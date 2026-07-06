@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -54,6 +55,7 @@ class Workspace:
         self.created: str = definition.get("created") or ""
         self.tables: list[dict] = list(definition.get("tables") or [])
         self.joins: list[dict] = list(definition.get("joins") or [])
+        self.tiles: list[dict] = list(definition.get("tiles") or [])
 
     # ------------------------------------------------------------- persistence
     @property
@@ -69,6 +71,7 @@ class Workspace:
             "created": self.created,
             "tables": self.tables,
             "joins": self.joins,
+            "tiles": self.tiles,
         }
         self.definition_path.write_text(
             json.dumps(definition, indent=2), encoding="utf-8"
@@ -198,6 +201,64 @@ class Workspace:
             raise WorkspaceError(f"No join named '{name}'.")
         self.remove_table(name)
 
+    # ------------------------------------------------------------------- tiles
+    # A tile pins a *spec* (a query or an analytics run), never data: the
+    # dashboard recomputes tiles on load, so it stays live when files change
+    # and every tile is reproducible.
+    def add_tile(self, payload: dict) -> dict:
+        kind = payload.get("kind")
+        if kind not in ("query", "analytics"):
+            raise WorkspaceError("Tile kind must be 'query' or 'analytics'.")
+        table = payload.get("table")
+        if table not in self.table_names():
+            raise WorkspaceError(f"Unknown table '{table}'.")
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise WorkspaceError("Tile title is required.")
+
+        tile = {
+            "id": uuid.uuid4().hex[:10],
+            "title": title,
+            "kind": kind,
+            "table": table,
+            "spec": dict(payload.get("spec") or {}),
+            "viz": dict(payload.get("viz") or {"type": "table"}),
+            "note": str(payload.get("note") or "").strip(),
+            "created": date.today().isoformat(),
+        }
+        self.tiles.append(tile)
+        self.save()
+        return tile
+
+    def _tile(self, tile_id: str) -> dict:
+        tile = next((t for t in self.tiles if t["id"] == tile_id), None)
+        if tile is None:
+            raise WorkspaceError("Tile not found.")
+        return tile
+
+    def update_tile(self, tile_id: str, changes: dict) -> dict:
+        tile = self._tile(tile_id)
+        if "title" in changes:
+            title = str(changes["title"] or "").strip()
+            if not title:
+                raise WorkspaceError("Tile title is required.")
+            tile["title"] = title
+        if "note" in changes:
+            tile["note"] = str(changes["note"] or "").strip()
+        if "viz" in changes and isinstance(changes["viz"], dict):
+            tile["viz"] = dict(changes["viz"])
+        if "move" in changes:
+            step = int(changes["move"])
+            index = self.tiles.index(tile)
+            target = max(0, min(len(self.tiles) - 1, index + step))
+            self.tiles.insert(target, self.tiles.pop(index))
+        self.save()
+        return tile
+
+    def remove_tile(self, tile_id: str) -> None:
+        self.tiles.remove(self._tile(tile_id))
+        self.save()
+
     # ------------------------------------------------------------------ frames
     def get_frame(self, name: str, _seen: frozenset = frozenset()) -> pl.DataFrame:
         if name in _seen:
@@ -254,6 +315,7 @@ class Workspace:
             "description": self.description,
             "created": self.created,
             "tables": tables,
+            "tile_count": len(self.tiles),
         }
 
 

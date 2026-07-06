@@ -31,6 +31,7 @@ export interface WorkspaceSummary {
   description: string
   created: string
   tables: TableInfo[]
+  tile_count?: number
 }
 
 export interface ColumnSchema {
@@ -132,8 +133,31 @@ export interface AnalyticsResult {
   verdict: 'ok' | 'warn' | 'fail' | 'info'
   verdict_text: string
   stats: StatChip[]
+  viz: VizSpec | null
   summary: FramePayload | null
   summary_rows: number
   detail: FramePayload | null
   detail_rows: number
+}
+
+export interface VizSpec {
+  type: 'table' | 'bar' | 'line' | 'pie'
+  x?: string
+  y?: string[]
+}
+
+export interface DashboardTile {
+  id: string
+  title: string
+  kind: 'query' | 'analytics'
+  table: string
+  note: string
+  viz: VizSpec
+  created: string
+  error: string | null
+  frame?: FramePayload | null
+  total_rows?: number
+  verdict?: 'ok' | 'warn' | 'fail' | 'info'
+  verdict_text?: string
+  stats?: StatChip[]
 }

@@ -18,10 +18,14 @@ your own machine; no data leaves it.
   duplicate detection, sequence-gap analysis, reproducible sampling
   (random / interval / stratified), period-over-period comparison, and
   round-number analysis. Results export to Excel.
+- **Dashboard** — pin any Explore query or Analytics test as a tile
+  (bar/line/pie chart or table). Tiles store the *spec*, not the data: the
+  dashboard re-runs everything against the current files on every load, so
+  it stays live and every tile is reproducible. Tiles can be renamed,
+  annotated, reordered, and removed.
 
 ## Roadmap
 
-- **V2** — charts and a pin-to-dashboard workspace view.
 - **V3** — natural-language querying: an LLM (Groq cloud API, configurable)
   generates visible, editable Python that executes locally. **Only metadata
   (schema, column names, aggregate stats) is ever sent to the API — never

@@ -39,12 +39,17 @@ backend/app/
 │                                sort → paginate; frame_payload() JSON serializer
 ├─ analytics.py               ── ANALYTICS registry: 6 audit tests, each
 │                                (df, params) -> AnalyticsResult; param metadata
-│                                drives the SPA's dynamic forms
+│                                drives the SPA's dynamic forms; tests suggest a
+│                                default viz (e.g. Benford → bar of obs vs exp)
+├─ dashboard.py               ── tile computation: re-runs each tile's stored
+│                                spec (query or analytics) against current
+│                                frames; broken tiles degrade to error cards
 └─ routes/
    ├─ workspace_routes.py     ── workspace/table/join CRUD
-   └─ analysis_routes.py      ── schema/preview/profile, query (+export),
-                                  analytics run (+export); exports re-run the
-                                  computation and stream xlsx (stateless)
+   ├─ analysis_routes.py      ── schema/preview/profile, query (+export),
+   │                              analytics run (+export); exports re-run the
+   │                              computation and stream xlsx (stateless)
+   └─ dashboard_routes.py     ── tiles CRUD (POST/PATCH/DELETE) + GET dashboard
 
 frontend/src/
 ├─ api.ts                     ── fetch wrapper (ApiError, upload, xlsx download)
@@ -52,13 +57,19 @@ frontend/src/
 ├─ views/HomeView.vue         ── workspace cards + create/delete
 ├─ views/WorkspaceView.vue    ── tabs: Data | Profile | Explore | Analytics
 └─ components/
+   ├─ DashboardTab.vue        ── pinned tile grid: chart/table + verdict/stats,
+   │                             rename/note/reorder/remove; remounts per visit
    ├─ DataTab.vue             ── upload, table list, preview dialog, remove
    ├─ JoinDialog.vue          ── join builder (schemas fetched per side)
    ├─ ProfileTab.vue          ── stat cards + expandable column profiles
    ├─ ExploreTab.vue          ── filter/group/agg builders; lazy DataTable
    │                             (server-side page+sort); group row click =
-   │                             drill-down to underlying rows
-   ├─ AnalyticsTab.vue        ── test cards → dynamic param form → result
+   │                             drill-down to underlying rows; chart controls
+   │                             (bar/line/pie) + Pin-to-dashboard
+   ├─ AnalyticsTab.vue        ── test cards → dynamic param form → result → Pin
+   ├─ ChartView.vue           ── Chart.js renderer for a frame + VizSpec
+   │                             (falls back to FrameTable for 'table' viz)
+   ├─ PinDialog.vue           ── title + note prompt shared by both pin flows
    └─ FrameTable.vue          ── renders a {columns, dtypes, rows} payload
 ```
 
@@ -99,6 +110,13 @@ cd frontend && npm run build
 
 - V1 complete: workspaces, multi-file load, joins, profiling, explore,
   6 analytics tests, Excel exports, full backend test suite.
+- V2 complete: Chart.js charts in Explore, pinned dashboard (spec-storing
+  tiles, live recompute, per-tile error degradation), Dashboard tab is the
+  landing tab when tiles exist.
 - No linter configured; `npm run build` runs vue-tsc as the frontend type gate.
-- Next: V2 charts/pinned tiles, then V3 NL→Python (Groq, metadata-only),
-  portable-zip build for distribution.
+- Next: V3 NL→Python (Groq, metadata-only), portable-zip build for
+  distribution.
+- Gotcha: PrimeVue Select options ignore bare synthetic `.click()` — driving
+  the UI programmatically needs the full pointerdown/mousedown/pointerup/
+  mouseup/click sequence. The Claude preview tool's preview_click does not
+  deliver events on this machine; use preview_eval instead.

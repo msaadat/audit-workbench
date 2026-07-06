@@ -27,6 +27,14 @@ export const api = {
     }).then((r) => handle<T>(r))
   },
 
+  patch<T>(url: string, body?: unknown): Promise<T> {
+    return fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    }).then((r) => handle<T>(r))
+  },
+
   del<T>(url: string): Promise<T> {
     return fetch(url, { method: 'DELETE' }).then((r) => handle<T>(r))
   },

@@ -9,6 +9,7 @@ import TabPanel from 'primevue/tabpanel'
 
 import { api } from '../api'
 import type { WorkspaceSummary } from '../types'
+import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
 import ProfileTab from '../components/ProfileTab.vue'
 import ExploreTab from '../components/ExploreTab.vue'
@@ -19,10 +20,16 @@ const toast = useToast()
 
 const workspace = ref<WorkspaceSummary | null>(null)
 const activeTab = ref('data')
+const initialized = ref(false)
 
 async function reload() {
   try {
     workspace.value = await api.get<WorkspaceSummary>(`/api/workspaces/${props.id}`)
+    if (!initialized.value) {
+      // Land on the dashboard when the workspace already has pinned work.
+      activeTab.value = (workspace.value.tile_count ?? 0) > 0 ? 'dashboard' : 'data'
+      initialized.value = true
+    }
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Workspace not found', detail: String(error), life: 5000 })
   }
@@ -42,12 +49,16 @@ onMounted(reload)
 
     <Tabs v-model:value="activeTab">
       <TabList>
+        <Tab value="dashboard"><i class="pi pi-th-large" /> Dashboard</Tab>
         <Tab value="data"><i class="pi pi-database" /> Data</Tab>
         <Tab value="profile"><i class="pi pi-chart-pie" /> Profile</Tab>
         <Tab value="explore"><i class="pi pi-search" /> Explore</Tab>
         <Tab value="analytics"><i class="pi pi-shield" /> Analytics</Tab>
       </TabList>
       <TabPanels>
+        <TabPanel value="dashboard">
+          <DashboardTab v-if="activeTab === 'dashboard'" :workspace="workspace" />
+        </TabPanel>
         <TabPanel value="data">
           <DataTab :workspace="workspace" @changed="reload" />
         </TabPanel>

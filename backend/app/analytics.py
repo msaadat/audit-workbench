@@ -38,6 +38,9 @@ class AnalyticsResult:
     stats: list = field(default_factory=list)  # [{"label", "value"}]
     summary: pl.DataFrame | None = None
     detail: pl.DataFrame | None = None
+    # Suggested visualization of the summary frame for dashboard tiles,
+    # e.g. {"type": "bar", "x": "digit", "y": ["observed_pct", "expected_pct"]}.
+    viz: dict | None = None
 
     def payload(self) -> dict:
         return {
@@ -45,6 +48,7 @@ class AnalyticsResult:
             "verdict": self.verdict,
             "verdict_text": self.verdict_text,
             "stats": self.stats,
+            "viz": self.viz,
             "summary": frame_payload(self.summary, SUMMARY_MAX_ROWS)
             if self.summary is not None
             else None,
@@ -179,6 +183,11 @@ def benford(df: pl.DataFrame, params: dict) -> AnalyticsResult:
             ),
         ],
         summary=table,
+        viz={
+            "type": "bar",
+            "x": "digit" if digits == 1 else "digits",
+            "y": ["observed_pct", "expected_pct"],
+        },
     )
 
 
@@ -399,6 +408,7 @@ def period_compare(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         verdict_text=text,
         stats=stats,
         summary=table,
+        viz={"type": "line", "x": "period", "y": [measure]},
     )
 
 
@@ -446,6 +456,7 @@ def round_numbers(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=summary,
         detail=detail if detail.height else None,
+        viz={"type": "bar", "x": "multiple_of", "y": ["pct", "expected_pct"]},
     )
 
 

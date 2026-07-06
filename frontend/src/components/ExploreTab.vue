@@ -10,7 +10,9 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import { api, ApiError } from '../api'
-import type { ColumnSchema, FilterSpec, QueryResult, WorkspaceSummary } from '../types'
+import type { ColumnSchema, FilterSpec, QueryResult, VizSpec, WorkspaceSummary } from '../types'
+import ChartView from './ChartView.vue'
+import PinDialog from './PinDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
@@ -30,6 +32,12 @@ const pageSize = ref(50)
 const result = ref<QueryResult | null>(null)
 const running = ref(false)
 const exporting = ref(false)
+
+const vizType = ref<VizSpec['type']>('table')
+const vizX = ref<string | null>(null)
+const vizY = ref<string[]>([])
+const showPin = ref(false)
+const pinning = ref(false)
 
 const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 const columnNames = computed(() => schema.value.map((c) => c.name))
@@ -110,11 +118,65 @@ async function run(resetPage = true) {
       spec(),
     )
     wasGrouped.value = groupBy.value.length > 0
+    syncVizDefaults()
   } catch (error) {
     const detail = error instanceof ApiError ? error.message : String(error)
     toast.add({ severity: 'error', summary: 'Query failed', detail, life: 6000 })
   } finally {
     running.value = false
+  }
+}
+
+/** Keep the chart axes valid for the current result; default them when grouped. */
+function syncVizDefaults() {
+  if (!result.value) return
+  const columns = result.value.columns
+  const numeric = columns.filter((_, index) => /Int|Float|Decimal/.test(result.value!.dtypes[index]))
+  if (vizX.value && !columns.includes(vizX.value)) vizX.value = null
+  vizY.value = vizY.value.filter((column) => numeric.includes(column))
+  if (wasGrouped.value) {
+    if (!vizX.value) vizX.value = groupBy.value[0] ?? columns[0]
+    if (vizY.value.length === 0 && numeric.length) vizY.value = [numeric[0]]
+  } else if (vizType.value !== 'table') {
+    vizType.value = 'table'
+  }
+}
+
+const currentViz = computed<VizSpec>(() => ({
+  type: vizType.value,
+  x: vizX.value ?? undefined,
+  y: vizY.value,
+}))
+
+const resultNumericColumns = computed(() => {
+  if (!result.value) return []
+  return result.value.columns.filter((_, index) =>
+    /Int|Float|Decimal/.test(result.value!.dtypes[index]),
+  )
+})
+
+async function pinTile({ title, note }: { title: string; note: string }) {
+  if (!table.value) return
+  pinning.value = true
+  try {
+    const tileSpec = { ...spec() }
+    delete (tileSpec as Record<string, unknown>).page
+    delete (tileSpec as Record<string, unknown>).page_size
+    await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
+      kind: 'query',
+      table: table.value,
+      title,
+      note,
+      spec: tileSpec,
+      viz: currentViz.value,
+    })
+    showPin.value = false
+    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: title, life: 3000 })
+  } catch (error) {
+    const detail = error instanceof ApiError ? error.message : String(error)
+    toast.add({ severity: 'error', summary: 'Pin failed', detail, life: 6000 })
+  } finally {
+    pinning.value = false
   }
 }
 
@@ -195,6 +257,14 @@ async function exportExcel() {
       v-tooltip.bottom="'Full result to Excel'"
       @click="exportExcel"
     />
+    <Button
+      label="Pin"
+      icon="pi pi-thumbtack"
+      severity="secondary"
+      :disabled="!result"
+      v-tooltip.bottom="'Pin this query to the dashboard'"
+      @click="showPin = true"
+    />
   </div>
 
   <div class="builders">
@@ -239,6 +309,18 @@ async function exportExcel() {
       <Tag :value="`${result.filtered_rows.toLocaleString()} rows after filters`" severity="secondary" />
       <Tag v-if="wasGrouped" :value="`${result.total_rows.toLocaleString()} groups`" severity="info" />
       <span v-if="wasGrouped" class="muted small">Click a group row to drill down to its rows.</span>
+
+      <span class="viz-controls" v-if="wasGrouped || vizType !== 'table'">
+        <Select v-model="vizType" :options="['table', 'bar', 'line', 'pie']" class="viz-type" />
+        <template v-if="vizType !== 'table'">
+          <Select v-model="vizX" :options="result.columns" placeholder="X axis" filter class="viz-axis" />
+          <MultiSelect v-model="vizY" :options="resultNumericColumns" placeholder="Values" class="viz-axis" />
+        </template>
+      </span>
+    </div>
+
+    <div v-if="vizType !== 'table'" class="chart-panel">
+      <ChartView :frame="result" :viz="currentViz" height="300px" />
     </div>
 
     <DataTable
@@ -275,6 +357,13 @@ async function exportExcel() {
     </DataTable>
   </template>
   <p v-else-if="table" class="muted">Build a query and press Run.</p>
+
+  <PinDialog
+    v-model:visible="showPin"
+    :defaultTitle="wasGrouped ? `${table}: by ${groupBy.join(', ') || 'group'}` : `${table}: filtered rows`"
+    :saving="pinning"
+    @pin="pinTile"
+  />
 </template>
 
 <style scoped>
@@ -334,6 +423,30 @@ async function exportExcel() {
   align-items: center;
   gap: 0.6rem;
   margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.viz-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.viz-type {
+  min-width: 7rem;
+}
+
+.viz-axis {
+  min-width: 11rem;
+}
+
+.chart-panel {
+  background: var(--p-surface-0);
+  border: 1px solid var(--p-surface-200);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
 }
 
 .cell-null::after {

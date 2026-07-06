@@ -16,6 +16,7 @@ import type {
   WorkspaceSummary,
 } from '../types'
 import FrameTable from './FrameTable.vue'
+import PinDialog from './PinDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
@@ -28,6 +29,8 @@ const params = ref<Record<string, unknown>>({})
 const result = ref<AnalyticsResult | null>(null)
 const running = ref(false)
 const exporting = ref(false)
+const showPin = ref(false)
+const pinning = ref(false)
 
 const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 
@@ -107,6 +110,27 @@ async function run() {
     toast.add({ severity: 'error', summary: 'Test failed', detail, life: 7000 })
   } finally {
     running.value = false
+  }
+}
+
+async function pinTile({ title, note }: { title: string; note: string }) {
+  if (!selected.value || !table.value) return
+  pinning.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
+      kind: 'analytics',
+      table: table.value,
+      title,
+      note,
+      spec: { test: selected.value.id, params: params.value },
+    })
+    showPin.value = false
+    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: title, life: 3000 })
+  } catch (error) {
+    const detail = error instanceof ApiError ? error.message : String(error)
+    toast.add({ severity: 'error', summary: 'Pin failed', detail, life: 6000 })
+  } finally {
+    pinning.value = false
   }
 }
 
@@ -203,6 +227,14 @@ async function exportExcel() {
         :loading="exporting"
         @click="exportExcel"
       />
+      <Button
+        label="Pin"
+        icon="pi pi-thumbtack"
+        severity="secondary"
+        size="small"
+        v-tooltip.bottom="'Pin this test to the dashboard'"
+        @click="showPin = true"
+      />
     </div>
 
     <div class="stat-cards" style="margin: 0.75rem 0 1rem">
@@ -227,6 +259,13 @@ async function exportExcel() {
       <FrameTable :frame="result.detail" scrollHeight="40vh" />
     </template>
   </div>
+
+  <PinDialog
+    v-model:visible="showPin"
+    :defaultTitle="result?.title ?? selected?.label ?? 'Analytics test'"
+    :saving="pinning"
+    @pin="pinTile"
+  />
 </template>
 
 <style scoped>

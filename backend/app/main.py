@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .explore import QueryError
 from .routes.analysis_routes import router as analysis_router
+from .routes.dashboard_routes import router as dashboard_router
 from .routes.workspace_routes import router as workspace_router
 from .workspaces import WorkspaceError
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
 
     app.include_router(workspace_router)
     app.include_router(analysis_router)
+    app.include_router(dashboard_router)
 
     if FRONTEND_DIST.exists():
         app.mount(
