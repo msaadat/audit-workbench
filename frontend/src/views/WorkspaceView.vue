@@ -1,0 +1,87 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useToast } from 'primevue/usetoast'
+import Tabs from 'primevue/tabs'
+import TabList from 'primevue/tablist'
+import Tab from 'primevue/tab'
+import TabPanels from 'primevue/tabpanels'
+import TabPanel from 'primevue/tabpanel'
+
+import { api } from '../api'
+import type { WorkspaceSummary } from '../types'
+import DataTab from '../components/DataTab.vue'
+import ProfileTab from '../components/ProfileTab.vue'
+import ExploreTab from '../components/ExploreTab.vue'
+import AnalyticsTab from '../components/AnalyticsTab.vue'
+
+const props = defineProps<{ id: string }>()
+const toast = useToast()
+
+const workspace = ref<WorkspaceSummary | null>(null)
+const activeTab = ref('data')
+
+async function reload() {
+  try {
+    workspace.value = await api.get<WorkspaceSummary>(`/api/workspaces/${props.id}`)
+  } catch (error) {
+    toast.add({ severity: 'error', summary: 'Workspace not found', detail: String(error), life: 5000 })
+  }
+}
+
+onMounted(reload)
+</script>
+
+<template>
+  <div class="page" v-if="workspace">
+    <div class="ws-header">
+      <div>
+        <h1>{{ workspace.name }}</h1>
+        <p class="muted">{{ workspace.description || 'No description.' }}</p>
+      </div>
+    </div>
+
+    <Tabs v-model:value="activeTab">
+      <TabList>
+        <Tab value="data"><i class="pi pi-database" /> Data</Tab>
+        <Tab value="profile"><i class="pi pi-chart-pie" /> Profile</Tab>
+        <Tab value="explore"><i class="pi pi-search" /> Explore</Tab>
+        <Tab value="analytics"><i class="pi pi-shield" /> Analytics</Tab>
+      </TabList>
+      <TabPanels>
+        <TabPanel value="data">
+          <DataTab :workspace="workspace" @changed="reload" />
+        </TabPanel>
+        <TabPanel value="profile">
+          <ProfileTab :workspace="workspace" />
+        </TabPanel>
+        <TabPanel value="explore">
+          <ExploreTab :workspace="workspace" />
+        </TabPanel>
+        <TabPanel value="analytics">
+          <AnalyticsTab :workspace="workspace" />
+        </TabPanel>
+      </TabPanels>
+    </Tabs>
+  </div>
+</template>
+
+<style scoped>
+.ws-header {
+  margin-bottom: 1rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.4rem;
+}
+
+.ws-header p {
+  margin: 0;
+}
+
+:deep(.p-tab) {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+</style>
