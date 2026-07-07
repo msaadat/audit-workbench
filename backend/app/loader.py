@@ -8,6 +8,12 @@ engine handle the remaining ambiguity per column.
 The cache is keyed by (resolved path, size, mtime), so editing or replacing
 a file invalidates its entry automatically. Files can be 100MB+ so avoiding
 repeated parses matters more than the memory of keeping frames around.
+
+Excel reads also get a parquet sidecar in a ``.cache`` folder next to the
+source file: header-detection plus multi-sheet consolidation is real work,
+and unlike the in-memory cache it survives process restarts. The sidecar's
+filename embeds the file signature, so a changed workbook simply misses and
+the stale file is swept away once the fresh one is written.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import polars as pl
 
 SUPPORTED_SUFFIXES = (".csv", ".tsv", ".xlsx", ".xlsm", ".xls")
 EXCEL_HEADER_SCAN_ROWS = 50
+CACHE_DIRNAME = ".cache"
 
 _cache: dict[tuple, pl.DataFrame] = {}
 
@@ -37,14 +44,38 @@ def _signature(path: Path) -> tuple:
     return (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
 
 
-def clear_cache(path: Path | None = None) -> None:
-    """Drop cached frames — all of them, or just the ones for ``path``."""
-    if path is None:
-        _cache.clear()
+def file_signature(path: Path) -> tuple:
+    """Public signature for a source file, for callers that cache alongside it."""
+    return _signature(Path(path))
+
+
+def _parquet_cache_path(path: Path, sig: tuple) -> Path:
+    _, size, mtime_ns = sig
+    return path.parent / CACHE_DIRNAME / f"{path.stem}.{size}-{mtime_ns}.parquet"
+
+
+def _clear_parquet_cache(path: Path, keep: Path | None = None) -> None:
+    cache_dir = path.parent / CACHE_DIRNAME
+    if not cache_dir.exists():
         return
+    for stale in cache_dir.glob(f"{path.stem}.*.parquet"):
+        if stale != keep:
+            stale.unlink(missing_ok=True)
+
+
+def _clear_memory_cache(path: Path) -> None:
     key = str(path.resolve())
     for cached in [k for k in _cache if k[0] == key]:
         _cache.pop(cached, None)
+
+
+def clear_cache(path: Path | None = None) -> None:
+    """Drop cached frames (memory and on-disk parquet) — all, or just ``path``."""
+    if path is None:
+        _cache.clear()
+        return
+    _clear_memory_cache(path)
+    _clear_parquet_cache(path)
 
 
 def _cell_text(value: object) -> str:
@@ -238,9 +269,19 @@ def read_table(path: Path) -> pl.DataFrame:
             ignore_errors=True,
         )
     else:
-        df = _read_excel(path)
+        parquet_cache = _parquet_cache_path(path, sig)
+        if parquet_cache.exists():
+            df = pl.read_parquet(parquet_cache)
+        else:
+            df = _read_excel(path)
+            try:
+                parquet_cache.parent.mkdir(parents=True, exist_ok=True)
+                df.write_parquet(parquet_cache)
+                _clear_parquet_cache(path, keep=parquet_cache)
+            except OSError:
+                pass  # best-effort: an unwritable cache dir shouldn't break reads
 
-    # Drop stale entries for the same file before caching the new read.
-    clear_cache(path)
+    # Drop stale in-memory entries for the same file before caching the new read.
+    _clear_memory_cache(path)
     _cache[sig] = df
     return df

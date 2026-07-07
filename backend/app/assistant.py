@@ -73,8 +73,7 @@ def _column_meta(profile: dict) -> dict:
 
 
 def table_metadata(workspace: Workspace, table: str) -> dict:
-    frame = workspace.get_frame(table)
-    profile = profiler.profile_table(frame)
+    profile = workspace.get_profile(table)
     return {
         "table": table,
         "rows": profile["rows"],

@@ -14,6 +14,7 @@ reference base tables or other joins. Frames are resolved lazily through
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -25,7 +26,7 @@ from pathlib import Path
 import polars as pl
 
 from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
-from . import loader
+from . import loader, profiler
 
 SCHEMA_VERSION = 1
 JOIN_TYPES = ("inner", "left", "full", "semi", "anti", "cross")
@@ -146,6 +147,7 @@ class Workspace:
             self.tables.remove(entry)
         if join is not None:
             self.joins.remove(join)
+        self._clear_profile_cache(name)
         self.save()
 
     # ------------------------------------------------------------------- joins
@@ -291,6 +293,69 @@ class Workspace:
             right_on=join["right_on"],
             coalesce=True,
         )
+
+    def _table_signature(self, name: str, _seen: frozenset = frozenset()) -> tuple:
+        """A hashable fingerprint of a table's content: the source file's
+        (size, mtime) for base tables, or the join spec plus both sides'
+        signatures, recursively. Used to key the on-disk profile cache."""
+        if name in _seen:
+            raise WorkspaceError(f"Join '{name}' references itself in a cycle.")
+
+        entry = self._table_entry(name)
+        if entry is not None:
+            return ("file", loader.file_signature(self.data_dir / entry["file"]))
+
+        join = self._join_entry(name)
+        if join is None:
+            raise WorkspaceError(f"No table named '{name}'.")
+
+        seen = _seen | {name}
+        return (
+            "join",
+            join["how"],
+            tuple(join["left_on"]),
+            tuple(join["right_on"]),
+            self._table_signature(join["left"], seen),
+            self._table_signature(join["right"], seen),
+        )
+
+    # ---------------------------------------------------------------- profile
+    def _cache_dir(self) -> Path:
+        return self.data_dir / loader.CACHE_DIRNAME
+
+    def _profile_cache_path(self, name: str, sig: tuple) -> Path:
+        digest = hashlib.sha1(repr(sig).encode()).hexdigest()[:16]
+        return self._cache_dir() / f"{name}.{digest}.profile.json"
+
+    def _clear_profile_cache(self, name: str) -> None:
+        cache_dir = self._cache_dir()
+        if not cache_dir.exists():
+            return
+        for stale in cache_dir.glob(f"{name}.*.profile.json"):
+            stale.unlink(missing_ok=True)
+
+    def get_profile(self, name: str) -> dict:
+        """Column/dataset profile for a table, cached on disk by content
+        signature — profiling a large frame is expensive and the result
+        never changes until the underlying file (or join input) does."""
+        sig = self._table_signature(name)
+        cache_file = self._profile_cache_path(name, sig)
+        if cache_file.exists():
+            try:
+                return json.loads(cache_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        profile = profiler.profile_table(self.get_frame(name))
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(profile), encoding="utf-8")
+            for stale in cache_file.parent.glob(f"{name}.*.profile.json"):
+                if stale != cache_file:
+                    stale.unlink(missing_ok=True)
+        except OSError:
+            pass  # best-effort: an unwritable cache dir shouldn't break profiling
+        return profile
 
     # ----------------------------------------------------------------- summary
     def summary(self) -> dict:

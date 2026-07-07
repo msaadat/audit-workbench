@@ -50,7 +50,7 @@ async def table_preview(workspace_id: str, table_name: str, rows: int = 100):
 
 @router.get("/workspaces/{workspace_id}/tables/{table_name}/profile")
 async def table_profile(workspace_id: str, table_name: str):
-    return profiler.profile_table(_frame(workspace_id, table_name))
+    return workspaces.load_workspace(workspace_id).get_profile(table_name)
 
 
 # ------------------------------------------------------------------- explore
