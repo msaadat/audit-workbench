@@ -11,7 +11,6 @@ import { api } from '../api'
 import type { WorkspaceSummary } from '../types'
 import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
-import ProfileTab from '../components/ProfileTab.vue'
 import PivotTab from '../components/PivotTab.vue'
 import ExploreTab from '../components/ExploreTab.vue'
 import AnalyticsTab from '../components/AnalyticsTab.vue'
@@ -53,7 +52,6 @@ onMounted(reload)
       <TabList>
         <Tab value="dashboard"><i class="pi pi-th-large" /> Dashboard</Tab>
         <Tab value="data"><i class="pi pi-database" /> Data</Tab>
-        <Tab value="profile"><i class="pi pi-chart-pie" /> Profile</Tab>
         <Tab value="pivot"><i class="pi pi-table" /> Pivot</Tab>
         <Tab value="explore"><i class="pi pi-search" /> Explore</Tab>
         <Tab value="analytics"><i class="pi pi-shield" /> Analytics</Tab>
@@ -65,9 +63,6 @@ onMounted(reload)
         </TabPanel>
         <TabPanel value="data">
           <DataTab :workspace="workspace" @changed="reload" />
-        </TabPanel>
-        <TabPanel value="profile">
-          <ProfileTab :workspace="workspace" />
         </TabPanel>
         <TabPanel value="pivot">
           <PivotTab :workspace="workspace" />
