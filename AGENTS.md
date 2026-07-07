@@ -50,7 +50,7 @@ backend/app/
 │                                current frames; broken tiles degrade to cards
 ├─ llm.py                     ── LLM transport: OpenAI-compatible chat/tools
 │                                over stdlib urllib (no dep), Groq by default;
-│                                configured via GROQ_API_KEY/MODEL/BASE_URL
+│                                configured via .env or GROQ_API_KEY/MODEL/BASE_URL
 ├─ sandbox.py                 ── AST-guarded local Polars executor (no imports,
 │                                no dunder/OS); powers run_python + python tiles
 ├─ assistant.py               ── NL agent: metadata-only context + tool loop
@@ -117,7 +117,7 @@ python -m venv .venv
 cd backend && ..\.venv\Scripts\python -m pytest
 
 # Enable the assistant (optional; unset == graceful "not configured" banner)
-set GROQ_API_KEY=...            # and optionally GROQ_MODEL / GROQ_BASE_URL
+# Copy .env.example to .env and set GROQ_API_KEY (optional: model/base URL)
 
 # Dev servers
 .venv\Scripts\python -m uvicorn app.main:app --app-dir backend --reload   # API :8000

@@ -1,4 +1,5 @@
 import json
+import urllib.error
 
 import polars as pl
 import pytest
@@ -140,6 +141,45 @@ def test_ask_without_key_raises(monkeypatch, workspace_with_data):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(llm.LLMError, match="not configured"):
         assistant.ask(workspace_with_data, "anything")
+
+
+def test_llm_chat_sends_user_agent(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["headers"]["User-agent"] == llm.USER_AGENT
+    assert captured["timeout"] == llm.REQUEST_TIMEOUT
+
+
+def test_llm_error_detail_keeps_plain_text_body():
+    error = urllib.error.HTTPError(
+        url="https://example.test",
+        code=403,
+        msg="Forbidden",
+        hdrs={},
+        fp=None,
+    )
+    error.read = lambda: b"error code: 1010"
+
+    assert llm._error_detail(error) == "error code: 1010"
 
 
 # --------------------------------------------------------------- full loop (mocked)

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import polars as pl
 
+from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
 from . import loader
 
 SCHEMA_VERSION = 1

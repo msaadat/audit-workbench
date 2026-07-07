@@ -4,8 +4,9 @@ Talks to any OpenAI-compatible chat/completions endpoint — Groq by default —
 over the standard library only (``urllib``), so there is **no extra runtime
 dependency** to bundle into the portable-zip distribution.
 
-The backend is configured entirely through environment variables, so a
-deployment can point it at Groq, a self-hosted model, or nothing at all:
+The backend is configured through environment variables or a local ``.env``
+file, so a deployment can point it at Groq, a self-hosted model, or nothing at
+all:
 
     GROQ_API_KEY   the API key (absence == "assistant not configured")
     GROQ_MODEL     model id (default: a current tool-capable Llama)
@@ -23,6 +24,8 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+from . import config  # noqa: F401  # load .env before reading os.environ
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
@@ -70,7 +73,8 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     if not key:
         raise LLMError(
             "The assistant is not configured. Set GROQ_API_KEY (and optionally "
-            "GROQ_MODEL) in the environment to enable natural-language analysis."
+            "GROQ_MODEL) in .env or the environment to enable natural-language "
+            "analysis."
         )
 
     body: dict = {

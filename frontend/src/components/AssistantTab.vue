@@ -142,10 +142,11 @@ const toolLabel: Record<string, string> = {
     <div>
       <strong>The assistant isn't configured.</strong>
       <p>
-        Set a <code>GROQ_API_KEY</code> environment variable (optionally
-        <code>GROQ_MODEL</code> / <code>GROQ_BASE_URL</code>) and restart the
-        backend to enable natural-language analysis. Only schema and aggregate
-        statistics are ever sent to the model — never your raw data rows.
+        Set <code>GROQ_API_KEY</code> in <code>.env</code> or the environment
+        (optionally <code>GROQ_MODEL</code> / <code>GROQ_BASE_URL</code>) and
+        restart the backend to enable natural-language analysis. Only schema
+        and aggregate statistics are ever sent to the model — never your raw
+        data rows.
       </p>
     </div>
   </div>
@@ -261,7 +262,7 @@ const toolLabel: Record<string, string> = {
       :disabled="!status?.configured || busy"
       :placeholder="status?.configured
         ? 'Ask about this data… (Enter to send, Shift+Enter for a new line)'
-        : 'Set GROQ_API_KEY to enable the assistant'"
+        : 'Set GROQ_API_KEY in .env to enable the assistant'"
       @keydown="onKeydown"
     />
     <Button

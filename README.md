@@ -38,17 +38,23 @@ your own machine; no data leaves it.
 - **Later** — portable-zip distribution (embedded Python, no installs) for
   locked-down corporate machines; promote findings into validation rules.
 
-## Enabling the assistant
+## Configuration
 
-The assistant is optional. Set an API key in the backend's environment:
+Configuration can live in a local `.env` file at the repo root. Copy
+`.env.example` to `.env` and fill in the values you need:
 
-```bash
-set GROQ_API_KEY=your-key       # optional: GROQ_MODEL, GROQ_BASE_URL
+```dotenv
+GROQ_API_KEY=your-key
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_BASE_URL=https://api.groq.com/openai/v1
 ```
 
-`GROQ_BASE_URL` accepts any OpenAI-compatible endpoint (e.g. a self-hosted
-model), so the LLM backend is configurable per deployment. The transport uses
-only the Python standard library — no extra dependency to bundle.
+The assistant is optional; without `GROQ_API_KEY`, the tab shows a setup
+message and the rest of the app keeps working. `GROQ_BASE_URL` accepts any
+OpenAI-compatible endpoint (e.g. a self-hosted model), so the LLM backend is
+configurable per deployment. Real environment variables override `.env` values.
+The transport and dotenv loader both use only the Python standard library, so
+there is no extra dependency to bundle.
 
 ## Stack
 
