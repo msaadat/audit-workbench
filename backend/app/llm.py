@@ -29,6 +29,7 @@ from . import config  # noqa: F401  # load .env before reading os.environ
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
+USER_AGENT = "audit-workbench/0.1"
 REQUEST_TIMEOUT = 60  # seconds
 
 
@@ -92,6 +93,7 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
         headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )
@@ -115,10 +117,14 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
 
 def _error_detail(error: urllib.error.HTTPError) -> str:
     try:
-        body = json.loads(error.read().decode("utf-8"))
+        text = error.read().decode("utf-8")
+        body = json.loads(text)
         message = body.get("error", {}).get("message")
         if message:
             return str(message)
+    except json.JSONDecodeError:
+        if text.strip():
+            return text.strip()
     except Exception:  # pragma: no cover - best-effort error extraction
         pass
     return error.reason or "unknown error"
