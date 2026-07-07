@@ -39,7 +39,7 @@ const tileIcon: Record<string, string> = {
 
 const tileKindLabel: Record<string, string> = {
   analytics: 'Analytics test',
-  query: 'Explore query',
+  query: 'Query',
   python: 'Python snippet',
   pivot: 'Pivot table',
 }
@@ -110,13 +110,13 @@ defineExpose({ load })
   <div class="toolbar">
     <span class="muted">
       Tiles re-run their saved query or test on the current data every time the
-      dashboard loads — pin results from the Explore and Analytics tabs.
+      dashboard loads — pin results from the Query and Analytics tabs.
     </span>
     <Button icon="pi pi-refresh" label="Refresh" severity="secondary" size="small" :loading="loading" @click="load" />
   </div>
 
   <p v-if="!loading && tiles.length === 0" class="muted empty">
-    Nothing pinned yet. Run a query in <b>Explore</b> or a test in
+    Nothing pinned yet. Run a query in <b>Query</b> or a test in
     <b>Analytics</b>, then hit <i class="pi pi-thumbtack" /> Pin.
   </p>
 

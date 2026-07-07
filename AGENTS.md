@@ -70,17 +70,22 @@ frontend/src/
 ├─ api.ts                     ── fetch wrapper (ApiError, upload, xlsx download)
 ├─ types.ts                   ── mirrors backend payload shapes
 ├─ views/HomeView.vue         ── workspace cards + create/delete
-├─ views/WorkspaceView.vue    ── tabs: Data | Profile | Explore | Analytics
+├─ views/WorkspaceView.vue    ── tabs: Dashboard | Data | Pivot | Query |
+│                                Analytics | Assistant
 └─ components/
    ├─ DashboardTab.vue        ── pinned tile grid: chart/table + verdict/stats,
    │                             rename/note/reorder/remove; remounts per visit
    ├─ DataTab.vue             ── upload, table list, preview dialog, remove
    ├─ JoinDialog.vue          ── join builder (schemas fetched per side)
    ├─ ProfileTab.vue          ── stat cards + expandable column profiles
-   ├─ ExploreTab.vue          ── filter/group/agg builders; lazy DataTable
-   │                             (server-side page+sort); group row click =
-   │                             drill-down to underlying rows; chart controls
-   │                             (bar/line/pie) + Pin-to-dashboard
+   ├─ PivotTab.vue            ── Perspective-style cross-tab: draggable Fields →
+   │                             Filters/Rows/Columns/Values zones; live recompute
+   ├─ QueryTab.vue            ── Perspective-style query builder (was ExploreTab):
+   │                             draggable Fields → Filters/Group by/Aggregations/
+   │                             Order by zones on the right; live (debounced)
+   │                             recompute; lazy DataTable (server page); group
+   │                             row click = drill-down; chart controls
+   │                             (bar/line/pie) + Pin-to-dashboard ('query' tile)
    ├─ AnalyticsTab.vue        ── test cards → dynamic param form → result → Pin
    ├─ AssistantTab.vue        ── NL chat: question → tool-step trace → answer +
    │                             artifacts (charts, editable+re-runnable Python)
