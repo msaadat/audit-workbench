@@ -171,7 +171,7 @@ export interface VizSpec {
 export interface DashboardTile {
   id: string
   title: string
-  kind: 'query' | 'analytics' | 'python'
+  kind: 'query' | 'analytics' | 'python' | 'pivot'
   table: string | null
   note: string
   viz: VizSpec

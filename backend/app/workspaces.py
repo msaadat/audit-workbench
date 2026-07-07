@@ -210,8 +210,10 @@ class Workspace:
     # and every tile is reproducible.
     def add_tile(self, payload: dict) -> dict:
         kind = payload.get("kind")
-        if kind not in ("query", "analytics", "python"):
-            raise WorkspaceError("Tile kind must be 'query', 'analytics' or 'python'.")
+        if kind not in ("query", "analytics", "python", "pivot"):
+            raise WorkspaceError(
+                "Tile kind must be 'query', 'pivot', 'analytics' or 'python'."
+            )
         table = payload.get("table")
         # Python tiles carry their own code and may reference any table(s), so
         # a bound table is optional (and only used as a label) for them.

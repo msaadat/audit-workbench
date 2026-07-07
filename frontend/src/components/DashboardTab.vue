@@ -34,12 +34,14 @@ const tileIcon: Record<string, string> = {
   analytics: 'pi pi-shield',
   query: 'pi pi-search',
   python: 'pi pi-code',
+  pivot: 'pi pi-table',
 }
 
 const tileKindLabel: Record<string, string> = {
   analytics: 'Analytics test',
   query: 'Explore query',
   python: 'Python snippet',
+  pivot: 'Pivot table',
 }
 
 function fail(summary: string, error: unknown) {

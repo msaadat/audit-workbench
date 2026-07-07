@@ -182,6 +182,14 @@ def run_pivot(df: pl.DataFrame, spec: dict) -> dict:
     }
 
 
+def run_pivot_frame(df: pl.DataFrame, spec: dict, limit: int | None = None) -> tuple[dict, int]:
+    """The wide cross-tab (no grand-total row) as a ``frame_payload`` plus its
+    row count — used to render pinned pivot tiles on the dashboard, where the
+    flat frame feeds a chart or table just like an Explore query."""
+    wide, _grand, _meta = _build(df, spec)
+    return frame_payload(wide, limit), wide.height
+
+
 def run_pivot_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
     """The cross-tab as one frame for Excel export — grand total appended as a
     final row with blank row fields. Returns (frame, filtered_row_count)."""

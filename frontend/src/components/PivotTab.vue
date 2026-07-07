@@ -3,11 +3,14 @@ import { computed, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
+import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import { api, ApiError } from '../api'
-import type { ColumnSchema, FilterSpec, PivotResult, PivotSpec, PivotValueSpec, WorkspaceSummary } from '../types'
+import type { ColumnSchema, FilterSpec, PivotResult, PivotSpec, PivotValueSpec, VizSpec, WorkspaceSummary } from '../types'
+import ChartView from './ChartView.vue'
+import PinDialog from './PinDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
@@ -36,6 +39,12 @@ const result = ref<PivotResult | null>(null)
 const running = ref(false)
 const exporting = ref(false)
 const lastError = ref<string | null>(null)
+
+const vizType = ref<VizSpec['type']>('table')
+const vizX = ref<string | null>(null)
+const vizY = ref<string[]>([])
+const showPin = ref(false)
+const pinning = ref(false)
 
 type ZoneName = 'filters' | 'rows' | 'columns' | 'values'
 const drag = ref<{ field: string; from: ZoneName | 'list'; index: number } | null>(null)
@@ -87,9 +96,13 @@ async function loadSchema() {
   values.value = []
   result.value = null
   lastError.value = null
+  vizType.value = 'table'
+  vizX.value = null
+  vizY.value = []
 }
 
 watch(table, loadSchema)
+watch(vizType, syncVizDefaults)
 watch(
   () => props.workspace.tables.length,
   () => {
@@ -192,10 +205,62 @@ async function run() {
       spec(),
     )
     lastError.value = null
+    syncVizDefaults()
   } catch (error) {
     lastError.value = error instanceof ApiError ? error.message : String(error)
   } finally {
     running.value = false
+  }
+}
+
+/** The cross-tab's numeric data columns (row fields excluded) — chartable. */
+const resultValueColumns = computed(() => {
+  const r = result.value
+  if (!r) return []
+  return r.columns.filter(
+    (column, index) => !r.row_fields.includes(column) && /Int|Float|Decimal/.test(r.dtypes[index]),
+  )
+})
+
+const currentViz = computed<VizSpec>(() => ({
+  type: vizType.value,
+  x: vizX.value ?? undefined,
+  y: vizY.value,
+}))
+
+/** Keep chart axes valid for the current cross-tab; default them when needed. */
+function syncVizDefaults() {
+  const r = result.value
+  if (!r) return
+  if (vizX.value && !r.row_fields.includes(vizX.value)) vizX.value = null
+  vizY.value = vizY.value.filter((column) => resultValueColumns.value.includes(column))
+  if (vizType.value !== 'table') {
+    if (!vizX.value) vizX.value = r.row_fields[0] ?? null
+    if (vizY.value.length === 0 && resultValueColumns.value.length) {
+      vizY.value = [resultValueColumns.value[0]]
+    }
+  }
+}
+
+async function pinTile({ title, note }: { title: string; note: string }) {
+  if (!table.value) return
+  pinning.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
+      kind: 'pivot',
+      table: table.value,
+      title,
+      note,
+      spec: spec(),
+      viz: currentViz.value,
+    })
+    showPin.value = false
+    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: title, life: 3000 })
+  } catch (error) {
+    const detail = error instanceof ApiError ? error.message : String(error)
+    toast.add({ severity: 'error', summary: 'Pin failed', detail, life: 6000 })
+  } finally {
+    pinning.value = false
   }
 }
 
@@ -309,6 +374,14 @@ function fmt(value: string | number | boolean | null): string {
       v-tooltip.bottom="'Cross-tab to Excel, totals included'"
       @click="exportExcel"
     />
+    <Button
+      label="Pin"
+      icon="pi pi-thumbtack"
+      severity="secondary"
+      :disabled="!result"
+      v-tooltip.bottom="'Pin this pivot to the dashboard'"
+      @click="showPin = true"
+    />
   </div>
 
   <div class="pivot-layout">
@@ -321,7 +394,27 @@ function fmt(value: string | number | boolean | null): string {
       <p v-else-if="result && result.rows.length === 0" class="muted hint">
         No rows match the filters.
       </p>
-      <div v-else-if="result" class="grid-wrap">
+      <template v-else-if="result">
+        <div class="viz-controls">
+          <Select v-model="vizType" :options="['table', 'bar', 'line', 'pie']" class="viz-type" />
+          <template v-if="vizType !== 'table'">
+            <Select v-model="vizX" :options="result.row_fields" placeholder="Category" filter class="viz-axis" />
+            <MultiSelect
+              v-model="vizY"
+              :options="resultValueColumns"
+              placeholder="Values"
+              filter
+              display="chip"
+              class="viz-axis"
+            />
+          </template>
+        </div>
+
+        <div v-if="vizType !== 'table'" class="chart-panel">
+          <ChartView :frame="result" :viz="currentViz" height="360px" />
+        </div>
+
+        <div v-else class="grid-wrap">
         <table class="pivot-grid">
           <thead>
             <tr v-if="twoRowHeader">
@@ -378,7 +471,8 @@ function fmt(value: string | number | boolean | null): string {
             </tr>
           </tfoot>
         </table>
-      </div>
+        </div>
+      </template>
       <p v-else class="muted hint">Computing…</p>
     </div>
 
@@ -497,6 +591,13 @@ function fmt(value: string | number | boolean | null): string {
       </div>
     </div>
   </div>
+
+  <PinDialog
+    v-model:visible="showPin"
+    :defaultTitle="`${table}: pivot by ${rowFields.join(', ') || 'rows'}`"
+    :saving="pinning"
+    @pin="pinTile"
+  />
 </template>
 
 <style scoped>
@@ -526,6 +627,29 @@ function fmt(value: string | number | boolean | null): string {
 
 .error {
   color: var(--p-red-600);
+  padding: 1rem;
+}
+
+.viz-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.viz-type {
+  min-width: 7rem;
+}
+
+.viz-axis {
+  min-width: 12rem;
+}
+
+.chart-panel {
+  background: var(--p-surface-0);
+  border: 1px solid var(--p-surface-200);
+  border-radius: 8px;
   padding: 1rem;
 }
 

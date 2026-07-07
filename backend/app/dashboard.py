@@ -10,7 +10,7 @@ Row caps depend on the visualization: charts get few points, tables a page.
 
 from __future__ import annotations
 
-from . import analytics, explore, sandbox
+from . import analytics, explore, pivot, sandbox
 from .workspaces import Workspace
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
@@ -51,6 +51,12 @@ def tile_payload(workspace: Workspace, tile: dict) -> dict:
             result, _ = explore.run_query_full(frame, tile.get("spec") or {})
             payload["total_rows"] = result.height
             payload["frame"] = explore.frame_payload(result, _cap_for(payload["viz"]))
+        elif tile["kind"] == "pivot":
+            fp, total = pivot.run_pivot_frame(
+                frame, tile.get("spec") or {}, _cap_for(payload["viz"])
+            )
+            payload["total_rows"] = total
+            payload["frame"] = fp
         else:
             spec = tile.get("spec") or {}
             result = analytics.run_test(frame, spec.get("test"), spec.get("params"))

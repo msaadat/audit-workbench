@@ -65,6 +65,30 @@ def test_query_tile_computes(workspace_with_data):
     assert payload["viz"]["type"] == "bar"
 
 
+def test_pivot_tile_computes(workspace_with_data):
+    ws = workspace_with_data
+    tile = ws.add_tile(
+        {
+            "kind": "pivot",
+            "table": "transactions",
+            "title": "Amount by customer",
+            "spec": {
+                "rows": ["cust_id"],
+                "columns": [],
+                "values": [{"column": "amount", "func": "sum"}],
+                "totals": True,
+            },
+            "viz": {"type": "bar", "x": "cust_id", "y": ["amount_sum"]},
+        }
+    )
+    payload = tile_payload(ws, tile)
+    assert payload["error"] is None
+    # Wide cross-tab, no grand-total row appended (chartable): 3 customers.
+    assert payload["total_rows"] == 3
+    assert payload["frame"]["columns"] == ["cust_id", "amount_sum"]
+    assert payload["viz"]["type"] == "bar"
+
+
 def test_analytics_tile_uses_suggested_viz(workspace_with_data):
     ws = workspace_with_data
     tile = ws.add_tile(
