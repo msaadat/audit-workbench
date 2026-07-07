@@ -207,14 +207,20 @@ class Workspace:
     # and every tile is reproducible.
     def add_tile(self, payload: dict) -> dict:
         kind = payload.get("kind")
-        if kind not in ("query", "analytics"):
-            raise WorkspaceError("Tile kind must be 'query' or 'analytics'.")
+        if kind not in ("query", "analytics", "python"):
+            raise WorkspaceError("Tile kind must be 'query', 'analytics' or 'python'.")
         table = payload.get("table")
-        if table not in self.table_names():
+        # Python tiles carry their own code and may reference any table(s), so
+        # a bound table is optional (and only used as a label) for them.
+        if kind == "python":
+            table = table if table in self.table_names() else None
+        elif table not in self.table_names():
             raise WorkspaceError(f"Unknown table '{table}'.")
         title = str(payload.get("title") or "").strip()
         if not title:
             raise WorkspaceError("Tile title is required.")
+        if kind == "python" and not str((payload.get("spec") or {}).get("code") or "").strip():
+            raise WorkspaceError("A Python tile needs code.")
 
         tile = {
             "id": uuid.uuid4().hex[:10],

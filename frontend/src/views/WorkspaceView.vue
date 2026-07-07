@@ -12,8 +12,10 @@ import type { WorkspaceSummary } from '../types'
 import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
 import ProfileTab from '../components/ProfileTab.vue'
+import PivotTab from '../components/PivotTab.vue'
 import ExploreTab from '../components/ExploreTab.vue'
 import AnalyticsTab from '../components/AnalyticsTab.vue'
+import AssistantTab from '../components/AssistantTab.vue'
 
 const props = defineProps<{ id: string }>()
 const toast = useToast()
@@ -52,8 +54,10 @@ onMounted(reload)
         <Tab value="dashboard"><i class="pi pi-th-large" /> Dashboard</Tab>
         <Tab value="data"><i class="pi pi-database" /> Data</Tab>
         <Tab value="profile"><i class="pi pi-chart-pie" /> Profile</Tab>
+        <Tab value="pivot"><i class="pi pi-table" /> Pivot</Tab>
         <Tab value="explore"><i class="pi pi-search" /> Explore</Tab>
         <Tab value="analytics"><i class="pi pi-shield" /> Analytics</Tab>
+        <Tab value="assistant"><i class="pi pi-sparkles" /> Assistant</Tab>
       </TabList>
       <TabPanels>
         <TabPanel value="dashboard">
@@ -65,11 +69,17 @@ onMounted(reload)
         <TabPanel value="profile">
           <ProfileTab :workspace="workspace" />
         </TabPanel>
+        <TabPanel value="pivot">
+          <PivotTab :workspace="workspace" />
+        </TabPanel>
         <TabPanel value="explore">
           <ExploreTab :workspace="workspace" />
         </TabPanel>
         <TabPanel value="analytics">
           <AnalyticsTab :workspace="workspace" />
+        </TabPanel>
+        <TabPanel value="assistant">
+          <AssistantTab v-if="activeTab === 'assistant'" :workspace="workspace" />
         </TabPanel>
       </TabPanels>
     </Tabs>

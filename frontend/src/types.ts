@@ -105,6 +105,28 @@ export interface QuerySpec {
   page_size: number
 }
 
+export interface PivotValueSpec {
+  column: string | null
+  func: string
+}
+
+export interface PivotSpec {
+  filters: FilterSpec[]
+  rows: string[]
+  columns: string[]
+  values: { column: string; func: string }[]
+  totals: boolean
+}
+
+export interface PivotResult extends FramePayload {
+  row_fields: string[]
+  column_field: string | null
+  value_names: string[]
+  column_keys: string[]
+  filtered_rows: number
+  grand_total: (string | number | boolean | null)[] | null
+}
+
 export interface AnalyticsParamMeta {
   name: string
   kind: 'column' | 'columns' | 'number' | 'select' | 'text'
@@ -149,8 +171,8 @@ export interface VizSpec {
 export interface DashboardTile {
   id: string
   title: string
-  kind: 'query' | 'analytics'
-  table: string
+  kind: 'query' | 'analytics' | 'python'
+  table: string | null
   note: string
   viz: VizSpec
   created: string
@@ -160,4 +182,49 @@ export interface DashboardTile {
   verdict?: 'ok' | 'warn' | 'fail' | 'info'
   verdict_text?: string
   stats?: StatChip[]
+  code?: string
+  stdout?: string | null
+}
+
+export interface AssistantStatus {
+  configured: boolean
+  model: string
+  base_url: string
+}
+
+export interface AssistantStep {
+  tool: string
+  args: Record<string, unknown>
+  ok: boolean
+}
+
+export interface AssistantArtifact {
+  id: string
+  tool: 'query_table' | 'run_analytics' | 'run_python'
+  title: string
+  table: string | null
+  kind: 'query' | 'analytics' | 'python'
+  spec: Record<string, unknown>
+  viz: VizSpec
+  frame: FramePayload | null
+  total_rows: number
+  error: string | null
+  code?: string
+  stdout?: string | null
+  verdict?: 'ok' | 'warn' | 'fail' | 'info'
+  verdict_text?: string
+  stats?: StatChip[]
+}
+
+export interface AssistantAnswer {
+  answer: string
+  steps: AssistantStep[]
+  artifacts: AssistantArtifact[]
+  disclosure: string
+}
+
+export interface RunPythonResult {
+  frame: FramePayload
+  total_rows: number
+  stdout: string | null
 }

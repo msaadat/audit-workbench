@@ -14,7 +14,7 @@ import polars as pl
 from fastapi import APIRouter, Body
 from fastapi.responses import StreamingResponse
 
-from .. import analytics, explore, profiler, workspaces
+from .. import analytics, explore, pivot, profiler, workspaces
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 
@@ -73,6 +73,18 @@ async def run_query(workspace_id: str, table_name: str, spec: dict = Body(...)):
 async def export_query(workspace_id: str, table_name: str, spec: dict = Body(...)):
     result, _ = explore.run_query_full(_frame(workspace_id, table_name), spec)
     return _excel_response(result, f"{table_name}_query.xlsx")
+
+
+# --------------------------------------------------------------------- pivot
+@router.post("/workspaces/{workspace_id}/tables/{table_name}/pivot")
+async def run_pivot(workspace_id: str, table_name: str, spec: dict = Body(...)):
+    return pivot.run_pivot(_frame(workspace_id, table_name), spec)
+
+
+@router.post("/workspaces/{workspace_id}/tables/{table_name}/pivot/export")
+async def export_pivot(workspace_id: str, table_name: str, spec: dict = Body(...)):
+    frame, _ = pivot.run_pivot_full(_frame(workspace_id, table_name), spec)
+    return _excel_response(frame, f"{table_name}_pivot.xlsx")
 
 
 # ----------------------------------------------------------------- analytics

@@ -16,9 +16,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .explore import QueryError
+from .llm import LLMError
 from .routes.analysis_routes import router as analysis_router
+from .routes.assistant_routes import router as assistant_router
 from .routes.dashboard_routes import router as dashboard_router
 from .routes.workspace_routes import router as workspace_router
+from .sandbox import SandboxError
 from .workspaces import WorkspaceError
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -36,12 +39,19 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(WorkspaceError)
     @app.exception_handler(QueryError)
+    @app.exception_handler(SandboxError)
     async def user_error(request: Request, error: Exception):
         return JSONResponse({"detail": str(error)}, status_code=400)
+
+    @app.exception_handler(LLMError)
+    async def llm_error(request: Request, error: Exception):
+        # 503: the request was fine, the LLM backend just isn't available.
+        return JSONResponse({"detail": str(error)}, status_code=503)
 
     app.include_router(workspace_router)
     app.include_router(analysis_router)
     app.include_router(dashboard_router)
+    app.include_router(assistant_router)
 
     if FRONTEND_DIST.exists():
         app.mount(

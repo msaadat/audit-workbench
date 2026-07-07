@@ -16,12 +16,16 @@ pandas, no DuckDB)** · XlsxWriter/fastexcel (Excel I/O) — frontend: Vue 3 +
 TypeScript + Vite + **PrimeVue 4** (no Tailwind).
 
 **Roadmap context (agreed 2026-07-06):** V2 adds charts + pin-to-dashboard
-tiles. V3 adds natural-language querying: an LLM (**Groq cloud API,
-configurable backend**) generates **visible, editable Python** executed
-locally; **only metadata (schema/column names/aggregate stats) may ever be
-sent to the LLM — never raw data rows**. A portable-zip distribution
+tiles. V3 (shipped) adds the natural-language **Assistant**: an LLM (**Groq
+cloud API, configurable backend**) answers questions by *calling tools* that
+run locally — structured queries, the analytics library, and an escape hatch
+that runs **visible, editable Polars** (`run_python`). **Only metadata
+(schema/column names/aggregate stats and previews of *aggregated* results) is
+ever sent to the LLM — never raw data rows**; `assistant._frame_for_model` is
+the choke point that withholds row-level detail. A portable-zip distribution
 (embedded Python, mirroring the old platform's `build_portable.py`) is
-planned because target users are on locked-down corporate PCs.
+planned because target users are on locked-down corporate PCs — this is why
+the LLM transport uses only the standard library (no SDK dependency).
 
 ## 2. Architecture
 
@@ -42,14 +46,25 @@ backend/app/
 │                                drives the SPA's dynamic forms; tests suggest a
 │                                default viz (e.g. Benford → bar of obs vs exp)
 ├─ dashboard.py               ── tile computation: re-runs each tile's stored
-│                                spec (query or analytics) against current
-│                                frames; broken tiles degrade to error cards
+│                                spec (query / analytics / python) against
+│                                current frames; broken tiles degrade to cards
+├─ llm.py                     ── LLM transport: OpenAI-compatible chat/tools
+│                                over stdlib urllib (no dep), Groq by default;
+│                                configured via GROQ_API_KEY/MODEL/BASE_URL
+├─ sandbox.py                 ── AST-guarded local Polars executor (no imports,
+│                                no dunder/OS); powers run_python + python tiles
+├─ assistant.py               ── NL agent: metadata-only context + tool loop
+│                                (list_tables, describe_table, query_table,
+│                                run_analytics, run_python); gates what the
+│                                model sees so raw rows never leave the machine
 └─ routes/
    ├─ workspace_routes.py     ── workspace/table/join CRUD
    ├─ analysis_routes.py      ── schema/preview/profile, query (+export),
    │                              analytics run (+export); exports re-run the
    │                              computation and stream xlsx (stateless)
-   └─ dashboard_routes.py     ── tiles CRUD (POST/PATCH/DELETE) + GET dashboard
+   ├─ dashboard_routes.py     ── tiles CRUD (POST/PATCH/DELETE) + GET dashboard
+   └─ assistant_routes.py     ── GET /assistant/status, POST /assistant (ask),
+   │                              POST /run-python (execute an edited snippet)
 
 frontend/src/
 ├─ api.ts                     ── fetch wrapper (ApiError, upload, xlsx download)
@@ -67,6 +82,9 @@ frontend/src/
    │                             drill-down to underlying rows; chart controls
    │                             (bar/line/pie) + Pin-to-dashboard
    ├─ AnalyticsTab.vue        ── test cards → dynamic param form → result → Pin
+   ├─ AssistantTab.vue        ── NL chat: question → tool-step trace → answer +
+   │                             artifacts (charts, editable+re-runnable Python)
+   │                             → Pin; banner when the LLM isn't configured
    ├─ ChartView.vue           ── Chart.js renderer for a frame + VizSpec
    │                             (falls back to FrameTable for 'table' viz)
    ├─ PinDialog.vue           ── title + note prompt shared by both pin flows
@@ -95,8 +113,11 @@ frontend/src/
 python -m venv .venv
 .venv\Scripts\pip install -r backend\requirements-dev.txt
 
-# Tests (56 tests: workspaces, explore, analytics, API)
+# Tests (67 tests: workspaces, explore, analytics, dashboard, assistant, API)
 cd backend && ..\.venv\Scripts\python -m pytest
+
+# Enable the assistant (optional; unset == graceful "not configured" banner)
+set GROQ_API_KEY=...            # and optionally GROQ_MODEL / GROQ_BASE_URL
 
 # Dev servers
 .venv\Scripts\python -m uvicorn app.main:app --app-dir backend --reload   # API :8000
@@ -113,9 +134,14 @@ cd frontend && npm run build
 - V2 complete: Chart.js charts in Explore, pinned dashboard (spec-storing
   tiles, live recompute, per-tile error degradation), Dashboard tab is the
   landing tab when tiles exist.
+- V3 complete: NL Assistant with a Groq tool-calling loop (list_tables,
+  describe_table, query_table, run_analytics, run_python), AST-sandboxed
+  local Polars, metadata-only guarantee (verified on real 604-row data: raw
+  run_python results reach the browser in full but the model sees only
+  shape/stats), and a new **python** tile kind so NL→Python results pin as
+  live dashboard tiles.
 - No linter configured; `npm run build` runs vue-tsc as the frontend type gate.
-- Next: V3 NL→Python (Groq, metadata-only), portable-zip build for
-  distribution.
+- Next: portable-zip build (embedded Python) for distribution.
 - Gotcha: PrimeVue Select options ignore bare synthetic `.click()` — driving
   the UI programmatically needs the full pointerdown/mousedown/pointerup/
   mouseup/click sequence. The Claude preview tool's preview_click does not

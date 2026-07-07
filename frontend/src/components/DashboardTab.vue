@@ -30,6 +30,18 @@ const verdictSeverity: Record<string, string> = {
   info: 'info',
 }
 
+const tileIcon: Record<string, string> = {
+  analytics: 'pi pi-shield',
+  query: 'pi pi-search',
+  python: 'pi pi-code',
+}
+
+const tileKindLabel: Record<string, string> = {
+  analytics: 'Analytics test',
+  query: 'Explore query',
+  python: 'Python snippet',
+}
+
 function fail(summary: string, error: unknown) {
   const detail = error instanceof ApiError ? error.message : String(error)
   toast.add({ severity: 'error', summary, detail, life: 6000 })
@@ -110,7 +122,7 @@ defineExpose({ load })
     <div v-for="(tile, index) in tiles" :key="tile.id" class="tile" :class="{ 'tile-error': tile.error }">
       <div class="tile-head">
         <div class="tile-title">
-          <i :class="tile.kind === 'analytics' ? 'pi pi-shield' : 'pi pi-search'" v-tooltip.bottom="tile.kind === 'analytics' ? 'Analytics test' : 'Explore query'" />
+          <i :class="tileIcon[tile.kind]" v-tooltip.bottom="tileKindLabel[tile.kind]" />
           <strong>{{ tile.title }}</strong>
           <Tag v-if="tile.verdict" :value="tile.verdict_text || tile.verdict" :severity="verdictSeverity[tile.verdict]" class="verdict-tag" />
         </div>
@@ -123,7 +135,7 @@ defineExpose({ load })
       </div>
 
       <p class="tile-meta muted">
-        {{ tile.table }}
+        {{ tile.table || (tile.kind === 'python' ? 'Python' : '') }}
         <template v-if="tile.total_rows !== undefined"> · {{ tile.total_rows.toLocaleString() }} rows</template>
         · pinned {{ tile.created }}
       </p>

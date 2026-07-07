@@ -4,7 +4,7 @@ A local-first data analysis workbench for auditors. Drop in an engagement's
 CSV/Excel files and profile, explore, and test the data — everything runs on
 your own machine; no data leaves it.
 
-## Capabilities (V1)
+## Capabilities
 
 - **Workspaces** — one per engagement. Holds the data files plus table/join
   definitions (`Workspaces/<id>/workspace.json`). Persistent and reopenable.
@@ -18,20 +18,37 @@ your own machine; no data leaves it.
   duplicate detection, sequence-gap analysis, reproducible sampling
   (random / interval / stratified), period-over-period comparison, and
   round-number analysis. Results export to Excel.
-- **Dashboard** — pin any Explore query or Analytics test as a tile
-  (bar/line/pie chart or table). Tiles store the *spec*, not the data: the
-  dashboard re-runs everything against the current files on every load, so
-  it stays live and every tile is reproducible. Tiles can be renamed,
-  annotated, reordered, and removed.
+- **Dashboard** — pin any Explore query, Analytics test, or Assistant result
+  as a tile (bar/line/pie chart or table). Tiles store the *spec*, not the
+  data: the dashboard re-runs everything against the current files on every
+  load, so it stays live and every tile is reproducible. Tiles can be
+  renamed, annotated, reordered, and removed.
+- **Assistant** — ask questions in plain English. An LLM (Groq cloud API,
+  configurable) answers by *calling tools* that run on your machine: it
+  discovers the schema, runs structured queries and the analytics tests, and
+  for anything bespoke writes **visible, editable Polars** you can tweak and
+  re-run. **Only metadata — schema, column names, aggregate statistics, and
+  previews of aggregated results — is ever sent to the model; raw data rows
+  never leave the machine.** Any answer can be pinned to the dashboard.
+  Without a key configured, the tab explains how to enable it and everything
+  else keeps working.
 
 ## Roadmap
 
-- **V3** — natural-language querying: an LLM (Groq cloud API, configurable)
-  generates visible, editable Python that executes locally. **Only metadata
-  (schema, column names, aggregate stats) is ever sent to the API — never
-  raw rows.**
 - **Later** — portable-zip distribution (embedded Python, no installs) for
   locked-down corporate machines; promote findings into validation rules.
+
+## Enabling the assistant
+
+The assistant is optional. Set an API key in the backend's environment:
+
+```bash
+set GROQ_API_KEY=your-key       # optional: GROQ_MODEL, GROQ_BASE_URL
+```
+
+`GROQ_BASE_URL` accepts any OpenAI-compatible endpoint (e.g. a self-hosted
+model), so the LLM backend is configurable per deployment. The transport uses
+only the Python standard library — no extra dependency to bundle.
 
 ## Stack
 
