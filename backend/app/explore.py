@@ -15,6 +15,14 @@ cast to the column's dtype here — a numeric column compares numerically, a
 date column by parsed date. Aggregated columns are named ``<column>_<func>``
 (plus ``row_count`` for ``count``), which is what sort specs reference after
 grouping.
+
+A query may also carry ``split_by`` (one column) to produce an Excel-style
+cross-tab: ``group_by`` fields go down, the ``split_by`` field's values go
+across, and ``aggs`` become the cells (default: row count). Value columns are
+named ``<value>::<column label>``; row totals land in ``<value>::Total`` and a
+separate grand-total row is returned. This is the one cross-tab implementation
+— the Query tab's ``split_by`` and the dashboard's legacy ``pivot`` tiles both
+go through :func:`build_crosstab`.
 """
 
 from __future__ import annotations
@@ -24,6 +32,10 @@ from datetime import date, datetime, time
 import polars as pl
 
 PAGE_SIZE_MAX = 500
+
+# A cross-tab explodes horizontally; past this the result is unreadable anyway.
+MAX_SPLIT_VALUES = 50
+TOTAL_LABEL = "Total"
 
 FILTER_OPS = {
     "eq": "equals",
@@ -158,12 +170,164 @@ def frame_payload(df: pl.DataFrame, limit: int | None = None) -> dict:
     }
 
 
+def _value_name(spec: dict) -> str:
+    """The alias :func:`_agg_expr` gives an aggregation, as a cross-tab value."""
+    if spec.get("func") == "count":
+        return "row_count"
+    return f"{spec.get('column')}_{spec.get('func')}"
+
+
+def _split_labels(long: pl.DataFrame, split_field: str) -> list[str]:
+    """Distinct split-field values, sorted by native dtype, stringified the way
+    ``DataFrame.pivot`` names its output columns (nulls become "null")."""
+    return (
+        long.select(
+            pl.col(split_field)
+            .unique()
+            .sort(nulls_last=True)
+            .cast(pl.String)
+            .fill_null("null")
+        )
+        .to_series()
+        .to_list()
+    )
+
+
+def build_crosstab(
+    df: pl.DataFrame,
+    *,
+    filters: list | None,
+    row_fields: list[str],
+    split_field: str | None,
+    value_specs: list | None,
+    totals: bool = True,
+) -> tuple[pl.DataFrame, dict | None, dict]:
+    """Excel-style cross-tab. Returns (wide frame, raw grand-total by column name
+    or None, metadata). ``row_fields`` go down, ``split_field`` (one column, its
+    values) go across, ``value_specs`` are the cells.
+
+    Totals are re-aggregated from the filtered rows, never summed across cells,
+    so a ``mean`` total is the true mean of the underlying rows. Row totals land
+    in ``<value>::Total`` columns; the grand-total row is returned separately.
+    """
+    schema = dict(df.schema)
+
+    filters = [f for f in (filters or []) if f.get("column") or f.get("op")]
+    if filters:
+        df = df.filter(pl.all_horizontal([_filter_expr(f, schema) for f in filters]))
+    filtered_rows = df.height
+
+    row_fields = [c for c in (row_fields or []) if c]
+    if not row_fields:
+        raise QueryError("A cross-tab needs at least one Group by field.")
+
+    for field in row_fields + ([split_field] if split_field else []):
+        if field not in schema:
+            raise QueryError(f"Unknown column '{field}'.")
+    if split_field is not None and split_field in row_fields:
+        raise QueryError(f"'{split_field}' cannot be both a Group by and a Split by field.")
+
+    value_specs = [v for v in (value_specs or []) if v.get("func")] or [{"func": "count"}]
+    agg_exprs = [_agg_expr(v, schema) for v in value_specs]
+    value_names = [_value_name(v) for v in value_specs]
+    if len(set(value_names)) != len(value_names):
+        raise QueryError("Duplicate value fields — use each column/function pair once.")
+
+    # Alignment invariant: every frame below enumerates the same distinct
+    # row-field combinations in the same order (sorted, nulls last), so they
+    # combine by hstack. Joins would silently drop null row-field keys.
+    if split_field is None:
+        labels: list[str] = []
+        wide = df.group_by(row_fields).agg(agg_exprs).sort(row_fields, nulls_last=True)
+    else:
+        if df.select(pl.col(split_field).n_unique()).item() > MAX_SPLIT_VALUES:
+            raise QueryError(
+                f"'{split_field}' has more than {MAX_SPLIT_VALUES} distinct values — "
+                "filter first, or use it as a Group by field."
+            )
+        long = (
+            df.group_by(row_fields + [split_field])
+            .agg(agg_exprs)
+            .sort(row_fields + [split_field], nulls_last=True)
+        )
+        labels = _split_labels(long, split_field)
+        wide = None
+        for name in value_names:
+            piece = long.pivot(
+                on=split_field, index=row_fields, values=name, aggregate_function="first"
+            ).rename({label: f"{name}::{label}" for label in labels})
+            named = [f"{name}::{label}" for label in labels]
+            if wide is None:
+                wide = piece.select(row_fields + named)
+            else:
+                wide = wide.hstack(piece.select(named))
+
+    grand_raw: dict | None = None
+    if totals:
+        if split_field is not None:
+            row_totals = (
+                df.group_by(row_fields)
+                .agg(agg_exprs)
+                .sort(row_fields, nulls_last=True)
+                .rename({name: f"{name}::{TOTAL_LABEL}" for name in value_names})
+            )
+            wide = wide.hstack(
+                row_totals.select([f"{name}::{TOTAL_LABEL}" for name in value_names])
+            )
+
+        grand_raw = {column: None for column in wide.columns}
+        overall = df.select(agg_exprs).row(0, named=True)
+        if split_field is None:
+            for name in value_names:
+                grand_raw[name] = overall[name]
+        else:
+            per_split = (
+                df.group_by(split_field)
+                .agg(agg_exprs)
+                .with_columns(
+                    pl.col(split_field).cast(pl.String).fill_null("null").alias("__label__")
+                )
+            )
+            for entry in per_split.iter_rows(named=True):
+                for name in value_names:
+                    grand_raw[f"{name}::{entry['__label__']}"] = entry[name]
+            for name in value_names:
+                grand_raw[f"{name}::{TOTAL_LABEL}"] = overall[name]
+
+    meta = {
+        "row_fields": row_fields,
+        "split_field": split_field,
+        "value_names": value_names,
+        "column_keys": labels,
+        "filtered_rows": filtered_rows,
+    }
+    return wide, grand_raw, meta
+
+
 def run_query_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
     """Filters → grouping/aggregation → sort. Returns (frame, filtered_row_count).
 
-    No pagination — this is the full result, used directly for Excel export
-    and sliced by :func:`run_query` for the UI.
+    When the spec carries ``split_by``, the result is a cross-tab (with the
+    grand total appended as a final row for export). Otherwise it is the flat
+    grouped/filtered frame. No pagination — this is the full result, used
+    directly for Excel export and sliced by :func:`run_query` for the UI.
     """
+    if spec.get("split_by"):
+        wide, grand_raw, meta = build_crosstab(
+            df,
+            filters=spec.get("filters"),
+            row_fields=spec.get("group_by") or [],
+            split_field=spec.get("split_by"),
+            value_specs=spec.get("aggs"),
+            totals=spec.get("totals", True),
+        )
+        if grand_raw is not None and wide.height:
+            grand = pl.DataFrame(
+                {column: [grand_raw[column]] for column in wide.columns}, schema=wide.schema
+            )
+            wide = pl.concat([wide, grand])
+        return wide, meta["filtered_rows"]
+
     schema = dict(df.schema)
 
     filters = [f for f in (spec.get("filters") or []) if f.get("column") or f.get("op")]
@@ -191,6 +355,36 @@ def run_query_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
 
 
 def run_query(df: pl.DataFrame, spec: dict) -> dict:
+    """Paginated query payload for the UI. With ``split_by`` the payload is a
+    cross-tab: the full wide frame (cross-tabs stay small — one row per group
+    combination) plus ``row_fields``/``split_field``/``value_names``/
+    ``column_keys``/``grand_total`` so the SPA can render a grouped grid."""
+    if spec.get("split_by"):
+        wide, grand_raw, meta = build_crosstab(
+            df,
+            filters=spec.get("filters"),
+            row_fields=spec.get("group_by") or [],
+            split_field=spec.get("split_by"),
+            value_specs=spec.get("aggs"),
+            totals=spec.get("totals", True),
+        )
+        return {
+            "total_rows": wide.height,
+            "filtered_rows": meta["filtered_rows"],
+            "page": 1,
+            "page_size": max(wide.height, 1),
+            "row_fields": meta["row_fields"],
+            "split_field": meta["split_field"],
+            "value_names": meta["value_names"],
+            "column_keys": meta["column_keys"],
+            "grand_total": (
+                [_serialize(grand_raw[column]) for column in wide.columns]
+                if grand_raw is not None
+                else None
+            ),
+            **frame_payload(wide),
+        }
+
     result, filtered_rows = run_query_full(df, spec)
 
     page_size = min(int(spec.get("page_size") or 50), PAGE_SIZE_MAX)

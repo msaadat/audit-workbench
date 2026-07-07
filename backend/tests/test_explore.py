@@ -84,6 +84,46 @@ def test_full_query_matches_paged_totals(transactions_df):
     assert filtered == 6
 
 
+def test_split_by_builds_cross_tab(transactions_df):
+    df = transactions_df.with_columns(pl.col("tx_date").str.slice(0, 7).alias("month"))
+    result = run_query(
+        df,
+        {
+            "group_by": ["cust_id"],
+            "split_by": "month",
+            "aggs": [{"column": "amount", "func": "sum"}],
+        },
+    )
+    assert result["split_field"] == "month"
+    assert result["row_fields"] == ["cust_id"]
+    assert result["column_keys"] == ["2026-01", "2026-02", "2026-03"]
+    assert result["columns"] == [
+        "cust_id",
+        "amount_sum::2026-01",
+        "amount_sum::2026-02",
+        "amount_sum::2026-03",
+        "amount_sum::Total",
+    ]
+    assert result["grand_total"] == [None, 2150.0, 1099.5, 300.0, 3549.5]
+
+
+def test_split_by_without_group_by_raises(transactions_df):
+    df = transactions_df.with_columns(pl.col("tx_date").str.slice(0, 7).alias("month"))
+    with pytest.raises(QueryError):
+        run_query(df, {"split_by": "month", "aggs": [{"column": "amount", "func": "sum"}]})
+
+
+def test_split_by_export_appends_grand_total(transactions_df):
+    df = transactions_df.with_columns(pl.col("tx_date").str.slice(0, 7).alias("month"))
+    frame, filtered = run_query_full(
+        df,
+        {"group_by": ["cust_id"], "split_by": "month", "aggs": [{"column": "amount", "func": "sum"}]},
+    )
+    assert filtered == 6
+    assert frame.height == 4  # 3 customers + grand total
+    assert frame.row(-1, named=True)["cust_id"] is None
+
+
 def test_dates_serialize_as_iso(transactions_df):
     df = transactions_df.with_columns(pl.col("tx_date").str.to_date())
     result = run_query(df, {"page_size": 1})

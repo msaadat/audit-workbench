@@ -40,7 +40,8 @@ backend/app/
 │                                Joins are named derived tables (can chain).
 ├─ profiler.py                ── per-column + dataset profiling (typed-aware)
 ├─ explore.py                 ── declarative query engine: filters → group/agg →
-│                                sort → paginate; frame_payload() JSON serializer
+│                                sort → paginate; also build_crosstab() for the
+│                                split_by cross-tab (Excel pivot); frame_payload()
 ├─ analytics.py               ── ANALYTICS registry: 6 audit tests, each
 │                                (df, params) -> AnalyticsResult; param metadata
 │                                drives the SPA's dynamic forms; tests suggest a
@@ -70,22 +71,23 @@ frontend/src/
 ├─ api.ts                     ── fetch wrapper (ApiError, upload, xlsx download)
 ├─ types.ts                   ── mirrors backend payload shapes
 ├─ views/HomeView.vue         ── workspace cards + create/delete
-├─ views/WorkspaceView.vue    ── tabs: Dashboard | Data | Pivot | Query |
-│                                Analytics | Assistant
+├─ views/WorkspaceView.vue    ── tabs: Dashboard | Data | Query | Analytics |
+│                                Assistant
 └─ components/
    ├─ DashboardTab.vue        ── pinned tile grid: chart/table + verdict/stats,
    │                             rename/note/reorder/remove; remounts per visit
    ├─ DataTab.vue             ── upload, table list, preview dialog, remove
    ├─ JoinDialog.vue          ── join builder (schemas fetched per side)
    ├─ ProfileTab.vue          ── stat cards + expandable column profiles
-   ├─ PivotTab.vue            ── Perspective-style cross-tab: draggable Fields →
-   │                             Filters/Rows/Columns/Values zones; live recompute
-   ├─ QueryTab.vue            ── Perspective-style query builder (was ExploreTab):
-   │                             draggable Fields → Filters/Group by/Aggregations/
-   │                             Order by zones on the right; live (debounced)
-   │                             recompute; lazy DataTable (server page); group
-   │                             row click = drill-down; chart controls
-   │                             (bar/line/pie) + Pin-to-dashboard ('query' tile)
+   ├─ QueryTab.vue            ── Perspective-style query builder (was ExploreTab;
+   │                             absorbed the old Pivot tab):
+   │                             draggable Fields → Filters/Group by/Split by/
+   │                             Aggregations/Order by zones on the right; live
+   │                             (debounced) recompute. Flat query → lazy DataTable
+   │                             (server page) with group-row drill-down; a Split
+   │                             by field switches it to a cross-tab grid (grouped
+   │                             headers + totals). Chart controls (bar/line/pie)
+   │                             + Pin-to-dashboard ('query' tile, cross-tab too)
    ├─ AnalyticsTab.vue        ── test cards → dynamic param form → result → Pin
    ├─ AssistantTab.vue        ── NL chat: question → tool-step trace → answer +
    │                             artifacts (charts, editable+re-runnable Python)
@@ -118,7 +120,8 @@ frontend/src/
 python -m venv .venv
 .venv\Scripts\pip install -r backend\requirements-dev.txt
 
-# Tests (67 tests: workspaces, explore, analytics, dashboard, assistant, API)
+# Tests (69 tests: workspaces, explore incl. cross-tab, analytics, dashboard,
+#        assistant, API)
 cd backend && ..\.venv\Scripts\python -m pytest
 
 # Enable the assistant (optional; unset == graceful "not configured" banner)

@@ -10,7 +10,7 @@ Row caps depend on the visualization: charts get few points, tables a page.
 
 from __future__ import annotations
 
-from . import analytics, explore, pivot, sandbox
+from . import analytics, explore, sandbox
 from .workspaces import Workspace
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
@@ -52,11 +52,23 @@ def tile_payload(workspace: Workspace, tile: dict) -> dict:
             payload["total_rows"] = result.height
             payload["frame"] = explore.frame_payload(result, _cap_for(payload["viz"]))
         elif tile["kind"] == "pivot":
-            fp, total = pivot.run_pivot_frame(
-                frame, tile.get("spec") or {}, _cap_for(payload["viz"])
+            # Legacy pivot tiles (rows/columns/values) render through the query
+            # engine's cross-tab now that pivot.py is gone; new cross-tabs pin as
+            # 'query' tiles with split_by.
+            spec = tile.get("spec") or {}
+            columns = spec.get("columns") or []
+            if isinstance(columns, str):
+                columns = [columns]
+            wide, _grand, _meta = explore.build_crosstab(
+                frame,
+                filters=spec.get("filters"),
+                row_fields=spec.get("rows") or [],
+                split_field=columns[0] if columns else None,
+                value_specs=spec.get("values"),
+                totals=spec.get("totals", True),
             )
-            payload["total_rows"] = total
-            payload["frame"] = fp
+            payload["total_rows"] = wide.height
+            payload["frame"] = explore.frame_payload(wide, _cap_for(payload["viz"]))
         else:
             spec = tile.get("spec") or {}
             result = analytics.run_test(frame, spec.get("test"), spec.get("params"))

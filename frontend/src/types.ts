@@ -51,6 +51,12 @@ export interface QueryResult extends FramePayload {
   filtered_rows: number
   page: number
   page_size: number
+  // Present only in cross-tab mode (when the query spec carries split_by).
+  row_fields?: string[]
+  split_field?: string | null
+  value_names?: string[]
+  column_keys?: string[]
+  grand_total?: (string | number | boolean | null)[] | null
 }
 
 export interface TopValue {
@@ -99,32 +105,11 @@ export interface AggSpec {
 export interface QuerySpec {
   filters: FilterSpec[]
   group_by: string[]
+  split_by?: string | null
   aggs: AggSpec[]
   sort: { column: string; desc: boolean }[]
   page: number
   page_size: number
-}
-
-export interface PivotValueSpec {
-  column: string | null
-  func: string
-}
-
-export interface PivotSpec {
-  filters: FilterSpec[]
-  rows: string[]
-  columns: string[]
-  values: { column: string; func: string }[]
-  totals: boolean
-}
-
-export interface PivotResult extends FramePayload {
-  row_fields: string[]
-  column_field: string | null
-  value_names: string[]
-  column_keys: string[]
-  filtered_rows: number
-  grand_total: (string | number | boolean | null)[] | null
 }
 
 export interface AnalyticsParamMeta {

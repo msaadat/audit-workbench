@@ -34,6 +34,7 @@ const filterOps = ref<{ value: string; label: string }[]>([])
 
 const filters = ref<FilterSpec[]>([])
 const groupBy = ref<string[]>([])
+const splitField = ref<string | null>(null)
 const aggs = ref<AggSpec[]>([])
 const sortSpec = ref<{ column: string; desc: boolean }[]>([])
 const page = ref(1)
@@ -51,9 +52,12 @@ const vizY = ref<string[]>([])
 const showPin = ref(false)
 const pinning = ref(false)
 
-type ZoneName = 'filters' | 'group' | 'aggs' | 'sort'
+type ZoneName = 'filters' | 'group' | 'split' | 'aggs' | 'sort'
 const drag = ref<{ field: string; from: ZoneName | 'list'; index: number } | null>(null)
 const dragOver = ref<ZoneName | null>(null)
+
+/** Cross-tab mode: a Split by field turns the flat query into a pivot grid. */
+const isPivot = computed(() => !!splitField.value)
 
 const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 const columnNames = computed(() => schema.value.map((c) => c.name))
@@ -80,10 +84,12 @@ function aggLabel(agg: AggSpec): string {
   return `${FUNC_LABELS[agg.func] ?? agg.func} of ${agg.column}`
 }
 
-/** Fields already placed in Group by — dimmed in the Fields list. */
-const inUse = computed(() => new Set(groupBy.value))
+/** Fields already placed as dimensions (Group by / Split by) — dimmed in Fields. */
+const inUse = computed(
+  () => new Set([...groupBy.value, ...(splitField.value ? [splitField.value] : [])]),
+)
 
-/** Columns available to order by: the shape the result will have. */
+/** Columns available to order by: the shape a flat (non-pivot) result will have. */
 const orderableFields = computed(() => {
   if (groupBy.value.length > 0) {
     const names = [...groupBy.value]
@@ -115,6 +121,7 @@ async function loadSchema() {
   ).columns
   filters.value = []
   groupBy.value = []
+  splitField.value = null
   aggs.value = []
   sortSpec.value = []
   result.value = null
@@ -144,6 +151,7 @@ function removeFromSource() {
   if (!drag.value) return
   const { from, index } = drag.value
   if (from === 'group') groupBy.value.splice(index, 1)
+  else if (from === 'split') splitField.value = null
   else if (from === 'aggs') aggs.value.splice(index, 1)
   else if (from === 'filters') filters.value.splice(index, 1)
   else if (from === 'sort') sortSpec.value.splice(index, 1)
@@ -164,7 +172,12 @@ function onDrop(zone: ZoneName) {
 
 function addToZone(zone: ZoneName, field: string) {
   if (zone === 'group') {
+    if (splitField.value === field) splitField.value = null
     if (!groupBy.value.includes(field)) groupBy.value.push(field)
+  } else if (zone === 'split') {
+    const rowIndex = groupBy.value.indexOf(field)
+    if (rowIndex !== -1) groupBy.value.splice(rowIndex, 1)
+    splitField.value = field
   } else if (zone === 'aggs') {
     aggs.value.push({ column: field, func: kindOf(field) === 'numeric' ? 'sum' : 'n_unique' })
   } else if (zone === 'filters') {
@@ -200,6 +213,7 @@ function spec() {
       (f) => f.column && f.op && (!needsValue(f.op) || f.value !== ''),
     ),
     group_by: groupBy.value,
+    split_by: splitField.value,
     aggs: aggs.value
       .filter((a) => a.func === 'count' || a.column)
       .map((a) => ({ column: a.column ?? '', func: a.func })),
@@ -213,7 +227,7 @@ let timer: ReturnType<typeof setTimeout> | undefined
 
 // Live query: recompute (debounced) whenever the spec changes, Perspective-style.
 watch(
-  [filters, groupBy, aggs, sortSpec],
+  [filters, groupBy, splitField, aggs, sortSpec],
   () => {
     clearTimeout(timer)
     timer = setTimeout(() => run(true), 350)
@@ -230,7 +244,7 @@ async function run(resetPage = true) {
       `/api/workspaces/${props.workspace.id}/tables/${table.value}/query`,
       spec(),
     )
-    wasGrouped.value = groupBy.value.length > 0
+    wasGrouped.value = !isPivot.value && groupBy.value.length > 0
     lastError.value = null
     syncVizDefaults()
   } catch (error) {
@@ -245,18 +259,37 @@ watch(schema, () => {
   if (table.value && schema.value.length) run(true)
 })
 
-/** Keep the chart axes valid for the current result; default them when grouped. */
+// ------------------------------------------------------------- visualization
+const vizXOptions = computed(() => {
+  const r = result.value
+  if (!r) return []
+  return isPivot.value ? r.row_fields ?? [] : r.columns
+})
+
+const vizYOptions = computed(() => {
+  const r = result.value
+  if (!r) return []
+  if (isPivot.value) {
+    const rowFields = new Set(r.row_fields ?? [])
+    return r.columns.filter((c, i) => !rowFields.has(c) && /Int|Float|Decimal/.test(r.dtypes[i]))
+  }
+  return r.columns.filter((_, i) => /Int|Float|Decimal/.test(r.dtypes[i]))
+})
+
+/** Keep chart axes valid for the current result; default them when charting. */
 function syncVizDefaults() {
-  if (!result.value) return
-  const columns = result.value.columns
-  const numeric = columns.filter((_, index) => /Int|Float|Decimal/.test(result.value!.dtypes[index]))
-  if (vizX.value && !columns.includes(vizX.value)) vizX.value = null
-  vizY.value = vizY.value.filter((column) => numeric.includes(column))
+  const r = result.value
+  if (!r) return
+  if (vizX.value && !vizXOptions.value.includes(vizX.value)) vizX.value = null
+  vizY.value = vizY.value.filter((c) => vizYOptions.value.includes(c))
+  if (!isPivot.value && !wasGrouped.value && vizType.value !== 'table') vizType.value = 'table'
   if (vizType.value !== 'table') {
-    if (!vizX.value) vizX.value = groupBy.value[0] ?? columns[0]
-    if (vizY.value.length === 0 && numeric.length) vizY.value = [numeric[0]]
+    if (!vizX.value) vizX.value = vizXOptions.value[0] ?? null
+    if (vizY.value.length === 0 && vizYOptions.value.length) vizY.value = [vizYOptions.value[0]]
   }
 }
+
+const showChartControls = computed(() => !!result.value && (isPivot.value || wasGrouped.value))
 
 const currentViz = computed<VizSpec>(() => ({
   type: vizType.value,
@@ -275,13 +308,83 @@ const records = computed(() => {
   })
 })
 
-const resultNumericColumns = computed(() => {
-  if (!result.value) return []
-  return result.value.columns.filter((_, index) =>
-    /Int|Float|Decimal/.test(result.value!.dtypes[index]),
-  )
+// ------------------------------------------------- cross-tab grid rendering
+function displayName(valueName: string): string {
+  if (valueName === 'row_count') return 'Count of rows'
+  for (const func of NUMERIC_FUNCS) {
+    if (valueName.endsWith(`_${func}`)) {
+      const column = valueName.slice(0, -func.length - 1)
+      return `${FUNC_LABELS[func]} of ${column}`
+    }
+  }
+  return valueName
+}
+
+/** Header groups over the data columns: one group per value (spanning the
+ *  split keys), then a Total group. */
+const headerGroups = computed(() => {
+  const r = result.value
+  if (!r || !isPivot.value) return []
+  const valueNames = r.value_names ?? []
+  const splitKeys = r.column_keys ?? []
+  const hasTotal = r.columns.some((c) => c.endsWith('::Total'))
+  if (!r.split_field) {
+    return [{ label: '', columns: valueNames.map((name) => ({ key: name, label: displayName(name) })) }]
+  }
+  const groups = valueNames.map((name) => ({
+    label: displayName(name),
+    columns: splitKeys.map((key) => ({ key: `${name}::${key}`, label: key })),
+  }))
+  if (hasTotal) {
+    groups.push({
+      label: 'Total',
+      columns: valueNames.map((name) => ({
+        key: `${name}::Total`,
+        label: valueNames.length > 1 ? displayName(name) : 'Total',
+      })),
+    })
+  }
+  return groups
 })
 
+const twoRowHeader = computed(() => {
+  const r = result.value
+  return !!r && isPivot.value && !!r.split_field && (r.value_names ?? []).length > 1
+})
+
+const bodyRows = computed(() => {
+  const r = result.value
+  if (!r || !isPivot.value) return []
+  return r.rows.map((row) => {
+    const byKey: Record<string, string | number | boolean | null> = {}
+    r.columns.forEach((column, index) => {
+      byKey[column] = row[index]
+    })
+    return byKey
+  })
+})
+
+const grandByKey = computed(() => {
+  const r = result.value
+  if (!r || !isPivot.value || !r.grand_total) return null
+  const byKey: Record<string, string | number | boolean | null> = {}
+  r.columns.forEach((column, index) => {
+    byKey[column] = r.grand_total![index]
+  })
+  return byKey
+})
+
+function fmt(value: string | number | boolean | null): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'number') {
+    return Number.isInteger(value)
+      ? value.toLocaleString()
+      : value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  }
+  return String(value)
+}
+
+// ------------------------------------------------------------- pin & export
 async function pinTile({ title, note }: { title: string; note: string }) {
   if (!table.value) return
   pinning.value = true
@@ -306,6 +409,11 @@ async function pinTile({ title, note }: { title: string; note: string }) {
     pinning.value = false
   }
 }
+
+const pinTitle = computed(() => {
+  if (isPivot.value) return `${table.value}: ${groupBy.value.join(', ') || 'group'} × ${splitField.value}`
+  return wasGrouped.value ? `${table.value}: by ${groupBy.value.join(', ') || 'group'}` : `${table.value}: filtered rows`
+})
 
 function onPage(event: DataTablePageEvent) {
   page.value = event.page + 1
@@ -392,13 +500,13 @@ async function exportExcel() {
       <p v-if="!table" class="muted hint">Pick a table to begin.</p>
       <p v-else-if="lastError" class="error">{{ lastError }}</p>
       <template v-else-if="result">
-        <div class="result-meta" v-if="wasGrouped">
-          <span class="muted small"><i class="pi pi-info-circle" /> Click a group row to drill down to its rows.</span>
-          <span class="viz-controls">
+        <div class="result-meta" v-if="showChartControls || wasGrouped">
+          <span v-if="wasGrouped" class="muted small"><i class="pi pi-info-circle" /> Click a group row to drill down to its rows.</span>
+          <span v-if="showChartControls" class="viz-controls">
             <Select v-model="vizType" :options="['table', 'bar', 'line', 'pie']" class="viz-type" />
             <template v-if="vizType !== 'table'">
-              <Select v-model="vizX" :options="result.columns" placeholder="X axis" filter class="viz-axis" />
-              <MultiSelect v-model="vizY" :options="resultNumericColumns" placeholder="Values" display="chip" class="viz-axis" />
+              <Select v-model="vizX" :options="vizXOptions" placeholder="X axis" filter class="viz-axis" />
+              <MultiSelect v-model="vizY" :options="vizYOptions" placeholder="Values" display="chip" class="viz-axis" />
             </template>
           </span>
         </div>
@@ -407,6 +515,60 @@ async function exportExcel() {
           <ChartView :frame="result" :viz="currentViz" height="320px" />
         </div>
 
+        <!-- Cross-tab grid (Split by active) -->
+        <div v-else-if="isPivot && result.rows.length" class="grid-wrap">
+          <table class="pivot-grid">
+            <thead>
+              <tr v-if="twoRowHeader">
+                <th v-for="field in result.row_fields" :key="field" class="rowhead" rowspan="2">{{ field }}</th>
+                <th v-for="group in headerGroups" :key="group.label" :colspan="group.columns.length" class="grouphead">
+                  {{ group.label }}
+                </th>
+              </tr>
+              <tr>
+                <template v-if="!twoRowHeader">
+                  <th v-for="field in result.row_fields" :key="field" class="rowhead">{{ field }}</th>
+                </template>
+                <template v-for="group in headerGroups" :key="group.label">
+                  <th
+                    v-for="column in group.columns"
+                    :key="column.key"
+                    class="num"
+                    :class="{ total: column.key.endsWith('::Total') }"
+                  >{{ column.label }}</th>
+                </template>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, index) in bodyRows" :key="index">
+                <td v-for="field in result.row_fields" :key="field" class="rowhead">
+                  <span :class="{ 'cell-null': row[field] === null }">{{ fmt(row[field]) }}</span>
+                </td>
+                <template v-for="group in headerGroups" :key="group.label">
+                  <td
+                    v-for="column in group.columns"
+                    :key="column.key"
+                    class="num"
+                    :class="{ total: column.key.endsWith('::Total') }"
+                  >{{ fmt(row[column.key]) }}</td>
+                </template>
+              </tr>
+            </tbody>
+            <tfoot v-if="grandByKey">
+              <tr>
+                <td :colspan="result.row_fields!.length" class="rowhead">Grand total</td>
+                <template v-for="group in headerGroups" :key="group.label">
+                  <td v-for="column in group.columns" :key="column.key" class="num">
+                    {{ fmt(grandByKey[column.key]) }}
+                  </td>
+                </template>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <p v-else-if="isPivot" class="muted hint">No rows match the filters.</p>
+
+        <!-- Flat result (no Split by) -->
         <DataTable
           v-else
           :value="records"
@@ -499,7 +661,7 @@ async function exportExcel() {
         @dragleave="dragOver = null"
         @drop="onDrop('group')"
       >
-        <div class="panel-head"><i class="pi pi-sitemap" /> Group by</div>
+        <div class="panel-head"><i class="pi pi-arrows-v" /> Group by</div>
         <p v-if="groupBy.length === 0" class="muted empty">Drop fields here — one row per group</p>
         <div v-for="(field, index) in groupBy" :key="field" class="zone-row">
           <span
@@ -513,6 +675,25 @@ async function exportExcel() {
 
       <div
         class="zone"
+        :class="{ over: dragOver === 'split' }"
+        @dragover.prevent="dragOver = 'split'"
+        @dragleave="dragOver = null"
+        @drop="onDrop('split')"
+      >
+        <div class="panel-head"><i class="pi pi-arrows-h" /> Split by</div>
+        <p v-if="!splitField" class="muted empty">Drop one field here — its values become columns</p>
+        <div v-else class="zone-row">
+          <span
+            class="chip zone-chip"
+            draggable="true"
+            @dragstart="startDrag(splitField, 'split', 0)"
+          >{{ splitField }}</span>
+          <Button icon="pi pi-times" text severity="danger" size="small" @click="splitField = null" />
+        </div>
+      </div>
+
+      <div
+        class="zone"
         :class="{ over: dragOver === 'aggs' }"
         @dragover.prevent="dragOver = 'aggs'"
         @dragleave="dragOver = null"
@@ -520,7 +701,7 @@ async function exportExcel() {
       >
         <div class="panel-head"><i class="pi pi-calculator" /> Aggregations</div>
         <p v-if="aggs.length === 0" class="muted empty">
-          {{ groupBy.length ? 'Drop fields here — default: count of rows' : 'Drop fields here to aggregate' }}
+          {{ groupBy.length || isPivot ? 'Drop fields here — default: count of rows' : 'Drop fields here to aggregate' }}
         </p>
         <div v-for="(agg, index) in aggs" :key="index" class="zone-row">
           <span
@@ -542,6 +723,7 @@ async function exportExcel() {
       </div>
 
       <div
+        v-if="!isPivot"
         class="zone"
         :class="{ over: dragOver === 'sort' }"
         @dragover.prevent="dragOver = 'sort'"
@@ -573,7 +755,7 @@ async function exportExcel() {
 
   <PinDialog
     v-model:visible="showPin"
-    :defaultTitle="wasGrouped ? `${table}: by ${groupBy.join(', ') || 'group'}` : `${table}: filtered rows`"
+    :defaultTitle="pinTitle"
     :saving="pinning"
     @pin="pinTile"
   />
@@ -647,6 +829,78 @@ async function exportExcel() {
 .cell-null::after {
   content: '∅';
   color: var(--p-surface-300);
+}
+
+/* cross-tab grid */
+.grid-wrap {
+  overflow: auto;
+  max-height: 70vh;
+  border: 1px solid var(--p-surface-200);
+  border-radius: 8px;
+  background: var(--p-surface-0);
+}
+
+.pivot-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.pivot-grid th,
+.pivot-grid td {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--p-surface-100);
+  white-space: nowrap;
+}
+
+.pivot-grid thead th {
+  position: sticky;
+  top: 0;
+  background: var(--p-surface-50);
+  border-bottom: 1px solid var(--p-surface-300);
+  font-weight: 600;
+  color: var(--p-surface-700);
+  text-align: right;
+  z-index: 1;
+}
+
+.pivot-grid th.rowhead,
+.pivot-grid td.rowhead {
+  text-align: left;
+  font-weight: 600;
+}
+
+.pivot-grid td.rowhead {
+  color: var(--p-surface-800);
+}
+
+.pivot-grid th.grouphead {
+  text-align: center;
+  border-left: 1px solid var(--p-surface-200);
+}
+
+.pivot-grid td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pivot-grid .total {
+  font-weight: 600;
+  border-left: 1px solid var(--p-surface-200);
+}
+
+.pivot-grid tfoot td {
+  position: sticky;
+  bottom: 0;
+  background: var(--p-surface-50);
+  border-top: 2px solid var(--p-surface-300);
+  font-weight: 600;
+}
+
+.pivot-grid .cell-null::after {
+  content: '(blank)';
+  color: var(--p-surface-400);
+  font-weight: 400;
 }
 
 .query-panel {
