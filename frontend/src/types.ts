@@ -171,6 +171,29 @@ export interface DashboardTile {
   stdout?: string | null
 }
 
+// A saved analysis: the computed payload the Analysis rail + detail render.
+// Same spec-recompute shape as DashboardTile, restricted to the two kinds the
+// Analysis tab creates, plus a `source` for the rail icon.
+export interface SavedAnalysis {
+  id: string
+  title: string
+  kind: 'analytics' | 'python'
+  table: string | null
+  note: string
+  viz: VizSpec
+  source: 'library' | 'ai'
+  created: string
+  error: string | null
+  frame?: FramePayload | null
+  total_rows?: number
+  verdict?: 'ok' | 'warn' | 'fail' | 'info'
+  verdict_text?: string
+  stats?: StatChip[]
+  code?: string
+  stdout?: string | null
+  spec?: Record<string, unknown>
+}
+
 export interface AssistantStatus {
   configured: boolean
   model: string

@@ -2,23 +2,29 @@
 import { computed, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
+import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
-import { api, ApiError } from '../api'
+import { api, ApiError } from '../../api'
 import type {
   AnalyticsParamMeta,
   AnalyticsResult,
   AnalyticsTest,
   ColumnSchema,
+  SavedAnalysis,
   WorkspaceSummary,
-} from '../types'
-import FrameTable from './FrameTable.vue'
-import PinDialog from './PinDialog.vue'
+} from '../../types'
+import FrameTable from '../FrameTable.vue'
+import PinDialog from '../PinDialog.vue'
 
-const props = defineProps<{ workspace: WorkspaceSummary }>()
+// A library analysis: pick a predefined audit test, configure it, run it, then
+// Save (to the rail) / Pin (to the dashboard) / Export. When `analysis` is set
+// we're editing a saved one — preload its table, test and params.
+const props = defineProps<{ workspace: WorkspaceSummary; analysis: SavedAnalysis | null }>()
+const emit = defineEmits<{ saved: [SavedAnalysis]; deleted: []; changed: [] }>()
 const toast = useToast()
 
 const table = ref<string | null>(null)
@@ -27,22 +33,23 @@ const tests = ref<AnalyticsTest[]>([])
 const selected = ref<AnalyticsTest | null>(null)
 const params = ref<Record<string, unknown>>({})
 const result = ref<AnalyticsResult | null>(null)
+const title = ref('')
 const running = ref(false)
 const exporting = ref(false)
+const saving = ref(false)
 const showPin = ref(false)
 const pinning = ref(false)
 
 const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 
 const verdictSeverity: Record<string, string> = {
-  ok: 'success',
-  warn: 'warn',
-  fail: 'danger',
-  info: 'info',
+  ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
 }
 
 async function loadTests() {
   tests.value = await api.get<AnalyticsTest[]>('/api/analytics')
+  // The registry may arrive after the analysis prop — sync once we have it.
+  if (props.analysis && !selected.value) preloadFromAnalysis()
 }
 loadTests()
 
@@ -53,20 +60,9 @@ async function loadSchema() {
       `/api/workspaces/${props.workspace.id}/tables/${table.value}/schema`,
     )
   ).columns
-  result.value = null
 }
 
-watch(table, loadSchema)
-watch(
-  () => props.workspace.tables.length,
-  () => {
-    if (!table.value && tableOptions.value.length) table.value = tableOptions.value[0]
-  },
-  { immediate: true },
-)
-
 function columnOptions(meta: AnalyticsParamMeta): string[] {
-  // Prefer matching-kind columns but never hide the rest — inference isn't perfect.
   const preferred = meta.column_kind
     ? schema.value.filter((c) => c.kind === meta.column_kind).map((c) => c.name)
     : []
@@ -74,16 +70,18 @@ function columnOptions(meta: AnalyticsParamMeta): string[] {
   return [...preferred, ...rest]
 }
 
-function pick(test: AnalyticsTest) {
+function pick(test: AnalyticsTest, presetParams?: Record<string, unknown>) {
   selected.value = test
   result.value = null
   const defaults: Record<string, unknown> = {}
   for (const param of test.params) {
-    if (param.default !== undefined) defaults[param.name] = param.default
+    if (presetParams && param.name in presetParams) defaults[param.name] = presetParams[param.name]
+    else if (param.default !== undefined) defaults[param.name] = param.default
     else if (param.kind === 'columns') defaults[param.name] = []
     else defaults[param.name] = null
   }
   params.value = defaults
+  if (!title.value) title.value = test.label
 }
 
 const ready = computed(() => {
@@ -105,30 +103,78 @@ async function run() {
       `/api/workspaces/${props.workspace.id}/tables/${table.value}/analytics/${selected.value.id}`,
       params.value,
     )
+    if (!title.value) title.value = result.value.title
   } catch (error) {
-    const detail = error instanceof ApiError ? error.message : String(error)
-    toast.add({ severity: 'error', summary: 'Test failed', detail, life: 7000 })
+    fail('Test failed', error)
   } finally {
     running.value = false
   }
 }
 
-async function pinTile({ title, note }: { title: string; note: string }) {
+function spec() {
+  return { test: selected.value!.id, params: params.value }
+}
+
+async function save() {
+  if (!selected.value || !table.value) return
+  const name = title.value.trim()
+  if (!name) {
+    toast.add({ severity: 'warn', summary: 'A title is required', life: 3000 })
+    return
+  }
+  saving.value = true
+  try {
+    const body = {
+      kind: 'analytics' as const,
+      table: table.value,
+      title: name,
+      spec: spec(),
+      viz: result.value?.viz ?? { type: 'table' as const },
+      source: 'library' as const,
+    }
+    if (props.analysis) {
+      await api.patch<SavedAnalysis>(
+        `/api/workspaces/${props.workspace.id}/analyses/${props.analysis.id}`,
+        { title: name, spec: spec(), viz: body.viz },
+      )
+      emit('changed')
+      toast.add({ severity: 'success', summary: 'Saved', detail: name, life: 2500 })
+    } else {
+      const created = await api.post<SavedAnalysis>(
+        `/api/workspaces/${props.workspace.id}/analyses`,
+        body,
+      )
+      emit('saved', created)
+      toast.add({ severity: 'success', summary: 'Saved to analyses', detail: name, life: 2500 })
+    }
+  } catch (error) {
+    fail('Save failed', error)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removeAnalysis() {
+  if (!props.analysis) return
+  try {
+    await api.del(`/api/workspaces/${props.workspace.id}/analyses/${props.analysis.id}`)
+    emit('deleted')
+  } catch (error) {
+    fail('Delete failed', error)
+  }
+}
+
+async function pinTile({ title: pinTitle, note }: { title: string; note: string }) {
   if (!selected.value || !table.value) return
   pinning.value = true
   try {
     await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
-      kind: 'analytics',
-      table: table.value,
-      title,
-      note,
-      spec: { test: selected.value.id, params: params.value },
+      kind: 'analytics', table: table.value, title: pinTitle, note, spec: spec(),
     })
     showPin.value = false
-    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: title, life: 3000 })
+    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: pinTitle, life: 3000 })
   } catch (error) {
-    const detail = error instanceof ApiError ? error.message : String(error)
-    toast.add({ severity: 'error', summary: 'Pin failed', detail, life: 6000 })
+    fail('Pin failed', error)
   } finally {
     pinning.value = false
   }
@@ -144,20 +190,65 @@ async function exportExcel() {
       `${table.value}_${selected.value.id}.xlsx`,
     )
   } catch (error) {
-    const detail = error instanceof ApiError ? error.message : String(error)
-    toast.add({ severity: 'error', summary: 'Export failed', detail, life: 6000 })
+    fail('Export failed', error)
   } finally {
     exporting.value = false
   }
 }
+
+function fail(summary: string, error: unknown) {
+  const detail = error instanceof ApiError ? error.message : String(error)
+  toast.add({ severity: 'error', summary, detail, life: 6000 })
+}
+
+async function preloadFromAnalysis() {
+  const a = props.analysis
+  if (!a) return
+  title.value = a.title
+  table.value = a.table
+  await loadSchema()
+  const spec = (a.spec ?? {}) as { test?: string; params?: Record<string, unknown> }
+  const test = tests.value.find((t) => t.id === spec.test)
+  if (test) {
+    pick(test, spec.params ?? {})
+    await run()
+  }
+}
+
+// Editing a saved analysis: preload it. Creating new: default to the first table.
+watch(
+  () => props.analysis?.id,
+  () => {
+    if (props.analysis) {
+      preloadFromAnalysis()
+    } else {
+      selected.value = null
+      result.value = null
+      title.value = ''
+      if (!table.value && tableOptions.value.length) {
+        table.value = tableOptions.value[0]
+        loadSchema()
+      }
+    }
+  },
+  { immediate: true },
+)
+watch(table, () => {
+  if (!props.analysis) { result.value = null; loadSchema() }
+})
 </script>
 
 <template>
-  <div class="toolbar">
+  <div class="detail-head">
+    <InputText v-model="title" placeholder="Analysis title" class="title-input" />
     <div class="field">
-      <label>Table</label>
-      <Select v-model="table" :options="tableOptions" placeholder="Pick a table" style="min-width: 16rem" />
+      <Select v-model="table" :options="tableOptions" placeholder="Table" style="min-width: 12rem" />
     </div>
+    <span class="grow" />
+    <Button label="Save" icon="pi pi-save" size="small" :loading="saving" :disabled="!result" @click="save" />
+    <Button label="Pin" icon="pi pi-thumbtack" severity="secondary" size="small" :disabled="!result" @click="showPin = true" />
+    <Button label="Export" icon="pi pi-file-excel" severity="secondary" size="small" :loading="exporting" :disabled="!result" @click="exportExcel" />
+    <Button v-if="analysis" icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="removeAnalysis" />
   </div>
 
   <div class="test-grid">
@@ -219,22 +310,6 @@ async function exportExcel() {
     <div class="result-head">
       <h3>{{ result.title }}</h3>
       <Tag :value="result.verdict_text || result.verdict" :severity="verdictSeverity[result.verdict]" />
-      <Button
-        label="Export"
-        icon="pi pi-file-excel"
-        severity="secondary"
-        size="small"
-        :loading="exporting"
-        @click="exportExcel"
-      />
-      <Button
-        label="Pin"
-        icon="pi pi-thumbtack"
-        severity="secondary"
-        size="small"
-        v-tooltip.bottom="'Pin this test to the dashboard'"
-        @click="showPin = true"
-      />
     </div>
 
     <div class="stat-cards" style="margin: 0.75rem 0 1rem">
@@ -246,7 +321,7 @@ async function exportExcel() {
 
     <template v-if="result.summary">
       <h4>Summary <span class="muted" v-if="result.summary_rows > result.summary.rows.length">(first {{ result.summary.rows.length }} of {{ result.summary_rows.toLocaleString() }})</span></h4>
-      <FrameTable :frame="result.summary" scrollHeight="40vh" />
+      <FrameTable :frame="result.summary" scrollHeight="34vh" />
     </template>
 
     <template v-if="result.detail">
@@ -256,26 +331,35 @@ async function exportExcel() {
           (previewing {{ result.detail.rows.length }} of {{ result.detail_rows.toLocaleString() }} — export for all)
         </span>
       </h4>
-      <FrameTable :frame="result.detail" scrollHeight="40vh" />
+      <FrameTable :frame="result.detail" scrollHeight="34vh" />
     </template>
   </div>
 
   <PinDialog
     v-model:visible="showPin"
-    :defaultTitle="result?.title ?? selected?.label ?? 'Analytics test'"
+    :defaultTitle="title || result?.title || selected?.label || 'Analytics test'"
     :saving="pinning"
     @pin="pinTile"
   />
 </template>
 
 <style scoped>
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.detail-head .grow { flex: 1; }
+.title-input { min-width: 16rem; font-weight: 600; }
+
 .test-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 0.75rem;
   margin-bottom: 1rem;
 }
-
 .test-card {
   display: flex;
   flex-direction: column;
@@ -290,26 +374,10 @@ async function exportExcel() {
   color: inherit;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-
-.test-card:hover {
-  border-color: var(--p-primary-300);
-}
-
-.test-card.active {
-  border-color: var(--p-primary-500);
-  box-shadow: 0 0 0 1px var(--p-primary-500);
-}
-
-.test-card i {
-  color: var(--p-primary-500);
-  font-size: 1.1rem;
-}
-
-.test-card span {
-  font-size: 0.8rem;
-  color: var(--p-surface-500);
-  line-height: 1.35;
-}
+.test-card:hover { border-color: var(--p-primary-300); }
+.test-card.active { border-color: var(--p-primary-500); box-shadow: 0 0 0 1px var(--p-primary-500); }
+.test-card i { color: var(--p-primary-500); font-size: 1.1rem; }
+.test-card span { font-size: 0.8rem; color: var(--p-surface-500); line-height: 1.35; }
 
 .run-panel {
   background: var(--p-surface-0);
@@ -318,26 +386,9 @@ async function exportExcel() {
   padding: 1rem;
   margin-bottom: 1rem;
 }
+.param-form { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: flex-end; }
 
-.param-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.9rem;
-  align-items: flex-end;
-}
-
-.result-head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.result-head h3 {
-  margin: 0;
-}
-
-h4 {
-  margin: 1rem 0 0.5rem;
-}
+.result-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.result-head h3 { margin: 0; }
+h4 { margin: 1rem 0 0.5rem; }
 </style>

@@ -5,16 +5,17 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
-import { api, ApiError } from '../api'
+import { api, ApiError } from '../../api'
 import type {
   AssistantAnswer,
   AssistantArtifact,
   AssistantStatus,
   RunPythonResult,
+  SavedAnalysis,
   WorkspaceSummary,
-} from '../types'
-import ChartView from './ChartView.vue'
-import PinDialog from './PinDialog.vue'
+} from '../../types'
+import ChartView from '../ChartView.vue'
+import PinDialog from '../PinDialog.vue'
 
 interface Turn {
   question: string
@@ -23,7 +24,11 @@ interface Turn {
   pending: boolean
 }
 
+// The AI-assisted creation surface: ask in plain English, the assistant loop
+// returns artifacts. Code / library artifacts can be Saved as an analysis (into
+// the rail) or Pinned straight to the dashboard.
 const props = defineProps<{ workspace: WorkspaceSummary }>()
+const emit = defineEmits<{ saved: [SavedAnalysis] }>()
 const toast = useToast()
 
 const status = ref<AssistantStatus | null>(null)
@@ -34,14 +39,15 @@ const showPin = ref(false)
 const pinning = ref(false)
 const pinTarget = ref<AssistantArtifact | null>(null)
 const rerunning = ref<Record<string, boolean>>({})
+const savingId = ref<string | null>(null)
 
 const verdictSeverity: Record<string, string> = {
   ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
 }
 
 const SAMPLES = [
+  'Flag invoices posted on a weekend',
   'Which customers have the highest total amount?',
-  'Run a Benford analysis on the amount column',
   'Are there duplicate invoice numbers?',
   'Show the monthly trend of total amount',
 ]
@@ -75,7 +81,6 @@ async function ask(text?: string) {
 }
 
 function onKeydown(event: KeyboardEvent) {
-  // Enter sends; Shift+Enter inserts a newline.
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     ask()
@@ -95,10 +100,39 @@ async function rerun(artifact: AssistantArtifact) {
     artifact.stdout = result.stdout
     artifact.spec = { code: artifact.code }
   } catch (error) {
-    const detail = error instanceof ApiError ? error.message : String(error)
-    toast.add({ severity: 'error', summary: 'Run failed', detail, life: 7000 })
+    fail('Run failed', error)
   } finally {
     rerunning.value = { ...rerunning.value, [artifact.id]: false }
+  }
+}
+
+// Only the two kinds the Analysis rail owns are saveable; query artifacts belong
+// to the Query tab and can still be Pinned to the dashboard.
+function saveable(artifact: AssistantArtifact): boolean {
+  return artifact.kind === 'python' || artifact.kind === 'analytics'
+}
+
+async function saveAsAnalysis(artifact: AssistantArtifact) {
+  savingId.value = artifact.id
+  try {
+    const body: Record<string, unknown> = {
+      kind: artifact.kind,
+      table: artifact.table,
+      title: artifact.title,
+      spec: artifact.kind === 'python' ? { code: artifact.code } : artifact.spec,
+      viz: artifact.viz,
+      source: 'ai',
+    }
+    const created = await api.post<SavedAnalysis>(
+      `/api/workspaces/${props.workspace.id}/analyses`,
+      body,
+    )
+    emit('saved', created)
+    toast.add({ severity: 'success', summary: 'Saved to analyses', detail: artifact.title, life: 2500 })
+  } catch (error) {
+    fail('Save failed', error)
+  } finally {
+    savingId.value = null
   }
 }
 
@@ -120,11 +154,15 @@ async function pin({ title, note }: { title: string; note: string }) {
     showPin.value = false
     toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: title, life: 3000 })
   } catch (error) {
-    const detail = error instanceof ApiError ? error.message : String(error)
-    toast.add({ severity: 'error', summary: 'Pin failed', detail, life: 6000 })
+    fail('Pin failed', error)
   } finally {
     pinning.value = false
   }
+}
+
+function fail(summary: string, error: unknown) {
+  const detail = error instanceof ApiError ? error.message : String(error)
+  toast.add({ severity: 'error', summary, detail, life: 7000 })
 }
 
 const toolLabel: Record<string, string> = {
@@ -153,8 +191,8 @@ const toolLabel: Record<string, string> = {
 
   <div class="assistant">
     <div v-if="!turns.length" class="empty">
-      <i class="pi pi-comments" />
-      <p>Ask a question about this workspace's data in plain English.</p>
+      <i class="pi pi-sparkles" />
+      <p>Describe an analysis in plain English — the AI writes editable Polars you can run, save, and pin.</p>
       <div class="samples">
         <button
           v-for="sample in SAMPLES"
@@ -207,13 +245,15 @@ const toolLabel: Record<string, string> = {
               {{ artifact.total_rows.toLocaleString() }} row{{ artifact.total_rows === 1 ? '' : 's' }}
             </span>
             <Button
-              label="Pin"
-              icon="pi pi-thumbtack"
-              severity="secondary"
+              v-if="saveable(artifact)"
+              label="Save"
+              icon="pi pi-save"
               size="small"
               text
-              @click="openPin(artifact)"
+              :loading="savingId === artifact.id"
+              @click="saveAsAnalysis(artifact)"
             />
+            <Button label="Pin" icon="pi pi-thumbtack" severity="secondary" size="small" text @click="openPin(artifact)" />
           </div>
 
           <div v-if="artifact.stats?.length" class="stat-cards">
@@ -239,12 +279,7 @@ const toolLabel: Record<string, string> = {
             <pre v-if="artifact.stdout" class="stdout">{{ artifact.stdout }}</pre>
           </div>
 
-          <ChartView
-            v-if="artifact.frame"
-            :frame="artifact.frame"
-            :viz="artifact.viz"
-            height="300px"
-          />
+          <ChartView v-if="artifact.frame" :frame="artifact.frame" :viz="artifact.viz" height="300px" />
         </div>
 
         <p class="disclosure" v-tooltip.top="turn.answer.disclosure">
@@ -261,7 +296,7 @@ const toolLabel: Record<string, string> = {
       autoResize
       :disabled="!status?.configured || busy"
       :placeholder="status?.configured
-        ? 'Ask about this data… (Enter to send, Shift+Enter for a new line)'
+        ? 'Describe an analysis… (Enter to send, Shift+Enter for a new line)'
         : 'Set GROQ_API_KEY in .env to enable the assistant'"
       @keydown="onKeydown"
     />
@@ -293,51 +328,15 @@ const toolLabel: Record<string, string> = {
   padding: 0.85rem 1rem;
   margin-bottom: 1rem;
 }
+.notice i { color: var(--p-primary-500); font-size: 1.1rem; margin-top: 0.15rem; }
+.notice p { margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--p-surface-600); }
+.notice code { background: var(--p-surface-100); padding: 0 0.25rem; border-radius: 4px; }
 
-.notice i {
-  color: var(--p-primary-500);
-  font-size: 1.1rem;
-  margin-top: 0.15rem;
-}
-
-.notice p {
-  margin: 0.25rem 0 0;
-  font-size: 0.85rem;
-  color: var(--p-surface-600);
-}
-
-.notice code {
-  background: var(--p-surface-100);
-  padding: 0 0.25rem;
-  border-radius: 4px;
-}
-
-.assistant {
-  min-height: 40vh;
-}
-
-.empty {
-  text-align: center;
-  color: var(--p-surface-500);
-  padding: 2.5rem 1rem;
-}
-
-.empty i {
-  font-size: 2rem;
-  color: var(--p-primary-400);
-}
-
-.empty p {
-  margin: 0.6rem 0 1rem;
-}
-
-.samples {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  justify-content: center;
-}
-
+.assistant { min-height: 36vh; }
+.empty { text-align: center; color: var(--p-surface-500); padding: 2.5rem 1rem; }
+.empty i { font-size: 2rem; color: var(--p-primary-400); }
+.empty p { margin: 0.6rem 0 1rem; }
+.samples { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; }
 .sample {
   background: var(--p-surface-0);
   border: 1px solid var(--p-surface-200);
@@ -348,26 +347,11 @@ const toolLabel: Record<string, string> = {
   color: var(--p-primary-600);
   cursor: pointer;
 }
+.sample:hover:not(:disabled) { border-color: var(--p-primary-400); }
+.sample:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.sample:hover:not(:disabled) {
-  border-color: var(--p-primary-400);
-}
-
-.sample:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.turn {
-  margin-bottom: 1.25rem;
-}
-
-.bubble {
-  border-radius: 10px;
-  padding: 0.75rem 1rem;
-  margin-bottom: 0.5rem;
-}
-
+.turn { margin-bottom: 1.25rem; }
+.bubble { border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
 .bubble.user {
   display: flex;
   gap: 0.55rem;
@@ -377,28 +361,11 @@ const toolLabel: Record<string, string> = {
   font-weight: 500;
   max-width: 80%;
 }
+.bubble.assistant { background: var(--p-surface-0); border: 1px solid var(--p-surface-200); }
+.bubble.pending, .bubble.error { color: var(--p-surface-500); }
+.bubble.error { color: var(--p-red-500); }
 
-.bubble.assistant {
-  background: var(--p-surface-0);
-  border: 1px solid var(--p-surface-200);
-}
-
-.bubble.pending,
-.bubble.error {
-  color: var(--p-surface-500);
-}
-
-.bubble.error {
-  color: var(--p-red-500);
-}
-
-.steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 0.6rem;
-}
-
+.steps { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
 .step {
   font-size: 0.72rem;
   background: var(--p-surface-100);
@@ -406,44 +373,15 @@ const toolLabel: Record<string, string> = {
   border-radius: 999px;
   padding: 0.15rem 0.55rem;
 }
+.step.bad { background: var(--p-red-50); color: var(--p-red-600); }
+.answer { margin: 0; white-space: pre-wrap; line-height: 1.5; }
 
-.step.bad {
-  background: var(--p-red-50);
-  color: var(--p-red-600);
-}
+.artifact { border: 1px solid var(--p-surface-200); border-radius: 8px; padding: 0.75rem; margin-top: 0.85rem; }
+.artifact-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem; }
+.artifact-head .grow { flex: 1; }
+.rows { font-size: 0.8rem; }
 
-.answer {
-  margin: 0;
-  white-space: pre-wrap;
-  line-height: 1.5;
-}
-
-.artifact {
-  border: 1px solid var(--p-surface-200);
-  border-radius: 8px;
-  padding: 0.75rem;
-  margin-top: 0.85rem;
-}
-
-.artifact-head {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-bottom: 0.5rem;
-}
-
-.artifact-head .grow {
-  flex: 1;
-}
-
-.rows {
-  font-size: 0.8rem;
-}
-
-.code-block {
-  margin-bottom: 0.75rem;
-}
-
+.code-block { margin-bottom: 0.75rem; }
 .code-head {
   display: flex;
   align-items: center;
@@ -452,13 +390,11 @@ const toolLabel: Record<string, string> = {
   color: var(--p-surface-500);
   margin-bottom: 0.25rem;
 }
-
 .code {
   width: 100%;
   font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
   font-size: 0.82rem;
 }
-
 .stdout {
   background: var(--p-surface-900);
   color: var(--p-surface-0);
@@ -469,13 +405,7 @@ const toolLabel: Record<string, string> = {
   margin: 0.4rem 0 0;
 }
 
-.stat-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 0.65rem;
-}
-
+.stat-cards { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.65rem; }
 .disclosure {
   display: inline-flex;
   align-items: center;
@@ -485,7 +415,6 @@ const toolLabel: Record<string, string> = {
   color: var(--p-surface-500);
   cursor: help;
 }
-
 .composer {
   display: flex;
   gap: 0.6rem;
@@ -495,9 +424,5 @@ const toolLabel: Record<string, string> = {
   padding-top: 0.75rem;
   background: var(--p-surface-50);
 }
-
-.composer :deep(textarea) {
-  flex: 1;
-  resize: none;
-}
+.composer :deep(textarea) { flex: 1; resize: none; }
 </style>

@@ -58,6 +58,7 @@ class Workspace:
         self.tables: list[dict] = list(definition.get("tables") or [])
         self.joins: list[dict] = list(definition.get("joins") or [])
         self.tiles: list[dict] = list(definition.get("tiles") or [])
+        self.analyses: list[dict] = list(definition.get("analyses") or [])
 
     # ------------------------------------------------------------- persistence
     @property
@@ -74,6 +75,7 @@ class Workspace:
             "tables": self.tables,
             "joins": self.joins,
             "tiles": self.tiles,
+            "analyses": self.analyses,
         }
         self.definition_path.write_text(
             json.dumps(definition, indent=2), encoding="utf-8"
@@ -268,6 +270,74 @@ class Workspace:
 
     def remove_tile(self, tile_id: str) -> None:
         self.tiles.remove(self._tile(tile_id))
+        self.save()
+
+    # --------------------------------------------------------------- analyses
+    # A saved analysis is the working-set sibling of a tile: same spec-not-data
+    # model (recomputed live), but it lives in the Analysis tab's rail rather
+    # than the dashboard. It comes from either the predefined library
+    # (kind 'analytics') or AI-assisted code (kind 'python'). Pinning promotes
+    # a copy to a dashboard tile; the two collections stay independent.
+    def add_analysis(self, payload: dict) -> dict:
+        kind = payload.get("kind")
+        if kind not in ("analytics", "python"):
+            raise WorkspaceError("Analysis kind must be 'analytics' or 'python'.")
+        table = payload.get("table")
+        # Python analyses carry their own code and may reference any table(s),
+        # so a bound table is optional (and only a label) for them.
+        if kind == "python":
+            table = table if table in self.table_names() else None
+        elif table not in self.table_names():
+            raise WorkspaceError(f"Unknown table '{table}'.")
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise WorkspaceError("Analysis title is required.")
+        if kind == "python" and not str((payload.get("spec") or {}).get("code") or "").strip():
+            raise WorkspaceError("A Python analysis needs code.")
+
+        analysis = {
+            "id": uuid.uuid4().hex[:10],
+            "title": title,
+            "kind": kind,
+            "table": table,
+            "spec": dict(payload.get("spec") or {}),
+            "viz": dict(payload.get("viz") or {"type": "table"}),
+            "note": str(payload.get("note") or "").strip(),
+            "source": payload.get("source") or ("ai" if kind == "python" else "library"),
+            "created": date.today().isoformat(),
+        }
+        self.analyses.append(analysis)
+        self.save()
+        return analysis
+
+    def _analysis(self, analysis_id: str) -> dict:
+        analysis = next((a for a in self.analyses if a["id"] == analysis_id), None)
+        if analysis is None:
+            raise WorkspaceError("Analysis not found.")
+        return analysis
+
+    def update_analysis(self, analysis_id: str, changes: dict) -> dict:
+        analysis = self._analysis(analysis_id)
+        if "title" in changes:
+            title = str(changes["title"] or "").strip()
+            if not title:
+                raise WorkspaceError("Analysis title is required.")
+            analysis["title"] = title
+        if "note" in changes:
+            analysis["note"] = str(changes["note"] or "").strip()
+        if "viz" in changes and isinstance(changes["viz"], dict):
+            analysis["viz"] = dict(changes["viz"])
+        # Unlike a tile, an analysis is an editing surface: params (library) and
+        # code (AI) are re-saved by rewriting its spec.
+        if "spec" in changes and isinstance(changes["spec"], dict):
+            if analysis["kind"] == "python" and not str(changes["spec"].get("code") or "").strip():
+                raise WorkspaceError("A Python analysis needs code.")
+            analysis["spec"] = dict(changes["spec"])
+        self.save()
+        return analysis
+
+    def remove_analysis(self, analysis_id: str) -> None:
+        self.analyses.remove(self._analysis(analysis_id))
         self.save()
 
     # ------------------------------------------------------------------ frames

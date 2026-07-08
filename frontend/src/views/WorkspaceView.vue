@@ -12,8 +12,7 @@ import type { WorkspaceSummary } from '../types'
 import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
 import QueryTab from '../components/QueryTab.vue'
-import AnalyticsTab from '../components/AnalyticsTab.vue'
-import AssistantTab from '../components/AssistantTab.vue'
+import AnalysisTab from '../components/AnalysisTab.vue'
 
 const props = defineProps<{ id: string }>()
 const toast = useToast()
@@ -52,8 +51,7 @@ onMounted(reload)
         <Tab value="dashboard"><i class="pi pi-th-large" /> Dashboard</Tab>
         <Tab value="data"><i class="pi pi-database" /> Data</Tab>
         <Tab value="query"><i class="pi pi-search" /> Query</Tab>
-        <Tab value="analytics"><i class="pi pi-shield" /> Analytics</Tab>
-        <Tab value="assistant"><i class="pi pi-sparkles" /> Assistant</Tab>
+        <Tab value="analysis"><i class="pi pi-shield" /> Analysis</Tab>
       </TabList>
       <TabPanels>
         <TabPanel value="dashboard">
@@ -65,11 +63,8 @@ onMounted(reload)
         <TabPanel value="query">
           <QueryTab :workspace="workspace" />
         </TabPanel>
-        <TabPanel value="analytics">
-          <AnalyticsTab :workspace="workspace" />
-        </TabPanel>
-        <TabPanel value="assistant">
-          <AssistantTab v-if="activeTab === 'assistant'" :workspace="workspace" />
+        <TabPanel value="analysis">
+          <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
         </TabPanel>
       </TabPanels>
     </Tabs>

@@ -30,14 +30,17 @@ def _python_frames(workspace: Workspace) -> dict:
     return frames
 
 
-def tile_payload(workspace: Workspace, tile: dict) -> dict:
+def compute_payload(workspace: Workspace, item: dict) -> dict:
+    """Recompute a stored spec (tile or saved analysis) into a render-ready
+    payload. Both collections store specs, not data, and share this logic; a
+    broken item degrades to an error card instead of raising."""
     payload = {
-        key: tile.get(key)
-        for key in ("id", "title", "kind", "table", "note", "viz", "created")
+        key: item.get(key)
+        for key in ("id", "title", "kind", "table", "note", "viz", "created", "source", "spec")
     }
     try:
-        if tile["kind"] == "python":
-            code = (tile.get("spec") or {}).get("code") or ""
+        if item["kind"] == "python":
+            code = (item.get("spec") or {}).get("code") or ""
             payload["code"] = code
             result, stdout = sandbox.run(code, _python_frames(workspace))
             payload["stdout"] = stdout or None
@@ -46,16 +49,16 @@ def tile_payload(workspace: Workspace, tile: dict) -> dict:
             payload["error"] = None
             return payload
 
-        frame = workspace.get_frame(tile["table"])
-        if tile["kind"] == "query":
-            result, _ = explore.run_query_full(frame, tile.get("spec") or {})
+        frame = workspace.get_frame(item["table"])
+        if item["kind"] == "query":
+            result, _ = explore.run_query_full(frame, item.get("spec") or {})
             payload["total_rows"] = result.height
             payload["frame"] = explore.frame_payload(result, _cap_for(payload["viz"]))
-        elif tile["kind"] == "pivot":
+        elif item["kind"] == "pivot":
             # Legacy pivot tiles (rows/columns/values) render through the query
             # engine's cross-tab now that pivot.py is gone; new cross-tabs pin as
             # 'query' tiles with split_by.
-            spec = tile.get("spec") or {}
+            spec = item.get("spec") or {}
             columns = spec.get("columns") or []
             if isinstance(columns, str):
                 columns = [columns]
@@ -70,7 +73,7 @@ def tile_payload(workspace: Workspace, tile: dict) -> dict:
             payload["total_rows"] = wide.height
             payload["frame"] = explore.frame_payload(wide, _cap_for(payload["viz"]))
         else:
-            spec = tile.get("spec") or {}
+            spec = item.get("spec") or {}
             result = analytics.run_test(frame, spec.get("test"), spec.get("params"))
             # Analytics tiles use the test's own suggested visualization —
             # it tracks parameter changes (e.g. Benford digit count).
@@ -90,5 +93,17 @@ def tile_payload(workspace: Workspace, tile: dict) -> dict:
     return payload
 
 
+def tile_payload(workspace: Workspace, tile: dict) -> dict:
+    return compute_payload(workspace, tile)
+
+
 def dashboard_payload(workspace: Workspace) -> dict:
-    return {"tiles": [tile_payload(workspace, tile) for tile in workspace.tiles]}
+    return {"tiles": [compute_payload(workspace, tile) for tile in workspace.tiles]}
+
+
+def analysis_payload(workspace: Workspace, analysis: dict) -> dict:
+    return compute_payload(workspace, analysis)
+
+
+def analyses_payload(workspace: Workspace) -> dict:
+    return {"analyses": [compute_payload(workspace, a) for a in workspace.analyses]}

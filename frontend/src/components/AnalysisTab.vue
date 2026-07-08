@@ -1,0 +1,255 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useConfirm } from 'primevue/useconfirm'
+import { useToast } from 'primevue/usetoast'
+import Button from 'primevue/button'
+import Tag from 'primevue/tag'
+
+import { api, ApiError } from '../api'
+import type { SavedAnalysis, WorkspaceSummary } from '../types'
+import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
+import AnalysisChat from './analysis/AnalysisChat.vue'
+import AnalysisPython from './analysis/AnalysisPython.vue'
+
+// The Analysis tab: a rail of saved analyses on the left, an editor on the
+// right. Two creation paths — the predefined Library, or Ask AI (assistant
+// loop → editable code). Saving persists to the rail; Pinning (inside each
+// pane) promotes a copy to the dashboard.
+const props = defineProps<{ workspace: WorkspaceSummary }>()
+const toast = useToast()
+const confirm = useConfirm()
+
+const analyses = ref<SavedAnalysis[]>([])
+const selectedId = ref<string | null>(null)
+const creating = ref<'library' | 'ai' | null>(null)
+const loading = ref(false)
+
+const verdictSeverity: Record<string, string> = {
+  ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
+}
+
+const selected = computed(() => analyses.value.find((a) => a.id === selectedId.value) ?? null)
+
+async function load() {
+  loading.value = true
+  try {
+    analyses.value = (
+      await api.get<{ analyses: SavedAnalysis[] }>(`/api/workspaces/${props.workspace.id}/analyses`)
+    ).analyses
+  } catch (error) {
+    const detail = error instanceof ApiError ? error.message : String(error)
+    toast.add({ severity: 'error', summary: 'Could not load analyses', detail, life: 6000 })
+  } finally {
+    loading.value = false
+  }
+}
+watch(() => props.workspace.id, load, { immediate: true })
+
+function startLibrary() {
+  creating.value = 'library'
+  selectedId.value = null
+}
+function startAi() {
+  creating.value = 'ai'
+  selectedId.value = null
+}
+function select(a: SavedAnalysis) {
+  selectedId.value = a.id
+  creating.value = null
+}
+
+async function onSaved(created: SavedAnalysis) {
+  await load()
+  select(created)
+}
+async function onChanged() {
+  const keep = selectedId.value
+  await load()
+  selectedId.value = keep
+}
+async function onDeleted() {
+  selectedId.value = null
+  creating.value = null
+  await load()
+}
+
+function confirmDelete(a: SavedAnalysis) {
+  confirm.require({
+    header: 'Delete analysis',
+    message: `Delete "${a.title}"? Pinned dashboard copies are unaffected.`,
+    icon: 'pi pi-exclamation-triangle',
+    acceptProps: { label: 'Delete', severity: 'danger' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      try {
+        await api.del(`/api/workspaces/${props.workspace.id}/analyses/${a.id}`)
+        if (selectedId.value === a.id) selectedId.value = null
+        await load()
+      } catch (error) {
+        const detail = error instanceof ApiError ? error.message : String(error)
+        toast.add({ severity: 'error', summary: 'Delete failed', detail, life: 6000 })
+      }
+    },
+  })
+}
+</script>
+
+<template>
+  <div class="analysis">
+    <aside class="rail">
+      <div class="rail-actions">
+        <Button label="Library" icon="pi pi-book" size="small" :outlined="creating !== 'library'" @click="startLibrary" />
+        <Button label="Ask AI" icon="pi pi-sparkles" size="small" :outlined="creating !== 'ai'" @click="startAi" />
+      </div>
+
+      <p class="rail-title">Saved analyses</p>
+      <p v-if="!loading && analyses.length === 0" class="muted small">
+        Nothing saved yet — create one from the library or the AI.
+      </p>
+
+      <button
+        v-for="a in analyses"
+        :key="a.id"
+        class="rail-item"
+        :class="{ active: selectedId === a.id }"
+        @click="select(a)"
+      >
+        <div class="rail-item-head">
+          <span class="rail-item-title">{{ a.title }}</span>
+          <Tag
+            v-if="a.error"
+            value="error"
+            severity="danger"
+          />
+          <Tag
+            v-else-if="a.verdict"
+            :value="a.verdict"
+            :severity="verdictSeverity[a.verdict]"
+          />
+        </div>
+        <div class="rail-item-meta">
+          <i :class="a.source === 'ai' ? 'pi pi-sparkles' : 'pi pi-book'" />
+          {{ a.source === 'ai' ? 'AI code' : 'library' }}
+          <span v-if="a.table"> · {{ a.table }}</span>
+          <i class="pi pi-trash del" @click.stop="confirmDelete(a)" v-tooltip.bottom="'Delete'" />
+        </div>
+      </button>
+    </aside>
+
+    <section class="detail">
+      <AnalysisLibrary
+        v-if="creating === 'library' || selected?.kind === 'analytics'"
+        :key="selected?.id ?? 'new-library'"
+        :workspace="workspace"
+        :analysis="creating === 'library' ? null : selected"
+        @saved="onSaved"
+        @changed="onChanged"
+        @deleted="onDeleted"
+      />
+      <AnalysisChat
+        v-else-if="creating === 'ai'"
+        :workspace="workspace"
+        @saved="onSaved"
+      />
+      <AnalysisPython
+        v-else-if="selected?.kind === 'python'"
+        :key="selected.id"
+        :workspace="workspace"
+        :analysis="selected"
+        @changed="onChanged"
+        @deleted="onDeleted"
+      />
+      <div v-else class="empty">
+        <i class="pi pi-shield" />
+        <p>Pick a saved analysis, or start a new one from the <strong>Library</strong> or <strong>Ask AI</strong>.</p>
+      </div>
+    </section>
+  </div>
+</template>
+
+<style scoped>
+.analysis {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.rail {
+  flex: 0 0 15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.rail-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.rail-actions :deep(.p-button) { flex: 1; }
+
+.rail-title {
+  margin: 0.5rem 0 0.15rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-surface-500);
+}
+
+.small { font-size: 0.85rem; }
+
+.rail-item {
+  text-align: left;
+  background: var(--p-surface-0);
+  border: 1px solid var(--p-surface-200);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.rail-item:hover { border-color: var(--p-primary-300); }
+.rail-item.active { border-color: var(--p-primary-500); box-shadow: 0 0 0 1px var(--p-primary-500); }
+
+.rail-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+.rail-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+.rail-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--p-surface-500);
+}
+.rail-item-meta .del {
+  margin-left: auto;
+  cursor: pointer;
+  padding: 0.1rem;
+}
+.rail-item-meta .del:hover { color: var(--p-red-500); }
+
+.detail {
+  flex: 1;
+  min-width: 0;
+}
+
+.empty {
+  text-align: center;
+  color: var(--p-surface-500);
+  padding: 3rem 1rem;
+}
+.empty i { font-size: 2rem; color: var(--p-primary-400); }
+.empty p { margin-top: 0.6rem; }
+</style>
