@@ -68,9 +68,11 @@ optional attribution headers via `OPENROUTER_APP_TITLE` and
 `~openai/gpt-latest`. LM Studio uses `LMSTUDIO_BASE_URL`
 (`http://localhost:1234/v1` by default), optional `LMSTUDIO_MODEL`, and a local
 dummy `LMSTUDIO_API_KEY` default of `lm-studio`; leave `LMSTUDIO_MODEL` blank
-to use whichever model is loaded in LM Studio. Real environment variables
-override `.env` values. The transport and dotenv loader both use only the
-Python standard library, so there is no extra dependency to bundle.
+to use whichever model is loaded in LM Studio. LLM requests default to 60
+seconds for cloud backends and 300 seconds for LM Studio; override with
+`LLM_REQUEST_TIMEOUT` if your local model needs longer. Real environment
+variables override `.env` values. The transport and dotenv loader both use only
+the Python standard library, so there is no extra dependency to bundle.
 
 ## Stack
 

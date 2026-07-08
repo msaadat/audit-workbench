@@ -20,6 +20,7 @@ supported, and LM Studio can be used as a local backend:
     LMSTUDIO_MODEL           optional LM Studio model id
     LMSTUDIO_BASE_URL        LM Studio local server URL
     LMSTUDIO_API_KEY         optional local dummy key
+    LLM_REQUEST_TIMEOUT      optional request timeout in seconds
 
 This module is a thin transport: it knows how to send a chat request (with
 optional tool schemas) and hand back the raw assistant message. It never sees
@@ -45,6 +46,7 @@ DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 DEFAULT_LMSTUDIO_API_KEY = "lm-studio"
 USER_AGENT = "audit-workbench/0.1"
 REQUEST_TIMEOUT = 60  # seconds
+LOCAL_REQUEST_TIMEOUT = 300  # seconds
 
 
 class LLMError(RuntimeError):
@@ -58,10 +60,24 @@ class LLMSettings:
     model: str
     base_url: str
     extra_headers: dict[str, str]
+    timeout: int
 
 
 def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
+
+
+def _request_timeout(default: int) -> int:
+    configured = _env("LLM_REQUEST_TIMEOUT")
+    if not configured:
+        return default
+    try:
+        timeout = int(configured)
+    except ValueError as error:
+        raise LLMError("LLM_REQUEST_TIMEOUT must be a positive integer.") from error
+    if timeout <= 0:
+        raise LLMError("LLM_REQUEST_TIMEOUT must be a positive integer.")
+    return timeout
 
 
 def _backend() -> str:
@@ -87,6 +103,7 @@ def _settings() -> LLMSettings:
             model=_env("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL,
             base_url=(_env("OPENROUTER_BASE_URL") or DEFAULT_OPENROUTER_BASE_URL).rstrip("/"),
             extra_headers=headers,
+            timeout=_request_timeout(REQUEST_TIMEOUT),
         )
     if backend == "groq":
         return LLMSettings(
@@ -95,6 +112,7 @@ def _settings() -> LLMSettings:
             model=_env("GROQ_MODEL") or DEFAULT_GROQ_MODEL,
             base_url=(_env("GROQ_BASE_URL") or DEFAULT_GROQ_BASE_URL).rstrip("/"),
             extra_headers={},
+            timeout=_request_timeout(REQUEST_TIMEOUT),
         )
     if backend == "lmstudio":
         return LLMSettings(
@@ -103,6 +121,7 @@ def _settings() -> LLMSettings:
             model=_env("LMSTUDIO_MODEL"),
             base_url=(_env("LMSTUDIO_BASE_URL") or DEFAULT_LMSTUDIO_BASE_URL).rstrip("/"),
             extra_headers={},
+            timeout=_request_timeout(LOCAL_REQUEST_TIMEOUT),
         )
     raise LLMError("Unsupported LLM_BACKEND. Use 'groq', 'openrouter', or 'lmstudio'.")
 
@@ -177,7 +196,7 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=settings.timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = _error_detail(error)

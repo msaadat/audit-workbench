@@ -186,6 +186,7 @@ def test_llm_chat_sends_user_agent(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
     assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
@@ -245,18 +246,46 @@ def test_llm_chat_supports_lmstudio(monkeypatch):
         captured["url"] = request.full_url
         captured["headers"] = {k.lower(): v for k, v in request.header_items()}
         captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
         return FakeResponse()
 
     monkeypatch.setenv("LLM_BACKEND", "lmstudio")
     monkeypatch.delenv("LMSTUDIO_MODEL", raising=False)
     monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
     monkeypatch.delenv("LMSTUDIO_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
     assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
     assert captured["url"] == "http://localhost:1234/v1/chat/completions"
     assert captured["headers"]["authorization"] == "Bearer lm-studio"
     assert captured["body"]["model"] == ""
+    assert captured["timeout"] == llm.LOCAL_REQUEST_TIMEOUT
+
+
+def test_llm_request_timeout_can_be_overridden(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT", "900")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["timeout"] == 900
 
 
 def test_llm_error_detail_keeps_plain_text_body():
