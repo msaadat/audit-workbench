@@ -196,8 +196,10 @@ export interface SavedAnalysis {
 
 export interface AssistantStatus {
   configured: boolean
+  backend: 'groq' | 'openrouter' | 'lmstudio' | string
   model: string
   base_url: string
+  error?: string
 }
 
 export interface AssistantStep {

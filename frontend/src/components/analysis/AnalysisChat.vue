@@ -56,7 +56,7 @@ onMounted(async () => {
   try {
     status.value = await api.get<AssistantStatus>('/api/assistant/status')
   } catch {
-    status.value = { configured: false, model: '', base_url: '' }
+    status.value = { configured: false, backend: 'groq', model: '', base_url: '' }
   }
 })
 
@@ -180,11 +180,13 @@ const toolLabel: Record<string, string> = {
     <div>
       <strong>The assistant isn't configured.</strong>
       <p>
-        Set <code>GROQ_API_KEY</code> in <code>.env</code> or the environment
-        (optionally <code>GROQ_MODEL</code> / <code>GROQ_BASE_URL</code>) and
-        restart the backend to enable natural-language analysis. Only schema
-        and aggregate statistics are ever sent to the model — never your raw
-        data rows.
+        Set <code>GROQ_API_KEY</code> for Groq, or set
+        <code>LLM_BACKEND=openrouter</code> with <code>OPENROUTER_API_KEY</code>
+        and optionally <code>OPENROUTER_MODEL</code>. For local LM Studio, set
+        <code>LLM_BACKEND=lmstudio</code>, start the local server, and optionally
+        set <code>LMSTUDIO_MODEL</code>. Restart the backend after changing
+        configuration. Only schema and aggregate statistics are ever sent to
+        the model — never your raw data rows.
       </p>
     </div>
   </div>
@@ -297,7 +299,7 @@ const toolLabel: Record<string, string> = {
       :disabled="!status?.configured || busy"
       :placeholder="status?.configured
         ? 'Describe an analysis… (Enter to send, Shift+Enter for a new line)'
-        : 'Set GROQ_API_KEY in .env to enable the assistant'"
+        : 'Configure Groq, OpenRouter, or LM Studio in .env to enable the assistant'"
       @keydown="onKeydown"
     />
     <Button

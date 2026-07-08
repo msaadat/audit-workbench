@@ -23,8 +23,8 @@ your own machine; no data leaves it.
   data: the dashboard re-runs everything against the current files on every
   load, so it stays live and every tile is reproducible. Tiles can be
   renamed, annotated, reordered, and removed.
-- **Assistant** — ask questions in plain English. An LLM (Groq cloud API,
-  configurable) answers by *calling tools* that run on your machine: it
+- **Assistant** — ask questions in plain English. An LLM (Groq, OpenRouter, or
+  local LM Studio, configurable) answers by *calling tools* that run on your machine: it
   discovers the schema, runs structured queries and the analytics tests, and
   for anything bespoke writes **visible, editable Polars** you can tweak and
   re-run. **Only metadata — schema, column names, aggregate statistics, and
@@ -44,17 +44,33 @@ Configuration can live in a local `.env` file at the repo root. Copy
 `.env.example` to `.env` and fill in the values you need:
 
 ```dotenv
+# Groq (default)
 GROQ_API_KEY=your-key
 GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_BASE_URL=https://api.groq.com/openai/v1
+
+# Or OpenRouter
+LLM_BACKEND=openrouter
+OPENROUTER_API_KEY=your-key
+OPENROUTER_MODEL=~openai/gpt-latest
+
+# Or local LM Studio
+LLM_BACKEND=lmstudio
+LMSTUDIO_MODEL=
+LMSTUDIO_BASE_URL=http://localhost:1234/v1
 ```
 
-The assistant is optional; without `GROQ_API_KEY`, the tab shows a setup
-message and the rest of the app keeps working. `GROQ_BASE_URL` accepts any
-OpenAI-compatible endpoint (e.g. a self-hosted model), so the LLM backend is
-configurable per deployment. Real environment variables override `.env` values.
-The transport and dotenv loader both use only the Python standard library, so
-there is no extra dependency to bundle.
+The assistant is optional; without a configured API key, the tab shows a setup
+message and the rest of the app keeps working. Groq uses `GROQ_BASE_URL`
+(`https://api.groq.com/openai/v1` by default). OpenRouter uses
+`OPENROUTER_BASE_URL` (`https://openrouter.ai/api/v1` by default) and accepts
+optional attribution headers via `OPENROUTER_APP_TITLE` and
+`OPENROUTER_HTTP_REFERER`; `OPENROUTER_MODEL` defaults to
+`~openai/gpt-latest`. LM Studio uses `LMSTUDIO_BASE_URL`
+(`http://localhost:1234/v1` by default), optional `LMSTUDIO_MODEL`, and a local
+dummy `LMSTUDIO_API_KEY` default of `lm-studio`; leave `LMSTUDIO_MODEL` blank
+to use whichever model is loaded in LM Studio. Real environment variables
+override `.env` values. The transport and dotenv loader both use only the
+Python standard library, so there is no extra dependency to bundle.
 
 ## Stack
 

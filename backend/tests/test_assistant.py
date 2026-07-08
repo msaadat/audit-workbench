@@ -130,15 +130,36 @@ def test_python_tile_requires_code(workspace_with_data):
 
 # ----------------------------------------------------------------- llm status
 def test_assistant_status_unconfigured(monkeypatch):
+    monkeypatch.delenv("LLM_BACKEND", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     client = TestClient(create_app())
     body = client.get("/api/assistant/status").json()
     assert body["configured"] is False
+    assert body["backend"] == "groq"
     assert body["model"]
 
 
+def test_assistant_status_lmstudio_configured_without_cloud_key(monkeypatch):
+    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
+    monkeypatch.delenv("LMSTUDIO_API_KEY", raising=False)
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
+    monkeypatch.delenv("LMSTUDIO_MODEL", raising=False)
+
+    body = llm.status()
+
+    assert body["configured"] is True
+    assert body["backend"] == "lmstudio"
+    assert body["model"] == ""
+    assert body["base_url"] == "http://localhost:1234/v1"
+
+
 def test_ask_without_key_raises(monkeypatch, workspace_with_data):
+    monkeypatch.delenv("LLM_BACKEND", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(llm.LLMError, match="not configured"):
         assistant.ask(workspace_with_data, "anything")
 
@@ -161,12 +182,81 @@ def test_llm_chat_sends_user_agent(monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse()
 
+    monkeypatch.delenv("LLM_BACKEND", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
     assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
     assert captured["headers"]["User-agent"] == llm.USER_AGENT
     assert captured["timeout"] == llm.REQUEST_TIMEOUT
+
+
+def test_llm_chat_supports_openrouter(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setenv("LLM_BACKEND", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/test-model")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Audit Workbench")
+    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://audit-workbench.local")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["headers"]["authorization"] == "Bearer router-key"
+    assert captured["headers"]["x-openrouter-title"] == "Audit Workbench"
+    assert captured["headers"]["http-referer"] == "https://audit-workbench.local"
+    assert captured["body"]["model"] == "openai/test-model"
+
+
+def test_llm_chat_supports_lmstudio(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
+    monkeypatch.delenv("LMSTUDIO_MODEL", raising=False)
+    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
+    monkeypatch.delenv("LMSTUDIO_API_KEY", raising=False)
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["url"] == "http://localhost:1234/v1/chat/completions"
+    assert captured["headers"]["authorization"] == "Bearer lm-studio"
+    assert captured["body"]["model"] == ""
 
 
 def test_llm_error_detail_keeps_plain_text_body():
@@ -180,6 +270,67 @@ def test_llm_error_detail_keeps_plain_text_body():
     error.read = lambda: b"error code: 1010"
 
     assert llm._error_detail(error) == "error code: 1010"
+
+
+def test_openrouter_rate_limit_error_includes_retry_hint(monkeypatch):
+    def fake_urlopen(request, timeout):
+        error = urllib.error.HTTPError(
+            url=request.full_url,
+            code=429,
+            msg="Too Many Requests",
+            hdrs={"Retry-After": "60"},
+            fp=None,
+        )
+        error.read = lambda: json.dumps(
+            {
+                "error": {
+                    "code": 429,
+                    "message": "Rate limit exceeded",
+                    "metadata": {"error_type": "rate_limit_exceeded"},
+                }
+            }
+        ).encode()
+        raise error
+
+    monkeypatch.setenv("LLM_BACKEND", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/test-model")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(llm.LLMError) as raised:
+        llm.chat([{"role": "user", "content": "hello"}])
+
+    message = str(raised.value)
+    assert "Rate limit exceeded (rate_limit_exceeded)" in message
+    assert "Retry after 60 seconds" in message
+    assert "OPENROUTER_MODEL" in message
+
+
+def test_lmstudio_model_error_includes_local_hint(monkeypatch):
+    def fake_urlopen(request, timeout):
+        error = urllib.error.HTTPError(
+            url=request.full_url,
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=None,
+        )
+        error.read = lambda: json.dumps(
+            {"error": {"code": 404, "message": "Model not found"}}
+        ).encode()
+        raise error
+
+    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
+    monkeypatch.setenv("LMSTUDIO_MODEL", "missing-model")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(llm.LLMError) as raised:
+        llm.chat([{"role": "user", "content": "hello"}])
+
+    message = str(raised.value)
+    assert "Model not found" in message
+    assert "LMSTUDIO_MODEL" in message
+    assert "missing-model" in message
 
 
 # --------------------------------------------------------------- full loop (mocked)
