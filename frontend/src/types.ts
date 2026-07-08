@@ -103,6 +103,7 @@ export interface AggSpec {
 }
 
 export interface QuerySpec {
+  columns?: string[]
   filters: FilterSpec[]
   group_by: string[]
   split_by?: string | null

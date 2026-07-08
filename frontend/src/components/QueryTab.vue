@@ -37,6 +37,7 @@ const groupBy = ref<string[]>([])
 const splitField = ref<string | null>(null)
 const aggs = ref<AggSpec[]>([])
 const sortSpec = ref<{ column: string; desc: boolean }[]>([])
+const visibleColumns = ref<string[]>([])
 const page = ref(1)
 const pageSize = ref(50)
 
@@ -61,6 +62,8 @@ const isPivot = computed(() => !!splitField.value)
 
 const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 const columnNames = computed(() => schema.value.map((c) => c.name))
+const visibleColumnSet = computed(() => new Set(visibleColumns.value))
+const hiddenCount = computed(() => Math.max(columnNames.value.length - visibleColumns.value.length, 0))
 
 function kindOf(field: string): string {
   return schema.value.find((c) => c.name === field)?.kind ?? 'text'
@@ -124,6 +127,7 @@ async function loadSchema() {
   splitField.value = null
   aggs.value = []
   sortSpec.value = []
+  visibleColumns.value = columnNames.value
   result.value = null
   lastError.value = null
   page.value = 1
@@ -202,13 +206,27 @@ function quickAdd(field: string) {
   else addToZone('group', field)
 }
 
+function toggleColumn(field: string) {
+  if (visibleColumnSet.value.has(field)) {
+    if (visibleColumns.value.length <= 1) return
+    visibleColumns.value = visibleColumns.value.filter((column) => column !== field)
+  } else {
+    const ordered = columnNames.value.filter((column) => column === field || visibleColumnSet.value.has(column))
+    visibleColumns.value = ordered
+  }
+}
+
+function showAllColumns() {
+  visibleColumns.value = columnNames.value
+}
+
 function needsValue(op: string): boolean {
   return !['blank', 'not_blank'].includes(op)
 }
 
 // ------------------------------------------------------------------ querying
 function spec() {
-  return {
+  const payload = {
     filters: filters.value.filter(
       (f) => f.column && f.op && (!needsValue(f.op) || f.value !== ''),
     ),
@@ -221,13 +239,17 @@ function spec() {
     page: page.value,
     page_size: pageSize.value,
   }
+  if (!splitField.value && groupBy.value.length === 0 && aggs.value.length === 0) {
+    return { ...payload, columns: visibleColumns.value }
+  }
+  return payload
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined
 
 // Live query: recompute (debounced) whenever the spec changes, Perspective-style.
 watch(
-  [filters, groupBy, splitField, aggs, sortSpec],
+  [filters, groupBy, splitField, aggs, sortSpec, visibleColumns],
   () => {
     clearTimeout(timer)
     timer = setTimeout(() => run(true), 350)
@@ -306,6 +328,24 @@ const records = computed(() => {
     })
     return record
   })
+})
+
+const displayedFlatColumns = computed(() => {
+  const r = result.value
+  if (!r) return []
+  if (isPivot.value || wasGrouped.value) return r.columns
+  const visible = r.columns.filter((column) => visibleColumnSet.value.has(column))
+  return visible.length ? visible : r.columns
+})
+
+const numericFlatColumns = computed(() => {
+  const r = result.value
+  const numeric = new Set<string>()
+  if (!r) return numeric
+  r.columns.forEach((column, index) => {
+    if (/Int|Float|Decimal/.test(r.dtypes[index] ?? '')) numeric.add(column)
+  })
+  return numeric
 })
 
 // ------------------------------------------------- cross-tab grid rendering
@@ -572,6 +612,7 @@ async function exportExcel() {
         <DataTable
           v-else
           :value="records"
+          class="query-table"
           lazy
           paginator
           :rows="result.page_size"
@@ -589,10 +630,11 @@ async function exportExcel() {
           @row-click="onRowClick"
         >
           <Column
-            v-for="column in result.columns"
+            v-for="column in displayedFlatColumns"
             :key="column"
             :field="column"
             :header="column"
+            :class="{ 'num-col': numericFlatColumns.has(column) }"
             sortable
           >
             <template #body="{ data }">
@@ -608,20 +650,50 @@ async function exportExcel() {
 
     <div class="query-panel">
       <div class="panel-section">
-        <div class="panel-head">Fields</div>
+        <div class="panel-head">
+          <span>Fields</span>
+          <span class="grow" />
+          <span v-if="hiddenCount" class="muted small">{{ hiddenCount }} hidden</span>
+          <Button
+            icon="pi pi-eye"
+            text
+            rounded
+            size="small"
+            :disabled="hiddenCount === 0"
+            v-tooltip.left="'Show all fields'"
+            @click="showAllColumns"
+          />
+        </div>
         <div class="field-list">
-          <span
+          <div
             v-for="column in columnNames"
             :key="column"
-            class="chip"
-            :class="{ used: inUse.has(column) }"
-            draggable="true"
-            v-tooltip.left="'Drag into a zone below, or click to add'"
-            @dragstart="startDrag(column, 'list')"
-            @click="quickAdd(column)"
+            class="field-item"
+            :class="{ hidden: !visibleColumnSet.has(column) }"
           >
-            <i :class="fieldIcon(column)" /> {{ column }}
-          </span>
+            <span
+              class="chip field-chip"
+              :class="{ used: inUse.has(column) }"
+              draggable="true"
+              v-tooltip.left="'Drag into a zone below, or click to add'"
+              @dragstart="startDrag(column, 'list')"
+              @click="quickAdd(column)"
+            >
+              <i :class="fieldIcon(column)" />
+              <span class="field-name">{{ column }}</span>
+            </span>
+            <Button
+              :icon="visibleColumnSet.has(column) ? 'pi pi-eye' : 'pi pi-eye-slash'"
+              text
+              rounded
+              size="small"
+              class="visibility-btn"
+              :severity="visibleColumnSet.has(column) ? 'secondary' : 'contrast'"
+              :disabled="visibleColumnSet.has(column) && visibleColumns.length <= 1"
+              v-tooltip.left="visibleColumnSet.has(column) ? 'Hide field' : 'Show field'"
+              @click.stop="toggleColumn(column)"
+            />
+          </div>
         </div>
       </div>
 
@@ -831,6 +903,38 @@ async function exportExcel() {
   color: var(--p-surface-300);
 }
 
+:deep(.query-table) {
+  font-size: 0.82rem;
+}
+
+:deep(.query-table .p-datatable-thead > tr > th),
+:deep(.query-table .p-datatable-tbody > tr > td) {
+  padding: 0.35rem 0.6rem;
+}
+
+:deep(.query-table .p-datatable-thead > tr > th) {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+:deep(.query-table .p-paginator) {
+  padding: 0.25rem 0.4rem;
+}
+
+:deep(.query-table .p-paginator .p-paginator-page),
+:deep(.query-table .p-paginator .p-paginator-first),
+:deep(.query-table .p-paginator .p-paginator-prev),
+:deep(.query-table .p-paginator .p-paginator-next),
+:deep(.query-table .p-paginator .p-paginator-last) {
+  min-width: 2rem;
+  height: 2rem;
+}
+
+:deep(.query-table .num-col) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* cross-tab grid */
 .grid-wrap {
   overflow: auto;
@@ -940,10 +1044,39 @@ async function exportExcel() {
 
 .field-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
+  flex-direction: column;
+  gap: 0.25rem;
   max-height: 11rem;
   overflow: auto;
+}
+
+.field-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2rem;
+  align-items: center;
+  gap: 0.2rem;
+  min-height: 2rem;
+}
+
+.field-item.hidden .field-chip {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.field-chip {
+  min-width: 0;
+}
+
+.field-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visibility-btn {
+  width: 1.8rem;
+  height: 1.8rem;
+  justify-self: end;
 }
 
 .chip {

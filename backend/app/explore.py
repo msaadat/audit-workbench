@@ -351,6 +351,15 @@ def run_query_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
         column = sort.get("column")
         if column in df.columns:
             df = df.sort(column, descending=bool(sort.get("desc")), nulls_last=True)
+
+    projection = [c for c in (spec.get("columns") or []) if c]
+    if projection and not group_by and not aggs:
+        unknown = [c for c in projection if c not in schema]
+        if unknown:
+            raise QueryError(f"Unknown column '{unknown[0]}'.")
+        seen = set()
+        projection = [c for c in projection if not (c in seen or seen.add(c))]
+        df = df.select(projection)
     return df, filtered_rows
 
 

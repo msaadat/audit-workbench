@@ -65,6 +65,30 @@ def test_pagination(transactions_df):
     assert len(result["rows"]) == 2
 
 
+def test_row_level_query_can_project_visible_columns(transactions_df):
+    result = run_query(
+        transactions_df,
+        {
+            "columns": ["invoice_no", "amount"],
+            "sort": [{"column": "cust_id", "desc": True}],
+        },
+    )
+    assert result["columns"] == ["invoice_no", "amount"]
+    assert result["total_rows"] == 6
+
+
+def test_projection_does_not_affect_grouped_results(transactions_df):
+    result = run_query(
+        transactions_df,
+        {
+            "columns": ["invoice_no"],
+            "group_by": ["cust_id"],
+            "aggs": [{"column": "amount", "func": "sum"}],
+        },
+    )
+    assert result["columns"] == ["cust_id", "amount_sum"]
+
+
 def test_bad_specs_raise(transactions_df):
     with pytest.raises(QueryError):
         run_query(transactions_df, {"filters": [{"column": "nope", "op": "eq", "value": "1"}]})
