@@ -14,10 +14,13 @@ your own machine; no data leaves it.
   cardinality, ranges, top values, duplicate-row count.
 - **Explore** — interactive slicing: filters, group-by aggregations, sorting,
   server-side pagination, drill-down from a group to its rows, Excel export.
-- **Analytics** — canned audit tests: Benford's law (MAD/chi-square),
-  duplicate detection, sequence-gap analysis, reproducible sampling
-  (random / interval / stratified), period-over-period comparison, and
-  round-number analysis. Results export to Excel.
+- **Analytics** — 15 canned audit tests: Benford's law (MAD/chi-square) and
+  the last-two-digit variant, duplicate detection, sequence-gap analysis,
+  reproducible sampling (random / interval / stratified), period-over-period
+  comparison, round-number analysis, outlier detection (Z-score / IQR),
+  just-below-threshold clustering, weekend postings, date-lag / backdating,
+  numeric stratification, completeness (blank scan), negative/zero scan, and
+  rare-value detection. Results export to Excel.
 - **Dashboard** — pin any Explore query, Analytics test, or Assistant result
   as a tile (bar/line/pie chart or table). Tiles store the *spec*, not the
   data: the dashboard re-runs everything against the current files on every

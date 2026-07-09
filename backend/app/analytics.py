@@ -460,6 +460,454 @@ def round_numbers(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     )
 
 
+# --------------------------------------------------------------- outliers
+def outliers(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    column = params.get("column")
+    method = (params.get("method") or "zscore").lower()
+    values = _numeric_series(df, column)
+    n = values.height
+    col = pl.col(column).cast(pl.Float64, strict=False)
+
+    if method == "zscore":
+        threshold = float(params.get("threshold") or 3.0)
+        mean = values["value"].mean()
+        std = values["value"].std()
+        if not std:
+            raise QueryError(f"'{column}' has zero variance — no outliers to detect.")
+        lower, upper = mean - threshold * std, mean + threshold * std
+        score = ((col - mean) / std).abs()
+        flagged = (
+            df.with_columns(score.round(2).alias("z_score"))
+            .filter(col.is_not_null() & (score > threshold))
+            .sort("z_score", descending=True)
+        )
+        band = f"mean ± {threshold:g}σ"
+    elif method == "iqr":
+        threshold = float(params.get("threshold") or 1.5)
+        q1, q3 = values["value"].quantile(0.25), values["value"].quantile(0.75)
+        iqr = q3 - q1
+        lower, upper = q1 - threshold * iqr, q3 + threshold * iqr
+        distance = pl.max_horizontal(pl.lit(lower) - col, col - pl.lit(upper))
+        flagged = (
+            df.with_columns(distance.round(2).alias("iqr_distance"))
+            .filter(col.is_not_null() & ((col < lower) | (col > upper)))
+            .sort("iqr_distance", descending=True)
+        )
+        band = f"{threshold:g}×IQR fence"
+    else:
+        raise QueryError(f"Unknown outlier method '{method}'.")
+
+    summary = pl.DataFrame(
+        {
+            "method": [method],
+            "lower_bound": [round(lower, 2)],
+            "upper_bound": [round(upper, 2)],
+            "outliers": [flagged.height],
+            "pct": [round(100.0 * flagged.height / n, 2)],
+        }
+    )
+    return AnalyticsResult(
+        title=f"Outliers in {column} ({method.upper()})",
+        verdict="warn" if flagged.height else "ok",
+        verdict_text=(
+            f"{flagged.height:,} value(s) outside {band}"
+            if flagged.height
+            else f"No values outside {band}"
+        ),
+        stats=[
+            _stat("Values tested", n),
+            _stat("Bounds", f"{lower:,.2f} … {upper:,.2f}"),
+            _stat("Outliers", flagged.height),
+        ],
+        summary=summary,
+        detail=flagged if flagged.height else None,
+    )
+
+
+# ------------------------------------------------------------- threshold
+def threshold_check(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    column = params.get("column")
+    raw = params.get("threshold")
+    if raw is None or raw == "":
+        raise QueryError("A threshold value is required.")
+    threshold = float(raw)
+    tolerance_pct = float(params.get("tolerance_pct") or 5.0)
+    if tolerance_pct <= 0:
+        raise QueryError("Tolerance must be greater than 0%.")
+
+    values = _numeric_series(df, column)
+    n = values.height
+    lower = threshold * (1 - tolerance_pct / 100.0)
+    upper = threshold * (1 + tolerance_pct / 100.0)
+    col = pl.col(column).cast(pl.Float64, strict=False)
+
+    just_below = df.filter(
+        col.is_not_null() & (col >= lower) & (col < threshold)
+    ).sort(column, descending=True)
+    below_count = just_below.height
+    above_count = values.filter(
+        (pl.col("value") >= threshold) & (pl.col("value") < upper)
+    ).height
+
+    summary = pl.DataFrame(
+        {
+            "band": [
+                f"just below ({lower:,.0f}–{threshold:,.0f})",
+                f"just above ({threshold:,.0f}–{upper:,.0f})",
+            ],
+            "count": [below_count, above_count],
+        }
+    )
+    clustered = below_count >= 3 and below_count >= 2 * max(above_count, 1)
+    return AnalyticsResult(
+        title=f"Just-below-threshold clustering on {column} (limit {threshold:,.0f})",
+        verdict="warn" if clustered else "info",
+        verdict_text=(
+            f"{below_count:,} value(s) cluster just below {threshold:,.0f} "
+            f"vs {above_count:,} just above — possible limit avoidance"
+            if clustered
+            else f"{below_count:,} just below vs {above_count:,} just above — no unusual clustering"
+        ),
+        stats=[
+            _stat("Values tested", n),
+            _stat(f"Just below (−{tolerance_pct:g}%)", below_count),
+            _stat(f"Just above (+{tolerance_pct:g}%)", above_count),
+        ],
+        summary=summary,
+        detail=just_below if below_count else None,
+        viz={"type": "bar", "x": "band", "y": ["count"]},
+    )
+
+
+# ------------------------------------------------------- weekend activity
+def weekend_activity(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    date_column = params.get("date_column")
+    tagged = df.with_columns(_date_expr(df, date_column).alias("_d")).drop_nulls(
+        subset=["_d"]
+    )
+    if tagged.is_empty():
+        raise QueryError(f"No parseable dates in '{date_column}'.")
+    tagged = tagged.with_columns(
+        pl.col("_d").dt.weekday().alias("_wd"),
+        pl.col("_d").dt.to_string("%A").alias("weekday"),
+    )
+    n = tagged.height
+    weekend = tagged.filter(pl.col("_wd") >= 6)
+
+    by_day = (
+        tagged.group_by(["_wd", "weekday"])
+        .agg(pl.len().alias("count"))
+        .sort("_wd")
+        .select("weekday", "count")
+    )
+    detail = weekend.drop(["_d", "_wd"]) if weekend.height else None
+    return AnalyticsResult(
+        title=f"Weekend postings in {date_column}",
+        verdict="warn" if weekend.height else "ok",
+        verdict_text=(
+            f"{weekend.height:,} of {n:,} dated rows fall on a weekend"
+            if weekend.height
+            else "No weekend-dated rows"
+        ),
+        stats=[
+            _stat("Dated rows", n),
+            _stat("Weekend rows", weekend.height),
+            _stat("Weekend share", f"{100.0 * weekend.height / n:.2f}%"),
+        ],
+        summary=by_day,
+        detail=detail,
+        viz={"type": "bar", "x": "weekday", "y": ["count"]},
+    )
+
+
+# ------------------------------------------------------------- date lag
+def date_lag(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    from_col = params.get("from_date")
+    to_col = params.get("to_date")
+    raw_max = params.get("max_days")
+    max_days = int(raw_max) if raw_max not in (None, "") else None
+
+    tagged = df.with_columns(
+        (_date_expr(df, to_col) - _date_expr(df, from_col))
+        .dt.total_days()
+        .alias("lag_days")
+    ).drop_nulls(subset=["lag_days"])
+    n = tagged.height
+    if n == 0:
+        raise QueryError(f"No rows with both '{from_col}' and '{to_col}' parseable.")
+
+    backdated = tagged.filter(pl.col("lag_days") < 0)
+    flag_expr = pl.col("lag_days") < 0
+    excessive_n = 0
+    if max_days is not None:
+        excessive_n = tagged.filter(pl.col("lag_days") > max_days).height
+        flag_expr = flag_expr | (pl.col("lag_days") > max_days)
+    flagged = tagged.filter(flag_expr).sort("lag_days")
+    avg_lag = tagged["lag_days"].mean()
+
+    summary = pl.DataFrame(
+        {
+            "metric": [
+                "backdated (<0 days)",
+                f"over {max_days} days" if max_days is not None else "excessive (no limit set)",
+                "average lag (days)",
+            ],
+            "value": [float(backdated.height), float(excessive_n), round(avg_lag, 1)],
+        }
+    )
+    if backdated.height:
+        verdict, text = "fail", f"{backdated.height:,} row(s) have {to_col} before {from_col}"
+    elif excessive_n:
+        verdict, text = "warn", f"{excessive_n:,} row(s) exceed {max_days} days"
+    else:
+        verdict, text = "ok", "No backdated or excessively lagged rows"
+    return AnalyticsResult(
+        title=f"Date lag: {from_col} → {to_col}",
+        verdict=verdict,
+        verdict_text=text,
+        stats=[
+            _stat("Rows compared", n),
+            _stat("Backdated", backdated.height),
+            _stat("Average lag (days)", round(avg_lag, 1)),
+        ],
+        summary=summary,
+        detail=flagged if flagged.height else None,
+    )
+
+
+# ----------------------------------------------------------- stratify
+def stratify(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    column = params.get("column")
+    method = (params.get("method") or "equal").lower()
+    n_bands = int(params.get("bands") or 10)
+    if n_bands < 2:
+        raise QueryError("Need at least 2 bands.")
+
+    values = _numeric_series(df, column)
+    lo, hi = values["value"].min(), values["value"].max()
+    if lo == hi:
+        raise QueryError(f"'{column}' has a single value — nothing to stratify.")
+
+    if method == "quantile":
+        edges = [values["value"].quantile(i / n_bands) for i in range(1, n_bands)]
+    elif method == "equal":
+        width = (hi - lo) / n_bands
+        edges = [lo + width * i for i in range(1, n_bands)]
+    else:
+        raise QueryError(f"Unknown stratification method '{method}'.")
+    edges = sorted({round(e, 6) for e in edges})
+
+    binned = (
+        df.select(pl.col(column).cast(pl.Float64, strict=False).alias("_v"))
+        .drop_nulls()
+        .with_columns(pl.col("_v").cut(breaks=edges, include_breaks=True).alias("_b"))
+        .unnest("_b")
+    )
+    total = binned.height
+    summary = (
+        binned.group_by("category")
+        .agg(
+            pl.len().alias("count"),
+            pl.col("_v").sum().round(2).alias("sum"),
+            pl.col("breakpoint").first().alias("_edge"),
+        )
+        .sort("_edge")
+        .with_columns((100.0 * pl.col("count") / total).round(2).alias("pct"))
+        .rename({"category": "band"})
+        .select("band", "count", "sum", "pct")
+    )
+    return AnalyticsResult(
+        title=f"Stratification of {column} ({method}, {n_bands} bands)",
+        verdict="info",
+        verdict_text=f"{total:,} values across {summary.height} band(s)",
+        stats=[
+            _stat("Values tested", total),
+            _stat("Range", f"{lo:,.2f} … {hi:,.2f}"),
+            _stat("Bands", summary.height),
+        ],
+        summary=summary,
+        viz={"type": "bar", "x": "band", "y": ["count"]},
+    )
+
+
+# --------------------------------------------------------- completeness
+def completeness(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    columns = [c for c in (params.get("columns") or []) if c]
+    if not columns:
+        raise QueryError("Pick at least one column to check.")
+    for column in columns:
+        if column not in df.columns:
+            raise QueryError(f"Unknown column '{column}'.")
+
+    n = df.height
+    rows, cond = [], None
+    for column in columns:
+        missing_expr = pl.col(column).is_null()
+        if df.schema[column] == pl.String:
+            missing_expr = missing_expr | (
+                pl.col(column).cast(pl.String).str.strip_chars() == ""
+            )
+        missing = int(df.select(missing_expr.sum()).item() or 0)
+        rows.append(
+            {"column": column, "missing": missing, "pct": round(100.0 * missing / n, 2)}
+        )
+        cond = missing_expr if cond is None else cond | missing_expr
+
+    summary = pl.DataFrame(rows).sort("missing", descending=True)
+    total_missing = sum(r["missing"] for r in rows)
+    detail = df.filter(cond) if total_missing else None
+    return AnalyticsResult(
+        title=f"Completeness of {', '.join(columns)}",
+        verdict="warn" if total_missing else "ok",
+        verdict_text=(
+            f"{detail.height:,} row(s) have a blank in a checked column"
+            if total_missing
+            else "No blank values in the checked columns"
+        ),
+        stats=[
+            _stat("Rows", n),
+            _stat("Columns checked", len(columns)),
+            _stat("Rows with gaps", detail.height if detail is not None else 0),
+        ],
+        summary=summary,
+        detail=detail,
+        viz={"type": "bar", "x": "column", "y": ["missing"]},
+    )
+
+
+# ----------------------------------------------------------- sign scan
+def sign_scan(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    column = params.get("column")
+    values = _numeric_series(df, column)
+    n = values.height
+    v = pl.col("value")
+    neg = values.filter(v < 0).height
+    zero = values.filter(v == 0).height
+    pos = n - neg - zero
+
+    summary = pl.DataFrame(
+        {
+            "sign": ["negative", "zero", "positive"],
+            "count": [neg, zero, pos],
+            "pct": [
+                round(100.0 * neg / n, 2),
+                round(100.0 * zero / n, 2),
+                round(100.0 * pos / n, 2),
+            ],
+        }
+    )
+    col = pl.col(column).cast(pl.Float64, strict=False)
+    detail = df.filter(col.is_not_null() & (col <= 0))
+    return AnalyticsResult(
+        title=f"Negative / zero values in {column}",
+        verdict="warn" if neg else "ok",
+        verdict_text=(
+            f"{neg:,} negative and {zero:,} zero value(s)"
+            if neg
+            else f"No negatives ({zero:,} zero value(s))"
+        ),
+        stats=[
+            _stat("Values tested", n),
+            _stat("Negative", neg),
+            _stat("Zero", zero),
+        ],
+        summary=summary,
+        detail=detail if detail.height else None,
+        viz={"type": "bar", "x": "sign", "y": ["count"]},
+    )
+
+
+# ------------------------------------------------------- last two digits
+def last_two_digits(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    column = params.get("column")
+    values = (
+        _numeric_series(df, column)
+        .select(pl.col("value").abs())
+        .filter(pl.col("value") > 0)
+    )
+    n = values.height
+    if n < 100:
+        raise QueryError(
+            f"Only {n} usable values in '{column}' — this test needs at least 100."
+        )
+
+    observed = (
+        values.select((pl.col("value").round(0).cast(pl.Int64) % 100).alias("last_two"))
+        .group_by("last_two")
+        .agg(pl.len().alias("count"))
+    )
+    table = (
+        pl.DataFrame({"last_two": list(range(100))})
+        .join(observed, on="last_two", how="left")
+        .with_columns(pl.col("count").fill_null(0))
+        .with_columns(
+            (100.0 * pl.col("count") / n).round(2).alias("observed_pct"),
+            pl.lit(1.0).alias("expected_pct"),
+        )
+        .sort("last_two")
+    )
+
+    expected = n / 100.0
+    chi_square = sum((c - expected) ** 2 / expected for c in table["count"].to_list())
+    # 99 degrees of freedom: χ² critical ≈ 123.2 (α=0.05), 134.6 (α=0.01).
+    if chi_square > 134.6:
+        verdict, text = "fail", "Strong non-uniformity in the last two digits"
+    elif chi_square > 123.2:
+        verdict, text = "warn", "Last-two-digit distribution deviates from uniform"
+    else:
+        verdict, text = "ok", "Last two digits look uniform"
+
+    top = table.sort("count", descending=True).row(0, named=True)
+    return AnalyticsResult(
+        title=f"Last-two-digit uniformity of {column}",
+        verdict=verdict,
+        verdict_text=text,
+        stats=[
+            _stat("Values tested", n),
+            _stat("Chi-square", round(chi_square, 1)),
+            _stat("Most common ending", f"{top['last_two']:02d} ({top['observed_pct']}%)"),
+        ],
+        summary=table,
+        viz={"type": "bar", "x": "last_two", "y": ["observed_pct", "expected_pct"]},
+    )
+
+
+# ---------------------------------------------------------- rare values
+def rare_values(df: pl.DataFrame, params: dict) -> AnalyticsResult:
+    column = params.get("column")
+    if column not in df.columns:
+        raise QueryError(f"Unknown column '{column}'.")
+    max_count = int(params.get("max_count") or 1)
+    if max_count < 1:
+        raise QueryError("Max occurrences must be at least 1.")
+
+    counts = df.group_by(column).agg(pl.len().alias("count"))
+    distinct = counts.height
+    rare = counts.filter(pl.col("count") <= max_count).sort(["count", column])
+    affected = int(rare["count"].sum() or 0)
+    detail = (
+        df.join(rare.select(column), on=column, how="semi").sort(column)
+        if rare.height
+        else None
+    )
+    return AnalyticsResult(
+        title=f"Rare values in {column} (≤{max_count} occurrence(s))",
+        verdict="warn" if rare.height else "ok",
+        verdict_text=(
+            f"{rare.height:,} value(s) occur ≤{max_count} time(s), covering {affected:,} row(s)"
+            if rare.height
+            else f"No values occur ≤{max_count} time(s)"
+        ),
+        stats=[
+            _stat("Distinct values", distinct),
+            _stat("Rare values", rare.height),
+            _stat("Rows affected", affected),
+        ],
+        summary=rare,
+        detail=detail,
+    )
+
+
 # ---------------------------------------------------------------- registry
 ANALYTICS: dict[str, dict] = {
     "benford": {
@@ -582,6 +1030,151 @@ ANALYTICS: dict[str, dict] = {
             {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
         ],
         "func": round_numbers,
+    },
+    "outliers": {
+        "label": "Outlier Detection",
+        "icon": "pi pi-chart-scatter",
+        "description": (
+            "Flags numeric values far from the centre of the distribution using "
+            "a Z-score or Tukey IQR fence — anomalously large or small amounts."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
+            {
+                "name": "method",
+                "kind": "select",
+                "label": "Method",
+                "options": [
+                    {"label": "Z-score (mean ± kσ)", "value": "zscore"},
+                    {"label": "IQR (Tukey fence)", "value": "iqr"},
+                ],
+                "default": "zscore",
+            },
+            {
+                "name": "threshold",
+                "kind": "number",
+                "label": "Threshold (σ for Z-score, ×IQR for IQR)",
+                "default": 3,
+                "optional": True,
+            },
+        ],
+        "func": outliers,
+    },
+    "threshold_check": {
+        "label": "Threshold Clustering",
+        "icon": "pi pi-arrows-h",
+        "description": (
+            "Counts values sitting just below an approval/authorization limit "
+            "versus just above it. Clustering underneath suggests split "
+            "transactions or limit avoidance."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
+            {"name": "threshold", "kind": "number", "label": "Limit / threshold"},
+            {"name": "tolerance_pct", "kind": "number", "label": "Window (± %)", "default": 5},
+        ],
+        "func": threshold_check,
+    },
+    "weekend_activity": {
+        "label": "Weekend Postings",
+        "icon": "pi pi-calendar-times",
+        "description": (
+            "Breaks activity down by weekday and flags entries dated on a "
+            "Saturday or Sunday — unusual timing worth a second look."
+        ),
+        "params": [
+            {"name": "date_column", "kind": "column", "label": "Date column", "column_kind": "date"},
+        ],
+        "func": weekend_activity,
+    },
+    "date_lag": {
+        "label": "Date Lag / Backdating",
+        "icon": "pi pi-history",
+        "description": (
+            "Measures the gap between two date columns. Flags negative gaps "
+            "(the later date precedes the earlier one — backdating) and, "
+            "optionally, gaps beyond a maximum number of days."
+        ),
+        "params": [
+            {"name": "from_date", "kind": "column", "label": "From date", "column_kind": "date"},
+            {"name": "to_date", "kind": "column", "label": "To date", "column_kind": "date"},
+            {"name": "max_days", "kind": "number", "label": "Max allowed days", "optional": True},
+        ],
+        "func": date_lag,
+    },
+    "stratify": {
+        "label": "Stratification",
+        "icon": "pi pi-align-left",
+        "description": (
+            "Buckets a numeric column into bands (equal-width or by quantile) "
+            "and shows the count, sum, and share of each band — the classic "
+            "audit stratification view."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
+            {
+                "name": "method",
+                "kind": "select",
+                "label": "Banding",
+                "options": [
+                    {"label": "Equal width", "value": "equal"},
+                    {"label": "Quantile", "value": "quantile"},
+                ],
+                "default": "equal",
+            },
+            {"name": "bands", "kind": "number", "label": "Number of bands", "default": 10},
+        ],
+        "func": stratify,
+    },
+    "completeness": {
+        "label": "Completeness",
+        "icon": "pi pi-check-square",
+        "description": (
+            "Counts blank and null values in the chosen mandatory columns and "
+            "lists the offending rows — missing keys, dates, or amounts."
+        ),
+        "params": [
+            {"name": "columns", "kind": "columns", "label": "Required columns"},
+        ],
+        "func": completeness,
+    },
+    "sign_scan": {
+        "label": "Negative / Zero Scan",
+        "icon": "pi pi-minus-circle",
+        "description": (
+            "Splits an amount column into negative, zero, and positive values. "
+            "Unexpected negatives can signal reversals, credits, or errors."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
+        ],
+        "func": sign_scan,
+    },
+    "last_two_digits": {
+        "label": "Last-Two-Digit Test",
+        "icon": "pi pi-percentage",
+        "description": (
+            "A Benford-family test: the last two digits of genuine amounts are "
+            "close to uniform. Spikes point to rounding, estimates, or "
+            "fabricated figures the first-digit test can miss."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Amount column", "column_kind": "numeric"},
+        ],
+        "func": last_two_digits,
+    },
+    "rare_values": {
+        "label": "Rare Values",
+        "icon": "pi pi-search-minus",
+        "description": (
+            "Finds category values that occur only a handful of times — "
+            "one-off vendors, typos, or misclassified codes."
+        ),
+        "params": [
+            {"name": "column", "kind": "column", "label": "Category column"},
+            {"name": "max_count", "kind": "number", "label": "Max occurrences", "default": 1},
+        ],
+        "func": rare_values,
     },
 }
 

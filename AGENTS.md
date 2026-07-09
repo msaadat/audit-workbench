@@ -5,8 +5,10 @@
 **Purpose:** A **local-first data analysis workbench for auditors**. The unit of
 work is a *workspace* (one per engagement): the auditor loads CSV/Excel files,
 optionally joins them, then profiles, explores (filter/group/aggregate), and
-runs canned audit analytics (Benford, duplicates, sequence gaps, sampling,
-period comparison, round numbers). All computation happens on the user's
+runs 15 canned audit analytics (Benford + last-two-digit, duplicates, sequence
+gaps, sampling, period comparison, round numbers, outliers, threshold
+clustering, weekend postings, date-lag/backdating, stratification,
+completeness, negative/zero scan, rare values). All computation happens on the user's
 machine. This project is the ground-up successor to the "TT Rebate Checker"
 validation platform (separate repo, same author); the EDA profiler was ported
 from there.
@@ -42,10 +44,13 @@ backend/app/
 ├─ explore.py                 ── declarative query engine: filters → group/agg →
 │                                sort → paginate; also build_crosstab() for the
 │                                split_by cross-tab (Excel pivot); frame_payload()
-├─ analytics.py               ── ANALYTICS registry: 6 audit tests, each
+├─ analytics.py               ── ANALYTICS registry: 15 audit tests, each
 │                                (df, params) -> AnalyticsResult; param metadata
 │                                drives the SPA's dynamic forms; tests suggest a
-│                                default viz (e.g. Benford → bar of obs vs exp)
+│                                default viz (e.g. Benford → bar of obs vs exp).
+│                                Add a test by registering a func + param meta
+│                                (kinds: column/columns/number/select) — no
+│                                frontend change needed
 ├─ dashboard.py               ── tile computation: re-runs each tile's stored
 │                                spec (query / analytics / python) against
 │                                current frames; broken tiles degrade to cards
@@ -120,7 +125,7 @@ frontend/src/
 uv venv .venv
 uv pip install -r backend/requirements-dev.txt
 
-# Tests (69 tests: workspaces, explore incl. cross-tab, analytics, dashboard,
+# Tests (97 tests: workspaces, explore incl. cross-tab, analytics, dashboard,
 #        assistant, API)
 cd backend && uv run --no-project pytest
 
@@ -138,7 +143,7 @@ cd frontend && npm run build
 ## 4. State & Next Steps
 
 - V1 complete: workspaces, multi-file load, joins, profiling, explore,
-  6 analytics tests, Excel exports, full backend test suite.
+  15 analytics tests, Excel exports, full backend test suite.
 - V2 complete: Chart.js charts in Explore, pinned dashboard (spec-storing
   tiles, live recompute, per-tile error degradation), Dashboard tab is the
   landing tab when tiles exist.
