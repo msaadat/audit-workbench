@@ -84,9 +84,9 @@ the Python standard library, so there is no extra dependency to bundle.
 Backend (API on :8000):
 
 ```bash
-python -m venv .venv
-.venv\Scripts\pip install -r backend\requirements-dev.txt
-.venv\Scripts\python -m uvicorn app.main:app --app-dir backend --reload
+uv venv .venv
+uv pip install -r backend/requirements-dev.txt
+uv run --no-project uvicorn app.main:app --app-dir backend --reload
 ```
 
 Frontend (Vite dev server on :5173, proxies /api to :8000):
@@ -101,7 +101,7 @@ Tests:
 
 ```bash
 cd backend
-..\.venv\Scripts\python -m pytest
+uv run --no-project pytest
 ```
 
 ## Production build

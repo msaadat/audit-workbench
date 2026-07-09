@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "backend",
-      "runtimeExecutable": "C:\\Users\\913300\\Desktop\\audit-workbench\\.venv\\Scripts\\python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8010"],
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "--no-project", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8010"],
       "port": 8010,
       "autoPort": false
     }

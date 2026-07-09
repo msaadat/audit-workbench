@@ -117,18 +117,18 @@ frontend/src/
 
 ```bash
 # Backend deps (Python 3.12)
-python -m venv .venv
-.venv\Scripts\pip install -r backend\requirements-dev.txt
+uv venv .venv
+uv pip install -r backend/requirements-dev.txt
 
 # Tests (69 tests: workspaces, explore incl. cross-tab, analytics, dashboard,
 #        assistant, API)
-cd backend && ..\.venv\Scripts\python -m pytest
+cd backend && uv run --no-project pytest
 
 # Enable the assistant (optional; unset == graceful "not configured" banner)
 # Copy .env.example to .env and set GROQ_API_KEY (optional: model/base URL)
 
 # Dev servers
-.venv\Scripts\python -m uvicorn app.main:app --app-dir backend --reload   # API :8000
+uv run --no-project uvicorn app.main:app --app-dir backend --reload       # API :8000
 cd frontend && npm run dev                                                # SPA :5173 (proxies /api)
 
 # Production build (then run.bat serves everything on :8000)
