@@ -127,6 +127,7 @@ export interface AnalyticsTest {
   id: string
   label: string
   icon: string
+  group: string
   description: string
   params: AnalyticsParamMeta[]
 }

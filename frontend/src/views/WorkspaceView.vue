@@ -64,7 +64,10 @@ onMounted(reload)
           <QueryTab :workspace="workspace" />
         </TabPanel>
         <TabPanel value="analysis">
-          <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
+          <!-- KeepAlive so an in-progress AI chat survives visiting other tabs. -->
+          <KeepAlive>
+            <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
+          </KeepAlive>
         </TabPanel>
       </TabPanels>
     </Tabs>

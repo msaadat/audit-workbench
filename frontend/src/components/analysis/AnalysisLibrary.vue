@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -17,15 +18,21 @@ import type {
   SavedAnalysis,
   WorkspaceSummary,
 } from '../../types'
+import ChartView from '../ChartView.vue'
 import FrameTable from '../FrameTable.vue'
 import PinDialog from '../PinDialog.vue'
 
 // A library analysis: pick a predefined audit test, configure it, run it, then
 // Save (to the rail) / Pin (to the dashboard) / Export. When `analysis` is set
 // we're editing a saved one — preload its table, test and params.
+//
+// The test catalog is a *picker state*, not a permanent fixture: it shows while
+// no test is chosen (or after "Change test") and collapses to a compact strip
+// once one is — so the config form and results stay above the fold.
 const props = defineProps<{ workspace: WorkspaceSummary; analysis: SavedAnalysis | null }>()
 const emit = defineEmits<{ saved: [SavedAnalysis]; deleted: []; changed: [] }>()
 const toast = useToast()
+const confirm = useConfirm()
 
 const table = ref<string | null>(null)
 const schema = ref<ColumnSchema[]>([])
@@ -39,12 +46,37 @@ const exporting = ref(false)
 const saving = ref(false)
 const showPin = ref(false)
 const pinning = ref(false)
+const pickerOpen = ref(!props.analysis)
+const paramsOpen = ref(true)
 
 const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 
 const verdictSeverity: Record<string, string> = {
   ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
 }
+
+const testGroups = computed(() => {
+  const groups: { name: string; tests: AnalyticsTest[] }[] = []
+  for (const test of tests.value) {
+    const name = test.group || 'Other'
+    let group = groups.find((g) => g.name === name)
+    if (!group) {
+      group = { name, tests: [] }
+      groups.push(group)
+    }
+    group.tests.push(test)
+  }
+  return groups
+})
+
+// Only chart when the saved viz actually matches the summary frame — otherwise
+// ChartView's table fallback would duplicate the summary table below it.
+const chartable = computed(() => {
+  const r = result.value
+  if (!r?.viz || r.viz.type === 'table' || !r.summary) return false
+  const columns = r.summary.columns
+  return !!r.viz.x && columns.includes(r.viz.x) && (r.viz.y ?? []).some((c) => columns.includes(c))
+})
 
 async function loadTests() {
   tests.value = await api.get<AnalyticsTest[]>('/api/analytics')
@@ -73,6 +105,8 @@ function columnOptions(meta: AnalyticsParamMeta): string[] {
 function pick(test: AnalyticsTest, presetParams?: Record<string, unknown>) {
   selected.value = test
   result.value = null
+  pickerOpen.value = false
+  paramsOpen.value = true
   const defaults: Record<string, unknown> = {}
   for (const param of test.params) {
     if (presetParams && param.name in presetParams) defaults[param.name] = presetParams[param.name]
@@ -154,14 +188,23 @@ async function save() {
   }
 }
 
-async function removeAnalysis() {
+function confirmDelete() {
   if (!props.analysis) return
-  try {
-    await api.del(`/api/workspaces/${props.workspace.id}/analyses/${props.analysis.id}`)
-    emit('deleted')
-  } catch (error) {
-    fail('Delete failed', error)
-  }
+  confirm.require({
+    header: 'Delete analysis',
+    message: `Delete "${props.analysis.title}"? Pinned dashboard copies are unaffected.`,
+    icon: 'pi pi-exclamation-triangle',
+    acceptProps: { label: 'Delete', severity: 'danger' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      try {
+        await api.del(`/api/workspaces/${props.workspace.id}/analyses/${props.analysis!.id}`)
+        emit('deleted')
+      } catch (error) {
+        fail('Delete failed', error)
+      }
+    },
+  })
 }
 
 async function pinTile({ title: pinTitle, note }: { title: string; note: string }) {
@@ -211,6 +254,8 @@ async function preloadFromAnalysis() {
   const test = tests.value.find((t) => t.id === spec.test)
   if (test) {
     pick(test, spec.params ?? {})
+    // Results-first for a saved analysis: keep the config folded away.
+    paramsOpen.value = false
     await run()
   }
 }
@@ -225,6 +270,8 @@ watch(
       selected.value = null
       result.value = null
       title.value = ''
+      pickerOpen.value = true
+      paramsOpen.value = true
       if (!table.value && tableOptions.value.length) {
         table.value = tableOptions.value[0]
         loadSchema()
@@ -245,28 +292,53 @@ watch(table, () => {
       <Select v-model="table" :options="tableOptions" placeholder="Table" style="min-width: 12rem" />
     </div>
     <span class="grow" />
-    <Button label="Save" icon="pi pi-save" size="small" :loading="saving" :disabled="!result" @click="save" />
-    <Button label="Pin" icon="pi pi-thumbtack" severity="secondary" size="small" :disabled="!result" @click="showPin = true" />
-    <Button label="Export" icon="pi pi-file-excel" severity="secondary" size="small" :loading="exporting" :disabled="!result" @click="exportExcel" />
-    <Button v-if="analysis" icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="removeAnalysis" />
+    <template v-if="result">
+      <Button label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save" />
+      <Button label="Pin" icon="pi pi-thumbtack" severity="secondary" size="small" @click="showPin = true" />
+      <Button label="Export" icon="pi pi-file-excel" severity="secondary" size="small" :loading="exporting" @click="exportExcel" />
+    </template>
+    <Button v-if="analysis" icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="confirmDelete" />
   </div>
 
-  <div class="test-grid">
-    <button
-      v-for="test in tests"
-      :key="test.id"
-      class="test-card"
-      :class="{ active: selected?.id === test.id }"
-      @click="pick(test)"
-    >
-      <i :class="test.icon" />
-      <strong>{{ test.label }}</strong>
-      <span>{{ test.description }}</span>
+  <!-- Compact strip once a test is chosen; the full catalog only while picking. -->
+  <div v-if="selected && !pickerOpen" class="test-strip">
+    <i :class="selected.icon" />
+    <div class="test-strip-text">
+      <strong>{{ selected.label }}</strong>
+      <span>{{ selected.description }}</span>
+    </div>
+    <Button label="Change test" icon="pi pi-th-large" severity="secondary" size="small" outlined @click="pickerOpen = true" />
+  </div>
+
+  <div v-if="pickerOpen" class="picker">
+    <div v-if="selected" class="picker-head">
+      <span class="muted">Pick a different test, or keep the current one.</span>
+      <Button label="Keep current" icon="pi pi-times" text size="small" @click="pickerOpen = false" />
+    </div>
+    <template v-for="group in testGroups" :key="group.name">
+      <p class="group-title">{{ group.name }}</p>
+      <div class="test-grid">
+        <button
+          v-for="test in group.tests"
+          :key="test.id"
+          class="test-card"
+          :class="{ active: selected?.id === test.id }"
+          @click="pick(test)"
+        >
+          <i :class="test.icon" />
+          <strong>{{ test.label }}</strong>
+          <span>{{ test.description }}</span>
+        </button>
+      </div>
+    </template>
+  </div>
+
+  <div v-if="selected && !pickerOpen" class="run-panel">
+    <button class="section-toggle" @click="paramsOpen = !paramsOpen">
+      <i :class="paramsOpen ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" />
+      Parameters
     </button>
-  </div>
-
-  <div v-if="selected" class="run-panel">
-    <div class="param-form">
+    <div v-show="paramsOpen" class="param-form">
       <div v-for="param in selected.params" :key="param.name" class="field">
         <label>{{ param.label }}</label>
         <Select
@@ -303,6 +375,9 @@ watch(table, () => {
         />
       </div>
       <Button label="Run test" icon="pi pi-play" :disabled="!ready" :loading="running" @click="run" />
+      <span v-if="!result && !running" class="muted run-hint">
+        Run the test to enable Save, Pin and Export.
+      </span>
     </div>
   </div>
 
@@ -318,6 +393,8 @@ watch(table, () => {
         <div class="value">{{ stat.value }}</div>
       </div>
     </div>
+
+    <ChartView v-if="chartable" :frame="result.summary!" :viz="result.viz!" height="280px" />
 
     <template v-if="result.summary">
       <h4>Summary <span class="muted" v-if="result.summary_rows > result.summary.rows.length">(first {{ result.summary.rows.length }} of {{ result.summary_rows.toLocaleString() }})</span></h4>
@@ -350,15 +427,64 @@ watch(table, () => {
   gap: 0.6rem;
   margin-bottom: 1rem;
   flex-wrap: wrap;
+  position: sticky;
+  top: -2px;
+  z-index: 5;
+  background: var(--p-surface-0);
+  padding: 0.4rem 0;
 }
 .detail-head .grow { flex: 1; }
 .title-input { min-width: 16rem; font-weight: 600; }
+
+.test-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--p-surface-0);
+  border: 1px solid var(--p-surface-200);
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 1rem;
+}
+.test-strip > i { color: var(--p-primary-500); font-size: 1.2rem; }
+.test-strip-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.test-strip-text span {
+  font-size: 0.8rem;
+  color: var(--p-surface-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker { margin-bottom: 1rem; }
+.picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+.group-title {
+  margin: 0.9rem 0 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-surface-500);
+}
+.group-title:first-of-type { margin-top: 0; }
 
 .test-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 0.75rem;
-  margin-bottom: 1rem;
 }
 .test-card {
   display: flex;
@@ -383,10 +509,31 @@ watch(table, () => {
   background: var(--p-surface-0);
   border: 1px solid var(--p-surface-200);
   border-radius: 8px;
-  padding: 1rem;
+  padding: 0.75rem 1rem;
   margin-bottom: 1rem;
 }
-.param-form { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: flex-end; }
+.section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--p-surface-600);
+  cursor: pointer;
+}
+.section-toggle i { font-size: 0.7rem; }
+.param-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  align-items: flex-end;
+  margin-top: 0.75rem;
+}
+.run-hint { font-size: 0.8rem; align-self: center; }
 
 .result-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .result-head h3 { margin: 0; }

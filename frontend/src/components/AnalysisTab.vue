@@ -146,20 +146,24 @@ function confirmDelete(a: SavedAnalysis) {
         @changed="onChanged"
         @deleted="onDeleted"
       />
-      <AnalysisChat
-        v-else-if="creating === 'ai'"
-        :workspace="workspace"
-        @saved="onSaved"
-      />
+      <!-- KeepAlive preserves the conversation when the user selects a saved
+           analysis (including the one just saved from the chat) and comes back. -->
+      <KeepAlive>
+        <AnalysisChat
+          v-if="creating === 'ai'"
+          :workspace="workspace"
+          @saved="onSaved"
+        />
+      </KeepAlive>
       <AnalysisPython
-        v-else-if="selected?.kind === 'python'"
+        v-if="creating !== 'ai' && selected?.kind === 'python'"
         :key="selected.id"
         :workspace="workspace"
         :analysis="selected"
         @changed="onChanged"
         @deleted="onDeleted"
       />
-      <div v-else class="empty">
+      <div v-if="!creating && !selected" class="empty">
         <i class="pi pi-shield" />
         <p>Pick a saved analysis, or start a new one from the <strong>Library</strong> or <strong>Ask AI</strong>.</p>
       </div>
@@ -171,7 +175,12 @@ function confirmDelete(a: SavedAnalysis) {
 .analysis {
   display: flex;
   gap: 1rem;
-  align-items: flex-start;
+  align-items: stretch;
+  /* Fill the viewport below the app banner / workspace header / tab strip so
+     the rail and the detail pane scroll independently instead of the whole
+     page scrolling as one. */
+  height: calc(100vh - 215px);
+  min-height: 24rem;
 }
 
 .rail {
@@ -179,7 +188,10 @@ function confirmDelete(a: SavedAnalysis) {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
 }
+.rail > * { flex-shrink: 0; }
 
 .rail-actions {
   display: flex;
@@ -243,6 +255,9 @@ function confirmDelete(a: SavedAnalysis) {
 .detail {
   flex: 1;
   min-width: 0;
+  overflow-y: auto;
+  /* Room for the focus ring of the sticky header inputs. */
+  padding: 2px;
 }
 
 .empty {

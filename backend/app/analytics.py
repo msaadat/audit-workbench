@@ -65,7 +65,13 @@ class AnalyticsResult:
 
 def _stat(label: str, value) -> dict:
     if isinstance(value, float):
-        value = f"{value:,.2f}".rstrip("0").rstrip(".")
+        # Two decimals reads well for ordinary magnitudes, but would squash
+        # small metrics like a Benford MAD of 0.004 to "0" — fall back to
+        # significant digits for those.
+        if value != 0 and abs(value) < 0.005:
+            value = f"{value:.3g}"
+        else:
+            value = f"{value:,.2f}".rstrip("0").rstrip(".")
     elif isinstance(value, int):
         value = f"{value:,}"
     return {"label": label, "value": str(value)}
@@ -175,7 +181,7 @@ def benford(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         verdict_text=text,
         stats=[
             _stat("Values tested", n),
-            _stat("MAD", round(mad, 5)),
+            _stat("MAD", f"{mad:.4f}"),
             _stat("Chi-square", round(chi_square, 1)),
             _stat(
                 "Most over-represented",
@@ -911,6 +917,7 @@ def rare_values(df: pl.DataFrame, params: dict) -> AnalyticsResult:
 # ---------------------------------------------------------------- registry
 ANALYTICS: dict[str, dict] = {
     "benford": {
+        "group": "Digit & number patterns",
         "label": "Benford's Law",
         "icon": "pi pi-chart-bar",
         "description": (
@@ -934,6 +941,7 @@ ANALYTICS: dict[str, dict] = {
         "func": benford,
     },
     "duplicates": {
+        "group": "Duplicates & sequences",
         "label": "Duplicate Detection",
         "icon": "pi pi-clone",
         "description": (
@@ -946,6 +954,7 @@ ANALYTICS: dict[str, dict] = {
         "func": duplicates,
     },
     "gaps": {
+        "group": "Duplicates & sequences",
         "label": "Sequence Gaps",
         "icon": "pi pi-sort-numeric-up",
         "description": (
@@ -958,6 +967,7 @@ ANALYTICS: dict[str, dict] = {
         "func": gaps,
     },
     "sampling": {
+        "group": "Sampling",
         "label": "Sampling",
         "icon": "pi pi-filter",
         "description": (
@@ -988,6 +998,7 @@ ANALYTICS: dict[str, dict] = {
         "func": sampling,
     },
     "period_compare": {
+        "group": "Timing",
         "label": "Period Comparison",
         "icon": "pi pi-calendar",
         "description": (
@@ -1020,6 +1031,7 @@ ANALYTICS: dict[str, dict] = {
         "func": period_compare,
     },
     "round_numbers": {
+        "group": "Digit & number patterns",
         "label": "Round Numbers",
         "icon": "pi pi-circle",
         "description": (
@@ -1032,6 +1044,7 @@ ANALYTICS: dict[str, dict] = {
         "func": round_numbers,
     },
     "outliers": {
+        "group": "Amounts & outliers",
         "label": "Outlier Detection",
         "icon": "pi pi-chart-scatter",
         "description": (
@@ -1061,6 +1074,7 @@ ANALYTICS: dict[str, dict] = {
         "func": outliers,
     },
     "threshold_check": {
+        "group": "Amounts & outliers",
         "label": "Threshold Clustering",
         "icon": "pi pi-arrows-h",
         "description": (
@@ -1076,6 +1090,7 @@ ANALYTICS: dict[str, dict] = {
         "func": threshold_check,
     },
     "weekend_activity": {
+        "group": "Timing",
         "label": "Weekend Postings",
         "icon": "pi pi-calendar-times",
         "description": (
@@ -1088,6 +1103,7 @@ ANALYTICS: dict[str, dict] = {
         "func": weekend_activity,
     },
     "date_lag": {
+        "group": "Timing",
         "label": "Date Lag / Backdating",
         "icon": "pi pi-history",
         "description": (
@@ -1103,6 +1119,7 @@ ANALYTICS: dict[str, dict] = {
         "func": date_lag,
     },
     "stratify": {
+        "group": "Amounts & outliers",
         "label": "Stratification",
         "icon": "pi pi-align-left",
         "description": (
@@ -1127,6 +1144,7 @@ ANALYTICS: dict[str, dict] = {
         "func": stratify,
     },
     "completeness": {
+        "group": "Data quality",
         "label": "Completeness",
         "icon": "pi pi-check-square",
         "description": (
@@ -1139,6 +1157,7 @@ ANALYTICS: dict[str, dict] = {
         "func": completeness,
     },
     "sign_scan": {
+        "group": "Amounts & outliers",
         "label": "Negative / Zero Scan",
         "icon": "pi pi-minus-circle",
         "description": (
@@ -1151,6 +1170,7 @@ ANALYTICS: dict[str, dict] = {
         "func": sign_scan,
     },
     "last_two_digits": {
+        "group": "Digit & number patterns",
         "label": "Last-Two-Digit Test",
         "icon": "pi pi-percentage",
         "description": (
@@ -1164,6 +1184,7 @@ ANALYTICS: dict[str, dict] = {
         "func": last_two_digits,
     },
     "rare_values": {
+        "group": "Data quality",
         "label": "Rare Values",
         "icon": "pi pi-search-minus",
         "description": (

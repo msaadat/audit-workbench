@@ -15,6 +15,7 @@ import type {
   WorkspaceSummary,
 } from '../../types'
 import ChartView from '../ChartView.vue'
+import CodeEditor from '../CodeEditor.vue'
 import PinDialog from '../PinDialog.vue'
 
 interface Turn {
@@ -277,7 +278,7 @@ const toolLabel: Record<string, string> = {
                 @click="rerun(artifact)"
               />
             </div>
-            <Textarea v-model="artifact.code" class="code" spellcheck="false" autoResize />
+            <CodeEditor v-model="artifact.code" />
             <pre v-if="artifact.stdout" class="stdout">{{ artifact.stdout }}</pre>
           </div>
 
@@ -392,11 +393,6 @@ const toolLabel: Record<string, string> = {
   color: var(--p-surface-500);
   margin-bottom: 0.25rem;
 }
-.code {
-  width: 100%;
-  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
-  font-size: 0.82rem;
-}
 .stdout {
   background: var(--p-surface-900);
   color: var(--p-surface-0);
@@ -422,9 +418,9 @@ const toolLabel: Record<string, string> = {
   gap: 0.6rem;
   align-items: flex-end;
   position: sticky;
-  bottom: 0;
-  padding-top: 0.75rem;
-  background: var(--p-surface-50);
+  bottom: -2px;
+  padding: 0.75rem 0 0.4rem;
+  background: var(--p-surface-0);
 }
 .composer :deep(textarea) { flex: 1; resize: none; }
 </style>

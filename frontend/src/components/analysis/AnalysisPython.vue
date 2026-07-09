@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
-import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../../api'
 import type { FramePayload, RunPythonResult, SavedAnalysis, WorkspaceSummary } from '../../types'
 import ChartView from '../ChartView.vue'
+import CodeEditor from '../CodeEditor.vue'
 import PinDialog from '../PinDialog.vue'
 
 // A saved AI-code analysis: editable Polars that runs in the local sandbox.
@@ -16,6 +17,7 @@ import PinDialog from '../PinDialog.vue'
 const props = defineProps<{ workspace: WorkspaceSummary; analysis: SavedAnalysis }>()
 const emit = defineEmits<{ deleted: []; changed: [] }>()
 const toast = useToast()
+const confirm = useConfirm()
 
 const title = ref('')
 const code = ref('')
@@ -77,13 +79,22 @@ async function save() {
   }
 }
 
-async function removeAnalysis() {
-  try {
-    await api.del(`/api/workspaces/${props.workspace.id}/analyses/${props.analysis.id}`)
-    emit('deleted')
-  } catch (error) {
-    fail('Delete failed', error)
-  }
+function confirmDelete() {
+  confirm.require({
+    header: 'Delete analysis',
+    message: `Delete "${props.analysis.title}"? Pinned dashboard copies are unaffected.`,
+    icon: 'pi pi-exclamation-triangle',
+    acceptProps: { label: 'Delete', severity: 'danger' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      try {
+        await api.del(`/api/workspaces/${props.workspace.id}/analyses/${props.analysis.id}`)
+        emit('deleted')
+      } catch (error) {
+        fail('Delete failed', error)
+      }
+    },
+  })
 }
 
 async function pinTile({ title: pinTitle, note }: { title: string; note: string }) {
@@ -120,10 +131,11 @@ function fail(summary: string, error: unknown) {
     <span class="grow" />
     <Button label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save" />
     <Button label="Pin" icon="pi pi-thumbtack" severity="secondary" size="small" @click="showPin = true" />
-    <Button icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="removeAnalysis" />
+    <Button icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete analysis'" @click="confirmDelete" />
   </div>
 
-  <div v-if="analysis.error" class="err">
+  <!-- The saved error is stale once a re-run has produced a frame. -->
+  <div v-if="analysis.error && !frame" class="err">
     <i class="pi pi-exclamation-triangle" /> {{ analysis.error }}
   </div>
 
@@ -132,7 +144,7 @@ function fail(summary: string, error: unknown) {
       <span><i class="pi pi-code" /> Python — editable, runs in the local sandbox</span>
       <Button label="Run" icon="pi pi-play" size="small" text :loading="running" @click="run" />
     </div>
-    <Textarea v-model="code" class="code" spellcheck="false" autoResize />
+    <CodeEditor v-model="code" />
     <pre v-if="stdout" class="stdout">{{ stdout }}</pre>
   </div>
 
@@ -158,6 +170,11 @@ function fail(summary: string, error: unknown) {
   gap: 0.6rem;
   margin-bottom: 1rem;
   flex-wrap: wrap;
+  position: sticky;
+  top: -2px;
+  z-index: 5;
+  background: var(--p-surface-0);
+  padding: 0.4rem 0;
 }
 .detail-head .grow { flex: 1; }
 .title-input { min-width: 16rem; font-weight: 600; }
@@ -179,11 +196,6 @@ function fail(summary: string, error: unknown) {
   font-size: 0.78rem;
   color: var(--p-surface-500);
   margin-bottom: 0.25rem;
-}
-.code {
-  width: 100%;
-  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
-  font-size: 0.82rem;
 }
 .stdout {
   background: var(--p-surface-900);

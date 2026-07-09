@@ -79,6 +79,11 @@ function render() {
           pointRadius: labels.length > 60 ? 0 : 2.5,
         }))
 
+  // The canvas can mount before its container has been laid out (e.g. inside
+  // a result section that appears in the same tick) — Chart.js then locks in
+  // a 0px width. Re-measure on the next frame.
+  requestAnimationFrame(() => chart?.resize())
+
   chart = new Chart(canvas.value, {
     type,
     data: { labels, datasets },
