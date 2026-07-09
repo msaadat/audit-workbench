@@ -183,7 +183,7 @@ export interface SavedAnalysis {
   table: string | null
   note: string
   viz: VizSpec
-  source: 'library' | 'ai'
+  source: 'library' | 'ai' | 'code'
   created: string
   error: string | null
   frame?: FramePayload | null

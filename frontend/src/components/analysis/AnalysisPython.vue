@@ -12,8 +12,9 @@ import ChartView from '../ChartView.vue'
 import CodeEditor from '../CodeEditor.vue'
 import PinDialog from '../PinDialog.vue'
 
-// A saved AI-code analysis: editable Polars that runs in the local sandbox.
-// The frame arrives already computed on the payload; Run re-executes the edits.
+// A saved Python analysis (AI-written or hand-written): editable Polars that
+// runs in the local sandbox. The frame arrives already computed on the
+// payload; Run re-executes the edits.
 const props = defineProps<{ workspace: WorkspaceSummary; analysis: SavedAnalysis }>()
 const emit = defineEmits<{ deleted: []; changed: [] }>()
 const toast = useToast()
@@ -127,7 +128,7 @@ function fail(summary: string, error: unknown) {
   <div class="detail-head">
     <InputText v-model="title" placeholder="Analysis title" class="title-input" />
     <Tag v-if="analysis.table" :value="analysis.table" severity="secondary" />
-    <Tag value="AI code" severity="info" />
+    <Tag :value="analysis.source === 'code' ? 'custom code' : 'AI code'" severity="info" />
     <span class="grow" />
     <Button label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save" />
     <Button label="Pin" icon="pi pi-thumbtack" severity="secondary" size="small" @click="showPin = true" />

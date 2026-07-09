@@ -10,22 +10,29 @@ import type { SavedAnalysis, WorkspaceSummary } from '../types'
 import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisChat from './analysis/AnalysisChat.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
+import AnalysisCode from './analysis/AnalysisCode.vue'
 
 // The Analysis tab: a rail of saved analyses on the left, an editor on the
-// right. Two creation paths — the predefined Library, or Ask AI (assistant
-// loop → editable code). Saving persists to the rail; Pinning (inside each
-// pane) promotes a copy to the dashboard.
+// right. Three creation paths — the predefined Library, Ask AI (assistant
+// loop → editable code), or Code (hand-written Python). Saving persists to
+// the rail; Pinning (inside each pane) promotes a copy to the dashboard.
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
 const confirm = useConfirm()
 
 const analyses = ref<SavedAnalysis[]>([])
 const selectedId = ref<string | null>(null)
-const creating = ref<'library' | 'ai' | null>(null)
+const creating = ref<'library' | 'ai' | 'code' | null>(null)
 const loading = ref(false)
 
 const verdictSeverity: Record<string, string> = {
   ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
+}
+const sourceIcon: Record<string, string> = {
+  library: 'pi pi-book', ai: 'pi pi-sparkles', code: 'pi pi-code',
+}
+const sourceLabel: Record<string, string> = {
+  library: 'library', ai: 'AI code', code: 'custom code',
 }
 
 const selected = computed(() => analyses.value.find((a) => a.id === selectedId.value) ?? null)
@@ -51,6 +58,10 @@ function startLibrary() {
 }
 function startAi() {
   creating.value = 'ai'
+  selectedId.value = null
+}
+function startCode() {
+  creating.value = 'code'
   selectedId.value = null
 }
 function select(a: SavedAnalysis) {
@@ -100,11 +111,12 @@ function confirmDelete(a: SavedAnalysis) {
       <div class="rail-actions">
         <Button label="Library" icon="pi pi-book" size="small" :outlined="creating !== 'library'" @click="startLibrary" />
         <Button label="Ask AI" icon="pi pi-sparkles" size="small" :outlined="creating !== 'ai'" @click="startAi" />
+        <Button label="Code" icon="pi pi-code" size="small" :outlined="creating !== 'code'" @click="startCode" />
       </div>
 
       <p class="rail-title">Saved analyses</p>
       <p v-if="!loading && analyses.length === 0" class="muted small">
-        Nothing saved yet — create one from the library or the AI.
+        Nothing saved yet — create one from the library, the AI, or your own code.
       </p>
 
       <button
@@ -128,8 +140,8 @@ function confirmDelete(a: SavedAnalysis) {
           />
         </div>
         <div class="rail-item-meta">
-          <i :class="a.source === 'ai' ? 'pi pi-sparkles' : 'pi pi-book'" />
-          {{ a.source === 'ai' ? 'AI code' : 'library' }}
+          <i :class="sourceIcon[a.source] ?? 'pi pi-book'" />
+          {{ sourceLabel[a.source] ?? a.source }}
           <span v-if="a.table"> · {{ a.table }}</span>
           <i class="pi pi-trash del" @click.stop="confirmDelete(a)" v-tooltip.bottom="'Delete'" />
         </div>
@@ -155,8 +167,14 @@ function confirmDelete(a: SavedAnalysis) {
           @saved="onSaved"
         />
       </KeepAlive>
+      <AnalysisCode
+        v-if="creating === 'code'"
+        :key="workspace.id"
+        :workspace="workspace"
+        @saved="onSaved"
+      />
       <AnalysisPython
-        v-if="creating !== 'ai' && selected?.kind === 'python'"
+        v-if="!creating && selected?.kind === 'python'"
         :key="selected.id"
         :workspace="workspace"
         :analysis="selected"
@@ -165,7 +183,7 @@ function confirmDelete(a: SavedAnalysis) {
       />
       <div v-if="!creating && !selected" class="empty">
         <i class="pi pi-shield" />
-        <p>Pick a saved analysis, or start a new one from the <strong>Library</strong> or <strong>Ask AI</strong>.</p>
+        <p>Pick a saved analysis, or start a new one from the <strong>Library</strong>, <strong>Ask AI</strong>, or <strong>Code</strong>.</p>
       </div>
     </section>
   </div>
@@ -197,7 +215,9 @@ function confirmDelete(a: SavedAnalysis) {
   display: flex;
   gap: 0.5rem;
 }
-.rail-actions :deep(.p-button) { flex: 1; }
+/* Three creation buttons share the 15rem rail — trim padding so the labels
+   stay on one line. */
+.rail-actions :deep(.p-button) { flex: 1; padding-inline: 0.35rem; white-space: nowrap; }
 
 .rail-title {
   margin: 0.5rem 0 0.15rem;
