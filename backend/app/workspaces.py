@@ -14,11 +14,15 @@ reference base tables or other joins. Frames are resolved lazily through
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import io
 import json
+import keyword
 import os
 import re
 import shutil
+import tokenize
 import uuid
 from datetime import date
 from pathlib import Path
@@ -44,6 +48,109 @@ def slugify(text: str) -> str:
 
 class WorkspaceError(ValueError):
     """A user-facing workspace problem (bad name, missing table, bad join)."""
+
+
+def _normalized_table_name(text: str) -> str:
+    if not str(text or "").strip():
+        return ""
+    return slugify(text).replace("-", "_")
+
+
+def _is_bare_table_identifier(name: str) -> bool:
+    return name.isidentifier() and not keyword.iskeyword(name)
+
+
+def _python_reference_token_positions(
+    code: str, old: str, new: str
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """Find exact table-name references in saved Python without reparsing text.
+
+    The string positions cover explicit ``tables["old"]`` and
+    ``tables.get("old")`` lookups. Bare-variable positions are only returned
+    when the old name is used as an injected table variable, not assigned inside
+    the snippet; that avoids changing a user's local alias.
+    """
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return set(), set()
+
+    string_positions: set[tuple[int, int]] = set()
+    bare_positions: set[tuple[int, int]] = set()
+    assigned_old = False
+
+    def is_tables_name(node: ast.AST) -> bool:
+        return isinstance(node, ast.Name) and node.id == "tables"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if node.id == old and isinstance(node.ctx, (ast.Store, ast.Del)):
+                assigned_old = True
+            continue
+        if isinstance(node, ast.arg) and node.arg == old:
+            assigned_old = True
+            continue
+        if isinstance(node, ast.ExceptHandler) and node.name == old:
+            assigned_old = True
+            continue
+        if isinstance(node, ast.Subscript) and is_tables_name(node.value):
+            if isinstance(node.slice, ast.Constant) and node.slice.value == old:
+                string_positions.add((node.slice.lineno, node.slice.col_offset))
+            continue
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and is_tables_name(node.func.value)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == old
+        ):
+            string_positions.add((node.args[0].lineno, node.args[0].col_offset))
+
+    if (
+        _is_bare_table_identifier(old)
+        and _is_bare_table_identifier(new)
+        and not assigned_old
+    ):
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Name)
+                and node.id == old
+                and isinstance(node.ctx, ast.Load)
+            ):
+                bare_positions.add((node.lineno, node.col_offset))
+
+    return string_positions, bare_positions
+
+
+def _rewrite_python_table_references(code: str, old: str, new: str) -> tuple[str, bool]:
+    if not code or old == new:
+        return code, False
+
+    string_positions, bare_positions = _python_reference_token_positions(code, old, new)
+    if not string_positions and not bare_positions:
+        return code, False
+
+    changed = False
+    rewritten = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(code).readline)
+        for token in tokens:
+            value = token.string
+            if token.type == tokenize.STRING and token.start in string_positions:
+                value = repr(new)
+                changed = True
+            elif token.type == tokenize.NAME and token.start in bare_positions:
+                value = new
+                changed = True
+            rewritten.append(
+                tokenize.TokenInfo(token.type, value, token.start, token.end, token.line)
+            )
+    except tokenize.TokenError:
+        return code, False
+
+    return tokenize.untokenize(rewritten), changed
 
 
 class Workspace:
@@ -194,6 +301,90 @@ class Workspace:
             "added_columns": [c for c in new_columns if c not in old_columns],
             "removed_columns": [c for c in old_columns if c not in new_columns],
         }
+
+    def rename_table(self, name: str, new_name: str) -> dict:
+        """Rename a base table or join and migrate saved references.
+
+        Stored work links by table name, so this updates the workspace metadata
+        in one commit: joins that depend on the table, saved dashboard tiles,
+        saved analyses, and validation rulesets. Python snippets are edited
+        conservatively for exact table lookups and unshadowed bare table names.
+        """
+        entry = self._table_entry(name)
+        join = self._join_entry(name)
+        if entry is None and join is None:
+            raise WorkspaceError(f"No table named '{name}'.")
+
+        target = _normalized_table_name(new_name)
+        if not target:
+            raise WorkspaceError("Table name is required.")
+        if target == name:
+            return {
+                "old_name": name,
+                "name": target,
+                "updated": {
+                    "joins": 0,
+                    "tiles": 0,
+                    "analyses": 0,
+                    "rulesets": 0,
+                    "python_snippets": 0,
+                },
+            }
+        if target in self.table_names():
+            raise WorkspaceError(f"A table named '{target}' already exists.")
+
+        updated = {
+            "joins": 0,
+            "tiles": 0,
+            "analyses": 0,
+            "rulesets": 0,
+            "python_snippets": 0,
+        }
+
+        if entry is not None:
+            entry["name"] = target
+        else:
+            join["name"] = target
+
+        for existing_join in self.joins:
+            touched = False
+            if existing_join.get("left") == name:
+                existing_join["left"] = target
+                touched = True
+            if existing_join.get("right") == name:
+                existing_join["right"] = target
+                touched = True
+            if touched:
+                updated["joins"] += 1
+
+        for collection_name, collection in (
+            ("tiles", self.tiles),
+            ("analyses", self.analyses),
+        ):
+            for item in collection:
+                touched = False
+                if item.get("table") == name:
+                    item["table"] = target
+                    touched = True
+                if item.get("kind") == "python" and isinstance(item.get("spec"), dict):
+                    code = str(item["spec"].get("code") or "")
+                    rewritten, changed = _rewrite_python_table_references(code, name, target)
+                    if changed:
+                        item["spec"]["code"] = rewritten
+                        updated["python_snippets"] += 1
+                        touched = True
+                if touched:
+                    updated[collection_name] += 1
+
+        for ruleset in self.rulesets:
+            if ruleset.get("table") == name:
+                ruleset["table"] = target
+                updated["rulesets"] += 1
+
+        self._clear_profile_cache(name)
+        self._clear_profile_cache(target)
+        self.save()
+        return {"old_name": name, "name": target, "updated": updated}
 
     def remove_table(self, name: str) -> None:
         entry = self._table_entry(name)

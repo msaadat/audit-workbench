@@ -6,6 +6,7 @@ import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Dialog from 'primevue/dialog'
+import InputText from 'primevue/inputtext'
 import ProgressBar from 'primevue/progressbar'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
@@ -32,6 +33,9 @@ const replaceInput = ref<HTMLInputElement>()
 const replaceTarget = ref<string | null>(null)
 const replacing = ref(false)
 const uploading = ref(false)
+const renameTarget = ref<TableInfo | null>(null)
+const renameName = ref('')
+const renaming = ref(false)
 const showJoin = ref(false)
 const preview = ref<{ table: string; frame: FramePayload; total: number } | null>(null)
 const previewLoading = ref(false)
@@ -78,6 +82,60 @@ async function upload(event: Event) {
 function startReplace(table: TableInfo) {
   replaceTarget.value = table.name
   replaceInput.value?.click()
+}
+
+function startRename(table: TableInfo) {
+  renameTarget.value = table
+  renameName.value = table.name
+}
+
+async function renameTable() {
+  const table = renameTarget.value
+  if (!table) return
+  renaming.value = true
+  try {
+    const { renamed } = await api.patch<{
+      renamed: {
+        old_name: string
+        name: string
+        updated: {
+          joins: number
+          tiles: number
+          analyses: number
+          rulesets: number
+          python_snippets: number
+        }
+      }
+    }>(
+      `/api/workspaces/${props.workspace.id}/tables/${table.name}`,
+      { name: renameName.value },
+    )
+    if (selected.value === renamed.old_name) selected.value = renamed.name
+    if (preview.value?.table === renamed.old_name) preview.value = null
+    emit('changed')
+
+    const total =
+      renamed.updated.joins +
+      renamed.updated.tiles +
+      renamed.updated.analyses +
+      renamed.updated.rulesets
+    const codeDetail = renamed.updated.python_snippets
+      ? ` Updated ${renamed.updated.python_snippets} saved Python snippet(s).`
+      : ''
+    toast.add({
+      severity: 'success',
+      summary: `Renamed "${renamed.old_name}" to "${renamed.name}"`,
+      detail: total
+        ? `Updated ${total} saved reference(s).${codeDetail}`
+        : codeDetail || 'No saved references needed changes.',
+      life: 6000,
+    })
+    renameTarget.value = null
+  } catch (error) {
+    fail('Rename failed', error)
+  } finally {
+    renaming.value = false
+  }
 }
 
 async function replaceData(event: Event) {
@@ -285,6 +343,13 @@ function rangeText(p: ColumnProfile): string {
             @click.stop="startReplace(table)"
           />
           <Button
+            icon="pi pi-pencil"
+            text
+            size="small"
+            v-tooltip.bottom="'Rename - updates saved work'"
+            @click.stop="startRename(table)"
+          />
+          <Button
             icon="pi pi-trash"
             text
             size="small"
@@ -389,6 +454,31 @@ function rangeText(p: ColumnProfile): string {
     @update:visible="preview = null"
   >
     <FrameTable v-if="preview" :frame="preview.frame" scrollHeight="60vh" />
+  </Dialog>
+
+  <Dialog
+    :visible="renameTarget !== null"
+    modal
+    header="Rename table"
+    :style="{ width: '26rem' }"
+    @update:visible="renameTarget = null"
+  >
+    <div class="rename-body">
+      <label for="rename-table-name">Name</label>
+      <InputText
+        id="rename-table-name"
+        v-model="renameName"
+        autofocus
+        @keyup.enter="renameTable"
+      />
+      <p class="muted">
+        Saved dashboard tiles, analyses, joins and validation rulesets will be rebound to the new name.
+      </p>
+    </div>
+    <template #footer>
+      <Button label="Cancel" severity="secondary" text @click="renameTarget = null" />
+      <Button label="Rename" icon="pi pi-check" :loading="renaming" @click="renameTable" />
+    </template>
   </Dialog>
 
   <JoinDialog
@@ -534,5 +624,11 @@ function rangeText(p: ColumnProfile): string {
   text-align: right;
   font-size: 0.85rem;
   color: var(--p-surface-500);
+}
+
+.rename-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
 }
 </style>

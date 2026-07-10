@@ -2,6 +2,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from app import workspaces
 from app.main import create_app
 
 
@@ -48,6 +49,23 @@ def test_schema_preview_profile(client, ws_id):
     assert profile["rows"] == 6
     amount = next(p for p in profile["column_profiles"] if p["name"] == "amount")
     assert amount["inferred_type"] == "numeric"
+
+
+def test_rename_table_api_rebinds_workspace_items(client, ws_id):
+    ws = workspaces.load_workspace(ws_id)
+    ws.add_tile({"kind": "query", "table": "transactions", "title": "TX", "spec": {}})
+
+    response = client.patch(
+        f"/api/workspaces/{ws_id}/tables/transactions",
+        json={"name": "ledger"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["renamed"]["name"] == "ledger"
+    assert body["renamed"]["updated"]["tiles"] == 1
+    assert [t["name"] for t in body["workspace"]["tables"]] == ["ledger"]
+    assert workspaces.load_workspace(ws_id).tiles[0]["table"] == "ledger"
 
 
 def test_query_and_export(client, ws_id):

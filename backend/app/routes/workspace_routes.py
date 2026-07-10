@@ -53,6 +53,13 @@ async def replace_table(
     return {"replaced": result, "workspace": ws.summary()}
 
 
+@router.patch("/{workspace_id}/tables/{table_name}")
+async def rename_table(workspace_id: str, table_name: str, payload: dict = Body(...)):
+    ws = workspaces.load_workspace(workspace_id)
+    result = ws.rename_table(table_name, payload.get("name", ""))
+    return {"renamed": result, "workspace": ws.summary()}
+
+
 @router.delete("/{workspace_id}/tables/{table_name}")
 async def delete_table(workspace_id: str, table_name: str):
     ws = workspaces.load_workspace(workspace_id)

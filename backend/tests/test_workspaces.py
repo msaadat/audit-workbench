@@ -123,6 +123,88 @@ def test_replace_rejects_join_and_unknown(workspace_with_data):
         ws.replace_table("nope", "x.csv", b"a,b\n1,2\n")
 
 
+def test_rename_table_updates_saved_references(workspace_with_data):
+    ws = workspace_with_data
+    join = ws.add_join(
+        {
+            "name": "tx enriched",
+            "left": "transactions",
+            "right": "customers",
+            "how": "left",
+            "left_on": ["cust_id"],
+            "right_on": ["id"],
+        }
+    )
+    query_tile = ws.add_tile(
+        {"kind": "query", "table": "transactions", "title": "By customer", "spec": {}}
+    )
+    python_tile = ws.add_tile(
+        {
+            "kind": "python",
+            "table": "transactions",
+            "title": "Code",
+            "spec": {"code": "result = tables['transactions'].head(1)"},
+        }
+    )
+    analysis = ws.add_analysis(
+        {
+            "kind": "python",
+            "table": None,
+            "title": "Bare code",
+            "spec": {"code": "result = transactions.select(pl.len())"},
+        }
+    )
+    ruleset = ws.add_ruleset({"title": "Rules", "table": "transactions", "rules": []})
+
+    result = ws.rename_table("transactions", "ledger entries")
+
+    assert result["name"] == "ledger_entries"
+    assert result["updated"] == {
+        "joins": 1,
+        "tiles": 2,
+        "analyses": 1,
+        "rulesets": 1,
+        "python_snippets": 2,
+    }
+    reloaded = workspaces.load_workspace(ws.id)
+    assert reloaded.table_names() == ["ledger_entries", "customers", "tx_enriched"]
+    assert reloaded._join_entry(join["name"])["left"] == "ledger_entries"
+    assert reloaded._tile(query_tile["id"])["table"] == "ledger_entries"
+    assert reloaded._tile(python_tile["id"])["spec"]["code"] == "result = tables['ledger_entries'].head(1)"
+    assert reloaded._analysis(analysis["id"])["spec"]["code"] == "result = ledger_entries.select(pl.len())"
+    assert reloaded._ruleset(ruleset["id"])["table"] == "ledger_entries"
+    assert reloaded.get_frame("tx_enriched").height == 6
+
+
+def test_rename_table_rewrites_python_without_renaming_local_alias(workspace_with_data):
+    ws = workspace_with_data
+    analysis = ws.add_analysis(
+        {
+            "kind": "python",
+            "table": None,
+            "title": "Alias code",
+            "spec": {
+                "code": "transactions = tables['transactions']\nresult = transactions.head(1)"
+            },
+        }
+    )
+
+    ws.rename_table("transactions", "ledger")
+
+    code = workspaces.load_workspace(ws.id)._analysis(analysis["id"])["spec"]["code"]
+    assert code == "transactions = tables['ledger']\nresult = transactions.head(1)"
+
+
+def test_rename_table_validation_errors(workspace_with_data):
+    ws = workspace_with_data
+    with pytest.raises(WorkspaceError, match="already exists"):
+        ws.rename_table("transactions", "customers")
+    with pytest.raises(WorkspaceError, match="required"):
+        ws.rename_table("transactions", "   ")
+    with pytest.raises(WorkspaceError, match="No table"):
+        ws.rename_table("missing", "ledger")
+
+
 def test_join_and_dependency_guard(workspace_with_data):
     ws = workspace_with_data
     ws.add_join(
