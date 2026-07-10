@@ -21,6 +21,7 @@ from .routes.analyses_routes import router as analyses_router
 from .routes.analysis_routes import router as analysis_router
 from .routes.assistant_routes import router as assistant_router
 from .routes.dashboard_routes import router as dashboard_router
+from .routes.validation_routes import router as validation_router
 from .routes.workspace_routes import router as workspace_router
 from .sandbox import SandboxError
 from .workspaces import WorkspaceError
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_router)
     app.include_router(analyses_router)
     app.include_router(assistant_router)
+    app.include_router(validation_router)
 
     if FRONTEND_DIST.exists():
         app.mount(

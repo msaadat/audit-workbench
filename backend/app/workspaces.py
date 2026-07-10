@@ -59,6 +59,7 @@ class Workspace:
         self.joins: list[dict] = list(definition.get("joins") or [])
         self.tiles: list[dict] = list(definition.get("tiles") or [])
         self.analyses: list[dict] = list(definition.get("analyses") or [])
+        self.rulesets: list[dict] = list(definition.get("rulesets") or [])
 
     # ------------------------------------------------------------- persistence
     @property
@@ -76,6 +77,7 @@ class Workspace:
             "joins": self.joins,
             "tiles": self.tiles,
             "analyses": self.analyses,
+            "rulesets": self.rulesets,
         }
         self.definition_path.write_text(
             json.dumps(definition, indent=2), encoding="utf-8"
@@ -406,6 +408,85 @@ class Workspace:
 
     def remove_analysis(self, analysis_id: str) -> None:
         self.analyses.remove(self._analysis(analysis_id))
+        self.save()
+
+    # ---------------------------------------------------------------- rulesets
+    # A rule set is the validation sibling of an analysis: field-wise checks
+    # bound to a table by name, stored as a spec and recomputed live — so a
+    # replaced or refreshed table re-validates with the same saved rules.
+    def _normalize_rules(self, rules: list) -> list[dict]:
+        from . import validation
+
+        normalized = []
+        for rule in rules or []:
+            check = (rule or {}).get("check")
+            meta = validation.CHECKS.get(check)
+            if meta is None:
+                raise WorkspaceError(f"Unknown check '{check}'.")
+            column = str(rule.get("column") or "").strip() or None
+            if meta["scope"] == "column" and not column:
+                raise WorkspaceError(f"Check '{check}' needs a column.")
+            severity = rule.get("severity")
+            normalized.append(
+                {
+                    "id": rule.get("id") or uuid.uuid4().hex[:10],
+                    "column": column if meta["scope"] == "column" else None,
+                    "check": check,
+                    "params": dict(rule.get("params") or {}),
+                    "severity": severity if severity in validation.SEVERITIES else "fail",
+                    "enabled": rule.get("enabled") is not False,
+                }
+            )
+        return normalized
+
+    def add_ruleset(self, payload: dict) -> dict:
+        table = payload.get("table")
+        if table not in self.table_names():
+            raise WorkspaceError(f"Unknown table '{table}'.")
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise WorkspaceError("Rule set title is required.")
+        ruleset = {
+            "id": uuid.uuid4().hex[:10],
+            "title": title,
+            "table": table,
+            "rules": self._normalize_rules(payload.get("rules") or []),
+            "note": str(payload.get("note") or "").strip(),
+            "created": date.today().isoformat(),
+        }
+        self.rulesets.append(ruleset)
+        self.save()
+        return ruleset
+
+    def _ruleset(self, ruleset_id: str) -> dict:
+        ruleset = next((r for r in self.rulesets if r["id"] == ruleset_id), None)
+        if ruleset is None:
+            raise WorkspaceError("Rule set not found.")
+        return ruleset
+
+    def update_ruleset(self, ruleset_id: str, changes: dict) -> dict:
+        ruleset = self._ruleset(ruleset_id)
+        if "title" in changes:
+            title = str(changes["title"] or "").strip()
+            if not title:
+                raise WorkspaceError("Rule set title is required.")
+            ruleset["title"] = title
+        if "note" in changes:
+            ruleset["note"] = str(changes["note"] or "").strip()
+        # Rebinding to another table is allowed even when some rule columns
+        # don't exist there — missing columns degrade to per-rule errors at
+        # run time, which is the point of re-running on evolving data.
+        if "table" in changes:
+            if changes["table"] not in self.table_names():
+                raise WorkspaceError(f"Unknown table '{changes['table']}'.")
+            ruleset["table"] = changes["table"]
+        if "rules" in changes:
+            ruleset["rules"] = self._normalize_rules(changes["rules"])
+        self.save()
+        return ruleset
+
+    def remove_ruleset(self, ruleset_id: str) -> None:
+        self.rulesets.remove(self._ruleset(ruleset_id))
         self.save()
 
     # ------------------------------------------------------------------ frames

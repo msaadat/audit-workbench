@@ -13,6 +13,7 @@ import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
 import QueryTab from '../components/QueryTab.vue'
 import AnalysisTab from '../components/AnalysisTab.vue'
+import ValidationTab from '../components/validation/ValidationTab.vue'
 
 const props = defineProps<{ id: string }>()
 const toast = useToast()
@@ -51,6 +52,7 @@ onMounted(reload)
         <Tab value="dashboard"><i class="pi pi-th-large" /> Dashboard</Tab>
         <Tab value="data"><i class="pi pi-database" /> Data</Tab>
         <Tab value="query"><i class="pi pi-search" /> Query</Tab>
+        <Tab value="validation"><i class="pi pi-check-square" /> Validation</Tab>
         <Tab value="analysis"><i class="pi pi-shield" /> Analysis</Tab>
       </TabList>
       <TabPanels>
@@ -62,6 +64,12 @@ onMounted(reload)
         </TabPanel>
         <TabPanel value="query">
           <QueryTab :workspace="workspace" />
+        </TabPanel>
+        <TabPanel value="validation">
+          <!-- KeepAlive so an unsaved rule-set draft survives visiting other tabs. -->
+          <KeepAlive>
+            <ValidationTab v-if="activeTab === 'validation'" :workspace="workspace" />
+          </KeepAlive>
         </TabPanel>
         <TabPanel value="analysis">
           <!-- KeepAlive so an in-progress AI chat survives visiting other tabs. -->

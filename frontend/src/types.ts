@@ -196,6 +196,80 @@ export interface SavedAnalysis {
   spec?: Record<string, unknown>
 }
 
+// ------------------------------------------------------------- validation
+export interface CheckParamMeta {
+  name: string
+  kind: 'number' | 'select' | 'text' | 'date' | 'toggle' | 'columns' | 'values'
+  label: string
+  optional?: boolean
+  default?: string | number | boolean
+  options?: { label: string; value: string | number }[]
+}
+
+export interface CheckMeta {
+  id: string
+  label: string
+  icon: string
+  scope: 'column' | 'table'
+  column_kinds: string[]
+  description: string
+  params: CheckParamMeta[]
+}
+
+export interface ValidationRule {
+  id: string
+  column: string | null
+  check: string
+  params: Record<string, unknown>
+  severity: 'fail' | 'warn'
+  enabled: boolean
+}
+
+// A saved rule set: field-wise checks bound to a table by name, stored as a
+// spec (like analyses/tiles) and recomputed live on every run.
+export interface RuleSet {
+  id: string
+  title: string
+  table: string
+  rules: ValidationRule[]
+  note: string
+  created: string
+}
+
+export interface RuleResult {
+  rule_id: string | null
+  column: string | null
+  check: string
+  label: string
+  severity: 'fail' | 'warn'
+  verdict: 'ok' | 'warn' | 'fail' | 'error' | 'skipped'
+  fail_count: number
+  checked_rows: number
+  pass_pct: number | null
+  error: string | null
+}
+
+export interface ValidationRun {
+  table: string
+  rows: number
+  run_at: string
+  verdict: 'ok' | 'warn' | 'fail' | 'info'
+  counts: { passed: number; warned: number; failed: number; errored: number; skipped: number }
+  results: RuleResult[]
+}
+
+export interface ValidationDetail {
+  label: string
+  detail: FramePayload
+  detail_rows: number
+}
+
+export interface ColumnValues {
+  distinct: number
+  truncated: boolean
+  values: string[]
+}
+
 export interface AssistantStatus {
   configured: boolean
   backend: 'groq' | 'openrouter' | 'lmstudio' | string
