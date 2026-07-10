@@ -100,6 +100,88 @@ def test_row_count_fails_on_empty_table(dirty_df):
     assert _run_one(empty, "row_count", params={"min": 1})["verdict"] == "fail"
 
 
+def test_referential_matches_across_types(dirty_df):
+    master = pl.DataFrame({"code": ["Ops", "HR", "FIN"]})
+    result = validation.run_rules(
+        dirty_df,
+        [
+            {
+                "id": "r1",
+                "column": "category",
+                "check": "referential",
+                "params": {"lookup_table": "master", "lookup_column": "code"},
+                "severity": "fail",
+                "enabled": True,
+            }
+        ],
+        "t",
+        resolve=lambda name: master,
+    )["results"][0]
+    assert result["fail_count"] == 2  # 'ops' (case differs) and 'Weird'
+
+    # Without a resolver (or with a bad lookup) the rule degrades to error.
+    no_resolver = validation.run_rules(
+        dirty_df,
+        [
+            {
+                "id": "r1",
+                "column": "category",
+                "check": "referential",
+                "params": {"lookup_table": "master", "lookup_column": "nope"},
+                "severity": "fail",
+                "enabled": True,
+            }
+        ],
+        "t",
+        resolve=lambda name: master,
+    )["results"][0]
+    assert no_resolver["verdict"] == "error"
+    assert "nope" in no_resolver["error"]
+
+
+def test_compare_fields_dates_and_numbers():
+    df = pl.DataFrame(
+        {
+            "start": ["2025-01-01", "2025-06-01", None],
+            "end": ["2025-03-01", "2025-01-01", "2025-02-01"],
+            "gross": [100.0, 50.0, 10.0],
+            "net": [90.0, 60.0, 10.0],
+        }
+    )
+    end_ge_start = _run_one(df, "compare_fields", "end", {"op": "ge", "other": "start"})
+    assert end_ge_start["fail_count"] == 1  # row 2; null start passes
+    gross_ge_net = _run_one(df, "compare_fields", "gross", {"op": "ge", "other": "net"})
+    assert gross_ge_net["fail_count"] == 1  # 50 < 60
+
+
+def test_conditional_required():
+    df = pl.DataFrame(
+        {
+            "band": ["HIGH", "HIGH", "LOW", None],
+            "approval": ["A-1", "  ", None, None],
+        }
+    )
+    result = _run_one(
+        df, "conditional_required", "approval", {"when_column": "band", "when_value": "HIGH"}
+    )
+    assert result["fail_count"] == 1  # blank approval on the second HIGH row
+
+
+def test_expression_check():
+    df = pl.DataFrame({"qty": [2, 3], "price": [5.0, 5.0], "total": [10.0, 14.0]})
+    result = _run_one(
+        df,
+        "expression",
+        params={"code": 'pl.col("qty") * pl.col("price") != pl.col("total")'},
+    )
+    assert result["fail_count"] == 1
+    bad = _run_one(df, "expression", params={"code": "1 + 1"})
+    assert bad["verdict"] == "error"
+    assert "Polars expression" in bad["error"]
+    broken = _run_one(df, "expression", params={"code": "pl.col('"})
+    assert broken["verdict"] == "error"
+
+
 def test_bad_params_raise_query_error(dirty_df):
     with pytest.raises(QueryError, match="min and/or a max"):
         validation.CHECKS["range"]["func"](dirty_df, "amount", {})
@@ -271,6 +353,99 @@ def test_run_against_other_table_degrades_missing_columns(workspace_with_data):
     assert run["table"] == "customers"
     assert run["results"][0]["verdict"] == "error"
     assert "amount" in run["results"][0]["error"]
+
+
+def test_saved_runs_record_history(workspace_with_data):
+    ws = workspace_with_data
+    created = ws.add_ruleset(
+        {
+            "title": "TX",
+            "table": "transactions",
+            "rules": [{"column": "amount", "check": "numeric_sign", "params": {"mode": "positive"}}],
+        }
+    )
+    client = TestClient(create_app())
+    first = client.post(f"/api/workspaces/{ws.id}/rulesets/{created['id']}/run", json={}).json()
+    assert len(first["history"]) == 1
+    second = client.post(
+        f"/api/workspaces/{ws.id}/rulesets/{created['id']}/run", json={"table": "customers"}
+    ).json()
+    assert len(second["history"]) == 2
+    assert second["history"][1]["table"] == "customers"
+    assert "results" not in second["history"][0]  # summary only, never row data
+
+    reloaded = workspaces.load_workspace(ws.id)
+    assert len(reloaded.rulesets[0]["runs"]) == 2
+
+    # Draft runs are not evidence — no history entry.
+    client.post(
+        f"/api/workspaces/{ws.id}/tables/transactions/validate",
+        json={"rules": created["rules"]},
+    )
+    assert len(workspaces.load_workspace(ws.id).rulesets[0]["runs"]) == 2
+
+
+def test_history_is_capped(workspace_with_data):
+    ws = workspace_with_data
+    created = ws.add_ruleset(
+        {"title": "TX", "table": "transactions", "rules": [{"column": "amount", "check": "required"}]}
+    )
+    run = {"run_at": "t", "table": "transactions", "rows": 6, "verdict": "ok",
+           "counts": {"passed": 1, "warned": 0, "failed": 0, "errored": 0, "skipped": 0}}
+    for _ in range(25):
+        ws.record_run(created["id"], run)
+    assert len(ws.rulesets[0]["runs"]) == ws.RUN_HISTORY_MAX
+
+
+def test_validation_tile_computes(workspace_with_data):
+    from app import dashboard
+
+    ws = workspace_with_data
+    tile = ws.add_tile(
+        {
+            "kind": "validation",
+            "table": "transactions",
+            "title": "TX validation",
+            "spec": {
+                "rules": [
+                    {"id": "a", "column": "amount", "check": "numeric_sign",
+                     "params": {"mode": "positive"}, "severity": "fail", "enabled": True},
+                    {"id": "b", "column": None, "check": "unique_key",
+                     "params": {"columns": ["invoice_no"]}, "severity": "fail", "enabled": True},
+                ]
+            },
+        }
+    )
+    payload = dashboard.tile_payload(ws, tile)
+    assert payload["error"] is None
+    assert payload["verdict"] == "fail"  # invoice 1006 duplicated
+    assert "1 passed" in payload["verdict_text"]
+    assert payload["frame"]["columns"][:2] == ["field", "rule"]
+    assert any(s["label"] == "Rules passed" for s in payload["stats"])
+
+
+def test_report_is_multi_sheet(workspace_with_data):
+    import io
+    import zipfile
+
+    ws = workspace_with_data
+    rules = [
+        {"id": "a", "column": "amount", "check": "range", "params": {"max": 500},
+         "severity": "fail", "enabled": True},
+        {"id": "b", "column": "cust_id", "check": "required", "params": {},
+         "severity": "fail", "enabled": True},
+    ]
+    client = TestClient(create_app())
+    response = client.post(
+        f"/api/workspaces/{ws.id}/tables/transactions/validate/report", json={"rules": rules}
+    )
+    assert response.status_code == 200
+    workbook_xml = zipfile.ZipFile(io.BytesIO(response.content)).read("xl/workbook.xml").decode()
+    assert "Summary" in workbook_xml
+    # The range rule fails (2000 and 1000 exceed 500) → its failing-rows sheet
+    # exists; the passing required rule gets none.
+    assert "1 amount" in workbook_xml
+    assert "cust_id" not in workbook_xml
 
 
 def test_workspace_without_rulesets_key_loads(workspace_with_data):

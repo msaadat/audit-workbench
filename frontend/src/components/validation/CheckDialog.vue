@@ -9,6 +9,7 @@ import InputText from 'primevue/inputtext'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
+import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
 
 import { api } from '../../api'
@@ -64,6 +65,31 @@ const applicable = computed(() =>
 )
 
 const columnOptions = computed(() => props.schema.map((c) => c.name))
+// For single-column params (compare/conditional): the rule's own column is
+// not a meaningful counterpart.
+const otherColumnOptions = computed(() =>
+  props.schema.map((c) => c.name).filter((name) => name !== props.column),
+)
+const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
+
+// Columns of the lookup table chosen for a referential check.
+const lookupColumns = ref<string[]>([])
+watch(
+  () => params.value.lookup_table,
+  async (table) => {
+    lookupColumns.value = []
+    if (!table) return
+    try {
+      lookupColumns.value = (
+        await api.get<{ columns: ColumnSchema[] }>(
+          `/api/workspaces/${props.workspace.id}/tables/${table}/schema`,
+        )
+      ).columns.map((c) => c.name)
+    } catch {
+      // Leave the picker empty; save-time validation reports the problem.
+    }
+  },
+)
 
 // At least one bound/flag must be set for checks whose params are all optional.
 const ready = computed(() => {
@@ -213,6 +239,42 @@ watch(visible, (open) => {
             <Checkbox v-model="params[param.name] as boolean" binary />
             <span>{{ param.label }}</span>
           </label>
+          <Select
+            v-else-if="param.kind === 'column'"
+            v-model="params[param.name] as string | null"
+            :options="otherColumnOptions"
+            placeholder="Pick a column"
+            filter
+            style="width: 100%"
+          />
+          <Select
+            v-else-if="param.kind === 'table'"
+            v-model="params[param.name] as string | null"
+            :options="tableOptions"
+            placeholder="Pick a table"
+            style="width: 100%"
+          />
+          <Select
+            v-else-if="param.kind === 'lookup_column'"
+            v-model="params[param.name] as string | null"
+            :options="lookupColumns"
+            :placeholder="params.lookup_table ? 'Pick a column' : 'Pick the lookup table first'"
+            :disabled="!params.lookup_table"
+            filter
+            style="width: 100%"
+          />
+          <template v-else-if="param.kind === 'code'">
+            <Textarea
+              v-model="params[param.name] as string"
+              rows="3"
+              class="code-input"
+              placeholder='pl.col("qty") * pl.col("price") != pl.col("total")'
+            />
+            <small class="muted">
+              A Polars expression that is <strong>True for violating rows</strong>;
+              <code>pl</code> is available.
+            </small>
+          </template>
           <MultiSelect
             v-else-if="param.kind === 'columns'"
             v-model="params[param.name] as string[]"
@@ -343,6 +405,12 @@ watch(visible, (open) => {
   gap: 0.5rem;
   font-size: 0.9rem;
   cursor: pointer;
+}
+
+.code-input {
+  width: 100%;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 0.85rem;
 }
 
 .rule-controls {

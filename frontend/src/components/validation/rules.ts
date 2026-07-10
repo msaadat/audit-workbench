@@ -43,6 +43,17 @@ export function ruleLabel(rule: ValidationRule, checks: CheckMeta[]): string {
     }
     case 'unique_key':
       return `Key: ${((p.columns as string[]) ?? []).join(' + ')}`
+    case 'referential':
+      return `In ${p.lookup_table ?? '?'}.${p.lookup_column ?? '?'}`
+    case 'compare_fields': {
+      const symbol =
+        { ge: '≥', gt: '>', eq: '=', ne: '≠', le: '≤', lt: '<' }[String(p.op ?? 'ge')] ?? '≥'
+      return `${symbol} ${p.other ?? '?'}`
+    }
+    case 'conditional_required':
+      return `Required when ${p.when_column ?? '?'} = ${p.when_value ?? '?'}`
+    case 'expression':
+      return String(p.name ?? '').trim() || label
     default:
       return label
   }

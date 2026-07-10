@@ -10,7 +10,7 @@ Row caps depend on the visualization: charts get few points, tables a page.
 
 from __future__ import annotations
 
-from . import analytics, explore, sandbox
+from . import analytics, explore, sandbox, validation
 from .workspaces import Workspace
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
@@ -72,6 +72,28 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
             )
             payload["total_rows"] = wide.height
             payload["frame"] = explore.frame_payload(wide, _cap_for(payload["viz"]))
+        elif item["kind"] == "validation":
+            spec = item.get("spec") or {}
+            run = validation.run_rules(
+                frame, spec.get("rules") or [], item["table"], resolve=workspace.get_frame
+            )
+            counts = run["counts"]
+            payload["viz"] = {"type": "table"}
+            # 'error' isn't a tile verdict — an errored rule reads as fail.
+            payload["verdict"] = "fail" if run["verdict"] == "fail" else run["verdict"]
+            payload["verdict_text"] = (
+                f"{counts['passed']} passed · {counts['warned']} warned · "
+                f"{counts['failed'] + counts['errored']} failed"
+            )
+            payload["stats"] = [
+                {"label": "Rows checked", "value": f"{run['rows']:,}"},
+                {"label": "Rules passed", "value": str(counts["passed"])},
+                {"label": "Warnings", "value": str(counts["warned"])},
+                {"label": "Failed", "value": str(counts["failed"] + counts["errored"])},
+            ]
+            summary = validation.summary_frame(run)
+            payload["total_rows"] = summary.height
+            payload["frame"] = explore.frame_payload(summary, _cap_for(payload["viz"]))
         else:
             spec = item.get("spec") or {}
             result = analytics.run_test(frame, spec.get("test"), spec.get("params"))

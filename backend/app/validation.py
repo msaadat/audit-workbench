@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timezone
+from typing import Callable
 
 import polars as pl
 
@@ -22,6 +23,10 @@ from .explore import QueryError, frame_payload
 
 DETAIL_PREVIEW_ROWS = 50
 SEVERITIES = ("fail", "warn")
+
+# A callable resolving a table name to its current frame — checks that look
+# across tables (referential) receive it; everything else ignores it.
+Resolve = Callable[[str], pl.DataFrame]
 
 
 def _column(df: pl.DataFrame, column: str | None) -> str:
@@ -161,6 +166,100 @@ def check_date_range(df: pl.DataFrame, column: str, params: dict) -> pl.Expr:
 def check_unique(df: pl.DataFrame, column: str, params: dict) -> pl.Expr:
     name = _column(df, column)
     return pl.col(name).is_duplicated() & pl.col(name).is_not_null()
+
+
+def check_referential(
+    df: pl.DataFrame, column: str, params: dict, resolve: Resolve | None
+) -> pl.Expr:
+    lookup_table = str(params.get("lookup_table") or "").strip()
+    lookup_column = str(params.get("lookup_column") or "").strip()
+    if not lookup_table or not lookup_column:
+        raise QueryError("Referential needs a lookup table and column.")
+    if resolve is None:
+        raise QueryError("Lookup tables are not available in this context.")
+    try:
+        lookup = resolve(lookup_table)
+    except Exception as error:
+        raise QueryError(f"Could not load lookup table '{lookup_table}': {error}") from error
+    if lookup_column not in lookup.columns:
+        raise QueryError(f"Column '{lookup_column}' not found in '{lookup_table}'.")
+    # Values compare as trimmed strings so an int code matches its text twin.
+    allowed = (
+        lookup.select(
+            pl.col(lookup_column).cast(pl.String).str.strip_chars().drop_nulls().unique()
+        )
+        .to_series()
+        .to_list()
+    )
+    return ~_text(df, column).str.strip_chars().is_in(allowed)
+
+
+_COMPARE_OPS = ("ge", "gt", "eq", "ne", "le", "lt")
+
+
+def check_compare_fields(df: pl.DataFrame, column: str, params: dict) -> pl.Expr:
+    left_name = _column(df, column)
+    right_name = _column(df, str(params.get("other") or ""))
+    op = params.get("op") or "ge"
+    if op not in _COMPARE_OPS:
+        raise QueryError(f"Unknown comparison '{op}'.")
+    mode = params.get("compare_as") or "auto"
+    if mode == "auto":
+        left_dt, right_dt = df.schema[left_name], df.schema[right_name]
+        if left_dt.is_temporal() or right_dt.is_temporal():
+            mode = "date"
+        elif left_dt.is_numeric() and right_dt.is_numeric():
+            mode = "number"
+        else:
+            mode = "text"
+    if mode == "date":
+        left, right = _date(df, left_name), _date(df, right_name)
+    elif mode == "number":
+        left, right = _numeric(df, left_name), _numeric(df, right_name)
+    else:
+        left = _text(df, left_name).str.strip_chars()
+        right = _text(df, right_name).str.strip_chars()
+    held = {
+        "ge": left >= right,
+        "gt": left > right,
+        "eq": left == right,
+        "ne": left != right,
+        "le": left <= right,
+        "lt": left < right,
+    }[op]
+    # A null on either side yields a null comparison → passes (nulls are
+    # 'required's business), so ~held stays null and fill_null(False) applies.
+    return ~held
+
+
+def check_conditional_required(df: pl.DataFrame, column: str, params: dict) -> pl.Expr:
+    target = _column(df, column)
+    when_column = _column(df, str(params.get("when_column") or ""))
+    when_value = str(params.get("when_value") or "").strip()
+    if not when_value:
+        raise QueryError("Conditional required needs a trigger value.")
+    triggered = _text(df, when_column).str.strip_chars() == when_value
+    blank = pl.col(target).is_null()
+    if df.schema[target] == pl.String:
+        blank = blank | (pl.col(target).str.strip_chars() == "")
+    return triggered.fill_null(False) & blank
+
+
+def check_expression(df: pl.DataFrame, column: str | None, params: dict) -> pl.Expr:
+    # The escape hatch, matching the Analysis tab's custom-code trust model
+    # (this is a local-first tool that already runs user Python via the
+    # sandbox). The expression must be a Polars expression that is True for
+    # VIOLATING rows, e.g.: (pl.col("qty") * pl.col("price") - pl.col("total")).abs() > 0.01
+    code = str(params.get("code") or "").strip()
+    if not code:
+        raise QueryError("Expression needs Polars code.")
+    try:
+        expr = eval(code, {"__builtins__": {}}, {"pl": pl, "col": pl.col})  # noqa: S307
+    except Exception as error:
+        raise QueryError(f"Expression error: {error}") from error
+    if not isinstance(expr, pl.Expr):
+        raise QueryError("The code must evaluate to a Polars expression (pl.Expr).")
+    return expr
 
 
 # -------------------------------------------------------- table-scope checks
@@ -308,6 +407,80 @@ CHECKS: dict[str, dict] = {
         "params": [],
         "func": check_unique,
     },
+    "referential": {
+        "label": "Exists in table",
+        "icon": "pi pi-link",
+        "scope": "column",
+        "column_kinds": ["numeric", "text"],
+        "description": "Value must exist in another table's column — e.g. every cost center appears in the cost-center master.",
+        "params": [
+            {"name": "lookup_table", "kind": "table", "label": "Lookup table"},
+            {"name": "lookup_column", "kind": "lookup_column", "label": "Lookup column"},
+        ],
+        "needs_lookup": True,
+        "func": check_referential,
+    },
+    "compare_fields": {
+        "label": "Compare fields",
+        "icon": "pi pi-arrow-right-arrow-left",
+        "scope": "column",
+        "column_kinds": ["numeric", "date", "text"],
+        "description": "This field must relate to another field in the same row — e.g. end_date ≥ start_date.",
+        "params": [
+            {
+                "name": "op",
+                "kind": "select",
+                "label": "Must be",
+                "options": [
+                    {"label": "≥ (at least)", "value": "ge"},
+                    {"label": "> (greater than)", "value": "gt"},
+                    {"label": "= (equal to)", "value": "eq"},
+                    {"label": "≠ (different from)", "value": "ne"},
+                    {"label": "≤ (at most)", "value": "le"},
+                    {"label": "< (less than)", "value": "lt"},
+                ],
+                "default": "ge",
+            },
+            {"name": "other", "kind": "column", "label": "Other field"},
+            {
+                "name": "compare_as",
+                "kind": "select",
+                "label": "Compare as",
+                "options": [
+                    {"label": "Auto (from column types)", "value": "auto"},
+                    {"label": "Numbers", "value": "number"},
+                    {"label": "Dates", "value": "date"},
+                    {"label": "Text", "value": "text"},
+                ],
+                "default": "auto",
+            },
+        ],
+        "func": check_compare_fields,
+    },
+    "conditional_required": {
+        "label": "Required when",
+        "icon": "pi pi-question-circle",
+        "scope": "column",
+        "column_kinds": ["numeric", "date", "boolean", "text"],
+        "description": "Value must be present whenever another field equals a trigger value — e.g. approval_ref required when amount_band = 'HIGH'.",
+        "params": [
+            {"name": "when_column", "kind": "column", "label": "When this field"},
+            {"name": "when_value", "kind": "text", "label": "Equals (exact value)"},
+        ],
+        "func": check_conditional_required,
+    },
+    "expression": {
+        "label": "Custom expression",
+        "icon": "pi pi-code",
+        "scope": "table",
+        "column_kinds": [],
+        "description": "A Polars expression that is True for violating rows — the escape hatch for anything the other checks can't say.",
+        "params": [
+            {"name": "name", "kind": "text", "label": "Rule name", "optional": True},
+            {"name": "code", "kind": "code", "label": "Violation expression"},
+        ],
+        "func": check_expression,
+    },
     "unique_key": {
         "label": "Unique key",
         "icon": "pi pi-key",
@@ -378,25 +551,43 @@ def rule_label(rule: dict) -> str:
         return f"{label}: {', '.join(parts)}" if parts else label
     if check == "unique_key":
         return f"{label}: {' + '.join(params.get('columns') or [])}"
+    if check == "referential":
+        return f"In {params.get('lookup_table') or '?'}.{params.get('lookup_column') or '?'}"
+    if check == "compare_fields":
+        symbol = {"ge": "≥", "gt": ">", "eq": "=", "ne": "≠", "le": "≤", "lt": "<"}.get(
+            params.get("op") or "ge", "≥"
+        )
+        return f"{symbol} {params.get('other') or '?'}"
+    if check == "conditional_required":
+        return f"Required when {params.get('when_column') or '?'} = {params.get('when_value') or '?'}"
+    if check == "expression":
+        return str(params.get("name") or "").strip() or label
     return label
 
 
 # ------------------------------------------------------------------ running
-def _violations(df: pl.DataFrame, rule: dict) -> pl.Expr:
+def _violations(df: pl.DataFrame, rule: dict, resolve: Resolve | None = None) -> pl.Expr:
     meta = CHECKS.get(rule.get("check"))
     if meta is None:
         raise QueryError(f"Unknown check '{rule.get('check')}'.")
-    expr = meta["func"](df, rule.get("column"), rule.get("params") or {})
+    if meta.get("needs_lookup"):
+        expr = meta["func"](df, rule.get("column"), rule.get("params") or {}, resolve)
+    else:
+        expr = meta["func"](df, rule.get("column"), rule.get("params") or {})
     # Comparisons against null yield null; a null verdict is "no violation".
     return expr.fill_null(False)
 
 
-def rule_failures(df: pl.DataFrame, rule: dict) -> pl.DataFrame:
+def rule_failures(
+    df: pl.DataFrame, rule: dict, resolve: Resolve | None = None
+) -> pl.DataFrame:
     """All rows violating one rule (full frame, for drill-in and export)."""
-    return df.filter(_violations(df, rule))
+    return df.filter(_violations(df, rule, resolve))
 
 
-def run_rules(df: pl.DataFrame, rules: list[dict], table: str) -> dict:
+def run_rules(
+    df: pl.DataFrame, rules: list[dict], table: str, resolve: Resolve | None = None
+) -> dict:
     results = []
     counts = {"passed": 0, "warned": 0, "failed": 0, "errored": 0, "skipped": 0}
 
@@ -419,7 +610,7 @@ def run_rules(df: pl.DataFrame, rules: list[dict], table: str) -> dict:
             results.append(result)
             continue
         try:
-            fail_count = int(df.select(_violations(df, rule).sum()).item() or 0)
+            fail_count = int(df.select(_violations(df, rule, resolve).sum()).item() or 0)
             result["fail_count"] = fail_count
             # Row count is a whole-table condition — a pass percentage or a
             # "failing rows" figure would be noise next to its verdict.
@@ -456,8 +647,8 @@ def run_rules(df: pl.DataFrame, rules: list[dict], table: str) -> dict:
     }
 
 
-def detail_payload(df: pl.DataFrame, rule: dict) -> dict:
-    failures = rule_failures(df, rule)
+def detail_payload(df: pl.DataFrame, rule: dict, resolve: Resolve | None = None) -> dict:
+    failures = rule_failures(df, rule, resolve)
     return {
         "label": rule_label(rule),
         "detail": frame_payload(failures, DETAIL_PREVIEW_ROWS),
@@ -465,12 +656,10 @@ def detail_payload(df: pl.DataFrame, rule: dict) -> dict:
     }
 
 
-def report_frame(run: dict) -> pl.DataFrame:
-    """One row per rule — the Excel evidence sheet for a run."""
+def summary_frame(run: dict) -> pl.DataFrame:
+    """One row per rule — the core of the evidence sheet and the tile table."""
     return pl.DataFrame(
         {
-            "table": [run["table"]] * len(run["results"]),
-            "run_at": [run["run_at"]] * len(run["results"]),
             "field": [r["column"] or "(table)" for r in run["results"]],
             "rule": [r["label"] for r in run["results"]],
             "severity": [r["severity"] for r in run["results"]],
@@ -481,3 +670,12 @@ def report_frame(run: dict) -> pl.DataFrame:
             "error": [r["error"] for r in run["results"]],
         }
     )
+
+
+def report_frame(run: dict) -> pl.DataFrame:
+    """The summary frame with the run context prepended, for Excel evidence."""
+    core = summary_frame(run)
+    return core.with_columns(
+        pl.Series("table", [run["table"]] * core.height),
+        pl.Series("run_at", [run["run_at"]] * core.height),
+    ).select(["table", "run_at", *core.columns])

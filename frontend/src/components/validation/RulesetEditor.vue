@@ -12,14 +12,19 @@ import { api, ApiError } from '../../api'
 import type {
   CheckMeta,
   ColumnSchema,
+  ColumnValues,
   RuleSet,
+  RunSummary,
+  TableProfile,
   ValidationRule,
   ValidationRun,
   WorkspaceSummary,
 } from '../../types'
+import PinDialog from '../PinDialog.vue'
 import CheckDialog from './CheckDialog.vue'
 import RunResults from './RunResults.vue'
 import ValidationGrid from './ValidationGrid.vue'
+import { newRuleId } from './rules'
 
 // One rule set: a header (title / bound table / run / save), the field-wise
 // checks grid, and the results of the latest run. All edits mutate a local
@@ -53,6 +58,15 @@ const dialogVisible = ref(false)
 const dialogColumn = ref<string | null>(null)
 const dialogRule = ref<ValidationRule | null>(null)
 
+const showPin = ref(false)
+const pinning = ref(false)
+// History arrives with saved-spec runs; seed it from the stored rule set.
+const history = ref<RunSummary[]>([...(props.ruleset?.runs ?? [])])
+// Ghost suggestions derived from the table profile — accepted or dismissed
+// one by one, never silently added: the auditor owns the rule set.
+const suggestions = ref<ValidationRule[]>([])
+const suggesting = ref(false)
+
 const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 const enabledCount = computed(() => rules.value.filter((r) => r.enabled).length)
 
@@ -61,9 +75,16 @@ const dirty = computed(() => {
   return (
     title.value !== props.ruleset.title ||
     table.value !== props.ruleset.table ||
-    JSON.stringify(rules.value) !== JSON.stringify(props.ruleset.rules)
+    rulesDirty.value
   )
 })
+
+// Rules-only dirtiness decides which run endpoint to use: the saved spec runs
+// through /rulesets/{id}/run (recorded in history), a draft runs statelessly.
+const rulesDirty = computed(
+  () =>
+    !props.ruleset || JSON.stringify(rules.value) !== JSON.stringify(props.ruleset.rules),
+)
 
 const viewOptions = computed(() => [
   { label: 'Rules', value: 'rules', disabled: false },
@@ -102,6 +123,10 @@ async function loadSchema() {
   }
 }
 watch(table, loadSchema, { immediate: true })
+// Suggestions are profiled from one table — a rebind invalidates them.
+watch(table, () => {
+  suggestions.value = []
+})
 
 // Default a new rule set to the first table.
 if (!props.ruleset && !table.value && tableOptions.value.length) {
@@ -113,10 +138,18 @@ async function runRules(targetTable?: string) {
   if (!target || rules.value.length === 0) return
   running.value = true
   try {
-    run.value = await api.post<ValidationRun>(
-      `/api/workspaces/${props.workspace.id}/tables/${target}/validate`,
-      { rules: rules.value },
-    )
+    if (props.ruleset && !rulesDirty.value) {
+      run.value = await api.post<ValidationRun>(
+        `/api/workspaces/${props.workspace.id}/rulesets/${props.ruleset.id}/run`,
+        { table: target },
+      )
+      if (run.value.history) history.value = [...run.value.history]
+    } else {
+      run.value = await api.post<ValidationRun>(
+        `/api/workspaces/${props.workspace.id}/tables/${target}/validate`,
+        { rules: rules.value },
+      )
+    }
     view.value = 'results'
     emit('ran', props.ruleset?.id ?? null, run.value.verdict)
   } catch (error) {
@@ -192,6 +225,107 @@ async function exportReport() {
   } finally {
     exporting.value = false
   }
+}
+
+async function pinTile({ title: pinTitle, note }: { title: string; note: string }) {
+  if (!table.value || rules.value.length === 0) return
+  pinning.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/tiles`, {
+      kind: 'validation',
+      table: table.value,
+      title: pinTitle,
+      note,
+      spec: { rules: rules.value },
+    })
+    showPin.value = false
+    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: pinTitle, life: 3000 })
+  } catch (error) {
+    fail('Pin failed', error)
+  } finally {
+    pinning.value = false
+  }
+}
+
+// ------------------------------------------------------------- suggestions
+// Conservative, profile-driven proposals: only what the current data already
+// satisfies (so accepting them starts green and guards future refreshes).
+async function suggest() {
+  if (!table.value) return
+  suggesting.value = true
+  try {
+    const profile = await api.get<TableProfile>(
+      `/api/workspaces/${props.workspace.id}/tables/${table.value}/profile`,
+    )
+    const have = new Set(rules.value.map((r) => `${r.column}|${r.check}`))
+    for (const s of suggestions.value) have.add(`${s.column}|${s.check}`)
+    const ghosts: ValidationRule[] = []
+    const propose = (
+      column: string,
+      check: string,
+      params: Record<string, unknown> = {},
+      severity: 'fail' | 'warn' = 'fail',
+    ) => {
+      if (have.has(`${column}|${check}`)) return
+      have.add(`${column}|${check}`)
+      ghosts.push({ id: newRuleId(), column, check, params, severity, enabled: true })
+    }
+    const kinds = new Map(schema.value.map((c) => [c.name, c.kind]))
+    const now = new Date()
+    const listCandidates: string[] = []
+    for (const col of profile.column_profiles) {
+      const kind = kinds.get(col.name)
+      if (!kind || col.inferred_type === 'empty') continue
+      if (col.blank_count === 0) propose(col.name, 'required')
+      if (kind === 'numeric' && col.min !== null && parseFloat(col.min.replace(/,/g, '')) >= 0)
+        propose(col.name, 'numeric_sign', { mode: 'non_negative' })
+      if (kind === 'date' && col.max !== null && new Date(col.max) <= now)
+        propose(col.name, 'date_range', { not_in_future: true }, 'warn')
+      if (col.distinct_pct === 100 && col.distinct_count > 1) propose(col.name, 'unique')
+      if (kind === 'text' && col.distinct_count >= 2 && col.distinct_count <= 20 && col.distinct_pct < 100)
+        listCandidates.push(col.name)
+    }
+    // Low-cardinality text columns → allowed-values prefilled with what the
+    // data currently contains.
+    await Promise.all(
+      listCandidates.map(async (name) => {
+        try {
+          const values = await api.get<ColumnValues>(
+            `/api/workspaces/${props.workspace.id}/tables/${table.value}/columns/${encodeURIComponent(name)}/values`,
+          )
+          if (!values.truncated && values.values.length)
+            propose(name, 'allowed_values', { values: values.values, ignore_case: false })
+        } catch {
+          /* skip the column — suggestions are best-effort */
+        }
+      }),
+    )
+    suggestions.value = [...suggestions.value, ...ghosts]
+    if (!ghosts.length) {
+      toast.add({
+        severity: 'info',
+        summary: 'No new suggestions',
+        detail: 'Every check the profile supports is already covered.',
+        life: 3500,
+      })
+    }
+  } catch (error) {
+    fail('Could not build suggestions', error)
+  } finally {
+    suggesting.value = false
+  }
+}
+
+function acceptSuggestion(rule: ValidationRule) {
+  suggestions.value = suggestions.value.filter((s) => s.id !== rule.id)
+  rules.value.push(rule)
+}
+function dismissSuggestion(ruleId: string) {
+  suggestions.value = suggestions.value.filter((s) => s.id !== ruleId)
+}
+function acceptAllSuggestions() {
+  rules.value.push(...suggestions.value)
+  suggestions.value = []
 }
 
 // ------------------------------------------------------------ rule editing
@@ -272,6 +406,15 @@ function fail(summary: string, error: unknown) {
       @click="save"
     />
     <Button
+      label="Pin"
+      icon="pi pi-thumbtack"
+      severity="secondary"
+      size="small"
+      :disabled="rules.length === 0 || !table"
+      @click="showPin = true"
+      v-tooltip.bottom="'Pin a live validation tile to the dashboard'"
+    />
+    <Button
       label="Report"
       icon="pi pi-file-excel"
       severity="secondary"
@@ -279,7 +422,7 @@ function fail(summary: string, error: unknown) {
       :disabled="rules.length === 0"
       :loading="exporting"
       @click="exportReport"
-      v-tooltip.bottom="'Export the validation report (Excel)'"
+      v-tooltip.bottom="'Export the validation report (Excel, summary + failing rows)'"
     />
     <Button
       v-if="ruleset"
@@ -300,19 +443,43 @@ function fail(summary: string, error: unknown) {
     <p v-if="!table" class="muted">
       Upload data in the Data tab first, then bind this rule set to a table.
     </p>
-    <ValidationGrid
-      v-else
-      :schema="schema"
-      :rules="rules"
-      :checks="checks"
-      @add="openAdd"
-      @edit="openEdit"
-      @remove="removeRule"
-    />
-    <p v-if="rules.length" class="muted grid-footer">
-      {{ rules.length }} rule{{ rules.length === 1 ? '' : 's' }}
-      ({{ enabledCount }} enabled) — click a chip to edit it.
-    </p>
+    <template v-else>
+      <div class="suggest-bar">
+        <Button
+          label="Suggest checks"
+          icon="pi pi-lightbulb"
+          severity="secondary"
+          outlined
+          size="small"
+          :loading="suggesting"
+          @click="suggest"
+          v-tooltip.bottom="'Propose checks the current data already satisfies'"
+        />
+        <template v-if="suggestions.length">
+          <span class="muted suggest-hint">
+            {{ suggestions.length }} suggestion{{ suggestions.length === 1 ? '' : 's' }} —
+            accept ✓ or dismiss ✕ each dashed chip.
+          </span>
+          <Button label="Accept all" text size="small" @click="acceptAllSuggestions" />
+          <Button label="Dismiss all" text size="small" severity="secondary" @click="suggestions = []" />
+        </template>
+      </div>
+      <ValidationGrid
+        :schema="schema"
+        :rules="rules"
+        :suggestions="suggestions"
+        :checks="checks"
+        @add="openAdd"
+        @edit="openEdit"
+        @remove="removeRule"
+        @accept="acceptSuggestion"
+        @dismiss="dismissSuggestion"
+      />
+      <p v-if="rules.length" class="muted grid-footer">
+        {{ rules.length }} rule{{ rules.length === 1 ? '' : 's' }}
+        ({{ enabledCount }} enabled) — click a chip to edit it.
+      </p>
+    </template>
   </template>
 
   <RunResults
@@ -321,7 +488,15 @@ function fail(summary: string, error: unknown) {
     :run="run"
     :rules="rules"
     :boundTable="table"
+    :history="history"
     @rebind="rebind"
+  />
+
+  <PinDialog
+    v-model:visible="showPin"
+    :defaultTitle="title || 'Validation rules'"
+    :saving="pinning"
+    @pin="pinTile"
   />
 
   <CheckDialog
@@ -363,4 +538,13 @@ function fail(summary: string, error: unknown) {
   margin-top: 0.6rem;
   font-size: 0.8rem;
 }
+
+.suggest-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+.suggest-hint { font-size: 0.8rem; }
 </style>

@@ -473,9 +473,9 @@ class Workspace:
     # and every tile is reproducible.
     def add_tile(self, payload: dict) -> dict:
         kind = payload.get("kind")
-        if kind not in ("query", "analytics", "python", "pivot"):
+        if kind not in ("query", "analytics", "python", "pivot", "validation"):
             raise WorkspaceError(
-                "Tile kind must be 'query', 'pivot', 'analytics' or 'python'."
+                "Tile kind must be 'query', 'pivot', 'analytics', 'python' or 'validation'."
             )
         table = payload.get("table")
         # Python tiles carry their own code and may reference any table(s), so
@@ -679,6 +679,28 @@ class Workspace:
     def remove_ruleset(self, ruleset_id: str) -> None:
         self.rulesets.remove(self._ruleset(ruleset_id))
         self.save()
+
+    RUN_HISTORY_MAX = 20
+
+    def record_run(self, ruleset_id: str, run: dict) -> list[dict]:
+        """Append a summary-only entry (never row data) to the rule set's run
+        history — enough for a 2025-vs-2026 trend without a second store of
+        results. Only runs of the *saved* spec are recorded; draft runs are not
+        evidence."""
+        ruleset = self._ruleset(ruleset_id)
+        runs = ruleset.setdefault("runs", [])
+        runs.append(
+            {
+                "run_at": run["run_at"],
+                "table": run["table"],
+                "rows": run["rows"],
+                "verdict": run["verdict"],
+                "counts": dict(run["counts"]),
+            }
+        )
+        del runs[: -self.RUN_HISTORY_MAX]
+        self.save()
+        return runs
 
     # ------------------------------------------------------------------ frames
     def get_frame(self, name: str, _seen: frozenset = frozenset()) -> pl.DataFrame:

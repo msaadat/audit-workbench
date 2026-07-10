@@ -7,6 +7,7 @@ import Tag from 'primevue/tag'
 import { api, ApiError } from '../../api'
 import type {
   RuleResult,
+  RunSummary,
   ValidationDetail,
   ValidationRule,
   ValidationRun,
@@ -22,6 +23,8 @@ const props = defineProps<{
   run: ValidationRun
   rules: ValidationRule[]
   boundTable: string | null
+  // Summary-only history of saved-spec runs (newest last, from the backend).
+  history?: RunSummary[]
 }>()
 const emit = defineEmits<{ rebind: [string] }>()
 const toast = useToast()
@@ -56,6 +59,8 @@ const stats = computed(() => {
 
 const runAt = computed(() => new Date(props.run.run_at).toLocaleString())
 const overridden = computed(() => !!props.boundTable && props.run.table !== props.boundTable)
+// Newest first for reading; the trend meter keeps chronological order.
+const pastRuns = computed(() => [...(props.history ?? [])].reverse())
 
 function expandable(result: RuleResult): boolean {
   return result.fail_count > 0 && result.check !== 'row_count' && result.verdict !== 'skipped'
@@ -223,6 +228,27 @@ watch(
         </div>
       </template>
     </div>
+
+    <template v-if="pastRuns.length">
+      <h4 class="history-title">Previous runs</h4>
+      <div class="history">
+        <div v-for="(entry, index) in pastRuns" :key="`${entry.run_at}-${index}`" class="history-row">
+          <Tag :value="entry.verdict" :severity="verdictSeverity[entry.verdict] ?? 'info'" />
+          <span class="history-when">{{ new Date(entry.run_at).toLocaleString() }}</span>
+          <span class="muted">{{ entry.table }} · {{ entry.rows.toLocaleString() }} rows</span>
+          <span class="history-counts muted">
+            {{ entry.counts.passed }} ok
+            <template v-if="entry.counts.warned"> · {{ entry.counts.warned }} warn</template>
+            <template v-if="entry.counts.failed + entry.counts.errored">
+              · {{ entry.counts.failed + entry.counts.errored }} fail</template
+            >
+          </span>
+        </div>
+      </div>
+      <p class="muted history-note">
+        Saved runs only — running unsaved edits doesn't record history.
+      </p>
+    </template>
   </div>
 </template>
 
@@ -322,4 +348,24 @@ watch(
   background: var(--p-surface-50);
 }
 .detail-note { margin: 0 0 0.4rem; font-size: 0.78rem; }
+
+.history-title { margin: 1.1rem 0 0.4rem; font-size: 0.9rem; }
+.history {
+  border: 1px solid var(--p-surface-200);
+  border-radius: 8px;
+  background: var(--p-surface-0);
+  overflow: hidden;
+}
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.35rem 0.8rem;
+  border-bottom: 1px solid var(--p-surface-100);
+  font-size: 0.8rem;
+}
+.history-row:last-child { border-bottom: none; }
+.history-when { font-weight: 500; }
+.history-counts { margin-left: auto; }
+.history-note { margin: 0.35rem 0 0; font-size: 0.74rem; }
 </style>

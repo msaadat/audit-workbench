@@ -35,6 +35,7 @@ const tileIcon: Record<string, string> = {
   query: 'pi pi-search',
   python: 'pi pi-code',
   pivot: 'pi pi-table',
+  validation: 'pi pi-check-square',
 }
 
 const tileKindLabel: Record<string, string> = {
@@ -42,6 +43,7 @@ const tileKindLabel: Record<string, string> = {
   query: 'Query',
   python: 'Python snippet',
   pivot: 'Pivot table',
+  validation: 'Validation rules',
 }
 
 function fail(summary: string, error: unknown) {

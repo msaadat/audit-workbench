@@ -158,7 +158,7 @@ export interface VizSpec {
 export interface DashboardTile {
   id: string
   title: string
-  kind: 'query' | 'analytics' | 'python' | 'pivot'
+  kind: 'query' | 'analytics' | 'python' | 'pivot' | 'validation'
   table: string | null
   note: string
   viz: VizSpec
@@ -199,7 +199,18 @@ export interface SavedAnalysis {
 // ------------------------------------------------------------- validation
 export interface CheckParamMeta {
   name: string
-  kind: 'number' | 'select' | 'text' | 'date' | 'toggle' | 'columns' | 'values'
+  kind:
+    | 'number'
+    | 'select'
+    | 'text'
+    | 'date'
+    | 'toggle'
+    | 'column'
+    | 'columns'
+    | 'values'
+    | 'table'
+    | 'lookup_column'
+    | 'code'
   label: string
   optional?: boolean
   default?: string | number | boolean
@@ -214,6 +225,7 @@ export interface CheckMeta {
   column_kinds: string[]
   description: string
   params: CheckParamMeta[]
+  needs_lookup?: boolean
 }
 
 export interface ValidationRule {
@@ -234,6 +246,16 @@ export interface RuleSet {
   rules: ValidationRule[]
   note: string
   created: string
+  // Summary-only history of saved-spec runs (never row data).
+  runs?: RunSummary[]
+}
+
+export interface RunSummary {
+  run_at: string
+  table: string
+  rows: number
+  verdict: 'ok' | 'warn' | 'fail' | 'info'
+  counts: { passed: number; warned: number; failed: number; errored: number; skipped: number }
 }
 
 export interface RuleResult {
@@ -256,6 +278,8 @@ export interface ValidationRun {
   verdict: 'ok' | 'warn' | 'fail' | 'info'
   counts: { passed: number; warned: number; failed: number; errored: number; skipped: number }
   results: RuleResult[]
+  // Present only on saved-ruleset runs, which record history server-side.
+  history?: RunSummary[]
 }
 
 export interface ValidationDetail {

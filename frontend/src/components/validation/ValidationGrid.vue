@@ -14,16 +14,29 @@ const props = defineProps<{
   schema: ColumnSchema[]
   rules: ValidationRule[]
   checks: CheckMeta[]
+  // Profile-derived proposals rendered as dashed "ghost" chips until the
+  // auditor explicitly accepts (✓) or dismisses (✕) them.
+  suggestions?: ValidationRule[]
 }>()
 const emit = defineEmits<{
   add: [string | null]
   edit: [ValidationRule]
   remove: [string]
+  accept: [ValidationRule]
+  dismiss: [string]
 }>()
 
 const columnRules = computed(() => {
   const byColumn: Record<string, ValidationRule[]> = {}
   for (const rule of props.rules) {
+    if (rule.column) (byColumn[rule.column] ??= []).push(rule)
+  }
+  return byColumn
+})
+
+const columnSuggestions = computed(() => {
+  const byColumn: Record<string, ValidationRule[]> = {}
+  for (const rule of props.suggestions ?? []) {
     if (rule.column) (byColumn[rule.column] ??= []).push(rule)
   }
   return byColumn
@@ -66,7 +79,21 @@ function label(rule: ValidationRule): string {
           {{ label(rule) }}
           <i class="pi pi-times x" @click.stop="emit('remove', rule.id)" />
         </button>
-        <span v-if="!(columnRules[column.name] ?? []).length" class="muted none">— no checks —</span>
+        <span
+          v-for="ghost in columnSuggestions[column.name] ?? []"
+          :key="ghost.id"
+          class="chip ghost"
+          v-tooltip.top="'Suggested from the current data'"
+        >
+          {{ label(ghost) }}
+          <i class="pi pi-check x accept" @click="emit('accept', ghost)" v-tooltip.top="'Accept'" />
+          <i class="pi pi-times x" @click="emit('dismiss', ghost.id)" v-tooltip.top="'Dismiss'" />
+        </span>
+        <span
+          v-if="!(columnRules[column.name] ?? []).length && !(columnSuggestions[column.name] ?? []).length"
+          class="muted none"
+          >— no checks —</span
+        >
       </span>
       <span class="row-add">
         <Button
@@ -218,6 +245,14 @@ function label(rule: ValidationRule): string {
   background: var(--p-red-50);
   color: var(--p-red-700);
 }
+.chip.ghost {
+  border-style: dashed;
+  border-color: var(--p-primary-300);
+  background: transparent;
+  color: var(--p-primary-600);
+  cursor: default;
+}
+.chip .accept:hover { color: var(--p-green-600); }
 .chip .x {
   font-size: 0.62rem;
   padding: 0.12rem;
