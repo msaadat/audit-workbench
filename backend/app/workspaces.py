@@ -125,6 +125,74 @@ class Workspace:
         self.save()
         return entry
 
+    def replace_table(self, name: str, filename: str, content: bytes) -> dict:
+        """Swap the data behind an existing base table, keeping its ``name``.
+
+        Saved queries/tiles/analyses/joins link to a table by name and recompute
+        live, so replacing the file content updates every one of them at once.
+        The new file is validated in a temp file first; only a successful parse
+        commits the swap, so a bad upload never destroys the existing data.
+        """
+        entry = self._table_entry(name)
+        if entry is None:
+            join = self._join_entry(name)
+            if join is not None:
+                raise WorkspaceError(f"'{name}' is a join, not a data table.")
+            raise WorkspaceError(f"No table named '{name}'.")
+
+        suffix = Path(filename).suffix.lower()
+        if suffix not in loader.SUPPORTED_SUFFIXES:
+            raise WorkspaceError(
+                f"Unsupported file type '{suffix}'. "
+                f"Supported: {', '.join(loader.SUPPORTED_SUFFIXES)}"
+            )
+
+        # Snapshot the current columns for the schema diff (best-effort: the old
+        # file may itself be unreadable, in which case there's nothing to diff).
+        try:
+            old_columns = self.get_frame(name).columns
+        except Exception:
+            old_columns = []
+
+        # Validate the new content in a temp file before touching the live one.
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.data_dir / f".{name}.upload{suffix}"
+        tmp.write_bytes(content)
+        try:
+            frame = loader.read_table(tmp)
+        except Exception as error:
+            loader.clear_cache(tmp)
+            tmp.unlink(missing_ok=True)
+            raise WorkspaceError(f"Could not read '{filename}': {error}") from error
+        if frame.width == 0:
+            loader.clear_cache(tmp)
+            tmp.unlink(missing_ok=True)
+            raise WorkspaceError(f"'{filename}' appears to be empty.")
+        loader.clear_cache(tmp)  # drop the temp path's entry before committing
+
+        old_path = self.data_dir / entry["file"]
+        new_path = self.data_dir / f"{name}{suffix}"
+        loader.clear_cache(old_path)
+        os.replace(tmp, new_path)
+        if new_path != old_path:
+            # Format changed (e.g. csv → xlsx): retire the old file.
+            old_path.unlink(missing_ok=True)
+            entry["file"] = new_path.name
+        loader.clear_cache(new_path)
+        self._clear_profile_cache(name)
+
+        entry["source"] = filename
+        self.save()
+
+        new_columns = self.get_frame(name).columns
+        return {
+            "name": name,
+            "file": entry["file"],
+            "source": filename,
+            "added_columns": [c for c in new_columns if c not in old_columns],
+            "removed_columns": [c for c in old_columns if c not in new_columns],
+        }
+
     def remove_table(self, name: str) -> None:
         entry = self._table_entry(name)
         join = self._join_entry(name)

@@ -43,6 +43,16 @@ async def upload_tables(workspace_id: str, files: list[UploadFile] = File(...)):
     return {"added": added, "workspace": ws.summary()}
 
 
+@router.put("/{workspace_id}/tables/{table_name}")
+async def replace_table(
+    workspace_id: str, table_name: str, file: UploadFile = File(...)
+):
+    ws = workspaces.load_workspace(workspace_id)
+    content = await file.read()
+    result = ws.replace_table(table_name, file.filename or "upload.csv", content)
+    return {"replaced": result, "workspace": ws.summary()}
+
+
 @router.delete("/{workspace_id}/tables/{table_name}")
 async def delete_table(workspace_id: str, table_name: str):
     ws = workspaces.load_workspace(workspace_id)

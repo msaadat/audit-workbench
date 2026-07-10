@@ -44,6 +44,85 @@ def test_add_table_rejects_unreadable_and_unsupported(workspace_with_data):
     assert not list(ws.data_dir.glob("broken*"))
 
 
+def test_replace_table_keeps_name_and_updates_data(workspace_with_data):
+    ws = workspace_with_data
+    # A saved tile bound to the table by name — the whole point of replacing.
+    ws.add_tile(
+        {
+            "kind": "query",
+            "table": "transactions",
+            "title": "By customer",
+            "spec": {"group_by": ["cust_id"], "aggs": [{"column": "amount", "func": "sum"}]},
+        }
+    )
+    assert ws.get_frame("transactions").height == 6
+
+    new_csv = b"invoice_no,cust_id,amount,tx_date\n2001,C1,10.0,2027-01-01\n2002,C2,20.0,2027-01-02\n"
+    result = ws.replace_table("transactions", "transactions.csv", new_csv)
+
+    assert result["name"] == "transactions"
+    assert result["removed_columns"] == [] and result["added_columns"] == []
+    # Same name, new data — reload from disk to prove it persisted.
+    reloaded = workspaces.load_workspace(ws.id)
+    assert reloaded.get_frame("transactions").height == 2
+    # The saved tile still resolves against the fresh data.
+    assert "transactions" in reloaded.table_names()
+
+
+def test_replace_table_reports_schema_diff(workspace_with_data):
+    ws = workspace_with_data
+    result = ws.replace_table(
+        "transactions", "transactions.csv", b"invoice_no,amount,branch\n1,10.0,North\n"
+    )
+    assert set(result["removed_columns"]) == {"cust_id", "tx_date"}
+    assert result["added_columns"] == ["branch"]
+
+
+def test_replace_table_rolls_back_on_bad_file(workspace_with_data):
+    ws = workspace_with_data
+    with pytest.raises(WorkspaceError):
+        ws.replace_table("transactions", "transactions.xlsx", b"not an excel file")
+    # Original data untouched; no temp file left behind.
+    assert ws.get_frame("transactions").height == 6
+    assert not list(ws.data_dir.glob(".transactions.upload*"))
+
+
+def test_replace_table_format_change_retires_old_file(workspace_with_data):
+    import io
+
+    import polars as pl
+
+    ws = workspace_with_data
+    assert (ws.data_dir / "transactions.csv").exists()
+
+    buffer = io.BytesIO()
+    pl.DataFrame({"invoice_no": [1, 2], "amount": [5.0, 6.0]}).write_excel(buffer)
+    ws.replace_table("transactions", "transactions.xlsx", buffer.getvalue())
+
+    entry = ws._table_entry("transactions")
+    assert entry["file"] == "transactions.xlsx"
+    assert not (ws.data_dir / "transactions.csv").exists()
+    assert ws.get_frame("transactions").height == 2
+
+
+def test_replace_rejects_join_and_unknown(workspace_with_data):
+    ws = workspace_with_data
+    ws.add_join(
+        {
+            "name": "tx_enriched",
+            "left": "transactions",
+            "right": "customers",
+            "how": "left",
+            "left_on": ["cust_id"],
+            "right_on": ["id"],
+        }
+    )
+    with pytest.raises(WorkspaceError):
+        ws.replace_table("tx_enriched", "x.csv", b"a,b\n1,2\n")
+    with pytest.raises(WorkspaceError):
+        ws.replace_table("nope", "x.csv", b"a,b\n1,2\n")
+
+
 def test_join_and_dependency_guard(workspace_with_data):
     ws = workspace_with_data
     ws.add_join(

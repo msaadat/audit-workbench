@@ -45,6 +45,13 @@ export const api = {
     return fetch(url, { method: 'POST', body: form }).then((r) => handle<T>(r))
   },
 
+  /** PUT a single file to replace an existing table's data in place. */
+  replace<T>(url: string, file: File): Promise<T> {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(url, { method: 'PUT', body: form }).then((r) => handle<T>(r))
+  },
+
   /** POST that streams back an Excel file and triggers a browser download. */
   async download(url: string, body: unknown, filename: string): Promise<void> {
     const response = await fetch(url, {

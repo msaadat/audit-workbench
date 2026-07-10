@@ -28,6 +28,9 @@ const toast = useToast()
 const confirm = useConfirm()
 
 const fileInput = ref<HTMLInputElement>()
+const replaceInput = ref<HTMLInputElement>()
+const replaceTarget = ref<string | null>(null)
+const replacing = ref(false)
 const uploading = ref(false)
 const showJoin = ref(false)
 const preview = ref<{ table: string; frame: FramePayload; total: number } | null>(null)
@@ -69,6 +72,51 @@ async function upload(event: Event) {
     fail('Upload failed', error)
   } finally {
     uploading.value = false
+  }
+}
+
+function startReplace(table: TableInfo) {
+  replaceTarget.value = table.name
+  replaceInput.value?.click()
+}
+
+async function replaceData(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = (input.files ?? [])[0]
+  input.value = ''
+  const table = replaceTarget.value
+  if (!file || !table) return
+  replacing.value = true
+  try {
+    const { replaced } = await api.replace<{
+      replaced: { removed_columns: string[]; added_columns: string[] }
+    }>(`/api/workspaces/${props.workspace.id}/tables/${table}`, file)
+    emit('changed')
+    const { removed_columns, added_columns } = replaced
+    if (removed_columns.length) {
+      toast.add({
+        severity: 'warn',
+        summary: `Replaced "${table}" — schema changed`,
+        detail:
+          `Dropped column(s): ${removed_columns.join(', ')}. ` +
+          `Saved queries or analyses using them may now error until updated.`,
+        life: 9000,
+      })
+    } else {
+      toast.add({
+        severity: 'success',
+        summary: `Replaced "${table}"`,
+        detail: added_columns.length
+          ? `New column(s): ${added_columns.join(', ')}.`
+          : 'Saved queries and analyses now use the new data.',
+        life: 5000,
+      })
+    }
+  } catch (error) {
+    fail('Replace failed', error)
+  } finally {
+    replacing.value = false
+    replaceTarget.value = null
   }
 }
 
@@ -165,6 +213,7 @@ function rangeText(p: ColumnProfile): string {
 <template>
   <div class="toolbar">
     <input ref="fileInput" type="file" multiple accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="upload" />
+    <input ref="replaceInput" type="file" accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="replaceData" />
     <Button label="Add files" icon="pi pi-upload" :loading="uploading" @click="fileInput?.click()" />
     <Button
       label="Add join"
@@ -225,6 +274,15 @@ function rangeText(p: ColumnProfile): string {
             :loading="previewLoading"
             v-tooltip.bottom="'Preview first 100 rows'"
             @click.stop="openPreview(table)"
+          />
+          <Button
+            v-if="table.kind === 'file'"
+            icon="pi pi-sync"
+            text
+            size="small"
+            :loading="replacing && replaceTarget === table.name"
+            v-tooltip.bottom="'Replace data — keeps saved queries &amp; analyses'"
+            @click.stop="startReplace(table)"
           />
           <Button
             icon="pi pi-trash"
