@@ -96,7 +96,8 @@ function confirmDelete(ruleset: RuleSet) {
 
 <template>
   <div class="validation">
-    <aside class="rail">
+    <aside class="rail surface-panel">
+      <div class="rail-heading"><p class="eyebrow">Control testing</p><strong>Validation rule sets</strong></div>
       <Button
         label="New rule set"
         icon="pi pi-plus"
@@ -105,7 +106,7 @@ function confirmDelete(ruleset: RuleSet) {
         @click="startNew"
       />
 
-      <p class="rail-title">Saved rule sets</p>
+      <p class="rail-title">Engagement rules</p>
       <p v-if="!loading && rulesets.length === 0" class="muted small">
         Nothing saved yet — define field-wise checks once, then re-run them on
         every data refresh.
@@ -134,7 +135,7 @@ function confirmDelete(ruleset: RuleSet) {
       </button>
     </aside>
 
-    <section class="detail">
+    <section class="detail surface-panel">
       <RulesetEditor
         v-if="creating || selected"
         :key="selected?.id ?? 'new-ruleset'"
@@ -145,13 +146,12 @@ function confirmDelete(ruleset: RuleSet) {
         @deleted="onDeleted"
         @ran="onRan"
       />
-      <div v-else class="empty">
-        <i class="pi pi-check-square" />
-        <p>
+      <div v-else class="empty-state validation-empty">
+        <div><span class="empty-state-icon"><i class="pi pi-check-square" /></span><h3>Define reusable controls</h3><p>
           Pick a saved rule set, or start a <strong>New rule set</strong> —
           attach checks to each field of a table, save once, and re-run on
           every new or refreshed dataset.
-        </p>
+        </p></div>
       </div>
     </section>
   </div>
@@ -174,9 +174,12 @@ function confirmDelete(ruleset: RuleSet) {
   flex-direction: column;
   gap: 0.5rem;
   overflow-y: auto;
-  padding-right: 0.25rem;
+  padding: 0.75rem;
+  box-shadow: none;
 }
 .rail > * { flex-shrink: 0; }
+.rail-heading { padding: .15rem .1rem .5rem; border-bottom: 1px solid var(--aw-border); }
+.rail-heading .eyebrow { margin-bottom: .1rem; }
 
 .rail-title {
   margin: 0.5rem 0 0.15rem;
@@ -202,6 +205,7 @@ function confirmDelete(ruleset: RuleSet) {
 }
 .rail-item:hover { border-color: var(--p-primary-300); }
 .rail-item.active { border-color: var(--p-primary-500); box-shadow: 0 0 0 1px var(--p-primary-500); }
+.rail-item.active { border-color: #6ca9a3; box-shadow: inset 3px 0 0 var(--aw-teal); background: #f3fbfa; }
 
 .rail-item-head {
   display: flex;
@@ -235,7 +239,8 @@ function confirmDelete(ruleset: RuleSet) {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 2px;
+  padding: 1rem;
+  box-shadow: none;
 }
 
 .empty {
@@ -245,4 +250,11 @@ function confirmDelete(ruleset: RuleSet) {
 }
 .empty i { font-size: 2rem; color: var(--p-primary-400); }
 .empty p { margin-top: 0.6rem; }
+.validation-empty { height: 100%; border: 0; background: transparent; }
+
+@media (max-width: 900px) {
+  .validation { height: auto; flex-direction: column; }
+  .rail { flex-basis: auto; max-height: 18rem; }
+  .detail { min-height: 24rem; }
+}
 </style>

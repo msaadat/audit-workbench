@@ -382,8 +382,10 @@ watch(table, () => {
   </div>
 
   <div v-if="result" class="result">
-    <div class="result-head">
-      <h3>{{ result.title }}</h3>
+    <div class="result-head" :data-verdict="result.verdict">
+      <span class="result-icon"><i :class="result.verdict === 'ok' ? 'pi pi-check-circle' : result.verdict === 'fail' ? 'pi pi-times-circle' : result.verdict === 'warn' ? 'pi pi-exclamation-triangle' : 'pi pi-info-circle'" /></span>
+      <div><p class="eyebrow">Audit conclusion</p><h3>{{ result.title }}</h3></div>
+      <span class="grow" />
       <Tag :value="result.verdict_text || result.verdict" :severity="verdictSeverity[result.verdict]" />
     </div>
 
@@ -535,7 +537,16 @@ watch(table, () => {
 }
 .run-hint { font-size: 0.8rem; align-self: center; }
 
-.result-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.result-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: .85rem 1rem; border: 1px solid var(--aw-border); border-left: 4px solid #3b82f6; border-radius: 7px; background: #f8fbff; }
+.result-head[data-verdict='ok'] { border-left-color: #16855b; background: #f3fbf7; }
+.result-head[data-verdict='warn'] { border-left-color: #d97706; background: #fffbeb; }
+.result-head[data-verdict='fail'] { border-left-color: #dc2626; background: #fff7f7; }
+.result-head .eyebrow { margin-bottom: .1rem; }
+.result-head .grow { flex: 1; }
+.result-icon { font-size: 1.35rem; color: #3b82f6; }
+.result-head[data-verdict='ok'] .result-icon { color: #16855b; }
+.result-head[data-verdict='warn'] .result-icon { color: #d97706; }
+.result-head[data-verdict='fail'] .result-icon { color: #dc2626; }
 .result-head h3 { margin: 0; }
 h4 { margin: 1rem 0 0.5rem; }
 </style>

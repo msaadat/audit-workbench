@@ -176,6 +176,10 @@ const toolLabel: Record<string, string> = {
 </script>
 
 <template>
+  <div class="privacy-banner">
+    <span><i class="pi pi-shield" /></span>
+    <div><strong>Metadata-only AI analysis</strong><small>The model receives schemas and aggregate previews—not raw data rows. Generated Polars runs locally and remains editable.</small></div>
+  </div>
   <div v-if="status && !status.configured" class="notice">
     <i class="pi pi-info-circle" />
     <div>
@@ -321,6 +325,11 @@ const toolLabel: Record<string, string> = {
 </template>
 
 <style scoped>
+.privacy-banner { display: flex; align-items: center; gap: .7rem; margin-bottom: .8rem; padding: .65rem .8rem; border: 1px solid #bfe5df; border-radius: 7px; background: #effaf8; }
+.privacy-banner > span { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 5px; background: #d6f3ee; color: var(--aw-teal); }
+.privacy-banner > div { display: flex; flex-direction: column; }
+.privacy-banner strong { font-size: .8rem; color: #125e59; }
+.privacy-banner small { margin-top: .1rem; color: #52716f; font-size: .7rem; }
 .notice {
   display: flex;
   gap: 0.75rem;

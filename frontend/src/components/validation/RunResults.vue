@@ -261,7 +261,11 @@ watch(
   border-radius: 8px;
   padding: 0.8rem 1rem;
   background: var(--p-surface-0);
+  border-left: 4px solid #3b82f6;
 }
+.banner[data-verdict='ok'] { border-left-color: #16855b; background: #f3fbf7; }
+.banner[data-verdict='warn'] { border-left-color: #d97706; background: #fffbeb; }
+.banner[data-verdict='fail'] { border-left-color: #dc2626; background: #fff7f7; }
 .banner > i { font-size: 1.6rem; }
 .banner[data-verdict='ok'] > i { color: var(--p-green-500); }
 .banner[data-verdict='warn'] > i { color: var(--p-amber-500); }

@@ -107,14 +107,15 @@ function confirmDelete(a: SavedAnalysis) {
 
 <template>
   <div class="analysis">
-    <aside class="rail">
+    <aside class="rail surface-panel">
+      <div class="rail-heading"><p class="eyebrow">Analysis library</p><strong>Saved procedures</strong></div>
       <div class="rail-actions">
         <Button label="Library" icon="pi pi-book" size="small" :outlined="creating !== 'library'" @click="startLibrary" />
         <Button label="Ask AI" icon="pi pi-sparkles" size="small" :outlined="creating !== 'ai'" @click="startAi" />
         <Button label="Code" icon="pi pi-code" size="small" :outlined="creating !== 'code'" @click="startCode" />
       </div>
 
-      <p class="rail-title">Saved analyses</p>
+      <p class="rail-title">Engagement analyses</p>
       <p v-if="!loading && analyses.length === 0" class="muted small">
         Nothing saved yet — create one from the library, the AI, or your own code.
       </p>
@@ -148,7 +149,7 @@ function confirmDelete(a: SavedAnalysis) {
       </button>
     </aside>
 
-    <section class="detail">
+    <section class="detail surface-panel">
       <AnalysisLibrary
         v-if="creating === 'library' || selected?.kind === 'analytics'"
         :key="selected?.id ?? 'new-library'"
@@ -181,9 +182,10 @@ function confirmDelete(a: SavedAnalysis) {
         @changed="onChanged"
         @deleted="onDeleted"
       />
-      <div v-if="!creating && !selected" class="empty">
-        <i class="pi pi-shield" />
-        <p>Pick a saved analysis, or start a new one from the <strong>Library</strong>, <strong>Ask AI</strong>, or <strong>Code</strong>.</p>
+      <div v-if="!creating && !selected" class="empty-state analysis-empty">
+        <div><span class="empty-state-icon"><i class="pi pi-shield" /></span>
+        <h3>Choose an analysis path</h3>
+        <p>Use a predefined audit procedure, describe an analysis to AI, or write visible Polars code.</p></div>
       </div>
     </section>
   </div>
@@ -207,7 +209,8 @@ function confirmDelete(a: SavedAnalysis) {
   flex-direction: column;
   gap: 0.5rem;
   overflow-y: auto;
-  padding-right: 0.25rem;
+  padding: 0.75rem;
+  box-shadow: none;
 }
 .rail > * { flex-shrink: 0; }
 
@@ -215,6 +218,8 @@ function confirmDelete(a: SavedAnalysis) {
   display: flex;
   gap: 0.5rem;
 }
+.rail-heading { padding: .15rem .1rem .5rem; border-bottom: 1px solid var(--aw-border); }
+.rail-heading .eyebrow { margin-bottom: .1rem; }
 /* Three creation buttons share the 15rem rail — trim padding so the labels
    stay on one line. */
 .rail-actions :deep(.p-button) { flex: 1; padding-inline: 0.35rem; white-space: nowrap; }
@@ -243,6 +248,7 @@ function confirmDelete(a: SavedAnalysis) {
 }
 .rail-item:hover { border-color: var(--p-primary-300); }
 .rail-item.active { border-color: var(--p-primary-500); box-shadow: 0 0 0 1px var(--p-primary-500); }
+.rail-item.active { border-color: #6ca9a3; box-shadow: inset 3px 0 0 var(--aw-teal); background: #f3fbfa; }
 
 .rail-item-head {
   display: flex;
@@ -277,7 +283,8 @@ function confirmDelete(a: SavedAnalysis) {
   min-width: 0;
   overflow-y: auto;
   /* Room for the focus ring of the sticky header inputs. */
-  padding: 2px;
+  padding: 1rem;
+  box-shadow: none;
 }
 
 .empty {
@@ -287,4 +294,11 @@ function confirmDelete(a: SavedAnalysis) {
 }
 .empty i { font-size: 2rem; color: var(--p-primary-400); }
 .empty p { margin-top: 0.6rem; }
+.analysis-empty { height: 100%; border: 0; background: transparent; }
+
+@media (max-width: 900px) {
+  .analysis { height: auto; flex-direction: column; }
+  .rail { flex-basis: auto; max-height: 18rem; }
+  .detail { min-height: 24rem; }
+}
 </style>

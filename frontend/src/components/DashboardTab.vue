@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -22,6 +22,11 @@ const loading = ref(true)
 const editing = ref<DashboardTile | null>(null)
 const editTitle = ref('')
 const editNote = ref('')
+const verdictCounts = computed(() => ({
+  ok: tiles.value.filter((tile) => tile.verdict === 'ok').length,
+  warn: tiles.value.filter((tile) => tile.verdict === 'warn').length,
+  fail: tiles.value.filter((tile) => tile.verdict === 'fail' || tile.error).length,
+}))
 
 const verdictSeverity: Record<string, string> = {
   ok: 'success',
@@ -109,21 +114,25 @@ defineExpose({ load })
 </script>
 
 <template>
-  <div class="toolbar">
-    <span class="muted">
-      Tiles re-run their saved query or test on the current data every time the
-      dashboard loads — pin results from the Query and Analytics tabs.
-    </span>
+  <div class="dashboard-heading">
+    <div><p class="eyebrow">Engagement overview</p><h2>Audit dashboard</h2><p class="muted">Pinned procedures recompute against the current data whenever this view opens.</p></div>
     <Button icon="pi pi-refresh" label="Refresh" severity="secondary" size="small" :loading="loading" @click="load" />
   </div>
 
-  <p v-if="!loading && tiles.length === 0" class="muted empty">
-    Nothing pinned yet. Run a query in <b>Query</b> or a test in
-    <b>Analytics</b>, then hit <i class="pi pi-thumbtack" /> Pin.
-  </p>
+  <div v-if="tiles.length" class="dashboard-summary surface-panel">
+    <span><strong>{{ tiles.length }}</strong><small>Pinned procedures</small></span>
+    <span class="summary-ok"><strong>{{ verdictCounts.ok }}</strong><small>Passed</small></span>
+    <span class="summary-warn"><strong>{{ verdictCounts.warn }}</strong><small>Review</small></span>
+    <span class="summary-fail"><strong>{{ verdictCounts.fail }}</strong><small>Exceptions</small></span>
+    <span class="freshness"><i class="pi pi-sync" /><small>Live against current tables</small></span>
+  </div>
+
+  <div v-if="!loading && tiles.length === 0" class="empty-state dashboard-empty">
+    <div><span class="empty-state-icon"><i class="pi pi-thumbtack" /></span><h3>Build an engagement overview</h3><p>Run a query, validation rule set or analysis, then pin the result here. Pinned work automatically recomputes against refreshed data.</p></div>
+  </div>
 
   <div class="tile-grid">
-    <div v-for="(tile, index) in tiles" :key="tile.id" class="tile" :class="{ 'tile-error': tile.error }">
+    <div v-for="(tile, index) in tiles" :key="tile.id" class="tile" :class="{ 'tile-error': tile.error }" :data-verdict="tile.error ? 'fail' : tile.verdict">
       <div class="tile-head">
         <div class="tile-title">
           <i :class="tileIcon[tile.kind]" v-tooltip.bottom="tileKindLabel[tile.kind]" />
@@ -178,9 +187,18 @@ defineExpose({ load })
 </template>
 
 <style scoped>
-.toolbar {
-  justify-content: space-between;
-}
+.dashboard-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.dashboard-heading h2 { margin: 0; font-size: 1.25rem; }
+.dashboard-heading p:last-child { margin: .25rem 0 0; }
+.dashboard-summary { display: flex; align-items: stretch; margin-bottom: 1rem; overflow: hidden; box-shadow: none; }
+.dashboard-summary > span { display: flex; flex-direction: column; justify-content: center; min-width: 9rem; padding: .7rem 1rem; border-right: 1px solid var(--aw-border); }
+.dashboard-summary strong { font-size: 1.15rem; }
+.dashboard-summary small { color: var(--aw-muted); font-size: .7rem; }
+.dashboard-summary .summary-ok strong { color: #15805c; }
+.dashboard-summary .summary-warn strong { color: #b45309; }
+.dashboard-summary .summary-fail strong { color: #b42318; }
+.dashboard-summary .freshness { margin-left: auto; flex-direction: row; align-items: center; gap: .45rem; border: 0; color: var(--aw-teal); }
+.dashboard-empty { min-height: 20rem; }
 
 .empty {
   padding: 2rem 0;
@@ -195,10 +213,16 @@ defineExpose({ load })
 .tile {
   background: var(--p-surface-0);
   border: 1px solid var(--p-surface-200);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 0.9rem 1rem 1rem;
   min-width: 0;
+  box-shadow: var(--aw-shadow);
+  border-top: 3px solid #94a3b8;
 }
+.tile[data-verdict='ok'] { border-top-color: #16855b; }
+.tile[data-verdict='warn'] { border-top-color: #d97706; }
+.tile[data-verdict='fail'] { border-top-color: #dc2626; }
+.tile[data-verdict='info'] { border-top-color: #3b82f6; }
 
 .tile-error {
   border-color: var(--p-red-200);
@@ -231,6 +255,8 @@ defineExpose({ load })
   display: flex;
   flex-shrink: 0;
 }
+.tile:not(:hover) .tile-actions { opacity: .35; }
+.tile-actions { transition: opacity .15s; }
 
 .tile-meta {
   margin: 0.15rem 0 0.4rem;
@@ -275,5 +301,11 @@ defineExpose({ load })
   color: var(--p-red-600);
   font-size: 0.9rem;
   padding: 0.75rem 0;
+}
+
+@media (max-width: 760px) {
+  .dashboard-summary { overflow-x: auto; }
+  .dashboard-heading { flex-direction: column; }
+  .tile-grid { grid-template-columns: 1fr; }
 }
 </style>

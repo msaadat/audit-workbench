@@ -64,6 +64,15 @@ const tableOptions = computed(() => props.workspace.tables.map((t) => t.name))
 const columnNames = computed(() => schema.value.map((c) => c.name))
 const visibleColumnSet = computed(() => new Set(visibleColumns.value))
 const hiddenCount = computed(() => Math.max(columnNames.value.length - visibleColumns.value.length, 0))
+const querySummary = computed(() => {
+  if (!table.value) return 'Select a table to begin'
+  const parts = [table.value]
+  if (filters.value.length) parts.push(`${filters.value.length} filter${filters.value.length === 1 ? '' : 's'}`)
+  if (groupBy.value.length) parts.push(`grouped by ${groupBy.value.join(', ')}`)
+  if (splitField.value) parts.push(`split by ${splitField.value}`)
+  if (aggs.value.length) parts.push(aggs.value.map(aggLabel).join(', '))
+  return parts.join(' · ')
+})
 
 function kindOf(field: string): string {
   return schema.value.find((c) => c.name === field)?.kind ?? 'text'
@@ -217,6 +226,15 @@ function toggleColumn(field: string) {
 }
 
 function showAllColumns() {
+  visibleColumns.value = columnNames.value
+}
+
+function clearQuery() {
+  filters.value = []
+  groupBy.value = []
+  splitField.value = null
+  aggs.value = []
+  sortSpec.value = []
   visibleColumns.value = columnNames.value
 }
 
@@ -504,10 +522,14 @@ async function exportExcel() {
 </script>
 
 <template>
-  <div class="toolbar">
+  <div class="query-commandbar surface-panel">
     <div class="field">
-      <label>Table</label>
+      <label>Source table</label>
       <Select v-model="table" :options="tableOptions" placeholder="Pick a table" style="min-width: 14rem" />
+    </div>
+    <div class="query-context">
+      <p class="eyebrow">Live query</p>
+      <strong>{{ querySummary }}</strong>
     </div>
     <span class="grow" />
     <Tag
@@ -533,12 +555,18 @@ async function exportExcel() {
       v-tooltip.bottom="'Pin this query to the dashboard'"
       @click="showPin = true"
     />
+    <Button icon="pi pi-undo" severity="secondary" text :disabled="!filters.length && !groupBy.length && !aggs.length && !splitField && !sortSpec.length" v-tooltip.bottom="'Clear query'" @click="clearQuery" />
   </div>
 
   <div class="query-layout">
-    <div class="query-result" :class="{ dim: running }">
-      <p v-if="!table" class="muted hint">Pick a table to begin.</p>
-      <p v-else-if="lastError" class="error">{{ lastError }}</p>
+    <div class="query-result surface-panel" :class="{ dim: running }">
+      <div class="result-titlebar">
+        <div><p class="eyebrow">Result canvas</p><strong>{{ result ? `${result.filtered_rows.toLocaleString()} of ${result.total_rows.toLocaleString()} rows` : 'Awaiting query' }}</strong></div>
+        <span v-if="running" class="computing"><i class="pi pi-spinner pi-spin" /> Recomputing</span>
+      </div>
+      <div class="result-body">
+      <div v-if="!table" class="empty-state compact-empty"><div><span class="empty-state-icon"><i class="pi pi-table" /></span><h3>Select a source table</h3><p>Choose a table above to inspect rows and build a query.</p></div></div>
+      <div v-else-if="lastError" class="error"><i class="pi pi-exclamation-circle" /> {{ lastError }}</div>
       <template v-else-if="result">
         <div class="result-meta" v-if="showChartControls || wasGrouped">
           <span v-if="wasGrouped" class="muted small"><i class="pi pi-info-circle" /> Click a group row to drill down to its rows.</span>
@@ -645,10 +673,12 @@ async function exportExcel() {
           </Column>
         </DataTable>
       </template>
-      <p v-else class="muted hint">Computing…</p>
+      <p v-else class="muted hint"><i class="pi pi-spinner pi-spin" /> Computing result…</p>
+      </div>
     </div>
 
-    <div class="query-panel">
+    <aside class="query-panel">
+      <div class="builder-title"><div><p class="eyebrow">Query builder</p><strong>Shape the result</strong></div><span class="muted small">Drag or click fields</span></div>
       <div class="panel-section">
         <div class="panel-head">
           <span>Fields</span>
@@ -698,6 +728,7 @@ async function exportExcel() {
       </div>
 
       <div
+        data-zone="filters"
         class="zone"
         :class="{ over: dragOver === 'filters' }"
         @dragover.prevent="dragOver = 'filters'"
@@ -727,6 +758,7 @@ async function exportExcel() {
       </div>
 
       <div
+        data-zone="group"
         class="zone"
         :class="{ over: dragOver === 'group' }"
         @dragover.prevent="dragOver = 'group'"
@@ -746,6 +778,7 @@ async function exportExcel() {
       </div>
 
       <div
+        data-zone="split"
         class="zone"
         :class="{ over: dragOver === 'split' }"
         @dragover.prevent="dragOver = 'split'"
@@ -765,6 +798,7 @@ async function exportExcel() {
       </div>
 
       <div
+        data-zone="aggs"
         class="zone"
         :class="{ over: dragOver === 'aggs' }"
         @dragover.prevent="dragOver = 'aggs'"
@@ -796,6 +830,7 @@ async function exportExcel() {
 
       <div
         v-if="!isPivot"
+        data-zone="sort"
         class="zone"
         :class="{ over: dragOver === 'sort' }"
         @dragover.prevent="dragOver = 'sort'"
@@ -822,7 +857,7 @@ async function exportExcel() {
           <Button icon="pi pi-times" text severity="danger" size="small" @click="sortSpec.splice(index, 1)" />
         </div>
       </div>
-    </div>
+    </aside>
   </div>
 
   <PinDialog
@@ -838,6 +873,10 @@ async function exportExcel() {
   flex: 1;
 }
 
+.query-commandbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem; margin-bottom: 1rem; padding: .75rem .9rem; position: sticky; top: 0; z-index: 8; box-shadow: 0 2px 12px rgb(15 23 42 / 6%); }
+.query-context { display: flex; flex-direction: column; align-self: center; min-width: 15rem; }
+.query-context .eyebrow { margin: 0; }
+.query-context strong { max-width: 36rem; overflow: hidden; color: #40516a; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
 .query-layout {
   display: flex;
   gap: 1rem;
@@ -848,7 +887,15 @@ async function exportExcel() {
   flex: 1;
   min-width: 0;
   transition: opacity 0.15s;
+  overflow: hidden;
+  box-shadow: none;
 }
+.result-titlebar { display: flex; align-items: center; justify-content: space-between; min-height: 3.7rem; padding: .7rem .9rem; border-bottom: 1px solid var(--aw-border); background: #fbfcfd; }
+.result-titlebar .eyebrow { margin-bottom: .1rem; }
+.result-titlebar strong { font-size: .82rem; }
+.result-body { padding: .75rem; }
+.computing { display: flex; align-items: center; gap: .35rem; color: var(--aw-teal); font-size: .75rem; font-weight: 650; }
+.compact-empty { min-height: 24rem; border: 0; background: transparent; }
 
 .query-result.dim {
   opacity: 0.55;
@@ -861,6 +908,9 @@ async function exportExcel() {
 .error {
   color: var(--p-red-600);
   padding: 1rem;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff5f5;
 }
 
 .result-meta {
@@ -1008,20 +1058,30 @@ async function exportExcel() {
 }
 
 .query-panel {
-  width: 21rem;
+  order: -1;
+  width: 22rem;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
 }
+.builder-title { display: flex; align-items: flex-end; justify-content: space-between; padding: .15rem .1rem .25rem; }
+.builder-title .eyebrow { margin-bottom: .1rem; }
 
 .panel-section,
 .zone {
   background: var(--p-surface-0);
   border: 1px solid var(--p-surface-200);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 0.6rem 0.75rem;
 }
+
+.zone { border-left-width: 3px; }
+.zone[data-zone='filters'] { border-left-color: #d97706; }
+.zone[data-zone='group'] { border-left-color: #2563eb; }
+.zone[data-zone='split'] { border-left-color: #7c3aed; }
+.zone[data-zone='aggs'] { border-left-color: #0f766e; }
+.zone[data-zone='sort'] { border-left-color: #64748b; }
 
 .zone {
   min-height: 4.2rem;
@@ -1098,6 +1158,19 @@ async function exportExcel() {
 
 .chip.used {
   opacity: 0.45;
+}
+
+@media (max-width: 1100px) {
+  .query-layout { flex-direction: column; }
+  .query-panel { order: 0; width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .builder-title { grid-column: 1 / -1; }
+  .query-result { width: 100%; }
+}
+
+@media (max-width: 720px) {
+  .query-context { display: none; }
+  .query-panel { grid-template-columns: 1fr; }
+  .builder-title { grid-column: auto; }
 }
 
 .chip i {

@@ -269,7 +269,13 @@ function rangeText(p: ColumnProfile): string {
 </script>
 
 <template>
-  <div class="toolbar">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Data inventory</p>
+      <h2>Source tables</h2>
+      <p class="muted">Inspect structure and data health before running audit procedures.</p>
+    </div>
+    <div class="toolbar">
     <input ref="fileInput" type="file" multiple accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="upload" />
     <input ref="replaceInput" type="file" accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="replaceData" />
     <Button label="Add files" icon="pi pi-upload" :loading="uploading" @click="fileInput?.click()" />
@@ -281,14 +287,23 @@ function rangeText(p: ColumnProfile): string {
       v-tooltip.bottom="workspace.tables.length < 2 ? 'Load at least two tables first' : ''"
       @click="showJoin = true"
     />
-    <span class="muted">CSV, TSV and Excel files. Types are inferred automatically.</span>
+      <span class="muted format-note">CSV, TSV and Excel</span>
+    </div>
   </div>
 
-  <p v-if="workspace.tables.length === 0" class="muted">
-    No tables yet — add the engagement's data files to get started.
-  </p>
+  <div v-if="workspace.tables.length === 0" class="empty-state import-empty">
+    <div>
+      <span class="empty-state-icon"><i class="pi pi-upload" /></span>
+      <h3>Add engagement data</h3>
+      <p>Import one or more CSV, TSV or Excel files. Column types are inferred automatically and all processing stays local.</p>
+      <Button label="Choose files" icon="pi pi-upload" :loading="uploading" @click="fileInput?.click()" />
+    </div>
+  </div>
 
   <template v-else>
+    <div class="data-workbench">
+    <aside class="inventory surface-panel">
+      <div class="inventory-head"><span>Tables</span><Tag :value="String(workspace.tables.length)" severity="secondary" /></div>
     <div class="cards" role="tablist">
       <button
         v-for="table in workspace.tables"
@@ -360,15 +375,19 @@ function rangeText(p: ColumnProfile): string {
         </div>
       </button>
     </div>
+    </aside>
 
-    <div class="profile-panel">
-      <p v-if="profiling" class="muted">Profiling {{ selected }}…</p>
+    <section class="profile-panel surface-panel">
+      <p v-if="profiling" class="muted loading-profile"><i class="pi pi-spinner pi-spin" /> Profiling {{ selected }}…</p>
 
       <template v-else-if="profile && selectedTable">
-        <h3 class="profile-title">{{ selectedTable.name }} <span class="muted">— profile</span></h3>
+        <div class="profile-head">
+          <div><p class="eyebrow">Selected table</p><h3 class="profile-title">{{ selectedTable.name }}</h3></div>
+          <Tag :value="profile.duplicate_rows ? 'Review data health' : 'Profile complete'" :severity="profile.duplicate_rows ? 'warn' : 'success'" />
+        </div>
 
         <div class="stat-cards" style="margin-bottom: 1rem">
-          <div class="stat-card">
+          <div class="stat-card" :data-tone="profile.duplicate_rows > 0 ? 'warn' : 'ok'">
             <div class="label">Rows</div>
             <div class="value">{{ profile.rows.toLocaleString() }}</div>
           </div>
@@ -443,6 +462,7 @@ function rangeText(p: ColumnProfile): string {
       </template>
 
       <p v-else class="muted">Select a table above to profile it.</p>
+    </section>
     </div>
   </template>
 
@@ -489,23 +509,33 @@ function rangeText(p: ColumnProfile): string {
 </template>
 
 <style scoped>
+.section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.section-heading h2 { margin: 0; font-size: 1.25rem; }
+.section-heading p:last-child { margin: 0.25rem 0 0; }
+.section-heading .toolbar { justify-content: flex-end; margin-bottom: 0; }
+.format-note { font-size: 0.75rem; }
+.import-empty { min-height: 20rem; }
+.data-workbench { display: grid; grid-template-columns: 18rem minmax(0, 1fr); gap: 1rem; align-items: start; }
+.inventory { overflow: hidden; box-shadow: none; }
+.inventory-head { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--aw-border); color: #43546d; font-size: 0.75rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
 .cards {
   display: flex;
+  flex-direction: column;
   gap: 0.75rem;
-  overflow-x: auto;
-  padding: 0.25rem 0.25rem 0.75rem;
-  margin-bottom: 0.5rem;
+  max-height: calc(100vh - 18rem);
+  overflow-y: auto;
+  padding: 0.65rem;
 }
 
 .card {
   position: relative;
-  flex: 0 0 15rem;
-  min-width: 15rem;
+  flex: none;
+  width: 100%;
   text-align: left;
   background: var(--p-surface-0);
   border: 1px solid var(--p-surface-200);
-  border-radius: 12px;
-  padding: 0.85rem 0.9rem;
+  border-radius: 7px;
+  padding: 0.7rem 0.75rem;
   cursor: pointer;
   font: inherit;
   color: inherit;
@@ -518,7 +548,8 @@ function rangeText(p: ColumnProfile): string {
 
 .card.active {
   border-color: var(--p-primary-500);
-  box-shadow: 0 0 0 1px var(--p-primary-500);
+  box-shadow: inset 3px 0 0 var(--aw-teal);
+  background: #f4fbfa;
 }
 
 .card.broken {
@@ -573,12 +604,16 @@ function rangeText(p: ColumnProfile): string {
 }
 
 .profile-panel {
-  border-top: 1px solid var(--p-surface-200);
-  padding-top: 1rem;
+  min-width: 0;
+  padding: 1rem;
 }
 
+.profile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; }
+.profile-head .eyebrow { margin-bottom: 0.15rem; }
+.loading-profile { min-height: 12rem; display: grid; place-items: center; align-content: center; gap: .5rem; }
+
 .profile-title {
-  margin: 0 0 0.75rem;
+  margin: 0;
   font-size: 1.05rem;
 }
 
@@ -630,5 +665,15 @@ function rangeText(p: ColumnProfile): string {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+}
+
+@media (max-width: 1050px) {
+  .data-workbench { grid-template-columns: 1fr; }
+  .cards { flex-direction: row; max-height: none; overflow-x: auto; }
+  .card { min-width: 15rem; width: 15rem; }
+}
+
+@media (max-width: 700px) {
+  .section-heading { flex-direction: column; }
 }
 </style>

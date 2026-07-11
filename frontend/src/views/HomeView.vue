@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
@@ -9,6 +9,7 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Tag from 'primevue/tag'
+import Skeleton from 'primevue/skeleton'
 
 import { api, ApiError } from '../api'
 import type { WorkspaceListItem, WorkspaceSummary } from '../types'
@@ -23,6 +24,7 @@ const showCreate = ref(false)
 const creating = ref(false)
 const name = ref('')
 const description = ref('')
+const totalTables = computed(() => workspaces.value.reduce((sum, ws) => sum + ws.table_count, 0))
 
 async function load() {
   loading.value = true
@@ -71,38 +73,56 @@ onMounted(load)
 
 <template>
   <div class="page">
-    <div class="header-row">
+    <div class="home-hero">
       <div>
-        <h1>Workspaces</h1>
+        <p class="eyebrow">Engagement index</p>
+        <h1>Your audit workspaces</h1>
         <p class="muted">
-          A workspace holds one engagement's data files. Open one to profile,
-          explore and test the data — everything runs on this machine.
+          Load, validate and analyse engagement data without moving raw records
+          off this device.
         </p>
       </div>
       <Button label="New workspace" icon="pi pi-plus" @click="showCreate = true" />
     </div>
 
-    <p v-if="loading" class="muted">Loading…</p>
-    <p v-else-if="workspaces.length === 0" class="muted empty">
-      No workspaces yet — create one and drop in a CSV or Excel file.
-    </p>
+    <div v-if="!loading && workspaces.length" class="portfolio-strip">
+      <span><strong>{{ workspaces.length }}</strong><small>Engagements</small></span>
+      <span><strong>{{ totalTables }}</strong><small>Data tables</small></span>
+      <span class="privacy-fact"><i class="pi pi-lock" /><span><strong>Private by design</strong><small>Raw data stays local</small></span></span>
+    </div>
+
+    <div v-if="loading" class="loading-grid">
+      <Skeleton v-for="n in 3" :key="n" height="12rem" borderRadius="8px" />
+    </div>
+    <div v-else-if="workspaces.length === 0" class="empty-state">
+      <div>
+        <span class="empty-state-icon"><i class="pi pi-folder-open" /></span>
+        <h3>Start your first engagement</h3>
+        <p>Create a workspace, then add CSV, TSV or Excel files. Profiling and audit tests run entirely on this machine.</p>
+        <Button label="Create workspace" icon="pi pi-plus" @click="showCreate = true" />
+      </div>
+    </div>
 
     <div class="grid">
-      <Card v-for="ws in workspaces" :key="ws.id" class="ws-card">
+      <Card v-for="ws in workspaces" :key="ws.id" class="ws-card" @click="router.push(`/workspace/${ws.id}`)">
         <template #title>
           <div class="card-title">
-            <span>{{ ws.name }}</span>
-            <Tag :value="`${ws.table_count} table(s)`" severity="secondary" />
+            <span class="workspace-icon"><i class="pi pi-briefcase" /></span>
+            <span class="workspace-name">{{ ws.name }}</span>
+            <i class="pi pi-arrow-up-right card-arrow" />
           </div>
         </template>
-        <template #subtitle>Created {{ ws.created || '—' }}</template>
         <template #content>
           <p class="desc">{{ ws.description || 'No description.' }}</p>
+          <div class="workspace-meta">
+            <span><i class="pi pi-database" /> {{ ws.table_count }} table{{ ws.table_count === 1 ? '' : 's' }}</span>
+            <span><i class="pi pi-calendar" /> Created {{ ws.created || '—' }}</span>
+          </div>
         </template>
         <template #footer>
           <div class="card-actions">
-            <Button label="Open" icon="pi pi-arrow-right" size="small" @click="router.push(`/workspace/${ws.id}`)" />
-            <Button icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete workspace'" @click="remove(ws)" />
+            <Tag :value="ws.table_count ? 'Ready' : 'Setup needed'" :severity="ws.table_count ? 'success' : 'warn'" />
+            <Button icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete workspace'" @click.stop="remove(ws)" />
           </div>
         </template>
       </Card>
@@ -126,12 +146,17 @@ onMounted(load)
 </template>
 
 <style scoped>
-.header-row {
+.home-hero {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 1rem;
-  margin-bottom: 1.5rem;
+  margin: 0.5rem 0 1.5rem;
+  padding: 1.4rem 1.5rem;
+  border: 1px solid #d7e0ea;
+  border-radius: 9px;
+  background: linear-gradient(115deg, #fff 0%, #f2faf9 100%);
+  box-shadow: var(--aw-shadow);
 }
 
 h1 {
@@ -139,16 +164,31 @@ h1 {
   font-size: 1.5rem;
 }
 
-.header-row p {
+.home-hero p {
   margin: 0;
   max-width: 48rem;
 }
 
+.portfolio-strip { display: flex; align-items: stretch; margin-bottom: 1.2rem; border: 1px solid var(--aw-border); border-radius: 8px; background: #fff; }
+.portfolio-strip > span { display: flex; flex-direction: column; min-width: 10rem; padding: 0.75rem 1.1rem; border-right: 1px solid var(--aw-border); }
+.portfolio-strip strong { font-size: 1.05rem; color: var(--aw-ink); }
+.portfolio-strip small { margin-top: 0.1rem; color: var(--aw-muted); font-size: 0.72rem; }
+.portfolio-strip .privacy-fact { margin-left: auto; flex-direction: row; align-items: center; gap: 0.6rem; border-right: 0; }
+.privacy-fact > i { color: var(--aw-teal); }
+.privacy-fact > span { display: flex; flex-direction: column; }
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 1rem;
+  gap: 0.9rem;
 }
+
+.loading-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+:deep(.ws-card) { border: 1px solid var(--aw-border); box-shadow: none; cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s; }
+:deep(.ws-card:hover) { transform: translateY(-2px); border-color: #91aaa7; box-shadow: var(--aw-shadow); }
+:deep(.ws-card .p-card-body) { padding: 1.05rem 1.1rem 0.85rem; }
+:deep(.ws-card .p-card-content) { padding-block: 0.7rem; }
+:deep(.ws-card .p-card-footer) { padding-top: 0.55rem; border-top: 1px solid #edf1f5; }
 
 .card-title {
   display: flex;
@@ -156,12 +196,18 @@ h1 {
   align-items: center;
   gap: 0.5rem;
 }
+.workspace-icon { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 6px; background: var(--aw-teal-soft); color: var(--aw-teal); font-size: 0.9rem; }
+.workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 1rem; }
+.card-arrow { color: #94a3b8; font-size: 0.85rem; }
 
 .desc {
   margin: 0;
   min-height: 2.5rem;
   color: var(--p-surface-600);
 }
+
+.workspace-meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; color: var(--aw-muted); font-size: 0.74rem; }
+.workspace-meta span { display: flex; align-items: center; gap: 0.3rem; }
 
 .card-actions {
   display: flex;
@@ -170,5 +216,11 @@ h1 {
 
 .empty {
   padding: 2rem 0;
+}
+
+@media (max-width: 720px) {
+  .home-hero { flex-direction: column; }
+  .portfolio-strip { overflow-x: auto; }
+  .loading-grid { grid-template-columns: 1fr; }
 }
 </style>
