@@ -6,13 +6,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import loader, workspaces  # noqa: E402
+from app import assistant_settings, loader, workspaces  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def isolated_workspaces(tmp_path, monkeypatch):
     """Point workspace storage at a temp folder and clear the frame cache."""
     monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "Workspaces")
+    monkeypatch.setattr(assistant_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     loader.clear_cache()
     yield
 

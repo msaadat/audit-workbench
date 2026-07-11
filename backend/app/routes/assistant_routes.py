@@ -1,6 +1,7 @@
 """Natural-language assistant endpoints.
 
   GET  /api/assistant/status                        is the LLM configured?
+  PATCH /api/assistant/settings                     update provider/model
   POST /api/workspaces/{id}/assistant               ask a question (tool loop)
   POST /api/workspaces/{id}/run-python              execute an edited snippet
 
@@ -19,6 +20,11 @@ router = APIRouter(prefix="/api", tags=["assistant"])
 @router.get("/assistant/status")
 async def assistant_status():
     return llm.status()
+
+
+@router.patch("/assistant/settings")
+async def assistant_settings(payload: dict = Body(...)):
+    return llm.update_settings(payload)
 
 
 @router.post("/workspaces/{workspace_id}/assistant")

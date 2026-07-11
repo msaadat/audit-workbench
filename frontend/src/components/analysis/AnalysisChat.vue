@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
+import InputText from 'primevue/inputtext'
+import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
@@ -36,6 +39,10 @@ const status = ref<AssistantStatus | null>(null)
 const question = ref('')
 const turns = ref<Turn[]>([])
 const busy = ref(false)
+const showSettings = ref(false)
+const savingSettings = ref(false)
+const draftProvider = ref('')
+const draftModel = ref('')
 const showPin = ref(false)
 const pinning = ref(false)
 const pinTarget = ref<AssistantArtifact | null>(null)
@@ -53,13 +60,52 @@ const SAMPLES = [
   'Show the monthly trend of total amount',
 ]
 
-onMounted(async () => {
+const providerOptions = computed(() => status.value?.providers ?? [])
+const activeProvider = computed(() => {
+  const id = status.value?.provider ?? status.value?.backend
+  return providerOptions.value.find((provider) => provider.id === id) ?? null
+})
+const draftProviderMeta = computed(() => (
+  providerOptions.value.find((provider) => provider.id === draftProvider.value) ?? null
+))
+
+onMounted(loadStatus)
+
+async function loadStatus() {
   try {
     status.value = await api.get<AssistantStatus>('/api/assistant/status')
   } catch {
-    status.value = { configured: false, backend: 'groq', model: '', base_url: '' }
+    status.value = { configured: false, backend: 'groq', provider: 'groq', model: '', base_url: '', providers: [] }
   }
+}
+
+function openSettings() {
+  draftProvider.value = status.value?.provider ?? status.value?.backend ?? 'groq'
+  draftModel.value = status.value?.model ?? ''
+  showSettings.value = true
+}
+
+watch(draftProvider, (provider, previous) => {
+  if (!provider || provider === previous) return
+  const meta = providerOptions.value.find((option) => option.id === provider)
+  draftModel.value = meta?.default_model ?? ''
 })
+
+async function saveSettings() {
+  savingSettings.value = true
+  try {
+    status.value = await api.patch<AssistantStatus>('/api/assistant/settings', {
+      provider: draftProvider.value,
+      model: draftModel.value,
+    })
+    showSettings.value = false
+    toast.add({ severity: 'success', summary: 'Assistant settings saved', life: 2500 })
+  } catch (error) {
+    fail('Settings failed', error)
+  } finally {
+    savingSettings.value = false
+  }
+}
 
 async function ask(text?: string) {
   const q = (text ?? question.value).trim()
@@ -179,19 +225,23 @@ const toolLabel: Record<string, string> = {
   <div class="privacy-banner">
     <span><i class="pi pi-shield" /></span>
     <div><strong>Metadata-only AI analysis</strong><small>The model receives schemas and aggregate previews—not raw data rows. Generated Polars runs locally and remains editable.</small></div>
+    <span class="grow" />
+    <div v-if="status" class="provider-pill" :class="{ missing: !status.configured }">
+      <i :class="status.configured ? 'pi pi-check-circle' : 'pi pi-key'" />
+      <span>{{ activeProvider?.label ?? status.backend }}</span>
+      <small>{{ status.model || 'No model selected' }}</small>
+    </div>
+    <Button icon="pi pi-cog" label="Settings" size="small" severity="secondary" outlined @click="openSettings" />
   </div>
   <div v-if="status && !status.configured" class="notice">
     <i class="pi pi-info-circle" />
     <div>
       <strong>The assistant isn't configured.</strong>
       <p>
-        Set <code>GROQ_API_KEY</code> for Groq, or set
-        <code>LLM_BACKEND=openrouter</code> with <code>OPENROUTER_API_KEY</code>
-        and optionally <code>OPENROUTER_MODEL</code>. For local LM Studio, set
-        <code>LLM_BACKEND=lmstudio</code>, start the local server, and optionally
-        set <code>LMSTUDIO_MODEL</code>. Restart the backend after changing
-        configuration. Only schema and aggregate statistics are ever sent to
-        the model — never your raw data rows.
+        Add <code>{{ activeProvider?.api_key_env ?? 'GROQ_API_KEY' }}</code> to
+        <code>.env</code>, then use Assistant settings for the provider and
+        model. Only schema and aggregate statistics are ever sent to the model
+        — never your raw data rows.
       </p>
     </div>
   </div>
@@ -304,7 +354,7 @@ const toolLabel: Record<string, string> = {
       :disabled="!status?.configured || busy"
       :placeholder="status?.configured
         ? 'Describe an analysis… (Enter to send, Shift+Enter for a new line)'
-        : 'Configure Groq, OpenRouter, or LM Studio in .env to enable the assistant'"
+        : 'Configure the assistant key and provider settings to ask questions'"
       @keydown="onKeydown"
     />
     <Button
@@ -322,14 +372,62 @@ const toolLabel: Record<string, string> = {
     :saving="pinning"
     @pin="pin"
   />
+
+  <Dialog v-model:visible="showSettings" modal header="Assistant settings" :style="{ width: '32rem' }">
+    <div class="settings-form">
+      <label>
+        <span>Provider</span>
+        <Select
+          v-model="draftProvider"
+          :options="providerOptions"
+          optionLabel="label"
+          optionValue="id"
+          placeholder="Provider"
+        />
+      </label>
+      <label>
+        <span>Model</span>
+        <InputText v-model="draftModel" placeholder="Model id" />
+      </label>
+      <div v-if="draftProviderMeta" class="settings-meta">
+        <div><span>Endpoint</span><code>{{ draftProviderMeta.base_url }}</code></div>
+        <div>
+          <span>Key</span>
+          <code>{{ draftProviderMeta.api_key_env }}</code>
+          <Tag
+            :value="draftProviderMeta.api_key_configured ? 'configured' : 'missing'"
+            :severity="draftProviderMeta.api_key_configured ? 'success' : 'warn'"
+          />
+        </div>
+      </div>
+      <div v-if="draftProviderMeta?.models?.length" class="model-chips">
+        <button
+          v-for="model in draftProviderMeta.models"
+          :key="model || '<blank>'"
+          type="button"
+          @click="draftModel = model"
+        >
+          {{ model || 'Loaded LM Studio model' }}
+        </button>
+      </div>
+    </div>
+    <template #footer>
+      <Button label="Cancel" severity="secondary" text @click="showSettings = false" />
+      <Button label="Save" icon="pi pi-check" :loading="savingSettings" @click="saveSettings" />
+    </template>
+  </Dialog>
 </template>
 
 <style scoped>
 .privacy-banner { display: flex; align-items: center; gap: .7rem; margin-bottom: .8rem; padding: .65rem .8rem; border: 1px solid #bfe5df; border-radius: 7px; background: #effaf8; }
-.privacy-banner > span { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 5px; background: #d6f3ee; color: var(--aw-teal); }
+.privacy-banner > span:not(.grow) { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 5px; background: #d6f3ee; color: var(--aw-teal); }
 .privacy-banner > div { display: flex; flex-direction: column; }
 .privacy-banner strong { font-size: .8rem; color: #125e59; }
 .privacy-banner small { margin-top: .1rem; color: #52716f; font-size: .7rem; }
+.grow { flex: 1; }
+.provider-pill { flex-direction: row !important; align-items: center; gap: .4rem; min-width: 0; color: #125e59; font-size: .8rem; }
+.provider-pill small { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-pill.missing { color: #8a5a00; }
 .notice {
   display: flex;
   gap: 0.75rem;
@@ -343,6 +441,15 @@ const toolLabel: Record<string, string> = {
 .notice i { color: var(--p-primary-500); font-size: 1.1rem; margin-top: 0.15rem; }
 .notice p { margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--p-surface-600); }
 .notice code { background: var(--p-surface-100); padding: 0 0.25rem; border-radius: 4px; }
+.settings-form { display: grid; gap: 0.85rem; }
+.settings-form label { display: grid; gap: 0.35rem; font-size: 0.82rem; font-weight: 700; color: var(--p-surface-700); }
+.settings-meta { display: grid; gap: 0.45rem; padding: 0.75rem; border: 1px solid var(--p-surface-200); border-radius: 7px; background: var(--p-surface-50); }
+.settings-meta > div { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.settings-meta span { min-width: 4.5rem; color: var(--p-surface-500); font-size: 0.78rem; }
+.settings-meta code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--p-surface-0); padding: 0.1rem 0.3rem; border-radius: 4px; }
+.model-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.model-chips button { border: 1px solid var(--p-surface-200); background: var(--p-surface-0); border-radius: 999px; padding: 0.3rem 0.65rem; color: var(--p-primary-700); cursor: pointer; }
+.model-chips button:hover { border-color: var(--p-primary-400); }
 
 .assistant { min-height: 36vh; }
 .empty { text-align: center; color: var(--p-surface-500); padding: 2.5rem 1rem; }

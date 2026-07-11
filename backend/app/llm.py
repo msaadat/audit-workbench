@@ -1,24 +1,15 @@
-"""LLM backends for the natural-language assistant.
+"""LLM transport for the natural-language assistant.
 
 Talks to OpenAI-compatible chat/completions endpoints over the standard library
 only (``urllib``), so there is no extra runtime dependency to bundle into the
 portable-zip distribution.
 
-The backend is configured through environment variables or a local ``.env``
-file. Groq remains the default for backward compatibility; OpenRouter is also
-supported, and LM Studio can be used as a local backend:
+Only API keys live in environment variables or a local ``.env`` file. The
+provider and model are normal application settings saved through the UI:
 
-    LLM_BACKEND              optional: groq, openrouter, or lmstudio
     GROQ_API_KEY             Groq API key
-    GROQ_MODEL               Groq model id
-    GROQ_BASE_URL            Groq/OpenAI-compatible endpoint override
     OPENROUTER_API_KEY       OpenRouter API key
-    OPENROUTER_MODEL         OpenRouter model slug
-    OPENROUTER_BASE_URL      OpenRouter endpoint override
-    OPENROUTER_HTTP_REFERER  optional attribution header
-    OPENROUTER_APP_TITLE     optional attribution header
-    LMSTUDIO_MODEL           optional LM Studio model id
-    LMSTUDIO_BASE_URL        LM Studio local server URL
+    MISTRAL_API_KEY          Mistral API key
     LMSTUDIO_API_KEY         optional local dummy key
     LLM_REQUEST_TIMEOUT      optional request timeout in seconds
 
@@ -36,13 +27,9 @@ import os
 import urllib.error
 import urllib.request
 
+from . import assistant_settings
 from . import config  # noqa: F401  # load .env before reading os.environ
 
-DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
-DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_OPENROUTER_MODEL = "~openai/gpt-latest"
-DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 DEFAULT_LMSTUDIO_API_KEY = "lm-studio"
 USER_AGENT = "audit-workbench/0.1"
 REQUEST_TIMEOUT = 60  # seconds
@@ -80,56 +67,30 @@ def _request_timeout(default: int) -> int:
     return timeout
 
 
-def _backend() -> str:
-    configured = (_env("LLM_BACKEND") or _env("LLM_PROVIDER")).lower()
-    if configured:
-        return configured
-    if _env("OPENROUTER_API_KEY") and not _env("GROQ_API_KEY"):
-        return "openrouter"
-    return "groq"
-
-
 def _settings() -> LLMSettings:
-    backend = _backend()
-    if backend == "openrouter":
-        title = _env("OPENROUTER_APP_TITLE") or "Audit Workbench"
-        referer = _env("OPENROUTER_HTTP_REFERER") or _env("OPENROUTER_SITE_URL")
-        headers = {"X-OpenRouter-Title": title}
-        if referer:
-            headers["HTTP-Referer"] = referer
-        return LLMSettings(
-            backend=backend,
-            api_key=_env("OPENROUTER_API_KEY"),
-            model=_env("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL,
-            base_url=(_env("OPENROUTER_BASE_URL") or DEFAULT_OPENROUTER_BASE_URL).rstrip("/"),
-            extra_headers=headers,
-            timeout=_request_timeout(REQUEST_TIMEOUT),
-        )
-    if backend == "groq":
-        return LLMSettings(
-            backend=backend,
-            api_key=_env("GROQ_API_KEY"),
-            model=_env("GROQ_MODEL") or DEFAULT_GROQ_MODEL,
-            base_url=(_env("GROQ_BASE_URL") or DEFAULT_GROQ_BASE_URL).rstrip("/"),
-            extra_headers={},
-            timeout=_request_timeout(REQUEST_TIMEOUT),
-        )
-    if backend == "lmstudio":
-        return LLMSettings(
-            backend=backend,
-            api_key=_env("LMSTUDIO_API_KEY") or DEFAULT_LMSTUDIO_API_KEY,
-            model=_env("LMSTUDIO_MODEL"),
-            base_url=(_env("LMSTUDIO_BASE_URL") or DEFAULT_LMSTUDIO_BASE_URL).rstrip("/"),
-            extra_headers={},
-            timeout=_request_timeout(LOCAL_REQUEST_TIMEOUT),
-        )
-    raise LLMError("Unsupported LLM_BACKEND. Use 'groq', 'openrouter', or 'lmstudio'.")
+    saved = assistant_settings.load()
+    backend = saved["provider"]
+    provider = assistant_settings.PROVIDERS[backend]
+    api_key_env = str(provider["api_key_env"])
+    api_key = _env(api_key_env)
+    if backend == "lmstudio" and not api_key:
+        api_key = DEFAULT_LMSTUDIO_API_KEY
+    return LLMSettings(
+        backend=backend,
+        api_key=api_key,
+        model=saved["model"],
+        base_url=str(provider["base_url"]).rstrip("/"),
+        extra_headers={},
+        timeout=_request_timeout(
+            LOCAL_REQUEST_TIMEOUT if provider["local"] else REQUEST_TIMEOUT
+        ),
+    )
 
 
 def is_configured() -> bool:
     try:
         return bool(_settings().api_key)
-    except LLMError:
+    except (LLMError, assistant_settings.SettingsError):
         return False
 
 
@@ -137,20 +98,29 @@ def status() -> dict:
     """What the frontend needs to decide whether to offer the assistant."""
     try:
         settings = _settings()
-    except LLMError as error:
+    except (LLMError, assistant_settings.SettingsError) as error:
         return {
             "configured": False,
-            "backend": _backend(),
+            "backend": assistant_settings.DEFAULT_PROVIDER,
+            "provider": assistant_settings.DEFAULT_PROVIDER,
             "model": "",
             "base_url": "",
+            "providers": assistant_settings.provider_options(),
             "error": str(error),
         }
     return {
         "configured": bool(settings.api_key),
         "backend": settings.backend,
+        "provider": settings.backend,
         "model": settings.model,
         "base_url": settings.base_url,
+        "providers": assistant_settings.provider_options(),
     }
+
+
+def update_settings(payload: dict) -> dict:
+    assistant_settings.save(payload)
+    return status()
 
 
 def chat(messages: list[dict], tools: list[dict] | None = None,
@@ -163,15 +133,14 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     """
     settings = _settings()
     if not settings.api_key:
-        if settings.backend == "openrouter":
-            hint = "Set OPENROUTER_API_KEY (and optionally OPENROUTER_MODEL)"
-        elif settings.backend == "lmstudio":
-            hint = "Start LM Studio's local server and optionally set LMSTUDIO_MODEL"
+        provider = assistant_settings.PROVIDERS[settings.backend]
+        if settings.backend == "lmstudio":
+            hint = "Start LM Studio's local server"
         else:
-            hint = "Set GROQ_API_KEY (and optionally GROQ_MODEL)"
+            hint = f"Set {provider['api_key_env']}"
         raise LLMError(
             f"The assistant is not configured for {settings.backend}. {hint} "
-            "in .env or the environment to enable natural-language analysis."
+            "in .env or the environment; choose provider/model in Assistant settings."
         )
 
     body: dict = {
@@ -235,14 +204,15 @@ def _error_detail(error: urllib.error.HTTPError) -> str:
 
 
 def _http_error_hint(settings: LLMSettings, error: urllib.error.HTTPError) -> str:
+    if settings.backend == "lmstudio" and error.code in {400, 404, 503}:
+        return (
+            f"LM Studio is running at {settings.base_url}, but model "
+            f"'{settings.model or '<blank>'}' was not accepted. Choose the "
+            "model identifier shown by LM Studio in Assistant settings, or "
+            "load the model in the local server."
+        )
+
     if settings.backend != "openrouter":
-        if settings.backend == "lmstudio" and error.code in {400, 404, 503}:
-            return (
-                f"LM Studio is running at {settings.base_url}, but model "
-                f"'{settings.model or '<blank>'}' was not accepted. Set LMSTUDIO_MODEL to the "
-                "model identifier shown by LM Studio, or load the model in the "
-                "local server."
-            )
         return ""
 
     if error.code == 429:
@@ -250,8 +220,9 @@ def _http_error_hint(settings: LLMSettings, error: urllib.error.HTTPError) -> st
         retry = f" Retry after {retry_after} seconds." if retry_after else ""
         return (
             f"OpenRouter is rate limiting model '{settings.model}'.{retry} "
-            "Try again later, choose a different OPENROUTER_MODEL, or check the "
-            "key's credits/rate limits at https://openrouter.ai/settings/keys."
+            "Try again later, choose a different model in Assistant settings, "
+            "or check the key's credits/rate limits at "
+            "https://openrouter.ai/settings/keys."
         )
     if error.code == 402:
         return (
@@ -261,6 +232,6 @@ def _http_error_hint(settings: LLMSettings, error: urllib.error.HTTPError) -> st
     if error.code == 503:
         return (
             f"OpenRouter could not find an available provider for '{settings.model}'. "
-            "Try again later or choose a different OPENROUTER_MODEL."
+            "Try again later or choose a different model in Assistant settings."
         )
     return ""

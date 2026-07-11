@@ -44,36 +44,25 @@ your own machine; no data leaves it.
 ## Configuration
 
 Configuration can live in a local `.env` file at the repo root. Copy
-`.env.example` to `.env` and fill in the values you need:
+`.env.example` to `.env` and fill in the API keys you use:
 
 ```dotenv
-# Groq (default)
+# Groq
 GROQ_API_KEY=your-key
-GROQ_MODEL=llama-3.3-70b-versatile
 
-# Or OpenRouter
-LLM_BACKEND=openrouter
+# OpenRouter
 OPENROUTER_API_KEY=your-key
-OPENROUTER_MODEL=~openai/gpt-latest
 
-# Or local LM Studio
-LLM_BACKEND=lmstudio
-LMSTUDIO_MODEL=
-LMSTUDIO_BASE_URL=http://localhost:1234/v1
+# Mistral
+MISTRAL_API_KEY=your-key
 ```
 
 The assistant is optional; without a configured API key, the tab shows a setup
-message and the rest of the app keeps working. Groq uses `GROQ_BASE_URL`
-(`https://api.groq.com/openai/v1` by default). OpenRouter uses
-`OPENROUTER_BASE_URL` (`https://openrouter.ai/api/v1` by default) and accepts
-optional attribution headers via `OPENROUTER_APP_TITLE` and
-`OPENROUTER_HTTP_REFERER`; `OPENROUTER_MODEL` defaults to
-`~openai/gpt-latest`. LM Studio uses `LMSTUDIO_BASE_URL`
-(`http://localhost:1234/v1` by default), optional `LMSTUDIO_MODEL`, and a local
-dummy `LMSTUDIO_API_KEY` default of `lm-studio`; leave `LMSTUDIO_MODEL` blank
-to use whichever model is loaded in LM Studio. LLM requests default to 60
-seconds for cloud backends and 300 seconds for LM Studio; override with
-`LLM_REQUEST_TIMEOUT` if your local model needs longer. Real environment
+message and the rest of the app keeps working. Pick the provider and model from
+the Assistant settings page; endpoints are predefined for Groq, OpenRouter,
+Mistral, and LM Studio. LM Studio uses `http://localhost:1234/v1` and a local
+dummy `LMSTUDIO_API_KEY` default of `lm-studio`. LLM requests default to 60
+seconds for cloud backends and 300 seconds for LM Studio. Real environment
 variables override `.env` values. The transport and dotenv loader both use only
 the Python standard library, so there is no extra dependency to bundle.
 

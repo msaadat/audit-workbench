@@ -23,6 +23,7 @@ from .routes.assistant_routes import router as assistant_router
 from .routes.dashboard_routes import router as dashboard_router
 from .routes.validation_routes import router as validation_router
 from .routes.workspace_routes import router as workspace_router
+from .assistant_settings import SettingsError
 from .sandbox import SandboxError
 from .workspaces import WorkspaceError
 
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(WorkspaceError)
     @app.exception_handler(QueryError)
     @app.exception_handler(SandboxError)
+    @app.exception_handler(SettingsError)
     async def user_error(request: Request, error: Exception):
         return JSONResponse({"detail": str(error)}, status_code=400)
 

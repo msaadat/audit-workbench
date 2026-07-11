@@ -296,10 +296,23 @@ export interface ColumnValues {
 
 export interface AssistantStatus {
   configured: boolean
-  backend: 'groq' | 'openrouter' | 'lmstudio' | string
+  backend: 'groq' | 'openrouter' | 'mistral' | 'lmstudio' | string
+  provider?: 'groq' | 'openrouter' | 'mistral' | 'lmstudio' | string
   model: string
   base_url: string
+  providers?: AssistantProvider[]
   error?: string
+}
+
+export interface AssistantProvider {
+  id: 'groq' | 'openrouter' | 'mistral' | 'lmstudio' | string
+  label: string
+  base_url: string
+  api_key_env: string
+  api_key_configured: boolean
+  default_model: string
+  models: string[]
+  local: boolean
 }
 
 export interface AssistantStep {

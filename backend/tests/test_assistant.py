@@ -3,11 +3,10 @@ import urllib.error
 
 import polars as pl
 import pytest
-from fastapi.testclient import TestClient
 
-from app import assistant, llm, workspaces
+from app import assistant, assistant_settings, llm, workspaces
 from app.dashboard import tile_payload
-from app.main import create_app
+from app.routes import assistant_routes
 from app.sandbox import SandboxError, run as sandbox_run
 from app.workspaces import WorkspaceError
 
@@ -130,22 +129,19 @@ def test_python_tile_requires_code(workspace_with_data):
 
 # ----------------------------------------------------------------- llm status
 def test_assistant_status_unconfigured(monkeypatch):
-    monkeypatch.delenv("LLM_BACKEND", raising=False)
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    client = TestClient(create_app())
-    body = client.get("/api/assistant/status").json()
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    body = llm.status()
     assert body["configured"] is False
     assert body["backend"] == "groq"
     assert body["model"]
+    assert any(provider["id"] == "mistral" for provider in body["providers"])
 
 
 def test_assistant_status_lmstudio_configured_without_cloud_key(monkeypatch):
-    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
     monkeypatch.delenv("LMSTUDIO_API_KEY", raising=False)
-    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
-    monkeypatch.delenv("LMSTUDIO_MODEL", raising=False)
 
     body = llm.status()
 
@@ -155,11 +151,28 @@ def test_assistant_status_lmstudio_configured_without_cloud_key(monkeypatch):
     assert body["base_url"] == "http://localhost:1234/v1"
 
 
+@pytest.mark.anyio
+async def test_assistant_settings_endpoint_persists_provider_model(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-key")
+
+    body = await assistant_routes.assistant_settings(
+        {"provider": "mistral", "model": "mistral-small-latest"}
+    )
+
+    assert body["configured"] is True
+    assert body["backend"] == "mistral"
+    assert body["model"] == "mistral-small-latest"
+    assert body["base_url"] == "https://api.mistral.ai/v1"
+    assert assistant_settings.load() == {
+        "provider": "mistral",
+        "model": "mistral-small-latest",
+    }
+
+
 def test_ask_without_key_raises(monkeypatch, workspace_with_data):
-    monkeypatch.delenv("LLM_BACKEND", raising=False)
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     with pytest.raises(llm.LLMError, match="not configured"):
         assistant.ask(workspace_with_data, "anything")
 
@@ -182,8 +195,7 @@ def test_llm_chat_sends_user_agent(monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.delenv("LLM_BACKEND", raising=False)
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
@@ -213,20 +225,43 @@ def test_llm_chat_supports_openrouter(monkeypatch):
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setenv("LLM_BACKEND", "openrouter")
+    assistant_settings.save({"provider": "openrouter", "model": "openai/test-model"})
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
-    monkeypatch.setenv("OPENROUTER_MODEL", "openai/test-model")
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Audit Workbench")
-    monkeypatch.setenv("OPENROUTER_HTTP_REFERER", "https://audit-workbench.local")
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
     assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["authorization"] == "Bearer router-key"
-    assert captured["headers"]["x-openrouter-title"] == "Audit Workbench"
-    assert captured["headers"]["http-referer"] == "https://audit-workbench.local"
     assert captured["body"]["model"] == "openai/test-model"
+
+
+def test_llm_chat_supports_mistral(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "mistral", "model": "mistral-large-latest"})
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["url"] == "https://api.mistral.ai/v1/chat/completions"
+    assert captured["headers"]["authorization"] == "Bearer mistral-key"
+    assert captured["body"]["model"] == "mistral-large-latest"
 
 
 def test_llm_chat_supports_lmstudio(monkeypatch):
@@ -249,9 +284,7 @@ def test_llm_chat_supports_lmstudio(monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
-    monkeypatch.delenv("LMSTUDIO_MODEL", raising=False)
-    monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
     monkeypatch.delenv("LMSTUDIO_API_KEY", raising=False)
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
@@ -280,7 +313,7 @@ def test_llm_request_timeout_can_be_overridden(monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT", "900")
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
@@ -321,9 +354,8 @@ def test_openrouter_rate_limit_error_includes_retry_hint(monkeypatch):
         ).encode()
         raise error
 
-    monkeypatch.setenv("LLM_BACKEND", "openrouter")
+    assistant_settings.save({"provider": "openrouter", "model": "openai/test-model"})
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
-    monkeypatch.setenv("OPENROUTER_MODEL", "openai/test-model")
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
     with pytest.raises(llm.LLMError) as raised:
@@ -332,7 +364,7 @@ def test_openrouter_rate_limit_error_includes_retry_hint(monkeypatch):
     message = str(raised.value)
     assert "Rate limit exceeded (rate_limit_exceeded)" in message
     assert "Retry after 60 seconds" in message
-    assert "OPENROUTER_MODEL" in message
+    assert "Assistant settings" in message
 
 
 def test_lmstudio_model_error_includes_local_hint(monkeypatch):
@@ -349,8 +381,7 @@ def test_lmstudio_model_error_includes_local_hint(monkeypatch):
         ).encode()
         raise error
 
-    monkeypatch.setenv("LLM_BACKEND", "lmstudio")
-    monkeypatch.setenv("LMSTUDIO_MODEL", "missing-model")
+    assistant_settings.save({"provider": "lmstudio", "model": "missing-model"})
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
 
     with pytest.raises(llm.LLMError) as raised:
@@ -358,7 +389,7 @@ def test_lmstudio_model_error_includes_local_hint(monkeypatch):
 
     message = str(raised.value)
     assert "Model not found" in message
-    assert "LMSTUDIO_MODEL" in message
+    assert "Assistant settings" in message
     assert "missing-model" in message
 
 
