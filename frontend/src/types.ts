@@ -351,3 +351,161 @@ export interface RunPythonResult {
   total_rows: number
   stdout: string | null
 }
+
+// ------------------------------------------------------------------ agent
+// A deterministic (backend) rule suggestion: a draft ValidationRule plus the
+// reason it was proposed. Shared by the Validation tab and agent runs.
+export interface RuleSuggestion {
+  column: string | null
+  check: string
+  params: Record<string, unknown>
+  severity: 'fail' | 'warn'
+  rationale: string
+}
+
+export type AgentRunStatus =
+  | 'queued'
+  | 'discovering'
+  | 'planning'
+  | 'executing'
+  | 'awaiting_approval'
+  | 'verifying'
+  | 'summarizing'
+  | 'paused'
+  | 'interrupted'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export type AgentTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'awaiting_approval'
+  | 'completed'
+  | 'skipped'
+  | 'failed'
+
+export interface AgentTask {
+  id: string
+  stage: string
+  title: string
+  detail: string
+  status: AgentTaskStatus
+  error: string | null
+  result_refs: string[]
+  disclosure: string[]
+}
+
+export interface AgentStage {
+  id: string
+  title: string
+  tasks: AgentTask[]
+}
+
+export interface AgentApprovalItem {
+  id: string
+  title: string
+  rationale: string
+  spec: Record<string, unknown>
+  evidence: Record<string, unknown>
+  disclosure: string
+  decision: 'approved' | 'rejected' | 'edited' | null
+  edited_spec: Record<string, unknown> | null
+}
+
+export interface AgentApproval {
+  id: string
+  kind: 'join' | 'rules' | 'tests' | string
+  task_id: string
+  status: 'pending' | 'resolved'
+  created: string
+  resolved?: string
+  items: AgentApprovalItem[]
+}
+
+export interface AgentMessage {
+  role: 'user' | 'agent'
+  content: string
+  at: string
+  handled?: boolean
+}
+
+export interface AgentFinding {
+  id: string
+  severity: 'high' | 'medium' | 'low' | 'info'
+  statement: string
+  basis: 'observed' | 'interpretation'
+  evidence_refs: string[]
+}
+
+export interface AgentDiscovery {
+  domain?: string
+  confidence?: 'high' | 'medium' | 'low'
+  table_roles?: Record<string, string>
+  assumptions?: string[]
+  warnings?: string[]
+  tables?: { table: string; rows: number; columns: number }[]
+}
+
+export interface AgentRunContext {
+  objective?: string
+  period?: string
+  materiality?: string | number | null
+  notes?: string
+}
+
+export interface AgentRun {
+  id: string
+  workspace_id: string
+  parent_run_id: string | null
+  mode: 'auto' | 'permission'
+  context: AgentRunContext
+  status: AgentRunStatus
+  created: string
+  started: string | null
+  finished: string | null
+  usage: { llm_turns: number; tool_calls: number; custom_analyses: number }
+  discovery: AgentDiscovery
+  plan: { stages: AgentStage[] }
+  approvals: AgentApproval[]
+  messages: AgentMessage[]
+  artifacts: { kind: string; id: string; semantic_id: string; action: string }[]
+  findings: AgentFinding[]
+  summary_markdown: string | null
+  warnings: string[]
+  error: string | null
+}
+
+export interface AgentRunSummary {
+  id: string
+  workspace_id: string
+  parent_run_id: string | null
+  mode: 'auto' | 'permission'
+  status: AgentRunStatus
+  created: string
+  started: string | null
+  finished: string | null
+  domain?: string | null
+  task_counts: { total: number; completed: number; failed: number }
+  error: string | null
+  has_summary: boolean
+}
+
+export interface AgentEvent {
+  seq: number
+  at: string
+  type: string
+  data: Record<string, unknown>
+}
+
+export interface WorkspaceChange {
+  kind: 'table' | 'join' | 'ruleset' | 'analysis' | 'tile' | string
+  id: string
+  action: 'created' | 'updated' | 'removed' | string
+}
+
+export interface AgentDecision {
+  item_id: string
+  action: 'approve' | 'reject' | 'edit'
+  spec?: Record<string, unknown>
+}

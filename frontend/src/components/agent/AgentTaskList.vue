@@ -1,0 +1,99 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+
+import type { AgentStage, AgentTaskStatus } from '../../types'
+
+// The Codex-style live plan: stages with their tasks, statuses updating as
+// SSE events land. Result refs surface as small "what this produced" chips.
+const props = defineProps<{ stages: AgentStage[] }>()
+
+const statusIcon: Record<AgentTaskStatus, string> = {
+  queued: 'pi pi-circle',
+  running: 'pi pi-spin pi-spinner',
+  awaiting_approval: 'pi pi-pause-circle',
+  completed: 'pi pi-check-circle',
+  skipped: 'pi pi-minus-circle',
+  failed: 'pi pi-times-circle',
+}
+
+const visibleStages = computed(() => props.stages.filter((s) => s.tasks.length))
+
+function refLabel(ref: string): string {
+  const [kind] = ref.split(':')
+  return { join: 'join', ruleset: 'rules', analysis: 'analysis', tile: 'tile' }[kind] ?? kind
+}
+</script>
+
+<template>
+  <div class="tasks">
+    <div v-for="stage in visibleStages" :key="stage.id" class="stage">
+      <p class="stage-title">{{ stage.title }}</p>
+      <div
+        v-for="task in stage.tasks"
+        :key="task.id"
+        class="task"
+        :class="task.status"
+      >
+        <i :class="statusIcon[task.status] ?? 'pi pi-circle'" />
+        <div class="task-body">
+          <span class="task-title">{{ task.title }}</span>
+          <small v-if="task.status === 'failed' && task.error" class="task-error">
+            {{ task.error }}
+          </small>
+          <small v-else-if="task.detail && task.status === 'queued'" class="muted">
+            {{ task.detail }}
+          </small>
+          <div v-if="task.result_refs.length" class="refs">
+            <span v-for="ref in task.result_refs" :key="ref" class="ref">
+              {{ refLabel(ref) }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p v-if="!visibleStages.length" class="muted empty">
+      The plan appears here once discovery finishes.
+    </p>
+  </div>
+</template>
+
+<style scoped>
+.tasks { display: flex; flex-direction: column; gap: 0.55rem; }
+.stage-title {
+  margin: 0 0 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--p-surface-500);
+}
+.task {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+}
+.task > i { margin-top: 0.15rem; font-size: 0.85rem; color: var(--p-surface-400); }
+.task.running { background: var(--p-primary-50); }
+.task.running > i { color: var(--p-primary-500); }
+.task.awaiting_approval { background: #fff7e6; }
+.task.awaiting_approval > i { color: var(--p-amber-500); }
+.task.completed > i { color: var(--aw-teal, #0b625c); }
+.task.failed > i { color: var(--p-red-500); }
+.task.skipped { opacity: 0.65; }
+.task-body { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.task-title { font-size: 0.85rem; line-height: 1.3; }
+.task.completed .task-title { color: var(--p-surface-600); }
+.task-error { color: var(--p-red-500); font-size: 0.72rem; }
+.muted { color: var(--p-surface-500); font-size: 0.72rem; }
+.refs { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.2rem; }
+.ref {
+  font-size: 0.65rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--p-surface-100);
+  color: var(--p-surface-600);
+}
+.empty { padding: 0.5rem; }
+</style>

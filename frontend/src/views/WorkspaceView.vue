@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useToast } from 'primevue/usetoast'
+import Button from 'primevue/button'
 import Tabs from 'primevue/tabs'
 import TabList from 'primevue/tablist'
 import Tab from 'primevue/tab'
@@ -8,7 +9,9 @@ import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 
 import { api } from '../api'
+import { useAgentRun } from '../composables/useAgentRun'
 import type { WorkspaceSummary } from '../types'
+import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
 import QueryTab from '../components/QueryTab.vue'
@@ -21,6 +24,8 @@ const toast = useToast()
 const workspace = ref<WorkspaceSummary | null>(null)
 const activeTab = ref('data')
 const initialized = ref(false)
+
+const agent = useAgentRun(props.id)
 
 async function reload() {
   try {
@@ -36,6 +41,12 @@ async function reload() {
 }
 
 onMounted(reload)
+
+// Agent-created tables/joins change the workspace summary every tab reads.
+const unsubscribe = agent.onWorkspaceChanged((change) => {
+  if (change.kind === 'join' || change.kind === 'table') void reload()
+})
+onUnmounted(unsubscribe)
 </script>
 
 <template>
@@ -50,45 +61,56 @@ onMounted(reload)
         <span><strong>{{ workspace.tables.length }}</strong> tables</span>
         <span><strong>{{ workspace.tables.reduce((sum, table) => sum + (table.rows ?? 0), 0).toLocaleString() }}</strong> rows</span>
         <span><i class="pi pi-lock" /> Processed locally</span>
+        <Button
+          :label="agent.isActive.value ? 'Agent running' : 'Run Agent'"
+          :icon="agent.isActive.value ? 'pi pi-spin pi-spinner' : 'pi pi-sparkles'"
+          size="small"
+          :severity="agent.state.drawerOpen ? 'secondary' : undefined"
+          :outlined="agent.state.drawerOpen"
+          @click="agent.toggleDrawer()"
+          v-tooltip.bottom="'Open the analyst agent panel'"
+        />
       </div>
     </div>
 
-    <Tabs v-model:value="activeTab" class="workspace-tabs">
-      <div class="workspace-body">
-        <TabList class="workspace-nav">
-          <p class="nav-label">Workspace</p>
-          <Tab value="dashboard"><i class="pi pi-th-large" /><span>Dashboard</span></Tab>
-          <Tab value="data"><i class="pi pi-database" /><span>Data</span></Tab>
-          <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
-          <Tab value="validation"><i class="pi pi-check-square" /><span>Validation</span></Tab>
-          <Tab value="analysis"><i class="pi pi-shield" /><span>Analysis</span></Tab>
-          <div class="nav-privacy"><i class="pi pi-shield" /><span>Raw data remains on this device.</span></div>
-        </TabList>
-        <TabPanels class="workspace-panels">
-        <TabPanel value="dashboard">
-          <DashboardTab v-if="activeTab === 'dashboard'" :workspace="workspace" />
-        </TabPanel>
-        <TabPanel value="data">
-          <DataTab :workspace="workspace" @changed="reload" />
-        </TabPanel>
-        <TabPanel value="query">
-          <QueryTab :workspace="workspace" />
-        </TabPanel>
-        <TabPanel value="validation">
-          <!-- KeepAlive so an unsaved rule-set draft survives visiting other tabs. -->
-          <KeepAlive>
-            <ValidationTab v-if="activeTab === 'validation'" :workspace="workspace" />
-          </KeepAlive>
-        </TabPanel>
-        <TabPanel value="analysis">
-          <!-- KeepAlive so an in-progress AI chat survives visiting other tabs. -->
-          <KeepAlive>
-            <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
-          </KeepAlive>
-        </TabPanel>
-        </TabPanels>
-      </div>
-    </Tabs>
+    <div class="workspace-layout">
+      <Tabs v-model:value="activeTab" class="workspace-tabs">
+        <div class="workspace-body">
+          <TabList class="workspace-nav">
+            <p class="nav-label">Workspace</p>
+            <Tab value="dashboard"><i class="pi pi-th-large" /><span>Dashboard</span></Tab>
+            <Tab value="data"><i class="pi pi-database" /><span>Data</span></Tab>
+            <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
+            <Tab value="validation"><i class="pi pi-check-square" /><span>Validation</span></Tab>
+            <Tab value="analysis"><i class="pi pi-shield" /><span>Analysis</span></Tab>
+            <div class="nav-privacy"><i class="pi pi-shield" /><span>Raw data remains on this device.</span></div>
+          </TabList>
+          <TabPanels class="workspace-panels">
+          <TabPanel value="dashboard">
+            <DashboardTab v-if="activeTab === 'dashboard'" :workspace="workspace" />
+          </TabPanel>
+          <TabPanel value="data">
+            <DataTab :workspace="workspace" @changed="reload" />
+          </TabPanel>
+          <TabPanel value="query">
+            <QueryTab :workspace="workspace" />
+          </TabPanel>
+          <TabPanel value="validation">
+            <!-- KeepAlive so an unsaved rule-set draft survives visiting other tabs. -->
+            <KeepAlive>
+              <ValidationTab v-if="activeTab === 'validation'" :workspace="workspace" />
+            </KeepAlive>
+          </TabPanel>
+          <TabPanel value="analysis">
+            <KeepAlive>
+              <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
+            </KeepAlive>
+          </TabPanel>
+          </TabPanels>
+        </div>
+      </Tabs>
+      <AgentDrawer v-if="agent.state.drawerOpen" :workspace="workspace" />
+    </div>
   </div>
 </template>
 
@@ -117,6 +139,10 @@ h1 {
 .workspace-facts span { display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
 .workspace-facts strong { color: var(--aw-ink); font-size: 0.95rem; }
 
+.workspace-layout { display: flex; align-items: stretch; }
+.workspace-tabs { flex: 1; min-width: 0; }
+.workspace-layout > .agent-drawer { min-height: calc(100vh - 10.75rem); max-height: calc(100vh - 10.75rem); position: sticky; top: 0; }
+
 .workspace-body { display: flex; min-height: calc(100vh - 10.75rem); }
 .workspace-nav { flex: 0 0 13.5rem; display: flex; flex-direction: column; align-items: stretch; gap: 0.22rem; padding: 1.25rem 0.75rem; background: #e9eef4; border-right: 1px solid #d5dde7; }
 .nav-label { margin: 0 0.6rem 0.45rem; color: #748196; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -144,6 +170,8 @@ h1 {
 @media (max-width: 900px) {
   .workspace-bar { padding-inline: 1.25rem; align-items: flex-start; }
   .workspace-facts span:nth-child(2) { display: none; }
+  .workspace-layout { flex-direction: column; }
+  .workspace-layout > .agent-drawer { position: static; min-height: auto; max-height: 32rem; border-left: 0; border-top: 1px solid #d5dde7; }
   .workspace-body { flex-direction: column; }
   .workspace-nav { flex: none; width: 100%; flex-direction: row; overflow-x: auto; padding: 0.55rem 0.75rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
   .nav-label, .nav-privacy { display: none; }

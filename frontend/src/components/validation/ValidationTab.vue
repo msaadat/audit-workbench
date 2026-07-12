@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
 import { api, ApiError } from '../../api'
+import { useAgentRun } from '../../composables/useAgentRun'
 import type { RuleSet, WorkspaceSummary } from '../../types'
 import RulesetEditor from './RulesetEditor.vue'
 
@@ -45,6 +46,12 @@ async function load() {
   }
 }
 watch(() => props.workspace.id, load, { immediate: true })
+
+// Live-refresh the rail while an agent run creates or updates rule sets.
+const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceChanged((change) => {
+  if (change.kind === 'ruleset') void onChanged()
+})
+onUnmounted(unsubscribe)
 
 function startNew() {
   creating.value = true

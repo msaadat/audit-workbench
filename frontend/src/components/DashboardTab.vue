@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -9,6 +9,7 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
+import { useAgentRun } from '../composables/useAgentRun'
 import type { DashboardTile, WorkspaceSummary } from '../types'
 import ChartView from './ChartView.vue'
 
@@ -19,6 +20,8 @@ const confirm = useConfirm()
 
 const tiles = ref<DashboardTile[]>([])
 const loading = ref(true)
+// Tiles the agent just created/updated get a brief highlight after reload.
+const flashed = ref<Record<string, boolean>>({})
 const editing = ref<DashboardTile | null>(null)
 const editTitle = ref('')
 const editNote = ref('')
@@ -111,6 +114,20 @@ function remove(tile: DashboardTile) {
 
 onMounted(load)
 defineExpose({ load })
+
+// Live-refresh while an agent run pins tiles; flash the changed tile.
+const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceChanged(async (change) => {
+  if (change.kind !== 'tile') return
+  await load()
+  if (change.action !== 'removed') {
+    flashed.value = { ...flashed.value, [change.id]: true }
+    setTimeout(() => {
+      const { [change.id]: _gone, ...rest } = flashed.value
+      flashed.value = rest
+    }, 2500)
+  }
+})
+onUnmounted(unsubscribe)
 </script>
 
 <template>
@@ -132,7 +149,7 @@ defineExpose({ load })
   </div>
 
   <div class="tile-grid">
-    <div v-for="(tile, index) in tiles" :key="tile.id" class="tile" :class="{ 'tile-error': tile.error }" :data-verdict="tile.error ? 'fail' : tile.verdict">
+    <div v-for="(tile, index) in tiles" :key="tile.id" class="tile" :class="{ 'tile-error': tile.error, 'tile-flash': flashed[tile.id] }" :data-verdict="tile.error ? 'fail' : tile.verdict">
       <div class="tile-head">
         <div class="tile-title">
           <i :class="tileIcon[tile.kind]" v-tooltip.bottom="tileKindLabel[tile.kind]" />
@@ -223,6 +240,12 @@ defineExpose({ load })
 .tile[data-verdict='warn'] { border-top-color: #d97706; }
 .tile[data-verdict='fail'] { border-top-color: #dc2626; }
 .tile[data-verdict='info'] { border-top-color: #3b82f6; }
+
+.tile-flash { animation: tile-flash 2.4s ease-out; }
+@keyframes tile-flash {
+  0% { box-shadow: 0 0 0 3px var(--p-primary-300); }
+  100% { box-shadow: var(--aw-shadow); }
+}
 
 .tile-error {
   border-color: var(--p-red-200);

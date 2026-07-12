@@ -1,28 +1,29 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
 import { api, ApiError } from '../api'
+import { useAgentRun } from '../composables/useAgentRun'
 import type { SavedAnalysis, WorkspaceSummary } from '../types'
 import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
-import AnalysisChat from './analysis/AnalysisChat.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
 import AnalysisCode from './analysis/AnalysisCode.vue'
 
 // The Analysis tab: a rail of saved analyses on the left, an editor on the
-// right. Three creation paths — the predefined Library, Ask AI (assistant
-// loop → editable code), or Code (hand-written Python). Saving persists to
-// the rail; Pinning (inside each pane) promotes a copy to the dashboard.
+// right. Two creation paths — the predefined Library or Code (hand-written
+// Polars). AI-assisted analysis lives in the Agent drawer, which saves into
+// this same rail. Saving persists to the rail; Pinning (inside each pane)
+// promotes a copy to the dashboard.
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
 const confirm = useConfirm()
 
 const analyses = ref<SavedAnalysis[]>([])
 const selectedId = ref<string | null>(null)
-const creating = ref<'library' | 'ai' | 'code' | null>(null)
+const creating = ref<'library' | 'code' | null>(null)
 const loading = ref(false)
 
 const verdictSeverity: Record<string, string> = {
@@ -52,12 +53,14 @@ async function load() {
 }
 watch(() => props.workspace.id, load, { immediate: true })
 
+// Live-refresh the rail while an agent run saves analyses into it.
+const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceChanged((change) => {
+  if (change.kind === 'analysis') void onChanged()
+})
+onUnmounted(unsubscribe)
+
 function startLibrary() {
   creating.value = 'library'
-  selectedId.value = null
-}
-function startAi() {
-  creating.value = 'ai'
   selectedId.value = null
 }
 function startCode() {
@@ -111,13 +114,13 @@ function confirmDelete(a: SavedAnalysis) {
       <div class="rail-heading"><p class="eyebrow">Analysis library</p><strong>Saved procedures</strong></div>
       <div class="rail-actions">
         <Button label="Library" icon="pi pi-book" size="small" :outlined="creating !== 'library'" @click="startLibrary" />
-        <Button label="Ask AI" icon="pi pi-sparkles" size="small" :outlined="creating !== 'ai'" @click="startAi" />
         <Button label="Code" icon="pi pi-code" size="small" :outlined="creating !== 'code'" @click="startCode" />
       </div>
 
       <p class="rail-title">Engagement analyses</p>
       <p v-if="!loading && analyses.length === 0" class="muted small">
-        Nothing saved yet — create one from the library, the AI, or your own code.
+        Nothing saved yet — create one from the library, your own code, or the
+        Agent panel.
       </p>
 
       <button
@@ -159,15 +162,6 @@ function confirmDelete(a: SavedAnalysis) {
         @changed="onChanged"
         @deleted="onDeleted"
       />
-      <!-- KeepAlive preserves the conversation when the user selects a saved
-           analysis (including the one just saved from the chat) and comes back. -->
-      <KeepAlive>
-        <AnalysisChat
-          v-if="creating === 'ai'"
-          :workspace="workspace"
-          @saved="onSaved"
-        />
-      </KeepAlive>
       <AnalysisCode
         v-if="creating === 'code'"
         :key="workspace.id"
@@ -185,7 +179,7 @@ function confirmDelete(a: SavedAnalysis) {
       <div v-if="!creating && !selected" class="empty-state analysis-empty">
         <div><span class="empty-state-icon"><i class="pi pi-shield" /></span>
         <h3>Choose an analysis path</h3>
-        <p>Use a predefined audit procedure, describe an analysis to AI, or write visible Polars code.</p></div>
+        <p>Use a predefined audit procedure, write visible Polars code, or ask the Agent panel to analyze for you.</p></div>
       </div>
     </section>
   </div>

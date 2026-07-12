@@ -12,10 +12,9 @@ import { api, ApiError } from '../../api'
 import type {
   CheckMeta,
   ColumnSchema,
-  ColumnValues,
   RuleSet,
+  RuleSuggestion,
   RunSummary,
-  TableProfile,
   ValidationRule,
   ValidationRun,
   WorkspaceSummary,
@@ -250,56 +249,31 @@ async function pinTile({ title: pinTitle, note }: { title: string; note: string 
 // ------------------------------------------------------------- suggestions
 // Conservative, profile-driven proposals: only what the current data already
 // satisfies (so accepting them starts green and guards future refreshes).
+// The logic lives in the backend (shared with agent runs); this just maps
+// the response onto ghost chips.
 async function suggest() {
   if (!table.value) return
   suggesting.value = true
   try {
-    const profile = await api.get<TableProfile>(
-      `/api/workspaces/${props.workspace.id}/tables/${table.value}/profile`,
+    const response = await api.get<{ suggestions: RuleSuggestion[] }>(
+      `/api/workspaces/${props.workspace.id}/tables/${table.value}/suggest-rules`,
     )
     const have = new Set(rules.value.map((r) => `${r.column}|${r.check}`))
     for (const s of suggestions.value) have.add(`${s.column}|${s.check}`)
     const ghosts: ValidationRule[] = []
-    const propose = (
-      column: string,
-      check: string,
-      params: Record<string, unknown> = {},
-      severity: 'fail' | 'warn' = 'fail',
-    ) => {
-      if (have.has(`${column}|${check}`)) return
-      have.add(`${column}|${check}`)
-      ghosts.push({ id: newRuleId(), column, check, params, severity, enabled: true })
+    for (const proposal of response.suggestions) {
+      const key = `${proposal.column}|${proposal.check}`
+      if (have.has(key)) continue
+      have.add(key)
+      ghosts.push({
+        id: newRuleId(),
+        column: proposal.column,
+        check: proposal.check,
+        params: proposal.params,
+        severity: proposal.severity,
+        enabled: true,
+      })
     }
-    const kinds = new Map(schema.value.map((c) => [c.name, c.kind]))
-    const now = new Date()
-    const listCandidates: string[] = []
-    for (const col of profile.column_profiles) {
-      const kind = kinds.get(col.name)
-      if (!kind || col.inferred_type === 'empty') continue
-      if (col.blank_count === 0) propose(col.name, 'required')
-      if (kind === 'numeric' && col.min !== null && parseFloat(col.min.replace(/,/g, '')) >= 0)
-        propose(col.name, 'numeric_sign', { mode: 'non_negative' })
-      if (kind === 'date' && col.max !== null && new Date(col.max) <= now)
-        propose(col.name, 'date_range', { not_in_future: true }, 'warn')
-      if (col.distinct_pct === 100 && col.distinct_count > 1) propose(col.name, 'unique')
-      if (kind === 'text' && col.distinct_count >= 2 && col.distinct_count <= 20 && col.distinct_pct < 100)
-        listCandidates.push(col.name)
-    }
-    // Low-cardinality text columns → allowed-values prefilled with what the
-    // data currently contains.
-    await Promise.all(
-      listCandidates.map(async (name) => {
-        try {
-          const values = await api.get<ColumnValues>(
-            `/api/workspaces/${props.workspace.id}/tables/${table.value}/columns/${encodeURIComponent(name)}/values`,
-          )
-          if (!values.truncated && values.values.length)
-            propose(name, 'allowed_values', { values: values.values, ignore_case: false })
-        } catch {
-          /* skip the column — suggestions are best-effort */
-        }
-      }),
-    )
     suggestions.value = [...suggestions.value, ...ghosts]
     if (!ghosts.length) {
       toast.add({
