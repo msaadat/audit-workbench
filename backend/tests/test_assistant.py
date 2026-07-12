@@ -27,6 +27,14 @@ def test_sandbox_exposes_tables_mapping_and_df():
     assert result.item() == 4
 
 
+def test_sandbox_collects_lazyframe_result():
+    frames = {"transactions": pl.DataFrame({"amount": [1, 2, 3]})}
+    result, _ = sandbox_run(
+        "result = transactions.lazy().select(pl.col('amount').sum())", frames
+    )
+    assert result.item() == 6
+
+
 @pytest.mark.parametrize(
     "code, match",
     [

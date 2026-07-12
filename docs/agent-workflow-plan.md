@@ -1,5 +1,15 @@
 # Agent-Driven Workspace Plan
 
+> **Status (2026-07-12): implemented** on the `agent-mode` branch. Backend:
+> `backend/app/agent/` (durable runs, staged runner, approvals, SSE) +
+> `routes/agent_routes.py`. Frontend: `composables/useAgentRun.ts` +
+> `components/agent/` (drawer, task list, approval cards, chat, summary).
+> The standalone Ask AI flow was removed in the same change. Deviations from
+> this draft: the LLM proposes work as structured JSON per stage and the
+> orchestrator executes mutations (rather than exposing mutation tools to the
+> model); queries/charts persist only as dashboard tiles (no separate saved
+> query store); V1 summary lives on the run record.
+
 ## Vision
 
 The workbench will support an optional LLM-backed data analyst agent that can

@@ -79,6 +79,9 @@ def _assert_safe(code: str) -> None:
 def _coerce_result(value) -> pl.DataFrame:
     if isinstance(value, pl.DataFrame):
         return value
+    if isinstance(value, pl.LazyFrame):
+        # Models often write .lazy() pipelines and forget .collect().
+        return value.collect()
     if isinstance(value, pl.Series):
         return value.to_frame()
     if isinstance(value, dict):
