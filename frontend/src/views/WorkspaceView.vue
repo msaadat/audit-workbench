@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useToast } from 'primevue/usetoast'
-import Button from 'primevue/button'
 import Tabs from 'primevue/tabs'
 import TabList from 'primevue/tablist'
 import Tab from 'primevue/tab'
@@ -61,15 +60,6 @@ onUnmounted(unsubscribe)
         <span><strong>{{ workspace.tables.length }}</strong> tables</span>
         <span><strong>{{ workspace.tables.reduce((sum, table) => sum + (table.rows ?? 0), 0).toLocaleString() }}</strong> rows</span>
         <span><i class="pi pi-lock" /> Processed locally</span>
-        <Button
-          :label="agent.isActive.value ? 'Agent running' : 'Run Agent'"
-          :icon="agent.isActive.value ? 'pi pi-spin pi-spinner' : 'pi pi-sparkles'"
-          size="small"
-          :severity="agent.state.drawerOpen ? 'secondary' : undefined"
-          :outlined="agent.state.drawerOpen"
-          @click="agent.toggleDrawer()"
-          v-tooltip.bottom="'Open the analyst agent panel'"
-        />
       </div>
     </div>
 
@@ -109,13 +99,23 @@ onUnmounted(unsubscribe)
           </TabPanels>
         </div>
       </Tabs>
-      <AgentDrawer v-if="agent.state.drawerOpen" :workspace="workspace" />
+      <AgentDrawer :workspace="workspace" />
     </div>
   </div>
 </template>
 
 <style scoped>
+.workspace-page {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .workspace-bar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -139,14 +139,20 @@ h1 {
 .workspace-facts span { display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
 .workspace-facts strong { color: var(--aw-ink); font-size: 0.95rem; }
 
-.workspace-layout { display: flex; align-items: stretch; }
-.workspace-tabs { flex: 1; min-width: 0; }
-.workspace-layout > .agent-drawer { min-height: calc(100vh - 10.75rem); max-height: calc(100vh - 10.75rem); position: sticky; top: 0; }
+.workspace-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+.workspace-tabs { flex: 1; min-width: 0; min-height: 0; height: 100%; }
+.workspace-layout > .agent-drawer { height: 100%; min-height: 0; }
 
-.workspace-body { display: flex; min-height: calc(100vh - 10.75rem); }
+.workspace-body { display: flex; height: 100%; min-height: 0; }
 .workspace-nav { flex: 0 0 13.5rem; display: flex; flex-direction: column; align-items: stretch; gap: 0.22rem; padding: 1.25rem 0.75rem; background: #e9eef4; border-right: 1px solid #d5dde7; }
 .nav-label { margin: 0 0.6rem 0.45rem; color: #748196; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-.workspace-panels { flex: 1; min-width: 0; padding: 1.25rem 1.5rem 1.75rem; background: var(--aw-canvas); }
+.workspace-panels { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1.25rem 1.5rem 1.75rem; background: var(--aw-canvas); }
 .nav-privacy { margin-top: auto; display: flex; gap: 0.55rem; padding: 0.8rem; border-top: 1px solid #d5dde7; color: #607086; font-size: 0.72rem; line-height: 1.35; }
 .nav-privacy i { color: var(--aw-teal); margin-top: 0.1rem; }
 
@@ -168,10 +174,11 @@ h1 {
 :deep(.workspace-panels .p-tabpanel) { padding: 0; }
 
 @media (max-width: 900px) {
+  .workspace-page { height: 100%; overflow: hidden; }
   .workspace-bar { padding-inline: 1.25rem; align-items: flex-start; }
   .workspace-facts span:nth-child(2) { display: none; }
-  .workspace-layout { flex-direction: column; }
-  .workspace-layout > .agent-drawer { position: static; min-height: auto; max-height: 32rem; border-left: 0; border-top: 1px solid #d5dde7; }
+  .workspace-layout { flex-direction: column; overflow: hidden; }
+  .workspace-layout > .agent-drawer { height: 32rem; min-height: 0; border-left: 0; border-top: 1px solid #d5dde7; }
   .workspace-body { flex-direction: column; }
   .workspace-nav { flex: none; width: 100%; flex-direction: row; overflow-x: auto; padding: 0.55rem 0.75rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
   .nav-label, .nav-privacy { display: none; }

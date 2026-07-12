@@ -133,14 +133,6 @@ function fail(summary: string, error: unknown) {
         v-tooltip.bottom="'Run history'"
         @click="showHistory = !showHistory; void agent.loadRuns()"
       />
-      <Button
-        icon="pi pi-times"
-        text
-        size="small"
-        severity="secondary"
-        v-tooltip.bottom="'Close'"
-        @click="agent.toggleDrawer()"
-      />
     </div>
 
     <div class="drawer-body">
@@ -315,6 +307,7 @@ function fail(summary: string, error: unknown) {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
   border-left: 1px solid var(--aw-border, #d5dde7);
   background: var(--p-surface-0);
 }
@@ -338,7 +331,7 @@ function fail(summary: string, error: unknown) {
 .live-dot.off { background: var(--p-amber-500); animation: none; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
-.drawer-body { flex: 1; overflow-y: auto; padding: 0.8rem 0.9rem; }
+.drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.8rem 0.9rem; }
 .section { margin-bottom: 1rem; }
 .section-title {
   margin: 0 0 0.4rem;
@@ -404,12 +397,17 @@ function fail(summary: string, error: unknown) {
 .history-item small { color: var(--p-surface-500); margin-left: auto; }
 
 .drawer-foot {
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
   border-top: 1px solid var(--aw-border, #d5dde7);
   padding: 0.6rem 0.9rem 0.5rem;
-  max-height: 45%;
-  overflow-y: auto;
+  overflow: hidden;
 }
 .disclosure {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 0.35rem;

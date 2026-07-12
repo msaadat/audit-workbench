@@ -26,7 +26,7 @@ const inWorkspace = computed(() => route.name === 'workspace')
       <i class="pi pi-th-large" /> All workspaces
     </router-link>
   </header>
-  <main>
+  <main :class="{ 'workspace-main': inWorkspace }">
     <router-view />
   </main>
   <Toast position="bottom-right" />
@@ -35,6 +35,7 @@ const inWorkspace = computed(() => route.name === 'workspace')
 
 <style scoped>
 .app-header {
+  flex: 0 0 4rem;
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -80,6 +81,18 @@ const inWorkspace = computed(() => route.name === 'workspace')
 .status-dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: #5eead4; box-shadow: 0 0 0 3px rgb(94 234 212 / 12%); }
 .all-workspaces { color: #e6edf6; text-decoration: none; padding: 0.45rem 0.65rem; border-radius: 6px; }
 .all-workspaces:hover { background: rgb(255 255 255 / 8%); }
+
+main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-main {
+  height: 0;
+  overflow: hidden;
+}
 
 @media (max-width: 640px) {
   .app-header { padding-inline: 1rem; }
