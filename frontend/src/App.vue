@@ -22,6 +22,9 @@ const inWorkspace = computed(() => route.name === 'workspace')
       <span class="status-dot" />
       <span>Local-only processing</span>
     </div>
+    <a href="/about.html" class="about-link">
+      <i class="pi pi-info-circle" /> About
+    </a>
     <router-link v-if="inWorkspace" to="/" class="all-workspaces">
       <i class="pi pi-th-large" /> All workspaces
     </router-link>
@@ -71,6 +74,7 @@ const inWorkspace = computed(() => route.name === 'workspace')
 .header-spacer { flex: 1; }
 
 .local-status,
+.about-link,
 .all-workspaces {
   display: inline-flex;
   align-items: center;
@@ -79,8 +83,8 @@ const inWorkspace = computed(() => route.name === 'workspace')
 }
 .local-status { color: #c7d3e2; }
 .status-dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: #5eead4; box-shadow: 0 0 0 3px rgb(94 234 212 / 12%); }
-.all-workspaces { color: #e6edf6; text-decoration: none; padding: 0.35rem 0.55rem; border-radius: 6px; }
-.all-workspaces:hover { background: rgb(255 255 255 / 8%); }
+.about-link, .all-workspaces { color: #e6edf6; text-decoration: none; padding: 0.35rem 0.55rem; border-radius: 6px; }
+.about-link:hover, .all-workspaces:hover { background: rgb(255 255 255 / 8%); }
 
 main {
   flex: 1;
@@ -96,7 +100,8 @@ main {
 
 @media (max-width: 640px) {
   .app-header { padding-inline: 1rem; }
-  .local-status span:last-child, .all-workspaces { font-size: 0; }
+  .local-status span:last-child, .about-link, .all-workspaces { font-size: 0; }
+  .about-link i,
   .all-workspaces i { font-size: 1rem; }
 }
 </style>
