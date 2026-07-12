@@ -74,6 +74,16 @@ const querySummary = computed(() => {
   return parts.join(' · ')
 })
 
+const resultSummary = computed(() => {
+  const r = result.value
+  if (!r) return 'Awaiting query'
+  if (isPivot.value || wasGrouped.value) {
+    const groupsLabel = r.total_rows === 1 ? 'group' : 'groups'
+    return `${r.total_rows.toLocaleString()} ${groupsLabel} from ${r.filtered_rows.toLocaleString()} rows`
+  }
+  return `${r.filtered_rows.toLocaleString()} of ${r.total_rows.toLocaleString()} rows`
+})
+
 function kindOf(field: string): string {
   return schema.value.find((c) => c.name === field)?.kind ?? 'text'
 }
@@ -366,6 +376,11 @@ const numericFlatColumns = computed(() => {
   return numeric
 })
 
+const showFlatPaginator = computed(() => {
+  const r = result.value
+  return !!r && !isPivot.value && r.total_rows > r.page_size
+})
+
 // ------------------------------------------------- cross-tab grid rendering
 function displayName(valueName: string): string {
   if (valueName === 'row_count') return 'Count of rows'
@@ -561,7 +576,7 @@ async function exportExcel() {
   <div class="query-layout">
     <div class="query-result surface-panel" :class="{ dim: running }">
       <div class="result-titlebar">
-        <div><p class="eyebrow">Result canvas</p><strong>{{ result ? `${result.filtered_rows.toLocaleString()} of ${result.total_rows.toLocaleString()} rows` : 'Awaiting query' }}</strong></div>
+        <div><p class="eyebrow">Result canvas</p><strong>{{ resultSummary }}</strong></div>
         <span v-if="running" class="computing"><i class="pi pi-spinner pi-spin" /> Recomputing</span>
       </div>
       <div class="result-body">
@@ -640,9 +655,9 @@ async function exportExcel() {
         <DataTable
           v-else
           :value="records"
-          class="query-table"
+          :class="['query-table', { 'query-table--drillable': wasGrouped }]"
           lazy
-          paginator
+          :paginator="showFlatPaginator"
           :rows="result.page_size"
           :first="(result.page - 1) * result.page_size"
           :totalRecords="result.total_rows"
@@ -662,7 +677,8 @@ async function exportExcel() {
             :key="column"
             :field="column"
             :header="column"
-            :class="{ 'num-col': numericFlatColumns.has(column) }"
+            :headerClass="{ 'num-col': numericFlatColumns.has(column) }"
+            :bodyClass="{ 'num-col': numericFlatColumns.has(column) }"
             sortable
           >
             <template #body="{ data }">
@@ -943,7 +959,7 @@ async function exportExcel() {
 .chart-panel {
   background: var(--aw-panel);
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-md);
+  border-radius: var(--aw-radius-sm);
   box-shadow: var(--aw-shadow-sm);
   padding: 1rem;
   margin-bottom: 0.75rem;
@@ -955,21 +971,94 @@ async function exportExcel() {
 }
 
 :deep(.query-table) {
-  font-size: 0.82rem;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--aw-border-strong);
+  border-radius: var(--aw-radius-sm);
+  background: var(--aw-panel);
+  box-shadow: 0 1px 0 rgb(13 35 64 / 3%);
+  font-size: var(--aw-text-sm);
+}
+
+:deep(.query-table .p-datatable-table-container) {
+  background: var(--aw-panel);
+}
+
+:deep(.query-table .p-datatable-table) {
+  width: max-content;
+  min-width: max-content;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
 :deep(.query-table .p-datatable-thead > tr > th),
 :deep(.query-table .p-datatable-tbody > tr > td) {
-  padding: 0.35rem 0.6rem;
+  padding: 0.52rem 0.7rem;
+  white-space: nowrap;
+  min-width: 7.5rem;
 }
 
 :deep(.query-table .p-datatable-thead > tr > th) {
-  font-size: 0.78rem;
-  font-weight: 600;
+  border-bottom: 1px solid var(--aw-border-strong);
+  background: #f1f5f9;
+  color: var(--aw-ink-strong);
+  font-size: var(--aw-text-xs);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+:deep(.query-table .p-column-header-content) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+}
+
+:deep(.query-table .num-col .p-column-header-content) {
+  justify-content: flex-end;
+  width: 100%;
+}
+
+:deep(.query-table .p-datatable-thead > tr > th:first-child) {
+  border-top-left-radius: calc(var(--aw-radius-sm) - 1px);
+}
+
+:deep(.query-table .p-datatable-thead > tr > th:last-child) {
+  border-top-right-radius: calc(var(--aw-radius-sm) - 1px);
+}
+
+:deep(.query-table .p-datatable-tbody > tr > td) {
+  border-color: var(--aw-border);
+  color: var(--aw-ink);
+  line-height: 1.35;
+}
+
+:deep(.query-table .p-datatable-tbody > tr:nth-child(even) > td) {
+  background: #f8fafc;
+}
+
+:deep(.query-table.query-table--drillable .p-datatable-tbody > tr) {
+  cursor: pointer;
+}
+
+:deep(.query-table.query-table--drillable .p-datatable-tbody > tr:hover > td) {
+  background: var(--aw-teal-soft);
+}
+
+:deep(.query-table .p-sortable-column-icon),
+:deep(.query-table .p-datatable-sort-icon) {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: var(--aw-muted);
 }
 
 :deep(.query-table .p-paginator) {
-  padding: 0.25rem 0.4rem;
+  min-height: 3.1rem;
+  padding: 0.45rem 0.65rem;
+  border-top: 1px solid var(--aw-border);
+  background: #fbfcfe;
+  gap: 0.15rem;
 }
 
 :deep(.query-table .p-paginator .p-paginator-page),
@@ -977,46 +1066,79 @@ async function exportExcel() {
 :deep(.query-table .p-paginator .p-paginator-prev),
 :deep(.query-table .p-paginator .p-paginator-next),
 :deep(.query-table .p-paginator .p-paginator-last) {
-  min-width: 2rem;
-  height: 2rem;
+  min-width: 2.1rem;
+  height: 2.1rem;
+  border-radius: var(--aw-radius-sm);
+  color: var(--aw-muted);
+}
+
+:deep(.query-table .p-paginator .p-paginator-page.p-highlight),
+:deep(.query-table .p-paginator .p-paginator-page.p-paginator-page-selected) {
+  background: var(--aw-teal-soft);
+  color: var(--aw-teal);
+  font-weight: 700;
+}
+
+:deep(.query-table .p-paginator .p-select) {
+  height: 2.35rem;
+  border-radius: var(--aw-radius-sm);
+}
+
+:deep(.query-table .p-paginator .p-select-label) {
+  padding-top: 0.42rem;
+  padding-bottom: 0.42rem;
 }
 
 :deep(.query-table .num-col) {
   text-align: right;
+  font-family: var(--aw-font-mono);
   font-variant-numeric: tabular-nums;
+  min-width: 8rem;
 }
 
 /* cross-tab grid */
 .grid-wrap {
+  width: fit-content;
+  max-width: 100%;
   overflow: auto;
   max-height: 70vh;
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-md);
+  border: 1px solid var(--aw-border-strong);
+  border-radius: var(--aw-radius-sm);
   background: var(--aw-panel);
+  box-shadow: 0 1px 0 rgb(13 35 64 / 3%);
 }
 
 .pivot-grid {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 0.875rem;
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  min-width: max-content;
+  font-size: var(--aw-text-sm);
 }
 
 .pivot-grid th,
 .pivot-grid td {
-  padding: 0.4rem 0.75rem;
+  padding: 0.52rem 0.7rem;
   border-bottom: 1px solid var(--aw-border);
   white-space: nowrap;
+  line-height: 1.35;
+  min-width: 7.5rem;
 }
 
 .pivot-grid thead th {
   position: sticky;
   top: 0;
-  background: var(--aw-raised);
+  background: #f1f5f9;
   border-bottom: 1px solid var(--aw-border-strong);
-  font-weight: 600;
-  color: var(--aw-ink);
+  font-size: var(--aw-text-xs);
+  font-weight: 700;
+  color: var(--aw-ink-strong);
   text-align: right;
   z-index: 1;
+}
+
+.pivot-grid tbody tr:nth-child(even) td {
+  background: #f8fafc;
 }
 
 .pivot-grid th.rowhead,
