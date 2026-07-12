@@ -46,6 +46,34 @@ def slugify(text: str) -> str:
     return slug or "item"
 
 
+def write_json_atomic(path: Path, payload: dict) -> None:
+    """Write JSON via a temp file + rename so a crash mid-write can never
+    leave a truncated definition behind."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:6]}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+# Provenance keys accepted on saved items (tiles/analyses/rulesets/joins).
+# An item carrying agent_run_id was created by an agent run; semantic_id is a
+# stable slug the agent uses to reconcile reruns instead of duplicating work.
+def _apply_provenance(item: dict, payload: dict) -> dict:
+    if payload.get("agent_run_id"):
+        item["agent_run_id"] = str(payload["agent_run_id"])
+        item["created_by"] = "agent"
+    if payload.get("semantic_id"):
+        item["semantic_id"] = str(payload["semantic_id"])
+    return item
+
+
+def _user_touch(item: dict) -> None:
+    """A manual edit of an agent-created item makes it user-owned: reruns of
+    the agent must no longer update or replace it."""
+    if item.get("created_by") == "agent":
+        item["created_by"] = "user"
+
+
 class WorkspaceError(ValueError):
     """A user-facing workspace problem (bad name, missing table, bad join)."""
 
@@ -186,9 +214,7 @@ class Workspace:
             "analyses": self.analyses,
             "rulesets": self.rulesets,
         }
-        self.definition_path.write_text(
-            json.dumps(definition, indent=2), encoding="utf-8"
-        )
+        write_json_atomic(self.definition_path, definition)
 
     # ------------------------------------------------------------------ tables
     def table_names(self) -> list[str]:
@@ -443,14 +469,17 @@ class Workspace:
                 if column not in self.get_frame(table).columns:
                     raise WorkspaceError(f"Column '{column}' not found in '{table}'.")
 
-        entry = {
-            "name": name,
-            "left": left,
-            "right": right,
-            "how": how,
-            "left_on": left_on,
-            "right_on": right_on,
-        }
+        entry = _apply_provenance(
+            {
+                "name": name,
+                "left": left,
+                "right": right,
+                "how": how,
+                "left_on": left_on,
+                "right_on": right_on,
+            },
+            spec,
+        )
         # Validate by executing once before persisting.
         self.joins.append(entry)
         try:
@@ -490,16 +519,19 @@ class Workspace:
         if kind == "python" and not str((payload.get("spec") or {}).get("code") or "").strip():
             raise WorkspaceError("A Python tile needs code.")
 
-        tile = {
-            "id": uuid.uuid4().hex[:10],
-            "title": title,
-            "kind": kind,
-            "table": table,
-            "spec": dict(payload.get("spec") or {}),
-            "viz": dict(payload.get("viz") or {"type": "table"}),
-            "note": str(payload.get("note") or "").strip(),
-            "created": date.today().isoformat(),
-        }
+        tile = _apply_provenance(
+            {
+                "id": uuid.uuid4().hex[:10],
+                "title": title,
+                "kind": kind,
+                "table": table,
+                "spec": dict(payload.get("spec") or {}),
+                "viz": dict(payload.get("viz") or {"type": "table"}),
+                "note": str(payload.get("note") or "").strip(),
+                "created": date.today().isoformat(),
+            },
+            payload,
+        )
         self.tiles.append(tile)
         self.save()
         return tile
@@ -512,6 +544,7 @@ class Workspace:
 
     def update_tile(self, tile_id: str, changes: dict) -> dict:
         tile = self._tile(tile_id)
+        _user_touch(tile)
         if "title" in changes:
             title = str(changes["title"] or "").strip()
             if not title:
@@ -556,17 +589,20 @@ class Workspace:
         if kind == "python" and not str((payload.get("spec") or {}).get("code") or "").strip():
             raise WorkspaceError("A Python analysis needs code.")
 
-        analysis = {
-            "id": uuid.uuid4().hex[:10],
-            "title": title,
-            "kind": kind,
-            "table": table,
-            "spec": dict(payload.get("spec") or {}),
-            "viz": dict(payload.get("viz") or {"type": "table"}),
-            "note": str(payload.get("note") or "").strip(),
-            "source": payload.get("source") or ("ai" if kind == "python" else "library"),
-            "created": date.today().isoformat(),
-        }
+        analysis = _apply_provenance(
+            {
+                "id": uuid.uuid4().hex[:10],
+                "title": title,
+                "kind": kind,
+                "table": table,
+                "spec": dict(payload.get("spec") or {}),
+                "viz": dict(payload.get("viz") or {"type": "table"}),
+                "note": str(payload.get("note") or "").strip(),
+                "source": payload.get("source") or ("ai" if kind == "python" else "library"),
+                "created": date.today().isoformat(),
+            },
+            payload,
+        )
         self.analyses.append(analysis)
         self.save()
         return analysis
@@ -579,6 +615,7 @@ class Workspace:
 
     def update_analysis(self, analysis_id: str, changes: dict) -> dict:
         analysis = self._analysis(analysis_id)
+        _user_touch(analysis)
         if "title" in changes:
             title = str(changes["title"] or "").strip()
             if not title:
@@ -637,14 +674,17 @@ class Workspace:
         title = str(payload.get("title") or "").strip()
         if not title:
             raise WorkspaceError("Rule set title is required.")
-        ruleset = {
-            "id": uuid.uuid4().hex[:10],
-            "title": title,
-            "table": table,
-            "rules": self._normalize_rules(payload.get("rules") or []),
-            "note": str(payload.get("note") or "").strip(),
-            "created": date.today().isoformat(),
-        }
+        ruleset = _apply_provenance(
+            {
+                "id": uuid.uuid4().hex[:10],
+                "title": title,
+                "table": table,
+                "rules": self._normalize_rules(payload.get("rules") or []),
+                "note": str(payload.get("note") or "").strip(),
+                "created": date.today().isoformat(),
+            },
+            payload,
+        )
         self.rulesets.append(ruleset)
         self.save()
         return ruleset
@@ -657,6 +697,7 @@ class Workspace:
 
     def update_ruleset(self, ruleset_id: str, changes: dict) -> dict:
         ruleset = self._ruleset(ruleset_id)
+        _user_touch(ruleset)
         if "title" in changes:
             title = str(changes["title"] or "").strip()
             if not title:
@@ -701,6 +742,19 @@ class Workspace:
         del runs[: -self.RUN_HISTORY_MAX]
         self.save()
         return runs
+
+    # -------------------------------------------------------------- provenance
+    def find_semantic(self, collection: str, semantic_id: str) -> dict | None:
+        """Find a saved item by its agent semantic id ('tiles', 'analyses',
+        'rulesets' or 'joins'). Used by agent reruns to reconcile instead of
+        duplicating outputs."""
+        items = {
+            "tiles": self.tiles,
+            "analyses": self.analyses,
+            "rulesets": self.rulesets,
+            "joins": self.joins,
+        }.get(collection, [])
+        return next((i for i in items if i.get("semantic_id") == semantic_id), None)
 
     # ------------------------------------------------------------------ frames
     def get_frame(self, name: str, _seen: frozenset = frozenset()) -> pl.DataFrame:

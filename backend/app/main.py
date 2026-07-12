@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .explore import QueryError
 from .llm import LLMError
+from .routes.agent_routes import router as agent_router
 from .routes.analyses_routes import router as analyses_router
 from .routes.analysis_routes import router as analysis_router
 from .routes.assistant_routes import router as assistant_router
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(analyses_router)
     app.include_router(assistant_router)
     app.include_router(validation_router)
+    app.include_router(agent_router)
 
     if FRONTEND_DIST.exists():
         app.mount(

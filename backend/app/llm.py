@@ -12,6 +12,8 @@ provider and model are normal application settings saved through the UI:
     MISTRAL_API_KEY          Mistral API key
     LMSTUDIO_API_KEY         optional local dummy key
     LLM_REQUEST_TIMEOUT      optional request timeout in seconds
+    AGENT_PROVIDER           optional provider override for agent runs
+    AGENT_MODEL              optional model override for agent runs
 
 This module is a thin transport: it knows how to send a chat request (with
 optional tool schemas) and hand back the raw assistant message. It never sees
@@ -67,9 +69,29 @@ def _request_timeout(default: int) -> int:
     return timeout
 
 
-def _settings() -> LLMSettings:
+def _settings(profile: str = "assistant") -> LLMSettings:
     saved = assistant_settings.load()
     backend = saved["provider"]
+    model = saved["model"]
+    if profile == "agent":
+        # Agent runs may need a stronger model than the chat assistant.
+        # AGENT_PROVIDER/AGENT_BACKEND and AGENT_MODEL override when set;
+        # otherwise the agent uses the assistant's configured backend/model.
+        override_backend = (_env("AGENT_PROVIDER") or _env("AGENT_BACKEND")).lower()
+        override_model = _env("AGENT_MODEL")
+        if override_backend:
+            if override_backend not in assistant_settings.PROVIDERS:
+                supported = ", ".join(assistant_settings.PROVIDERS)
+                raise LLMError(
+                    f"Unsupported AGENT_PROVIDER '{override_backend}'. "
+                    f"Use one of: {supported}."
+                )
+            backend = override_backend
+            model = override_model or str(
+                assistant_settings.PROVIDERS[backend]["default_model"]
+            )
+        elif override_model:
+            model = override_model
     provider = assistant_settings.PROVIDERS[backend]
     api_key_env = str(provider["api_key_env"])
     api_key = _env(api_key_env)
@@ -78,7 +100,7 @@ def _settings() -> LLMSettings:
     return LLMSettings(
         backend=backend,
         api_key=api_key,
-        model=saved["model"],
+        model=model,
         base_url=str(provider["base_url"]).rstrip("/"),
         extra_headers={},
         timeout=_request_timeout(
@@ -123,15 +145,39 @@ def update_settings(payload: dict) -> dict:
     return status()
 
 
+def agent_status() -> dict:
+    """Like :func:`status`, but for the agent profile (env overrides applied)."""
+    try:
+        settings = _settings("agent")
+    except (LLMError, assistant_settings.SettingsError) as error:
+        return {
+            "configured": False,
+            "backend": "",
+            "provider": "",
+            "model": "",
+            "base_url": "",
+            "error": str(error),
+        }
+    return {
+        "configured": bool(settings.api_key),
+        "backend": settings.backend,
+        "provider": settings.backend,
+        "model": settings.model,
+        "base_url": settings.base_url,
+    }
+
+
 def chat(messages: list[dict], tools: list[dict] | None = None,
-         temperature: float = 0.0) -> dict:
+         temperature: float = 0.0, profile: str = "assistant") -> dict:
     """One chat/completions round-trip. Returns the assistant message dict.
 
     The returned message may contain ``content`` and/or ``tool_calls``; the
     caller drives the tool loop. Raises :class:`LLMError` for any transport or
-    API failure, with a message safe to show the user.
+    API failure, with a message safe to show the user. ``profile`` selects the
+    backend/model pair: 'assistant' (saved settings) or 'agent' (env overrides
+    falling back to the saved settings).
     """
-    settings = _settings()
+    settings = _settings(profile)
     if not settings.api_key:
         provider = assistant_settings.PROVIDERS[settings.backend]
         if settings.backend == "lmstudio":

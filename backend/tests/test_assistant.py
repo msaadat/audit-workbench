@@ -134,7 +134,7 @@ def test_assistant_status_unconfigured(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     body = llm.status()
     assert body["configured"] is False
-    assert body["backend"] == "groq"
+    assert body["backend"] == assistant_settings.DEFAULT_PROVIDER
     assert body["model"]
     assert any(provider["id"] == "mistral" for provider in body["providers"])
 
