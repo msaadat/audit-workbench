@@ -35,12 +35,12 @@ const inWorkspace = computed(() => route.name === 'workspace')
 
 <style scoped>
 .app-header {
-  flex: 0 0 4rem;
+  flex: 0 0 3.5rem;
   display: flex;
   align-items: center;
-  gap: 1rem;
-  min-height: 4rem;
-  padding: 0.65rem 1.5rem;
+  gap: 0.85rem;
+  min-height: 3.5rem;
+  padding: 0.45rem 1.25rem;
   background: #10233f;
   border-bottom: 1px solid #203a5d;
   color: #fff;
@@ -57,29 +57,29 @@ const inWorkspace = computed(() => route.name === 'workspace')
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 2.25rem;
-  height: 2.25rem;
-  border-radius: 7px;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 6px;
   color: #10233f;
   background: #5eead4;
-  font-size: 1.1rem;
+  font-size: 1rem;
 }
 
 .brand-copy { display: flex; flex-direction: column; line-height: 1.15; }
-.brand-copy strong { font-size: 1rem; letter-spacing: 0.01em; }
-.brand-copy small { margin-top: 0.18rem; color: #a9b9ce; font-size: 0.7rem; font-weight: 500; }
+.brand-copy strong { font-size: 0.96rem; letter-spacing: 0.01em; }
+.brand-copy small { margin-top: 0.12rem; color: #a9b9ce; font-size: 0.66rem; font-weight: 500; }
 .header-spacer { flex: 1; }
 
 .local-status,
 .all-workspaces {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  font-size: 0.78rem;
+  gap: 0.4rem;
+  font-size: 0.75rem;
 }
 .local-status { color: #c7d3e2; }
 .status-dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: #5eead4; box-shadow: 0 0 0 3px rgb(94 234 212 / 12%); }
-.all-workspaces { color: #e6edf6; text-decoration: none; padding: 0.45rem 0.65rem; border-radius: 6px; }
+.all-workspaces { color: #e6edf6; text-decoration: none; padding: 0.35rem 0.55rem; border-radius: 6px; }
 .all-workspaces:hover { background: rgb(255 255 255 / 8%); }
 
 main {

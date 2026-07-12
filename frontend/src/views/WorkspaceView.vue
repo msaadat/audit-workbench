@@ -120,24 +120,24 @@ onUnmounted(unsubscribe)
   align-items: center;
   justify-content: space-between;
   gap: 2rem;
-  min-height: 6.75rem;
-  padding: 1.2rem 2rem;
+  min-height: 5.5rem;
+  padding: 0.9rem 2rem;
   background: #fff;
   border-bottom: 1px solid var(--aw-border);
 }
 
 h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.4rem;
+  margin: 0 0 0.18rem;
+  font-size: 1.25rem;
 }
 
 .workspace-bar p {
   margin: 0;
 }
 
-.workspace-facts { display: flex; align-items: center; gap: 1.4rem; color: var(--aw-muted); font-size: 0.78rem; }
+.workspace-facts { display: flex; align-items: center; gap: 1.2rem; color: var(--aw-muted); font-size: 0.75rem; }
 .workspace-facts span { display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
-.workspace-facts strong { color: var(--aw-ink); font-size: 0.95rem; }
+.workspace-facts strong { color: var(--aw-ink); font-size: 0.9rem; }
 
 .workspace-layout {
   flex: 1;
