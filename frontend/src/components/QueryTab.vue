@@ -873,10 +873,10 @@ async function exportExcel() {
   flex: 1;
 }
 
-.query-commandbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem; margin-bottom: 1rem; padding: .75rem .9rem; position: sticky; top: 0; z-index: 8; box-shadow: 0 2px 12px rgb(15 23 42 / 6%); }
+.query-commandbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem; margin-bottom: 1rem; padding: .75rem .9rem; position: sticky; top: 0; z-index: 8; box-shadow: var(--aw-shadow-md); }
 .query-context { display: flex; flex-direction: column; align-self: center; min-width: 15rem; }
 .query-context .eyebrow { margin: 0; }
-.query-context strong { max-width: 36rem; overflow: hidden; color: #40516a; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
+.query-context strong { max-width: 36rem; overflow: hidden; color: var(--aw-muted); font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
 .query-layout {
   display: flex;
   gap: 1rem;
@@ -890,9 +890,9 @@ async function exportExcel() {
   overflow: hidden;
   box-shadow: none;
 }
-.result-titlebar { display: flex; align-items: center; justify-content: space-between; min-height: 3.7rem; padding: .7rem .9rem; border-bottom: 1px solid var(--aw-border); background: #fbfcfd; }
+.result-titlebar { display: flex; align-items: center; justify-content: space-between; min-height: 3.7rem; padding: .7rem .9rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-raised); }
 .result-titlebar .eyebrow { margin-bottom: .1rem; }
-.result-titlebar strong { font-size: .82rem; }
+.result-titlebar strong { font-size: .82rem; font-family: var(--aw-font-mono); letter-spacing: -0.01em; }
 .result-body { padding: .75rem; }
 .computing { display: flex; align-items: center; gap: .35rem; color: var(--aw-teal); font-size: .75rem; font-weight: 650; }
 .compact-empty { min-height: 24rem; border: 0; background: transparent; }
@@ -906,11 +906,11 @@ async function exportExcel() {
 }
 
 .error {
-  color: var(--p-red-600);
+  color: var(--aw-danger);
   padding: 1rem;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  background: #fff5f5;
+  border: 1px solid var(--aw-danger);
+  border-radius: var(--aw-radius-sm);
+  background: var(--aw-danger-soft);
 }
 
 .result-meta {
@@ -941,9 +941,10 @@ async function exportExcel() {
 }
 
 .chart-panel {
-  background: var(--p-surface-0);
-  border: 1px solid var(--p-surface-200);
-  border-radius: 8px;
+  background: var(--aw-panel);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  box-shadow: var(--aw-shadow-sm);
   padding: 1rem;
   margin-bottom: 0.75rem;
 }
@@ -989,9 +990,9 @@ async function exportExcel() {
 .grid-wrap {
   overflow: auto;
   max-height: 70vh;
-  border: 1px solid var(--p-surface-200);
-  border-radius: 8px;
-  background: var(--p-surface-0);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  background: var(--aw-panel);
 }
 
 .pivot-grid {
@@ -1003,17 +1004,17 @@ async function exportExcel() {
 .pivot-grid th,
 .pivot-grid td {
   padding: 0.4rem 0.75rem;
-  border-bottom: 1px solid var(--p-surface-100);
+  border-bottom: 1px solid var(--aw-border);
   white-space: nowrap;
 }
 
 .pivot-grid thead th {
   position: sticky;
   top: 0;
-  background: var(--p-surface-50);
-  border-bottom: 1px solid var(--p-surface-300);
+  background: var(--aw-raised);
+  border-bottom: 1px solid var(--aw-border-strong);
   font-weight: 600;
-  color: var(--p-surface-700);
+  color: var(--aw-ink);
   text-align: right;
   z-index: 1;
 }
@@ -1025,35 +1026,39 @@ async function exportExcel() {
 }
 
 .pivot-grid td.rowhead {
-  color: var(--p-surface-800);
+  color: var(--aw-ink);
 }
 
 .pivot-grid th.grouphead {
   text-align: center;
-  border-left: 1px solid var(--p-surface-200);
+  border-left: 1px solid var(--aw-border);
 }
 
 .pivot-grid td.num {
   text-align: right;
+  font-family: var(--aw-font-mono);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 
 .pivot-grid .total {
   font-weight: 600;
-  border-left: 1px solid var(--p-surface-200);
+  border-left: 1px solid var(--aw-border);
 }
 
 .pivot-grid tfoot td {
   position: sticky;
   bottom: 0;
-  background: var(--p-surface-50);
-  border-top: 2px solid var(--p-surface-300);
+  background: var(--aw-raised);
+  border-top: 2px solid var(--aw-border-strong);
   font-weight: 600;
 }
 
+.pivot-grid tfoot td.num { font-family: var(--aw-font-mono); }
+
 .pivot-grid .cell-null::after {
   content: '(blank)';
-  color: var(--p-surface-400);
+  color: var(--aw-muted);
   font-weight: 400;
 }
 
@@ -1070,32 +1075,34 @@ async function exportExcel() {
 
 .panel-section,
 .zone {
-  background: var(--p-surface-0);
-  border: 1px solid var(--p-surface-200);
-  border-radius: 7px;
+  background: var(--aw-panel);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-sm);
+  box-shadow: var(--aw-shadow-sm);
   padding: 0.6rem 0.75rem;
 }
 
 .zone { border-left-width: 3px; }
-.zone[data-zone='filters'] { border-left-color: #d97706; }
+.zone[data-zone='filters'] { border-left-color: var(--aw-warn); }
 .zone[data-zone='group'] { border-left-color: #2563eb; }
 .zone[data-zone='split'] { border-left-color: #7c3aed; }
-.zone[data-zone='aggs'] { border-left-color: #0f766e; }
-.zone[data-zone='sort'] { border-left-color: #64748b; }
+.zone[data-zone='aggs'] { border-left-color: var(--aw-teal); }
+.zone[data-zone='sort'] { border-left-color: var(--aw-muted); }
 
 .zone {
   min-height: 4.2rem;
 }
 
 .zone.over {
-  border-color: var(--p-primary-400);
-  background: var(--p-primary-50);
+  border-color: var(--aw-teal);
+  box-shadow: inset 0 0 0 1px var(--aw-teal);
+  background: var(--aw-teal-soft);
 }
 
 .panel-head {
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--p-surface-600);
+  color: var(--aw-ink);
   margin-bottom: 0.45rem;
   display: flex;
   align-items: center;
@@ -1144,16 +1151,18 @@ async function exportExcel() {
   align-items: center;
   gap: 0.35rem;
   font-size: 0.8rem;
-  background: var(--p-surface-100);
-  border: 1px solid var(--p-surface-200);
-  border-radius: 6px;
-  padding: 0.2rem 0.55rem;
+  background: var(--aw-raised);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-sm);
+  padding: 0.25rem 0.6rem;
   cursor: grab;
   user-select: none;
+  transition: border-color 0.15s, background 0.15s;
 }
 
 .chip:hover {
-  background: var(--p-surface-200);
+  background: #fff;
+  border-color: var(--aw-teal);
 }
 
 .chip.used {
@@ -1175,13 +1184,14 @@ async function exportExcel() {
 
 .chip i {
   font-size: 0.7rem;
-  color: var(--p-surface-500);
+  color: var(--aw-muted);
 }
 
 .zone-chip {
-  background: var(--p-primary-50);
-  border-color: var(--p-primary-200);
-  color: var(--p-primary-800);
+  background: var(--aw-teal-soft);
+  border-color: #a7ded8;
+  color: #0b625c;
+  font-weight: 600;
 }
 
 .zone-row {
@@ -1208,8 +1218,8 @@ async function exportExcel() {
 
 .empty {
   font-size: 0.8rem;
-  border: 1px dashed var(--p-surface-300);
-  border-radius: 6px;
+  border: 1px dashed var(--aw-border-strong);
+  border-radius: var(--aw-radius-sm);
   padding: 0.5rem;
   text-align: center;
   margin: 0;
