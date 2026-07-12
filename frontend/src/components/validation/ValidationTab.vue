@@ -176,10 +176,10 @@ function confirmDelete(ruleset: RuleSet) {
 }
 
 .rail {
-  flex: 0 0 15rem;
+  flex: 0 0 17.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.55rem;
   overflow-y: auto;
   padding: 0.75rem;
   box-shadow: none;
@@ -194,53 +194,56 @@ function confirmDelete(ruleset: RuleSet) {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--p-surface-500);
+  color: var(--aw-muted);
 }
 
 .small { font-size: 0.85rem; }
 
 .rail-item {
   text-align: left;
-  background: var(--p-surface-0);
-  border: 1px solid var(--p-surface-200);
-  border-radius: 8px;
-  padding: 0.55rem 0.7rem;
+  background: var(--aw-panel);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-sm);
+  box-shadow: var(--aw-shadow-sm);
+  padding: 0.65rem 0.8rem;
   cursor: pointer;
   font: inherit;
   color: inherit;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.rail-item:hover { border-color: var(--p-primary-300); }
-.rail-item.active { border-color: var(--p-primary-500); box-shadow: 0 0 0 1px var(--p-primary-500); }
-.rail-item.active { border-color: #6ca9a3; box-shadow: inset 3px 0 0 var(--aw-teal); background: #f3fbfa; }
+.rail-item:hover { border-color: var(--aw-teal); box-shadow: var(--aw-shadow-md); }
+.rail-item.active { border-color: var(--aw-teal); box-shadow: inset 3px 0 0 var(--aw-teal); background: var(--aw-teal-soft); }
 
 .rail-item-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.4rem;
 }
 .rail-item-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.9rem;
-  font-weight: 500;
+  line-height: 1.3;
+  font-size: 0.92rem;
+  font-weight: 600;
 }
 .rail-item-meta {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  margin-top: 0.2rem;
-  font-size: 0.72rem;
-  color: var(--p-surface-500);
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--aw-muted);
 }
 .rail-item-meta .del {
   margin-left: auto;
   cursor: pointer;
-  padding: 0.1rem;
+  padding: 0.2rem;
+  border-radius: 4px;
 }
-.rail-item-meta .del:hover { color: var(--p-red-500); }
+.rail-item-meta .del:hover { color: var(--aw-danger); }
 
 .detail {
   flex: 1;

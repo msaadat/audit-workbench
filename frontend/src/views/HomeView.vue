@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
@@ -24,7 +24,6 @@ const showCreate = ref(false)
 const creating = ref(false)
 const name = ref('')
 const description = ref('')
-const totalTables = computed(() => workspaces.value.reduce((sum, ws) => sum + ws.table_count, 0))
 
 async function load() {
   loading.value = true
@@ -83,12 +82,6 @@ onMounted(load)
         </p>
       </div>
       <Button label="New workspace" icon="pi pi-plus" @click="showCreate = true" />
-    </div>
-
-    <div v-if="!loading && workspaces.length" class="portfolio-strip">
-      <span><strong>{{ workspaces.length }}</strong><small>Engagements</small></span>
-      <span><strong>{{ totalTables }}</strong><small>Data tables</small></span>
-      <span class="privacy-fact"><i class="pi pi-lock" /><span><strong>Private by design</strong><small>Raw data stays local</small></span></span>
     </div>
 
     <div v-if="loading" class="loading-grid">
