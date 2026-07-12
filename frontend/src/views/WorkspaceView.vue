@@ -183,6 +183,7 @@ h1 {
   .workspace-facts span:nth-child(2) { display: none; }
   .workspace-layout { flex-direction: column; overflow: hidden; }
   .workspace-layout > .agent-drawer { height: 32rem; min-height: 0; border-left: 0; border-top: 1px solid #d5dde7; }
+  .workspace-layout > .agent-drawer.collapsed { flex: 0 0 3.25rem; height: 3.25rem; }
   .workspace-body { flex-direction: column; }
   .workspace-nav { flex: none; width: 100%; flex-direction: row; overflow-x: auto; padding: 0.55rem 0.75rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
   .nav-label, .nav-privacy { display: none; }

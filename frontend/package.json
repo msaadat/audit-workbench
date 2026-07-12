@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build-watch": "vue-tsc --noEmit && vite build --watch"
   },
   "dependencies": {
     "@codemirror/lang-python": "^6.2.1",

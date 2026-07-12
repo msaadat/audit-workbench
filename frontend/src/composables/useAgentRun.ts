@@ -56,7 +56,9 @@ function state(workspaceId: string): AgentState {
       status: null,
       run: null,
       runs: [],
-      drawerOpen: false,
+      // Preserve the existing always-visible drawer on first visit; the UI can
+      // then collapse it without losing the run or its live connection.
+      drawerOpen: true,
       connected: false,
       starting: false,
       lastChange: null,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import SelectButton from 'primevue/selectbutton'
@@ -29,6 +29,12 @@ const objective = ref('')
 const showLaunch = ref(false)
 const showHistory = ref(false)
 const deciding = ref(false)
+const drawerWidth = ref(416)
+const resizing = ref(false)
+
+const MIN_DRAWER_WIDTH = 320
+const MAX_DRAWER_WIDTH = 640
+const WIDTH_STORAGE_KEY = `audit-workbench:agent-drawer-width:${props.workspace.id}`
 
 const modeOptions = [
   { label: 'Auto', value: 'auto' },
@@ -54,7 +60,54 @@ const runFinished = computed(() =>
   ['completed', 'failed', 'cancelled'].includes(state.run?.status ?? ''),
 )
 
-onMounted(() => void agent.init())
+onMounted(() => {
+  const savedWidth = Number(window.localStorage.getItem(WIDTH_STORAGE_KEY))
+  if (Number.isFinite(savedWidth) && savedWidth > 0) {
+    drawerWidth.value = clampWidth(savedWidth)
+  }
+  void agent.init()
+})
+
+onUnmounted(stopResize)
+
+function clampWidth(width: number) {
+  // Leave enough room for the workspace navigation and useful tab content.
+  const viewportMaximum = Math.max(MIN_DRAWER_WIDTH, window.innerWidth - 480)
+  return Math.min(Math.max(width, MIN_DRAWER_WIDTH), MAX_DRAWER_WIDTH, viewportMaximum)
+}
+
+function startResize(event: PointerEvent) {
+  if (!state.drawerOpen || window.innerWidth <= 900) return
+  event.preventDefault()
+  resizing.value = true
+  document.body.classList.add('agent-drawer-resizing')
+  window.addEventListener('pointermove', resize)
+  window.addEventListener('pointerup', stopResize)
+  window.addEventListener('pointercancel', stopResize)
+}
+
+function resize(event: PointerEvent) {
+  drawerWidth.value = clampWidth(window.innerWidth - event.clientX)
+}
+
+function stopResize() {
+  if (!resizing.value) return
+  resizing.value = false
+  document.body.classList.remove('agent-drawer-resizing')
+  window.removeEventListener('pointermove', resize)
+  window.removeEventListener('pointerup', stopResize)
+  window.removeEventListener('pointercancel', stopResize)
+  window.localStorage.setItem(WIDTH_STORAGE_KEY, String(drawerWidth.value))
+}
+
+function resizeWithKeyboard(event: KeyboardEvent) {
+  if (!state.drawerOpen) return
+  const delta = event.key === 'ArrowLeft' ? 16 : event.key === 'ArrowRight' ? -16 : 0
+  if (!delta) return
+  event.preventDefault()
+  drawerWidth.value = clampWidth(drawerWidth.value + delta)
+  window.localStorage.setItem(WIDTH_STORAGE_KEY, String(drawerWidth.value))
+}
 
 async function start() {
   try {
@@ -113,12 +166,39 @@ function fail(summary: string, error: unknown) {
 </script>
 
 <template>
-  <aside class="agent-drawer">
+  <aside
+    class="agent-drawer"
+    :class="{ collapsed: !state.drawerOpen, resizing }"
+    :style="state.drawerOpen ? { flexBasis: `${drawerWidth}px` } : undefined"
+  >
+    <div
+      v-if="state.drawerOpen"
+      class="resize-handle"
+      role="separator"
+      aria-label="Resize analyst agent panel"
+      aria-orientation="vertical"
+      :aria-valuenow="drawerWidth"
+      :aria-valuemin="MIN_DRAWER_WIDTH"
+      :aria-valuemax="MAX_DRAWER_WIDTH"
+      tabindex="0"
+      @pointerdown="startResize"
+      @keydown="resizeWithKeyboard"
+    />
     <div class="drawer-head">
-      <i class="pi pi-sparkles" />
-      <strong>Analyst agent</strong>
+      <i v-if="state.drawerOpen" class="pi pi-sparkles" />
+      <Button
+        v-else
+        icon="pi pi-sparkles"
+        text
+        size="small"
+        severity="secondary"
+        aria-label="Expand analyst agent panel"
+        v-tooltip.left="'Expand analyst agent panel'"
+        @click="agent.toggleDrawer()"
+      />
+      <strong v-if="state.drawerOpen">Analyst agent</strong>
       <Tag
-        v-if="state.run"
+        v-if="state.run && state.drawerOpen"
         :value="statusLabel"
         :severity="statusSeverity[state.run.status] ?? 'info'"
       />
@@ -126,6 +206,7 @@ function fail(summary: string, error: unknown) {
             v-tooltip.bottom="state.connected ? 'Live' : 'Reconnecting…'" />
       <span class="grow" />
       <Button
+        v-if="state.drawerOpen"
         icon="pi pi-history"
         text
         size="small"
@@ -133,9 +214,19 @@ function fail(summary: string, error: unknown) {
         v-tooltip.bottom="'Run history'"
         @click="showHistory = !showHistory; void agent.loadRuns()"
       />
+      <Button
+        v-if="state.drawerOpen"
+        icon="pi pi-angle-right"
+        text
+        size="small"
+        severity="secondary"
+        aria-label="Collapse analyst agent panel"
+        v-tooltip.left="'Collapse panel'"
+        @click="agent.toggleDrawer()"
+      />
     </div>
 
-    <div class="drawer-body">
+    <div v-if="state.drawerOpen" class="drawer-body">
       <div v-if="showHistory" class="section history">
         <p class="section-title">Run history</p>
         <p v-if="!state.runs.length" class="muted">No runs yet.</p>
@@ -285,7 +376,7 @@ function fail(summary: string, error: unknown) {
       </template>
     </div>
 
-    <div class="drawer-foot">
+    <div v-if="state.drawerOpen" class="drawer-foot">
       <AgentChat
         :workspace="workspace"
         :messages="state.run?.messages ?? []"
@@ -304,6 +395,7 @@ function fail(summary: string, error: unknown) {
 <style scoped>
 .agent-drawer {
   flex: 0 0 26rem;
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -311,12 +403,41 @@ function fail(summary: string, error: unknown) {
   border-left: 1px solid var(--aw-border, #d5dde7);
   background: var(--p-surface-0);
 }
+.agent-drawer.collapsed { flex-basis: 3.25rem; }
+.agent-drawer.resizing { transition: none; user-select: none; }
+:global(body.agent-drawer-resizing) { cursor: col-resize; user-select: none; }
+.resize-handle {
+  position: absolute;
+  z-index: 2;
+  inset: 0 auto 0 -0.3rem;
+  width: 0.6rem;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0.25rem;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+.resize-handle:hover::after,
+.resize-handle:focus-visible::after,
+.agent-drawer.resizing .resize-handle::after { background: var(--aw-teal, #0b625c); }
 .drawer-head {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding: 0.7rem 0.9rem;
   border-bottom: 1px solid var(--aw-border, #d5dde7);
+}
+.collapsed .drawer-head {
+  flex-direction: column;
+  height: 100%;
+  padding: 0.8rem 0.35rem;
+  border-bottom: 0;
 }
 .drawer-head > i { color: var(--aw-teal, #0b625c); }
 .drawer-head strong { font-size: 0.9rem; }
@@ -416,7 +537,10 @@ function fail(summary: string, error: unknown) {
   color: var(--p-surface-500);
 }
 
-@media (max-width: 1100px) {
-  .agent-drawer { flex-basis: 22rem; }
+@media (max-width: 900px) {
+  .agent-drawer { width: 100%; flex-basis: auto !important; }
+  .agent-drawer.collapsed { height: 3.25rem; }
+  .collapsed .drawer-head { flex-direction: row; padding: 0.55rem 0.9rem; }
+  .resize-handle { display: none; }
 }
 </style>
