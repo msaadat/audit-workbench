@@ -565,6 +565,75 @@ export interface DashboardTile {
   stdout?: string | null
 }
 
+export interface DashboardTarget {
+  tab: 'dashboard' | 'planning' | 'documents' | 'doc-tests' | 'data' | 'query' | 'validation' | 'analysis' | 'findings' | 'report'
+  query: Record<string, string>
+}
+
+export interface DashboardPhase {
+  id: 'setup' | 'planning' | 'fieldwork' | 'report'
+  label: string
+  state: 'not_started' | 'in_progress' | 'complete' | 'attention'
+  complete: boolean
+  summary: string
+  counts: Record<string, number>
+  issues: string[]
+  target: DashboardTarget
+}
+
+export interface DashboardAction {
+  id: string
+  title: string
+  reason: string
+  priority: 'high' | 'medium' | 'low'
+  source: 'deterministic' | 'ai'
+  target: DashboardTarget
+}
+
+export interface DashboardAttention {
+  id: string
+  severity: 'error' | 'warning' | 'info'
+  title: string
+  message: string
+  target: DashboardTarget
+}
+
+export interface DashboardAdvice {
+  items: DashboardAction[]
+  generated_at: string
+  provider: string
+  model: string
+  input_hash: string
+  stale: boolean
+}
+
+export interface DashboardOverview {
+  tables: number
+  readable_tables: number
+  table_errors: number
+  rows: number
+  documents: number
+  rcm_rows: number
+  procedures: number
+  document_tests: number
+  analyses: number
+  rulesets: number
+  findings: number
+  final_findings: number
+  pinned_tiles: number
+  report_errors: number
+  report_warnings: number
+}
+
+export interface DashboardPayload {
+  overview: DashboardOverview
+  phases: DashboardPhase[]
+  actions: DashboardAction[]
+  attention: DashboardAttention[]
+  ai_advice: DashboardAdvice | null
+  tiles: DashboardTile[]
+}
+
 // A saved analysis: the computed payload the Analysis rail + detail render.
 // Same spec-recompute shape as DashboardTile, restricted to the two kinds the
 // Analysis tab creates, plus a `source` for the rail icon.

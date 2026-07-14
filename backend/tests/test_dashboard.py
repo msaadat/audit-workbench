@@ -1,8 +1,10 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app import workspaces
-from app.dashboard import dashboard_payload, tile_payload
+from app import llm, workspaces
+from app.dashboard import dashboard_payload, generate_advice, tile_payload
 from app.main import create_app
 from app.workspaces import WorkspaceError
 
@@ -141,3 +143,107 @@ def test_tiles_api_roundtrip(workspace_with_data):
 
     assert client.delete(f"/api/workspaces/{ws.id}/tiles/{tile_id}").json() == {"ok": True}
     assert client.get(f"/api/workspaces/{ws.id}/dashboard").json()["tiles"] == []
+
+
+def test_empty_workspace_dashboard_drives_onboarding():
+    ws = workspaces.create_workspace("Empty engagement")
+    board = dashboard_payload(ws)
+
+    assert board["overview"]["tables"] == 0
+    assert [phase["state"] for phase in board["phases"]] == [
+        "not_started", "not_started", "not_started", "not_started",
+    ]
+    assert board["actions"][0]["id"] == "import-sources"
+    assert board["actions"][0]["target"]["tab"] == "data"
+    assert board["ai_advice"] is None
+
+
+def test_derived_phases_can_reach_complete(workspace_with_data):
+    ws = workspace_with_data
+    ws.update_planning({"status": "final", "apm_markdown": "# Planning"})
+    ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    procedure = ws.add_procedure({"objective": "Test recorded revenue"})
+    ws.update_procedure(procedure["id"], {
+        "result_summary": "Testing completed.",
+        "conclusion": "Recorded revenue is supported.",
+    })
+    ws.report = {"status": "final", "markdown": "# Audit report\n\nNo findings."}
+    ws.save()
+
+    board = dashboard_payload(ws)
+    phases = {phase["id"]: phase for phase in board["phases"]}
+    assert all(phase["complete"] for phase in phases.values())
+    assert phases["fieldwork"]["state"] == "complete"
+    assert phases["report"]["counts"]["quality_errors"] == 0
+
+
+def test_dashboard_advice_is_metadata_only_cached_and_marked_stale(
+    workspace_with_data, monkeypatch,
+):
+    ws = workspace_with_data
+    ws.report = {"status": "draft", "markdown": "PRIVATE REPORT BODY 1001 C1"}
+    ws.save()
+    captured = {}
+
+    def fake_chat(messages, tools=None, temperature=0.0, profile="assistant"):
+        captured["messages"] = messages
+        captured["profile"] = profile
+        return {"content": json.dumps({"suggestions": [
+            {"title": "Define the audit scope", "reason": "Planning has not started.",
+             "priority": "high", "tab": "planning"},
+            {"title": "Bad destination", "reason": "Must be discarded.",
+             "priority": "high", "tab": "external"},
+        ]})}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(llm, "agent_status", lambda: {
+        "configured": True, "provider": "fake", "model": "audit-model",
+    })
+    advice = generate_advice(ws)
+
+    outbound = json.dumps(captured["messages"])
+    assert captured["profile"] == "agent"
+    assert "PRIVATE REPORT BODY" not in outbound
+    assert '"C1"' not in outbound
+    assert len(advice["items"]) == 1
+    assert advice["items"][0]["target"]["tab"] == "planning"
+    assert workspaces.load_workspace(ws.id).dashboard_advice["model"] == "audit-model"
+    assert dashboard_payload(ws)["ai_advice"]["stale"] is False
+
+    ws.update_planning({"context": {"objective": "Changed after advice"}})
+    assert dashboard_payload(ws)["ai_advice"]["stale"] is True
+
+
+def test_dashboard_advice_api(workspace_with_data, monkeypatch):
+    monkeypatch.setattr(llm, "chat", lambda *args, **kwargs: {
+        "content": '{"suggestions": []}',
+    })
+    monkeypatch.setattr(llm, "agent_status", lambda: {
+        "configured": True, "provider": "fake", "model": "fake",
+    })
+    client = TestClient(create_app())
+    response = client.post(f"/api/workspaces/{workspace_with_data.id}/dashboard/advice")
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
+def test_dashboard_advice_does_not_overwrite_edits_made_during_model_call(
+    workspace_with_data, monkeypatch,
+):
+    ws = workspace_with_data
+
+    def fake_chat(*args, **kwargs):
+        concurrent = workspaces.load_workspace(ws.id)
+        concurrent.update_planning({"context": {"objective": "Saved during advice"}})
+        return {"content": '{"suggestions": []}'}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(llm, "agent_status", lambda: {
+        "configured": True, "provider": "fake", "model": "fake",
+    })
+    advice = generate_advice(ws)
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert reloaded.planning["context"]["objective"] == "Saved during advice"
+    assert advice["stale"] is True
+    assert reloaded.dashboard_advice["items"] == []

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Body
 
 from .. import dashboard, workspaces
@@ -13,6 +15,12 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["dashboard"])
 async def get_dashboard(workspace_id: str):
     ws = workspaces.load_workspace(workspace_id)
     return dashboard.dashboard_payload(ws)
+
+
+@router.post("/dashboard/advice")
+async def generate_dashboard_advice(workspace_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    return await asyncio.to_thread(dashboard.generate_advice, ws)
 
 
 @router.post("/tiles")

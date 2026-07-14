@@ -260,6 +260,7 @@ class Workspace:
         self.rcm: list[dict] = list(definition.get("rcm") or [])
         self.work_program: list[dict] = list(definition.get("work_program") or [])
         self.findings: list[dict] = list(definition.get("findings") or [])
+        self.dashboard_advice: dict = dict(definition.get("dashboard_advice") or {})
         # Legacy evidence strings remain represented through a typed wrapper;
         # all subsequent writes validate the durable anchor shape.
         from .evidence import normalize_many
@@ -298,6 +299,7 @@ class Workspace:
             "work_program": self.work_program,
             "findings": self.findings,
             "report": self.report,
+            "dashboard_advice": self.dashboard_advice,
         }
         write_json_atomic(self.definition_path, definition)
 

@@ -31,9 +31,10 @@ const route = useRoute()
 const router = useRouter()
 
 const workspace = ref<WorkspaceSummary | null>(null)
-const activeTab = ref(String(route.query.tab || 'data'))
+const activeTab = ref(String(route.query.tab || 'dashboard'))
 const initialized = ref(false)
 const folderImportOpen = ref(false)
+const dashboardRef = ref<{ load: () => Promise<void> } | null>(null)
 
 const agent = useAgentRun(props.id)
 
@@ -41,13 +42,18 @@ async function reload() {
   try {
     workspace.value = await api.get<WorkspaceSummary>(`/api/workspaces/${props.id}`)
     if (!initialized.value) {
-      // Land on the dashboard when the workspace already has pinned work.
-      if (!route.query.tab) activeTab.value = (workspace.value.tile_count ?? 0) > 0 ? 'dashboard' : 'data'
+      // Dashboard is the engagement home, including onboarding for empty workspaces.
+      if (!route.query.tab) activeTab.value = 'dashboard'
       initialized.value = true
     }
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Workspace not found', detail: String(error), life: 5000 })
   }
+}
+
+async function handleImported() {
+  await reload()
+  if (activeTab.value === 'dashboard') await dashboardRef.value?.load()
 }
 
 onMounted(async () => {
@@ -107,7 +113,7 @@ onUnmounted(unsubscribe)
           </TabList>
           <TabPanels class="workspace-panels">
           <TabPanel value="dashboard">
-            <DashboardTab v-if="activeTab === 'dashboard'" :workspace="workspace" />
+            <DashboardTab v-if="activeTab === 'dashboard'" ref="dashboardRef" :workspace="workspace" @import-requested="folderImportOpen = true" />
           </TabPanel>
           <TabPanel value="planning">
             <PlanningTab v-if="activeTab === 'planning'" :workspace="workspace" />
@@ -150,7 +156,7 @@ onUnmounted(unsubscribe)
       v-model="folderImportOpen"
       :workspaceId="props.id"
       :documentAiEnabled="Boolean(workspace.settings?.doc_llm_optin)"
-      @imported="reload"
+      @imported="handleImported"
       @settings-changed="reload"
       @planning-started="activeTab = 'planning'"
     />

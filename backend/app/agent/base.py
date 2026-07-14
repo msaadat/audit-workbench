@@ -328,9 +328,13 @@ class BaseRunner:
                 response_hash=None, artifact_ref=f"proposal:{kind}:{item['id']}", disposition=item["decision"],
             )
         approval.update(status="resolved", resolved=store.utcnow())
+        # Persist the resolved approval and resumed run status atomically. A
+        # save in between exposed an impossible state to pollers: the run said
+        # awaiting_approval while no pending approval existed.
+        self.run["status"] = "executing"
         self.save()
         self.emit("approval_resolved", {"approval": approval})
-        self.set_status("executing")
+        self.emit("run_status", {"status": "executing"})
         self.task_status(task, "running")
         accepted = []
         for item in approval["items"]:
