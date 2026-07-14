@@ -43,6 +43,7 @@ const ACTIVE_STATUSES = new Set([
   'planning',
   'executing',
   'awaiting_approval',
+  'awaiting_input',
   'verifying',
   'summarizing',
   'paused',
@@ -200,12 +201,16 @@ export function useAgentRun(workspaceId: string) {
     else disconnect(workspaceId)
   }
 
-  async function startRun(mode: 'auto' | 'permission', context: AgentRunContext) {
+  async function startRun(
+    mode: 'auto' | 'permission',
+    context: AgentRunContext,
+    kind: AgentRun['kind'] = 'analysis',
+  ) {
     store.starting = true
     try {
       const run = await api.post<AgentRun>(
         `/api/workspaces/${workspaceId}/agent/runs`,
-        { mode, context },
+        { mode, context, kind },
       )
       store.run = run
       store.drawerOpen = true

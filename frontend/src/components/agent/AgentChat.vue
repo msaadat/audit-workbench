@@ -36,6 +36,7 @@ const props = defineProps<{
   runActive: boolean
   runFinished: boolean
   configured: boolean
+  pendingQuestion: string | null
 }>()
 const emit = defineEmits<{ steer: [string] }>()
 const toast = useToast()
@@ -62,6 +63,7 @@ const toolLabel: Record<string, string> = {
 
 const placeholder = computed(() => {
   if (!props.configured) return 'Configure an LLM key to talk to the agent'
+  if (props.pendingQuestion) return 'Answer the planning interview question'
   if (props.runActive) return 'Steer the run — e.g. "also test weekend postings"'
   if (props.runFinished) return 'Ask a question, or give the agent a follow-up task'
   return 'Ask about your data… (Enter to send)'
@@ -266,6 +268,10 @@ function fail(summary: string, error: unknown) {
     </div>
 
     <div class="composer">
+      <div v-if="pendingQuestion" class="pending-question">
+        <i class="pi pi-comments" />
+        <span><strong>Planning question</strong>{{ pendingQuestion }}</span>
+      </div>
       <Textarea
         v-model="draft"
         rows="2"
@@ -391,7 +397,9 @@ function fail(summary: string, error: unknown) {
   overflow-x: auto;
   margin: 0.35rem 0 0;
 }
-.composer { flex: 0 0 auto; display: flex; gap: 0.45rem; align-items: flex-end; }
+.composer { flex: 0 0 auto; display: flex; gap: 0.45rem; align-items: flex-end; flex-wrap: wrap; }
+.pending-question { flex: 0 0 100%; display: flex; gap: 0.5rem; padding: 0.55rem 0.65rem; border: 1px solid var(--p-primary-200); border-radius: 7px; background: var(--p-primary-50); font-size: 0.78rem; }
+.pending-question span { display: flex; flex-direction: column; gap: 0.15rem; }
 .composer :deep(textarea) { flex: 1; resize: none; font-size: 0.85rem; }
 .composer-actions { display: flex; flex-direction: column; gap: 0.3rem; }
 </style>

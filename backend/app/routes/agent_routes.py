@@ -54,6 +54,7 @@ async def create_run(workspace_id: str, payload: dict = Body(default={})):
             ws,
             payload.get("mode") or "auto",
             payload.get("context") or {},
+            kind=payload.get("kind") or "analysis",
         )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error

@@ -61,6 +61,98 @@ def _context_block(context: dict, guidance: list[str]) -> str:
     return "\n".join(parts) if parts else "No auditor context was provided; infer it."
 
 
+# ------------------------------------------------------------ folder intake
+FILE_CLASSIFICATION_SYSTEM = f"""[agent:file_classification]
+You classify files in a browser-selected audit folder from privacy-safe local
+metadata. Spreadsheet cells, rows, previews, formulas, comments, and document
+content are not present. Keep each known item id exactly; never add an item.
+
+{JSON_RULES}
+Keys:
+  items array of {{"id": known item id,
+    "route": "table" | "document" | "unsupported" | "ignore",
+    "document_category": "background" | "policy" | "regulation" |
+      "contract" | "minutes" | "voucher" | "evidence" | "prior_report" |
+      "correspondence" | "other" | null,
+    "table_role": "population" | "master_lookup" | "prior_period" |
+      "schedule" | "parameters" | "unknown" | null,
+    "subtype": short free-form label, "proposed_name": safe short name,
+    "confidence": "high" | "medium" | "low", "rationale": one sentence,
+    "proposed_action": "import" | "ignore"}}
+Technical parser metadata is authoritative. Do not propose importing a file
+whose local parser failed. Filenames can be suggestive but are not evidence of
+document content."""
+
+
+def file_classification_user(payload: dict) -> str:
+    return json.dumps(payload, indent=1, default=str)
+
+
+# ----------------------------------------------------------- audit planning
+INTERVIEW_SYSTEM = f"""[agent:interview]
+You conduct a concise internal-audit planning interview. Ask exactly one
+question at a time, or conclude once the planning basis is sufficient. Return:
+{{"action":"ask|conclude","question":"...","captured":{{}}}}.
+The captured object contains normalized facts learned so far. Do not request
+raw transaction rows. {JSON_RULES}"""
+
+
+def interview_user(template: str, planning: dict, messages: list[dict], turn: int) -> str:
+    return (
+        "ACTIVE INTERVIEW TEMPLATE (verbatim):\n"
+        f"{template}\n\nTURN: {turn}/10\nCURRENT PLANNING:\n"
+        f"{json.dumps(planning, default=str)}\n\nCONVERSATION:\n"
+        f"{json.dumps(messages, default=str)}"
+    )
+
+
+APM_SYSTEM = f"""[agent:apm]
+Draft an audit planning memorandum grounded only in the supplied planning
+basis. Methodology excerpts, when present, were explicitly disclosed and must
+be cited by pack/version/section. Preserve the selected Markdown template's structure and placeholders
+where facts are unavailable; clearly label assumptions. Return:
+{{"apm_markdown":"..."}}. {JSON_RULES}"""
+
+
+def apm_user(template: str, context: dict) -> str:
+    return (
+        "ACTIVE APM TEMPLATE (verbatim):\n"
+        f"{template}\n\nPLANNING BASIS (table/document metadata plus any logged methodology excerpts):\n"
+        f"{json.dumps(context, default=str)}"
+    )
+
+
+RCM_SYSTEM = f"""[agent:rcm]
+Draft a practical risk and control matrix. Return an object with `rows`, each
+row containing process, risk, risk_rating (low|medium|high|critical), assertion,
+control, control_type, test_procedure, and test_refs. Do not invent control
+operation as fact when evidence is absent. {JSON_RULES}"""
+
+
+def rcm_user(template: str, context: dict, apm_markdown: str) -> str:
+    return (
+        "ACTIVE RCM TEMPLATE (verbatim):\n"
+        f"{template}\n\nPLANNING BASIS:\n{json.dumps(context, default=str)}"
+        f"\n\nDRAFT APM:\n{apm_markdown}"
+    )
+
+
+WORK_PROGRAM_SYSTEM = f"""[agent:work_program]
+Draft an executable audit program linked to the supplied RCM. Return an object
+with `procedures`; each has stable_slug, rcm_refs (RCM semantic IDs or IDs),
+objective, criteria, steps (strings), method, expected_evidence, and test_refs.
+Steps must be specific enough for another auditor to perform and must not
+misstate a methodology excerpt as engagement evidence. {JSON_RULES}"""
+
+
+def work_program_user(workpaper_template: str, context: dict, rcm_rows: list[dict]) -> str:
+    return (
+        "ACTIVE WORKPAPER TEMPLATE (verbatim):\n"
+        f"{workpaper_template}\n\nPLANNING BASIS:\n{json.dumps(context, default=str)}"
+        f"\n\nRCM ROWS:\n{json.dumps(rcm_rows, default=str)}"
+    )
+
+
 # ------------------------------------------------------------------ planning
 PLANNING_SYSTEM = f"""[agent:planning]
 You are the planning module of an audit data-analyst agent inside a local

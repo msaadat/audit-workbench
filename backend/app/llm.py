@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import base64
 import urllib.error
 import urllib.request
 
@@ -73,25 +74,30 @@ def _settings(profile: str = "assistant") -> LLMSettings:
     saved = assistant_settings.load()
     backend = saved["provider"]
     model = saved["model"]
-    if profile == "agent":
+    if profile in ("agent", "vision"):
         # Agent runs may need a stronger model than the chat assistant.
         # AGENT_PROVIDER/AGENT_BACKEND and AGENT_MODEL override when set;
         # otherwise the agent uses the assistant's configured backend/model.
-        override_backend = (_env("AGENT_PROVIDER") or _env("AGENT_BACKEND")).lower()
-        override_model = _env("AGENT_MODEL")
+        prefix = "AGENT_VISION" if profile == "vision" else "AGENT"
+        override_backend = (_env(f"{prefix}_PROVIDER") or _env(f"{prefix}_BACKEND")).lower()
+        override_model = _env(f"{prefix}_MODEL")
         if override_backend:
             if override_backend not in assistant_settings.PROVIDERS:
                 supported = ", ".join(assistant_settings.PROVIDERS)
                 raise LLMError(
-                    f"Unsupported AGENT_PROVIDER '{override_backend}'. "
+                    f"Unsupported {prefix}_PROVIDER '{override_backend}'. "
                     f"Use one of: {supported}."
                 )
             backend = override_backend
+            provider_meta = assistant_settings.PROVIDERS[backend]
             model = override_model or str(
-                assistant_settings.PROVIDERS[backend]["default_model"]
+                (provider_meta.get("vision_model") or provider_meta["default_model"])
+                if profile == "vision" else provider_meta["default_model"]
             )
         elif override_model:
             model = override_model
+        elif profile == "vision":
+            model = str(assistant_settings.PROVIDERS[backend].get("vision_model") or model)
     provider = assistant_settings.PROVIDERS[backend]
     api_key_env = str(provider["api_key_env"])
     api_key = _env(api_key_env)
@@ -123,6 +129,7 @@ def status() -> dict:
     except (LLMError, assistant_settings.SettingsError) as error:
         return {
             "configured": False,
+            "vision_configured": False,
             "backend": assistant_settings.DEFAULT_PROVIDER,
             "provider": assistant_settings.DEFAULT_PROVIDER,
             "model": "",
@@ -152,19 +159,38 @@ def agent_status() -> dict:
     except (LLMError, assistant_settings.SettingsError) as error:
         return {
             "configured": False,
+            "vision_configured": False,
             "backend": "",
             "provider": "",
             "model": "",
             "base_url": "",
             "error": str(error),
         }
-    return {
+    result = {
         "configured": bool(settings.api_key),
         "backend": settings.backend,
         "provider": settings.backend,
         "model": settings.model,
         "base_url": settings.base_url,
     }
+    try:
+        vision = _settings("vision")
+        result["vision_configured"] = bool(
+            vision.api_key and assistant_settings.PROVIDERS[vision.backend].get("vision")
+        )
+        result["vision_provider"] = vision.backend
+        result["vision_model"] = vision.model
+    except (LLMError, assistant_settings.SettingsError):
+        result["vision_configured"] = False
+    return result
+
+
+def image_part(content: bytes, mime: str) -> dict:
+    """Build an OpenAI-compatible inline image content part."""
+    if not str(mime or "").startswith("image/"):
+        raise LLMError("Vision content must use an image MIME type.")
+    encoded = base64.b64encode(content).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
 
 
 def chat(messages: list[dict], tools: list[dict] | None = None,
@@ -174,8 +200,8 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     The returned message may contain ``content`` and/or ``tool_calls``; the
     caller drives the tool loop. Raises :class:`LLMError` for any transport or
     API failure, with a message safe to show the user. ``profile`` selects the
-    backend/model pair: 'assistant' (saved settings) or 'agent' (env overrides
-    falling back to the saved settings).
+    backend/model pair: 'assistant' (saved settings), 'agent' (agent overrides),
+    or 'vision' (vision-capable profile overrides).
     """
     settings = _settings(profile)
     if not settings.api_key:

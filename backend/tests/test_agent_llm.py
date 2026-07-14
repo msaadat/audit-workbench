@@ -1,3 +1,5 @@
+import base64
+
 from app import assistant_settings, llm
 
 
@@ -9,6 +11,17 @@ def test_agent_profile_defaults_to_assistant_settings(monkeypatch):
     settings = llm._settings("agent")
     assert settings.backend == "groq"
     assert settings.model == "llama-3.3-70b-versatile"
+
+
+def test_vision_profile_and_image_part(monkeypatch):
+    assistant_settings.save({"provider": "mistral", "model": "mistral-large-latest"})
+    monkeypatch.setenv("MISTRAL_API_KEY", "test")
+    settings = llm._settings("vision")
+    assert settings.model == "pixtral-large-latest"
+    status = llm.agent_status()
+    assert status["vision_configured"] is True
+    part = llm.image_part(b"image", "image/png")
+    assert base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) == b"image"
 
 
 def test_agent_model_override(monkeypatch):

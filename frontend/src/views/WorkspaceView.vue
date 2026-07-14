@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Tabs from 'primevue/tabs'
 import TabList from 'primevue/tablist'
 import Tab from 'primevue/tab'
 import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
+import Button from 'primevue/button'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
@@ -16,13 +18,22 @@ import DataTab from '../components/DataTab.vue'
 import QueryTab from '../components/QueryTab.vue'
 import AnalysisTab from '../components/AnalysisTab.vue'
 import ValidationTab from '../components/validation/ValidationTab.vue'
+import FolderImportDialog from '../components/FolderImportDialog.vue'
+import PlanningTab from '../components/PlanningTab.vue'
+import DocumentsTab from '../components/DocumentsTab.vue'
+import DocTestsTab from '../components/DocTestsTab.vue'
+import FindingsTab from '../components/FindingsTab.vue'
+import ReportTab from '../components/ReportTab.vue'
 
 const props = defineProps<{ id: string }>()
 const toast = useToast()
+const route = useRoute()
+const router = useRouter()
 
 const workspace = ref<WorkspaceSummary | null>(null)
-const activeTab = ref('data')
+const activeTab = ref(String(route.query.tab || 'data'))
 const initialized = ref(false)
+const folderImportOpen = ref(false)
 
 const agent = useAgentRun(props.id)
 
@@ -31,7 +42,7 @@ async function reload() {
     workspace.value = await api.get<WorkspaceSummary>(`/api/workspaces/${props.id}`)
     if (!initialized.value) {
       // Land on the dashboard when the workspace already has pinned work.
-      activeTab.value = (workspace.value.tile_count ?? 0) > 0 ? 'dashboard' : 'data'
+      if (!route.query.tab) activeTab.value = (workspace.value.tile_count ?? 0) > 0 ? 'dashboard' : 'data'
       initialized.value = true
     }
   } catch (error) {
@@ -40,6 +51,8 @@ async function reload() {
 }
 
 onMounted(reload)
+watch(activeTab, tab => { if (route.query.tab !== tab) void router.replace({ query: { ...route.query, tab } }) })
+watch(() => route.query.tab, tab => { if (tab && tab !== activeTab.value) activeTab.value = String(tab) })
 
 // Agent-created tables/joins change the workspace summary every tab reads.
 const unsubscribe = agent.onWorkspaceChanged((change) => {
@@ -59,7 +72,8 @@ onUnmounted(unsubscribe)
       <div class="workspace-facts">
         <span><strong>{{ workspace.tables.length }}</strong> tables</span>
         <span><strong>{{ workspace.tables.reduce((sum, table) => sum + (table.rows ?? 0), 0).toLocaleString() }}</strong> rows</span>
-        <span><i class="pi pi-lock" /> Processed locally</span>
+        <span><i class="pi pi-lock" /> Rows processed locally</span>
+        <Button label="Import audit folder" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
       </div>
     </div>
 
@@ -67,17 +81,34 @@ onUnmounted(unsubscribe)
       <Tabs v-model:value="activeTab" class="workspace-tabs">
         <div class="workspace-body">
           <TabList class="workspace-nav">
-            <p class="nav-label">Workspace</p>
+            <p class="nav-label">Overview</p>
             <Tab value="dashboard"><i class="pi pi-th-large" /><span>Dashboard</span></Tab>
+            <p class="nav-label nav-group">Plan</p>
+            <Tab value="planning"><i class="pi pi-map" /><span>Planning</span></Tab>
+            <Tab value="documents"><i class="pi pi-folder" /><span>Documents</span></Tab>
+            <p class="nav-label nav-group">Fieldwork</p>
+            <Tab value="doc-tests"><i class="pi pi-verified" /><span>Document tests</span></Tab>
             <Tab value="data"><i class="pi pi-database" /><span>Data</span></Tab>
             <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
             <Tab value="validation"><i class="pi pi-check-square" /><span>Validation</span></Tab>
             <Tab value="analysis"><i class="pi pi-shield" /><span>Analysis</span></Tab>
-            <div class="nav-privacy"><i class="pi pi-shield" /><span>Raw data remains on this device.</span></div>
+            <p class="nav-label nav-group output-label">Output</p>
+            <Tab value="findings"><i class="pi pi-flag" /><span>Findings</span><small v-if="workspace.finding_count">{{ workspace.finding_count }}</small></Tab>
+            <Tab value="report"><i class="pi pi-file-edit" /><span>Report</span></Tab>
+            <div class="nav-privacy"><i class="pi pi-shield" /><span>{{ workspace.settings?.doc_llm_optin ? 'Rows stay local; confirmed document pages may be disclosed.' : 'Raw data and documents remain on this device.' }}</span></div>
           </TabList>
           <TabPanels class="workspace-panels">
           <TabPanel value="dashboard">
             <DashboardTab v-if="activeTab === 'dashboard'" :workspace="workspace" />
+          </TabPanel>
+          <TabPanel value="planning">
+            <PlanningTab v-if="activeTab === 'planning'" :workspace="workspace" />
+          </TabPanel>
+          <TabPanel value="documents">
+            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reload" />
+          </TabPanel>
+          <TabPanel value="doc-tests">
+            <DocTestsTab v-if="activeTab === 'doc-tests'" :workspace="workspace" />
           </TabPanel>
           <TabPanel value="data">
             <DataTab :workspace="workspace" @changed="reload" />
@@ -96,11 +127,18 @@ onUnmounted(unsubscribe)
               <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
             </KeepAlive>
           </TabPanel>
+          <TabPanel value="findings">
+            <FindingsTab v-if="activeTab === 'findings'" :workspace="workspace" @changed="reload" />
+          </TabPanel>
+          <TabPanel value="report">
+            <ReportTab v-if="activeTab === 'report'" :workspace="workspace" />
+          </TabPanel>
           </TabPanels>
         </div>
       </Tabs>
       <AgentDrawer :workspace="workspace" />
     </div>
+    <FolderImportDialog v-model="folderImportOpen" :workspaceId="props.id" @imported="reload" />
   </div>
 </template>
 
@@ -153,6 +191,8 @@ h1 {
 .workspace-body { display: flex; height: 100%; min-height: 0; }
 .workspace-nav { flex: 0 0 13.5rem; display: flex; flex-direction: column; align-items: stretch; gap: 0.22rem; padding: 1.25rem 0.75rem; background: var(--aw-raised); border-right: 1px solid var(--aw-border); }
 .nav-label { margin: 0 0.6rem 0.45rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
+.nav-group { margin-top: 0.7rem; margin-bottom: 0.18rem; }
+.workspace-nav :deep(.p-tab small) { margin-left:auto; min-width:1.25rem; padding:.1rem .35rem; border-radius:999px; background:var(--p-primary-50); color:var(--aw-teal); text-align:center; }
 .workspace-panels { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1.25rem 1.5rem 1.75rem; background: var(--aw-canvas); }
 .nav-privacy { margin-top: auto; display: flex; gap: 0.55rem; padding: 0.8rem; border-top: 1px solid var(--aw-border); color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.35; }
 .nav-privacy i { color: var(--aw-teal); margin-top: 0.1rem; }

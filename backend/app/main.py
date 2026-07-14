@@ -22,6 +22,11 @@ from .routes.analyses_routes import router as analyses_router
 from .routes.analysis_routes import router as analysis_router
 from .routes.assistant_routes import router as assistant_router
 from .routes.dashboard_routes import router as dashboard_router
+from .routes.document_routes import router as document_router
+from .routes.doc_test_routes import router as doc_test_router
+from .routes.intake_routes import router as intake_router
+from .routes.planning_routes import router as planning_router
+from .routes.report_routes import router as report_router
 from .routes.validation_routes import router as validation_router
 from .routes.workspace_routes import router as workspace_router
 from .assistant_settings import SettingsError
@@ -60,6 +65,11 @@ def create_app() -> FastAPI:
     app.include_router(assistant_router)
     app.include_router(validation_router)
     app.include_router(agent_router)
+    app.include_router(intake_router)
+    app.include_router(planning_router)
+    app.include_router(document_router)
+    app.include_router(doc_test_router)
+    app.include_router(report_router)
 
     if FRONTEND_DIST.exists():
         app.mount(

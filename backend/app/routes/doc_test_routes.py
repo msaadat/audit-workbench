@@ -1,0 +1,115 @@
+"""Document-test, deterministic matching, and working-paper endpoints."""
+
+from __future__ import annotations
+
+import asyncio
+
+from fastapi import APIRouter, Body, HTTPException
+
+from .. import doc_tests, working_papers, workspaces
+from ..agent import runner
+
+router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["document tests"])
+
+
+def _ws(workspace_id: str):
+    return workspaces.load_workspace(workspace_id)
+
+
+@router.get("/doc-tests")
+async def list_document_tests(workspace_id: str):
+    return {"items": doc_tests.list_tests(_ws(workspace_id))}
+
+
+@router.post("/doc-tests/build/vouching")
+async def build_vouching_test(workspace_id: str, payload: dict = Body(...)):
+    return await asyncio.to_thread(doc_tests.build_vouching, _ws(workspace_id), payload)
+
+
+@router.post("/doc-tests/build/attribute")
+async def build_attribute_test(workspace_id: str, payload: dict = Body(...)):
+    return doc_tests.build_attribute(_ws(workspace_id), payload)
+
+
+@router.post("/doc-tests/build/review")
+async def build_review_test(workspace_id: str, payload: dict = Body(...)):
+    return doc_tests.build_review(_ws(workspace_id), payload)
+
+
+@router.post("/doc-tests/build/qa")
+async def build_qa_test(workspace_id: str, payload: dict = Body(...)):
+    return doc_tests.build_qa(_ws(workspace_id), payload)
+
+
+@router.post("/doc-tests")
+async def create_document_test(workspace_id: str, payload: dict = Body(...)):
+    return doc_tests.create_test(_ws(workspace_id), payload)
+
+
+@router.get("/doc-tests/{test_id}")
+async def get_document_test(workspace_id: str, test_id: str):
+    test = doc_tests.load_test(_ws(workspace_id), test_id)
+    return {**test, "rollup": doc_tests.result_rollup(test)}
+
+
+@router.patch("/doc-tests/{test_id}")
+async def patch_document_test(workspace_id: str, test_id: str, payload: dict = Body(...)):
+    return doc_tests.update_test(_ws(workspace_id), test_id, payload)
+
+
+@router.delete("/doc-tests/{test_id}")
+async def delete_document_test(workspace_id: str, test_id: str):
+    doc_tests.remove_test(_ws(workspace_id), test_id)
+    return {"ok": True}
+
+
+@router.post("/doc-tests/{test_id}/items/{item_id}/documents")
+async def attach_document(workspace_id: str, test_id: str, item_id: str, payload: dict = Body(...)):
+    return doc_tests.attach_document(_ws(workspace_id), test_id, item_id, str(payload.get("document_id") or ""))
+
+
+@router.delete("/doc-tests/{test_id}/items/{item_id}/documents/{document_id}")
+async def detach_document(workspace_id: str, test_id: str, item_id: str, document_id: str):
+    return doc_tests.detach_document(_ws(workspace_id), test_id, item_id, document_id)
+
+
+@router.patch("/doc-tests/{test_id}/items/{item_id}/comparisons")
+async def patch_comparisons(workspace_id: str, test_id: str, item_id: str, payload: dict = Body(...)):
+    return doc_tests.update_comparisons(_ws(workspace_id), test_id, item_id, payload.get("checks") or [])
+
+
+@router.patch("/doc-tests/{test_id}/items/{item_id}")
+async def patch_document_test_item(workspace_id: str, test_id: str, item_id: str, payload: dict = Body(...)):
+    return doc_tests.update_item(_ws(workspace_id), test_id, item_id, payload)
+
+
+@router.post("/doc-tests/{test_id}/run")
+async def run_document_test(workspace_id: str, test_id: str, payload: dict = Body(default={})):
+    ws = _ws(workspace_id)
+    doc_tests.load_test(ws, test_id)
+    try:
+        return await asyncio.to_thread(
+            runner.start_run, ws, payload.get("mode") or "auto",
+            {**dict(payload.get("context") or {}), "test_id": test_id},
+            kind="doc_test",
+        )
+    except runner.AgentBusyError as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
+@router.post("/procedures/{procedure_id}/draft-results")
+async def draft_procedure_results(workspace_id: str, procedure_id: str):
+    return working_papers.draft_results(_ws(workspace_id), procedure_id)
+
+
+@router.get("/procedures/{procedure_id}/working-paper")
+async def get_working_paper(workspace_id: str, procedure_id: str):
+    return working_papers.render(_ws(workspace_id), procedure_id)
+
+
+@router.post("/matching/compare")
+async def compare_values(payload: dict = Body(...)):
+    return doc_tests.compare_values(
+        payload.get("expected"), payload.get("found"),
+        str(payload.get("method") or "normalized"), payload.get("tolerance"),
+    )

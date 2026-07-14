@@ -25,6 +25,7 @@ const agent = useAgentRun(props.workspace.id)
 const { state, isActive, pendingApproval } = agent
 
 const mode = ref<'auto' | 'permission'>('auto')
+const runKind = ref<'analysis' | 'planning'>('analysis')
 const objective = ref('')
 const showLaunch = ref(false)
 const showHistory = ref(false)
@@ -40,6 +41,10 @@ const modeOptions = [
   { label: 'Auto', value: 'auto' },
   { label: 'Permission', value: 'permission' },
 ]
+const kindOptions = [
+  { label: 'Data analysis', value: 'analysis' },
+  { label: 'Planning', value: 'planning' },
+]
 
 const statusSeverity: Record<string, string> = {
   completed: 'success',
@@ -48,6 +53,7 @@ const statusSeverity: Record<string, string> = {
   paused: 'secondary',
   interrupted: 'warn',
   awaiting_approval: 'warn',
+  awaiting_input: 'warn',
 }
 
 const statusLabel = computed(() =>
@@ -113,7 +119,7 @@ async function start() {
   try {
     await agent.startRun(mode.value, {
       objective: objective.value.trim() || undefined,
-    })
+    }, runKind.value)
     showLaunch.value = false
     showHistory.value = false
   } catch (error) {
@@ -175,7 +181,7 @@ function fail(summary: string, error: unknown) {
       v-if="state.drawerOpen"
       class="resize-handle"
       role="separator"
-      aria-label="Resize analyst agent panel"
+      aria-label="Resize audit assistant panel"
       aria-orientation="vertical"
       :aria-valuenow="drawerWidth"
       :aria-valuemin="MIN_DRAWER_WIDTH"
@@ -192,11 +198,11 @@ function fail(summary: string, error: unknown) {
         text
         size="small"
         severity="secondary"
-        aria-label="Expand analyst agent panel"
-        v-tooltip.left="'Expand analyst agent panel'"
+        aria-label="Expand audit assistant panel"
+        v-tooltip.left="'Expand audit assistant panel'"
         @click="agent.toggleDrawer()"
       />
-      <strong v-if="state.drawerOpen">Analyst agent</strong>
+      <strong v-if="state.drawerOpen">Audit assistant</strong>
       <Tag
         v-if="state.run && state.drawerOpen"
         :value="statusLabel"
@@ -220,7 +226,7 @@ function fail(summary: string, error: unknown) {
         text
         size="small"
         severity="secondary"
-        aria-label="Collapse analyst agent panel"
+        aria-label="Collapse audit assistant panel"
         v-tooltip.left="'Collapse panel'"
         @click="agent.toggleDrawer()"
       />
@@ -239,22 +245,29 @@ function fail(summary: string, error: unknown) {
         >
           <span>{{ run.created.slice(0, 16).replace('T', ' ') }}</span>
           <Tag :value="run.status" :severity="statusSeverity[run.status] ?? 'info'" />
-          <small>{{ run.mode }} · {{ run.task_counts.completed }}/{{ run.task_counts.total }} tasks</small>
+          <small>{{ run.kind === 'planning' ? 'planning' : 'data analysis' }} · {{ run.mode }} · {{ run.task_counts.completed }}/{{ run.task_counts.total }} tasks</small>
         </button>
       </div>
 
       <div v-if="launchVisible" class="section launch">
-        <p class="section-title">Run the analyst agent</p>
+        <p class="section-title">Run the audit assistant</p>
         <p class="muted">
-          The agent profiles your tables, infers the domain, creates joins and
-          validation rules, runs analytics, and builds the dashboard — then
-          writes an evidence-linked summary.
+          Choose planning to interview the audit team and draft the APM, RCM,
+          and audit program, or data analysis to test loaded tables.
         </p>
         <div v-if="state.status && !state.status.configured" class="warn-note">
           <i class="pi pi-key" />
           The agent's LLM is not configured — set a provider key in
           <code>.env</code> (or <code>AGENT_PROVIDER</code>/<code>AGENT_MODEL</code>).
         </div>
+        <SelectButton
+          v-model="runKind"
+          :options="kindOptions"
+          optionLabel="label"
+          optionValue="value"
+          :allowEmpty="false"
+          size="small"
+        />
         <SelectButton
           v-model="mode"
           :options="modeOptions"
@@ -266,7 +279,7 @@ function fail(summary: string, error: unknown) {
         <p class="muted mode-hint">
           {{ mode === 'auto'
             ? 'Validated changes apply automatically as the agent works.'
-            : 'The agent pauses for your review before saving joins, rules, and tests.' }}
+            : 'The assistant pauses for your review before saving draft artifacts.' }}
         </p>
         <Textarea
           v-model="objective"
@@ -275,10 +288,10 @@ function fail(summary: string, error: unknown) {
           placeholder="Optional context — objective, period, known risks…"
         />
         <Button
-          label="Run Agent"
+          label="Run assistant"
           icon="pi pi-play"
           :loading="state.starting"
-          :disabled="!state.status?.configured || !workspace.tables.length"
+          :disabled="!state.status?.configured || (runKind === 'analysis' && !workspace.tables.length)"
           @click="start"
         />
         <p v-if="state.status?.configured" class="muted model-note">
@@ -371,6 +384,8 @@ function fail(summary: string, error: unknown) {
           <AgentSummary
             :markdown="state.run.summary_markdown"
             :findings="state.run.findings"
+            :workspaceId="workspace.id"
+            :runId="state.run.id"
           />
         </div>
       </template>
@@ -383,6 +398,7 @@ function fail(summary: string, error: unknown) {
         :runActive="isActive"
         :runFinished="runFinished"
         :configured="!!state.status?.configured"
+        :pendingQuestion="state.run?.interview?.pending_question ?? null"
         @steer="steer"
       />
       <p class="disclosure">

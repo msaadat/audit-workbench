@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,7 @@ ACTIVE_STATUSES = (
     "planning",
     "executing",
     "awaiting_approval",
+    "awaiting_input",
     "verifying",
     "summarizing",
 )
@@ -44,6 +46,8 @@ TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 _event_locks: dict[str, threading.Lock] = {}
 _event_locks_guard = threading.Lock()
+_run_locks: dict[str, threading.RLock] = {}
+_run_locks_guard = threading.Lock()
 
 
 def utcnow() -> str:
@@ -56,6 +60,14 @@ def _event_lock(run_dir: Path) -> threading.Lock:
         if key not in _event_locks:
             _event_locks[key] = threading.Lock()
         return _event_locks[key]
+
+
+def _run_lock(path: Path) -> threading.RLock:
+    key = str(path)
+    with _run_locks_guard:
+        if key not in _run_locks:
+            _run_locks[key] = threading.RLock()
+        return _run_locks[key]
 
 
 def runs_dir(workspace: Workspace) -> Path:
@@ -72,9 +84,12 @@ def new_run(
     context: dict | None = None,
     parent_run_id: str | None = None,
     limits: dict | None = None,
+    kind: str = "analysis",
 ) -> dict:
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
+    if kind not in ("analysis", "intake", "planning", "doc_test"):
+        raise WorkspaceError("Unknown agent run kind.")
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     run = {
@@ -82,6 +97,7 @@ def new_run(
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
+        "kind": kind,
         "mode": mode,
         "context": dict(context or {}),
         "status": "queued",
@@ -100,19 +116,35 @@ def new_run(
         "warnings": [],
         "error": None,
     }
+    if kind == "planning":
+        run["interview"] = {"captured": {}, "turns": 0, "pending_question": None}
+    elif kind == "doc_test":
+        run["doc_test"] = {"test_id": str((context or {}).get("test_id") or "")}
     save_run(workspace, run)
     return run
 
 
 def save_run(workspace: Workspace, run: dict) -> None:
-    write_json_atomic(run_dir(workspace, run["id"]) / "run.json", run)
+    path = run_dir(workspace, run["id"]) / "run.json"
+    with _run_lock(path):
+        write_json_atomic(path, run)
 
 
 def load_run(workspace: Workspace, run_id: str) -> dict:
     path = run_dir(workspace, run_id) / "run.json"
     if not path.exists():
         raise WorkspaceError(f"Agent run '{run_id}' not found.")
-    return json.loads(path.read_text(encoding="utf-8"))
+    with _run_lock(path):
+        for attempt in range(10):
+            try:
+                run = json.loads(path.read_text(encoding="utf-8"))
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    run.setdefault("kind", "analysis")
+    return run
 
 
 def list_runs(workspace: Workspace) -> list[dict]:
@@ -127,6 +159,7 @@ def list_runs(workspace: Workspace) -> list[dict]:
             continue
         try:
             run = json.loads(path.read_text(encoding="utf-8"))
+            run.setdefault("kind", "analysis")
         except (OSError, json.JSONDecodeError):
             continue
         summaries.append(run_summary(run))
@@ -139,6 +172,7 @@ def run_summary(run: dict) -> dict:
         "id": run["id"],
         "workspace_id": run["workspace_id"],
         "parent_run_id": run.get("parent_run_id"),
+        "kind": run.get("kind", "analysis"),
         "mode": run["mode"],
         "status": run["status"],
         "created": run["created"],
@@ -210,6 +244,7 @@ def recover_orphans(workspace: Workspace, live_run_ids: set[str]) -> list[str]:
             continue
         try:
             run = json.loads(path.read_text(encoding="utf-8"))
+            run.setdefault("kind", "analysis")
         except (OSError, json.JSONDecodeError):
             continue
         if run["status"] in ACTIVE_STATUSES and run["id"] not in live_run_ids:

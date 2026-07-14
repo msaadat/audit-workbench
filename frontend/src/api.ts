@@ -27,6 +27,14 @@ export const api = {
     }).then((r) => handle<T>(r))
   },
 
+  put<T>(url: string, body?: unknown): Promise<T> {
+    return fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    }).then((r) => handle<T>(r))
+  },
+
   patch<T>(url: string, body?: unknown): Promise<T> {
     return fetch(url, {
       method: 'PATCH',
@@ -42,6 +50,13 @@ export const api = {
   upload<T>(url: string, files: File[]): Promise<T> {
     const form = new FormData()
     for (const file of files) form.append('files', file)
+    return fetch(url, { method: 'POST', body: form }).then((r) => handle<T>(r))
+  },
+
+  uploadOne<T>(url: string, file: File, fields: Record<string, string> = {}): Promise<T> {
+    const form = new FormData()
+    for (const [key, value] of Object.entries(fields)) form.append(key, value)
+    form.append('file', file)
     return fetch(url, { method: 'POST', body: form }).then((r) => handle<T>(r))
   },
 

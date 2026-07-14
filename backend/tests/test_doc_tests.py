@@ -1,0 +1,209 @@
+import json
+
+import polars as pl
+import pytest
+from fastapi.testclient import TestClient
+
+from app import doc_tests, documents, llm, working_papers, workspaces
+from app.agent import runner
+from app.main import create_app
+from conftest import wait_run
+
+
+def _procedure(ws):
+    rcm = ws.add_rcm({"process": "Purchasing", "risk": "Unsupported purchases"})
+    procedure = ws.add_procedure({
+        "objective": "Verify sampled purchases are supported",
+        "criteria": "Invoices agree to the ledger and are approved.",
+        "steps": ["Select a seeded sample.", "Compare invoices to ledger fields."],
+        "method": "Document vouching",
+        "rcm_refs": [rcm["id"]],
+    })
+    return rcm, procedure
+
+
+def test_explainable_comparison_methods():
+    assert doc_tests.compare_values("ABC-123", "ABC-123", "exact")["result"] == "match"
+    normalized = doc_tests.compare_values("Acme, Inc.", " ACME INC ", "normalized")
+    assert normalized["result"] == "match"
+    assert normalized["normalization"] == {"expected": "acme inc", "found": "acme inc"}
+    fuzzy = doc_tests.compare_values("purchase order approved", "purchase order aproved", "fuzzy", 80)
+    assert fuzzy["result"] == "match"
+    assert 0 < fuzzy["similarity"] <= 1
+    numeric = doc_tests.compare_values(1000, "1,004", "numeric_tolerance", {"absolute": 5})
+    assert numeric["result"] == "match"
+    assert numeric["tolerance"]["allowed"] == 5
+    date = doc_tests.compare_values("2026-01-10", "12/01/2026", "date_tolerance", {"days": 2})
+    assert date["result"] == "match"
+    assert doc_tests.compare_values("x", None, "exact")["result"] == "missing"
+
+
+def test_vouching_builder_freezes_seeded_sample_outside_workspace(workspace_with_data):
+    ws = workspace_with_data
+    test = doc_tests.build_vouching(ws, {
+        "title": "Invoice support", "table": "transactions", "size": 2,
+        "seed": 17, "frozen_fields": ["invoice_no", "amount", "tx_date"],
+    })
+    assert test["spec"]["sampling"]["seed"] == 17
+    assert len(test["items"]) == 2
+    assert set(test["items"][0]["frozen"]) == {"invoice_no", "amount", "tx_date"}
+    assert (ws.root / "DocTests" / f"{test['id']}.json").is_file()
+    workspace_json = json.loads((ws.root / "workspace.json").read_text(encoding="utf-8"))
+    assert "DocTests" not in workspace_json
+    assert "frozen" not in workspace_json
+
+
+def test_local_multi_document_matching_records_anchors_and_conflicts(workspace_with_data):
+    ws = workspace_with_data
+    test = doc_tests.create_test(ws, {
+        "kind": "vouching", "title": "Three-way match",
+        "spec": {"direction": "vouching", "require_all_documents": True},
+        "items": [{
+            "label": "Invoice 1001", "frozen": {"invoice_no": 1001, "amount": 150.0},
+            "checks": [
+                {"field": "invoice_no", "expected": 1001, "method": "normalized"},
+                {"field": "amount", "expected": 150.0, "method": "numeric_tolerance", "tolerance": {"absolute": 0}},
+            ],
+        }],
+    })
+    invoice = documents.add_document(ws, "invoice-1001.txt", b"Invoice number: 1001\nTotal amount: 150.00\n")
+    receipt = documents.add_document(ws, "receipt-1001.txt", b"Receipt for invoice 1001\nPaid 150.00\n")
+    for doc in (invoice, receipt):
+        doc_tests.attach_document(ws, test["id"], test["items"][0]["id"], doc["id"])
+    item = doc_tests.run_item(ws, test["id"], test["items"][0]["id"], run_id="RUN-1")
+    assert item["state"] == "agent_checked"
+    assert all(check["verdict"] == "match" for check in item["checks"])
+    assert all(len(check["comparisons"]) == 2 for check in item["checks"])
+    anchor = item["checks"][0]["evidence_refs"][0]
+    assert anchor["source_sha1"] == invoice["sha1"]
+    assert anchor["page"] == 1 and anchor["excerpt_hash"]
+
+    duplicate = documents.add_document(ws, "copy-of-invoice.txt", b"Invoice number: 1001\nTotal amount: 150.00\n")
+    doc_tests.attach_document(ws, test["id"], item["id"], duplicate["id"])
+    conflicted = doc_tests.run_item(ws, test["id"], item["id"])
+    assert conflicted["state"] == "manual_review"
+    assert conflicted["document_conflicts"]["duplicate_documents"]
+
+
+def test_version_conflicts_are_explicit(workspace_with_data):
+    ws = workspace_with_data
+    old = documents.add_document(ws, "voucher.txt", b"Voucher 1001 amount 150")
+    new = documents.add_document(ws, "voucher.txt", b"Voucher 1001 amount 151")
+    test = doc_tests.create_test(ws, {
+        "kind": "vouching", "title": "Version check",
+        "items": [{"label": "1001", "checks": [{"field": "id", "expected": 1001}], "document_ids": [old["id"], new["id"]]}],
+    })
+    item = doc_tests.run_item(ws, test["id"], test["items"][0]["id"])
+    assert item["state"] == "manual_review"
+    assert item["document_conflicts"]["version_conflicts"] == [{"newer": new["id"], "older": old["id"]}]
+
+
+def test_all_four_builders_and_auditor_dispositions(workspace_with_data):
+    ws = workspace_with_data
+    document = documents.add_document(ws, "policy.txt", b"Approval is required.\nEvidence must be retained.")
+    attribute = doc_tests.build_attribute(ws, {"title": "Attributes", "attributes": [{"name": "Approval"}]})
+    review = doc_tests.build_review(ws, {"title": "Policy review", "document_id": document["id"]})
+    qa = doc_tests.build_qa(ws, {"title": "Policy Q&A", "document_ids": [document["id"]], "questions": ["Is approval required?"]})
+    assert {attribute["kind"], review["kind"], qa["kind"]} == {"attribute", "review", "qa"}
+    assert review["items"][0]["evidence_refs"][0]["source_sha1"] == document["sha1"]
+    updated = doc_tests.update_item(ws, review["id"], review["items"][0]["id"], {
+        "auditor_disposition": "exception", "auditor_note": "Policy is outdated."
+    })
+    assert updated["items"][0]["state"] == "exception"
+    assert updated["items"][0]["auditor_note"] == "Policy is outdated."
+
+
+def test_doc_test_runner_persists_each_item_and_completes(workspace_with_data):
+    ws = workspace_with_data
+    document = documents.add_document(ws, "evidence.txt", b"Invoice: 1001\nAmount: 150.00")
+    test = doc_tests.create_test(ws, {
+        "kind": "vouching", "title": "Runner test",
+        "items": [{"label": "Invoice 1001", "document_ids": [document["id"]], "checks": [
+            {"field": "invoice", "expected": 1001, "method": "normalized"},
+            {"field": "amount", "expected": 150, "method": "numeric_tolerance"},
+        ]}],
+    })
+    run = runner.start_run(ws, "auto", {"test_id": test["id"]}, kind="doc_test")
+    finished = wait_run(ws, run["id"])
+    assert finished["status"] == "completed"
+    assert finished["kind"] == "doc_test"
+    assert finished["doc_test"]["rollup"]["matched"] == 2
+    saved = doc_tests.load_test(ws, test["id"])
+    assert saved["items"][0]["state"] == "agent_checked"
+    assert saved["status"] == "in_progress"
+
+
+def test_qa_runner_uses_disclosure_gate_and_manual_fallback(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    document = documents.add_document(ws, "policy.txt", b"Purchases require manager approval.")
+    test = doc_tests.build_qa(ws, {
+        "title": "Policy question", "document_ids": [document["id"]],
+        "questions": ["Is manager approval required?"],
+    })
+    item = doc_tests.run_item(ws, test["id"], test["items"][0]["id"])
+    assert item["state"] == "manual_review"
+    assert "Document AI is off" in item["runner_note"]
+    assert documents.disclosures(ws)["items"] == []
+
+    ws.settings["doc_llm_optin"] = True
+    ws.save()
+    monkeypatch.setattr(llm, "chat", lambda *args, **kwargs: {
+        "content": json.dumps({
+            "answer": "Yes, manager approval is required.",
+            "citations": [{"page": 1, "excerpt": "Purchases require manager approval."}],
+        })
+    })
+    checked = doc_tests.run_item(ws, test["id"], item["id"], run_id="RUN-QA")
+    assert checked["state"] == "agent_checked"
+    assert checked["citations"][0]["source_sha1"] == document["sha1"]
+    disclosure = documents.disclosures(ws)["items"][0]
+    assert disclosure["purpose"] == "document_qa"
+    assert disclosure["run_id"] == "RUN-QA"
+
+
+def test_working_paper_draft_traceability_and_safe_html(workspace_with_data):
+    ws = workspace_with_data
+    rcm, procedure = _procedure(ws)
+    test = doc_tests.create_test(ws, {
+        "kind": "vouching", "title": "Invoice support", "rcm_refs": [rcm["id"]],
+        "procedure_refs": [procedure["id"]],
+        "items": [{"label": "Item one", "state": "exception", "auditor_disposition": "exception", "checks": [
+            {"field": "amount", "expected": 100, "found": 90, "verdict": "mismatch"}
+        ]}],
+    })
+    assert f"doctest:{test['id']}" in ws.work_program[0]["test_refs"]
+    drafted = working_papers.draft_results(ws, procedure["id"])
+    assert "1 linked document test" in drafted["result_summary"]
+    assert "exceptions or unmatched" in drafted["conclusion"]
+    paper = working_papers.render(ws, procedure["id"])
+    assert test["id"] in paper["markdown"]
+    assert rcm["id"] in paper["markdown"]
+    assert "<article" in paper["html"]
+
+    ws.update_procedure(procedure["id"], {"objective": "Check <script>alert(1)</script>"})
+    safe = working_papers.render(ws, procedure["id"])["html"]
+    assert "<script>" not in safe
+    assert "&lt;script&gt;" in safe
+
+
+def test_doctest_reference_validation_and_api(workspace_with_data):
+    ws = workspace_with_data
+    rcm, procedure = _procedure(ws)
+    with pytest.raises(workspaces.WorkspaceError, match="does not exist"):
+        ws.update_procedure(procedure["id"], {"test_refs": ["doctest:missing"]})
+
+    client = TestClient(create_app())
+    created = client.post(f"/api/workspaces/{ws.id}/doc-tests", json={
+        "kind": "qa", "title": "API Q&A", "procedure_refs": [procedure["id"]],
+        "items": [{"label": "Question", "question": "What happened?"}],
+    })
+    assert created.status_code == 200
+    test_id = created.json()["id"]
+    listed = client.get(f"/api/workspaces/{ws.id}/doc-tests").json()["items"]
+    assert any(item["id"] == test_id for item in listed)
+    compare = client.post(f"/api/workspaces/{ws.id}/matching/compare", json={
+        "expected": 100, "found": 101, "method": "numeric_tolerance", "tolerance": 1,
+    })
+    assert compare.status_code == 200 and compare.json()["result"] == "match"
+    paper = client.get(f"/api/workspaces/{ws.id}/procedures/{procedure['id']}/working-paper")
+    assert paper.status_code == 200 and test_id in paper.json()["markdown"]

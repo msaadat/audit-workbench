@@ -20,6 +20,8 @@ PROVIDERS = {
         "default_model": "llama-3.3-70b-versatile",
         "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
         "local": False,
+        "vision": True,
+        "vision_model": "meta-llama/llama-4-scout-17b-16e-instruct",
     },
     "openrouter": {
         "label": "OpenRouter",
@@ -32,6 +34,8 @@ PROVIDERS = {
             "anthropic/claude-3.5-sonnet",
         ],
         "local": False,
+        "vision": True,
+        "vision_model": "openai/gpt-4o-mini",
     },
     "mistral": {
         "label": "Mistral",
@@ -40,6 +44,8 @@ PROVIDERS = {
         "default_model": "mistral-medium-3-5",
         "models": ["mistral-large-latest", "mistral-medium-3-5", "mistral-small-latest"],
         "local": False,
+        "vision": True,
+        "vision_model": "pixtral-large-latest",
     },
     "lmstudio": {
         "label": "LM Studio",
@@ -48,6 +54,8 @@ PROVIDERS = {
         "default_model": "",
         "models": [""],
         "local": True,
+        "vision": True,
+        "vision_model": "",
     },
 }
 
@@ -132,6 +140,8 @@ def provider_options() -> list[dict]:
                 "default_model": meta["default_model"],
                 "models": meta["models"],
                 "local": meta["local"],
+                "vision": bool(meta.get("vision")),
+                "vision_model": meta.get("vision_model") or "",
             }
         )
     return options

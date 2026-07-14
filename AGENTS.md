@@ -9,7 +9,10 @@ runs 15 canned audit analytics (Benford + last-two-digit, duplicates, sequence
 gaps, sampling, period comparison, round numbers, outliers, threshold
 clustering, weekend postings, date-lag/backdating, stratification,
 completeness, negative/zero scan, rare values). All computation happens on the user's
-machine. This project is the ground-up successor to the "TT Rebate Checker"
+machine. The implemented audit-cycle extension also supports incremental mixed
+folder intake, engagement planning, documents and cited Q&A, document testing,
+working-paper drafts, evidence-linked findings, and editable audit-report
+drafts. This project is the ground-up successor to the "TT Rebate Checker"
 validation platform (separate repo, same author); the EDA profiler was ported
 from there.
 
@@ -28,6 +31,13 @@ the choke point that withholds row-level detail. A portable-zip distribution
 (embedded Python, mirroring the old platform's `build_portable.py`) is
 planned because target users are on locked-down corporate PCs — this is why
 the LLM transport uses only the standard library (no SDK dependency).
+
+**Audit-cycle extension (implemented 2026-07-14):** M1-M5 of
+`docs/full-audit-cycle-plan.md` are shipped. The audit assistant now spans
+incremental folder intake, APM/RCM/audit-program planning, document disclosure
+and typed evidence, resumable document tests, working papers, findings, and
+edit-aware report generation. M6 is optional polish rather than required core
+scope.
 
 ## 2. Architecture
 
@@ -63,7 +73,7 @@ backend/app/
 │                                (list_tables, describe_table, query_table,
 │                                run_analytics, run_python); gates what the
 │                                model sees so raw rows never leave the machine
-├─ agent/                     ── the LLM-driven data-analyst agent (V4):
+├─ agent/                     ── durable audit-assistant run framework:
 │  ├─ store.py                ── durable runs: Workspaces/<id>/AgentRuns/<run>/
 │  │                             {run.json (atomic), events.jsonl (replayable)}
 │  ├─ runner.py               ── threaded run state machine (discovery →
@@ -92,9 +102,14 @@ backend/app/
    ├─ dashboard_routes.py     ── tiles CRUD (POST/PATCH/DELETE) + GET dashboard
    ├─ assistant_routes.py     ── GET /assistant/status, POST /assistant (ask),
    │                              POST /run-python (execute an edited snippet)
-   └─ agent_routes.py         ── run CRUD, SSE event stream (cursor replay via
-                                  Last-Event-ID), pause/resume/cancel,
-                                  approvals, messages, GET suggest-rules
+   ├─ agent_routes.py         ── run CRUD, SSE event stream (cursor replay via
+   │                              Last-Event-ID), pause/resume/cancel,
+   │                              approvals, messages, GET suggest-rules
+   ├─ intake_routes.py        ── source manifests, staging, classification/apply
+   ├─ planning_routes.py      ── planning, templates, RCM, and procedure CRUD
+   ├─ document_routes.py      ── documents, extraction, disclosure, Q&A, packs
+   ├─ doc_test_routes.py      ── document tests, matching, and working papers
+   └─ report_routes.py        ── findings, report drafts, reconciliation, quality
 
 frontend/src/
 ├─ api.ts                     ── fetch wrapper (ApiError, upload, xlsx download)
@@ -104,9 +119,9 @@ frontend/src/
 │                                refetch, and the workspace_changed bus tabs
 │                                subscribe to for live refresh
 ├─ views/HomeView.vue         ── workspace cards + create/delete
-├─ views/WorkspaceView.vue    ── tabs: Dashboard | Data | Query | Validation |
-│                                Analysis, plus the Run Agent header button and
-│                                the persistent right-side AgentDrawer
+├─ views/WorkspaceView.vue    ── grouped Overview/Plan/Fieldwork/Output tabs,
+│                                folder import action, and persistent right-side
+│                                audit-assistant drawer
 └─ components/
    ├─ DashboardTab.vue        ── pinned tile grid: chart/table + verdict/stats,
    │                             rename/note/reorder/remove; remounts per visit
@@ -123,6 +138,11 @@ frontend/src/
    │                             headers + totals). Chart controls (bar/line/pie)
    │                             + Pin-to-dashboard ('query' tile, cross-tab too)
    ├─ AnalysisTab.vue         ── saved-analyses rail + Library / Code editors
+   ├─ PlanningTab.vue         ── context/APM/RCM/audit-program views
+   ├─ DocumentsTab.vue        ── document inventory, preview, Q&A, versions/logs
+   ├─ DocTestsTab.vue         ── test worklists, dispositions, working papers
+   ├─ FindingsTab.vue         ── evidence-linked IIA finding editor
+   ├─ ReportTab.vue           ── report editor/preview/sources & quality
    ├─ validation/…            ── ValidationTab (rail) + RulesetEditor (grid,
    │                             ghost suggestions from GET suggest-rules,
    │                             run results, history)
@@ -136,6 +156,35 @@ frontend/src/
    ├─ PinDialog.vue           ── title + note prompt shared by both pin flows
    └─ FrameTable.vue          ── renders a {columns, dtypes, rows} payload
 ```
+
+**Audit-cycle backend modules:**
+
+- `intake.py` and `agent/intake_runner.py` implement incremental mixed-folder
+  manifests, safe local classification metadata, staging, and idempotent
+  routing into tables/documents.
+- `documents.py`, `evidence.py`, and `methodology.py` implement extraction,
+  versioning, opt-in disclosure/activity logs, typed immutable anchors, cited
+  document Q&A, and local methodology packs.
+- `agent/base.py`, `agent/planning_runner.py`, and
+  `agent/doc_test_runner.py` provide shared durable-run plumbing, planning
+  interviews/drafts, and resumable per-item document testing.
+- `doc_tests.py` provides vouching/tracing, attribute, review, and Q&A tests
+  with explainable exact/normalized/fuzzy/tolerance comparisons.
+- `working_papers.py` assembles procedure-linked Markdown/HTML workpapers.
+- `findings.py` provides provenance-aware findings CRUD and explicit promotion
+  from agent observations; `report.py` builds privacy-safe report context,
+  drafts, reconciliation candidates, safe HTML, and deterministic quality
+  checks.
+- The corresponding API surfaces live in `intake_routes.py`,
+  `planning_routes.py`, `document_routes.py`, `doc_test_routes.py`, and
+  `report_routes.py`.
+
+**Audit-cycle frontend modules:** `FolderImportDialog.vue`, `PlanningTab.vue`,
+`DocumentsTab.vue`, `DocTestsTab.vue`, `FindingsTab.vue`, and `ReportTab.vue`
+follow the shared rail/detail or editor/preview patterns. `MarkdownView.vue`
+is the safe shared Markdown renderer, `EvidenceAnchorDialog.vue` navigates
+typed sources, and `ReportReconcileDialog.vue` prevents silent overwrites of
+auditor-edited reports.
 
 **Key conventions:**
 - User-facing errors are `WorkspaceError`/`QueryError` (ValueError subclasses);
@@ -159,8 +208,8 @@ frontend/src/
 uv venv .venv
 uv pip install -r backend/requirements-dev.txt
 
-# Tests (190 tests: workspaces, explore incl. cross-tab, analytics, dashboard,
-#        assistant, validation, agent store/joins/suggest/runner/API, API)
+# Tests (232 tests as of 2026-07-14, including intake, planning, documents,
+#        evidence, document tests, working papers, findings, and reports)
 cd backend && uv run --no-project pytest
 
 # Enable the assistant (optional; unset == graceful "not configured" banner)
@@ -199,11 +248,22 @@ cd frontend && npm run build
   rerun reconciliation (user-edited items become user-owned and are never
   touched). The standalone Ask AI tab was folded into the Agent drawer.
   Verified end-to-end against Mistral (auto + permission on live data).
+- Audit-cycle M1-M5 complete (2026-07-14, per
+  `docs/full-audit-cycle-plan.md`): incremental audit-folder intake; planning
+  interviews and editable APM/RCM/audit programs; versioned documents,
+  per-engagement disclosure opt-in, typed evidence anchors, and methodology
+  packs; resumable vouching/tracing/attribute/review/Q&A tests; evidence-linked
+  working papers; findings CRUD/promotion; and editable report drafting with
+  deterministic quality checks and explicit side-by-side regeneration.
+  Acceptance: 232 backend tests plus the frontend TypeScript/Vite build.
 - Agent testing pattern: `FakeAgentLLM` in conftest scripts one JSON response
   per `[agent:<stage>]` prompt tag; `wait_run` polls the store and joins the
   worker thread.
 - No linter configured; `npm run build` runs vue-tsc as the frontend type gate.
-- Next: portable-zip build (embedded Python) for distribution.
+- Next product stage: optional M6 assistant polish (traceability matrix,
+  risk/coverage heatmap, duplicate suggestions, reusable procedure templates,
+  and editorial actions). Portable-zip distribution remains a separate
+  packaging priority for locked-down corporate machines.
 - Known V1 agent limits: LLM-titled query tiles reconcile by slugified title,
   so a rerun that words a chart differently pins a new tile; custom-code
   repair gets one attempt; approval batches don't support partial re-editing

@@ -18,24 +18,18 @@ disclosure-gated metadata views — raw data rows never enter a prompt.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
-import time
-import uuid
 
 from .. import analytics, assistant, dashboard, explore, llm, sandbox, validation
 from ..workspaces import Workspace, WorkspaceError, load_workspace, slugify
 from . import joins as joins_mod
 from . import prompts, store, suggest, summary as summary_mod
+from .base import BaseRunner, Cancelled, LimitExceeded
 
 # Fixed V1 limits — deliberately not user-configurable yet.
-MAX_LLM_TURNS = 40
-MAX_TASKS = 60
 MAX_CUSTOM_ANALYSES = 6
-MAX_RUNTIME_SECONDS = 1800
 MAX_QUERY_TILES = 5
-LLM_JSON_ATTEMPTS = 2
 
 STAGES = (
     ("joins", "Relationships"),
@@ -46,19 +40,8 @@ STAGES = (
     ("summary", "Summary"),
 )
 
-DISCLOSURE_NOTE = assistant.DISCLOSURE
-
-
 class AgentBusyError(RuntimeError):
     """Another run is already active (per-workspace or global limit)."""
-
-
-class _Cancelled(Exception):
-    pass
-
-
-class _LimitExceeded(Exception):
-    pass
 
 
 class RunHandle:
@@ -113,9 +96,12 @@ def start_run(
     mode: str,
     context: dict | None = None,
     parent_run_id: str | None = None,
+    kind: str = "analysis",
 ) -> dict:
     recover_workspace(workspace)
-    if not llm.agent_status()["configured"]:
+    if kind not in ("analysis", "intake", "planning", "doc_test"):
+        raise WorkspaceError("Unknown agent run kind.")
+    if kind in ("analysis", "planning") and not llm.agent_status()["configured"]:
         raise llm.LLMError(
             "The agent's LLM is not configured. Set an API key for the "
             "assistant provider (or AGENT_PROVIDER/AGENT_MODEL) first."
@@ -131,10 +117,19 @@ def start_run(
             "The agent is busy with another workspace right now; try again "
             "when that run finishes."
         )
-    if not workspace.tables:
+    if kind == "analysis" and not workspace.tables:
         raise WorkspaceError("Upload at least one data table before running the agent.")
+    if kind == "doc_test":
+        from .. import doc_tests
 
-    run = store.new_run(workspace, mode, context, parent_run_id)
+        test_id = str((context or {}).get("test_id") or "")
+        if not test_id:
+            raise WorkspaceError("A document-test run requires context.test_id.")
+        doc_tests.load_test(workspace, test_id)
+
+    run = store.new_run(
+        workspace, mode, context, parent_run_id, kind=kind
+    )
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
     _launch(workspace.id, run["id"])
     return run
@@ -214,7 +209,11 @@ def steer(workspace: Workspace, run_id: str, content: str) -> dict:
         objective = (context.get("objective") or "").strip()
         context["objective"] = f"{objective}\n{content}".strip()
         follow_up = start_run(
-            workspace, run["mode"], context, parent_run_id=run_id
+            workspace,
+            run["mode"],
+            context,
+            parent_run_id=run_id,
+            kind=run.get("kind", "analysis"),
         )
         return {"handled": "follow_up_run", "run": follow_up}
 
@@ -262,7 +261,24 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
     try:
         workspace = load_workspace(workspace_id)
         run = store.load_run(workspace, run_id)
-        _Runner(workspace, run, handle).execute()
+        if run.get("kind", "analysis") == "intake":
+            from .intake_runner import IntakeRunner
+
+            IntakeRunner(workspace, run, handle).execute()
+        elif run.get("kind") == "planning":
+            from .planning_runner import PlanningRunner
+
+            PlanningRunner(workspace, run, handle).execute()
+        elif run.get("kind") == "doc_test":
+            from .doc_test_runner import DocTestRunner
+
+            DocTestRunner(workspace, run, handle).execute()
+        elif run.get("kind", "analysis") == "analysis":
+            _Runner(workspace, run, handle).execute()
+        else:
+            raise WorkspaceError(
+                f"Run kind '{run.get('kind')}' is not implemented yet."
+            )
     except Exception as error:  # last-resort: never leave a run stuck 'active'
         try:
             workspace = load_workspace(workspace_id)
@@ -286,257 +302,14 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
 
 
 # -------------------------------------------------------------------- runner
-class _Runner:
+class _Runner(BaseRunner):
+    """The original data-analysis runner on the shared durable-run base."""
+
+    stage_titles = dict(STAGES)
+
     def __init__(self, workspace: Workspace, run: dict, handle: RunHandle):
-        self.ws = workspace
-        self.run = run
-        self.handle = handle
-        self.deadline = time.monotonic() + MAX_RUNTIME_SECONDS
+        super().__init__(workspace, run, handle)
         self.tables_meta: list[dict] = []
-
-    # ------------------------------------------------------------ plumbing
-    def save(self) -> None:
-        store.save_run(self.ws, self.run)
-
-    def emit(self, type_: str, data: dict) -> None:
-        store.append_event(self.ws, self.run["id"], type_, data)
-
-    def set_status(self, status: str) -> None:
-        if self.run["status"] == status:
-            return
-        self.run["status"] = status
-        self.save()
-        self.emit("run_status", {"status": status})
-
-    def warn(self, text: str) -> None:
-        self.run["warnings"].append(text)
-        self.save()
-        self.emit("warning", {"text": text})
-
-    def checkpoint(self) -> None:
-        """Between units of work: honor cancel/pause, apply steering, enforce
-        the runtime budget."""
-        if self.handle.cancel.is_set():
-            raise _Cancelled()
-        if self.handle.pause_requested.is_set():
-            self.set_status("paused")
-            waited_from = time.monotonic()
-            while not self.handle.resume.wait(0.2):
-                if self.handle.cancel.is_set():
-                    raise _Cancelled()
-            self.handle.resume.clear()
-            self.handle.pause_requested.clear()
-            self.deadline += time.monotonic() - waited_from  # user time is free
-            self.set_status("executing")
-        self._drain_inbox()
-        if time.monotonic() > self.deadline:
-            raise _LimitExceeded("run time limit reached")
-
-    def _drain_inbox(self) -> None:
-        with self.handle.lock:
-            pending, self.handle.inbox = self.handle.inbox[:], []
-        for content in pending:
-            self.run["messages"].append(
-                {
-                    "role": "user",
-                    "content": content,
-                    "at": store.utcnow(),
-                    "handled": True,
-                }
-            )
-        if pending:
-            self.save()
-
-    @property
-    def guidance(self) -> list[str]:
-        return [m["content"] for m in self.run["messages"] if m["role"] == "user"]
-
-    @property
-    def context(self) -> dict:
-        return self.run.get("context") or {}
-
-    # ------------------------------------------------------------ LLM turns
-    def llm_json(self, system: str, user: str) -> dict:
-        """One structured LLM exchange with a parse-retry. Counts turns."""
-        last_error = ""
-        attempt_user = user
-        for _ in range(LLM_JSON_ATTEMPTS):
-            self.checkpoint()
-            if self.run["usage"]["llm_turns"] >= MAX_LLM_TURNS:
-                raise _LimitExceeded("model turn limit reached")
-            self.run["usage"]["llm_turns"] += 1
-            self.save()
-            message = llm.chat(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": attempt_user},
-                ],
-                profile="agent",
-            )
-            try:
-                return prompts.parse_json_object(message.get("content") or "")
-            except (ValueError, json.JSONDecodeError) as error:
-                last_error = str(error)
-                attempt_user = (
-                    f"{user}\n\nYour previous response could not be used: "
-                    f"{last_error}. {prompts.JSON_RULES}"
-                )
-        raise llm.LLMError(f"The model did not return usable JSON: {last_error}")
-
-    # ---------------------------------------------------------------- tasks
-    def _stage(self, stage_id: str) -> dict:
-        for stage in self.run["plan"]["stages"]:
-            if stage["id"] == stage_id:
-                return stage
-        stage = {
-            "id": stage_id,
-            "title": dict(STAGES).get(stage_id, stage_id.title()),
-            "tasks": [],
-        }
-        self.run["plan"]["stages"].append(stage)
-        return stage
-
-    def _task(self, task_id: str) -> dict | None:
-        for stage in self.run["plan"]["stages"]:
-            for task in stage["tasks"]:
-                if task["id"] == task_id:
-                    return task
-        return None
-
-    def add_task(
-        self, stage_id: str, task_id: str, title: str, detail: str = ""
-    ) -> dict:
-        existing = self._task(task_id)
-        if existing is not None:
-            return existing
-        total = sum(len(s["tasks"]) for s in self.run["plan"]["stages"])
-        if total >= MAX_TASKS:
-            raise _LimitExceeded("task limit reached")
-        task = {
-            "id": task_id,
-            "stage": stage_id,
-            "title": title,
-            "detail": detail,
-            "status": "queued",
-            "error": None,
-            "result_refs": [],
-            "disclosure": [],
-        }
-        self._stage(stage_id)["tasks"].append(task)
-        self.save()
-        self.emit("task_update", {"task": task})
-        return task
-
-    def task_status(self, task: dict, status: str, error: str | None = None) -> None:
-        task["status"] = status
-        task["error"] = error
-        self.save()
-        self.emit("task_update", {"task": task})
-
-    def disclose(self, task: dict, note: str) -> None:
-        if note not in task["disclosure"]:
-            task["disclosure"].append(note)
-
-    def record_artifact(
-        self, kind: str, item_id: str, semantic_id: str, action: str, task: dict | None
-    ) -> str:
-        ref = f"{kind}:{item_id}"
-        self.run["artifacts"].append(
-            {"kind": kind, "id": item_id, "semantic_id": semantic_id, "action": action}
-        )
-        if task is not None and ref not in task["result_refs"]:
-            task["result_refs"].append(ref)
-        self.save()
-        self.emit(
-            "workspace_changed", {"kind": kind, "id": item_id, "action": action}
-        )
-        return ref
-
-    # ------------------------------------------------------------ approvals
-    def _pending_approval(self, kind: str, task_id: str) -> dict | None:
-        for approval in self.run["approvals"]:
-            if (
-                approval["kind"] == kind
-                and approval["task_id"] == task_id
-                and approval["status"] == "pending"
-            ):
-                return approval
-        return None
-
-    def request_approval(self, kind: str, task: dict, items: list[dict]) -> list[dict]:
-        """Pause for an editable approval batch; returns the accepted items
-        with any edits applied (empty when everything was rejected). Reuses a
-        persisted pending batch when resuming an interrupted run."""
-        approval = self._pending_approval(kind, task["id"])
-        if approval is None:
-            if not items:
-                return []
-            approval = {
-                "id": uuid.uuid4().hex[:10],
-                "kind": kind,
-                "task_id": task["id"],
-                "status": "pending",
-                "created": store.utcnow(),
-                "items": items,
-            }
-            self.run["approvals"].append(approval)
-        self.task_status(task, "awaiting_approval")
-        self.emit("approval_request", {"approval": approval})
-        self.set_status("awaiting_approval")
-
-        waited_from = time.monotonic()
-        decisions: list | None = None
-        while decisions is None:
-            if self.handle.cancel.is_set():
-                raise _Cancelled()
-            if self.handle.approval_resolved.wait(0.2):
-                self.handle.approval_resolved.clear()
-                decisions = self.handle.decisions.pop(approval["id"], None)
-        self.deadline += time.monotonic() - waited_from
-
-        by_id = {item["id"]: item for item in approval["items"]}
-        for decision in decisions:
-            item = by_id.get(str(decision.get("item_id")))
-            action = decision.get("action")
-            if item is None or action not in ("approve", "reject", "edit"):
-                continue
-            if action == "edit":
-                item["decision"] = "edited"
-                item["edited_spec"] = decision.get("spec")
-            else:
-                item["decision"] = "approved" if action == "approve" else "rejected"
-        for item in approval["items"]:
-            if not item.get("decision"):
-                item["decision"] = "rejected"
-        approval["status"] = "resolved"
-        approval["resolved"] = store.utcnow()
-        self.save()
-        self.emit("approval_resolved", {"approval": approval})
-        self.set_status("executing")
-        self.task_status(task, "running")
-
-        accepted = []
-        for item in approval["items"]:
-            if item["decision"] == "approved":
-                accepted.append({**item, "spec": item["spec"]})
-            elif item["decision"] == "edited" and item.get("edited_spec"):
-                accepted.append({**item, "spec": item["edited_spec"]})
-        return accepted
-
-    def proposal_item(
-        self, title: str, rationale: str, spec: dict, evidence: dict | None = None
-    ) -> dict:
-        return {
-            "id": uuid.uuid4().hex[:8],
-            "title": title,
-            "rationale": rationale,
-            "spec": spec,
-            "evidence": evidence or {},
-            "disclosure": DISCLOSURE_NOTE,
-            "decision": None,
-            "edited_spec": None,
-        }
-
     # ------------------------------------------------------------- execute
     def execute(self) -> None:
         if not self.run.get("started"):
@@ -554,10 +327,10 @@ class _Runner:
             self.run["finished"] = store.utcnow()
             self.set_status("completed")
             self.emit("summary_ready", {"run_id": self.run["id"]})
-        except _Cancelled:
+        except Cancelled:
             self.run["finished"] = store.utcnow()
             self.set_status("cancelled")
-        except _LimitExceeded as error:
+        except LimitExceeded as error:
             self.warn(f"Execution limit reached ({error}); results are partial.")
             self._finish_partial()
         except llm.LLMError as error:
@@ -769,7 +542,7 @@ class _Runner:
             self.task_status(task, "running")
             try:
                 self._validate_table(table, task)
-            except (_Cancelled, _LimitExceeded):
+            except (Cancelled, LimitExceeded):
                 raise
             except Exception as error:
                 self.task_status(task, "failed", str(error))
@@ -999,7 +772,7 @@ class _Runner:
                 else:
                     self._run_library(spec, sub)
                 self.task_status(sub, "completed")
-            except (_Cancelled, _LimitExceeded):
+            except (Cancelled, LimitExceeded):
                 raise
             except Exception as error:
                 self.task_status(sub, "failed", str(error))

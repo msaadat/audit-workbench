@@ -22,9 +22,10 @@ import keyword
 import os
 import re
 import shutil
+import time
 import tokenize
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -52,7 +53,18 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:6]}.tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    # Windows can briefly deny a replace while antivirus/indexing software or
+    # a concurrent API read has the destination open. Retrying preserves the
+    # atomic-write guarantee without surfacing a spurious engagement error.
+    for attempt in range(6):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 5:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.02 * (attempt + 1))
 
 
 # Provenance keys accepted on saved items (tiles/analyses/rulesets/joins).
@@ -76,6 +88,18 @@ def _user_touch(item: dict) -> None:
 
 class WorkspaceError(ValueError):
     """A user-facing workspace problem (bad name, missing table, bad join)."""
+
+
+def _validate_test_refs(workspace: "Workspace", refs: object) -> list[str]:
+    values = [str(ref) for ref in (refs or [])]
+    from . import doc_tests
+    for ref in values:
+        kind, separator, item_id = ref.partition(":")
+        if kind == "doctest" and (
+            not separator or not item_id or not doc_tests.exists(workspace, item_id)
+        ):
+            raise WorkspaceError(f"Document test reference '{ref}' does not exist.")
+    return values
 
 
 def _normalized_table_name(text: str) -> str:
@@ -195,6 +219,60 @@ class Workspace:
         self.tiles: list[dict] = list(definition.get("tiles") or [])
         self.analyses: list[dict] = list(definition.get("analyses") or [])
         self.rulesets: list[dict] = list(definition.get("rulesets") or [])
+        # Full-audit-cycle records hydrate defensively so every pre-extension
+        # workspace remains readable without a migration step.
+        self.settings: dict = {
+            "doc_llm_optin": False,
+            "doc_llm_optin_at": None,
+            "doc_pii_masking": False,
+            **dict(definition.get("settings") or {}),
+        }
+        self.documents: list[dict] = list(definition.get("documents") or [])
+        self.planning: dict = {
+            "status": "draft",
+            "context": {
+                "objective": "",
+                "entity": "",
+                "period": "",
+                "scope": "",
+                "materiality": "",
+                "key_contacts": "",
+                "background_notes": "",
+                "interview_answers": {},
+            },
+            "apm_markdown": "",
+            "created_by": "user",
+            "agent_run_id": None,
+            "updated": None,
+            **dict(definition.get("planning") or {}),
+        }
+        self.planning["context"] = {
+            "objective": "",
+            "entity": "",
+            "period": "",
+            "scope": "",
+            "materiality": "",
+            "key_contacts": "",
+            "background_notes": "",
+            "interview_answers": {},
+            **dict(self.planning.get("context") or {}),
+        }
+        self.rcm: list[dict] = list(definition.get("rcm") or [])
+        self.work_program: list[dict] = list(definition.get("work_program") or [])
+        self.findings: list[dict] = list(definition.get("findings") or [])
+        # Legacy evidence strings remain represented through a typed wrapper;
+        # all subsequent writes validate the durable anchor shape.
+        from .evidence import normalize_many
+        for item in self.work_program:
+            item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
+            item.setdefault("methodology_refs", [])
+        for item in self.findings:
+            item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
+            item.setdefault("rcm_refs", [])
+            item.setdefault("procedure_refs", [])
+            item.setdefault("status", "draft")
+            item.setdefault("source", "manual")
+        self.report: dict = dict(definition.get("report") or {})
 
     # ------------------------------------------------------------- persistence
     @property
@@ -213,6 +291,13 @@ class Workspace:
             "tiles": self.tiles,
             "analyses": self.analyses,
             "rulesets": self.rulesets,
+            "settings": self.settings,
+            "documents": self.documents,
+            "planning": self.planning,
+            "rcm": self.rcm,
+            "work_program": self.work_program,
+            "findings": self.findings,
+            "report": self.report,
         }
         write_json_atomic(self.definition_path, definition)
 
@@ -746,15 +831,161 @@ class Workspace:
     # -------------------------------------------------------------- provenance
     def find_semantic(self, collection: str, semantic_id: str) -> dict | None:
         """Find a saved item by its agent semantic id ('tiles', 'analyses',
-        'rulesets' or 'joins'). Used by agent reruns to reconcile instead of
+        'rulesets', 'joins', 'rcm', or 'procedures'). Used by agent reruns to reconcile instead of
         duplicating outputs."""
         items = {
             "tiles": self.tiles,
             "analyses": self.analyses,
             "rulesets": self.rulesets,
             "joins": self.joins,
+            "rcm": self.rcm,
+            "procedures": self.work_program,
+            "work_program": self.work_program,
+            "findings": self.findings,
         }.get(collection, [])
         return next((i for i in items if i.get("semantic_id") == semantic_id), None)
+
+    # --------------------------------------------------------------- planning
+    @staticmethod
+    def _updated_now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def update_planning(self, changes: dict, *, agent: bool = False) -> dict:
+        allowed = {"status", "context", "apm_markdown", "agent_run_id", "created_by"}
+        unknown = set(changes) - allowed
+        if unknown:
+            raise WorkspaceError(f"Unknown planning field: {sorted(unknown)[0]}.")
+        if not agent and ({"agent_run_id", "created_by"} & set(changes)):
+            raise WorkspaceError("Planning provenance is managed by the workbench.")
+        if "status" in changes and changes["status"] not in ("draft", "final"):
+            raise WorkspaceError("Planning status must be 'draft' or 'final'.")
+        if "context" in changes:
+            context = changes["context"]
+            if not isinstance(context, dict):
+                raise WorkspaceError("Planning context must be an object.")
+            self.planning["context"].update(context)
+        for key in ("status", "apm_markdown", "agent_run_id", "created_by"):
+            if key in changes:
+                self.planning[key] = changes[key]
+        if not agent and self.planning.get("created_by") == "agent":
+            self.planning["created_by"] = "user"
+        self.planning["updated"] = self._updated_now()
+        self.save()
+        return self.planning
+
+    def _planning_record(self, collection: list[dict], item_id: str, label: str) -> dict:
+        item = next((row for row in collection if row.get("id") == item_id), None)
+        if item is None:
+            raise WorkspaceError(f"{label} '{item_id}' not found.")
+        return item
+
+    def add_rcm(self, payload: dict) -> dict:
+        process = str(payload.get("process") or "").strip()
+        risk = str(payload.get("risk") or "").strip()
+        if not risk:
+            raise WorkspaceError("RCM risk is required.")
+        item = {
+            "id": str(payload.get("id") or f"RCM-{uuid.uuid4().hex[:6].upper()}"),
+            "semantic_id": str(payload.get("semantic_id") or f"rcm:{slugify(process)}:{slugify(risk)}"),
+            "created_by": "agent" if payload.get("agent_run_id") else "user",
+            "agent_run_id": payload.get("agent_run_id"),
+            "process": process,
+            "risk": risk,
+            "risk_rating": str(payload.get("risk_rating") or "medium").lower(),
+            "assertion": str(payload.get("assertion") or ""),
+            "control": str(payload.get("control") or ""),
+            "control_type": str(payload.get("control_type") or ""),
+            "test_procedure": str(payload.get("test_procedure") or ""),
+            "test_refs": _validate_test_refs(self, payload.get("test_refs") or []),
+        }
+        if item["risk_rating"] not in ("low", "medium", "high", "critical"):
+            raise WorkspaceError("Risk rating must be low, medium, high, or critical.")
+        self.rcm.append(item)
+        self.save()
+        return item
+
+    def update_rcm(self, item_id: str, changes: dict, *, agent: bool = False) -> dict:
+        item = self._planning_record(self.rcm, item_id, "RCM row")
+        allowed = {"process", "risk", "risk_rating", "assertion", "control", "control_type", "test_procedure", "test_refs"}
+        if set(changes) - allowed:
+            raise WorkspaceError("Unknown RCM field.")
+        if "risk_rating" in changes and changes["risk_rating"] not in ("low", "medium", "high", "critical"):
+            raise WorkspaceError("Risk rating must be low, medium, high, or critical.")
+        if "test_refs" in changes:
+            changes = {**changes, "test_refs": _validate_test_refs(self, changes["test_refs"])}
+        for key, value in changes.items():
+            item[key] = [str(ref) for ref in value] if key == "test_refs" else str(value or "")
+        if not agent:
+            _user_touch(item)
+        self.save()
+        return item
+
+    def remove_rcm(self, item_id: str) -> None:
+        item = self._planning_record(self.rcm, item_id, "RCM row")
+        self.rcm.remove(item)
+        for procedure in self.work_program:
+            procedure["rcm_refs"] = [ref for ref in procedure.get("rcm_refs", []) if ref != item_id]
+        for finding in self.findings:
+            finding["rcm_refs"] = [ref for ref in finding.get("rcm_refs", []) if ref != item_id]
+        self.save()
+
+    def add_procedure(self, payload: dict) -> dict:
+        from .evidence import normalize_many
+        objective = str(payload.get("objective") or "").strip()
+        if not objective:
+            raise WorkspaceError("Procedure objective is required.")
+        item = {
+            "id": str(payload.get("id") or f"PROC-{uuid.uuid4().hex[:6].upper()}"),
+            "semantic_id": str(payload.get("semantic_id") or f"procedure:{slugify(objective)}"),
+            "created_by": "agent" if payload.get("agent_run_id") else "user",
+            "agent_run_id": payload.get("agent_run_id"),
+            "rcm_refs": [str(ref) for ref in (payload.get("rcm_refs") or [])],
+            "objective": objective,
+            "criteria": str(payload.get("criteria") or ""),
+            "steps": [str(step) for step in (payload.get("steps") or []) if str(step).strip()],
+            "method": str(payload.get("method") or ""),
+            "expected_evidence": str(payload.get("expected_evidence") or ""),
+            "test_refs": _validate_test_refs(self, payload.get("test_refs") or []),
+            "evidence_refs": normalize_many(payload.get("evidence_refs") or [], require_hash=True),
+            "methodology_refs": list(payload.get("methodology_refs") or []),
+            "result_summary": str(payload.get("result_summary") or ""),
+            "conclusion": str(payload.get("conclusion") or ""),
+            "scope_limitations": str(payload.get("scope_limitations") or ""),
+            "updated": self._updated_now(),
+        }
+        self.work_program.append(item)
+        self.save()
+        return item
+
+    def update_procedure(self, item_id: str, changes: dict, *, agent: bool = False) -> dict:
+        from .evidence import normalize_many
+        item = self._planning_record(self.work_program, item_id, "Procedure")
+        allowed = {"rcm_refs", "objective", "criteria", "steps", "method", "expected_evidence", "test_refs", "evidence_refs", "methodology_refs", "result_summary", "conclusion", "scope_limitations"}
+        if set(changes) - allowed:
+            raise WorkspaceError("Unknown procedure field.")
+        if "test_refs" in changes:
+            changes = {**changes, "test_refs": _validate_test_refs(self, changes["test_refs"])}
+        for key, value in changes.items():
+            if key in ("rcm_refs", "steps", "test_refs"):
+                item[key] = [str(entry) for entry in (value or [])]
+            elif key == "evidence_refs":
+                item[key] = normalize_many(value or [], require_hash=True)
+            elif key == "methodology_refs":
+                item[key] = list(value or [])
+            else:
+                item[key] = str(value or "")
+        if not agent:
+            _user_touch(item)
+        item["updated"] = self._updated_now()
+        self.save()
+        return item
+
+    def remove_procedure(self, item_id: str) -> None:
+        item = self._planning_record(self.work_program, item_id, "Procedure")
+        self.work_program.remove(item)
+        for finding in self.findings:
+            finding["procedure_refs"] = [ref for ref in finding.get("procedure_refs", []) if ref != item_id]
+        self.save()
 
     # ------------------------------------------------------------------ frames
     def get_frame(self, name: str, _seen: frozenset = frozenset()) -> pl.DataFrame:
@@ -876,6 +1107,9 @@ class Workspace:
             "created": self.created,
             "tables": tables,
             "tile_count": len(self.tiles),
+            "document_count": len(self.documents),
+            "finding_count": len(self.findings),
+            "settings": self.settings,
         }
 
 

@@ -1,0 +1,88 @@
+"""Browser folder-source and durable incremental-import endpoints."""
+
+from __future__ import annotations
+
+import hashlib
+
+from fastapi import APIRouter, Body, File, Form, UploadFile
+
+from .. import intake, workspaces
+
+router = APIRouter(prefix="/api/workspaces", tags=["folder-intake"])
+
+
+@router.get("/{workspace_id}/folder-sources")
+async def list_folder_sources(workspace_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    return {"sources": intake.list_sources(ws)}
+
+
+@router.post("/{workspace_id}/folder-sources")
+async def create_folder_source(workspace_id: str, payload: dict = Body(...)):
+    ws = workspaces.load_workspace(workspace_id)
+    return intake.create_source(
+        ws, payload.get("label") or "", payload.get("root_name") or ""
+    )
+
+
+@router.post("/{workspace_id}/folder-sources/{source_id}/imports")
+async def compare_folder_import(
+    workspace_id: str, source_id: str, payload: dict = Body(...)
+):
+    ws = workspaces.load_workspace(workspace_id)
+    return intake.compare_manifest(
+        ws,
+        source_id,
+        payload.get("manifest") or [],
+        payload.get("mode") or "permission",
+        bool(payload.get("force")),
+    )
+
+
+@router.post("/{workspace_id}/folder-imports/{batch_id}/files")
+async def upload_folder_file(
+    workspace_id: str,
+    batch_id: str,
+    relative_path: str = Form(...),
+    file: UploadFile = File(...),
+):
+    ws = workspaces.load_workspace(workspace_id)
+    batch = intake.load_batch(ws, batch_id)
+    if batch.get("status") != "uploading":
+        raise workspaces.WorkspaceError("This import batch is no longer accepting uploads.")
+    item = intake.requested_item(batch, relative_path)
+    target = intake.staging_path(ws, batch, item)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha1()
+    size = 0
+    try:
+        with target.open("wb") as handle:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+                handle.write(chunk)
+        intake.mark_uploaded(ws, batch, item, digest.hexdigest(), size, target)
+    except Exception:
+        if not item.get("uploaded"):
+            target.unlink(missing_ok=True)
+        raise
+    return {"item_id": item["id"], "sha1": item["sha1"], "size": size}
+
+
+@router.post("/{workspace_id}/folder-imports/{batch_id}/complete-upload")
+async def complete_folder_upload(workspace_id: str, batch_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    return intake.complete_upload(ws, batch_id)
+
+
+@router.get("/{workspace_id}/folder-imports/{batch_id}")
+async def get_folder_import(workspace_id: str, batch_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    return intake.load_batch(ws, batch_id)
+
+
+@router.delete("/{workspace_id}/folder-imports/{batch_id}")
+async def cancel_folder_import(workspace_id: str, batch_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    intake.cancel_batch(ws, batch_id)
+    return {"ok": True}
