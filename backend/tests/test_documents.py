@@ -117,6 +117,7 @@ def test_document_privacy_and_knowledge_apis(monkeypatch):
     base = f"/api/workspaces/{workspace_id}"
     upload = client.post(f"{base}/documents", files={"files": ("policy.txt", b"Policy evidence", "text/plain")})
     assert upload.status_code == 200
+    assert upload.json()["suggested_actions"][0]["agent_kind"] == "planning"
     doc = upload.json()["added"][0]
     assert client.get(f"{base}/documents/{doc['id']}/preview").json()["pages"][0]["text"] == "Policy evidence"
     assert client.post(f"{base}/doc-chat", json={"document_id": doc["id"], "question": "What?", "pages": [1]}).status_code == 400

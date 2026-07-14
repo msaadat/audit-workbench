@@ -1144,7 +1144,9 @@ def load_workspace(workspace_id: str) -> Workspace:
     return Workspace(root)
 
 
-def create_workspace(name: str, description: str = "") -> Workspace:
+def create_workspace(
+    name: str, description: str = "", doc_llm_optin: bool = False
+) -> Workspace:
     name = str(name).strip()
     if not name:
         raise WorkspaceError("Workspace name is required.")
@@ -1161,6 +1163,15 @@ def create_workspace(name: str, description: str = "") -> Workspace:
                 "name": name,
                 "description": str(description).strip(),
                 "created": date.today().isoformat(),
+                "settings": {
+                    "doc_llm_optin": bool(doc_llm_optin),
+                    "doc_llm_optin_at": (
+                        datetime.now(timezone.utc).isoformat(timespec="seconds")
+                        if doc_llm_optin
+                        else None
+                    ),
+                    "doc_pii_masking": False,
+                },
                 "tables": [],
                 "joins": [],
             },

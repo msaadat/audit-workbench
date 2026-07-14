@@ -8,6 +8,8 @@ from . import prompts, store
 from .base import BaseRunner, Cancelled, LimitExceeded
 
 MAX_INTERVIEW_TURNS = 10
+MAX_SOURCE_DOCUMENTS = 8
+MAX_PAGES_PER_SOURCE_DOCUMENT = 8
 SKIP_PHRASES = ("skip interview", "skip the interview", "conclude interview", "end interview")
 
 
@@ -113,6 +115,13 @@ class PlanningRunner(BaseRunner):
                 tables.append(assistant.table_metadata(self.ws, name))
             except Exception as error:
                 self.warn(f"Could not profile '{name}' for planning: {error}")
+        requested_document_ids = [
+            str(value) for value in (self.context.get("document_ids") or []) if str(value).strip()
+        ][:MAX_SOURCE_DOCUMENTS]
+        requested = set(requested_document_ids)
+        missing = requested - {str(doc.get("id")) for doc in self.ws.documents}
+        if missing:
+            raise WorkspaceError(f"Planning source document not found: {sorted(missing)[0]}.")
         document_metadata = [
             {
                 "id": doc.get("id"),
@@ -120,6 +129,7 @@ class PlanningRunner(BaseRunner):
                 "category": doc.get("category"),
                 "pages": doc.get("pages"),
                 "text_state": doc.get("text_state"),
+                "selected_for_update": doc.get("id") in requested,
             }
             for doc in self.ws.documents
         ]
@@ -129,8 +139,29 @@ class PlanningRunner(BaseRunner):
         ).strip() or "internal audit risk controls procedures"
         pack_results = methodology.search(self.ws, methodology_query, limit=5)
         methodology_context = []
+        disclosed_documents = []
         disclosed_packs: dict[str, dict] = {}
         if self.ws.settings.get("doc_llm_optin"):
+            for document_id in requested_document_ids:
+                doc = next(item for item in self.ws.documents if item.get("id") == document_id)
+                page_count = max(1, int(doc.get("pages") or 1))
+                disclosed = documents.disclosable_content(
+                    self.ws,
+                    document_id,
+                    "planning_update",
+                    self.run["id"],
+                    list(range(1, min(page_count, MAX_PAGES_PER_SOURCE_DOCUMENT) + 1)),
+                    mask_pii=bool(self.ws.settings.get("doc_pii_masking")),
+                )
+                disclosed_documents.append(
+                    {
+                        "id": document_id,
+                        "title": doc.get("title"),
+                        "category": doc.get("category"),
+                        "source_sha1": disclosed.get("source_sha1"),
+                        "pages": disclosed.get("pages") or [],
+                    }
+                )
             for result in pack_results:
                 source_ref = f"pack:{result['scope']}:{result['pack_id']}"
                 if source_ref not in disclosed_packs:
@@ -140,18 +171,71 @@ class PlanningRunner(BaseRunner):
                 content = disclosed_packs[source_ref]["pages"][0]["text"]
                 excerpt = result["excerpt"] if result["excerpt"] in content else ""
                 methodology_context.append({**result, "excerpt": excerpt})
+        elif requested_document_ids:
+            self.warn(
+                "Document AI is off; the planning run can use imported document metadata but not document content."
+            )
         basis = {
             "planning": self.ws.planning,
             "interview": self.run.get("interview", {}),
             "documents": document_metadata,
             "tables": tables,
-            "document_content_disclosed": False,
+            "document_content_disclosed": bool(disclosed_documents),
+            "document_content": disclosed_documents,
             "methodology_available": [
                 {key: pack.get(key) for key in ("id", "name", "scope", "version", "sha1")}
                 for pack in methodology.list_packs(self.ws)
             ],
             "methodology": methodology_context,
         }
+        if disclosed_documents:
+            self.disclose(
+                task,
+                f"{len(disclosed_documents)} selected planning document(s), up to "
+                f"{MAX_PAGES_PER_SOURCE_DOCUMENT} page(s) each",
+            )
+            payload = self.llm_json(
+                prompts.DOCUMENT_CONTEXT_SYSTEM,
+                prompts.document_context_user(context, disclosed_documents),
+            )
+            proposed_context = {
+                key: value
+                for key, value in dict(payload.get("context") or {}).items()
+                if key
+                in {
+                    "objective", "entity", "period", "scope", "materiality",
+                    "key_contacts", "background_notes",
+                }
+                and str(value or "").strip()
+            }
+            proposals = []
+            if proposed_context:
+                proposals.append(
+                    self.proposal_item(
+                        "Planning context from imported documents",
+                        "Grounded facts extracted from the selected policy and procedure material.",
+                        {"context": proposed_context},
+                        {"document_ids": requested_document_ids},
+                    )
+                )
+            if proposals:
+                for accepted in self._accepted_specs("context", task, proposals):
+                    accepted_context = accepted.get("context")
+                    if not isinstance(accepted_context, dict):
+                        raise WorkspaceError("The approved planning context must be an object.")
+                    accepted_context = {
+                        key: value
+                        for key, value in accepted_context.items()
+                        if key
+                        in {
+                            "objective", "entity", "period", "scope", "materiality",
+                            "key_contacts", "background_notes",
+                        }
+                        and str(value or "").strip()
+                    }
+                    if accepted_context:
+                        self.ws.update_planning({"context": accepted_context}, agent=True)
+                        self.record_artifact("planning", "context", "planning:context", "updated", task)
         self.run["planning_basis"] = basis
         self.save()
         if task["status"] != "completed":

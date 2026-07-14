@@ -10,6 +10,12 @@ from conftest import FakeAgentLLM, wait_run
 
 
 PLANNING_RESPONSES = {
+    "agent:document_context": {
+        "context": {
+            "scope": "Procurement policy governance",
+            "background_notes": "Procurement approvals are governed by the disclosed policy.",
+        }
+    },
     "agent:apm": {"apm_markdown": "# APM\n\nScope covers accounts payable."},
     "agent:rcm": {
         "rows": [
@@ -205,3 +211,28 @@ def test_planning_cites_opted_in_methodology_pack(monkeypatch):
     apm_call = next(item for item in activity if item.get("stage") == "agent:apm")
     assert apm_call["template_versions"][0]["name"] == "apm"
     assert apm_call["knowledge_packs"][0]["sha1"] == refs[0]["sha1"]
+
+
+def test_planning_update_discloses_selected_imported_documents(monkeypatch):
+    fake = configure_planning_llm(monkeypatch)
+    ws = workspaces.create_workspace("Policy planning update", doc_llm_optin=True)
+    policy_text = b"Procurement Policy: purchases require documented approval before commitment."
+    policy = documents.add_document(ws, "Procurement Policy.txt", policy_text, category="policy")
+
+    started = runner.start_run(
+        ws,
+        "auto",
+        {"skip_interview": True, "document_ids": [policy["id"]]},
+        kind="planning",
+    )
+    completed = wait_run(ws, started["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
+    context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
+    assert policy_text.decode() in context_call["messages"][-1]["content"]
+    disclosures = documents.disclosures(reloaded)["items"]
+    assert disclosures[0]["document_id"] == policy["id"]
+    assert disclosures[0]["purpose"] == "planning_update"
+    assert completed["planning_basis"]["document_content_disclosed"] is True

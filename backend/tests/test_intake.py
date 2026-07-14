@@ -142,7 +142,11 @@ def test_apply_batch_imports_table_and_versions_changed_document():
     )["batch"]
     _stage(reloaded, batch, "Audit/policy.txt", doc1)
     intake.complete_upload(reloaded, batch["id"])
-    intake.apply_batch(reloaded, batch["id"])
+    policy_result = intake.apply_batch(reloaded, batch["id"])
+    recommendation = policy_result["suggested_actions"][0]
+    assert recommendation["agent_kind"] == "planning"
+    assert recommendation["document_ids"] == [policy_result["items"][0]["target_ref"].split(":", 1)[1]]
+    assert recommendation["requires_doc_ai"] is True
 
     doc2 = b"Changed policy text"
     batch = intake.compare_manifest(

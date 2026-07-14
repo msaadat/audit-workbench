@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from .. import documents, methodology, workspaces
+from .. import documents, intake, methodology, workspaces
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["documents"])
 
@@ -34,7 +34,11 @@ async def upload_documents(workspace_id: str, files: list[UploadFile] = File(...
     added = []
     for file in files:
         added.append(documents.add_document(ws, file.filename or "document", await file.read(), category=category))
-    return {"added": added, "items": ws.documents}
+    return {
+        "added": added,
+        "items": ws.documents,
+        "suggested_actions": intake.planning_actions_for_documents(added),
+    }
 
 
 @router.get("/documents/disclosures")

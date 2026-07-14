@@ -50,7 +50,15 @@ async function reload() {
   }
 }
 
-onMounted(reload)
+onMounted(async () => {
+  await reload()
+  if (route.query.import === '1') {
+    folderImportOpen.value = true
+    const query = { ...route.query }
+    delete query.import
+    await router.replace({ query })
+  }
+})
 watch(activeTab, tab => { if (route.query.tab !== tab) void router.replace({ query: { ...route.query, tab } }) })
 watch(() => route.query.tab, tab => { if (tab && tab !== activeTab.value) activeTab.value = String(tab) })
 
@@ -73,7 +81,7 @@ onUnmounted(unsubscribe)
         <span><strong>{{ workspace.tables.length }}</strong> tables</span>
         <span><strong>{{ workspace.tables.reduce((sum, table) => sum + (table.rows ?? 0), 0).toLocaleString() }}</strong> rows</span>
         <span><i class="pi pi-lock" /> Rows processed locally</span>
-        <Button label="Import audit folder" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
+        <Button label="Import files" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
       </div>
     </div>
 
@@ -105,7 +113,7 @@ onUnmounted(unsubscribe)
             <PlanningTab v-if="activeTab === 'planning'" :workspace="workspace" />
           </TabPanel>
           <TabPanel value="documents">
-            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reload" />
+            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reload" @planning-started="activeTab = 'planning'" />
           </TabPanel>
           <TabPanel value="doc-tests">
             <DocTestsTab v-if="activeTab === 'doc-tests'" :workspace="workspace" />
@@ -138,7 +146,14 @@ onUnmounted(unsubscribe)
       </Tabs>
       <AgentDrawer :workspace="workspace" />
     </div>
-    <FolderImportDialog v-model="folderImportOpen" :workspaceId="props.id" @imported="reload" />
+    <FolderImportDialog
+      v-model="folderImportOpen"
+      :workspaceId="props.id"
+      :documentAiEnabled="Boolean(workspace.settings?.doc_llm_optin)"
+      @imported="reload"
+      @settings-changed="reload"
+      @planning-started="activeTab = 'planning'"
+    />
   </div>
 </template>
 

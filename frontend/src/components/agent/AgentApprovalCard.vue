@@ -16,6 +16,10 @@ const kindLabel: Record<string, string> = {
   join: 'Proposed joins',
   rules: 'Proposed validation rules',
   tests: 'Suggested tests',
+  context: 'Planning context updates',
+  apm: 'Audit planning memorandum',
+  rcm: 'Risk and control matrix',
+  work_program: 'Audit program',
 }
 
 interface ItemState {

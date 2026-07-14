@@ -16,9 +16,15 @@ import type {
   IntakeBatchItem,
   IntakeClassification,
 } from '../types'
+import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 
-const props = defineProps<{ workspaceId: string; modelValue: boolean }>()
-const emit = defineEmits<{ 'update:modelValue': [value: boolean]; imported: [] }>()
+const props = defineProps<{ workspaceId: string; modelValue: boolean; documentAiEnabled?: boolean }>()
+const emit = defineEmits<{
+  'update:modelValue': [value: boolean]
+  imported: []
+  'planning-started': []
+  'settings-changed': []
+}>()
 const agent = useAgentRun(props.workspaceId)
 
 const step = ref(1)
@@ -27,6 +33,7 @@ const sourceId = ref<string | null>(null)
 const sourceLabel = ref('Audit folder')
 const mode = ref<'auto' | 'permission'>('permission')
 const files = ref<File[]>([])
+const selectionKind = ref<'folder' | 'files' | null>(null)
 const batch = ref<IntakeBatch | null>(null)
 const busy = ref(false)
 const error = ref('')
@@ -48,6 +55,9 @@ const actionOptions = ['import', 'ignore'].map((value) => ({ label: value, value
 const uploadTotal = computed(() => batch.value?.items.filter((item) => item.needs_upload).length ?? 0)
 const progress = computed(() => uploadTotal.value ? Math.round(uploaded.value / uploadTotal.value * 100) : 100)
 const pendingClassification = computed(() => agent.pendingApproval.value?.kind === 'file_classification' ? agent.pendingApproval.value : null)
+const planningAction = computed(() => (
+  batch.value?.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
+))
 
 watch(() => props.modelValue, (open) => {
   if (open) void loadSources()
@@ -76,9 +86,12 @@ async function loadSources() {
   }
 }
 
-function chooseFiles(event: Event) {
+function chooseFiles(event: Event, kind: 'folder' | 'files') {
   const input = event.target as HTMLInputElement
   files.value = Array.from(input.files ?? [])
+  selectionKind.value = files.value.length ? kind : null
+  if (kind === 'files' && sourceLabel.value === 'Audit folder') sourceLabel.value = 'Selected files'
+  if (kind === 'folder' && sourceLabel.value === 'Selected files') sourceLabel.value = 'Audit folder'
   error.value = ''
 }
 
@@ -175,6 +188,7 @@ function close() {
 function reset() {
   step.value = 1
   files.value = []
+  selectionKind.value = null
   batch.value = null
   uploaded.value = 0
   edits.value = {}
@@ -183,9 +197,9 @@ function reset() {
 </script>
 
 <template>
-  <Dialog :visible="modelValue" modal header="Import audit folder" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
+  <Dialog :visible="modelValue" modal header="Import folders or files" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
     <div class="steps" aria-label="Import progress">
-      <span v-for="(label, index) in ['Select folder', 'Compare & upload', 'Review classification', 'Summary']" :key="label" :class="{ active: step === index + 1, done: step > index + 1 }">
+      <span v-for="(label, index) in ['Select files', 'Compare & upload', 'Review classification', 'Summary']" :key="label" :class="{ active: step === index + 1, done: step > index + 1 }">
         <b>{{ index + 1 }}</b>{{ label }}
       </span>
     </div>
@@ -194,23 +208,36 @@ function reset() {
 
     <section v-if="step === 1" class="select-step">
       <div class="field">
-        <label>Folder source</label>
+        <label>Import source</label>
         <Select v-model="sourceId" :options="sourceOptions" optionLabel="label" optionValue="value" />
       </div>
       <div v-if="!sourceId" class="field">
         <label>Source name</label>
-        <InputText v-model="sourceLabel" placeholder="e.g. AP audit folder" />
+        <InputText v-model="sourceLabel" placeholder="e.g. AP audit evidence" />
       </div>
       <div class="field">
         <label>Assistant mode</label>
         <Select v-model="mode" :options="modeOptions" optionLabel="label" optionValue="value" />
       </div>
-      <label class="folder-picker">
-        <i class="pi pi-folder-open" />
-        <strong>{{ files.length ? `${files.length} files selected` : 'Choose audit folder' }}</strong>
-        <span>The browser grants access only for this import. Absolute paths are never sent.</span>
-        <input type="file" multiple webkitdirectory @change="chooseFiles" />
-      </label>
+      <div class="picker-grid">
+        <label class="folder-picker" :class="{ selected: selectionKind === 'folder' }">
+          <i class="pi pi-folder-open" />
+          <strong>Choose a folder</strong>
+          <span>Include supported files from its subfolders.</span>
+          <input type="file" multiple webkitdirectory @change="chooseFiles($event, 'folder')" />
+        </label>
+        <label class="folder-picker" :class="{ selected: selectionKind === 'files' }">
+          <i class="pi pi-file-plus" />
+          <strong>Choose individual files</strong>
+          <span>Select one or more data or document files.</span>
+          <input type="file" multiple accept=".csv,.tsv,.xlsx,.xlsm,.xls,.pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" @change="chooseFiles($event, 'files')" />
+        </label>
+      </div>
+      <div v-if="files.length" class="selection-summary">
+        <i class="pi pi-check-circle" />
+        <span><strong>{{ files.length }} file{{ files.length === 1 ? '' : 's' }} selected</strong><small>{{ selectionKind === 'folder' ? 'Folder paths will be retained for classification.' : 'Files will be grouped under this import source.' }}</small></span>
+      </div>
+      <p class="local-note"><i class="pi pi-shield" /> The browser grants access only to your selection. Absolute paths are never sent.</p>
       <Button label="Compare and upload" icon="pi pi-arrow-right" :disabled="!files.length || busy" :loading="busy" @click="compareAndUpload" />
     </section>
 
@@ -255,6 +282,14 @@ function reset() {
         <span><strong>{{ batch.summary.ambiguous }}</strong> manual review</span>
       </div>
       <p v-if="agent.state.run?.error" class="inline-error">{{ agent.state.run.error }}</p>
+      <PostImportPlanningOffer
+        v-if="planningAction"
+        :workspaceId="workspaceId"
+        :action="planningAction"
+        :documentAiEnabled="Boolean(documentAiEnabled)"
+        @settings-changed="emit('settings-changed')"
+        @planning-started="emit('planning-started'); close()"
+      />
       <div class="review-actions"><Button label="Import another folder" severity="secondary" @click="reset" /><Button label="Done" @click="close" /></div>
     </section>
   </Dialog>
@@ -269,10 +304,19 @@ function reset() {
 .select-step { display: grid; gap: 1rem; max-width: 42rem; margin: auto; }
 .field { display: grid; gap: .35rem; }
 .field label { font-size: .76rem; font-weight: 700; }
-.folder-picker { display: flex; flex-direction: column; align-items: center; gap: .4rem; padding: 2rem; border: 1px dashed var(--p-surface-300); border-radius: 10px; background: var(--p-surface-50); cursor: pointer; }
+.picker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+.folder-picker { display: flex; flex-direction: column; align-items: center; gap: .4rem; padding: 1.5rem; border: 1px dashed var(--p-surface-300); border-radius: 10px; background: var(--p-surface-50); text-align: center; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
+.folder-picker:hover, .folder-picker.selected { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
+.folder-picker.selected { box-shadow: 0 0 0 1px var(--aw-teal); }
 .folder-picker i { font-size: 2rem; color: var(--aw-teal); }
 .folder-picker span { color: var(--p-surface-500); font-size: .75rem; }
 .folder-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.selection-summary { display: flex; align-items: center; gap: .65rem; padding: .7rem .85rem; border: 1px solid #b7e3dc; border-radius: 8px; background: var(--aw-teal-soft); }
+.selection-summary > i { color: var(--aw-teal); }
+.selection-summary span { display: grid; gap: .15rem; }
+.selection-summary small { color: var(--p-surface-500); }
+.local-note { display: flex; align-items: center; gap: .45rem; margin: 0; color: var(--p-surface-500); font-size: .75rem; }
+.local-note i { color: var(--aw-teal); }
 .inline-error { display: flex; gap: .45rem; padding: .65rem; margin-bottom: .8rem; color: var(--p-red-700); background: var(--p-red-50); border-radius: 7px; }
 .upload-step { max-width: 40rem; margin: 3rem auto; text-align: center; }
 .muted { color: var(--p-surface-500); font-size: .75rem; }
@@ -288,5 +332,5 @@ function reset() {
 .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: .7rem; margin: 1.5rem 0; }
 .summary-cards span { display: flex; flex-direction: column; padding: 1rem; background: var(--p-surface-50); border: 1px solid var(--p-surface-200); border-radius: 8px; }
 .summary-cards strong { font-size: 1.4rem; color: var(--aw-teal); }
-@media (max-width: 700px) { .steps { grid-template-columns: 1fr 1fr; } .summary-cards { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 700px) { .steps { grid-template-columns: 1fr 1fr; } .picker-grid { grid-template-columns: 1fr; } .summary-cards { grid-template-columns: 1fr 1fr; } }
 </style>

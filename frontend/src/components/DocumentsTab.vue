@@ -10,12 +10,13 @@ import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import Checkbox from 'primevue/checkbox'
 import { api } from '../api'
-import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentPage, EvidenceRef, KnowledgePack, WorkspaceSummary } from '../types'
+import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentPage, EvidenceRef, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
 import MarkdownView from './MarkdownView.vue'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
+import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
-const emit = defineEmits<{ changed: [] }>()
+const emit = defineEmits<{ changed: []; 'planning-started': [] }>()
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
@@ -49,6 +50,7 @@ const packs = ref<KnowledgePack[]>([])
 const packSearch = ref('')
 const packResults = ref<Array<Record<string, unknown>>>([])
 const packInput = ref<HTMLInputElement | null>(null)
+const planningAction = ref<IntakeSuggestedAction | null>(null)
 
 const categories = ['all', 'background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other']
 const states = ['all', 'extracted', 'partial', 'image_only', 'pending', 'failed']
@@ -109,7 +111,8 @@ async function upload(event: Event) {
   if (!files.length) return
   busy.value = true
   try {
-    await api.upload(`/api/workspaces/${props.workspace.id}/documents`, files)
+    const result = await api.upload<{ suggested_actions?: IntakeSuggestedAction[] }>(`/api/workspaces/${props.workspace.id}/documents`, files)
+    planningAction.value = result.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
     await loadDocuments(); if (selectedId.value) await loadDetail()
     emit('changed')
     toast.add({ severity: 'success', summary: 'Documents added', detail: `${files.length} file(s) stored and extracted locally.`, life: 3500 })
@@ -205,6 +208,15 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
       <span v-else>All document content remains local. Document questions are disabled until this engagement explicitly opts in.</span>
       <label v-if="optin"><Checkbox v-model="piiMasking" binary @change="setMasking" /> Mask common email/number patterns before disclosure</label>
     </div>
+
+    <PostImportPlanningOffer
+      v-if="planningAction"
+      :workspaceId="workspace.id"
+      :action="planningAction"
+      :documentAiEnabled="optin"
+      @settings-changed="optin = true; emit('changed')"
+      @planning-started="emit('planning-started')"
+    />
 
     <div class="document-layout surface-panel">
       <aside class="document-rail">

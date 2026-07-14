@@ -1,6 +1,8 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from app import workspaces
+from app.main import create_app
 from app.workspaces import WorkspaceError
 
 
@@ -21,6 +23,27 @@ def test_create_duplicate_and_blank_name_rejected():
         workspaces.create_workspace("audit")
     with pytest.raises(WorkspaceError):
         workspaces.create_workspace("   ")
+
+
+def test_create_workspace_persists_document_ai_choice():
+    ws = workspaces.create_workspace("AI-enabled audit", doc_llm_optin=True)
+    assert ws.settings["doc_llm_optin"] is True
+    assert ws.settings["doc_llm_optin_at"]
+
+    local_only = workspaces.create_workspace("Local-only audit")
+    assert local_only.settings["doc_llm_optin"] is False
+    assert local_only.settings["doc_llm_optin_at"] is None
+
+
+def test_create_workspace_api_accepts_explicit_document_ai_choice():
+    client = TestClient(create_app())
+    response = client.post(
+        "/api/workspaces",
+        json={"name": "API AI audit", "doc_llm_optin": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["settings"]["doc_llm_optin"] is True
+    assert response.json()["settings"]["doc_llm_optin_at"]
 
 
 def test_add_table_types_and_uniquifies(workspace_with_data):

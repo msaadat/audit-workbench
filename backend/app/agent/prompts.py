@@ -106,10 +106,28 @@ def interview_user(template: str, planning: dict, messages: list[dict], turn: in
     )
 
 
+DOCUMENT_CONTEXT_SYSTEM = f"""[agent:document_context]
+Extract planning facts only from the explicitly disclosed engagement documents.
+Return an object with `context`, containing only supported fields that are
+grounded in the documents: objective, entity, period, scope, materiality,
+key_contacts, and background_notes. Omit fields that the documents do not
+support; do not turn policy requirements into claims about actual control
+operation. {JSON_RULES}"""
+
+
+def document_context_user(current: dict, documents: list[dict]) -> str:
+    return (
+        "CURRENT PLANNING CONTEXT:\n"
+        f"{json.dumps(current, default=str)}\n\n"
+        "EXPLICITLY DISCLOSED DOCUMENT CONTENT:\n"
+        f"{json.dumps(documents, default=str)}"
+    )
+
+
 APM_SYSTEM = f"""[agent:apm]
 Draft an audit planning memorandum grounded only in the supplied planning
-basis. Methodology excerpts, when present, were explicitly disclosed and must
-be cited by pack/version/section. Preserve the selected Markdown template's structure and placeholders
+basis. Document content and methodology excerpts, when present, were explicitly
+disclosed. Methodology must be cited by pack/version/section. Preserve the selected Markdown template's structure and placeholders
 where facts are unavailable; clearly label assumptions. Return:
 {{"apm_markdown":"..."}}. {JSON_RULES}"""
 

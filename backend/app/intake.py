@@ -37,6 +37,15 @@ TABLE_ROLES = frozenset(
     {"population", "master_lookup", "prior_period", "schedule", "parameters", "unknown"}
 )
 ROUTES = frozenset({"table", "document", "unsupported", "ignore"})
+PLANNING_DOCUMENT_CATEGORIES = frozenset(
+    {"background", "policy", "regulation", "contract", "minutes", "prior_report", "correspondence"}
+)
+PLANNING_DOCUMENT_TERMS = re.compile(
+    r"\b(policy|policies|procedure|procedures|process|manual|sop|guideline|"
+    r"standard|regulation|control|charter|terms of reference|prior audit|minutes)\b",
+    re.IGNORECASE,
+)
+MAX_SUGGESTED_PLANNING_DOCUMENTS = 8
 EXCLUDED_NAMES = frozenset({".ds_store", "thumbs.db"})
 EXCLUDED_FOLDER_NAMES = frozenset(
     {".git", ".cache", "__pycache__", "node_modules", "staging", ".extracted"}
@@ -550,9 +559,73 @@ def apply_batch(workspace: Workspace, batch_id: str, decisions: list[dict] | Non
         "ignored": sum(item.get("action") == "ignore" for item in batch["items"]),
         "ambiguous": sum(bool(item.get("error")) and item.get("action") != "ignore" for item in batch["items"]),
     }
+    batch["suggested_actions"] = suggested_actions(workspace, batch)
     save_batch(workspace, batch)
     shutil.rmtree(batch_dir(workspace, batch_id) / "Staging", ignore_errors=True)
     return batch
+
+
+def suggested_actions(workspace: Workspace, batch: dict) -> list[dict]:
+    """Return safe, metadata-only next steps for newly imported material."""
+    imported_documents = []
+    for item in batch.get("items") or []:
+        classification = dict(item.get("classification") or {})
+        target_ref = str(item.get("target_ref") or "")
+        if item.get("action") != "imported" or not target_ref.startswith("document:"):
+            continue
+        document_id = target_ref.split(":", 1)[1]
+        document = next((doc for doc in workspace.documents if doc.get("id") == document_id), None)
+        if document is None:
+            continue
+        imported_documents.append(
+            {
+                **document,
+                "category": classification.get("document_category") or document.get("category") or "other",
+                "relative_path": item.get("relative_path"),
+                "subtype": classification.get("subtype"),
+            }
+        )
+    return planning_actions_for_documents(imported_documents)
+
+
+def planning_actions_for_documents(imported_documents: list[dict]) -> list[dict]:
+    """Recommend planning only for guidance/context documents, using metadata."""
+    planning_documents = []
+    for document in imported_documents:
+        category = str(document.get("category") or "other")
+        searchable = " ".join(
+            str(document.get(key) or "")
+            for key in ("title", "source", "relative_path", "subtype")
+        )
+        if category not in PLANNING_DOCUMENT_CATEGORIES and not PLANNING_DOCUMENT_TERMS.search(searchable):
+            continue
+        planning_documents.append(
+            {
+                "id": str(document.get("id") or ""),
+                "title": document.get("title") or document.get("source") or document.get("relative_path"),
+                "category": category,
+                "pages": document.get("pages"),
+            }
+        )
+    if not planning_documents:
+        return []
+    selected = planning_documents[:MAX_SUGGESTED_PLANNING_DOCUMENTS]
+    omitted = len(planning_documents) - len(selected)
+    return [
+        {
+            "id": "update_planning",
+            "agent_kind": "planning",
+            "title": "Update planning from imported guidance",
+            "reason": (
+                f"{len(planning_documents)} newly imported policy, procedure, or planning document(s) "
+                "may affect the engagement context, APM, RCM, and audit program."
+            ),
+            "document_ids": [item["id"] for item in selected],
+            "documents": selected,
+            "omitted_document_count": omitted,
+            "requires_doc_ai": True,
+        }
+    ]
 
 
 def _already_incorporated(

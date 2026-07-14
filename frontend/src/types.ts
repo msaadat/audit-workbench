@@ -401,6 +401,17 @@ export interface IntakeBatchItem {
   error: string | null
 }
 
+export interface IntakeSuggestedAction {
+  id: 'update_planning'
+  agent_kind: 'planning'
+  title: string
+  reason: string
+  document_ids: string[]
+  documents: Array<{ id: string; title: string; category: string; pages: number | null }>
+  omitted_document_count: number
+  requires_doc_ai: boolean
+}
+
 export interface IntakeBatch {
   id: string
   source_id: string
@@ -412,6 +423,7 @@ export interface IntakeBatch {
   unsupported_count: number
   items: IntakeBatchItem[]
   summary?: { imported: number; unchanged: number; ignored: number; ambiguous: number }
+  suggested_actions?: IntakeSuggestedAction[]
 }
 
 export interface ColumnSchema {
@@ -837,6 +849,7 @@ export interface AgentRunContext {
   source_id?: string
   skip_interview?: boolean
   test_id?: string
+  document_ids?: string[]
 }
 
 export interface AgentRun {
