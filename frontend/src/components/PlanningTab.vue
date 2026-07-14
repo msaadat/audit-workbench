@@ -19,11 +19,10 @@ const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
 const route = useRoute()
 const agent = useAgentRun(props.workspace.id)
-const { isActive } = agent
+const { isActive, launchMode } = agent
 
 const data = ref<PlanningPayload | null>(null)
 const view = ref<'context' | 'apm' | 'rcm' | 'program'>('context')
-const mode = ref<'auto' | 'permission'>('permission')
 const saving = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
@@ -38,7 +37,6 @@ const viewOptions = [
   { label: 'Risk & Control Matrix', value: 'rcm' },
   { label: 'Audit program', value: 'program' },
 ]
-const modeOptions = [{ label: 'Auto', value: 'auto' }, { label: 'Permission', value: 'permission' }]
 const selectedProcedure = computed(() => data.value?.procedures.find((item) => item.id === selectedProcedureId.value) ?? null)
 function testLabel(ref: string) {
   const item = data.value?.document_tests.find(test => `doctest:${test.id}` === ref)
@@ -86,7 +84,7 @@ async function togglePlanningStatus() {
 async function generate(skipInterview: boolean) {
   try {
     await savePlanning()
-    await agent.startRun(mode.value, { skip_interview: skipInterview }, 'planning')
+    await agent.startRun(launchMode.value, { skip_interview: skipInterview }, 'planning')
   } catch (error) { fail('Could not start planning', error) }
 }
 
@@ -180,7 +178,6 @@ function fail(summary: string, error: unknown) {
         <Tag :value="data.planning.status" :severity="data.planning.status === 'final' ? 'success' : 'warn'" />
         <Button :label="data.planning.status === 'final' ? 'Reopen draft' : 'Mark final'" size="small" text severity="secondary" @click="togglePlanningStatus" />
         <span v-if="data.planning.updated" class="muted">Updated {{ data.planning.updated.slice(0, 16).replace('T', ' ') }}</span>
-        <SelectButton v-model="mode" :options="modeOptions" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" />
         <Button label="Start interview" icon="pi pi-comments" size="small" outlined :disabled="isActive || !agent.state.status?.configured" @click="generate(false)" />
         <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate(true)" />
       </div>

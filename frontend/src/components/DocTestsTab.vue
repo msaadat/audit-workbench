@@ -21,6 +21,7 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const agent = useAgentRun(props.workspace.id)
+const { launchMode } = agent
 
 const tests = ref<DocTest[]>([])
 const current = ref<DocTest | null>(null)
@@ -139,7 +140,7 @@ async function runTest() {
   if (!current.value) return
   running.value = true
   try {
-    await agent.startRun('auto', { test_id: current.value.id }, 'doc_test')
+    await agent.startRun(launchMode.value, { test_id: current.value.id }, 'doc_test')
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant drawer.', life: 3000 })
   } catch (error) { fail('Could not start document test', error) }
   finally { running.value = false }

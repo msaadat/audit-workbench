@@ -15,6 +15,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'planning-started': []; 'settings-changed': [] }>()
 const agent = useAgentRun(props.workspaceId)
+const { launchMode } = agent
 
 const confirmOpen = ref(false)
 const starting = ref(false)
@@ -35,7 +36,7 @@ async function startPlanningUpdate() {
       enabledForRun.value = true
       emit('settings-changed')
     }
-    await agent.startRun('permission', {
+    await agent.startRun(launchMode.value, {
       skip_interview: true,
       document_ids: props.action.document_ids,
       objective: 'Review the newly imported policy and procedure documents and update planning context, APM, RCM, and the audit program.',
@@ -74,8 +75,8 @@ async function startPlanningUpdate() {
     <div class="planning-confirmation">
       <p>
         The planning assistant will use the selected documents to propose updates to the
-        engagement context, APM, RCM, and audit program. It will run in permission mode,
-        so changes wait for your review.
+        engagement context, APM, RCM, and audit program. It will use the global
+        {{ launchMode }} mode selected in the audit assistant.
       </p>
       <div class="disclosure-preview">
         <strong><i class="pi pi-cloud-upload" /> Document disclosure</strong>

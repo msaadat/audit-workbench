@@ -1,4 +1,4 @@
-import { computed, reactive, readonly } from 'vue'
+import { computed, reactive, readonly, ref, watch } from 'vue'
 
 import { api } from '../api'
 import type {
@@ -31,6 +31,30 @@ interface AgentState {
 }
 
 type ChangeListener = (change: WorkspaceChange) => void
+export type AgentMode = 'auto' | 'permission'
+
+const MODE_STORAGE_KEY = 'audit-workbench:agent-mode'
+
+function savedMode(): AgentMode {
+  try {
+    return window.localStorage.getItem(MODE_STORAGE_KEY) === 'permission'
+      ? 'permission'
+      : 'auto'
+  } catch {
+    return 'auto'
+  }
+}
+
+// One launch preference is shared by every assistant entry point. Individual
+// runs still persist their selected mode in the backend once they start.
+const launchMode = ref<AgentMode>(savedMode())
+watch(launchMode, (mode) => {
+  try {
+    window.localStorage.setItem(MODE_STORAGE_KEY, mode)
+  } catch {
+    /* Storage can be unavailable in hardened/private browser contexts. */
+  }
+})
 
 const stores = new Map<string, AgentState>()
 const listeners = new Map<string, Set<ChangeListener>>()
@@ -202,7 +226,7 @@ export function useAgentRun(workspaceId: string) {
   }
 
   async function startRun(
-    mode: 'auto' | 'permission',
+    mode: AgentMode,
     context: AgentRunContext,
     kind: AgentRun['kind'] = 'analysis',
   ) {
@@ -277,6 +301,7 @@ export function useAgentRun(workspaceId: string) {
 
   return {
     state: readonly(store) as Readonly<AgentState>,
+    launchMode,
     isActive,
     pendingApproval,
     init,

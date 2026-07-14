@@ -22,9 +22,8 @@ const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
 
 const agent = useAgentRun(props.workspace.id)
-const { state, isActive, pendingApproval } = agent
+const { state, isActive, pendingApproval, launchMode } = agent
 
-const mode = ref<'auto' | 'permission'>('auto')
 const runKind = ref<'analysis' | 'planning'>('analysis')
 const objective = ref('')
 const showLaunch = ref(false)
@@ -117,7 +116,7 @@ function resizeWithKeyboard(event: KeyboardEvent) {
 
 async function start() {
   try {
-    await agent.startRun(mode.value, {
+    await agent.startRun(launchMode.value, {
       objective: objective.value.trim() || undefined,
     }, runKind.value)
     showLaunch.value = false
@@ -269,7 +268,7 @@ function fail(summary: string, error: unknown) {
           size="small"
         />
         <SelectButton
-          v-model="mode"
+          v-model="launchMode"
           :options="modeOptions"
           optionLabel="label"
           optionValue="value"
@@ -277,7 +276,7 @@ function fail(summary: string, error: unknown) {
           size="small"
         />
         <p class="muted mode-hint">
-          {{ mode === 'auto'
+          {{ launchMode === 'auto'
             ? 'Validated changes apply automatically as the agent works.'
             : 'The assistant pauses for your review before saving draft artifacts.' }}
         </p>

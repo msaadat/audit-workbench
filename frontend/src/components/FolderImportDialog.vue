@@ -26,12 +26,12 @@ const emit = defineEmits<{
   'settings-changed': []
 }>()
 const agent = useAgentRun(props.workspaceId)
+const { launchMode } = agent
 
 const step = ref(1)
 const sources = ref<FolderSource[]>([])
 const sourceId = ref<string | null>(null)
 const sourceLabel = ref('Audit folder')
-const mode = ref<'auto' | 'permission'>('permission')
 const files = ref<File[]>([])
 const selectionKind = ref<'folder' | 'files' | null>(null)
 const batch = ref<IntakeBatch | null>(null)
@@ -44,10 +44,6 @@ const sourceOptions = computed(() => [
   { label: 'Create a new folder source', value: null },
   ...sources.value.map((source) => ({ label: `${source.label}${source.last_imported ? ' · import again' : ''}`, value: source.id })),
 ])
-const modeOptions = [
-  { label: 'Permission — review every candidate', value: 'permission' },
-  { label: 'Auto — import only high-confidence agreements', value: 'auto' },
-]
 const routeOptions = ['table', 'document', 'unsupported', 'ignore'].map((value) => ({ label: value, value }))
 const documentCategories = ['background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other'].map((value) => ({ label: value.replace('_', ' '), value }))
 const tableRoles = ['population', 'master_lookup', 'prior_period', 'schedule', 'parameters', 'unknown'].map((value) => ({ label: value.replace('_', ' '), value }))
@@ -124,7 +120,7 @@ async function compareAndUpload() {
     }))
     const compared = await api.post<{ batch: IntakeBatch; upload_paths: string[] }>(
       `/api/workspaces/${props.workspaceId}/folder-sources/${selectedSource}/imports`,
-      { manifest, mode: mode.value },
+      { manifest, mode: launchMode.value },
     )
     batch.value = compared.batch
     step.value = 2
@@ -145,7 +141,7 @@ async function compareAndUpload() {
     )
     seedEdits(batch.value.items)
     step.value = 3
-    await agent.startRun(mode.value, { batch_id: batch.value.id, source_id: selectedSource }, 'intake')
+    await agent.startRun(launchMode.value, { batch_id: batch.value.id, source_id: selectedSource }, 'intake')
   } catch (cause) {
     error.value = String(cause)
   } finally {
@@ -215,10 +211,6 @@ function reset() {
         <label>Source name</label>
         <InputText v-model="sourceLabel" placeholder="e.g. AP audit evidence" />
       </div>
-      <div class="field">
-        <label>Assistant mode</label>
-        <Select v-model="mode" :options="modeOptions" optionLabel="label" optionValue="value" />
-      </div>
       <div class="picker-grid">
         <label class="folder-picker" :class="{ selected: selectionKind === 'folder' }">
           <i class="pi pi-folder-open" />
@@ -267,9 +259,9 @@ function reset() {
         </div>
       </div>
       <div class="review-actions">
-        <span v-if="mode === 'permission' && !pendingClassification" class="muted">The assistant is preparing the editable approval batch…</span>
-        <span v-if="mode === 'auto'" class="muted">Auto mode is applying only locally valid high-confidence agreements.</span>
-        <Button v-if="mode === 'permission'" label="Apply classifications" icon="pi pi-check" :disabled="!pendingClassification || busy" :loading="busy" @click="applyClassifications" />
+        <span v-if="agent.state.run?.mode === 'permission' && !pendingClassification" class="muted">The assistant is preparing the editable approval batch…</span>
+        <span v-if="agent.state.run?.mode === 'auto'" class="muted">Auto mode is applying only locally valid high-confidence agreements.</span>
+        <Button v-if="agent.state.run?.mode === 'permission'" label="Apply classifications" icon="pi pi-check" :disabled="!pendingClassification || busy" :loading="busy" @click="applyClassifications" />
       </div>
     </section>
 
