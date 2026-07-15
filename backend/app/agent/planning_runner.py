@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from .. import assistant, documents, llm, methodology, templates_store
 from ..workspaces import WorkspaceError, slugify
@@ -106,10 +107,14 @@ class PlanningRunner(BaseRunner):
         pack_results = methodology.search(self.ws, methodology_query, limit=5)
         methodology_context = []
         disclosed_documents = []
+        disclosed_names: list[str] = []
         disclosed_packs: dict[str, dict] = {}
         if self.ws.settings.get("doc_llm_optin"):
             for document_id in requested_document_ids:
                 doc = next(item for item in self.ws.documents if item.get("id") == document_id)
+                disclosed_names.append(
+                    Path(str(doc.get("source") or doc.get("title") or document_id)).name
+                )
                 page_count = max(1, int(doc.get("pages") or 1))
                 disclosed = documents.disclosable_content(
                     self.ws,
@@ -156,8 +161,8 @@ class PlanningRunner(BaseRunner):
         if disclosed_documents:
             self.disclose(
                 task,
-                f"{len(disclosed_documents)} selected planning document(s), up to "
-                f"{MAX_PAGES_PER_SOURCE_DOCUMENT} page(s) each",
+                f"{', '.join(disclosed_names)} "
+                f"({len(disclosed_names)} file{'s' if len(disclosed_names) != 1 else ''})",
             )
             payload = self.llm_json(
                 prompts.DOCUMENT_CONTEXT_SYSTEM,
@@ -261,8 +266,8 @@ class PlanningRunner(BaseRunner):
             for spec in self._accepted_specs("documents", task, proposals)
             if str(spec.get("document_id") or "") in eligible_ids
         ]
-        if confirmed:
-            self.disclose(task, f"{len(confirmed)} agent-selected planning document(s)")
+        # The disclosed filenames are surfaced on the task once content is
+        # actually disclosed in stage_context, so no separate note here.
         return confirmed[:MAX_SOURCE_DOCUMENTS]
 
     def _accepted_specs(self, kind: str, task: dict, proposals: list[dict]) -> list[dict]:
