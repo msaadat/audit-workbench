@@ -39,6 +39,21 @@ async def compare_folder_import(
     )
 
 
+@router.post("/{workspace_id}/folder-imports")
+async def start_folder_import(workspace_id: str, payload: dict = Body(...)):
+    """Start an import without exposing internal folder-source bookkeeping."""
+    ws = workspaces.load_workspace(workspace_id)
+    manifest = payload.get("manifest") or []
+    source = intake.resolve_source(ws, payload.get("root_name") or "", manifest)
+    return intake.compare_manifest(
+        ws,
+        source["id"],
+        manifest,
+        payload.get("mode") or "permission",
+        bool(payload.get("force")),
+    )
+
+
 @router.post("/{workspace_id}/folder-imports/{batch_id}/files")
 async def upload_folder_file(
     workspace_id: str,

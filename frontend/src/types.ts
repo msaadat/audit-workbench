@@ -363,14 +363,6 @@ export interface MarkdownTemplate {
   source: 'default' | 'workspace'
 }
 
-export interface FolderSource {
-  id: string
-  label: string
-  root_name: string
-  created: string
-  last_imported: string | null
-}
-
 export type IntakeRoute = 'table' | 'document' | 'unsupported' | 'ignore'
 
 export interface IntakeClassification {

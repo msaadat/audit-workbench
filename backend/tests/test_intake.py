@@ -64,6 +64,66 @@ def test_manifest_compare_is_incremental_and_reports_exclusions():
     assert second["items"][0]["needs_upload"] is False
 
 
+def test_folder_source_is_created_and_resolved_from_manifest_overlap():
+    ws = _workspace()
+    manifest = [
+        {"relative_path": "Client Audit/ledger.csv", "size": 8, "last_modified": 10},
+        {"relative_path": "Client Audit/policy.pdf", "size": 12, "last_modified": 10},
+    ]
+    created = intake.resolve_source(ws, "Client Audit", manifest)
+    assert created["label"] == "Client Audit"
+    assert created["root_name"] == "Client Audit"
+
+    index = intake.load_index(ws)
+    index["files"].append(
+        {
+            "source_id": created["id"],
+            "relative_path": "Client Audit/ledger.csv",
+            "size": 8,
+            "last_modified": 10,
+            "sha1": "old",
+        }
+    )
+    intake.save_index(ws, index)
+
+    resolved = intake.resolve_source(ws, "client audit", manifest)
+    assert resolved["id"] == created["id"]
+    assert len(intake.list_sources(ws)) == 1
+
+
+def test_folder_source_reuses_one_empty_interrupted_source():
+    ws = _workspace()
+    interrupted = intake.create_source(ws, "Client Audit", "Client Audit")
+    resolved = intake.resolve_source(
+        ws,
+        "Client Audit",
+        [{"relative_path": "Client Audit/ledger.csv", "size": 8, "last_modified": 10}],
+    )
+    assert resolved["id"] == interrupted["id"]
+
+
+def test_ambiguous_same_named_folders_create_a_new_source():
+    ws = _workspace()
+    first = intake.create_source(ws, "Client Audit", "Client Audit")
+    second = intake.create_source(ws, "Client Audit", "Client Audit")
+    index = intake.load_index(ws)
+    index["files"].extend(
+        [
+            {"source_id": first["id"], "relative_path": "Client Audit/a.csv"},
+            {"source_id": second["id"], "relative_path": "Client Audit/b.csv"},
+        ]
+    )
+    intake.save_index(ws, index)
+
+    resolved = intake.resolve_source(
+        ws,
+        "Client Audit",
+        [{"relative_path": "Client Audit/new.csv", "size": 8, "last_modified": 10}],
+    )
+    assert resolved["id"] not in {first["id"], second["id"]}
+    assert len(intake.list_sources(ws)) == 3
+
+
 def test_manifest_rejects_traversal_and_absolute_paths():
     ws = _workspace()
     source = intake.create_source(ws, "Audit folder")
@@ -220,6 +280,30 @@ def test_folder_upload_api_streams_requested_file():
     )
     assert completed.status_code == 200
     assert completed.json()["items"][0]["local_metadata"]["route"] == "table"
+
+
+def test_folder_import_api_hides_source_creation():
+    ws = _workspace()
+    client = TestClient(create_app())
+    response = client.post(
+        f"/api/workspaces/{ws.id}/folder-imports",
+        json={
+            "root_name": "Client Audit",
+            "mode": "auto",
+            "manifest": [
+                {
+                    "relative_path": "Client Audit/ledger.csv",
+                    "size": 8,
+                    "last_modified": 10,
+                    "mime": "text/csv",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["upload_paths"] == ["Client Audit/ledger.csv"]
+    assert payload["batch"]["source_id"] == intake.list_sources(ws)[0]["id"]
 
 
 def test_intake_run_needs_no_table_or_configured_model(monkeypatch):

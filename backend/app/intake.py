@@ -108,6 +108,51 @@ def create_source(workspace: Workspace, label: str, root_name: str = "") -> dict
     return source
 
 
+def resolve_source(workspace: Workspace, root_name: str, manifest: list[dict]) -> dict:
+    """Resolve browser-selected folders to an internal incremental source.
+
+    Browser folder pickers deliberately withhold absolute paths, so the best
+    stable identity available is the selected root name plus overlap with the
+    paths imported previously.  Ambiguous matches create a new source rather
+    than risk updating files from an unrelated same-named folder.
+    """
+    root_name = _clean_root_name(root_name)
+    if not root_name:
+        raise WorkspaceError("Selected folder name is required.")
+
+    selected_paths = {
+        normalize_relative_path(item.get("relative_path")) for item in manifest or []
+    }
+    index = load_index(workspace)
+    candidates = [
+        source
+        for source in index["sources"]
+        if str(source.get("root_name") or "").casefold() == root_name.casefold()
+    ]
+    paths_by_source = {
+        source["id"]: {
+            item["relative_path"]
+            for item in index["files"]
+            if item.get("source_id") == source["id"]
+        }
+        for source in candidates
+    }
+    overlaps = [
+        (len(selected_paths & paths_by_source[source["id"]]), source)
+        for source in candidates
+    ]
+    best_overlap = max((count for count, _ in overlaps), default=0)
+    best = [source for count, source in overlaps if count == best_overlap and count > 0]
+    if len(best) == 1:
+        return best[0]
+
+    empty = [source for source in candidates if not paths_by_source[source["id"]]]
+    if best_overlap == 0 and len(empty) == 1:
+        return empty[0]
+
+    return create_source(workspace, root_name, root_name)
+
+
 def _source(index: dict, source_id: str) -> dict:
     source = next((item for item in index["sources"] if item.get("id") == source_id), None)
     if source is None:

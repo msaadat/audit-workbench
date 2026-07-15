@@ -11,7 +11,6 @@ import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import type {
   AgentDecision,
-  FolderSource,
   IntakeBatch,
   IntakeBatchItem,
   IntakeClassification,
@@ -29,21 +28,14 @@ const agent = useAgentRun(props.workspaceId)
 const { launchMode } = agent
 
 const step = ref(1)
-const sources = ref<FolderSource[]>([])
-const sourceId = ref<string | null>(null)
-const sourceLabel = ref('Audit folder')
 const files = ref<File[]>([])
-const selectionKind = ref<'folder' | 'files' | null>(null)
+const folderName = ref('')
 const batch = ref<IntakeBatch | null>(null)
 const busy = ref(false)
 const error = ref('')
 const uploaded = ref(0)
 const edits = ref<Record<string, IntakeClassification>>({})
 
-const sourceOptions = computed(() => [
-  { label: 'Create a new folder source', value: null },
-  ...sources.value.map((source) => ({ label: `${source.label}${source.last_imported ? ' · import again' : ''}`, value: source.id })),
-])
 const routeOptions = ['table', 'document', 'unsupported', 'ignore'].map((value) => ({ label: value, value }))
 const documentCategories = ['background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other'].map((value) => ({ label: value.replace('_', ' '), value }))
 const tableRoles = ['population', 'master_lookup', 'prior_period', 'schedule', 'parameters', 'unknown'].map((value) => ({ label: value.replace('_', ' '), value }))
@@ -54,10 +46,6 @@ const pendingClassification = computed(() => agent.pendingApproval.value?.kind =
 const planningAction = computed(() => (
   batch.value?.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
 ))
-
-watch(() => props.modelValue, (open) => {
-  if (open) void loadSources()
-})
 
 watch(pendingClassification, (approval) => {
   if (!approval) return
@@ -74,21 +62,14 @@ watch(() => agent.state.run?.status, (status) => {
   }
 })
 
-async function loadSources() {
-  try {
-    sources.value = (await api.get<{ sources: FolderSource[] }>(`/api/workspaces/${props.workspaceId}/folder-sources`)).sources
-  } catch (cause) {
-    error.value = String(cause)
-  }
-}
-
-function chooseFiles(event: Event, kind: 'folder' | 'files') {
+function chooseFolder(event: Event) {
   const input = event.target as HTMLInputElement
   files.value = Array.from(input.files ?? [])
-  selectionKind.value = files.value.length ? kind : null
-  if (kind === 'files' && sourceLabel.value === 'Audit folder') sourceLabel.value = 'Selected files'
-  if (kind === 'folder' && sourceLabel.value === 'Selected files') sourceLabel.value = 'Audit folder'
   error.value = ''
+  if (!files.value.length) return
+  const first = relativePath(files.value[0])
+  folderName.value = first.includes('/') ? first.split('/')[0] : ''
+  void compareAndUpload()
 }
 
 function relativePath(file: File): string {
@@ -100,18 +81,6 @@ async function compareAndUpload() {
   busy.value = true
   error.value = ''
   try {
-    let selectedSource = sourceId.value
-    if (!selectedSource) {
-      const first = relativePath(files.value[0])
-      const rootName = first.includes('/') ? first.split('/')[0] : ''
-      const created = await api.post<FolderSource>(`/api/workspaces/${props.workspaceId}/folder-sources`, {
-        label: sourceLabel.value,
-        root_name: rootName,
-      })
-      sources.value.push(created)
-      selectedSource = created.id
-      sourceId.value = created.id
-    }
     const manifest = files.value.map((file) => ({
       relative_path: relativePath(file),
       size: file.size,
@@ -119,8 +88,8 @@ async function compareAndUpload() {
       mime: file.type,
     }))
     const compared = await api.post<{ batch: IntakeBatch; upload_paths: string[] }>(
-      `/api/workspaces/${props.workspaceId}/folder-sources/${selectedSource}/imports`,
-      { manifest, mode: launchMode.value },
+      `/api/workspaces/${props.workspaceId}/folder-imports`,
+      { root_name: folderName.value, manifest, mode: launchMode.value },
     )
     batch.value = compared.batch
     step.value = 2
@@ -141,9 +110,20 @@ async function compareAndUpload() {
     )
     seedEdits(batch.value.items)
     step.value = 3
-    await agent.startRun(launchMode.value, { batch_id: batch.value.id, source_id: selectedSource }, 'intake')
+    await agent.startRun(launchMode.value, { batch_id: batch.value.id }, 'intake')
   } catch (cause) {
     error.value = String(cause)
+    if (batch.value?.status === 'uploading') {
+      try {
+        await api.del(`/api/workspaces/${props.workspaceId}/folder-imports/${batch.value.id}`)
+      } catch {
+        /* A later folder selection creates a fresh durable batch. */
+      }
+    }
+    step.value = 1
+    files.value = []
+    batch.value = null
+    uploaded.value = 0
   } finally {
     busy.value = false
   }
@@ -184,7 +164,7 @@ function close() {
 function reset() {
   step.value = 1
   files.value = []
-  selectionKind.value = null
+  folderName.value = ''
   batch.value = null
   uploaded.value = 0
   edits.value = {}
@@ -193,48 +173,21 @@ function reset() {
 </script>
 
 <template>
-  <Dialog :visible="modelValue" modal header="Import folders or files" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
-    <div class="steps" aria-label="Import progress">
-      <span v-for="(label, index) in ['Select files', 'Compare & upload', 'Review classification', 'Summary']" :key="label" :class="{ active: step === index + 1, done: step > index + 1 }">
-        <b>{{ index + 1 }}</b>{{ label }}
-      </span>
-    </div>
-
+  <Dialog :visible="modelValue" modal header="Import audit folder" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
     <div v-if="error" class="inline-error"><i class="pi pi-exclamation-triangle" />{{ error }}</div>
 
     <section v-if="step === 1" class="select-step">
-      <div class="field">
-        <label>Import source</label>
-        <Select v-model="sourceId" :options="sourceOptions" optionLabel="label" optionValue="value" />
-      </div>
-      <div v-if="!sourceId" class="field">
-        <label>Source name</label>
-        <InputText v-model="sourceLabel" placeholder="e.g. AP audit evidence" />
-      </div>
-      <div class="picker-grid">
-        <label class="folder-picker" :class="{ selected: selectionKind === 'folder' }">
-          <i class="pi pi-folder-open" />
-          <strong>Choose a folder</strong>
-          <span>Include supported files from its subfolders.</span>
-          <input type="file" multiple webkitdirectory @change="chooseFiles($event, 'folder')" />
-        </label>
-        <label class="folder-picker" :class="{ selected: selectionKind === 'files' }">
-          <i class="pi pi-file-plus" />
-          <strong>Choose individual files</strong>
-          <span>Select one or more data or document files.</span>
-          <input type="file" multiple accept=".csv,.tsv,.xlsx,.xlsm,.xls,.pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" @change="chooseFiles($event, 'files')" />
-        </label>
-      </div>
-      <div v-if="files.length" class="selection-summary">
-        <i class="pi pi-check-circle" />
-        <span><strong>{{ files.length }} file{{ files.length === 1 ? '' : 's' }} selected</strong><small>{{ selectionKind === 'folder' ? 'Folder paths will be retained for classification.' : 'Files will be grouped under this import source.' }}</small></span>
-      </div>
+      <label class="folder-picker">
+        <i class="pi pi-folder-open" />
+        <strong>Choose folder</strong>
+        <span>Import supported data and documents from this folder and its subfolders.</span>
+        <input type="file" multiple webkitdirectory @change="chooseFolder" />
+      </label>
       <p class="local-note"><i class="pi pi-shield" /> The browser grants access only to your selection. Absolute paths are never sent.</p>
-      <Button label="Compare and upload" icon="pi pi-arrow-right" :disabled="!files.length || busy" :loading="busy" @click="compareAndUpload" />
     </section>
 
     <section v-else-if="step === 2" class="upload-step">
-      <h3>Staging changed files</h3>
+      <h3>Importing {{ folderName }}</h3>
       <p>{{ uploaded }} of {{ uploadTotal }} requested files uploaded. Unchanged and excluded files stay untouched.</p>
       <ProgressBar :value="progress" />
       <p class="muted">Keep this dialog open until staging finishes. Classification can continue after the upload is durable.</p>
@@ -288,18 +241,9 @@ function reset() {
 </template>
 
 <style scoped>
-.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; margin-bottom: 1.2rem; }
-.steps span { display: flex; align-items: center; gap: .45rem; padding: .55rem; color: var(--p-surface-500); border-bottom: 2px solid var(--p-surface-200); font-size: .78rem; }
-.steps span.active { color: var(--aw-teal); border-color: var(--aw-teal); }
-.steps span.done { color: var(--p-green-600); border-color: var(--p-green-400); }
-.steps b { display: grid; place-items: center; width: 1.35rem; height: 1.35rem; border: 1px solid currentColor; border-radius: 50%; }
 .select-step { display: grid; gap: 1rem; max-width: 42rem; margin: auto; }
-.field { display: grid; gap: .35rem; }
-.field label { font-size: .76rem; font-weight: 700; }
-.picker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
 .folder-picker { display: flex; flex-direction: column; align-items: center; gap: .4rem; padding: 1.5rem; border: 1px dashed var(--p-surface-300); border-radius: 10px; background: var(--p-surface-50); text-align: center; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
-.folder-picker:hover, .folder-picker.selected { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
-.folder-picker.selected { box-shadow: 0 0 0 1px var(--aw-teal); }
+.folder-picker:hover { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
 .folder-picker i { font-size: 2rem; color: var(--aw-teal); }
 .folder-picker span { color: var(--p-surface-500); font-size: .75rem; }
 .folder-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
@@ -324,5 +268,5 @@ function reset() {
 .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: .7rem; margin: 1.5rem 0; }
 .summary-cards span { display: flex; flex-direction: column; padding: 1rem; background: var(--p-surface-50); border: 1px solid var(--p-surface-200); border-radius: 8px; }
 .summary-cards strong { font-size: 1.4rem; color: var(--aw-teal); }
-@media (max-width: 700px) { .steps { grid-template-columns: 1fr 1fr; } .picker-grid { grid-template-columns: 1fr; } .summary-cards { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 700px) { .summary-cards { grid-template-columns: 1fr 1fr; } }
 </style>

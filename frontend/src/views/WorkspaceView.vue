@@ -140,7 +140,7 @@ onUnmounted(unsubscribe)
           aria-label="Agent permission mode"
         />
       </div>
-      <Button label="Import" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
+      <Button label="Import folder" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
       <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
       <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
     </header>
