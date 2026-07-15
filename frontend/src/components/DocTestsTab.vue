@@ -6,6 +6,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
+import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
@@ -13,8 +14,11 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import type { AuditDocument, DocTest, DocTestItem, DocTestKind, EvidenceRef, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditDocument, DocTest, DocTestItem, DocTestKind, EvidenceRef, PlanningPayload, WorkspaceSummary, WorkingPaper } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
+import UiAdvancedSection from './ui/UiAdvancedSection.vue'
+import UiEmptyState from './ui/UiEmptyState.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -30,6 +34,7 @@ const documents = ref<AuditDocument[]>([])
 const selectedItemId = ref<string | null>(String(route.query.item || '') || null)
 const view = ref<'worklist' | 'working-paper'>('worklist')
 const createOpen = ref(false)
+const createStep = ref(1)
 const creating = ref(false)
 const running = ref(false)
 const anchorOpen = ref(false)
@@ -37,7 +42,8 @@ const anchor = ref<EvidenceRef | null>(null)
 const attachId = ref<string | null>(null)
 const workingPaper = ref<WorkingPaper | null>(null)
 const procedureId = ref<string | null>(null)
-const draft = ref({ kind: 'vouching' as DocTestKind, title: '', procedureRefs: '', rcmRefs: '', direction: 'vouching', table: '', size: 10, seed: 42, frozenFields: '', attributes: '', documentId: '', pages: '', questions: '' })
+const planning = ref<PlanningPayload | null>(null)
+const draft = ref({ kind: 'vouching' as DocTestKind, title: '', procedureRefs: [] as string[], rcmRefs: [] as string[], direction: 'vouching', table: '', size: 10, seed: 42, frozenFields: '', attributes: '', documentId: '', pages: '', questions: '' })
 
 const kinds = [
   { label: 'Vouching / tracing', value: 'vouching' },
@@ -50,6 +56,13 @@ const selectedItem = computed(() => current.value?.items.find(item => item.id ==
 const tableOptions = computed(() => props.workspace.tables.map(table => table.name))
 const documentOptions = computed(() => documents.value.map(doc => ({ label: `${doc.title} · v${doc.version}`, value: doc.id })))
 const procedureOptions = computed(() => current.value?.procedure_refs ?? [])
+const planningProcedureOptions = computed(() => (planning.value?.procedures ?? []).map(item => ({ label: `${item.id} · ${item.objective}`, value: item.id })))
+const rcmOptions = computed(() => (planning.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
+const draftReady = computed(() => {
+  if (draft.value.kind === 'vouching') return Boolean(draft.value.table)
+  if (draft.value.kind === 'review' || draft.value.kind === 'qa') return Boolean(draft.value.documentId)
+  return true
+})
 
 function severity(state: string) {
   return state === 'confirmed' || state === 'match' || state === 'completed' ? 'success' : state === 'exception' || state === 'mismatch' ? 'danger' : state === 'manual_review' || state === 'in_progress' ? 'warn' : 'secondary'
@@ -66,6 +79,9 @@ async function loadList(preferred?: string) {
 }
 async function loadDocuments() {
   documents.value = (await api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)).items
+}
+async function loadPlanning() {
+  planning.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
 }
 async function selectTest(id: string) {
   current.value = await api.get<DocTest>(`/api/workspaces/${props.workspace.id}/doc-tests/${id}`)
@@ -85,8 +101,8 @@ async function createTest() {
     let created: DocTest
     const common = {
       title: draft.value.title || `New ${draft.value.kind} test`,
-      procedure_refs: draft.value.procedureRefs.split(',').map(value => value.trim()).filter(Boolean),
-      rcm_refs: draft.value.rcmRefs.split(',').map(value => value.trim()).filter(Boolean),
+      procedure_refs: draft.value.procedureRefs,
+      rcm_refs: draft.value.rcmRefs,
     }
     if (draft.value.kind === 'vouching') {
       created = await api.post(`/api/workspaces/${props.workspace.id}/doc-tests/build/vouching`, {
@@ -150,6 +166,13 @@ async function runTest() {
   } catch (error) { fail('Could not start document test', error) }
   finally { running.value = false }
 }
+async function prepareTests() {
+  try {
+    await agent.startCommand(launchMode.value, 'Prepare the next appropriate document tests from the audit program and available evidence.', 'document_testing', 'tab_button')
+    toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress and any required decisions in the assistant.', life: 3000 })
+  } catch (error) { fail('Could not start document test preparation', error) }
+}
+function openManualCreate() { createStep.value = 1; createOpen.value = true }
 function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
 async function openWorkingPaper() {
   if (!procedureId.value) { workingPaper.value = null; return }
@@ -169,19 +192,20 @@ async function copyPaper(kind: 'markdown' | 'html') {
   if (workingPaper.value) await navigator.clipboard.writeText(workingPaper.value[kind])
 }
 
-onMounted(() => void Promise.all([loadList(), loadDocuments()]).catch(error => fail('Could not load document tests', error)))
+onMounted(() => void Promise.all([loadList(), loadDocuments(), loadPlanning()]).catch(error => fail('Could not load document tests', error)))
 const unsubscribe = agent.onWorkspaceChanged(change => { if (change.kind === 'doctest') void loadList(current.value?.id) })
 onUnmounted(unsubscribe)
 </script>
 
 <template>
   <div class="doc-tests">
-    <header class="test-head">
-      <div><h2>Document tests</h2></div>
-      <div class="actions"><Button label="New test" icon="pi pi-plus" outlined @click="createOpen = true"/><Button label="Run selected" icon="pi pi-play" :loading="running" :disabled="!current || agent.isActive.value" @click="runTest"/></div>
-    </header>
+    <UiPageHeader title="Document tests" description="Execute and document evidence-based fieldwork">
+      <Button label="Prepare with assistant" icon="pi pi-sparkles" :disabled="agent.isActive.value" @click="prepareTests"/>
+      <Button label="Create manually" icon="pi pi-plus" outlined @click="openManualCreate"/>
+      <Button v-if="current" label="Run selected" icon="pi pi-play" severity="secondary" :loading="running" :disabled="agent.isActive.value" @click="runTest"/>
+    </UiPageHeader>
 
-    <div class="test-layout">
+    <div v-if="tests.length" class="test-layout">
       <aside class="test-rail card">
         <div class="rail-title"><strong>Tests</strong><Tag :value="String(tests.length)" severity="secondary"/></div>
         <button v-for="test in tests" :key="test.id" :class="{ active: current?.id === test.id }" @click="selectTest(test.id)">
@@ -217,7 +241,7 @@ onUnmounted(unsubscribe)
             <div v-if="selectedItem.checks" class="checks">
               <article v-for="check in selectedItem.checks" :key="check.field">
                 <div class="check-head"><strong>{{ check.field }}</strong><Tag :value="check.verdict" :severity="severity(check.verdict)"/></div>
-                <div class="comparison-settings"><span>Expected: <code>{{ check.expected }}</code></span><Select v-model="check.method" :options="methods"/><InputText :modelValue="String(check.tolerance ?? '')" @update:modelValue="check.tolerance = $event" placeholder="Tolerance"/></div>
+                <UiAdvancedSection title="Comparison method" description="Matching rule and optional tolerance"><div class="comparison-settings"><span>Expected: <code>{{ check.expected }}</code></span><Select v-model="check.method" :options="methods"/><InputText :modelValue="String(check.tolerance ?? '')" @update:modelValue="check.tolerance = $event" placeholder="Tolerance"/></div></UiAdvancedSection>
                 <div v-for="result in check.comparisons" :key="`${result.document_id}:${result.page}`" class="result-row"><span>{{ documents.find(doc => doc.id === result.document_id)?.title || result.document_id }} · page {{ result.page || '—' }}</span><code>{{ result.expected }} ↔ {{ result.found ?? 'missing' }}</code><Tag :value="result.result" :severity="severity(result.result)"/><Button v-if="result.evidence" icon="pi pi-link" text rounded aria-label="Open evidence" @click="showAnchor(result.evidence)"/></div>
               </article>
               <Button label="Save comparison methods" icon="pi pi-save" size="small" outlined @click="saveChecks"/>
@@ -239,22 +263,29 @@ onUnmounted(unsubscribe)
           <p v-else class="empty">Choose a linked procedure.</p>
         </section>
       </main>
-      <main v-else class="card empty">Create a document test to begin fieldwork.</main>
+      <main v-else><UiEmptyState icon="pi pi-verified" title="Loading test" description="Preparing the selected worklist." /></main>
     </div>
+    <UiEmptyState v-else icon="pi pi-verified" title="Prepare document fieldwork" description="Let the assistant derive tests from the audit program, or create a test manually."><Button label="Prepare with assistant" icon="pi pi-sparkles" @click="prepareTests"/><Button label="Create manually" icon="pi pi-plus" severity="secondary" outlined @click="openManualCreate"/></UiEmptyState>
 
     <Dialog v-model:visible="createOpen" modal header="New document test" :style="{width:'min(44rem,94vw)'}">
-      <div class="create-form"><label>Test kind<Select v-model="draft.kind" :options="kinds" optionLabel="label" optionValue="value"/></label><label>Title<InputText v-model="draft.title" placeholder="e.g. Invoice vouching"/></label><div class="two"><label>Procedure IDs (comma separated)<InputText v-model="draft.procedureRefs" placeholder="PROC-..."/></label><label>RCM IDs (comma separated)<InputText v-model="draft.rcmRefs" placeholder="RCM-..."/></label></div>
+      <div class="wizard-steps"><span v-for="n in 3" :key="n" :class="{ active: createStep === n, done: createStep > n }"><i>{{ n }}</i>{{ ['Type','Source & scope','Review'][n-1] }}</span></div>
+      <div v-if="createStep === 1" class="create-form"><label>Test kind<Select v-model="draft.kind" :options="kinds" optionLabel="label" optionValue="value"/></label><label>Title<InputText v-model="draft.title" placeholder="e.g. Invoice vouching"/></label></div>
+      <div v-else-if="createStep === 2" class="create-form">
         <template v-if="draft.kind === 'vouching'"><div class="two"><label>Direction<Select v-model="draft.direction" :options="['vouching','tracing']"/></label><label>Population table<Select v-model="draft.table" :options="tableOptions"/></label></div><div class="two"><label>Sample size<InputNumber v-model="draft.size" :min="1"/></label><label>Seed<InputNumber v-model="draft.seed"/></label></div><label>Frozen fields (comma separated)<InputText v-model="draft.frozenFields" placeholder="invoice_no, amount, tx_date"/></label></template>
         <label v-else-if="draft.kind === 'attribute'">Attributes (comma separated)<InputText v-model="draft.attributes" placeholder="approval, signature, date"/></label>
         <template v-else-if="draft.kind === 'review'"><label>Document<Select v-model="draft.documentId" :options="documentOptions" optionLabel="label" optionValue="value" filter/></label><label>Pages (comma separated; blank = all)<InputText v-model="draft.pages" placeholder="1, 3, 4"/></label></template>
         <template v-else><label>Document<Select v-model="draft.documentId" :options="documentOptions" optionLabel="label" optionValue="value" filter/></label><label>Questions (one per line)<Textarea v-model="draft.questions" rows="5"/></label></template>
-      </div><template #footer><Button label="Cancel" text severity="secondary" @click="createOpen=false"/><Button label="Create worklist" icon="pi pi-plus" :loading="creating" @click="createTest"/></template>
+      </div>
+      <div v-else class="create-form"><div class="review-summary"><strong>{{ draft.title || `New ${draft.kind} test` }}</strong><span>{{ kinds.find(item => item.value === draft.kind)?.label }}</span><span v-if="draft.table">Population: {{ draft.table }}</span><span v-if="draft.documentId">Document: {{ documentOptions.find(item => item.value === draft.documentId)?.label }}</span></div><UiAdvancedSection title="Planning links" description="Optional procedure and risk traceability"><div class="create-form"><label>Procedures<MultiSelect v-model="draft.procedureRefs" :options="planningProcedureOptions" optionLabel="label" optionValue="value" display="chip" filter/></label><label>Risks and controls<MultiSelect v-model="draft.rcmRefs" :options="rcmOptions" optionLabel="label" optionValue="value" display="chip" filter/></label></div></UiAdvancedSection></div>
+      <template #footer><Button label="Cancel" text severity="secondary" @click="createOpen=false"/><span class="grow"/><Button v-if="createStep > 1" label="Back" severity="secondary" outlined @click="createStep--"/><Button v-if="createStep < 3" label="Next" icon="pi pi-arrow-right" iconPos="right" :disabled="createStep === 2 && !draftReady" @click="createStep++"/><Button v-else label="Create worklist" icon="pi pi-plus" :loading="creating" :disabled="!draftReady" @click="createTest"/></template>
     </Dialog>
     <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor"/>
   </div>
 </template>
 
 <style scoped>
-.doc-tests { display:flex; flex-direction:column; gap:1rem; min-height:100%; }.test-head,.actions,.detail-title,.rollups,.rail-title,.item-title,.check-head,.attach,.paper-actions,.dispositions { display:flex; align-items:center; gap:.55rem }.test-head,.detail-title,.rail-title,.item-title,.check-head { justify-content:space-between }.test-head h2,.detail-title h3,.item-title h3 { margin:.1rem 0 }.test-head p { margin:0 }.test-layout { display:grid; grid-template-columns:18rem minmax(0,1fr); gap:1rem }.card { background:#fff; border:1px solid var(--aw-border); border-radius:var(--aw-radius); box-shadow:var(--aw-shadow-sm); padding:1rem }.test-rail { padding:.55rem; align-self:start }.test-rail button,.worklist button { border:0; background:transparent; width:100%; text-align:left; padding:.65rem; border-radius:7px; cursor:pointer }.test-rail button:hover,.test-rail button.active,.worklist button:hover,.worklist button.active { background:var(--p-primary-50) }.test-rail button span,.worklist button span { display:flex; justify-content:space-between; gap:.5rem; align-items:center }.test-rail small,.worklist small { display:block; margin-top:.25rem; color:var(--aw-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }.test-detail { min-width:0; display:flex; flex-direction:column; gap:.8rem }.work-layout { display:grid; grid-template-columns:minmax(15rem,.8fr) minmax(24rem,1.6fr); gap:1rem }.worklist { padding:.5rem; max-height:calc(100vh - 22rem); overflow:auto }.item-detail { display:flex; flex-direction:column; gap:.8rem }.muted,.empty { color:var(--aw-muted); font-size:.8rem }.attach :deep(.p-select) { flex:1 }.attached,.rollups { display:flex; gap:.35rem; flex-wrap:wrap }.runner-note,.conflict { padding:.7rem; border-radius:7px; background:var(--p-blue-50); margin:0 }.conflict { display:grid; background:var(--p-orange-50); color:var(--p-orange-800) }.checks { display:grid; gap:.75rem }.checks article,.attributes article { border:1px solid var(--aw-border); border-radius:7px; padding:.7rem }.comparison-settings { display:grid; grid-template-columns:1fr 12rem 9rem; gap:.5rem; align-items:center; margin-top:.5rem }.result-row { display:grid; grid-template-columns:1fr 1fr auto auto; gap:.5rem; align-items:center; padding:.45rem 0; border-top:1px solid var(--aw-border); font-size:.78rem }code { font-family:var(--aw-font-mono); font-size:.75rem }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.dispositions { flex-wrap:wrap }.paper-actions { flex-wrap:wrap }.paper-preview { max-width:58rem; margin:1rem auto; line-height:1.6 }.create-form { display:grid; gap:.8rem }.two { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }blockquote { margin:0; padding:.8rem; border-left:3px solid var(--aw-teal); background:var(--aw-canvas) }
+.doc-tests { display:flex; flex-direction:column; gap:1rem; min-height:100%; }.test-head,.actions,.detail-title,.rollups,.rail-title,.item-title,.check-head,.attach,.paper-actions,.dispositions { display:flex; align-items:center; gap:.55rem }.test-head,.detail-title,.rail-title,.item-title,.check-head { justify-content:space-between }.test-head h2,.detail-title h3,.item-title h3 { margin:.1rem 0 }.test-head p { margin:0 }.test-layout { display:grid; grid-template-columns:17rem minmax(0,1fr); gap:1rem }.card { background:#fff; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); padding:1rem }.test-rail { padding:.55rem; align-self:start }.test-rail button,.worklist button { border:0; background:transparent; width:100%; min-height:var(--aw-row-height); text-align:left; padding:.5rem .6rem; border-radius:7px; cursor:pointer }.test-rail button:hover,.test-rail button.active,.worklist button:hover,.worklist button.active { background:var(--p-primary-50) }.test-rail button span,.worklist button span { display:flex; justify-content:space-between; gap:.5rem; align-items:center }.test-rail small,.worklist small { display:block; margin-top:.25rem; color:var(--aw-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }.test-detail { min-width:0; display:flex; flex-direction:column; gap:.8rem }.work-layout { display:grid; grid-template-columns:minmax(14rem,.75fr) minmax(22rem,1.6fr); gap:1rem }.worklist { padding:.5rem; max-height:36rem; overflow:auto }.item-detail { display:flex; flex-direction:column; gap:.8rem }.muted,.empty { color:var(--aw-muted); font-size:.8rem }.attach :deep(.p-select) { flex:1 }.attached,.rollups { display:flex; gap:.35rem; flex-wrap:wrap }.runner-note,.conflict { padding:.7rem; border-radius:7px; background:var(--p-blue-50); margin:0 }.conflict { display:grid; background:var(--p-orange-50); color:var(--p-orange-800) }.checks { display:grid; gap:.75rem }.checks article,.attributes article { border:1px solid var(--aw-border); border-radius:7px; padding:.7rem }.comparison-settings { display:grid; grid-template-columns:1fr 12rem 9rem; gap:.5rem; align-items:center }.result-row { display:grid; grid-template-columns:1fr 1fr auto auto; gap:.5rem; align-items:center; padding:.45rem 0; border-top:1px solid var(--aw-border); font-size:.78rem }code { font-family:var(--aw-font-mono); font-size:.75rem }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.dispositions { position:sticky; bottom:-1rem; z-index:2; flex-wrap:wrap; margin:0 -1rem -1rem; padding:.7rem 1rem; border-top:1px solid var(--aw-border); background:#fff }.paper-actions { flex-wrap:wrap }.paper-preview { max-width:58rem; margin:1rem auto; line-height:1.6 }.create-form { display:grid; gap:.8rem }.two { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }blockquote { margin:0; padding:.8rem; border-left:3px solid var(--aw-teal); background:var(--aw-canvas) }
+.grow { flex:1 }
+.wizard-steps { display:grid; grid-template-columns:repeat(3,1fr); margin-bottom:1rem; border-bottom:1px solid var(--aw-border) }.wizard-steps span { display:flex; align-items:center; gap:.4rem; padding:.55rem; color:var(--aw-muted); font-size:.72rem; font-weight:700 }.wizard-steps i { display:grid; place-items:center; width:1.45rem; height:1.45rem; border-radius:999px; background:var(--aw-raised); font-style:normal }.wizard-steps span.active { color:var(--aw-teal); border-bottom:2px solid var(--aw-teal) }.wizard-steps span.active i,.wizard-steps span.done i { color:white; background:var(--aw-teal) }.review-summary { display:grid; gap:.2rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:var(--aw-canvas) }.review-summary span { color:var(--aw-muted); font-size:.76rem }
 @media(max-width:1100px){.test-layout,.work-layout{grid-template-columns:1fr}.test-rail{display:flex;overflow:auto}.test-rail button{min-width:15rem}.worklist{max-height:16rem}}@media(max-width:700px){.test-head,.detail-title{align-items:flex-start;flex-direction:column}.comparison-settings,.result-row,.two{grid-template-columns:1fr}}
 </style>

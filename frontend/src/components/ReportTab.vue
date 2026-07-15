@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -12,6 +12,8 @@ import { api, ApiError } from '../api'
 import type { AuditReport, MarkdownTemplate, ReportContext, ReportQuality, ReportQualityIssue, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ReportReconcileDialog from './ReportReconcileDialog.vue'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -136,24 +138,26 @@ function openIssueRef(ref: string) {
   else if (kind === 'ruleset') void router.replace({ query: { tab: 'validation' } })
 }
 function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.issues ?? []), ...(report.value?.quality.editorial ?? [])] }
+const secondaryActions = computed(() => [
+  { label: 'Quality checks', icon: 'pi pi-check-circle', command: () => void runQuality(false) },
+  { label: 'Edit report template', icon: 'pi pi-file-edit', command: () => void openTemplate() },
+  { separator: true },
+  { label: 'Copy Markdown', icon: 'pi pi-copy', command: () => void copy('markdown') },
+  { label: 'Copy HTML', icon: 'pi pi-copy', command: () => void copy('html') },
+])
 </script>
 
 <template>
   <div v-if="report" class="report-tab">
-    <header class="report-head">
-      <div><h2>Draft audit report</h2></div>
-      <div class="report-actions">
+    <UiPageHeader title="Draft audit report" description="Generate, edit, review, and finalize the engagement report">
         <Tag :value="report.status" :severity="report.status === 'final' ? 'success' : 'warn'"/>
         <Tag v-if="report.edited" value="auditor edited" severity="info"/>
-        <span v-if="report.generated_at" class="muted">Generated {{ report.generated_at.slice(0,16).replace('T',' ') }}</span>
         <Button :label="report.status === 'final' ? 'Reopen draft' : 'Mark final'" text size="small" @click="toggleStatus"/>
-        <Button label="Template" icon="pi pi-file-edit" outlined size="small" @click="openTemplate"/>
-        <Button label="Quality checks" icon="pi pi-check-circle" outlined size="small" :loading="busy" @click="runQuality(false)"/>
         <Button :label="report.generated_at ? 'Regenerate' : 'Generate report'" icon="pi pi-sparkles" size="small" :loading="busy" @click="generate"/>
-      </div>
-    </header>
+        <UiOverflowMenu :items="secondaryActions" />
+    </UiPageHeader>
     <div v-if="report.generation_warnings.length" class="generation-warning"><i class="pi pi-info-circle"/><span>{{ report.generation_warnings.join(' ') }}</span></div>
-    <div class="report-nav"><SelectButton v-model="view" :options="views" optionLabel="label" optionValue="value" :allowEmpty="false"/><span class="grow"/><Button label="Copy Markdown" icon="pi pi-copy" text size="small" @click="copy('markdown')"/><Button label="Copy HTML" icon="pi pi-copy" text size="small" @click="copy('html')"/></div>
+    <div class="report-nav"><SelectButton v-model="view" :options="views" optionLabel="label" optionValue="value" :allowEmpty="false"/><span v-if="report.generated_at" class="muted generated-at">Generated {{ report.generated_at.slice(0,16).replace('T',' ') }}</span></div>
 
     <section v-if="view === 'editor'" class="editor-view">
       <div class="editor-pane card"><div class="pane-title"><strong>Report editor</strong><Button label="Save" icon="pi pi-save" size="small" :loading="busy" @click="save(true)"/></div><MarkdownEditor v-model="report.markdown" /></div>
@@ -173,7 +177,9 @@ function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.i
 </template>
 
 <style scoped>
-.report-tab { min-width:0 }.report-head,.report-actions,.report-nav,.pane-title,.quality-head,.quality-counts { display:flex; align-items:center }.report-head { justify-content:space-between; gap:1rem; margin-bottom:.8rem }.report-head h2 { margin:.1rem 0 }.report-actions { justify-content:flex-end; gap:.4rem; flex-wrap:wrap }.generation-warning { display:flex; gap:.5rem; padding:.65rem .8rem; margin-bottom:.7rem; color:var(--p-blue-800); background:var(--p-blue-50); border-radius:var(--aw-radius-sm) }.report-nav { gap:.4rem; margin-bottom:.8rem }.grow { flex:1 }.editor-view { min-height:calc(100vh - 18rem) }.editor-pane { display:flex; flex-direction:column; padding:1rem; min-width:0 }.pane-title { justify-content:space-between; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border); margin-bottom:.7rem }.editor-pane :deep(.markdown-editor) { flex:1; min-height:32rem }.quality-view { display:grid; grid-template-columns:minmax(0,1fr) 20rem; gap:1rem }.quality-card,.sources-card { padding:1rem }.quality-head { justify-content:space-between; gap:1rem; border-bottom:1px solid var(--aw-border); padding-bottom:.75rem }.quality-head p { margin:.2rem 0 0; color:var(--aw-muted); font-size:.78rem }.quality-counts { gap:.4rem; flex-wrap:wrap }.issue-list { display:flex; flex-direction:column; gap:.55rem; margin-top:.8rem }.issue-list article { display:flex; align-items:flex-start; gap:.6rem; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm) }.issue-list article > div { flex:1 }.issue-list strong { text-transform:capitalize }.issue-list p { margin:.2rem 0 }.refs { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.35rem }.refs button { border:1px solid var(--aw-border); background:var(--p-primary-50); color:var(--aw-teal); border-radius:999px; padding:.2rem .45rem; cursor:pointer }.quality-ok { color:var(--p-green-700); padding:1rem }.sources-card h3 { margin-top:0 }.sources-card h4 { margin:.9rem 0 .35rem }.sources-card a { display:block; color:var(--aw-teal); margin:.35rem 0; text-decoration:none }.stats { display:grid; grid-template-columns:repeat(2,1fr); gap:.4rem }.stats span { display:flex; flex-direction:column; padding:.55rem; background:var(--aw-canvas); border-radius:var(--aw-radius-sm); font-size:.68rem; color:var(--aw-muted); text-transform:capitalize }.stats strong { color:var(--aw-ink); font-size:1rem }.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }.muted { color:var(--aw-muted) }
+.report-tab { min-width:0 }.report-head,.report-actions,.report-nav,.pane-title,.quality-head,.quality-counts { display:flex; align-items:center }.report-head { justify-content:space-between; gap:1rem; margin-bottom:.8rem }.report-head h2 { margin:.1rem 0 }.report-actions { justify-content:flex-end; gap:.4rem; flex-wrap:wrap }.generation-warning { display:flex; gap:.5rem; padding:.65rem .8rem; margin-bottom:.7rem; color:var(--p-blue-800); background:var(--p-blue-50); border-radius:var(--aw-radius-sm) }.report-nav { gap:.4rem; margin-bottom:.8rem }.grow { flex:1 }.editor-view { min-height:34rem }.editor-pane { display:flex; flex-direction:column; padding:1rem; min-width:0 }.pane-title { justify-content:space-between; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border); margin-bottom:.7rem }.editor-pane :deep(.markdown-editor) { flex:1; min-height:32rem }.quality-view { display:grid; grid-template-columns:minmax(0,1fr) 20rem; gap:1rem }.quality-card,.sources-card { padding:1rem }.quality-head { justify-content:space-between; gap:1rem; border-bottom:1px solid var(--aw-border); padding-bottom:.75rem }.quality-head p { margin:.2rem 0 0; color:var(--aw-muted); font-size:.78rem }.quality-counts { gap:.4rem; flex-wrap:wrap }.issue-list { display:flex; flex-direction:column; gap:.55rem; margin-top:.8rem }.issue-list article { display:flex; align-items:flex-start; gap:.6rem; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm) }.issue-list article > div { flex:1 }.issue-list strong { text-transform:capitalize }.issue-list p { margin:.2rem 0 }.refs { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.35rem }.refs button { border:1px solid var(--aw-border); background:var(--p-primary-50); color:var(--aw-teal); border-radius:999px; padding:.2rem .45rem; cursor:pointer }.quality-ok { color:var(--p-green-700); padding:1rem }.sources-card h3 { margin-top:0 }.sources-card h4 { margin:.9rem 0 .35rem }.sources-card a { display:block; color:var(--aw-teal); margin:.35rem 0; text-decoration:none }.stats { display:grid; grid-template-columns:repeat(2,1fr); gap:.4rem }.stats span { display:flex; flex-direction:column; padding:.55rem; background:var(--aw-canvas); border-radius:var(--aw-radius-sm); font-size:.68rem; color:var(--aw-muted); text-transform:capitalize }.stats strong { color:var(--aw-ink); font-size:1rem }.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }.muted { color:var(--aw-muted) }
+.editor-view { min-height:34rem }
+.generated-at { margin-left:auto }
 @media (max-width:1050px) { .quality-view { grid-template-columns:1fr }.report-head { align-items:flex-start; flex-direction:column }.report-actions { justify-content:flex-start }.sources-card { order:-1 } }
 @media (max-width:700px) { .report-nav { align-items:flex-start; flex-wrap:wrap }.report-nav .grow { display:none }.quality-head { align-items:flex-start; flex-direction:column } }
 </style>

@@ -8,8 +8,6 @@ import Tab from 'primevue/tab'
 import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 import Button from 'primevue/button'
-import SelectButton from 'primevue/selectbutton'
-import ToggleSwitch from 'primevue/toggleswitch'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
@@ -37,15 +35,9 @@ const activeTab = ref(String(route.query.tab || 'dashboard'))
 const initialized = ref(false)
 const folderImportOpen = ref(false)
 const dashboardRef = ref<{ load: () => Promise<void> } | null>(null)
-const savingDocumentAi = ref(false)
 const phaseStatus = ref<Partial<Record<DashboardPhase['id'], DashboardPhase>>>({})
 
 const agent = useAgentRun(props.id)
-const { launchMode } = agent
-const agentModeOptions = [
-  { label: 'Auto', value: 'auto' },
-  { label: 'Ask', value: 'permission' },
-]
 const phaseStateIcon: Record<DashboardPhase['state'], string> = {
   not_started: 'pi pi-circle',
   in_progress: 'pi pi-clock',
@@ -94,29 +86,6 @@ async function reloadWorkspaceAndStatus() {
   await Promise.all([reload(), loadEngagementStatus()])
 }
 
-async function setDocumentAi(enabled: boolean) {
-  if (!workspace.value || savingDocumentAi.value) return
-  const previous = Boolean(workspace.value.settings?.doc_llm_optin)
-  savingDocumentAi.value = true
-  try {
-    const settings = await api.patch<NonNullable<WorkspaceSummary['settings']>>(
-      `/api/workspaces/${props.id}/settings`,
-      { doc_llm_optin: enabled },
-    )
-    workspace.value.settings = settings
-    toast.add({
-      severity: enabled ? 'success' : 'secondary',
-      summary: `Document AI ${enabled ? 'enabled' : 'disabled'}`,
-      life: 2500,
-    })
-  } catch (error) {
-    if (workspace.value.settings) workspace.value.settings.doc_llm_optin = previous
-    toast.add({ severity: 'error', summary: 'Could not update Document AI', detail: String(error), life: 5000 })
-  } finally {
-    savingDocumentAi.value = false
-  }
-}
-
 onMounted(async () => {
   await Promise.all([reload(), loadEngagementStatus()])
   if (route.query.import === '1') {
@@ -155,27 +124,6 @@ onUnmounted(unsubscribe)
         <h1>{{ workspace.name }}</h1>
       </div>
       <span class="header-spacer" />
-      <div class="header-setting document-ai-setting" :class="{ saving: savingDocumentAi }">
-        <label for="document-ai">Document AI</label>
-        <ToggleSwitch
-          inputId="document-ai"
-          :modelValue="Boolean(workspace.settings?.doc_llm_optin)"
-          :disabled="savingDocumentAi"
-          @update:modelValue="setDocumentAi"
-        />
-      </div>
-      <div class="header-setting agent-mode-setting">
-        <span>Agent</span>
-        <SelectButton
-          v-model="launchMode"
-          :options="agentModeOptions"
-          optionLabel="label"
-          optionValue="value"
-          :allowEmpty="false"
-          size="small"
-          aria-label="Agent permission mode"
-        />
-      </div>
       <Button label="Import folder" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
       <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
       <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
@@ -283,14 +231,6 @@ onUnmounted(unsubscribe)
 .engagement-title small { color: #8fa6c2; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .engagement-title h1 { max-width: 22rem; margin: 0.15rem 0 0; overflow: hidden; color: #fff; font-size: 0.96rem; text-overflow: ellipsis; white-space: nowrap; }
 .header-spacer { flex: 1; }
-.header-setting { display: flex; align-items: center; gap: 0.5rem; color: #c7d3e2; font-size: 0.7rem; font-weight: 600; white-space: nowrap; }
-.header-setting.saving { opacity: 0.65; }
-.header-setting :deep(.p-toggleswitch) { width: 2.25rem; height: 1.25rem; }
-.header-setting :deep(.p-toggleswitch-slider::before) { width: 0.85rem; height: 0.85rem; margin-top: -0.425rem; }
-.agent-mode-setting :deep(.p-selectbutton) { display: flex; }
-.agent-mode-setting :deep(.p-togglebutton) { min-width: 2.7rem; padding: 0.32rem 0.55rem; border-color: rgb(255 255 255 / 20%); background: rgb(255 255 255 / 7%); color: #c7d3e2; font-size: 0.68rem; }
-.agent-mode-setting :deep(.p-togglebutton.p-togglebutton-checked) { border-color: var(--aw-mint); background: var(--aw-mint); color: var(--aw-navy-950); }
-.agent-mode-setting :deep(.p-togglebutton-checked .p-togglebutton-content) { background: transparent; box-shadow: none; }
 .workspace-header :deep(.p-button-secondary) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: #fff; }
 .header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-sm); color: #e6edf6; text-decoration: none; transition: background .15s; }
 .header-link:hover { background: rgb(255 255 255 / 10%); }
@@ -301,6 +241,7 @@ onUnmounted(unsubscribe)
 }
 
 .workspace-layout {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -311,7 +252,7 @@ onUnmounted(unsubscribe)
 .workspace-layout > .agent-drawer { height: 100%; min-height: 0; }
 
 .workspace-body { display: flex; height: 100%; min-height: 0; }
-.workspace-nav { flex: 0 0 13.5rem; display: flex; flex-direction: column; align-items: stretch; gap: 0.22rem; padding: 1.25rem 0.75rem; background: var(--aw-raised); border-right: 1px solid var(--aw-border); }
+.workspace-nav { flex: 0 0 12.5rem; display: flex; flex-direction: column; align-items: stretch; gap: 0.16rem; padding: 1rem 0.65rem; background: var(--aw-raised); border-right: 1px solid var(--aw-border); }
 .nav-label { margin: 0 0.6rem 0.45rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
 .nav-group { margin-top: 0.7rem; margin-bottom: 0.18rem; }
 .workspace-nav :deep(.p-tab small) { margin-left:auto; min-width:1.25rem; padding:.1rem .35rem; border-radius:999px; background:var(--p-primary-50); color:var(--aw-teal); text-align:center; }
@@ -320,14 +261,15 @@ onUnmounted(unsubscribe)
 .workspace-nav :deep(.phase-status[data-state='in_progress']) { color:#2563eb; }
 .workspace-nav :deep(.phase-status[data-state='complete']) { color:#16855b; }
 .workspace-nav :deep(.phase-status[data-state='attention']) { color:#d97706; }
-.workspace-panels { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1.25rem 1.5rem 1.75rem; background: var(--aw-canvas); }
+.workspace-panels { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1rem 1.25rem 1.35rem; background: var(--aw-canvas); }
 :deep(.workspace-nav .p-tab) {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 0.65rem;
   width: 100%;
-  padding: 0.7rem 0.8rem;
+  min-height: 2.35rem;
+  padding: 0.5rem 0.7rem;
   border: 0;
   border-radius: var(--aw-radius-sm);
   color: #485b74;
@@ -344,20 +286,33 @@ onUnmounted(unsubscribe)
 @media (max-width: 900px) {
   .workspace-page { height: 100%; overflow: hidden; }
   .workspace-header { padding-inline: 0.85rem; }
-  .header-divider, .engagement-title small, .document-ai-setting { display: none; }
+  .header-divider, .engagement-title small { display: none; }
   .engagement-title h1 { max-width: 11rem; }
-  .workspace-layout { flex-direction: column; overflow: hidden; }
-  .workspace-layout > .agent-drawer { height: 32rem; min-height: 0; border-left: 0; border-top: 1px solid #d5dde7; }
-  .workspace-layout > .agent-drawer.collapsed { flex: 0 0 3.25rem; height: 3.25rem; }
+  .workspace-layout { overflow: hidden; }
+  .workspace-tabs { width: 100%; }
+  .workspace-layout > .agent-drawer {
+    position: absolute;
+    z-index: 30;
+    inset: auto 0 0;
+    width: 100% !important;
+    height: min(32rem, calc(100% - 3.5rem));
+    min-height: 0;
+    border-left: 0;
+    border-top: 1px solid #d5dde7;
+    box-shadow: 0 -10px 30px rgb(7 22 43 / 14%);
+  }
+  .workspace-layout > .agent-drawer.collapsed { height: 3.25rem; box-shadow: none; }
   .workspace-body { flex-direction: column; }
-  .workspace-nav { flex: none; width: 100%; flex-direction: row; overflow-x: auto; padding: 0.55rem 0.75rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
+  .workspace-nav { flex: none; display: block; width: 100%; padding: 0.45rem 0.65rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
   .nav-label { display: none; }
-  :deep(.workspace-nav .p-tab) { width: auto; white-space: nowrap; }
+  :deep(.workspace-nav .p-tablist-content) { overflow-x: auto; scrollbar-width: thin; }
+  :deep(.workspace-nav .p-tablist-tab-list) { display: flex; flex-direction: row; gap: 0.16rem; width: max-content; }
+  :deep(.workspace-nav .p-tab) { flex: 0 0 auto; width: auto; white-space: nowrap; }
   .workspace-panels { padding: 1rem; }
 }
 
 @media (max-width: 640px) {
-  .brand, .agent-mode-setting, .workspace-header > .p-button { display: none; }
+  .brand, .workspace-header > .p-button { display: none; }
   .engagement-title h1 { max-width: none; }
 }
 </style>

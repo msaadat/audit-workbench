@@ -26,6 +26,7 @@ interface AgentState {
   run: AgentRun | null
   runs: AgentRunSummary[]
   drawerOpen: boolean
+  drawerAutoOpened: boolean
   connected: boolean
   starting: boolean
   lastChange: (WorkspaceChange & { at: number }) | null
@@ -35,6 +36,15 @@ type ChangeListener = (change: WorkspaceChange) => void
 export type AgentMode = 'auto' | 'permission'
 
 const MODE_STORAGE_KEY = 'audit-workbench:agent-mode'
+const PANEL_STORAGE_PREFIX = 'audit-workbench:agent-panel-open:'
+
+function savedPanelState(workspaceId: string): boolean {
+  try {
+    return window.localStorage.getItem(`${PANEL_STORAGE_PREFIX}${workspaceId}`) === 'true'
+  } catch {
+    return false
+  }
+}
 
 function savedMode(): AgentMode {
   try {
@@ -83,9 +93,10 @@ function state(workspaceId: string): AgentState {
       status: null,
       run: null,
       runs: [],
-      // Preserve the existing always-visible drawer on first visit; the UI can
-      // then collapse it without losing the run or its live connection.
-      drawerOpen: true,
+      // The assistant is a contextual sidecar. It starts compact unless the
+      // user explicitly left it open or a run requires their attention.
+      drawerOpen: savedPanelState(workspaceId),
+      drawerAutoOpened: false,
       connected: false,
       starting: false,
       lastChange: null,
@@ -120,7 +131,23 @@ function scheduleRefetch(workspaceId: string, runId: string) {
         const run = await api.get<AgentRun>(
           `/api/workspaces/${workspaceId}/agent/runs/${runId}`,
         )
-        if (store.run?.id === runId || !store.run) store.run = run
+        if (store.run?.id === runId || !store.run) {
+          store.run = run
+          if (
+            run.status === 'awaiting_approval' ||
+            run.status === 'awaiting_input' ||
+            run.status === 'failed'
+          ) {
+            store.drawerOpen = true
+            store.drawerAutoOpened = true
+          } else if (
+            store.drawerAutoOpened &&
+            ['completed', 'completed_with_issues', 'cancelled'].includes(run.status)
+          ) {
+            store.drawerOpen = savedPanelState(workspaceId)
+            store.drawerAutoOpened = false
+          }
+        }
       } catch {
         /* transient — the next event retries */
       }
@@ -222,7 +249,10 @@ export function useAgentRun(workspaceId: string) {
       const active = runs.find((r) => ACTIVE_STATUSES.has(r.status))
       const latest = active ?? runs[0]
       if (latest) await openRun(latest.id)
-      if (active) store.drawerOpen = true
+      if (active && ['awaiting_approval', 'awaiting_input'].includes(active.status)) {
+        store.drawerOpen = true
+        store.drawerAutoOpened = true
+      }
     } catch {
       /* agent endpoints unavailable — the drawer shows the launch panel */
     }
@@ -232,6 +262,14 @@ export function useAgentRun(workspaceId: string) {
     store.run = await api.get<AgentRun>(
       `/api/workspaces/${workspaceId}/agent/runs/${runId}`,
     )
+    if (
+      store.run.status === 'awaiting_approval' ||
+      store.run.status === 'awaiting_input' ||
+      store.run.status === 'failed'
+    ) {
+      store.drawerOpen = true
+      store.drawerAutoOpened = true
+    }
     if (ACTIVE_STATUSES.has(store.run.status)) connect(workspaceId, runId)
     else disconnect(workspaceId)
   }
@@ -249,6 +287,7 @@ export function useAgentRun(workspaceId: string) {
       )
       store.run = run
       store.drawerOpen = true
+      store.drawerAutoOpened = true
       connect(workspaceId, run.id)
       void loadRuns(workspaceId)
       return run
@@ -271,6 +310,7 @@ export function useAgentRun(workspaceId: string) {
       )
       store.run = run
       store.drawerOpen = true
+      store.drawerAutoOpened = true
       connect(workspaceId, run.id)
       void loadRuns(workspaceId)
       return run
@@ -362,6 +402,12 @@ export function useAgentRun(workspaceId: string) {
     onWorkspaceChanged,
     toggleDrawer: () => {
       store.drawerOpen = !store.drawerOpen
+      store.drawerAutoOpened = false
+      try {
+        window.localStorage.setItem(`${PANEL_STORAGE_PREFIX}${workspaceId}`, String(store.drawerOpen))
+      } catch {
+        /* Storage can be unavailable in hardened/private browser contexts. */
+      }
     },
   }
 }

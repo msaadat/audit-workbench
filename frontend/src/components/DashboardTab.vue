@@ -21,6 +21,7 @@ import type {
   WorkspaceSummary,
 } from '../types'
 import ChartView from './ChartView.vue'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ 'import-requested': [] }>()
@@ -133,6 +134,16 @@ function remove(tile: DashboardTile) {
   })
 }
 
+function tileActions(tile: DashboardTile, index: number) {
+  return [
+    { label: 'Move left', icon: 'pi pi-chevron-left', disabled: index === 0, command: () => void patchTile(tile, { move: -1 }) },
+    { label: 'Move right', icon: 'pi pi-chevron-right', disabled: index === tiles.value.length - 1, command: () => void patchTile(tile, { move: 1 }) },
+    { label: 'Rename or add note', icon: 'pi pi-pencil', command: () => openEdit(tile) },
+    { separator: true },
+    { label: 'Remove from dashboard', icon: 'pi pi-times', command: () => remove(tile) },
+  ]
+}
+
 onMounted(async () => {
   await Promise.all([load(), agent.state.status ? Promise.resolve() : agent.refreshStatus()])
 })
@@ -243,10 +254,7 @@ onUnmounted(unsubscribe)
           <div class="tile-head">
             <div class="tile-title"><i :class="tileIcon[tile.kind]" v-tooltip.bottom="tileKindLabel[tile.kind]" /><strong>{{ tile.title }}</strong><Tag v-if="tile.verdict" :value="tile.verdict_text || tile.verdict" :severity="verdictSeverity[tile.verdict]" class="verdict-tag" /></div>
             <div class="tile-actions">
-              <Button icon="pi pi-chevron-left" text size="small" :disabled="index === 0" v-tooltip.bottom="'Move left'" @click="patchTile(tile, { move: -1 })" />
-              <Button icon="pi pi-chevron-right" text size="small" :disabled="index === tiles.length - 1" v-tooltip.bottom="'Move right'" @click="patchTile(tile, { move: 1 })" />
-              <Button icon="pi pi-pencil" text size="small" v-tooltip.bottom="'Rename / note'" @click="openEdit(tile)" />
-              <Button icon="pi pi-times" text size="small" severity="danger" v-tooltip.bottom="'Remove tile'" @click="remove(tile)" />
+              <UiOverflowMenu :items="tileActions(tile, index)" tooltip="Tile actions" />
             </div>
           </div>
           <p class="tile-meta muted">{{ tile.table || (tile.kind === 'python' ? 'Python' : '') }}<template v-if="tile.total_rows !== undefined"> · {{ tile.total_rows.toLocaleString() }} rows</template> · pinned {{ tile.created }}</p>

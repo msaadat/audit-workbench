@@ -65,7 +65,7 @@ onBeforeUnmount(() => void unmount())
 <style scoped>
 .markdown-editor {
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius);
+  border-radius: var(--aw-radius-md);
   overflow: auto;
   background: #fff;
 }

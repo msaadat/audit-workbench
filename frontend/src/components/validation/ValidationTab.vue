@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
@@ -9,6 +8,7 @@ import { api, ApiError } from '../../api'
 import { useAgentRun } from '../../composables/useAgentRun'
 import type { RuleSet, WorkspaceSummary } from '../../types'
 import RulesetEditor from './RulesetEditor.vue'
+import UiMasterDetail from '../ui/UiMasterDetail.vue'
 
 // The Validation tab: a rail of saved rule sets on the left, the rule-set
 // editor (field-wise checks grid + run results) on the right. A rule set is
@@ -16,7 +16,6 @@ import RulesetEditor from './RulesetEditor.vue'
 // data is just Run again.
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
-const confirm = useConfirm()
 
 const rulesets = ref<RuleSet[]>([])
 const selectedId = ref<string | null>(null)
@@ -38,6 +37,9 @@ async function load() {
     rulesets.value = (
       await api.get<{ rulesets: RuleSet[] }>(`/api/workspaces/${props.workspace.id}/rulesets`)
     ).rulesets
+    if (!creating.value && (!selectedId.value || !rulesets.value.some(item => item.id === selectedId.value))) {
+      selectedId.value = rulesets.value[0]?.id ?? null
+    }
   } catch (error) {
     const detail = error instanceof ApiError ? error.message : String(error)
     toast.add({ severity: 'error', summary: 'Could not load rule sets', detail, life: 6000 })
@@ -80,30 +82,11 @@ function onRan(rulesetId: string | null, verdict: string) {
   if (rulesetId) lastVerdicts.value = { ...lastVerdicts.value, [rulesetId]: verdict }
 }
 
-function confirmDelete(ruleset: RuleSet) {
-  confirm.require({
-    header: 'Delete rule set',
-    message: `Delete "${ruleset.title}" and its ${ruleset.rules.length} rule(s)?`,
-    icon: 'pi pi-exclamation-triangle',
-    acceptProps: { label: 'Delete', severity: 'danger' },
-    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
-    accept: async () => {
-      try {
-        await api.del(`/api/workspaces/${props.workspace.id}/rulesets/${ruleset.id}`)
-        if (selectedId.value === ruleset.id) selectedId.value = null
-        await load()
-      } catch (error) {
-        const detail = error instanceof ApiError ? error.message : String(error)
-        toast.add({ severity: 'error', summary: 'Delete failed', detail, life: 6000 })
-      }
-    },
-  })
-}
 </script>
 
 <template>
-  <div class="validation">
-    <aside class="rail surface-panel">
+  <UiMasterDetail railWidth="17rem" class="validation">
+    <template #rail><div class="rail">
       <div class="rail-heading"><p class="eyebrow">Control testing</p><strong>Validation rule sets</strong></div>
       <Button
         label="New rule set"
@@ -133,10 +116,9 @@ function confirmDelete(ruleset: RuleSet) {
         <div class="rail-item-meta">
           <i class="pi pi-table" />
           {{ r.table }} · {{ r.rules.length }} rule{{ r.rules.length === 1 ? '' : 's' }}
-          <i class="pi pi-trash del" @click.stop="confirmDelete(r)" v-tooltip.bottom="'Delete'" />
         </div>
       </button>
-    </aside>
+    </div></template>
 
     <section class="detail surface-panel">
       <RulesetEditor
@@ -153,26 +135,21 @@ function confirmDelete(ruleset: RuleSet) {
         <div><span class="empty-state-icon"><i class="pi pi-check-square" /></span><h3>Define reusable controls</h3><p>Select or create a rule set.</p></div>
       </div>
     </section>
-  </div>
+  </UiMasterDetail>
 </template>
 
 <style scoped>
 .validation {
-  display: flex;
-  gap: 1rem;
-  align-items: stretch;
   /* Same viewport-filling split as the Analysis tab: rail and detail scroll
      independently instead of the whole page. */
-  height: calc(100vh - 215px);
-  min-height: 24rem;
+  min-height: 32rem;
 }
 
 .rail {
-  flex: 0 0 17.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
-  overflow-y: auto;
+  overflow: visible;
   padding: 0.75rem;
   box-shadow: none;
 }
@@ -238,9 +215,8 @@ function confirmDelete(ruleset: RuleSet) {
 .rail-item-meta .del:hover { color: var(--aw-danger); }
 
 .detail {
-  flex: 1;
   min-width: 0;
-  overflow-y: auto;
+  overflow: visible;
   padding: 1rem;
   box-shadow: none;
 }
@@ -255,7 +231,7 @@ function confirmDelete(ruleset: RuleSet) {
 .validation-empty { height: 100%; border: 0; background: transparent; }
 
 @media (max-width: 900px) {
-  .validation { height: auto; flex-direction: column; }
+  .validation { min-height: 0; }
   .rail { flex-basis: auto; max-height: 18rem; }
   .detail { min-height: 24rem; }
 }

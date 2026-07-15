@@ -13,6 +13,9 @@ import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantContext } from '../composables/useAssistantContext'
 import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
 import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
+import UiEmptyState from './ui/UiEmptyState.vue'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: []; 'planning-started': [] }>()
@@ -62,6 +65,10 @@ const groups = computed(() => {
   return [...map.entries()]
 })
 const current = computed(() => previewPages.value.find(page => page.page === currentPage.value) || previewPages.value[0])
+const secondaryActions = computed(() => [
+  { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
+  { label: 'Disclosure log', icon: 'pi pi-list', command: () => void openDisclosures() },
+])
 
 function severity(value: string): 'success' | 'danger' | 'warn' | 'secondary' {
   if (value === 'extracted') return 'success'
@@ -196,15 +203,11 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 
 <template>
   <section class="documents-tab">
-    <div class="toolbar doc-toolbar">
-      <div><h2>Documents</h2></div>
-      <div class="toolbar-actions">
-        <input ref="fileInput" type="file" multiple hidden accept=".pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" @change="upload" />
-        <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
-        <Button label="Knowledge" icon="pi pi-book" severity="secondary" text @click="openKnowledge" />
-        <Button label="Disclosure log" icon="pi pi-list" severity="secondary" text @click="openDisclosures" />
-      </div>
-    </div>
+    <UiPageHeader title="Documents" description="Engagement evidence and reference material">
+      <input ref="fileInput" type="file" multiple hidden accept=".pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" @change="upload" />
+      <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
+      <UiOverflowMenu :items="secondaryActions" />
+    </UiPageHeader>
 
     <div class="privacy-strip" :class="{ enabled: optin }">
       <i :class="optin ? 'pi pi-shield' : 'pi pi-lock'" />
@@ -224,7 +227,7 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
       @planning-started="emit('planning-started')"
     />
 
-    <div class="document-layout surface-panel">
+    <div v-if="documents.length" class="document-layout surface-panel">
       <aside class="document-rail">
         <div class="rail-tools">
           <span class="search-wrap"><i class="pi pi-search" /><InputText v-model="search" placeholder="Search documents" class="rail-search" /></span>
@@ -282,8 +285,11 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
           <p v-if="!activity.length" class="muted">No model activity references this document.</p>
         </div>
       </main>
-      <div v-else class="empty-state"><div><i class="pi pi-file empty-state-icon" /><h3>Add engagement documents</h3></div></div>
+      <UiEmptyState v-else icon="pi pi-file" title="Choose a document" description="Select a document from the inventory to preview it." compact />
     </div>
+    <UiEmptyState v-else icon="pi pi-file-plus" title="Add engagement documents" description="Upload policies, contracts, evidence, reports, and other files. Extraction happens locally.">
+      <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
+    </UiEmptyState>
 
     <Dialog v-model:visible="confirmOptin" modal header="Enable document AI for this engagement?" :style="{ width: 'min(34rem, 92vw)' }">
       <p>Structured data rows will still never leave this device. For documents only, the pages and purpose shown in each disclosure preview may be sent to your configured model. Every disclosure and model result is appended to the engagement logs.</p>
@@ -304,13 +310,12 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 
 <style scoped>
 .documents-tab { display: grid; gap: 1rem; min-height: 100%; }
-.doc-toolbar { align-items: center; justify-content: space-between; margin: 0; }
-.doc-toolbar h2, .detail-head h3 { margin: 0; }.toolbar-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-.privacy-strip { display: flex; align-items: center; gap: .65rem; padding: .75rem 1rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.detail-head h3 { margin: 0; }
+.privacy-strip { display: flex; align-items: center; gap: .55rem; min-height:2.5rem; padding: .45rem .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .privacy-strip.enabled { background: var(--aw-teal-soft); color: var(--aw-ink); border-color: #b7e3dc; }.privacy-strip label { margin-left: auto; display: flex; align-items: center; gap: .45rem; }
-.document-layout { display: grid; grid-template-columns: minmax(19rem, 22rem) minmax(0, 1fr); min-height: 38rem; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff; box-shadow:var(--aw-shadow-sm); }
+.document-layout { display: grid; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 36rem; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff; }
 .document-rail { padding:.75rem; border-right:1px solid var(--aw-border); background:var(--p-surface-50); overflow-y:auto; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--p-surface-200); background:var(--p-surface-50); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--p-surface-400); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr 1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:.76rem; }
-.doc-group { display:grid; gap:.45rem; }.doc-group h4 { display:flex; justify-content:space-between; margin:.9rem .25rem .05rem; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.65rem; padding:.7rem; border:1px solid var(--p-surface-200); border-radius:10px; background:#fff; color:inherit; text-align:left; cursor:pointer; box-shadow:0 1px 2px rgb(15 23 42 / 4%); transition:border-color .15s, box-shadow .15s, background .15s; }.doc-row:hover { border-color:#9ad5cd; box-shadow:var(--aw-shadow-sm); }.doc-row.active { border-color:var(--aw-teal); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:2.2rem; height:2.2rem; place-items:center; border-radius:8px; color:var(--p-blue-600); background:var(--p-blue-50); }.doc-identity { display:grid; min-width:0; gap:.08rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.84rem; }.doc-identity small { color:var(--aw-muted); font-size:.66rem; }.state-pill { padding:.25rem .45rem; border-radius:999px; color:var(--p-surface-600); background:var(--p-surface-100); font-size:.61rem; font-weight:700; text-transform:uppercase; }.state-extracted { color:var(--p-green-700); background:var(--p-green-50); }.state-failed { color:var(--p-red-700); background:var(--p-red-50); }.state-partial,.state-image_only { color:var(--p-orange-700); background:var(--p-orange-50); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
+.doc-group { display:grid; gap:.15rem; }.doc-group h4 { display:flex; justify-content:space-between; margin:.7rem .25rem .05rem; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; }.doc-row { width:100%; min-height:var(--aw-row-height); display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.42rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-sm); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:#fff; }.doc-row.active { border-color:#a7ded8; background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.8rem; height:1.8rem; place-items:center; border-radius:6px; color:var(--p-blue-600); background:var(--p-blue-50); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.8rem; }.doc-identity small { color:var(--aw-muted); font-size:.63rem; }.state-pill { width:.55rem; height:.55rem; overflow:hidden; padding:0; border-radius:999px; color:transparent; background:var(--p-surface-300); font-size:0; }.state-extracted { background:var(--p-green-500); }.state-failed { background:var(--p-red-500); }.state-partial,.state-image_only { background:var(--p-orange-500); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
 .document-detail { min-width:0; display:flex; flex-direction:column; }.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { min-width:0; }.detail-identity p { margin:.25rem 0 0; color:var(--aw-muted); font-size:.73rem; }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }.detail-tabs { display:flex; padding:0 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-tabs button { padding:.75rem .85rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--aw-muted); cursor:pointer; text-transform:capitalize; }.detail-tabs button.active { color:var(--aw-teal); border-color:var(--aw-teal); font-weight:700; }.detail-content { padding:1.25rem; overflow-y:auto; }.page-tools { display:flex; align-items:center; gap:.4rem; margin-bottom:.75rem; }.page-tools a { margin-left:auto; color:var(--aw-teal); }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:10px; background:#fff; font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow:0 1px 2px rgb(15 23 42 / 4%); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--p-surface-200); border-radius:8px; background:var(--p-surface-50); color:var(--p-surface-500); font-size:.7rem; }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: .7rem; }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }

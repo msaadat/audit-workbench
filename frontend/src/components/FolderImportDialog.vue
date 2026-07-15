@@ -35,6 +35,7 @@ const busy = ref(false)
 const error = ref('')
 const uploaded = ref(0)
 const edits = ref<Record<string, IntakeClassification>>({})
+const showAll = ref(false)
 
 const routeOptions = [
   { label: 'Data table', value: 'table' },
@@ -52,6 +53,9 @@ const uploadTotal = computed(() => batch.value?.items.filter((item) => item.need
 const progress = computed(() => uploadTotal.value ? Math.round(uploaded.value / uploadTotal.value * 100) : 100)
 const pendingClassification = computed(() => agent.pendingApproval.value?.kind === 'file_classification' ? agent.pendingApproval.value : null)
 const uploadedItems = computed(() => batch.value?.items.filter((item) => item.uploaded) ?? [])
+const reviewItems = computed(() => showAll.value
+  ? uploadedItems.value
+  : uploadedItems.value.filter(item => item.error || !edits.value[item.id] || edits.value[item.id].confidence !== 'high'))
 const classificationEditable = computed(() => agent.state.run?.mode === 'permission' && Boolean(pendingClassification.value))
 const routeCounts = computed(() => {
   const counts = { table: 0, document: 0, excluded: 0 }
@@ -188,6 +192,7 @@ async function compareAndUpload() {
 
 function seedEdits(items: IntakeBatchItem[]) {
   edits.value = {}
+  showAll.value = false
   for (const item of items) if (item.classification) edits.value[item.id] = { ...item.classification }
 }
 
@@ -225,6 +230,7 @@ function reset() {
   batch.value = null
   uploaded.value = 0
   edits.value = {}
+  showAll.value = false
   error.value = ''
 }
 </script>
@@ -232,6 +238,7 @@ function reset() {
 <template>
   <Dialog :visible="modelValue" modal header="Import audit folder" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
     <div v-if="error" class="inline-error"><i class="pi pi-exclamation-triangle" />{{ error }}</div>
+    <nav class="wizard-progress" aria-label="Import progress"><span v-for="(label,index) in ['Choose folder','Upload','Review','Complete']" :key="label" :class="{ active: step === index + 1, done: step > index + 1 }"><i>{{ index + 1 }}</i>{{ label }}</span></nav>
 
     <section v-if="step === 1" class="select-step">
       <label class="folder-picker">
@@ -260,8 +267,9 @@ function reset() {
           <span><i class="pi pi-file" /><strong>{{ routeCounts.document }}</strong> {{ routeCounts.document === 1 ? 'document' : 'documents' }}</span>
           <span><i class="pi pi-minus-circle" /><strong>{{ routeCounts.excluded }}</strong> left out</span>
         </div>
+        <div class="review-filter"><span>{{ showAll ? 'Showing all staged files' : 'Showing files that need attention' }}</span><Button :label="showAll ? 'Show attention only' : `Show all ${uploadedItems.length}`" text size="small" @click="showAll = !showAll" /></div>
         <div class="file-review-list">
-          <article class="file-review-card" v-for="item in uploadedItems" :key="item.id">
+          <article class="file-review-card" v-for="item in reviewItems" :key="item.id">
             <header class="file-review-header">
             <span class="file-icon" :class="`route-${edits[item.id]?.route || 'pending'}`"><i :class="fileIcon(item)" /></span>
             <span class="file-identity">
@@ -280,6 +288,7 @@ function reset() {
             </div>
             <footer v-if="edits[item.id]?.rationale || item.error" class="classification-basis"><Tag v-if="edits[item.id]?.confidence" :value="`${edits[item.id].confidence} confidence`" /><span>{{ edits[item.id]?.rationale || item.error }}</span></footer>
           </article>
+          <p v-if="!reviewItems.length" class="all-clear"><i class="pi pi-check-circle" /> All staged files have high-confidence classifications.</p>
         </div>
       </div>
       <div class="review-actions">
@@ -313,6 +322,7 @@ function reset() {
 
 <style scoped>
 .select-step { display: grid; gap: 1rem; max-width: 42rem; margin: auto; }
+.wizard-progress { display:grid; grid-template-columns:repeat(4,1fr); margin:-.25rem 0 1rem; border-bottom:1px solid var(--aw-border) }.wizard-progress span { display:flex; justify-content:center; align-items:center; gap:.4rem; padding:.55rem; color:var(--aw-muted); font-size:.72rem; font-weight:700 }.wizard-progress i { display:grid; place-items:center; width:1.35rem; height:1.35rem; border-radius:999px; background:var(--aw-raised); font-style:normal }.wizard-progress span.active { color:var(--aw-teal); border-bottom:2px solid var(--aw-teal) }.wizard-progress span.done i,.wizard-progress span.active i { color:white; background:var(--aw-teal) }
 .folder-picker { display: flex; flex-direction: column; align-items: center; gap: .4rem; padding: 1.5rem; border: 1px dashed var(--p-surface-300); border-radius: 10px; background: var(--p-surface-50); text-align: center; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
 .folder-picker:hover { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
 .folder-picker i { font-size: 2rem; color: var(--aw-teal); }
@@ -333,6 +343,7 @@ function reset() {
 .route-summary span { display: inline-flex; align-items: center; gap: .4rem; padding: .45rem .7rem; border: 1px solid var(--p-surface-200); border-radius: 999px; color: var(--p-surface-600); background: var(--p-surface-50); font-size: .75rem; }
 .route-summary i { color: var(--aw-teal); }
 .route-summary strong { color: var(--p-surface-900); }
+.review-filter { display:flex; align-items:center; justify-content:space-between; min-height:2.2rem; color:var(--aw-muted); font-size:.75rem }.all-clear { display:flex; align-items:center; justify-content:center; gap:.45rem; padding:2rem; color:var(--aw-ok) }
 .file-review-list { display: flex; flex-direction: column; gap: .7rem; max-height: min(58vh, 38rem); overflow-y: auto; padding: .1rem .25rem .1rem .1rem; }
 .file-review-card { flex: 0 0 auto; overflow: hidden; border: 1px solid var(--p-surface-200); border-radius: 10px; background: var(--p-surface-0); box-shadow: 0 1px 2px rgb(15 23 42 / 4%); }
 .file-review-header { display: flex; align-items: center; gap: .7rem; padding: .75rem .85rem; }

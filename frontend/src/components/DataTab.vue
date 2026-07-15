@@ -19,6 +19,8 @@ import type {
   TableProfile,
   WorkspaceSummary,
 } from '../types'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
 import FrameTable from './FrameTable.vue'
 import JoinDialog from './JoinDialog.vue'
 
@@ -261,6 +263,16 @@ const selectedTable = computed(() =>
   props.workspace.tables.find((t) => t.name === selected.value) ?? null,
 )
 
+function tableActions(table: TableInfo) {
+  return [
+    { label: 'Preview first 100 rows', icon: 'pi pi-eye', disabled: Boolean(table.error), command: () => void openPreview(table) },
+    ...(table.kind === 'file' ? [{ label: 'Replace data', icon: 'pi pi-sync', command: () => startReplace(table) }] : []),
+    { label: 'Rename', icon: 'pi pi-pencil', command: () => startRename(table) },
+    { separator: true },
+    { label: 'Remove', icon: 'pi pi-trash', command: () => removeTable(table) },
+  ]
+}
+
 function rangeText(p: ColumnProfile): string {
   if (p.min === null && p.max === null) return ''
   const range = `${p.min ?? '?'} – ${p.max ?? '?'}`
@@ -269,11 +281,7 @@ function rangeText(p: ColumnProfile): string {
 </script>
 
 <template>
-  <div class="section-heading">
-    <div>
-      <h2>Source tables</h2>
-    </div>
-    <div class="toolbar">
+  <UiPageHeader title="Source tables" description="Loaded data and derived joins">
     <input ref="fileInput" type="file" multiple accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="upload" />
     <input ref="replaceInput" type="file" accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="replaceData" />
     <Button label="Add files" icon="pi pi-upload" :loading="uploading" @click="fileInput?.click()" />
@@ -285,8 +293,7 @@ function rangeText(p: ColumnProfile): string {
       v-tooltip.bottom="workspace.tables.length < 2 ? 'Load at least two tables first' : ''"
       @click="showJoin = true"
     />
-    </div>
-  </div>
+  </UiPageHeader>
 
   <div v-if="workspace.tables.length === 0" class="empty-state import-empty">
     <div>
@@ -301,14 +308,17 @@ function rangeText(p: ColumnProfile): string {
     <aside class="inventory surface-panel">
       <div class="inventory-head"><span>Tables</span><Tag :value="String(workspace.tables.length)" severity="secondary" /></div>
     <div class="cards" role="tablist">
-      <button
+      <div
         v-for="table in workspace.tables"
         :key="table.name"
         class="card"
         :class="{ active: selected === table.name, broken: !!table.error }"
         role="tab"
+        tabindex="0"
         :aria-selected="selected === table.name"
         @click="selectTable(table)"
+        @keydown.enter="selectTable(table)"
+        @keydown.space.prevent="selectTable(table)"
       >
         <div class="card-head">
           <strong class="card-name" :title="table.name">{{ table.name }}</strong>
@@ -334,42 +344,8 @@ function rangeText(p: ColumnProfile): string {
           </div>
         </template>
 
-        <div class="card-actions">
-          <Button
-            icon="pi pi-eye"
-            text
-            size="small"
-            :disabled="!!table.error"
-            :loading="previewLoading"
-            v-tooltip.bottom="'Preview first 100 rows'"
-            @click.stop="openPreview(table)"
-          />
-          <Button
-            v-if="table.kind === 'file'"
-            icon="pi pi-sync"
-            text
-            size="small"
-            :loading="replacing && replaceTarget === table.name"
-            v-tooltip.bottom="'Replace data — keeps saved queries &amp; analyses'"
-            @click.stop="startReplace(table)"
-          />
-          <Button
-            icon="pi pi-pencil"
-            text
-            size="small"
-            v-tooltip.bottom="'Rename - updates saved work'"
-            @click.stop="startRename(table)"
-          />
-          <Button
-            icon="pi pi-trash"
-            text
-            size="small"
-            severity="danger"
-            v-tooltip.bottom="'Remove'"
-            @click.stop="removeTable(table)"
-          />
-        </div>
-      </button>
+        <div class="card-actions" @click.stop><UiOverflowMenu :items="tableActions(table)" /></div>
+      </div>
     </div>
     </aside>
 
@@ -505,9 +481,6 @@ function rangeText(p: ColumnProfile): string {
 </template>
 
 <style scoped>
-.section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
-.section-heading h2 { margin: 0; font-size: 1.25rem; }
-.section-heading .toolbar { justify-content: flex-end; margin-bottom: 0; }
 .import-empty { min-height: 20rem; }
 .data-workbench { display: grid; grid-template-columns: 18rem minmax(0, 1fr); gap: 1rem; align-items: start; }
 .inventory { overflow: hidden; box-shadow: none; }
@@ -515,9 +488,8 @@ function rangeText(p: ColumnProfile): string {
 .cards {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  max-height: calc(100vh - 18rem);
-  overflow-y: auto;
+  gap: 0.3rem;
+  overflow: visible;
   padding: 0.65rem;
 }
 
@@ -527,9 +499,10 @@ function rangeText(p: ColumnProfile): string {
   width: 100%;
   text-align: left;
   background: var(--p-surface-0);
-  border: 1px solid var(--p-surface-200);
+  min-height: var(--aw-row-height);
+  border: 1px solid transparent;
   border-radius: 7px;
-  padding: 0.7rem 0.75rem;
+  padding: 0.55rem 0.65rem;
   cursor: pointer;
   font: inherit;
   color: inherit;
@@ -537,7 +510,8 @@ function rangeText(p: ColumnProfile): string {
 }
 
 .card:hover:not(.broken) {
-  border-color: var(--p-primary-300);
+  border-color: var(--aw-border);
+  background: #fff;
 }
 
 .card.active {

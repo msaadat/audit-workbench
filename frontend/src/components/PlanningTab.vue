@@ -14,6 +14,8 @@ import { useAgentRun } from '../composables/useAgentRun'
 import type { AuditProcedure, MarkdownTemplate, PlanningPayload, RcmRow, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
+import UiAdvancedSection from './ui/UiAdvancedSection.vue'
+import UiPageHeader from './ui/UiPageHeader.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -178,16 +180,17 @@ function fail(summary: string, error: unknown) {
 
 <template>
   <div v-if="data" class="planning-tab">
-    <div class="planning-head">
-      <div><h2>Planning and audit program</h2></div>
-      <div class="head-actions">
+    <UiPageHeader title="Planning and audit program" description="Define scope, risks, controls, and fieldwork procedures">
         <Tag :value="data.planning.status" :severity="data.planning.status === 'final' ? 'success' : 'warn'" />
         <Button :label="data.planning.status === 'final' ? 'Reopen draft' : 'Mark final'" size="small" text severity="secondary" @click="togglePlanningStatus" />
-        <span v-if="data.planning.updated" class="muted">Updated {{ data.planning.updated.slice(0, 16).replace('T', ' ') }}</span>
         <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured || !docAiEnabled" @click="generate()" />
-      </div>
+    </UiPageHeader>
+    <p v-if="!docAiEnabled" class="doc-ai-note"><i class="pi pi-lock" /><span>Planning drafts need Document AI to read explicitly disclosed engagement documents.</span><a href="?tab=documents">Open Documents</a></p>
+    <div class="planning-progress">
+      <span :class="{ complete: Boolean(data.planning.apm_markdown.trim()) }"><i class="pi pi-file-edit" /> APM</span>
+      <span :class="{ complete: data.rcm.length > 0 }"><i class="pi pi-th-large" /> {{ data.rcm.length }} risks & controls</span>
+      <span :class="{ complete: data.procedures.length > 0 }"><i class="pi pi-list-check" /> {{ data.procedures.length }} procedures</span>
     </div>
-    <p v-if="!docAiEnabled" class="doc-ai-note"><i class="pi pi-lock" /> Enable <strong>Document AI</strong> in the Documents tab to use the planning agent — it needs to read your imported documents to draft the APM, RCM, and audit program.</p>
     <SelectButton class="planning-nav" v-model="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" />
 
     <section v-if="view === 'apm'" class="apm-view">
@@ -199,7 +202,28 @@ function fail(summary: string, error: unknown) {
 
     <section v-else class="program-layout">
       <aside class="procedure-rail card"><div class="rail-head"><strong>Procedures</strong><Button icon="pi pi-plus" text size="small" @click="addProcedure" /></div><button v-for="item in data.procedures" :key="item.id" :class="{ active: item.id === selectedProcedureId }" @click="selectProcedure(item)"><strong>{{ item.id }}</strong><span>{{ item.objective }}</span><small>{{ item.rcm_refs.length }} RCM · {{ item.test_refs.length }} result link(s)</small></button><p v-if="!data.procedures.length" class="muted">No procedures yet.</p></aside>
-      <div v-if="selectedProcedure" class="procedure-detail card"><div class="section-toolbar"><strong>{{ selectedProcedure.id }}</strong><span class="grow"/><Tag v-if="selectedProcedure.test_refs.length" :value="`${selectedProcedure.test_refs.length} linked test(s)`" severity="info"/><Button label="Working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button icon="pi pi-trash" severity="danger" text @click="removeProcedure"/><Button label="Save procedure" icon="pi pi-save" size="small" @click="saveProcedure"/></div><label>Objective<Textarea v-model="selectedProcedure.objective" rows="2" autoResize /></label><label>Criteria<Textarea v-model="selectedProcedure.criteria" rows="2" autoResize /></label><label>Steps — one per line<Textarea v-model="stepDraft" rows="7" autoResize /></label><div class="two"><label>Method<InputText v-model="selectedProcedure.method" /></label><label>RCM IDs (comma separated)<InputText :modelValue="selectedProcedure.rcm_refs.join(', ')" @update:modelValue="setRcmRefs" /></label></div><label>Expected evidence<Textarea v-model="selectedProcedure.expected_evidence" rows="2" autoResize /></label><div v-if="selectedProcedure.test_refs.length || data.finding_rollups.by_procedure[selectedProcedure.id]?.length" class="test-links"><small>Execution results</small><a v-for="ref in selectedProcedure.test_refs" :key="ref" :href="`?tab=doc-tests&test=${ref.replace('doctest:','')}`">{{ testLabel(ref) }}</a><a v-for="finding in data.finding_rollups.by_procedure[selectedProcedure.id] ?? []" :key="finding.id" :href="`?tab=findings&finding=${finding.id}`">{{ finding.id }} · {{ finding.severity }}</a></div><div v-if="selectedProcedure.methodology_refs?.length" class="methodology-citations"><small>Methodology basis</small><span v-for="ref in selectedProcedure.methodology_refs" :key="`${ref.pack_id}:${ref.section}`"><i class="pi pi-book" /> {{ ref.citation }} · {{ ref.sha1.slice(0, 10) }}</span></div><label>Result summary<Textarea v-model="selectedProcedure.result_summary" rows="2" autoResize /></label><label>Conclusion<Textarea v-model="selectedProcedure.conclusion" rows="2" autoResize /></label><label>Scope limitations<Textarea v-model="selectedProcedure.scope_limitations" rows="2" autoResize /></label></div>
+      <div v-if="selectedProcedure" class="procedure-detail card">
+        <div class="section-toolbar sticky-actions"><strong>{{ selectedProcedure.id }}</strong><span class="grow"/><Tag v-if="selectedProcedure.test_refs.length" :value="`${selectedProcedure.test_refs.length} linked test(s)`" severity="info"/><Button label="Working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Save procedure" icon="pi pi-save" size="small" @click="saveProcedure"/></div>
+        <h3 class="form-section-title">Setup</h3>
+        <label>Objective<Textarea v-model="selectedProcedure.objective" rows="2" autoResize /></label>
+        <label>Criteria<Textarea v-model="selectedProcedure.criteria" rows="2" autoResize /></label>
+        <label>Steps — one per line<Textarea v-model="stepDraft" rows="7" autoResize /></label>
+        <label>Expected evidence<Textarea v-model="selectedProcedure.expected_evidence" rows="2" autoResize /></label>
+        <UiAdvancedSection title="Advanced setup" description="Method and traceability references">
+          <div class="two"><label>Method<InputText v-model="selectedProcedure.method" /></label><label>RCM IDs (comma separated)<InputText :modelValue="selectedProcedure.rcm_refs.join(', ')" @update:modelValue="setRcmRefs" /></label></div>
+        </UiAdvancedSection>
+        <h3 class="form-section-title">Execution</h3>
+        <div v-if="selectedProcedure.test_refs.length || data.finding_rollups.by_procedure[selectedProcedure.id]?.length" class="test-links"><small>Results</small><a v-for="ref in selectedProcedure.test_refs" :key="ref" :href="`?tab=doc-tests&test=${ref.replace('doctest:','')}`">{{ testLabel(ref) }}</a><a v-for="finding in data.finding_rollups.by_procedure[selectedProcedure.id] ?? []" :key="finding.id" :href="`?tab=findings&finding=${finding.id}`">{{ finding.id }} · {{ finding.severity }}</a></div>
+        <p v-else class="muted">No execution results are linked yet.</p>
+        <UiAdvancedSection v-if="selectedProcedure.methodology_refs?.length" title="Methodology basis" description="Citations and immutable source identifiers">
+          <div class="methodology-citations"><span v-for="ref in selectedProcedure.methodology_refs" :key="`${ref.pack_id}:${ref.section}`"><i class="pi pi-book" /> {{ ref.citation }} · {{ ref.sha1.slice(0, 10) }}</span></div>
+        </UiAdvancedSection>
+        <h3 class="form-section-title">Outcome</h3>
+        <label>Result summary<Textarea v-model="selectedProcedure.result_summary" rows="2" autoResize /></label>
+        <label>Conclusion<Textarea v-model="selectedProcedure.conclusion" rows="2" autoResize /></label>
+        <label>Scope limitations<Textarea v-model="selectedProcedure.scope_limitations" rows="2" autoResize /></label>
+        <UiAdvancedSection title="Procedure administration"><Button label="Delete procedure" icon="pi pi-trash" severity="danger" outlined size="small" @click="removeProcedure"/></UiAdvancedSection>
+      </div>
       <div v-else class="empty card">Select or add a procedure.</div>
     </section>
 
@@ -217,11 +241,17 @@ function fail(summary: string, error: unknown) {
 .muted { color: var(--aw-muted); font-size: 0.78rem; }
 .doc-ai-note { display: flex; align-items: center; gap: 0.5rem; margin: 0; padding: 0.6rem 0.8rem; border: 1px solid #f0cf9f; border-radius: var(--aw-radius-sm); background: var(--aw-warn-soft); color: var(--p-surface-700); font-size: 0.82rem; }.doc-ai-note i { color: var(--aw-teal); }
 .planning-nav { align-self: flex-start; }
-.card { background: #fff; border: 1px solid var(--aw-border); border-radius: var(--aw-radius); box-shadow: var(--aw-shadow-sm); padding: 1rem; }
+.card { background: #fff; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-md); padding: 1rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
 .wide { grid-column: 1 / -1; }
 .form-actions { display: flex; justify-content: flex-end; }
 .section-toolbar { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.7rem; }.section-toolbar > div { display: flex; flex-direction: column; }.grow { flex: 1; }
+.sticky-actions { position: sticky; top: -.05rem; z-index: 3; margin: -1rem -1rem .7rem; padding: .65rem 1rem; border-bottom: 1px solid var(--aw-border); background: #fff; }
+.form-section-title { margin: .3rem 0 -.25rem; color: var(--aw-muted); font-size: .72rem; letter-spacing: .07em; text-transform: uppercase; }
+.planning-progress { display: flex; gap: .4rem; flex-wrap: wrap; }
+.planning-progress span { display: inline-flex; align-items: center; gap: .35rem; padding: .35rem .55rem; border: 1px solid var(--aw-border); border-radius: 999px; color: var(--aw-muted); background: #fff; font-size: .72rem; }
+.planning-progress span.complete { border-color: #b7e3dc; color: var(--aw-ok); background: var(--aw-ok-soft); }
+.doc-ai-note a { margin-left: auto; color: var(--aw-teal); font-weight: 700; }
 .apm-editor { min-height: 34rem; }.apm-editor > :deep(.markdown-editor) { min-height: 34rem; }
 .program-layout { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 1rem; }.procedure-rail { padding: 0.55rem; }.rail-head { display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.4rem 0.55rem; }.procedure-rail button { width: 100%; display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.45rem; text-align: left; border: 0; border-radius: 6px; background: transparent; padding: 0.55rem; cursor: pointer; }.procedure-rail button:hover, .procedure-rail button.active { background: var(--p-primary-50); }.procedure-rail button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.procedure-rail button small { grid-column: 2; color: var(--aw-muted); }.procedure-detail { display: flex; flex-direction: column; gap: 0.75rem; }.two { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }.empty { color: var(--aw-muted); }
 .template-editor { width: 100%; font-family: var(--aw-font-mono); font-size: 0.8rem; }

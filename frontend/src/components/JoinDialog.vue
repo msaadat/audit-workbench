@@ -8,6 +8,7 @@ import Select from 'primevue/select'
 
 import { api, ApiError } from '../api'
 import type { ColumnSchema, WorkspaceSummary } from '../types'
+import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary; visible: boolean }>()
 const emit = defineEmits<{ 'update:visible': [value: boolean]; saved: [] }>()
@@ -49,6 +50,9 @@ async function loadColumns(table: string | null, target: 'left' | 'right') {
 
 watch(left, (table) => loadColumns(table, 'left'))
 watch(right, (table) => loadColumns(table, 'right'))
+watch([left, right], ([leftTable, rightTable]) => {
+  if (!name.value.trim() && leftTable && rightTable) name.value = `${leftTable}_${rightTable}`
+})
 watch(
   () => props.visible,
   (visible) => {
@@ -118,11 +122,6 @@ async function save() {
     </div>
 
     <div class="field">
-      <label>Join type</label>
-      <Select v-model="how" :options="howOptions" optionLabel="label" optionValue="value" />
-    </div>
-
-    <div class="field">
       <label>Join keys</label>
       <div v-for="(pair, index) in pairs" :key="index" class="row pair-row">
         <Select v-model="pair.left_on" :options="leftColumns" placeholder="Left column" class="grow" filter />
@@ -132,6 +131,10 @@ async function save() {
       </div>
       <Button label="Add key pair" icon="pi pi-plus" text size="small" @click="pairs.push({ left_on: null, right_on: null })" />
     </div>
+
+    <UiAdvancedSection title="Advanced join type" description="Left join keeps every row from the left table">
+      <div class="field advanced-field"><label>Join type</label><Select v-model="how" :options="howOptions" optionLabel="label" optionValue="value" /></div>
+    </UiAdvancedSection>
 
     <template #footer>
       <Button label="Cancel" severity="secondary" text @click="emit('update:visible', false)" />
@@ -159,4 +162,5 @@ async function save() {
 .pair-row {
   margin-bottom: 0.5rem;
 }
+.advanced-field { margin: 0; }
 </style>

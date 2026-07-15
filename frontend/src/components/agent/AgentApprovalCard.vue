@@ -71,6 +71,16 @@ function apply() {
   submitting.value = true
   emit('decide', decisions)
 }
+
+function readableSpec(spec: Record<string, unknown>): Array<{ label: string; value: string }> {
+  return Object.entries(spec)
+    .filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value) || (Array.isArray(value) && value.every(item => ['string', 'number'].includes(typeof item))))
+    .slice(0, 6)
+    .map(([key, value]) => ({
+      label: key.replaceAll('_', ' '),
+      value: Array.isArray(value) ? value.join(', ') : value === null ? 'Not set' : String(value),
+    }))
+}
 </script>
 
 <template>
@@ -108,11 +118,14 @@ function apply() {
           size="small"
           text
           severity="secondary"
-          v-tooltip.left="'Edit the exact spec'"
+          v-tooltip.left="'Advanced specification'"
           @click="items[item.id].editing = !items[item.id].editing"
         />
       </div>
       <small v-if="item.rationale" class="rationale">{{ item.rationale }}</small>
+      <dl v-if="readableSpec(item.spec).length" class="spec-summary">
+        <div v-for="field in readableSpec(item.spec)" :key="field.label"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div>
+      </dl>
       <small v-if="items[item.id].edited" class="edited">
         <i class="pi pi-pencil" /> edited — the modified spec will be applied
       </small>
@@ -165,6 +178,10 @@ function apply() {
 .item-head { display: flex; align-items: center; gap: 0.3rem; }
 .item-title { font-size: 0.82rem; font-weight: 600; line-height: 1.3; }
 .rationale { display: block; color: var(--p-surface-500); font-size: 0.72rem; margin-top: 0.15rem; }
+.spec-summary { display: grid; grid-template-columns: 1fr 1fr; gap: .25rem .6rem; margin: .45rem 0 0; padding: .45rem; border-radius: 6px; background: var(--aw-canvas); }
+.spec-summary div { min-width: 0; }
+.spec-summary dt { color: var(--aw-muted); font-size: .64rem; font-weight: 700; text-transform: capitalize; }
+.spec-summary dd { margin: .08rem 0 0; overflow: hidden; color: var(--aw-ink); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
 .edited { display: block; color: var(--p-primary-600); font-size: 0.72rem; margin-top: 0.15rem; }
 .editor { margin-top: 0.45rem; }
 .editor :deep(textarea) { width: 100%; font-family: ui-monospace, monospace; font-size: 0.75rem; }

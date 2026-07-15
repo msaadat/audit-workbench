@@ -9,9 +9,11 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 import Skeleton from 'primevue/skeleton'
+import type { MenuItem } from 'primevue/menuitem'
 
 import { api, ApiError } from '../api'
 import type { WorkspaceListItem, WorkspaceSummary } from '../types'
+import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 
 const router = useRouter()
 const confirm = useConfirm()
@@ -72,6 +74,14 @@ function remove(ws: WorkspaceListItem) {
   })
 }
 
+function workspaceActions(ws: WorkspaceListItem): MenuItem[] {
+  return [{
+    label: `Delete ${ws.name}`,
+    icon: 'pi pi-trash',
+    command: () => remove(ws),
+  }]
+}
+
 onMounted(load)
 </script>
 
@@ -114,8 +124,8 @@ onMounted(load)
         </template>
         <template #footer>
           <div class="card-actions">
-            <Tag :value="ws.table_count ? 'Ready' : 'Setup needed'" :severity="ws.table_count ? 'success' : 'warn'" />
-            <Button icon="pi pi-trash" severity="danger" text size="small" v-tooltip.bottom="'Delete workspace'" @click.stop="remove(ws)" />
+            <Tag :value="ws.table_count ? 'Data ready' : 'Setup needed'" :severity="ws.table_count ? 'success' : 'warn'" />
+            <span @click.stop><UiOverflowMenu :items="workspaceActions(ws)" :tooltip="`Actions for ${ws.name}`" /></span>
           </div>
         </template>
       </Card>
@@ -148,8 +158,8 @@ onMounted(load)
   justify-content: space-between;
   align-items: flex-start;
   gap: 1rem;
-  margin: 0.5rem 0 1.5rem;
-  padding: 1.6rem 1.75rem;
+  margin: 0.25rem 0 1.1rem;
+  padding: 1.2rem 1.35rem;
   border: 1px solid var(--aw-border);
   border-radius: var(--aw-radius-lg);
   background: linear-gradient(118deg, #fff 0%, var(--aw-teal-soft) 130%);
@@ -171,15 +181,15 @@ h1 {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 0.9rem;
 }
 
 .loading-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
 :deep(.ws-card) { border: 1px solid var(--aw-border); border-radius: var(--aw-radius-md); box-shadow: var(--aw-shadow-sm); cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s; }
 :deep(.ws-card:hover) { transform: translateY(-2px); border-color: var(--aw-teal); box-shadow: var(--aw-shadow-md); }
-:deep(.ws-card .p-card-body) { padding: 1.05rem 1.1rem 0.85rem; }
-:deep(.ws-card .p-card-content) { padding-block: 0.7rem; }
+:deep(.ws-card .p-card-body) { padding: 0.85rem 0.95rem 0.7rem; }
+:deep(.ws-card .p-card-content) { padding-block: 0.55rem; }
 :deep(.ws-card .p-card-footer) { padding-top: 0.55rem; border-top: 1px solid #edf1f5; }
 
 .card-title {

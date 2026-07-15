@@ -41,7 +41,7 @@ function refClass(ref: string) {
       <div><strong>Risk &amp; Control Matrix</strong><small>{{ rows.length }} rows</small></div>
       <Button label="Add risk" icon="pi pi-plus" size="small" outlined @click="emit('add')" />
     </div>
-    <DataTable :value="rows" scrollable scrollHeight="calc(100vh - 19rem)" size="small" stripedRows>
+    <DataTable :value="rows" scrollable scrollHeight="60vh" size="small" stripedRows>
       <Column field="id" header="ID" frozen style="min-width: 8rem"><template #body="{ data }"><strong>{{ data.id }}</strong></template></Column>
       <Column header="Process" style="min-width: 11rem"><template #body="{ data }"><InputText v-model="data.process" @change="emit('update', data.id, { process: data.process })" /></template></Column>
       <Column header="Risk" style="min-width: 18rem"><template #body="{ data }"><Textarea v-model="data.risk" rows="2" autoResize @change="emit('update', data.id, { risk: data.risk })" /></template></Column>

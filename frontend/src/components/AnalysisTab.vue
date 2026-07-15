@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
@@ -11,6 +10,7 @@ import type { SavedAnalysis, WorkspaceSummary } from '../types'
 import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
 import AnalysisCode from './analysis/AnalysisCode.vue'
+import UiMasterDetail from './ui/UiMasterDetail.vue'
 
 // The Analysis tab: a rail of saved analyses on the left, an editor on the
 // right. Two creation paths — the predefined Library or Code (hand-written
@@ -19,7 +19,6 @@ import AnalysisCode from './analysis/AnalysisCode.vue'
 // promotes a copy to the dashboard.
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
-const confirm = useConfirm()
 
 const analyses = ref<SavedAnalysis[]>([])
 const selectedId = ref<string | null>(null)
@@ -44,6 +43,9 @@ async function load() {
     analyses.value = (
       await api.get<{ analyses: SavedAnalysis[] }>(`/api/workspaces/${props.workspace.id}/analyses`)
     ).analyses
+    if (!creating.value && (!selectedId.value || !analyses.value.some(item => item.id === selectedId.value))) {
+      selectedId.value = analyses.value[0]?.id ?? null
+    }
   } catch (error) {
     const detail = error instanceof ApiError ? error.message : String(error)
     toast.add({ severity: 'error', summary: 'Could not load analyses', detail, life: 6000 })
@@ -87,30 +89,11 @@ async function onDeleted() {
   await load()
 }
 
-function confirmDelete(a: SavedAnalysis) {
-  confirm.require({
-    header: 'Delete analysis',
-    message: `Delete "${a.title}"? Pinned dashboard copies are unaffected.`,
-    icon: 'pi pi-exclamation-triangle',
-    acceptProps: { label: 'Delete', severity: 'danger' },
-    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
-    accept: async () => {
-      try {
-        await api.del(`/api/workspaces/${props.workspace.id}/analyses/${a.id}`)
-        if (selectedId.value === a.id) selectedId.value = null
-        await load()
-      } catch (error) {
-        const detail = error instanceof ApiError ? error.message : String(error)
-        toast.add({ severity: 'error', summary: 'Delete failed', detail, life: 6000 })
-      }
-    },
-  })
-}
 </script>
 
 <template>
-  <div class="analysis">
-    <aside class="rail surface-panel">
+  <UiMasterDetail railWidth="17rem" class="analysis">
+    <template #rail><div class="rail">
       <div class="rail-heading"><p class="eyebrow">Analysis library</p><strong>Saved procedures</strong></div>
       <div class="rail-actions">
         <Button label="Library" icon="pi pi-book" size="small" :outlined="creating !== 'library'" @click="startLibrary" />
@@ -143,10 +126,9 @@ function confirmDelete(a: SavedAnalysis) {
           <i :class="sourceIcon[a.source] ?? 'pi pi-book'" />
           {{ sourceLabel[a.source] ?? a.source }}
           <span v-if="a.table"> · {{ a.table }}</span>
-          <i class="pi pi-trash del" @click.stop="confirmDelete(a)" v-tooltip.bottom="'Delete'" />
         </div>
       </button>
-    </aside>
+    </div></template>
 
     <section class="detail surface-panel">
       <AnalysisLibrary
@@ -177,27 +159,22 @@ function confirmDelete(a: SavedAnalysis) {
         <h3>Choose an analysis path</h3></div>
       </div>
     </section>
-  </div>
+  </UiMasterDetail>
 </template>
 
 <style scoped>
 .analysis {
-  display: flex;
-  gap: 1rem;
-  align-items: stretch;
   /* Fill the viewport below the app banner / workspace header / tab strip so
      the rail and the detail pane scroll independently instead of the whole
      page scrolling as one. */
-  height: calc(100vh - 215px);
-  min-height: 24rem;
+  min-height: 32rem;
 }
 
 .rail {
-  flex: 0 0 17.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
-  overflow-y: auto;
+  overflow: visible;
   padding: 0.75rem;
   box-shadow: none;
 }
@@ -271,9 +248,8 @@ function confirmDelete(a: SavedAnalysis) {
 .rail-item-meta .del:hover { color: var(--aw-danger); }
 
 .detail {
-  flex: 1;
   min-width: 0;
-  overflow-y: auto;
+  overflow: visible;
   /* Room for the focus ring of the sticky header inputs. */
   padding: 1rem;
   box-shadow: none;
@@ -289,7 +265,7 @@ function confirmDelete(a: SavedAnalysis) {
 .analysis-empty { height: 100%; border: 0; background: transparent; }
 
 @media (max-width: 900px) {
-  .analysis { height: auto; flex-direction: column; }
+  .analysis { min-height: 0; }
   .rail { flex-basis: auto; max-height: 18rem; }
   .detail { min-height: 24rem; }
 }

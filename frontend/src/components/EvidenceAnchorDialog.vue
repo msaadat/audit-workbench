@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import type { EvidenceRef } from '../types'
+import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 
 const props = defineProps<{ modelValue: boolean; anchor: EvidenceRef | null }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -33,13 +34,12 @@ async function copyCitation() {
       <div class="anchor-facts">
         <span><small>Source</small><strong>{{ anchor.source_kind }} · {{ anchor.source_id }}</strong></span>
         <span><small>Page</small><strong>{{ anchor.page || '—' }}</strong></span>
-        <span><small>Immutable hash</small><code>{{ anchor.source_sha1 || 'Legacy reference' }}</code></span>
       </div>
       <div class="excerpt">
         <small>Anchored excerpt</small>
         <blockquote>{{ anchor.excerpt || 'No excerpt was retained for this legacy or non-document reference.' }}</blockquote>
-        <code v-if="anchor.excerpt_hash">Excerpt hash: {{ anchor.excerpt_hash }}</code>
       </div>
+      <UiAdvancedSection title="Technical details" description="Immutable source and excerpt identifiers"><dl class="technical"><div><dt>Source hash</dt><dd><code>{{ anchor.source_sha1 || 'Legacy reference' }}</code></dd></div><div v-if="anchor.excerpt_hash"><dt>Excerpt hash</dt><dd><code>{{ anchor.excerpt_hash }}</code></dd></div></dl></UiAdvancedSection>
     </div>
     <template #footer>
       <Button label="Copy citation" icon="pi pi-copy" severity="secondary" @click="copyCitation" />
@@ -50,10 +50,11 @@ async function copyCitation() {
 
 <style scoped>
 .anchor-body { display: grid; gap: 1rem; }
-.anchor-facts { display: grid; grid-template-columns: 1.4fr .5fr 2fr; gap: .75rem; }
+.anchor-facts { display: grid; grid-template-columns: 1.4fr .5fr; gap: .75rem; }
 .anchor-facts span, .excerpt { padding: .85rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
 small { display: block; margin-bottom: .3rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
 code { font-family: var(--aw-font-mono); font-size: .72rem; overflow-wrap: anywhere; }
 blockquote { margin: .5rem 0; padding: .85rem 1rem; border-left: 3px solid var(--aw-teal); background: #fff; white-space: pre-wrap; }
+.technical { display:grid; gap:.45rem; margin:0 }.technical div { display:grid; grid-template-columns:7rem 1fr; gap:.6rem }.technical dt { color:var(--aw-muted); font-size:.72rem; font-weight:700 }.technical dd { margin:0; overflow-wrap:anywhere }
 @media (max-width: 700px) { .anchor-facts { grid-template-columns: 1fr; } }
 </style>

@@ -792,15 +792,16 @@ async function exportExcel() {
         </div>
       </div>
 
-      <div
+      <details
         data-zone="split"
-        class="zone"
+        class="zone advanced-zone"
+        :open="Boolean(splitField)"
         :class="{ over: dragOver === 'split' }"
         @dragover.prevent="dragOver = 'split'"
         @dragleave="dragOver = null"
         @drop="onDrop('split')"
       >
-        <div class="panel-head"><i class="pi pi-arrows-h" /> Split by</div>
+        <summary class="panel-head"><span><i class="pi pi-arrows-h" /> Split by</span><small>Advanced</small><i class="pi pi-chevron-down" /></summary>
         <p v-if="!splitField" class="muted empty">Drop one field here — its values become columns</p>
         <div v-else class="zone-row">
           <span
@@ -810,17 +811,18 @@ async function exportExcel() {
           >{{ splitField }}</span>
           <Button icon="pi pi-times" text severity="danger" size="small" @click="splitField = null" />
         </div>
-      </div>
+      </details>
 
-      <div
+      <details
         data-zone="aggs"
-        class="zone"
+        class="zone advanced-zone"
+        :open="Boolean(aggs.length)"
         :class="{ over: dragOver === 'aggs' }"
         @dragover.prevent="dragOver = 'aggs'"
         @dragleave="dragOver = null"
         @drop="onDrop('aggs')"
       >
-        <div class="panel-head"><i class="pi pi-calculator" /> Aggregations</div>
+        <summary class="panel-head"><span><i class="pi pi-calculator" /> Aggregations</span><small>Advanced</small><i class="pi pi-chevron-down" /></summary>
         <p v-if="aggs.length === 0" class="muted empty">
           {{ groupBy.length || isPivot ? 'Drop fields here — default: count of rows' : 'Drop fields here to aggregate' }}
         </p>
@@ -841,18 +843,19 @@ async function exportExcel() {
           />
           <Button icon="pi pi-times" text severity="danger" size="small" @click="aggs.splice(index, 1)" />
         </div>
-      </div>
+      </details>
 
-      <div
+      <details
         v-if="!isPivot"
         data-zone="sort"
-        class="zone"
+        class="zone advanced-zone"
+        :open="Boolean(sortSpec.length)"
         :class="{ over: dragOver === 'sort' }"
         @dragover.prevent="dragOver = 'sort'"
         @dragleave="dragOver = null"
         @drop="onDrop('sort')"
       >
-        <div class="panel-head"><i class="pi pi-sort-alt" /> Order by</div>
+        <summary class="panel-head"><span><i class="pi pi-sort-alt" /> Order by</span><small>Advanced</small><i class="pi pi-chevron-down" /></summary>
         <p v-if="sortSpec.length === 0" class="muted empty">Drop fields here to sort</p>
         <div v-for="(sort, index) in sortSpec" :key="index" class="zone-row">
           <Select
@@ -871,7 +874,7 @@ async function exportExcel() {
           />
           <Button icon="pi pi-times" text severity="danger" size="small" @click="sortSpec.splice(index, 1)" />
         </div>
-      </div>
+      </details>
     </aside>
   </div>
 
@@ -1185,7 +1188,7 @@ async function exportExcel() {
 
 .query-panel {
   order: -1;
-  width: 22rem;
+  width: 19rem;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -1213,6 +1216,13 @@ async function exportExcel() {
 .zone {
   min-height: 4.2rem;
 }
+.advanced-zone { min-height: 2.65rem; }
+.advanced-zone > summary { min-height: 1.6rem; margin: 0; cursor: pointer; list-style: none; }
+.advanced-zone > summary::-webkit-details-marker { display: none; }
+.advanced-zone > summary span { display: flex; align-items: center; gap: .4rem; }
+.advanced-zone > summary small { margin-left: auto; color: var(--aw-muted); font-size: .62rem; font-weight: 600; text-transform: uppercase; }
+.advanced-zone > summary > .pi-chevron-down { color: var(--aw-muted); font-size: .65rem; transition: rotate .15s; }
+.advanced-zone[open] > summary > .pi-chevron-down { rotate: 180deg; }
 
 .zone.over {
   border-color: var(--aw-teal);

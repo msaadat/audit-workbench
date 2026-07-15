@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
+import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
@@ -46,6 +47,10 @@ const goalOptions = [
   { label: 'Data analysis', value: 'data_analysis' },
   { label: 'Document testing', value: 'document_testing' },
   { label: 'Report', value: 'report' },
+]
+const modeOptions = [
+  { label: 'Auto', value: 'auto' },
+  { label: 'Ask before changes', value: 'permission' },
 ]
 
 const statusSeverity: Record<string, string> = {
@@ -193,7 +198,7 @@ function fail(summary: string, error: unknown) {
   <aside
     class="agent-drawer"
     :class="{ collapsed: !state.drawerOpen, resizing }"
-    :style="state.drawerOpen ? { flexBasis: `${drawerWidth}px` } : undefined"
+    :style="state.drawerOpen ? { flexBasis: `${drawerWidth}px`, width: `${drawerWidth}px` } : undefined"
   >
     <div
       v-if="state.drawerOpen"
@@ -274,20 +279,18 @@ function fail(summary: string, error: unknown) {
           The agent's LLM is not configured — set a provider key in
           <code>.env</code> (or <code>AGENT_PROVIDER</code>/<code>AGENT_MODEL</code>).
         </div>
-        <SelectButton
-          v-model="goalTemplate"
-          :options="goalOptions"
-          optionLabel="label"
-          optionValue="value"
-          :allowEmpty="false"
-          size="small"
-        />
-        <Textarea
-          v-model="objective"
-          rows="2"
-          autoResize
-          placeholder="Focus or constraints — e.g. duplicate payments in Q2…"
-        />
+        <label class="launch-field">
+          <span>Goal</span>
+          <Select v-model="goalTemplate" :options="goalOptions" optionLabel="label" optionValue="value" />
+        </label>
+        <label class="launch-field">
+          <span>Changes</span>
+          <SelectButton v-model="launchMode" :options="modeOptions" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" />
+        </label>
+        <label class="launch-field">
+          <span>Focus <small>optional</small></span>
+          <Textarea v-model="objective" rows="2" autoResize placeholder="e.g. duplicate payments in Q2" />
+        </label>
         <Button
           label="Run assistant"
           icon="pi pi-play"
@@ -295,10 +298,10 @@ function fail(summary: string, error: unknown) {
           :disabled="!state.status?.configured"
           @click="start"
         />
-        <p v-if="state.status?.configured" class="muted model-note">
-          <i class="pi pi-microchip-ai" /> {{ state.status.provider || state.status.backend }}
-          · {{ state.status.model }}
-        </p>
+        <details v-if="state.status?.configured" class="launch-details">
+          <summary>Model details</summary>
+          <p class="muted model-note"><i class="pi pi-microchip-ai" /> {{ state.status.provider || state.status.backend }} · {{ state.status.model }}</p>
+        </details>
       </div>
 
       <template v-if="state.run && !launchVisible">
@@ -344,21 +347,12 @@ function fail(summary: string, error: unknown) {
           <i class="pi pi-exclamation-triangle" /> {{ state.run.error }}
         </div>
 
-        <div v-if="state.run.discovery.domain" class="section discovery">
-          <p class="section-title">Understanding</p>
-          <p class="domain">
-            <strong>{{ state.run.discovery.domain }}</strong>
-            <Tag
-              :value="`${state.run.discovery.confidence ?? 'low'} confidence`"
-              severity="secondary"
-            />
-          </p>
+        <details v-if="state.run.discovery.domain" class="section drawer-disclosure discovery">
+          <summary><span>Understanding</span><strong>{{ state.run.discovery.domain }}</strong><Tag :value="`${state.run.discovery.confidence ?? 'low'} confidence`" severity="secondary" /></summary>
           <ul v-if="state.run.discovery.assumptions?.length" class="assumptions">
-            <li v-for="assumption in state.run.discovery.assumptions" :key="assumption">
-              {{ assumption }}
-            </li>
+            <li v-for="assumption in state.run.discovery.assumptions" :key="assumption">{{ assumption }}</li>
           </ul>
-        </div>
+        </details>
 
         <div v-if="pendingApproval" class="section">
           <AgentApprovalCard
@@ -380,11 +374,11 @@ function fail(summary: string, error: unknown) {
           />
         </div>
 
-        <div class="section">
-          <p class="section-title">{{ state.run.kind === 'audit' ? 'Action graph' : 'Plan' }}</p>
+        <details class="section drawer-disclosure" :open="isActive && !pendingApproval && !pendingInteraction">
+          <summary><span>{{ state.run.kind === 'audit' ? 'Current work' : 'Plan' }}</span></summary>
           <AgentActionList v-if="state.run.kind === 'audit'" :actions="state.run.actions ?? []" />
           <AgentTaskList v-else :stages="state.run.plan.stages" />
-        </div>
+        </details>
 
         <div v-if="state.run.pending_commands?.length" class="section next-commands">
           <p class="section-title">Next commands</p>
@@ -499,9 +493,16 @@ function fail(summary: string, error: unknown) {
 .muted { color: var(--p-surface-500); font-size: 0.78rem; margin: 0 0 0.6rem; }
 
 .launch { display: flex; flex-direction: column; gap: 0.6rem; }
+.launch-field { display: grid; gap: .3rem; color: var(--aw-muted); font-size: .72rem; font-weight: 700; }
+.launch-field > span { display: flex; justify-content: space-between; }
+.launch-field small { font-weight: 500; }
+.launch-field :deep(.p-select), .launch-field :deep(.p-selectbutton) { width: 100%; }
+.launch-field :deep(.p-selectbutton) { display: grid; grid-template-columns: 1fr 1fr; }
+.launch-field :deep(.p-togglebutton) { min-width: 0; padding-inline: .35rem; }
 .launch :deep(textarea) { width: 100%; font-size: 0.82rem; }
 .mode-hint { margin: 0; font-size: 0.72rem; }
 .model-note { margin: 0; font-size: 0.72rem; display: flex; align-items: center; gap: 0.35rem; }
+.launch-details summary { cursor: pointer; color: var(--aw-muted); font-size: .72rem; }
 .warn-note {
   display: flex;
   gap: 0.5rem;
@@ -526,6 +527,12 @@ function fail(summary: string, error: unknown) {
 }
 .discovery .domain { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.3rem; }
 .assumptions { margin: 0.2rem 0 0; padding-left: 1.1rem; font-size: 0.76rem; color: var(--p-surface-600); }
+.drawer-disclosure { border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
+.drawer-disclosure > summary { display: flex; align-items: center; gap: .4rem; min-height: 2.4rem; padding: .45rem .6rem; cursor: pointer; list-style: none; font-size: .74rem; }
+.drawer-disclosure > summary::-webkit-details-marker { display: none; }
+.drawer-disclosure > summary span { color: var(--aw-muted); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.drawer-disclosure > summary strong { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--aw-ink); }
+.drawer-disclosure > :not(summary) { margin: 0 .6rem .6rem; }
 
 .warnings summary { cursor: pointer; font-size: 0.78rem; color: var(--p-amber-600, #b45309); }
 .warnings ul { margin: 0.35rem 0 0; padding-left: 1.1rem; font-size: 0.74rem; color: var(--p-surface-600); }
@@ -560,6 +567,16 @@ function fail(summary: string, error: unknown) {
   border-top: 1px solid var(--aw-border, #d5dde7);
   padding: 0.6rem 0.9rem 0.5rem;
   overflow: hidden;
+}
+
+@media (max-width: 1536px) and (min-width: 901px) {
+  .agent-drawer:not(.collapsed) {
+    position: absolute;
+    z-index: 30;
+    inset: 0 0 0 auto;
+    max-width: min(34rem, calc(100% - 12.5rem));
+    box-shadow: -10px 0 30px rgb(7 22 43 / 14%);
+  }
 }
 
 @media (max-width: 900px) {

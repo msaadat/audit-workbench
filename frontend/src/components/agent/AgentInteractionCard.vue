@@ -39,6 +39,17 @@ function approve() {
   }
   emit('respond', response)
 }
+
+function readablePreview(value: unknown) {
+  if (typeof value === 'string') return value
+  if (!value || typeof value !== 'object') return String(value ?? '')
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => ['string', 'number', 'boolean'].includes(typeof item))
+    .slice(0, 8)
+  return entries.length
+    ? entries.map(([key, item]) => `${key.replaceAll('_', ' ')}: ${item}`).join('\n')
+    : 'Review the proposed action before approving.'
+}
 </script>
 
 <template>
@@ -46,7 +57,7 @@ function approve() {
     <strong>{{ title }}</strong>
     <p>{{ interaction.prompt }}</p>
     <small v-if="interaction.policy_reason">{{ interaction.policy_reason }}</small>
-    <pre v-if="detail">{{ JSON.stringify(detail, null, 2) }}</pre>
+    <details v-if="detail" class="technical"><summary>Technical comparison</summary><pre>{{ JSON.stringify(detail, null, 2) }}</pre></details>
 
     <template v-if="interaction.type === 'clarification'">
       <Textarea v-model="text" rows="2" autoResize placeholder="Provide the missing detail…" />
@@ -66,8 +77,8 @@ function approve() {
     </template>
 
     <template v-else-if="interaction.type === 'proposal_approval'">
-      <pre v-if="interaction.payload.preview">{{ JSON.stringify(interaction.payload.preview, null, 2) }}</pre>
-      <Textarea v-model="editedArgs" rows="3" autoResize placeholder="Optional edited action arguments (JSON)" />
+      <div v-if="interaction.payload.preview" class="proposal-preview">{{ readablePreview(interaction.payload.preview) }}</div>
+      <details class="technical"><summary>Advanced specification</summary><Textarea v-model="editedArgs" rows="3" autoResize placeholder="Optional edited action arguments (JSON)" /></details>
       <div class="buttons">
         <Button label="Reject" severity="secondary" outlined size="small" :disabled="busy" @click="emit('respond', { decision: 'reject' })" />
         <Button label="Approve" size="small" :loading="busy" @click="approve" />
@@ -75,7 +86,7 @@ function approve() {
     </template>
 
     <template v-else-if="interaction.type === 'confirmation'">
-      <pre v-if="interaction.payload.preview">{{ JSON.stringify(interaction.payload.preview, null, 2) }}</pre>
+      <details v-if="interaction.payload.preview" class="technical"><summary>Removal details</summary><pre>{{ JSON.stringify(interaction.payload.preview, null, 2) }}</pre></details>
       <div class="buttons">
         <Button label="Keep it" severity="secondary" outlined size="small" :disabled="busy" @click="emit('respond', { decision: 'reject' })" />
         <Button label="Confirm removal" severity="danger" size="small" :loading="busy" @click="emit('respond', { decision: 'approve' })" />
@@ -83,7 +94,7 @@ function approve() {
     </template>
 
     <template v-else>
-      <pre v-if="interaction.payload">{{ JSON.stringify(interaction.payload, null, 2) }}</pre>
+      <details v-if="interaction.payload" class="technical"><summary>Conflict details</summary><pre>{{ JSON.stringify(interaction.payload, null, 2) }}</pre></details>
       <div class="buttons">
         <Button label="Keep current and skip" severity="secondary" outlined size="small" :disabled="busy" @click="emit('respond', { decision: 'skip' })" />
         <Button label="Revalidate current version" size="small" :loading="busy" @click="emit('respond', { decision: 'retry' })" />
@@ -101,5 +112,8 @@ function approve() {
 .choice.selected { border-color: var(--aw-teal, #0b625c); box-shadow: 0 0 0 1px var(--aw-teal, #0b625c); }
 .choice small { color: var(--p-text-muted-color); }
 pre { max-height: 10rem; overflow: auto; margin: 0; padding: .5rem; border-radius: .35rem; background: rgba(255,255,255,.75); font-size: .7rem; white-space: pre-wrap; }
+.technical summary { cursor: pointer; color: var(--aw-muted); font-size: .72rem; font-weight: 700; }
+.technical > :not(summary) { width: 100%; margin-top: .4rem; }
+.proposal-preview { padding: .55rem; border-radius: .4rem; background: white; color: var(--aw-ink); font-size: .75rem; white-space: pre-wrap; }
 .buttons { display: flex; justify-content: flex-end; gap: .45rem; }
 </style>

@@ -337,7 +337,7 @@ function fail(summary: string, error: unknown) {
         <i class="pi pi-comments" />
         <span><strong>Planning question</strong>{{ pendingQuestion }}</span>
       </div>
-      <div v-if="false && context.documents.value.length && !runActive" class="context-chips">
+      <div v-if="context.documents.value.length && !runActive" class="context-chips">
         <span v-for="doc in context.documents.value" :key="doc.id" class="context-chip">
           <i class="pi pi-file" /><span>{{ doc.title }}</span>
           <button :aria-label="`Remove ${doc.title} from context`" @click="context.remove(doc.id)"><i class="pi pi-times" /></button>
@@ -354,7 +354,7 @@ function fail(summary: string, error: unknown) {
       />
       <div class="composer-actions">
         <Button
-          v-if="false"
+          v-if="!runActive"
           icon="pi pi-paperclip"
           size="small"
           severity="secondary"
