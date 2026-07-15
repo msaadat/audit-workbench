@@ -36,13 +36,37 @@ const error = ref('')
 const uploaded = ref(0)
 const edits = ref<Record<string, IntakeClassification>>({})
 
-const routeOptions = ['table', 'document', 'unsupported', 'ignore'].map((value) => ({ label: value, value }))
+const routeOptions = [
+  { label: 'Data table', value: 'table' },
+  { label: 'Document', value: 'document' },
+  { label: 'Unsupported file', value: 'unsupported' },
+  { label: 'Leave out', value: 'ignore' },
+]
 const documentCategories = ['background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other'].map((value) => ({ label: value.replace('_', ' '), value }))
 const tableRoles = ['population', 'master_lookup', 'prior_period', 'schedule', 'parameters', 'unknown'].map((value) => ({ label: value.replace('_', ' '), value }))
-const actionOptions = ['import', 'ignore'].map((value) => ({ label: value, value }))
+const actionOptions = [
+  { label: 'Import file', value: 'import' },
+  { label: 'Leave out', value: 'ignore' },
+]
 const uploadTotal = computed(() => batch.value?.items.filter((item) => item.needs_upload).length ?? 0)
 const progress = computed(() => uploadTotal.value ? Math.round(uploaded.value / uploadTotal.value * 100) : 100)
 const pendingClassification = computed(() => agent.pendingApproval.value?.kind === 'file_classification' ? agent.pendingApproval.value : null)
+const uploadedItems = computed(() => batch.value?.items.filter((item) => item.uploaded) ?? [])
+const classificationEditable = computed(() => agent.state.run?.mode === 'permission' && Boolean(pendingClassification.value))
+const routeCounts = computed(() => {
+  const counts = { table: 0, document: 0, excluded: 0 }
+  for (const item of uploadedItems.value) {
+    const classification = edits.value[item.id]
+    if (classification?.proposed_action === 'ignore' || classification?.route === 'ignore' || classification?.route === 'unsupported') {
+      counts.excluded += 1
+    } else if (classification?.route === 'table') {
+      counts.table += 1
+    } else if (classification?.route === 'document') {
+      counts.document += 1
+    }
+  }
+  return counts
+})
 const planningAction = computed(() => (
   batch.value?.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
 ))
@@ -74,6 +98,39 @@ function chooseFolder(event: Event) {
 
 function relativePath(file: File): string {
   return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+}
+
+function fileName(path: string): string {
+  return path.split('/').pop() || path
+}
+
+function parentPath(path: string): string {
+  const parts = path.split('/')
+  parts.pop()
+  return parts.join(' / ')
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function fileIcon(item: IntakeBatchItem): string {
+  const route = edits.value[item.id]?.route
+  if (route === 'table') return 'pi pi-table'
+  if (route === 'document') return 'pi pi-file'
+  return 'pi pi-file'
+}
+
+function routeLabel(item: IntakeBatchItem): string {
+  const classification = edits.value[item.id]
+  if (!classification) return 'Classifying'
+  if (classification.proposed_action === 'ignore' || classification.route === 'ignore') return 'Leave out'
+  if (classification.route === 'unsupported') return 'Unsupported'
+  if (classification.route === 'table') return 'Data table'
+  if (classification.route === 'document') return 'Document'
+  return classification.route
 }
 
 async function compareAndUpload() {
@@ -195,20 +252,35 @@ function reset() {
 
     <section v-else-if="step === 3" class="review-step">
       <div class="review-head">
-        <div><h3>Classification</h3><p>Review routing metadata only; no spreadsheet rows or document text are shown here.</p></div>
+        <div><h3>Review files</h3><p>Confirm where each file belongs before it is added to the workspace.</p></div>
         <Tag :value="agent.state.run?.status?.replace('_', ' ') || 'starting'" />
       </div>
-      <div class="classification-grid" v-if="batch">
-        <div class="grid-row grid-head"><span>File</span><span>Route</span><span>Category / role</span><span>Name</span><span>Action</span><span>Basis</span></div>
-        <div class="grid-row" v-for="item in batch.items.filter((candidate) => candidate.uploaded)" :key="item.id">
-          <span class="file-cell"><strong>{{ item.relative_path }}</strong><small>{{ item.state }} · {{ item.size.toLocaleString() }} bytes</small></span>
-          <Select v-if="edits[item.id]" v-model="edits[item.id].route" :options="routeOptions" optionLabel="label" optionValue="value" />
-          <Select v-if="edits[item.id]?.route === 'document'" v-model="edits[item.id].document_category" :options="documentCategories" optionLabel="label" optionValue="value" />
-          <Select v-else-if="edits[item.id]?.route === 'table'" v-model="edits[item.id].table_role" :options="tableRoles" optionLabel="label" optionValue="value" />
-          <span v-else class="muted">Not applicable</span>
-          <InputText v-if="edits[item.id]" v-model="edits[item.id].proposed_name" />
-          <Select v-if="edits[item.id]" v-model="edits[item.id].proposed_action" :options="actionOptions" optionLabel="label" optionValue="value" />
-          <span class="basis"><Tag v-if="edits[item.id]" :value="edits[item.id].confidence" /><small>{{ edits[item.id]?.rationale || item.error }}</small></span>
+      <div class="classification-review" v-if="batch">
+        <div class="route-summary" aria-label="Classification summary">
+          <span><i class="pi pi-table" /><strong>{{ routeCounts.table }}</strong> data {{ routeCounts.table === 1 ? 'table' : 'tables' }}</span>
+          <span><i class="pi pi-file" /><strong>{{ routeCounts.document }}</strong> {{ routeCounts.document === 1 ? 'document' : 'documents' }}</span>
+          <span><i class="pi pi-minus-circle" /><strong>{{ routeCounts.excluded }}</strong> left out</span>
+        </div>
+        <div class="file-review-list">
+          <article class="file-review-card" v-for="item in uploadedItems" :key="item.id">
+            <header class="file-review-header">
+            <span class="file-icon" :class="`route-${edits[item.id]?.route || 'pending'}`"><i :class="fileIcon(item)" /></span>
+            <span class="file-identity">
+              <strong :title="item.relative_path">{{ fileName(item.relative_path) }}</strong>
+              <small v-if="parentPath(item.relative_path)">{{ parentPath(item.relative_path) }}</small>
+              <small>{{ formatBytes(item.size) }} · {{ item.state.replace('_', ' ') }}</small>
+            </span>
+            <span class="route-label" :class="`route-${edits[item.id]?.route || 'pending'}`">{{ routeLabel(item) }}</span>
+            </header>
+            <div v-if="edits[item.id]" class="classification-fields" :class="{ readonly: !classificationEditable }">
+              <label><span>Use as</span><Select v-model="edits[item.id].route" :options="routeOptions" optionLabel="label" optionValue="value" :disabled="!classificationEditable" /></label>
+              <label v-if="edits[item.id].route === 'document'"><span>Document type</span><Select v-model="edits[item.id].document_category" :options="documentCategories" optionLabel="label" optionValue="value" :disabled="!classificationEditable" /></label>
+              <label v-else-if="edits[item.id].route === 'table'"><span>Data role</span><Select v-model="edits[item.id].table_role" :options="tableRoles" optionLabel="label" optionValue="value" :disabled="!classificationEditable" /></label>
+              <label v-if="edits[item.id].route === 'table' || edits[item.id].route === 'document'" class="name-field"><span>Name in workspace</span><InputText v-model="edits[item.id].proposed_name" :disabled="!classificationEditable" /></label>
+              <label v-if="classificationEditable"><span>Decision</span><Select v-model="edits[item.id].proposed_action" :options="actionOptions" optionLabel="label" optionValue="value" /></label>
+            </div>
+            <footer v-if="edits[item.id]?.rationale || item.error" class="classification-basis"><Tag v-if="edits[item.id]?.confidence" :value="`${edits[item.id].confidence} confidence`" /><span>{{ edits[item.id]?.rationale || item.error }}</span></footer>
+          </article>
         </div>
       </div>
       <div class="review-actions">
@@ -256,17 +328,42 @@ function reset() {
 .inline-error { display: flex; gap: .45rem; padding: .65rem; margin-bottom: .8rem; color: var(--p-red-700); background: var(--p-red-50); border-radius: 7px; }
 .upload-step { max-width: 40rem; margin: 3rem auto; text-align: center; }
 .muted { color: var(--p-surface-500); font-size: .75rem; }
+.review-step { max-width: 66rem; margin: auto; }
 .review-head, .review-actions { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .review-head h3, .review-head p { margin: 0 0 .2rem; }
-.classification-grid { overflow: auto; margin: 1rem 0; border: 1px solid var(--p-surface-200); border-radius: 8px; }
-.grid-row { display: grid; grid-template-columns: minmax(15rem, 2fr) 8rem 10rem 11rem 7rem minmax(12rem, 1.4fr); gap: .55rem; align-items: center; min-width: 70rem; padding: .55rem; border-bottom: 1px solid var(--p-surface-200); }
-.grid-head { position: sticky; top: 0; z-index: 1; background: var(--p-surface-100); font-size: .7rem; font-weight: 700; text-transform: uppercase; }
-.file-cell, .basis { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
-.file-cell strong { overflow: hidden; text-overflow: ellipsis; font-size: .78rem; }
-.file-cell small, .basis small { color: var(--p-surface-500); font-size: .68rem; }
+.classification-review { display: grid; gap: .85rem; margin: 1rem 0; }
+.route-summary { display: flex; flex-wrap: wrap; gap: .55rem; }
+.route-summary span { display: inline-flex; align-items: center; gap: .4rem; padding: .45rem .7rem; border: 1px solid var(--p-surface-200); border-radius: 999px; color: var(--p-surface-600); background: var(--p-surface-50); font-size: .75rem; }
+.route-summary i { color: var(--aw-teal); }
+.route-summary strong { color: var(--p-surface-900); }
+.file-review-list { display: grid; gap: .7rem; max-height: min(58vh, 38rem); overflow-y: auto; padding: .1rem .25rem .1rem .1rem; }
+.file-review-card { overflow: hidden; border: 1px solid var(--p-surface-200); border-radius: 10px; background: var(--p-surface-0); box-shadow: 0 1px 2px rgb(15 23 42 / 4%); }
+.file-review-header { display: flex; align-items: center; gap: .7rem; padding: .75rem .85rem; }
+.file-icon { display: grid; flex: 0 0 2.2rem; height: 2.2rem; place-items: center; border-radius: 8px; color: var(--p-surface-600); background: var(--p-surface-100); }
+.file-icon.route-table { color: var(--aw-teal); background: var(--aw-teal-soft); }
+.file-icon.route-document { color: var(--p-blue-600); background: var(--p-blue-50); }
+.file-identity { display: grid; flex: 1; min-width: 0; gap: .08rem; }
+.file-identity strong { overflow: hidden; color: var(--p-surface-900); text-overflow: ellipsis; white-space: nowrap; font-size: .85rem; }
+.file-identity small { overflow: hidden; color: var(--p-surface-500); text-overflow: ellipsis; white-space: nowrap; font-size: .68rem; }
+.route-label { flex: 0 0 auto; padding: .28rem .55rem; border-radius: 999px; color: var(--p-surface-600); background: var(--p-surface-100); font-size: .68rem; font-weight: 700; }
+.route-label.route-table { color: var(--aw-teal); background: var(--aw-teal-soft); }
+.route-label.route-document { color: var(--p-blue-700); background: var(--p-blue-50); }
+.classification-fields { display: grid; grid-template-columns: minmax(8rem, .8fr) minmax(9rem, 1fr) minmax(12rem, 1.35fr) minmax(7rem, .7fr); gap: .65rem; padding: .75rem .85rem; border-top: 1px solid var(--p-surface-100); background: var(--p-surface-50); }
+.classification-fields label { display: grid; align-content: start; gap: .3rem; min-width: 0; }
+.classification-fields label > span { color: var(--p-surface-600); font-size: .67rem; font-weight: 700; }
+.classification-fields :deep(.p-select), .classification-fields :deep(.p-inputtext) { width: 100%; min-width: 0; font-size: .78rem; }
+.classification-fields.readonly :deep(.p-disabled) { opacity: .85; }
+.classification-basis { display: flex; align-items: center; gap: .55rem; padding: .55rem .85rem; border-top: 1px solid var(--p-surface-100); color: var(--p-surface-500); font-size: .7rem; }
+.classification-basis :deep(.p-tag) { flex: 0 0 auto; font-size: .62rem; }
 .summary-step { max-width: 44rem; margin: 2rem auto; text-align: center; }
 .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: .7rem; margin: 1.5rem 0; }
 .summary-cards span { display: flex; flex-direction: column; padding: 1rem; background: var(--p-surface-50); border: 1px solid var(--p-surface-200); border-radius: 8px; }
 .summary-cards strong { font-size: 1.4rem; color: var(--aw-teal); }
-@media (max-width: 700px) { .summary-cards { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 800px) { .classification-fields { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) {
+  .review-head { align-items: flex-start; }
+  .classification-fields { grid-template-columns: 1fr; }
+  .route-label { display: none; }
+  .summary-cards { grid-template-columns: 1fr 1fr; }
+}
 </style>
