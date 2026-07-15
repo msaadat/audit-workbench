@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Crepe } from '@milkdown/crepe'
+import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 
 // WYSIWYG markdown editor: a thin v-model wrapper around Milkdown Crepe.
-// Crepe stores content as markdown natively, so it round-trips with apm_markdown.
+// Crepe stores content as markdown natively, so it round-trips with workspace documents.
 const props = defineProps<{ modelValue: string }>()
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
 
@@ -16,7 +16,11 @@ let crepe: Crepe | null = null
 let lastEmitted = ''
 
 async function mount(value: string) {
-  crepe = new Crepe({ root: host.value, defaultValue: value })
+  crepe = new Crepe({
+    root: host.value,
+    defaultValue: value,
+    features: { [CrepeFeature.TopBar]: true },
+  })
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, markdown, prev) => {
       if (markdown !== prev) {

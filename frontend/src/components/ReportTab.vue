@@ -10,7 +10,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import type { AuditReport, MarkdownTemplate, ReportContext, ReportQuality, ReportQualityIssue, WorkspaceSummary } from '../types'
-import MarkdownView from './MarkdownView.vue'
+import MarkdownEditor from './MarkdownEditor.vue'
 import ReportReconcileDialog from './ReportReconcileDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -18,7 +18,7 @@ const toast = useToast()
 const router = useRouter()
 const report = ref<AuditReport | null>(null)
 const context = ref<ReportContext | null>(null)
-const view = ref<'editor' | 'preview' | 'quality'>('editor')
+const view = ref<'editor' | 'quality'>('editor')
 const busy = ref(false)
 const reconcileOpen = ref(false)
 const reconcileCurrent = ref('')
@@ -28,7 +28,6 @@ const template = ref<MarkdownTemplate | null>(null)
 
 const views = [
   { label: 'Editor', value: 'editor' },
-  { label: 'Preview', value: 'preview' },
   { label: 'Sources & quality', value: 'quality' },
 ]
 const issueTone: Record<string, string> = { error: 'danger', warning: 'warn', info: 'info' }
@@ -153,10 +152,8 @@ function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.i
     <div class="report-nav"><SelectButton v-model="view" :options="views" optionLabel="label" optionValue="value" :allowEmpty="false"/><span class="grow"/><Button label="Copy Markdown" icon="pi pi-copy" text size="small" @click="copy('markdown')"/><Button label="Copy HTML" icon="pi pi-copy" text size="small" @click="copy('html')"/></div>
 
     <section v-if="view === 'editor'" class="editor-view">
-      <div class="editor-pane card"><div class="pane-title"><strong>Markdown editor</strong><Button label="Save" icon="pi pi-save" size="small" :loading="busy" @click="save(true)"/></div><Textarea v-model="report.markdown" spellcheck="false" /></div>
-      <div class="preview-pane card"><div class="pane-title"><strong>Live preview</strong></div><MarkdownView :markdown="report.markdown || '*Generate a report or begin writing here.*'"/></div>
+      <div class="editor-pane card"><div class="pane-title"><strong>Report editor</strong><Button label="Save" icon="pi pi-save" size="small" :loading="busy" @click="save(true)"/></div><MarkdownEditor v-model="report.markdown" /></div>
     </section>
-    <section v-else-if="view === 'preview'" class="full-preview card"><MarkdownView :markdown="report.markdown || '*No report draft yet.*'"/></section>
     <section v-else class="quality-view">
       <div class="quality-card card">
         <div class="quality-head"><div><strong>Deterministic checks</strong><p>Advisory only — warnings never disable editing, generation, final labels, or copy-out.</p></div><div class="quality-counts"><Tag :value="`${report.quality.counts.error} errors`" :severity="report.quality.counts.error ? 'danger' : 'success'"/><Tag :value="`${report.quality.counts.warning} warnings`" :severity="report.quality.counts.warning ? 'warn' : 'secondary'"/><Button label="Optional editorial review" icon="pi pi-sparkles" size="small" outlined :loading="busy" @click="runQuality(true)"/></div></div>
@@ -172,7 +169,7 @@ function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.i
 </template>
 
 <style scoped>
-.report-tab { min-width:0 }.report-head,.report-actions,.report-nav,.pane-title,.quality-head,.quality-counts { display:flex; align-items:center }.report-head { justify-content:space-between; gap:1rem; margin-bottom:.8rem }.report-head h2 { margin:.1rem 0 }.report-actions { justify-content:flex-end; gap:.4rem; flex-wrap:wrap }.generation-warning { display:flex; gap:.5rem; padding:.65rem .8rem; margin-bottom:.7rem; color:var(--p-blue-800); background:var(--p-blue-50); border-radius:var(--aw-radius-sm) }.report-nav { gap:.4rem; margin-bottom:.8rem }.grow { flex:1 }.editor-view { display:grid; grid-template-columns:1fr 1fr; gap:1rem; min-height:calc(100vh - 18rem) }.editor-pane,.preview-pane,.full-preview { padding:1rem; min-width:0 }.pane-title { justify-content:space-between; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border); margin-bottom:.7rem }.editor-pane { display:flex; flex-direction:column }.editor-pane :deep(textarea) { flex:1; width:100%; min-height:32rem; resize:vertical; font-family:var(--aw-font-mono, monospace); font-size:.8rem; line-height:1.55 }.preview-pane,.full-preview { overflow:auto }.preview-pane :deep(.markdown-view),.full-preview :deep(.markdown-view) { max-width:52rem; margin:auto }.full-preview { min-height:32rem }.quality-view { display:grid; grid-template-columns:minmax(0,1fr) 20rem; gap:1rem }.quality-card,.sources-card { padding:1rem }.quality-head { justify-content:space-between; gap:1rem; border-bottom:1px solid var(--aw-border); padding-bottom:.75rem }.quality-head p { margin:.2rem 0 0; color:var(--aw-muted); font-size:.78rem }.quality-counts { gap:.4rem; flex-wrap:wrap }.issue-list { display:flex; flex-direction:column; gap:.55rem; margin-top:.8rem }.issue-list article { display:flex; align-items:flex-start; gap:.6rem; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm) }.issue-list article > div { flex:1 }.issue-list strong { text-transform:capitalize }.issue-list p { margin:.2rem 0 }.refs { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.35rem }.refs button { border:1px solid var(--aw-border); background:var(--p-primary-50); color:var(--aw-teal); border-radius:999px; padding:.2rem .45rem; cursor:pointer }.quality-ok { color:var(--p-green-700); padding:1rem }.sources-card h3 { margin-top:0 }.sources-card h4 { margin:.9rem 0 .35rem }.sources-card a { display:block; color:var(--aw-teal); margin:.35rem 0; text-decoration:none }.stats { display:grid; grid-template-columns:repeat(2,1fr); gap:.4rem }.stats span { display:flex; flex-direction:column; padding:.55rem; background:var(--aw-canvas); border-radius:var(--aw-radius-sm); font-size:.68rem; color:var(--aw-muted); text-transform:capitalize }.stats strong { color:var(--aw-ink); font-size:1rem }.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }.muted { color:var(--aw-muted) }
-@media (max-width:1050px) { .editor-view,.quality-view { grid-template-columns:1fr }.report-head { align-items:flex-start; flex-direction:column }.report-actions { justify-content:flex-start }.sources-card { order:-1 } }
+.report-tab { min-width:0 }.report-head,.report-actions,.report-nav,.pane-title,.quality-head,.quality-counts { display:flex; align-items:center }.report-head { justify-content:space-between; gap:1rem; margin-bottom:.8rem }.report-head h2 { margin:.1rem 0 }.report-actions { justify-content:flex-end; gap:.4rem; flex-wrap:wrap }.generation-warning { display:flex; gap:.5rem; padding:.65rem .8rem; margin-bottom:.7rem; color:var(--p-blue-800); background:var(--p-blue-50); border-radius:var(--aw-radius-sm) }.report-nav { gap:.4rem; margin-bottom:.8rem }.grow { flex:1 }.editor-view { min-height:calc(100vh - 18rem) }.editor-pane { display:flex; flex-direction:column; padding:1rem; min-width:0 }.pane-title { justify-content:space-between; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border); margin-bottom:.7rem }.editor-pane :deep(.markdown-editor) { flex:1; min-height:32rem }.quality-view { display:grid; grid-template-columns:minmax(0,1fr) 20rem; gap:1rem }.quality-card,.sources-card { padding:1rem }.quality-head { justify-content:space-between; gap:1rem; border-bottom:1px solid var(--aw-border); padding-bottom:.75rem }.quality-head p { margin:.2rem 0 0; color:var(--aw-muted); font-size:.78rem }.quality-counts { gap:.4rem; flex-wrap:wrap }.issue-list { display:flex; flex-direction:column; gap:.55rem; margin-top:.8rem }.issue-list article { display:flex; align-items:flex-start; gap:.6rem; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm) }.issue-list article > div { flex:1 }.issue-list strong { text-transform:capitalize }.issue-list p { margin:.2rem 0 }.refs { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.35rem }.refs button { border:1px solid var(--aw-border); background:var(--p-primary-50); color:var(--aw-teal); border-radius:999px; padding:.2rem .45rem; cursor:pointer }.quality-ok { color:var(--p-green-700); padding:1rem }.sources-card h3 { margin-top:0 }.sources-card h4 { margin:.9rem 0 .35rem }.sources-card a { display:block; color:var(--aw-teal); margin:.35rem 0; text-decoration:none }.stats { display:grid; grid-template-columns:repeat(2,1fr); gap:.4rem }.stats span { display:flex; flex-direction:column; padding:.55rem; background:var(--aw-canvas); border-radius:var(--aw-radius-sm); font-size:.68rem; color:var(--aw-muted); text-transform:capitalize }.stats strong { color:var(--aw-ink); font-size:1rem }.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }.muted { color:var(--aw-muted) }
+@media (max-width:1050px) { .quality-view { grid-template-columns:1fr }.report-head { align-items:flex-start; flex-direction:column }.report-actions { justify-content:flex-start }.sources-card { order:-1 } }
 @media (max-width:700px) { .report-nav { align-items:flex-start; flex-wrap:wrap }.report-nav .grow { display:none }.quality-head { align-items:flex-start; flex-direction:column } }
 </style>
