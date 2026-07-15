@@ -1,0 +1,107 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
+import Dialog from 'primevue/dialog'
+import InputText from 'primevue/inputtext'
+import Tag from 'primevue/tag'
+
+import { api } from '../../api'
+import type { AuditDocument } from '../../types'
+
+const props = defineProps<{
+  visible: boolean
+  workspaceId: string
+  selectedIds: string[]
+  documentAiEnabled: boolean
+  piiMasking: boolean
+}>()
+const emit = defineEmits<{
+  'update:visible': [boolean]
+  apply: [AuditDocument[]]
+  enable: []
+  masking: [boolean]
+}>()
+
+const documents = ref<AuditDocument[]>([])
+const draftIds = ref<string[]>([])
+const search = ref('')
+const loading = ref(false)
+
+const filtered = computed(() => {
+  const term = search.value.trim().toLowerCase()
+  return documents.value.filter((doc) => !term || `${doc.title} ${doc.source} ${doc.category}`.toLowerCase().includes(term))
+})
+
+watch(() => props.visible, async (visible) => {
+  if (!visible) return
+  draftIds.value = [...props.selectedIds]
+  search.value = ''
+  loading.value = true
+  try {
+    documents.value = (await api.get<{ items: AuditDocument[] }>(
+      `/api/workspaces/${props.workspaceId}/documents`,
+    )).items
+    draftIds.value = draftIds.value.filter((id) => documents.value.some((doc) => doc.id === id))
+  } finally {
+    loading.value = false
+  }
+})
+
+function apply() {
+  emit('apply', documents.value.filter((doc) => draftIds.value.includes(doc.id)))
+  emit('update:visible', false)
+}
+</script>
+
+<template>
+  <Dialog
+    :visible="visible"
+    modal
+    header="Add document context"
+    :style="{ width: 'min(42rem, 94vw)' }"
+    @update:visible="emit('update:visible', $event)"
+  >
+    <div class="privacy-note" :class="{ enabled: documentAiEnabled }">
+      <i :class="documentAiEnabled ? 'pi pi-shield' : 'pi pi-lock'" />
+      <div>
+        <strong>{{ documentAiEnabled ? 'Document AI is enabled' : 'Document AI is off' }}</strong>
+        <p>{{ documentAiEnabled ? 'Attached document text may be sent with your question. Every disclosure is logged.' : 'Enable it for this engagement before sending attached documents.' }}</p>
+      </div>
+      <Button v-if="!documentAiEnabled" label="Enable" size="small" @click="emit('enable')" />
+    </div>
+    <label v-if="documentAiEnabled" class="masking-option">
+      <Checkbox :modelValue="piiMasking" binary @update:modelValue="emit('masking', Boolean($event))" />
+      Mask common email and number patterns
+    </label>
+
+    <InputText v-model="search" class="search" placeholder="Search documents" />
+    <div class="document-list" :class="{ loading }">
+      <label v-for="doc in filtered" :key="doc.id" class="document-card">
+        <Checkbox v-model="draftIds" :value="doc.id" />
+        <span class="file-icon"><i class="pi pi-file" /></span>
+        <span class="identity">
+          <strong>{{ doc.title }}</strong>
+          <small>{{ doc.source }} · {{ doc.pages || 0 }} page{{ doc.pages === 1 ? '' : 's' }} · v{{ doc.version }}</small>
+        </span>
+        <Tag :value="doc.text_state.replace('_', ' ')" :severity="doc.text_state === 'extracted' ? 'success' : doc.text_state === 'failed' ? 'danger' : 'warn'" />
+      </label>
+      <p v-if="!loading && !filtered.length" class="empty">No documents match your search.</p>
+    </div>
+    <p class="budget-note"><i class="pi pi-info-circle" /> Whole documents are attached. If they exceed the safe context budget, the answer will identify any trimmed pages.</p>
+
+    <template #footer>
+      <Button label="Cancel" severity="secondary" text @click="emit('update:visible', false)" />
+      <Button :label="`Use ${draftIds.length} document${draftIds.length === 1 ? '' : 's'}`" icon="pi pi-paperclip" @click="apply" />
+    </template>
+  </Dialog>
+</template>
+
+<style scoped>
+.privacy-note { display:flex; align-items:center; gap:.7rem; padding:.75rem; border:1px solid var(--p-surface-200); border-radius:9px; background:var(--p-surface-50); }
+.privacy-note.enabled { border-color:#b7e3dc; background:var(--aw-teal-soft); }.privacy-note > i { color:var(--aw-teal); }.privacy-note div { flex:1; }.privacy-note p { margin:.2rem 0 0; color:var(--p-surface-500); font-size:.72rem; line-height:1.35; }
+.masking-option { display:flex; align-items:center; gap:.5rem; margin:.75rem 0; font-size:.76rem; color:var(--p-surface-600); }.search { width:100%; margin:1rem 0 .65rem; }
+.document-list { display:grid; gap:.55rem; max-height:24rem; overflow:auto; padding:.1rem; }.document-list.loading { opacity:.55; }
+.document-card { display:flex; align-items:center; gap:.65rem; padding:.7rem; border:1px solid var(--p-surface-200); border-radius:9px; cursor:pointer; background:var(--p-surface-0); }.document-card:hover { border-color:var(--aw-teal); }
+.file-icon { display:grid; place-items:center; width:2.15rem; height:2.15rem; border-radius:8px; color:var(--p-blue-600); background:var(--p-blue-50); }.identity { display:grid; min-width:0; flex:1; gap:.12rem; }.identity strong,.identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.identity small,.empty,.budget-note { color:var(--p-surface-500); font-size:.7rem; }.empty { padding:2rem; text-align:center; }.budget-note { display:flex; gap:.4rem; margin:.75rem 0 0; }
+</style>

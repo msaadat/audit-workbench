@@ -204,7 +204,7 @@ onUnmounted(unsubscribe)
           </TabPanels>
         </div>
       </Tabs>
-      <AgentDrawer :workspace="workspace" />
+      <AgentDrawer :workspace="workspace" @settings-changed="reload" />
     </div>
     <FolderImportDialog
       v-model="folderImportOpen"

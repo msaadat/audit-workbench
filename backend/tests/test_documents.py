@@ -67,6 +67,27 @@ def test_disclosure_requires_optin_selects_pages_masks_and_logs():
         documents.disclosable_content(ws, doc["id"], "document_qa", pages=[])
 
 
+def test_assistant_document_context_shares_budget_and_reports_trimming():
+    ws = workspaces.create_workspace("Assistant document budget")
+    first = documents.add_document(ws, "first.txt", b"A" * 120)
+    second = documents.add_document(ws, "second.txt", b"B" * 20)
+    ws.settings["doc_llm_optin"] = True
+    ws.save()
+
+    context = documents.assistant_document_context(
+        ws, [first["id"], second["id"], first["id"]], max_characters=60,
+    )
+
+    assert [item["document_id"] for item in context["manifest"]] == [first["id"], second["id"]]
+    assert sum(item["characters_disclosed"] for item in context["manifest"]) == 60
+    assert context["trimmed"] is True
+    assert context["manifest"][1]["characters_disclosed"] == 20
+    logged = documents.disclosures(ws)["items"]
+    assert len(logged) == 2
+    assert all(item["purpose"] == "assistant_chat" for item in logged)
+    assert all("characters_disclosed" in item for item in logged)
+
+
 def test_doc_chat_creates_citations_and_content_free_activity(monkeypatch):
     ws = workspaces.create_workspace("Document Q&A")
     doc = documents.add_document(ws, "policy.txt", b"Invoices require approval by the finance director before payment.")

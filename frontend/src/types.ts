@@ -91,6 +91,9 @@ export interface DisclosureEvent {
   pages: number[]
   purpose: string
   pii_masked: boolean
+  characters_disclosed?: number
+  truncated_pages?: number[]
+  omitted_pages?: number[]
 }
 
 export interface AIActivityEvent {
@@ -797,6 +800,22 @@ export interface AssistantAnswer {
   steps: AssistantStep[]
   artifacts: AssistantArtifact[]
   disclosure: string
+  citations: EvidenceRef[]
+  document_context: {
+    manifest: Array<{
+      document_id: string
+      title: string
+      total_pages: number
+      included_pages: number[]
+      truncated_pages: number[]
+      omitted_pages: number[]
+      characters_disclosed: number
+      trimmed: boolean
+      text_state: DocumentTextState
+    }>
+    trimmed: boolean
+    character_budget: number
+  } | null
 }
 
 export interface RunPythonResult {

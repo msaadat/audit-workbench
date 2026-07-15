@@ -19,6 +19,7 @@ import AgentTaskList from './AgentTaskList.vue'
 // It stays mounted while the user moves between tabs, driven by the shared
 // useAgentRun store (SSE events → live updates).
 const props = defineProps<{ workspace: WorkspaceSummary }>()
+const emit = defineEmits<{ 'settings-changed': [] }>()
 const toast = useToast()
 
 const agent = useAgentRun(props.workspace.id)
@@ -382,9 +383,10 @@ function fail(summary: string, error: unknown) {
         :configured="!!state.status?.configured"
         :pendingQuestion="state.run?.interview?.pending_question ?? null"
         @steer="steer"
+        @settings-changed="emit('settings-changed')"
       />
       <p class="disclosure">
-        <i class="pi pi-shield" /> Metadata-only — raw rows never leave this machine.
+        <i class="pi pi-shield" /> Rows stay metadata-only. Attached document text is disclosed only with engagement permission.
       </p>
     </div>
   </aside>

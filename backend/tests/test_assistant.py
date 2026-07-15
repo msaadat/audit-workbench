@@ -4,7 +4,7 @@ import urllib.error
 import polars as pl
 import pytest
 
-from app import assistant, assistant_settings, llm, workspaces
+from app import assistant, assistant_settings, documents, llm, workspaces
 from app.dashboard import tile_payload
 from app.routes import assistant_routes
 from app.sandbox import SandboxError, run as sandbox_run
@@ -465,3 +465,49 @@ def test_ask_reports_tool_error_to_model(monkeypatch, workspace_with_data):
     result = assistant.ask(workspace_with_data, "query the ghost table")
     assert result["steps"][0]["ok"] is False
     assert result["answer"] == "That table does not exist."
+
+
+def test_ask_with_documents_discloses_context_and_returns_validated_citation(
+    monkeypatch, workspace_with_data,
+):
+    doc = documents.add_document(
+        workspace_with_data,
+        "approval-policy.txt",
+        b"The finance director approves invoices before payment.",
+    )
+    workspace_with_data.settings.update(doc_llm_optin=True, doc_pii_masking=False)
+    workspace_with_data.save()
+    calls = []
+
+    def fake_chat(messages, tools=None, temperature=0.0):
+        calls.append(messages)
+        return {"content": json.dumps({
+            "answer": "The finance director approves invoices.",
+            "citations": [{
+                "document_id": doc["id"], "page": 1,
+                "excerpt": "The finance director approves invoices before payment.",
+            }],
+        })}
+
+    monkeypatch.setattr(assistant.llm, "chat", fake_chat)
+    monkeypatch.setattr(assistant.llm, "status", lambda: {
+        "configured": True, "provider": "fake", "model": "fake",
+    })
+    result = assistant.ask(
+        workspace_with_data, "Who approves invoices?", [doc["id"]], mask_pii=False,
+    )
+
+    assert result["answer"] == "The finance director approves invoices."
+    assert result["citations"][0]["source_id"] == doc["id"]
+    assert result["document_context"]["trimmed"] is False
+    assert "finance director" in calls[0][0]["content"]
+    assert documents.disclosures(workspace_with_data)["items"][0]["purpose"] == "assistant_chat"
+    activity = documents.activities(workspace_with_data)["items"][0]
+    assert activity["document_ids"] == [doc["id"]]
+    assert "finance director" not in json.dumps(activity)
+
+
+def test_ask_with_documents_requires_optin(workspace_with_data):
+    doc = documents.add_document(workspace_with_data, "local.txt", b"Stays local")
+    with pytest.raises(documents.DocPrivacyError):
+        assistant.ask(workspace_with_data, "What does it say?", [doc["id"]])

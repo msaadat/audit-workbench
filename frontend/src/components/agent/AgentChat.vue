@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../../api'
+import { useAssistantContext } from '../../composables/useAssistantContext'
 import type {
   AgentMessage,
   AssistantAnswer,
@@ -16,7 +17,9 @@ import type {
 } from '../../types'
 import ChartView from '../ChartView.vue'
 import CodeEditor from '../CodeEditor.vue'
+import EvidenceAnchorDialog from '../EvidenceAnchorDialog.vue'
 import PinDialog from '../PinDialog.vue'
+import DocumentContextPicker from './DocumentContextPicker.vue'
 
 interface Turn {
   question: string
@@ -38,8 +41,9 @@ const props = defineProps<{
   configured: boolean
   pendingQuestion: string | null
 }>()
-const emit = defineEmits<{ steer: [string] }>()
+const emit = defineEmits<{ steer: [string]; 'settings-changed': [] }>()
 const toast = useToast()
+const context = useAssistantContext(props.workspace.id)
 
 const draft = ref('')
 const turns = ref<Turn[]>([])
@@ -49,6 +53,14 @@ const pinning = ref(false)
 const pinTarget = ref<AssistantArtifact | null>(null)
 const rerunning = ref<Record<string, boolean>>({})
 const savingId = ref<string | null>(null)
+const pickerOpen = ref(false)
+const anchorOpen = ref(false)
+const activeAnchor = ref<AssistantAnswer['citations'][number] | null>(null)
+const documentAiEnabled = ref(Boolean(props.workspace.settings?.doc_llm_optin))
+const piiMasking = ref(Boolean(props.workspace.settings?.doc_pii_masking))
+
+watch(() => props.workspace.settings?.doc_llm_optin, (value) => { documentAiEnabled.value = Boolean(value) })
+watch(() => props.workspace.settings?.doc_pii_masking, (value) => { piiMasking.value = Boolean(value) })
 
 const verdictSeverity: Record<string, string> = {
   ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
@@ -72,6 +84,10 @@ const placeholder = computed(() => {
 function send(followUp = false) {
   const text = draft.value.trim()
   if (!text || busy.value) return
+  if (!props.runActive && !followUp && context.documentIds.value.length && !documentAiEnabled.value) {
+    pickerOpen.value = true
+    return
+  }
   draft.value = ''
   if (props.runActive || followUp) {
     emit('steer', text)
@@ -87,7 +103,11 @@ async function ask(question: string) {
   try {
     turn.answer = await api.post<AssistantAnswer>(
       `/api/workspaces/${props.workspace.id}/assistant`,
-      { question },
+      {
+        question,
+        document_ids: context.documentIds.value,
+        mask_pii: piiMasking.value,
+      },
     )
   } catch (error) {
     turn.error = error instanceof ApiError ? error.message : String(error)
@@ -95,6 +115,35 @@ async function ask(question: string) {
     turn.pending = false
     busy.value = false
   }
+}
+
+async function enableDocumentAi() {
+  try {
+    const settings = await api.patch<NonNullable<WorkspaceSummary['settings']>>(
+      `/api/workspaces/${props.workspace.id}/settings`, { doc_llm_optin: true },
+    )
+    documentAiEnabled.value = settings.doc_llm_optin
+    emit('settings-changed')
+  } catch (error) {
+    fail('Could not enable Document AI', error)
+  }
+}
+
+async function setMasking(value: boolean) {
+  const previous = piiMasking.value
+  piiMasking.value = value
+  try {
+    await api.patch(`/api/workspaces/${props.workspace.id}/settings`, { doc_pii_masking: value })
+    emit('settings-changed')
+  } catch (error) {
+    piiMasking.value = previous
+    fail('Could not update masking', error)
+  }
+}
+
+function showCitation(citation: AssistantAnswer['citations'][number]) {
+  activeAnchor.value = citation
+  anchorOpen.value = true
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -213,6 +262,29 @@ function fail(summary: string, error: unknown) {
           </div>
           <p class="answer">{{ turn.answer.answer }}</p>
 
+          <div v-if="turn.answer.document_context?.trimmed" class="context-warning">
+            <i class="pi pi-exclamation-triangle" />
+            <span>
+              <strong>Some document context was trimmed</strong>
+              <small v-for="item in turn.answer.document_context.manifest.filter(value => value.trimmed)" :key="item.document_id">
+                {{ item.title }}: included {{ item.included_pages.length }} of {{ item.total_pages }} pages<span v-if="item.truncated_pages.length">; page {{ item.truncated_pages.join(', ') }} was shortened</span>
+              </small>
+            </span>
+          </div>
+
+          <div v-if="turn.answer.citations?.length" class="answer-citations">
+            <Button
+              v-for="citation in turn.answer.citations"
+              :key="citation.id"
+              :label="`${context.documents.value.find(doc => doc.id === citation.source_id)?.title || 'Document'} · p. ${citation.page}`"
+              icon="pi pi-link"
+              size="small"
+              severity="secondary"
+              outlined
+              @click="showCitation(citation)"
+            />
+          </div>
+
           <div v-for="artifact in turn.answer.artifacts" :key="artifact.id" class="artifact">
             <div class="artifact-head">
               <strong>{{ artifact.title }}</strong>
@@ -272,6 +344,13 @@ function fail(summary: string, error: unknown) {
         <i class="pi pi-comments" />
         <span><strong>Planning question</strong>{{ pendingQuestion }}</span>
       </div>
+      <div v-if="context.documents.value.length && !runActive" class="context-chips">
+        <span v-for="doc in context.documents.value" :key="doc.id" class="context-chip">
+          <i class="pi pi-file" /><span>{{ doc.title }}</span>
+          <button :aria-label="`Remove ${doc.title} from context`" @click="context.remove(doc.id)"><i class="pi pi-times" /></button>
+        </span>
+        <button class="clear-context" @click="context.clear">Clear</button>
+      </div>
       <Textarea
         v-model="draft"
         rows="2"
@@ -281,6 +360,15 @@ function fail(summary: string, error: unknown) {
         @keydown="onKeydown"
       />
       <div class="composer-actions">
+        <Button
+          icon="pi pi-paperclip"
+          size="small"
+          severity="secondary"
+          text
+          v-tooltip.top="runActive ? 'Document context is available for ordinary chat questions only' : 'Add document context'"
+          :disabled="runActive"
+          @click="pickerOpen = true"
+        />
         <Button
           v-if="runFinished && !runActive"
           icon="pi pi-sparkles"
@@ -309,6 +397,17 @@ function fail(summary: string, error: unknown) {
     :saving="pinning"
     @pin="pin"
   />
+  <DocumentContextPicker
+    v-model:visible="pickerOpen"
+    :workspaceId="workspace.id"
+    :selectedIds="context.documentIds.value"
+    :documentAiEnabled="documentAiEnabled"
+    :piiMasking="piiMasking"
+    @apply="context.replace"
+    @enable="enableDocumentAi"
+    @masking="setMasking"
+  />
+  <EvidenceAnchorDialog v-model="anchorOpen" :anchor="activeAnchor" />
 </template>
 
 <style scoped>
@@ -365,6 +464,8 @@ function fail(summary: string, error: unknown) {
 }
 .step.bad { background: var(--p-red-50); color: var(--p-red-600); }
 .answer { margin: 0; white-space: pre-wrap; line-height: 1.45; }
+.answer-citations { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.55rem; }
+.context-warning { display:flex; gap:.5rem; margin-top:.55rem; padding:.55rem; border:1px solid var(--p-orange-200); border-radius:7px; color:var(--p-orange-800); background:var(--p-orange-50); font-size:.72rem; }.context-warning span { display:grid; gap:.18rem; }.context-warning small { color:var(--p-orange-700); }
 
 .artifact { border: 1px solid var(--p-surface-200); border-radius: 8px; padding: 0.6rem; margin-top: 0.6rem; }
 .artifact-head { display: flex; align-items: center; gap: 0.45rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
@@ -398,6 +499,7 @@ function fail(summary: string, error: unknown) {
   margin: 0.35rem 0 0;
 }
 .composer { flex: 0 0 auto; display: flex; gap: 0.45rem; align-items: flex-end; flex-wrap: wrap; }
+.context-chips { flex:0 0 100%; display:flex; align-items:center; gap:.3rem; overflow-x:auto; padding:.1rem 0; }.context-chip { display:inline-flex; align-items:center; gap:.3rem; max-width:12rem; padding:.25rem .4rem; border:1px solid var(--p-primary-200); border-radius:999px; color:var(--p-primary-800); background:var(--p-primary-50); font-size:.68rem; }.context-chip > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.context-chip button,.clear-context { border:0; padding:0; color:inherit; background:transparent; cursor:pointer; }.clear-context { color:var(--p-surface-500); font-size:.68rem; }
 .pending-question { flex: 0 0 100%; display: flex; gap: 0.5rem; padding: 0.55rem 0.65rem; border: 1px solid var(--p-primary-200); border-radius: 7px; background: var(--p-primary-50); font-size: 0.78rem; }
 .pending-question span { display: flex; flex-direction: column; gap: 0.15rem; }
 .composer :deep(textarea) { flex: 1; resize: none; font-size: 0.85rem; }

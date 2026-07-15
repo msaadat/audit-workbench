@@ -30,7 +30,12 @@ async def assistant_settings(payload: dict = Body(...)):
 @router.post("/workspaces/{workspace_id}/assistant")
 async def ask(workspace_id: str, payload: dict = Body(...)):
     ws = workspaces.load_workspace(workspace_id)
-    return assistant.ask(ws, payload.get("question", ""))
+    return assistant.ask(
+        ws,
+        payload.get("question", ""),
+        payload.get("document_ids"),
+        mask_pii=payload.get("mask_pii"),
+    )
 
 
 @router.post("/workspaces/{workspace_id}/run-python")

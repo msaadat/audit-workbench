@@ -23,12 +23,13 @@ while the full result is returned to the browser (same machine) for display.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
 import polars as pl
 
-from . import analytics, explore, llm, profiler, sandbox
+from . import analytics, documents, explore, llm, profiler, sandbox
 from .workspaces import Workspace, WorkspaceError
 
 MAX_STEPS = 8
@@ -439,9 +440,10 @@ list_tables / describe_table before querying unfamiliar columns.
 - Prefer query_table for filters and group-by aggregations, run_analytics for \
 the canned audit tests, and run_python only when the structured tools can't \
 express the task. Keep run_python to Polars, assign the answer to `result`.
-- You only ever see schema, aggregate statistics and previews of aggregated \
-results — raw rows are withheld from you by design. Do not ask for raw data; \
-compute aggregates instead. The auditor sees full results in the UI.
+- For structured tables, you only ever see schema, aggregate statistics and \
+previews of aggregated results — raw rows are withheld from you by design. Do \
+not ask for raw rows; compute aggregates instead. Explicitly attached document \
+text is the only exception and is governed by a separate disclosure gate.
 - When done, give a short, plain-English answer grounded in the tool results. \
 Mention the concrete figures you were shown. Note any caveats (withheld rows, \
 data quality) briefly.
@@ -451,17 +453,81 @@ Workspace tables and columns:
 """
 
 
-def ask(workspace: Workspace, question: str) -> dict:
+DOCUMENT_CONTEXT_RULES = """
+The auditor explicitly attached the documents below. Treat their disclosed
+text as evidence and use it alongside the local data tools when relevant.
+When you finish, respond with one JSON object only:
+{"answer": "plain-language answer", "citations": [
+  {"document_id": "attached id", "page": 1, "excerpt": "exact short excerpt"}
+]}
+Include citations only for claims grounded in attached documents. Excerpts
+must be exact text from the disclosed page. Do not cite omitted content.
+
+ATTACHED DOCUMENTS:
+%s
+"""
+
+
+def _document_prompt(context: dict) -> str:
+    payload = []
+    for doc in context.get("documents") or []:
+        payload.append({
+            "document_id": doc["document_id"], "title": doc["title"], "source": doc["source"],
+            "pages": [{"page": page["page"], "text": page.get("text") or ""} for page in doc["pages"]],
+        })
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _parse_document_answer(value: str) -> tuple[str, list[dict]]:
+    raw = str(value or "").strip()
+    candidate = raw
+    if candidate.startswith("```"):
+        candidate = candidate.removeprefix("```json").removeprefix("```")
+        candidate = candidate.removesuffix("```").strip()
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return raw, []
+    if not isinstance(parsed, dict):
+        return raw, []
+    citations = parsed.get("citations") if isinstance(parsed.get("citations"), list) else []
+    return str(parsed.get("answer") or raw), [item for item in citations if isinstance(item, dict)]
+
+
+def ask(
+    workspace: Workspace,
+    question: str,
+    document_ids: list[str] | None = None,
+    *,
+    mask_pii: bool | None = None,
+) -> dict:
     """Run the tool-calling loop for one question. Returns answer + trace +
     artifacts. Raises :class:`llm.LLMError` if the backend isn't configured."""
     question = str(question or "").strip()
     if not question:
         raise WorkspaceError("Ask a question first.")
 
+    if document_ids is not None and not isinstance(document_ids, list):
+        raise WorkspaceError("document_ids must be an array.")
+    attached_ids = [str(value) for value in (document_ids or [])]
+    effective_masking = (
+        bool(workspace.settings.get("doc_pii_masking"))
+        if mask_pii is None else bool(mask_pii)
+    )
+    document_context = (
+        documents.assistant_document_context(
+            workspace, attached_ids, mask_pii=effective_masking,
+        )
+        if attached_ids else None
+    )
+
     session = _Session(workspace)
     schema_text = json.dumps(_schema_brief(workspace), indent=1)
+    system_prompt = SYSTEM_PROMPT % schema_text
+    if document_context:
+        system_prompt += DOCUMENT_CONTEXT_RULES % _document_prompt(document_context)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT % schema_text},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
 
@@ -507,11 +573,46 @@ def ask(workspace: Workspace, question: str) -> dict:
             "gathered so far."
         )
 
+    raw_answer = answer
+    raw_citations: list[dict] = []
+    if document_context:
+        answer, raw_citations = _parse_document_answer(answer)
+    citations = (
+        documents.assistant_document_citations(
+            workspace, raw_citations, document_context, mask_pii=effective_masking,
+        )
+        if document_context else []
+    )
+    if document_context:
+        profile = llm.status()
+        documents.append_activity(
+            workspace, run_id=None, stage="assistant_chat", task=None,
+            purpose="assistant_chat", provider=profile.get("provider") or profile.get("backend"),
+            model=profile.get("model"), vision_used=False,
+            prompt_version=hashlib.sha1(system_prompt.encode()).hexdigest(),
+            template_versions=[], knowledge_packs=[], document_ids=attached_ids,
+            page_ranges=sorted({
+                page for item in document_context["manifest"] for page in item["included_pages"]
+            }),
+            source_hashes=[event.get("source_sha1") for event in document_context["disclosures"]],
+            response_at=documents.utcnow(),
+            response_hash=hashlib.sha1(raw_answer.encode()).hexdigest() if raw_answer else None,
+            artifact_ref="assistant_chat", disposition="generated",
+        )
     return {
         "answer": answer,
         "steps": session.steps,
         "artifacts": session.artifacts,
-        "disclosure": DISCLOSURE,
+        "disclosure": (
+            DISCLOSURE + " Explicitly attached document text was also disclosed under the engagement's Document AI setting."
+            if document_context else DISCLOSURE
+        ),
+        "citations": citations,
+        "document_context": ({
+            "manifest": document_context["manifest"],
+            "trimmed": document_context["trimmed"],
+            "character_budget": document_context["character_budget"],
+        } if document_context else None),
     }
 
 

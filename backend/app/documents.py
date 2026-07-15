@@ -31,6 +31,7 @@ CATEGORIES = {
     "evidence", "prior_report", "correspondence", "other",
 }
 MIN_TEXT_CHARACTERS = 40
+ASSISTANT_DOCUMENT_CONTEXT_MAX_CHARACTERS = 80_000
 _append_lock = threading.Lock()
 
 
@@ -249,7 +250,8 @@ def _mask_pii(text: str) -> str:
 
 
 def disclosable_content(workspace: Workspace, source_ref: str, purpose: str, run_id: str | None = None,
-                         pages: list[int] | None = None, *, mask_pii: bool = False) -> dict:
+                         pages: list[int] | None = None, *, mask_pii: bool = False,
+                         max_characters: int | None = None) -> dict:
     """The only function allowed to return prompt-ready document content."""
     if not workspace.settings.get("doc_llm_optin"):
         raise DocPrivacyError("Document AI is off for this engagement. Enable it before disclosing document content.")
@@ -287,14 +289,158 @@ def disclosable_content(workspace: Workspace, source_ref: str, purpose: str, run
     else:
         doc = _document(workspace, source_ref)
         selected = _select_pages(extract_document(workspace, doc["id"]), pages)
-    content_pages = [{**page, "text": _mask_pii(page.get("text") or "") if mask_pii else page.get("text") or ""} for page in selected]
+    prepared = [
+        {**page, "text": _mask_pii(page.get("text") or "") if mask_pii else page.get("text") or ""}
+        for page in selected
+    ]
+    content_pages: list[dict] = []
+    truncated_pages: list[int] = []
+    omitted_pages: list[int] = []
+    remaining = None if max_characters is None else max(0, int(max_characters))
+    for page in prepared:
+        text = str(page.get("text") or "")
+        page_number = int(page["page"])
+        if not text:
+            omitted_pages.append(page_number)
+            continue
+        if remaining is None or len(text) <= remaining:
+            content_pages.append(page)
+            if remaining is not None:
+                remaining -= len(text)
+            continue
+        if remaining > 0:
+            content_pages.append({**page, "text": text[:remaining]})
+            truncated_pages.append(page_number)
+            remaining = 0
+        else:
+            omitted_pages.append(page_number)
+    included = [int(page["page"]) for page in content_pages]
+    omitted_pages.extend(
+        int(page["page"]) for page in prepared
+        if int(page["page"]) not in included and int(page["page"]) not in omitted_pages
+    )
     event = {
         "id": f"DISC-{uuid.uuid4().hex[:10].upper()}", "at": utcnow(), "source_ref": source_ref,
-        "document_id": doc["id"], "source_sha1": doc.get("sha1"), "pages": [page["page"] for page in selected],
+        "document_id": doc["id"], "source_sha1": doc.get("sha1"), "pages": included,
         "purpose": str(purpose or "document_use"), "run_id": run_id, "pii_masked": bool(mask_pii),
+        "characters_disclosed": sum(len(str(page.get("text") or "")) for page in content_pages),
+        "truncated_pages": truncated_pages, "omitted_pages": sorted(set(omitted_pages)),
     }
-    _append_jsonl(_documents_dir(workspace) / "disclosures.jsonl", event)
-    return {"source_ref": source_ref, "source_sha1": doc.get("sha1"), "pages": content_pages, "disclosure": event}
+    disclosure = _append_jsonl(_documents_dir(workspace) / "disclosures.jsonl", event) if content_pages else None
+    return {
+        "source_ref": source_ref, "source_sha1": doc.get("sha1"), "pages": content_pages,
+        "disclosure": disclosure, "truncated_pages": truncated_pages,
+        "omitted_pages": sorted(set(omitted_pages)),
+    }
+
+
+def _fair_character_allocations(lengths: list[int], budget: int) -> list[int]:
+    """Share a fixed prompt budget across documents, redistributing spare room."""
+    allocations = [0] * len(lengths)
+    remaining_lengths = [max(0, int(value)) for value in lengths]
+    active = {index for index, value in enumerate(remaining_lengths) if value > 0}
+    remaining_budget = max(0, int(budget))
+    while active and remaining_budget:
+        share = max(1, remaining_budget // len(active))
+        progressed = False
+        for index in list(active):
+            amount = min(share, remaining_lengths[index], remaining_budget)
+            allocations[index] += amount
+            remaining_lengths[index] -= amount
+            remaining_budget -= amount
+            progressed = progressed or amount > 0
+            if remaining_lengths[index] == 0:
+                active.remove(index)
+            if remaining_budget == 0:
+                break
+        if not progressed:
+            break
+    return allocations
+
+
+def assistant_document_context(
+    workspace: Workspace,
+    document_ids: list[str],
+    *,
+    mask_pii: bool = False,
+    max_characters: int = ASSISTANT_DOCUMENT_CONTEXT_MAX_CHARACTERS,
+) -> dict:
+    """Build prompt-ready, disclosure-logged context for attached documents."""
+    unique_ids = list(dict.fromkeys(str(value or "").strip() for value in document_ids))
+    unique_ids = [value for value in unique_ids if value]
+    docs = [_document(workspace, document_id) for document_id in unique_ids]
+    extracted = [extract_document(workspace, doc["id"]) for doc in docs]
+    lengths = [sum(len(str(page.get("text") or "")) for page in item.get("pages") or []) for item in extracted]
+    allocations = _fair_character_allocations(lengths, max_characters)
+    prompt_documents = []
+    manifest = []
+    disclosure_events = []
+    for doc, item, allocation in zip(docs, extracted, allocations, strict=True):
+        disclosed = disclosable_content(
+            workspace, doc["id"], "assistant_chat", pages=None,
+            mask_pii=mask_pii, max_characters=allocation,
+        )
+        if disclosed["disclosure"]:
+            disclosure_events.append(disclosed["disclosure"])
+        total_pages = [int(page["page"]) for page in item.get("pages") or []]
+        included_pages = [int(page["page"]) for page in disclosed["pages"]]
+        entry = {
+            "document_id": doc["id"], "title": doc.get("title") or doc.get("source") or doc["id"],
+            "source": doc.get("source") or "", "pages": disclosed["pages"],
+        }
+        prompt_documents.append(entry)
+        omitted = sorted(set(total_pages) - set(included_pages))
+        manifest.append({
+            "document_id": doc["id"], "title": entry["title"], "total_pages": len(total_pages),
+            "included_pages": included_pages, "truncated_pages": disclosed["truncated_pages"],
+            "omitted_pages": omitted, "characters_disclosed": sum(
+                len(str(page.get("text") or "")) for page in disclosed["pages"]
+            ),
+            "trimmed": bool(disclosed["truncated_pages"] or omitted),
+            "text_state": doc.get("text_state") or item.get("state"),
+        })
+    return {
+        "documents": prompt_documents, "manifest": manifest, "disclosures": disclosure_events,
+        "trimmed": any(item["trimmed"] for item in manifest),
+        "character_budget": max_characters,
+    }
+
+
+def assistant_document_citations(
+    workspace: Workspace,
+    citations: list[dict],
+    context: dict,
+    *,
+    mask_pii: bool = False,
+) -> list[dict]:
+    """Validate model citations against the exact document text it received."""
+    disclosed = {
+        (str(doc["document_id"]), int(page["page"])): str(page.get("text") or "")
+        for doc in context.get("documents") or [] for page in doc.get("pages") or []
+    }
+    anchors = []
+    seen = set()
+    for citation in citations or []:
+        document_id = str(citation.get("document_id") or "")
+        try:
+            page = int(citation.get("page"))
+        except (TypeError, ValueError):
+            continue
+        allowed_text = disclosed.get((document_id, page))
+        if allowed_text is None or (document_id, page) in seen:
+            continue
+        excerpt = str(citation.get("excerpt") or "").strip()
+        if not excerpt or excerpt not in allowed_text:
+            excerpt = allowed_text[:240].strip()
+        doc = _document(workspace, document_id)
+        anchor_excerpt = excerpt
+        if mask_pii:
+            original = preview(workspace, document_id, [page])["pages"][0].get("text") or ""
+            if excerpt not in original:
+                anchor_excerpt = str(original)[:240].strip()
+        anchors.append(document_anchor(doc, page, anchor_excerpt, generated_by="assistant-chat"))
+        seen.add((document_id, page))
+    return anchors
 
 
 def append_activity(workspace: Workspace, **fields) -> dict:
@@ -344,6 +490,8 @@ def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[
         raise WorkspaceError("A document question is required.")
     doc = _document(workspace, doc_id)
     disclosed = disclosable_content(workspace, doc_id, "document_qa", run_id, pages, mask_pii=mask_pii)
+    if not disclosed["pages"]:
+        raise WorkspaceError("The selected document pages contain no extractable text.")
     system = """[agent:document_qa]\nAnswer only from the disclosed pages. Return JSON with answer and citations. Each citation has page and a short verbatim excerpt. If the answer is absent, say so. Do not invent facts."""
     page_text = "\n\n".join(f"--- Page {page['page']} ---\n{page['text']}" for page in disclosed["pages"])
     user = f"Question: {question}\n\nDisclosed document pages:\n{page_text}"

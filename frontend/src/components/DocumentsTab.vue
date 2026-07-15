@@ -5,14 +5,13 @@ import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
-import Textarea from 'primevue/textarea'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import Checkbox from 'primevue/checkbox'
 import { api } from '../api'
-import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentPage, EvidenceRef, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
-import MarkdownView from './MarkdownView.vue'
-import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
+import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantContext } from '../composables/useAssistantContext'
+import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
 import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -20,13 +19,15 @@ const emit = defineEmits<{ changed: []; 'planning-started': [] }>()
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
+const assistantContext = useAssistantContext(props.workspace.id)
+const agent = useAgentRun(props.workspace.id)
 
 const documents = ref<AuditDocument[]>([])
 const selectedId = ref('')
 const previewPages = ref<DocumentPage[]>([])
 const currentPage = ref(1)
-const view = ref<'preview' | 'ask' | 'versions' | 'activity'>('preview')
-const detailViews = ['preview', 'ask', 'versions', 'activity'] as const
+const view = ref<'preview' | 'versions' | 'activity'>('preview')
+const detailViews = ['preview', 'versions', 'activity'] as const
 const search = ref('')
 const category = ref('all')
 const state = ref('all')
@@ -37,14 +38,8 @@ const piiMasking = ref(Boolean(props.workspace.settings?.doc_pii_masking))
 const confirmOptin = ref(false)
 const disclosuresOpen = ref(false)
 const disclosures = ref<DisclosureEvent[]>([])
-const question = ref('')
-const askPages = ref('1')
-const answer = ref('')
-const citations = ref<EvidenceRef[]>([])
 const versions = ref<AuditDocument[]>([])
 const activity = ref<AIActivityEvent[]>([])
-const anchor = ref<EvidenceRef | null>(null)
-const anchorOpen = ref(false)
 const knowledgeOpen = ref(false)
 const packs = ref<KnowledgePack[]>([])
 const packSearch = ref('')
@@ -54,6 +49,8 @@ const planningAction = ref<IntakeSuggestedAction | null>(null)
 
 const categories = ['all', 'background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other']
 const states = ['all', 'extracted', 'partial', 'image_only', 'pending', 'failed']
+const categoryOptions = categories.map(value => ({ value, label: value === 'all' ? 'All types' : value.replace('_', ' ') }))
+const stateOptions = states.map(value => ({ value, label: value === 'all' ? 'All statuses' : value.replace('_', ' ') }))
 const selected = computed(() => documents.value.find(doc => doc.id === selectedId.value) || null)
 const filtered = computed(() => documents.value.filter(doc => {
   const term = search.value.toLowerCase()
@@ -84,7 +81,6 @@ async function loadDocuments() {
 async function selectDocument(id: string, page?: number) {
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
-  answer.value = ''; citations.value = []
   await router.replace({ query: { ...route.query, tab: 'documents', doc: id, page: String(currentPage.value) } })
   await loadDetail()
 }
@@ -95,7 +91,6 @@ async function loadDetail() {
     const data = await api.get<{ pages: DocumentPage[] }>(`/api/workspaces/${props.workspace.id}/documents/${selectedId.value}/preview`)
     previewPages.value = data.pages
     if (!data.pages.some(page => page.page === currentPage.value)) currentPage.value = data.pages[0]?.page || 1
-    askPages.value = String(currentPage.value)
     const [versionData, activityData] = await Promise.all([
       api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents/${selectedId.value}/versions`),
       api.get<{ items: AIActivityEvent[] }>(`/api/workspaces/${props.workspace.id}/ai-activity?document_id=${selectedId.value}`),
@@ -131,6 +126,7 @@ async function reextract() {
 async function remove() {
   if (!selected.value || !window.confirm(`Delete ${selected.value.title}? Existing evidence references will remain visibly stale.`)) return
   await api.del(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}`)
+  assistantContext.remove(selected.value.id)
   selectedId.value = ''; await loadDocuments(); if (selectedId.value) await loadDetail(); emit('changed')
 }
 
@@ -154,23 +150,31 @@ async function openDisclosures() {
   disclosuresOpen.value = true
 }
 
-function parsedPages(): number[] {
-  return [...new Set(askPages.value.split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0))]
+function attachToAssistant() {
+  if (!selected.value) return
+  assistantContext.add(selected.value)
+  if (!agent.state.drawerOpen) agent.toggleDrawer()
+  toast.add({ severity: 'success', summary: 'Added to assistant', detail: selected.value.title, life: 2500 })
 }
 
-async function ask() {
-  if (!selected.value || !question.value.trim()) return
-  busy.value = true
+function documentLabel(id: string) {
+  return documents.value.find(doc => doc.id === id)?.title || 'Document'
+}
+
+function fileIcon(doc: AuditDocument) {
+  if (/\.(png|jpe?g|webp|bmp|tiff?)$/i.test(doc.source)) return 'pi pi-image'
+  if (/\.pdf$/i.test(doc.source)) return 'pi pi-file-pdf'
+  return 'pi pi-file'
+}
+
+async function copyText(value: string, label: string) {
   try {
-    const result = await api.post<{ answer: string; citations: EvidenceRef[] }>(`/api/workspaces/${props.workspace.id}/doc-chat`, {
-      document_id: selected.value.id, question: question.value, pages: parsedPages(), mask_pii: piiMasking.value,
-    })
-    answer.value = result.answer; citations.value = result.citations; await loadDetail()
-  } catch (error) { toast.add({ severity: 'error', summary: 'Document question failed', detail: String(error), life: 6000 }) }
-  finally { busy.value = false }
+    await navigator.clipboard.writeText(value)
+    toast.add({ severity: 'success', summary: `${label} copied`, life: 1800 })
+  } catch {
+    toast.add({ severity: 'error', summary: `Could not copy ${label.toLowerCase()}`, life: 3000 })
+  }
 }
-
-function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
 
 async function loadPacks() { packs.value = (await api.get<{ items: KnowledgePack[] }>(`/api/workspaces/${props.workspace.id}/knowledge-packs`)).items }
 async function openKnowledge() { await loadPacks(); knowledgeOpen.value = true }
@@ -197,18 +201,18 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
       <div class="toolbar-actions">
         <input ref="fileInput" type="file" multiple hidden accept=".pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" @change="upload" />
         <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
-        <Button label="Knowledge packs" icon="pi pi-book" severity="secondary" @click="openKnowledge" />
-        <Button label="Disclosure log" icon="pi pi-list" severity="secondary" @click="openDisclosures" />
-        <Button v-if="!optin" label="Document AI off" icon="pi pi-lock" severity="secondary" @click="confirmOptin = true" />
-        <Button v-else label="Document AI on" icon="pi pi-unlock" severity="success" @click="disableOptin" />
+        <Button label="Knowledge" icon="pi pi-book" severity="secondary" text @click="openKnowledge" />
+        <Button label="Disclosure log" icon="pi pi-list" severity="secondary" text @click="openDisclosures" />
       </div>
     </div>
 
     <div class="privacy-strip" :class="{ enabled: optin }">
-      <i :class="optin ? 'pi pi-cloud-upload' : 'pi pi-lock'" />
-      <span v-if="optin">Structured rows remain local. Only document pages you confirm may be sent to the configured model, and every disclosure is logged.</span>
-      <span v-else>All document content remains local. Document questions are disabled until this engagement explicitly opts in.</span>
+      <i :class="optin ? 'pi pi-shield' : 'pi pi-lock'" />
+      <span v-if="optin"><strong>Document AI on.</strong> Only documents attached in the assistant may be disclosed; every disclosure is logged.</span>
+      <span v-else><strong>Documents stay local.</strong> Enable Document AI when you want to attach them to assistant questions.</span>
       <label v-if="optin"><Checkbox v-model="piiMasking" binary @change="setMasking" /> Mask common email/number patterns before disclosure</label>
+      <Button v-if="!optin" label="Enable" size="small" severity="secondary" @click="confirmOptin = true" />
+      <Button v-else icon="pi pi-times" text rounded severity="secondary" aria-label="Turn off Document AI" v-tooltip.top="'Turn off Document AI'" @click="disableOptin" />
     </div>
 
     <PostImportPlanningOffer
@@ -222,25 +226,40 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 
     <div class="document-layout surface-panel">
       <aside class="document-rail">
-        <InputText v-model="search" placeholder="Search documents" class="rail-search" />
-        <div class="filters"><Select v-model="category" :options="categories" /><Select v-model="state" :options="states" /></div>
+        <div class="rail-tools">
+          <span class="search-wrap"><i class="pi pi-search" /><InputText v-model="search" placeholder="Search documents" class="rail-search" /></span>
+          <div class="filters">
+            <Select v-model="category" :options="categoryOptions" optionLabel="label" optionValue="value" aria-label="Document type" />
+            <Select v-model="state" :options="stateOptions" optionLabel="label" optionValue="value" aria-label="Extraction status" />
+          </div>
+        </div>
         <div v-if="!filtered.length" class="rail-empty">No documents match these filters.</div>
         <div v-for="[group, items] in groups" :key="group" class="doc-group">
           <h4>{{ String(group).replace('_', ' ') }} <span>{{ items.length }}</span></h4>
           <button v-for="doc in items" :key="doc.id" class="doc-row" :class="{ active: doc.id === selectedId }" @click="selectDocument(doc.id, 1)">
-            <i class="pi pi-file" /><span><strong>{{ doc.title }}</strong><small>{{ doc.source }} · v{{ doc.version }}</small></span>
-            <Tag :value="doc.text_state.replace('_', ' ')" :severity="severity(doc.text_state)" />
+            <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
+            <span class="doc-identity"><strong>{{ doc.title }}</strong><small>{{ doc.source }}</small><small>{{ doc.pages || 0 }} page{{ doc.pages === 1 ? '' : 's' }} · version {{ doc.version }}</small></span>
+            <span class="state-pill" :class="`state-${doc.text_state}`">{{ doc.text_state.replace('_', ' ') }}</span>
           </button>
         </div>
       </aside>
 
       <main v-if="selected" class="document-detail">
         <header class="detail-head">
-          <div><p class="eyebrow">{{ selected.category }} · version {{ selected.version }}</p><h3>{{ selected.title }}</h3><code>{{ selected.sha1 }}</code></div>
-          <div><Button icon="pi pi-refresh" text rounded aria-label="Re-extract" @click="reextract" /><Button icon="pi pi-trash" text rounded severity="danger" aria-label="Delete" @click="remove" /></div>
+          <div class="detail-identity">
+            <p class="eyebrow">{{ selected.category.replace('_', ' ') }}</p>
+            <h3>{{ selected.title }}</h3>
+            <p>{{ selected.source }} · {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }} · version {{ selected.version }}</p>
+          </div>
+          <div class="detail-actions">
+            <Tag :value="selected.text_state.replace('_', ' ')" :severity="severity(selected.text_state)" />
+            <Button label="Add to assistant" icon="pi pi-paperclip" size="small" @click="attachToAssistant" />
+            <Button icon="pi pi-refresh" text rounded aria-label="Re-extract" v-tooltip.top="'Re-extract'" @click="reextract" />
+            <Button icon="pi pi-trash" text rounded severity="danger" aria-label="Delete" v-tooltip.top="'Delete document'" @click="remove" />
+          </div>
         </header>
         <nav class="detail-tabs">
-          <button v-for="item in detailViews" :key="item" :class="{ active: view === item }" @click="view = item">{{ item === 'ask' ? 'Ask document' : item }}</button>
+          <button v-for="item in detailViews" :key="item" :class="{ active: view === item }" @click="view = item">{{ item }}</button>
         </nav>
 
         <div v-if="view === 'preview'" class="detail-content preview-view">
@@ -248,22 +267,18 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
           <div v-if="current?.image_only" class="scan-notice"><i class="pi pi-image" /><div><strong>Image-only page</strong><p>This page has insufficient extractable text. Use the original image/PDF or a configured vision workflow; tiled scans may require uploading the page as an image.</p></div></div>
           <img v-if="selected.file.match(/\.(png|jpe?g|webp|bmp)$/i)" class="document-image" :src="`/api/workspaces/${workspace.id}/documents/${selected.id}/file`" :alt="selected.title" />
           <pre v-else class="page-text">{{ current?.text || 'No extractable text on this page.' }}</pre>
-        </div>
-
-        <div v-else-if="view === 'ask'" class="detail-content ask-view">
-          <div class="field"><label>Question</label><Textarea v-model="question" rows="4" auto-resize placeholder="What evidence does this document provide?" /></div>
-          <div class="field"><label>Pages to disclose</label><InputText v-model="askPages" placeholder="1, 2, 4" /></div>
-          <div class="disclosure-preview"><strong>Disclosure preview</strong><p>Purpose: document Q&amp;A · pages {{ parsedPages().join(', ') || 'none' }} · source {{ selected.sha1.slice(0, 12) }}…</p><p>{{ piiMasking ? 'Common email and number patterns will be masked in the model copy.' : 'The extracted page text will be sent without masking.' }}</p></div>
-          <Button :label="optin ? 'Disclose pages and ask' : 'Enable document AI to ask'" icon="pi pi-send" :disabled="!optin || !question.trim() || !parsedPages().length" :loading="busy" @click="ask" />
-          <div v-if="answer" class="answer surface-panel"><MarkdownView :markdown="answer" /><div class="citations"><Button v-for="citation in citations" :key="citation.id" :label="`Page ${citation.page}`" icon="pi pi-link" size="small" severity="secondary" @click="showAnchor(citation)" /></div></div>
+          <details class="technical-details">
+            <summary>Technical details</summary>
+            <dl><div><dt>Document ID</dt><dd><code>{{ selected.id }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy document ID" @click="copyText(selected.id, 'Document ID')" /></dd></div><div><dt>Content hash</dt><dd><code>{{ selected.sha1 }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy content hash" @click="copyText(selected.sha1, 'Content hash')" /></dd></div><div><dt>Stored file</dt><dd><code>{{ selected.file }}</code></dd></div><div v-if="selected.relative_path"><dt>Imported path</dt><dd>{{ selected.relative_path }}</dd></div><div><dt>Added</dt><dd>{{ selected.created }}</dd></div></dl>
+          </details>
         </div>
 
         <div v-else-if="view === 'versions'" class="detail-content timeline">
-          <article v-for="item in versions" :key="item.id"><i class="pi pi-history" /><div><strong>Version {{ item.version }} <Tag v-if="item.id === selected.id" value="selected" severity="info" /></strong><p>{{ item.created }} · {{ item.source }}</p><code>{{ item.sha1 }}</code><Button label="Open version" text size="small" @click="selectDocument(item.id, 1)" /></div></article>
+          <article v-for="item in versions" :key="item.id"><i class="pi pi-history" /><div><strong>Version {{ item.version }} <Tag v-if="item.id === selected.id" value="current" severity="info" /></strong><p>{{ item.created }} · {{ item.source }}</p><details><summary>Technical details</summary><code>{{ item.id }} · {{ item.sha1 }}</code></details><Button label="Open version" text size="small" @click="selectDocument(item.id, 1)" /></div></article>
         </div>
 
         <div v-else class="detail-content timeline">
-          <article v-for="item in activity" :key="item.id"><i class="pi pi-sparkles" /><div><strong>{{ item.purpose }} · {{ item.disposition }}</strong><p>{{ item.at }} · {{ item.provider }} / {{ item.model }}</p><p>Pages {{ item.page_ranges?.join(', ') || '—' }} · response {{ item.response_hash?.slice(0, 12) || 'fallback' }}</p></div></article>
+          <article v-for="item in activity" :key="item.id"><i class="pi pi-sparkles" /><div><strong>{{ item.purpose.replace('_', ' ') }} · {{ item.disposition }}</strong><p>{{ item.at }} · {{ item.provider }} / {{ item.model }}</p><p>Pages {{ item.page_ranges?.join(', ') || '—' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · response {{ item.response_hash || 'not available' }}</code></details></div></article>
           <p v-if="!activity.length" class="muted">No model activity references this document.</p>
         </div>
       </main>
@@ -276,15 +291,14 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
     </Dialog>
 
     <Dialog v-model:visible="disclosuresOpen" modal header="Document disclosure log" :style="{ width: 'min(58rem, 94vw)' }">
-      <div class="timeline"><article v-for="item in disclosures" :key="item.id"><i class="pi pi-cloud-upload" /><div><strong>{{ item.purpose }} · pages {{ item.pages.join(', ') }}</strong><p>{{ item.at }} · {{ item.document_id }} · {{ item.pii_masked ? 'PII masking selected' : 'Unmasked' }}</p><code>{{ item.source_sha1 }}</code></div></article><p v-if="!disclosures.length" class="muted">Nothing has been disclosed.</p></div>
+      <div class="timeline"><article v-for="item in disclosures" :key="item.id"><i class="pi pi-cloud-upload" /><div><strong>{{ documentLabel(item.document_id) }} · pages {{ item.pages.join(', ') || 'none' }}</strong><p>{{ item.at }} · {{ item.purpose.replace('_', ' ') }} · {{ item.pii_masked ? 'PII masking on' : 'Unmasked' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · {{ item.document_id }} · {{ item.source_sha1 }}</code></details></div></article><p v-if="!disclosures.length" class="muted">Nothing has been disclosed.</p></div>
     </Dialog>
 
     <Dialog v-model:visible="knowledgeOpen" modal header="Methodology knowledge packs" :style="{ width: 'min(64rem, 95vw)' }">
       <div class="pack-toolbar"><input ref="packInput" type="file" hidden accept=".md,.markdown,.txt" @change="uploadPack" /><Button label="Add Markdown pack" icon="pi pi-plus" @click="packInput?.click()" /><InputText v-model="packSearch" placeholder="Search local methodology" @keyup.enter="searchPacks" /><Button label="Search" severity="secondary" @click="searchPacks" /></div>
-      <div class="pack-grid"><article v-for="pack in packs" :key="`${pack.scope}:${pack.id}`"><strong>{{ pack.name }}</strong><Tag :value="pack.scope" severity="secondary" /><p>Version {{ pack.version }} · {{ pack.sha1.slice(0, 12) }}</p></article></div>
+      <div class="pack-grid"><article v-for="pack in packs" :key="`${pack.scope}:${pack.id}`"><strong>{{ pack.name }}</strong><Tag :value="pack.scope" severity="secondary" /><p>Version {{ pack.version }} · updated {{ pack.updated }}</p><details><summary>Technical details</summary><code>{{ pack.id }} · {{ pack.sha1 }}</code></details></article></div>
       <div v-if="packResults.length" class="search-results"><h4>Cited sections</h4><article v-for="(result, index) in packResults" :key="index"><strong>{{ result.citation }}</strong><p>{{ result.excerpt }}</p></article></div>
     </Dialog>
-    <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" />
   </section>
 </template>
 
@@ -294,10 +308,11 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 .doc-toolbar h2, .detail-head h3 { margin: 0; }.toolbar-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .privacy-strip { display: flex; align-items: center; gap: .65rem; padding: .75rem 1rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .privacy-strip.enabled { background: var(--aw-teal-soft); color: var(--aw-ink); border-color: #b7e3dc; }.privacy-strip label { margin-left: auto; display: flex; align-items: center; gap: .45rem; }
-.document-layout { display: grid; grid-template-columns: 20rem minmax(0, 1fr); min-height: 38rem; overflow: hidden; }
-.document-rail { padding: .8rem; border-right: 1px solid var(--aw-border); background: var(--aw-raised); overflow-y: auto; }.rail-search { width: 100%; }.filters { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; margin: .5rem 0 1rem; }.filters :deep(.p-select) { min-width: 0; }
-.doc-group h4 { display: flex; justify-content: space-between; margin: 1rem .35rem .35rem; color: var(--aw-muted); text-transform: uppercase; font-size: var(--aw-text-xs); letter-spacing: .06em; }.doc-row { width: 100%; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .55rem; padding: .65rem; border: 0; border-radius: var(--aw-radius-sm); background: transparent; color: inherit; text-align: left; cursor: pointer; }.doc-row:hover,.doc-row.active { background: #fff; box-shadow: var(--aw-shadow-sm); }.doc-row span { min-width: 0; }.doc-row strong,.doc-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.doc-row small { margin-top: .18rem; color: var(--aw-muted); }.rail-empty { padding: 2rem .5rem; text-align: center; color: var(--aw-muted); }
-.document-detail { min-width: 0; display: flex; flex-direction: column; }.detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--aw-border); }.detail-head code { display: block; margin-top: .35rem; color: var(--aw-muted); font-size: .68rem; }.detail-tabs { display: flex; padding: 0 1.25rem; border-bottom: 1px solid var(--aw-border); }.detail-tabs button { padding: .75rem .85rem; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--aw-muted); cursor: pointer; text-transform: capitalize; }.detail-tabs button.active { color: var(--aw-teal); border-color: var(--aw-teal); font-weight: 700; }.detail-content { padding: 1.25rem; overflow-y: auto; }.page-tools { display: flex; align-items: center; gap: .4rem; margin-bottom: .75rem; }.page-tools a { margin-left: auto; color: var(--aw-teal); }.page-text { min-height: 25rem; margin: 0; padding: 1.2rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: #fff; font-family: var(--aw-font-sans); white-space: pre-wrap; line-height: 1.65; }.scan-notice,.disclosure-preview { display: flex; gap: .75rem; padding: .9rem; margin-bottom: .75rem; border: 1px solid #f0cf9f; border-radius: var(--aw-radius-sm); background: var(--aw-warn-soft); }.scan-notice p,.disclosure-preview p { margin: .25rem 0 0; }.document-image { display: block; max-width: 100%; max-height: 34rem; margin: auto; }.ask-view { display: grid; gap: .9rem; max-width: 54rem; }.disclosure-preview { display: block; }.answer { padding: 1rem; }.citations { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .8rem; }
+.document-layout { display: grid; grid-template-columns: minmax(19rem, 22rem) minmax(0, 1fr); min-height: 38rem; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff; box-shadow:var(--aw-shadow-sm); }
+.document-rail { padding:.75rem; border-right:1px solid var(--aw-border); background:var(--p-surface-50); overflow-y:auto; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--p-surface-200); background:var(--p-surface-50); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--p-surface-400); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr 1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:.76rem; }
+.doc-group { display:grid; gap:.45rem; }.doc-group h4 { display:flex; justify-content:space-between; margin:.9rem .25rem .05rem; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.65rem; padding:.7rem; border:1px solid var(--p-surface-200); border-radius:10px; background:#fff; color:inherit; text-align:left; cursor:pointer; box-shadow:0 1px 2px rgb(15 23 42 / 4%); transition:border-color .15s, box-shadow .15s, background .15s; }.doc-row:hover { border-color:#9ad5cd; box-shadow:var(--aw-shadow-sm); }.doc-row.active { border-color:var(--aw-teal); background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:2.2rem; height:2.2rem; place-items:center; border-radius:8px; color:var(--p-blue-600); background:var(--p-blue-50); }.doc-identity { display:grid; min-width:0; gap:.08rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.84rem; }.doc-identity small { color:var(--aw-muted); font-size:.66rem; }.state-pill { padding:.25rem .45rem; border-radius:999px; color:var(--p-surface-600); background:var(--p-surface-100); font-size:.61rem; font-weight:700; text-transform:uppercase; }.state-extracted { color:var(--p-green-700); background:var(--p-green-50); }.state-failed { color:var(--p-red-700); background:var(--p-red-50); }.state-partial,.state-image_only { color:var(--p-orange-700); background:var(--p-orange-50); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
+.document-detail { min-width:0; display:flex; flex-direction:column; }.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { min-width:0; }.detail-identity p { margin:.25rem 0 0; color:var(--aw-muted); font-size:.73rem; }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }.detail-tabs { display:flex; padding:0 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-tabs button { padding:.75rem .85rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--aw-muted); cursor:pointer; text-transform:capitalize; }.detail-tabs button.active { color:var(--aw-teal); border-color:var(--aw-teal); font-weight:700; }.detail-content { padding:1.25rem; overflow-y:auto; }.page-tools { display:flex; align-items:center; gap:.4rem; margin-bottom:.75rem; }.page-tools a { margin-left:auto; color:var(--aw-teal); }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:10px; background:#fff; font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow:0 1px 2px rgb(15 23 42 / 4%); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }
+.technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--p-surface-200); border-radius:8px; background:var(--p-surface-50); color:var(--p-surface-500); font-size:.7rem; }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: .7rem; }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
-@media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 18rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.privacy-strip { align-items: flex-start; flex-wrap: wrap; }.privacy-strip label { margin-left: 0; width: 100%; } }
+@media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.privacy-strip { align-items: flex-start; flex-wrap: wrap; }.privacy-strip label { margin-left: 0; width: 100%; }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }
 </style>
