@@ -63,8 +63,9 @@ def test_table_metadata_is_aggregate_only(workspace_with_data):
     # numeric column exposes ranges, not values
     assert set(by_name["amount"]) >= {"nulls_pct", "distinct", "min", "max", "mean"}
     assert "rows" not in by_name["amount"]
-    # low-cardinality string exposes its category labels
-    assert set(by_name["cust_id"]["values"]) == {"C1", "C2", "C3"}
+    # identifier-like fields retain schema/count metadata but never values
+    assert by_name["cust_id"]["classification"] == "sensitive_identifier"
+    assert "values" not in by_name["cust_id"]
 
 
 def test_frame_for_model_withholds_raw_rows():

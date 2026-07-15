@@ -32,6 +32,7 @@ MODES = ("auto", "permission")
 # Statuses that mean "a worker thread should be driving this run".
 ACTIVE_STATUSES = (
     "queued",
+    "interpreting",
     "discovering",
     "planning",
     "executing",
@@ -42,7 +43,7 @@ ACTIVE_STATUSES = (
 )
 # Statuses a run can rest in with no thread attached.
 RESUMABLE_STATUSES = ("paused", "interrupted")
-TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+TERMINAL_STATUSES = ("completed", "completed_with_issues", "failed", "cancelled")
 
 _event_locks: dict[str, threading.Lock] = {}
 _event_locks_guard = threading.Lock()
@@ -124,6 +125,62 @@ def new_run(
     return run
 
 
+def new_command_run(
+    workspace: Workspace,
+    mode: str,
+    command: dict,
+    *,
+    parent_run_id: str | None = None,
+    limits: dict | None = None,
+) -> dict:
+    """Create a schema-v2 audit run driven by a command/action ledger."""
+    if mode not in MODES:
+        raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
+    source = str(command.get("source") or "chat")
+    if source not in ("chat", "goal_template", "tab_button", "follow_up"):
+        raise WorkspaceError("Unknown command source.")
+    text = str(command.get("text") or "").strip()
+    template = str(command.get("goal_template") or "").strip() or None
+    if not text and not template:
+        raise WorkspaceError("A command or goal template is required.")
+    now = datetime.now(timezone.utc)
+    run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    command_id = f"cmd_{uuid.uuid4().hex[:12]}"
+    run = {
+        "schema_version": 2,
+        "id": run_id,
+        "workspace_id": workspace.id,
+        "parent_run_id": parent_run_id,
+        "kind": "audit",
+        "mode": mode,
+        "context": {},
+        "command": {
+            "id": command_id, "source": source, "text": text,
+            "goal_template": template, "submitted_at": utcnow(),
+            "status": "queued", "parent_command_id": command.get("parent_command_id"),
+        },
+        "goal": {"objective": text, "constraints": [], "completion_criteria": []},
+        "graph_revision": 0,
+        "actions": [],
+        "interactions": [],
+        "pending_commands": [],
+        "status": "queued",
+        "created": utcnow(), "started": None, "finished": None,
+        "usage": {"llm_turns": 0, "tool_calls": 0, "planner_waves": 0, "actions_started": 0},
+        "limits": {
+            "max_actions": 60, "max_waves": 8, "max_depth": 10,
+            "max_model_turns": 40, "max_execution_attempts": 2,
+            **dict(limits or {}),
+        },
+        # Compatibility projection consumed by older history/drawer clients.
+        "discovery": {}, "plan": {"stages": []}, "approvals": [],
+        "messages": [], "artifacts": [], "findings": [],
+        "warnings": [], "summary_markdown": None, "error": None,
+    }
+    save_run(workspace, run)
+    return run
+
+
 def save_run(workspace: Workspace, run: dict) -> None:
     path = run_dir(workspace, run["id"]) / "run.json"
     with _run_lock(path):
@@ -143,8 +200,26 @@ def load_run(workspace: Workspace, run_id: str) -> dict:
                 if attempt == 9:
                     raise
                 time.sleep(0.02 * (attempt + 1))
-    run.setdefault("kind", "analysis")
+    _hydrate_run(run)
     return run
+
+
+def _hydrate_run(run: dict) -> None:
+    """Read-compatible defaults; schema-v1 history is never rewritten."""
+    run.setdefault("schema_version", 1)
+    run.setdefault("kind", "analysis")
+    if run["schema_version"] >= 2:
+        run.setdefault("actions", [])
+        run.setdefault("interactions", [])
+        run.setdefault("pending_commands", [])
+        run.setdefault("graph_revision", 0)
+        run.setdefault("goal", {"objective": "", "constraints": [], "completion_criteria": []})
+        run.setdefault("plan", {"stages": []})
+        run.setdefault("approvals", [])
+        run.setdefault("messages", [])
+        run.setdefault("artifacts", [])
+        run.setdefault("findings", [])
+        run.setdefault("warnings", [])
 
 
 def list_runs(workspace: Workspace) -> list[dict]:
@@ -159,7 +234,7 @@ def list_runs(workspace: Workspace) -> list[dict]:
             continue
         try:
             run = json.loads(path.read_text(encoding="utf-8"))
-            run.setdefault("kind", "analysis")
+            _hydrate_run(run)
         except (OSError, json.JSONDecodeError):
             continue
         summaries.append(run_summary(run))
@@ -167,7 +242,22 @@ def list_runs(workspace: Workspace) -> list[dict]:
 
 
 def run_summary(run: dict) -> dict:
-    tasks = [t for s in run["plan"]["stages"] for t in s.get("tasks", [])]
+    tasks = [t for s in (run.get("plan") or {}).get("stages", []) for t in s.get("tasks", [])]
+    actions = run.get("actions") or []
+    if actions:
+        counts = {
+            "total": len(actions),
+            "completed": sum(1 for action in actions if action["status"] == "succeeded"),
+            "failed": sum(1 for action in actions if action["status"] == "failed"),
+            "blocked": sum(1 for action in actions if action["status"] == "blocked"),
+        }
+    else:
+        counts = {
+            "total": len(tasks),
+            "completed": sum(1 for t in tasks if t["status"] == "completed"),
+            "failed": sum(1 for t in tasks if t["status"] == "failed"),
+            "blocked": 0,
+        }
     return {
         "id": run["id"],
         "workspace_id": run["workspace_id"],
@@ -179,14 +269,29 @@ def run_summary(run: dict) -> dict:
         "started": run.get("started"),
         "finished": run.get("finished"),
         "domain": (run.get("discovery") or {}).get("domain"),
-        "task_counts": {
-            "total": len(tasks),
-            "completed": sum(1 for t in tasks if t["status"] == "completed"),
-            "failed": sum(1 for t in tasks if t["status"] == "failed"),
-        },
+        "task_counts": counts,
         "error": run.get("error"),
         "has_summary": bool(run.get("summary_markdown")),
     }
+
+
+def write_sidecar(workspace: Workspace, run_id: str, payload: object) -> dict:
+    """Store large/sensitive interaction or undo content by immutable hash."""
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    digest = __import__("hashlib").sha1(encoded.encode("utf-8")).hexdigest()
+    folder = run_dir(workspace, run_id) / "sidecars"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{digest}.json"
+    if not path.exists():
+        write_json_atomic(path, payload)
+    return {"sha1": digest, "path": f"sidecars/{digest}.json"}
+
+
+def read_sidecar(workspace: Workspace, run_id: str, ref: dict) -> object:
+    path = run_dir(workspace, run_id) / str(ref.get("path") or "")
+    if not path.is_file() or path.parent != run_dir(workspace, run_id) / "sidecars":
+        raise WorkspaceError("Run sidecar not found.")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ------------------------------------------------------------------- events

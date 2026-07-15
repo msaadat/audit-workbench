@@ -86,7 +86,7 @@ async function togglePlanningStatus() {
 async function generate() {
   try {
     await savePlanning()
-    await agent.startRun(launchMode.value, {}, 'planning')
+    await agent.startCommand(launchMode.value, 'Update the planning context, APM, RCM, and audit procedures using the current engagement evidence.', 'planning', 'tab_button')
   } catch (error) { fail('Could not start planning', error) }
 }
 

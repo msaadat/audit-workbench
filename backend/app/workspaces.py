@@ -624,7 +624,7 @@ class Workspace:
 
         tile = _apply_provenance(
             {
-                "id": uuid.uuid4().hex[:10],
+                "id": str(payload.get("id") or uuid.uuid4().hex[:10]),
                 "title": title,
                 "kind": kind,
                 "table": table,
@@ -694,7 +694,7 @@ class Workspace:
 
         analysis = _apply_provenance(
             {
-                "id": uuid.uuid4().hex[:10],
+                "id": str(payload.get("id") or uuid.uuid4().hex[:10]),
                 "title": title,
                 "kind": kind,
                 "table": table,
@@ -779,7 +779,7 @@ class Workspace:
             raise WorkspaceError("Rule set title is required.")
         ruleset = _apply_provenance(
             {
-                "id": uuid.uuid4().hex[:10],
+                "id": str(payload.get("id") or uuid.uuid4().hex[:10]),
                 "title": title,
                 "table": table,
                 "rules": self._normalize_rules(payload.get("rules") or []),

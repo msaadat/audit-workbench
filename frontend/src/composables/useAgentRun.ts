@@ -3,6 +3,7 @@ import { computed, reactive, readonly, ref, watch } from 'vue'
 import { api } from '../api'
 import type {
   AgentDecision,
+  AgentInteraction,
   AgentRun,
   AgentRunContext,
   AgentRunSummary,
@@ -63,6 +64,7 @@ const refetchTimers = new Map<string, number>()
 
 const ACTIVE_STATUSES = new Set([
   'queued',
+  'interpreting',
   'discovering',
   'planning',
   'executing',
@@ -151,6 +153,12 @@ function connect(workspaceId: string, runId: string) {
     'discovery',
     'warning',
     'summary_ready',
+    'command_queued',
+    'graph_update',
+    'action_update',
+    'interaction_request',
+    'interaction_resolved',
+    'action_conflict',
   ]) {
     source.addEventListener(type, refetch)
   }
@@ -188,6 +196,9 @@ export function useAgentRun(workspaceId: string) {
   )
   const pendingApproval = computed(
     () => store.run?.approvals.find((a) => a.status === 'pending') ?? null,
+  )
+  const pendingInteraction = computed(
+    () => store.run?.interactions?.find((item) => item.status === 'pending') ?? null,
   )
 
   async function refreshStatus() {
@@ -246,6 +257,28 @@ export function useAgentRun(workspaceId: string) {
     }
   }
 
+  async function startCommand(
+    mode: AgentMode,
+    text: string,
+    goalTemplate?: string,
+    source: 'chat' | 'goal_template' | 'tab_button' | 'follow_up' = goalTemplate ? 'goal_template' : 'chat',
+  ) {
+    store.starting = true
+    try {
+      const run = await api.post<AgentRun>(
+        `/api/workspaces/${workspaceId}/agent/runs`,
+        { mode, command: { source, text: text.trim(), goal_template: goalTemplate || null } },
+      )
+      store.run = run
+      store.drawerOpen = true
+      connect(workspaceId, run.id)
+      void loadRuns(workspaceId)
+      return run
+    } finally {
+      store.starting = false
+    }
+  }
+
   async function pause() {
     if (!store.run) return
     await api.post(`/api/workspaces/${workspaceId}/agent/runs/${store.run.id}/pause`)
@@ -264,7 +297,7 @@ export function useAgentRun(workspaceId: string) {
 
   /** Steer a live run, or spawn a linked follow-up run after completion. */
   async function sendMessage(content: string) {
-    if (!store.run) return
+    if (!store.run) return startCommand(launchMode.value, content)
     const response = await api.post<{ handled: string; run: AgentRun }>(
       `/api/workspaces/${workspaceId}/agent/runs/${store.run.id}/messages`,
       { content },
@@ -277,6 +310,15 @@ export function useAgentRun(workspaceId: string) {
       scheduleRefetch(workspaceId, store.run.id)
     }
     return response
+  }
+
+  async function respond(interaction: AgentInteraction, response: Record<string, unknown>) {
+    if (!store.run) return
+    await api.post(
+      `/api/workspaces/${workspaceId}/agent/runs/${store.run.id}/interactions/${interaction.id}/respond`,
+      response,
+    )
+    scheduleRefetch(workspaceId, store.run.id)
   }
 
   async function decide(approvalId: string, decisions: AgentDecision[]) {
@@ -304,16 +346,19 @@ export function useAgentRun(workspaceId: string) {
     launchMode,
     isActive,
     pendingApproval,
+    pendingInteraction,
     init,
     refreshStatus,
     loadRuns: () => loadRuns(workspaceId),
     openRun,
     startRun,
+    startCommand,
     pause,
     resume,
     cancel,
     sendMessage,
     decide,
+    respond,
     onWorkspaceChanged,
     toggleDrawer: () => {
       store.drawerOpen = !store.drawerOpen

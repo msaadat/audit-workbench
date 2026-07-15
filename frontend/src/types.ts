@@ -841,6 +841,7 @@ export interface RuleSuggestion {
 
 export type AgentRunStatus =
   | 'queued'
+  | 'interpreting'
   | 'discovering'
   | 'planning'
   | 'executing'
@@ -851,6 +852,7 @@ export type AgentRunStatus =
   | 'paused'
   | 'interrupted'
   | 'completed'
+  | 'completed_with_issues'
   | 'failed'
   | 'cancelled'
 
@@ -936,17 +938,24 @@ export interface AgentRunContext {
 }
 
 export interface AgentRun {
+  schema_version?: number
   id: string
   workspace_id: string
   parent_run_id: string | null
-  kind: 'analysis' | 'intake' | 'planning' | 'doc_test'
+  kind: 'audit' | 'analysis' | 'intake' | 'planning' | 'doc_test'
   mode: 'auto' | 'permission'
   context: AgentRunContext
   status: AgentRunStatus
   created: string
   started: string | null
   finished: string | null
-  usage: { llm_turns: number; tool_calls: number; custom_analyses: number }
+  usage: {
+    llm_turns: number
+    tool_calls: number
+    custom_analyses?: number
+    planner_waves?: number
+    actions_started?: number
+  }
   discovery: AgentDiscovery
   plan: { stages: AgentStage[] }
   approvals: AgentApproval[]
@@ -956,6 +965,12 @@ export interface AgentRun {
   summary_markdown: string | null
   warnings: string[]
   error: string | null
+  command?: AgentCommand
+  goal?: AgentGoal
+  graph_revision?: number
+  actions?: AgentAction[]
+  interactions?: AgentInteraction[]
+  pending_commands?: AgentCommand[]
   interview?: {
     captured: Record<string, unknown>
     turns: number
@@ -967,14 +982,14 @@ export interface AgentRunSummary {
   id: string
   workspace_id: string
   parent_run_id: string | null
-  kind: 'analysis' | 'intake' | 'planning' | 'doc_test'
+  kind: 'audit' | 'analysis' | 'intake' | 'planning' | 'doc_test'
   mode: 'auto' | 'permission'
   status: AgentRunStatus
   created: string
   started: string | null
   finished: string | null
   domain?: string | null
-  task_counts: { total: number; completed: number; failed: number }
+  task_counts: { total: number; completed: number; failed: number; blocked?: number }
   error: string | null
   has_summary: boolean
 }
@@ -996,4 +1011,74 @@ export interface AgentDecision {
   item_id: string
   action: 'approve' | 'reject' | 'edit'
   spec?: Record<string, unknown>
+}
+
+export interface AgentCommand {
+  id: string
+  source: 'chat' | 'goal_template' | 'tab_button' | 'follow_up'
+  text: string
+  goal_template: string | null
+  submitted_at: string
+  status: string
+  parent_command_id: string | null
+}
+
+export interface AgentGoal {
+  objective: string
+  constraints: string[]
+  completion_criteria: string[]
+}
+
+export type AgentActionStatus =
+  | 'proposed' | 'awaiting_input' | 'awaiting_confirmation' | 'ready'
+  | 'blocked' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
+
+export interface AgentAction {
+  id: string
+  command_id: string
+  type: string
+  definition_version: number
+  args: Record<string, unknown>
+  target: { kind: string | null; selector: string | null; resolved_id: string | null }
+  resolution: {
+    resolved_ref?: string | null
+    title?: string
+    confidence?: number
+    reason?: string
+  } | null
+  depends_on: string[]
+  depth: number
+  status: AgentActionStatus
+  attempts: number
+  result_refs: string[]
+  error: string | null
+}
+
+export type AgentInteractionType =
+  | 'clarification' | 'target_choice' | 'confirmation'
+  | 'proposal_approval' | 'conflict_resolution'
+
+export interface AgentInteractionOption {
+  value?: string
+  ref?: string
+  id?: string
+  label?: string
+  title?: string
+  reason?: string
+  score?: number
+}
+
+export interface AgentInteraction {
+  id: string
+  action_id: string
+  type: AgentInteractionType
+  prompt: string
+  options: AgentInteractionOption[]
+  payload: Record<string, unknown>
+  policy_reason: string
+  status: 'pending' | 'resolved'
+  response: Record<string, unknown> | null
+  actor: string | null
+  created_at: string
+  resolved_at: string | null
 }

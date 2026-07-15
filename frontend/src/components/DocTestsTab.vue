@@ -145,7 +145,7 @@ async function runTest() {
   if (!current.value) return
   running.value = true
   try {
-    await agent.startRun(launchMode.value, { test_id: current.value.id }, 'doc_test')
+    await agent.startCommand(launchMode.value, `Run document test ${current.value.id} and preserve its results.`, 'document_testing', 'tab_button')
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant drawer.', life: 3000 })
   } catch (error) { fail('Could not start document test', error) }
   finally { running.value = false }

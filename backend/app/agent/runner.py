@@ -57,6 +57,10 @@ class RunHandle:
         self.approval_resolved = threading.Event()
         self.decisions: dict[str, list] = {}
         self.inbox: list[str] = []
+        self.command_queue: list[dict] = []
+        self.command_queued = threading.Event()
+        self.interaction_resolved = threading.Event()
+        self.interaction_responses: dict[str, dict] = {}
         self.lock = threading.Lock()
 
 
@@ -135,6 +139,33 @@ def start_run(
     return run
 
 
+def start_command_run(
+    workspace: Workspace,
+    mode: str,
+    command: dict,
+    parent_run_id: str | None = None,
+) -> dict:
+    """Start the schema-v2 unified engagement command runner."""
+    recover_workspace(workspace)
+    if not llm.agent_status()["configured"]:
+        raise llm.LLMError(
+            "The agent's LLM is not configured. Set an API key for the "
+            "assistant provider (or AGENT_PROVIDER/AGENT_MODEL) first."
+        )
+    live = live_handles()
+    if any(handle.workspace_id == workspace.id for handle in live):
+        raise AgentBusyError(
+            "An agent run is already active in this workspace. New chat commands "
+            "are queued on that run."
+        )
+    if len(live) >= _max_concurrent():
+        raise AgentBusyError("The agent is busy with another workspace right now; try again when it finishes.")
+    run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+    store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
+    _launch(workspace.id, run["id"])
+    return run
+
+
 def resume_run(workspace: Workspace, run_id: str) -> dict:
     run = store.load_run(workspace, run_id)
     handle = get_handle(run_id)
@@ -196,6 +227,24 @@ def resolve_approval(
     return run
 
 
+def resolve_interaction(
+    workspace: Workspace, run_id: str, interaction_id: str, response: dict
+) -> dict:
+    run = store.load_run(workspace, run_id)
+    interaction = next((item for item in run.get("interactions") or [] if item["id"] == interaction_id), None)
+    if interaction is None:
+        raise WorkspaceError("Interaction not found on this run.")
+    if interaction["status"] != "pending":
+        raise WorkspaceError("This interaction was already resolved.")
+    handle = get_handle(run_id)
+    if handle is None:
+        raise WorkspaceError("The run is not executing — resume it before responding.")
+    with handle.lock:
+        handle.interaction_responses[interaction_id] = dict(response or {})
+    handle.interaction_resolved.set()
+    return run
+
+
 def steer(workspace: Workspace, run_id: str, content: str) -> dict:
     """A message to a run: steering while it's live, a persisted note while
     paused, or a linked follow-up run once it has finished."""
@@ -203,6 +252,31 @@ def steer(workspace: Workspace, run_id: str, content: str) -> dict:
     if not content:
         raise WorkspaceError("Say what the agent should do.")
     run = store.load_run(workspace, run_id)
+
+    if run.get("schema_version", 1) >= 2 and run["status"] in store.TERMINAL_STATUSES:
+        follow_up = start_command_run(
+            workspace, run["mode"],
+            {"source": "follow_up", "text": content, "parent_command_id": (run.get("command") or {}).get("id")},
+            parent_run_id=run_id,
+        )
+        return {"handled": "follow_up_run", "run": follow_up}
+
+    if run.get("schema_version", 1) >= 2:
+        command = {
+            "id": f"cmd_{__import__('uuid').uuid4().hex[:12]}", "source": "follow_up",
+            "text": content, "goal_template": None, "submitted_at": store.utcnow(),
+            "status": "queued", "parent_command_id": (run.get("command") or {}).get("id"),
+        }
+        handle = get_handle(run_id)
+        if handle is not None:
+            with handle.lock:
+                handle.command_queue.append(command)
+            handle.command_queued.set()
+        else:
+            run.setdefault("pending_commands", []).append(command)
+            store.save_run(workspace, run)
+        store.append_event(workspace, run_id, "command_queued", {"command": command})
+        return {"handled": "queued_command", "run": run}
 
     if run["status"] in store.TERMINAL_STATUSES:
         context = dict(run.get("context") or {})
@@ -273,6 +347,10 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
             from .doc_test_runner import DocTestRunner
 
             DocTestRunner(workspace, run, handle).execute()
+        elif run.get("kind") == "audit":
+            from .command_runner import CommandRunner
+
+            CommandRunner(workspace, run, handle).execute()
         elif run.get("kind", "analysis") == "analysis":
             _Runner(workspace, run, handle).execute()
         else:
@@ -299,6 +377,28 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
             current = _HANDLES.get(run_id)
             if current is handle:
                 _HANDLES.pop(run_id, None)
+        try:
+            workspace = load_workspace(workspace_id)
+            finished = store.load_run(workspace, run_id)
+            if finished.get("schema_version", 1) >= 2 and finished["status"] in store.TERMINAL_STATUSES:
+                _launch_next_command(workspace, finished)
+        except Exception:
+            pass
+
+
+def _launch_next_command(workspace: Workspace, run: dict) -> None:
+    pending = run.get("pending_commands") or []
+    if not pending:
+        return
+    command = pending.pop(0)
+    store.save_run(workspace, run)
+    try:
+        start_command_run(workspace, run["mode"], command, parent_run_id=run["id"])
+    except Exception as error:
+        run = store.load_run(workspace, run["id"])
+        run.setdefault("pending_commands", []).insert(0, command)
+        run.setdefault("warnings", []).append(f"Queued command could not start yet: {error}")
+        store.save_run(workspace, run)
 
 
 # -------------------------------------------------------------------- runner

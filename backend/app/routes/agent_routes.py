@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .. import llm, workspaces
-from ..agent import runner, store, suggest
+from ..agent import actions, runner, store, suggest
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
@@ -49,16 +50,27 @@ async def suggest_rules(workspace_id: str, table: str):
 async def create_run(workspace_id: str, payload: dict = Body(default={})):
     ws = workspaces.load_workspace(workspace_id)
     try:
-        run = await asyncio.to_thread(
-            runner.start_run,
-            ws,
-            payload.get("mode") or "auto",
-            payload.get("context") or {},
-            kind=payload.get("kind") or "analysis",
-        )
+        if isinstance(payload.get("command"), dict):
+            run = await asyncio.to_thread(
+                runner.start_command_run, ws, payload.get("mode") or "auto",
+                payload["command"], payload.get("parent_run_id"),
+            )
+        else:
+            run = await asyncio.to_thread(
+                runner.start_run,
+                ws,
+                payload.get("mode") or "auto",
+                payload.get("context") or {},
+                kind=payload.get("kind") or "analysis",
+            )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error
     return run
+
+
+@router.get("/agent/actions")
+async def action_coverage():
+    return {"actions": actions.ACTION_COVERAGE}
 
 
 @router.get("/workspaces/{workspace_id}/agent/runs")
@@ -73,6 +85,19 @@ async def get_run(workspace_id: str, run_id: str):
     ws = workspaces.load_workspace(workspace_id)
     runner.recover_workspace(ws)
     return store.load_run(ws, run_id)
+
+
+@router.get("/workspaces/{workspace_id}/agent/runs/{run_id}/sidecars/{sha1}")
+async def get_run_sidecar(workspace_id: str, run_id: str, sha1: str):
+    ws = workspaces.load_workspace(workspace_id)
+    run = store.load_run(ws, run_id)
+    if not re.fullmatch(r"[0-9a-f]{40}", sha1):
+        raise workspaces.WorkspaceError("Invalid run sidecar reference.")
+    # A hash is readable only when the run record actually references it.
+    serialized = json.dumps(run, default=str)
+    if sha1 not in serialized:
+        raise workspaces.WorkspaceError("Run sidecar is not referenced by this run.")
+    return store.read_sidecar(ws, run_id, {"path": f"sidecars/{sha1}.json"})
 
 
 @router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/pause")
@@ -114,6 +139,16 @@ async def decide_approval(
     return runner.resolve_approval(
         ws, run_id, approval_id, payload.get("decisions") or []
     )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/agent/runs/{run_id}/interactions/{interaction_id}/respond"
+)
+async def respond_interaction(
+    workspace_id: str, run_id: str, interaction_id: str, payload: dict = Body(...)
+):
+    ws = workspaces.load_workspace(workspace_id)
+    return runner.resolve_interaction(ws, run_id, interaction_id, payload)
 
 
 @router.get("/workspaces/{workspace_id}/agent/runs/{run_id}/events")

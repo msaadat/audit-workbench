@@ -10,7 +10,9 @@ import { ApiError } from '../../api'
 import { useAgentRun } from '../../composables/useAgentRun'
 import type { AgentDecision, WorkspaceSummary } from '../../types'
 import AgentApprovalCard from './AgentApprovalCard.vue'
+import AgentActionList from './AgentActionList.vue'
 import AgentChat from './AgentChat.vue'
+import AgentInteractionCard from './AgentInteractionCard.vue'
 import AgentSummary from './AgentSummary.vue'
 import AgentTaskList from './AgentTaskList.vue'
 
@@ -23,9 +25,9 @@ const emit = defineEmits<{ 'settings-changed': [] }>()
 const toast = useToast()
 
 const agent = useAgentRun(props.workspace.id)
-const { state, isActive, pendingApproval, launchMode } = agent
+const { state, isActive, pendingApproval, pendingInteraction, launchMode } = agent
 
-const runKind = ref<'analysis' | 'planning'>('analysis')
+const goalTemplate = ref('data_analysis')
 const objective = ref('')
 const showLaunch = ref(false)
 const showHistory = ref(false)
@@ -37,13 +39,18 @@ const MIN_DRAWER_WIDTH = 320
 const MAX_DRAWER_WIDTH = 640
 const WIDTH_STORAGE_KEY = `audit-workbench:agent-drawer-width:${props.workspace.id}`
 
-const kindOptions = [
-  { label: 'Data analysis', value: 'analysis' },
+const goalOptions = [
+  { label: 'Full working draft', value: 'full_audit_working_draft' },
   { label: 'Planning', value: 'planning' },
+  { label: 'APM only', value: 'apm_only' },
+  { label: 'Data analysis', value: 'data_analysis' },
+  { label: 'Document testing', value: 'document_testing' },
+  { label: 'Report', value: 'report' },
 ]
 
 const statusSeverity: Record<string, string> = {
   completed: 'success',
+  completed_with_issues: 'warn',
   failed: 'danger',
   cancelled: 'secondary',
   paused: 'secondary',
@@ -59,7 +66,7 @@ const launchVisible = computed(
   () => showLaunch.value || (!state.run && !isActive.value),
 )
 const runFinished = computed(() =>
-  ['completed', 'failed', 'cancelled'].includes(state.run?.status ?? ''),
+  ['completed', 'completed_with_issues', 'failed', 'cancelled'].includes(state.run?.status ?? ''),
 )
 
 onMounted(() => {
@@ -113,13 +120,28 @@ function resizeWithKeyboard(event: KeyboardEvent) {
 
 async function start() {
   try {
-    await agent.startRun(launchMode.value, {
-      objective: objective.value.trim() || undefined,
-    }, runKind.value)
+    await agent.startCommand(
+      launchMode.value,
+      objective.value.trim(),
+      goalTemplate.value,
+      'goal_template',
+    )
     showLaunch.value = false
     showHistory.value = false
   } catch (error) {
     fail('Could not start the agent', error)
+  }
+}
+
+async function respond(response: Record<string, unknown>) {
+  if (!pendingInteraction.value) return
+  deciding.value = true
+  try {
+    await agent.respond(pendingInteraction.value, response)
+  } catch (error) {
+    fail('Could not submit the response', error)
+  } finally {
+    deciding.value = false
   }
 }
 
@@ -241,7 +263,7 @@ function fail(summary: string, error: unknown) {
         >
           <span>{{ run.created.slice(0, 16).replace('T', ' ') }}</span>
           <Tag :value="run.status" :severity="statusSeverity[run.status] ?? 'info'" />
-          <small>{{ run.kind === 'planning' ? 'planning' : 'data analysis' }} · {{ run.mode }} · {{ run.task_counts.completed }}/{{ run.task_counts.total }} tasks</small>
+          <small>{{ run.kind === 'audit' ? 'command' : run.kind.replaceAll('_', ' ') }} · {{ run.mode }} · {{ run.task_counts.completed }}/{{ run.task_counts.total }} actions</small>
         </button>
       </div>
 
@@ -253,8 +275,8 @@ function fail(summary: string, error: unknown) {
           <code>.env</code> (or <code>AGENT_PROVIDER</code>/<code>AGENT_MODEL</code>).
         </div>
         <SelectButton
-          v-model="runKind"
-          :options="kindOptions"
+          v-model="goalTemplate"
+          :options="goalOptions"
           optionLabel="label"
           optionValue="value"
           :allowEmpty="false"
@@ -264,13 +286,13 @@ function fail(summary: string, error: unknown) {
           v-model="objective"
           rows="2"
           autoResize
-          placeholder="Optional context — objective, period, known risks…"
+          placeholder="Focus or constraints — e.g. duplicate payments in Q2…"
         />
         <Button
           label="Run assistant"
           icon="pi pi-play"
           :loading="state.starting"
-          :disabled="!state.status?.configured || (runKind === 'analysis' && !workspace.tables.length)"
+          :disabled="!state.status?.configured"
           @click="start"
         />
         <p v-if="state.status?.configured" class="muted model-note">
@@ -347,9 +369,28 @@ function fail(summary: string, error: unknown) {
           />
         </div>
 
+        <div v-if="pendingInteraction" class="section">
+          <AgentInteractionCard
+            :key="pendingInteraction.id"
+            :interaction="pendingInteraction"
+            :busy="deciding"
+            :workspaceId="workspace.id"
+            :runId="state.run.id"
+            @respond="respond"
+          />
+        </div>
+
         <div class="section">
-          <p class="section-title">Plan</p>
-          <AgentTaskList :stages="state.run.plan.stages" />
+          <p class="section-title">{{ state.run.kind === 'audit' ? 'Action graph' : 'Plan' }}</p>
+          <AgentActionList v-if="state.run.kind === 'audit'" :actions="state.run.actions ?? []" />
+          <AgentTaskList v-else :stages="state.run.plan.stages" />
+        </div>
+
+        <div v-if="state.run.pending_commands?.length" class="section next-commands">
+          <p class="section-title">Next commands</p>
+          <div v-for="command in state.run.pending_commands" :key="command.id" class="queued-command">
+            <i class="pi pi-clock" /> <span>{{ command.text }}</span>
+          </div>
         </div>
 
         <details v-if="state.run.warnings.length" class="section warnings">

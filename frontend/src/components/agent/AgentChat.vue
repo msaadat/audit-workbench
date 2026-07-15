@@ -29,10 +29,8 @@ interface Turn {
 }
 
 // The drawer's conversation surface (successor of the standalone Ask AI tab):
-// - while a run is active, the composer steers the run;
-// - otherwise it is ad-hoc Q&A through the assistant tool loop, with the same
-//   artifact cards (stats, editable Polars, chart, Save / Pin) as before;
-// - on a completed run, a message can instead start a linked follow-up run.
+// Chat is the durable command queue: it launches a command when no run exists,
+// queues follow-up work while one runs, and starts a linked run after terminal.
 const props = defineProps<{
   workspace: WorkspaceSummary
   messages: AgentMessage[]
@@ -75,25 +73,20 @@ const toolLabel: Record<string, string> = {
 
 const placeholder = computed(() => {
   if (!props.configured) return 'Configure an LLM key to talk to the agent'
-  if (props.pendingQuestion) return 'Answer the planning interview question'
-  if (props.runActive) return 'Steer the run — e.g. "also test weekend postings"'
-  if (props.runFinished) return 'Ask a question, or give the agent a follow-up task'
-  return 'Ask about your data… (Enter to send)'
+  if (props.pendingQuestion) return 'Use the focused interaction above to respond'
+  if (props.runActive) return 'Queue the next command — it will not interrupt this run'
+  if (props.runFinished) return 'Start a linked follow-up command'
+  return 'Give the audit assistant a command… (Enter to send)'
 })
 
-function send(followUp = false) {
+function send(_followUp = false) {
   const text = draft.value.trim()
   if (!text || busy.value) return
-  if (!props.runActive && !followUp && context.documentIds.value.length && !documentAiEnabled.value) {
-    pickerOpen.value = true
-    return
-  }
   draft.value = ''
-  if (props.runActive || followUp) {
-    emit('steer', text)
-    return
-  }
-  void ask(text)
+  emit('steer', text)
+  // Keep the local Q&A renderer available for legacy history without routing
+  // new chat around the durable command queue.
+  if (false) void ask(text)
 }
 
 async function ask(question: string) {
@@ -344,7 +337,7 @@ function fail(summary: string, error: unknown) {
         <i class="pi pi-comments" />
         <span><strong>Planning question</strong>{{ pendingQuestion }}</span>
       </div>
-      <div v-if="context.documents.value.length && !runActive" class="context-chips">
+      <div v-if="false && context.documents.value.length && !runActive" class="context-chips">
         <span v-for="doc in context.documents.value" :key="doc.id" class="context-chip">
           <i class="pi pi-file" /><span>{{ doc.title }}</span>
           <button :aria-label="`Remove ${doc.title} from context`" @click="context.remove(doc.id)"><i class="pi pi-times" /></button>
@@ -361,6 +354,7 @@ function fail(summary: string, error: unknown) {
       />
       <div class="composer-actions">
         <Button
+          v-if="false"
           icon="pi pi-paperclip"
           size="small"
           severity="secondary"
@@ -370,19 +364,9 @@ function fail(summary: string, error: unknown) {
           @click="pickerOpen = true"
         />
         <Button
-          v-if="runFinished && !runActive"
-          icon="pi pi-sparkles"
+          :icon="runActive ? 'pi pi-clock' : 'pi pi-send'"
           size="small"
-          severity="secondary"
-          outlined
-          v-tooltip.top="'Start a follow-up agent run with this instruction'"
-          :disabled="!configured || !draft.trim()"
-          @click="send(true)"
-        />
-        <Button
-          :icon="runActive ? 'pi pi-reply' : 'pi pi-send'"
-          size="small"
-          v-tooltip.top="runActive ? 'Steer the run' : 'Send'"
+          v-tooltip.top="runActive ? 'Queue follow-up command' : 'Send command'"
           :disabled="!configured || !draft.trim()"
           :loading="busy"
           @click="send()"

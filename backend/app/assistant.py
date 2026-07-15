@@ -29,7 +29,7 @@ import uuid
 
 import polars as pl
 
-from . import analytics, documents, explore, llm, profiler, sandbox
+from . import analytics, documents, explore, llm, privacy, profiler, sandbox
 from .workspaces import Workspace, WorkspaceError
 
 MAX_STEPS = 8
@@ -54,23 +54,7 @@ DISCLOSURE = (
 # ============================================================ metadata context
 def _column_meta(profile: dict) -> dict:
     """Compact, aggregate-only metadata for one column (from the profiler)."""
-    meta = {
-        "name": profile["name"],
-        "dtype": profile["dtype"],
-        "type": profile["inferred_type"],
-        "nulls_pct": profile["blank_pct"],
-        "distinct": profile["distinct_count"],
-    }
-    if profile["inferred_type"] in ("numeric", "date"):
-        meta["min"] = profile["min"]
-        meta["max"] = profile["max"]
-        if profile.get("mean") is not None:
-            meta["mean"] = profile["mean"]
-    # Category labels are metadata, not rows — but only for low-cardinality
-    # columns, where they help the model write correct filters.
-    if profile["distinct_count"] <= CATEGORY_SAMPLE_MAX and profile["top_values"]:
-        meta["values"] = [v["value"] for v in profile["top_values"]]
-    return meta
+    return privacy.project_column_profile(profile)
 
 
 def table_metadata(workspace: Workspace, table: str) -> dict:
@@ -130,20 +114,7 @@ def _frame_for_model(df: pl.DataFrame, allow_rows: bool) -> dict:
     included only when ``allow_rows`` (i.e. the result is an aggregate/summary,
     not raw rows) and the frame is small.
     """
-    view: dict = {
-        "shape": [df.height, df.width],
-        "columns": df.columns,
-        "dtypes": [str(t) for t in df.dtypes],
-        "numeric_summary": _numeric_summary(df),
-    }
-    if allow_rows and df.height <= MODEL_PREVIEW_ROWS:
-        view["rows"] = explore.frame_payload(df, MODEL_PREVIEW_ROWS)["rows"]
-    else:
-        view["note"] = (
-            "Row-level values are withheld (raw or large result). The full "
-            "result is shown to the auditor; you see only its shape and stats."
-        )
-    return view
+    return privacy.project_frame(df, allow_rows=allow_rows, row_limit=MODEL_PREVIEW_ROWS)
 
 
 def _artifact_frame(df: pl.DataFrame) -> dict:

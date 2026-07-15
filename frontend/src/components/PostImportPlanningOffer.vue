@@ -36,10 +36,12 @@ async function startPlanningUpdate() {
       enabledForRun.value = true
       emit('settings-changed')
     }
-    await agent.startRun(launchMode.value, {
-      document_ids: props.action.document_ids,
-      objective: 'Review the newly imported policy and procedure documents and update planning context, APM, RCM, and the audit program.',
-    }, 'planning')
+    await agent.startCommand(
+      launchMode.value,
+      `Review newly imported documents ${props.action.document_ids.join(', ')} and update planning context, APM, RCM, and audit procedures.`,
+      'planning',
+      'tab_button',
+    )
     confirmOpen.value = false
     emit('planning-started')
   } catch (cause) {
