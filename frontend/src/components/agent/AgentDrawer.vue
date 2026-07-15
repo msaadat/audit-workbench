@@ -36,10 +36,6 @@ const MIN_DRAWER_WIDTH = 320
 const MAX_DRAWER_WIDTH = 640
 const WIDTH_STORAGE_KEY = `audit-workbench:agent-drawer-width:${props.workspace.id}`
 
-const modeOptions = [
-  { label: 'Auto', value: 'auto' },
-  { label: 'Permission', value: 'permission' },
-]
 const kindOptions = [
   { label: 'Data analysis', value: 'analysis' },
   { label: 'Planning', value: 'planning' },
@@ -267,19 +263,6 @@ function fail(summary: string, error: unknown) {
           :allowEmpty="false"
           size="small"
         />
-        <SelectButton
-          v-model="launchMode"
-          :options="modeOptions"
-          optionLabel="label"
-          optionValue="value"
-          :allowEmpty="false"
-          size="small"
-        />
-        <p class="muted mode-hint">
-          {{ launchMode === 'auto'
-            ? 'Validated changes apply automatically as the agent works.'
-            : 'The assistant pauses for your review before saving draft artifacts.' }}
-        </p>
         <Textarea
           v-model="objective"
           rows="2"

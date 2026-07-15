@@ -12,7 +12,7 @@ import Textarea from 'primevue/textarea'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import type { AuditProcedure, MarkdownTemplate, PlanningPayload, RcmRow, WorkspaceSummary, WorkingPaper } from '../types'
-import MarkdownView from './MarkdownView.vue'
+import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
@@ -22,7 +22,7 @@ const agent = useAgentRun(props.workspace.id)
 const { isActive, launchMode } = agent
 
 const data = ref<PlanningPayload | null>(null)
-const view = ref<'context' | 'apm' | 'rcm' | 'program'>('context')
+const view = ref<'apm' | 'rcm' | 'program'>('apm')
 const saving = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
@@ -32,7 +32,6 @@ const paperOpen = ref(false)
 const workingPaper = ref<WorkingPaper | null>(null)
 
 const viewOptions = [
-  { label: 'Context', value: 'context' },
   { label: 'APM', value: 'apm' },
   { label: 'Risk & Control Matrix', value: 'rcm' },
   { label: 'Audit program', value: 'program' },
@@ -52,7 +51,7 @@ async function reload() {
     selectedProcedureId.value = requested
     view.value = 'program'
   } else if (!selectedProcedureId.value && data.value.procedures.length) selectedProcedureId.value = data.value.procedures[0].id
-  if (['context', 'apm', 'rcm', 'program'].includes(String(route.query.view || ''))) view.value = String(route.query.view) as typeof view.value
+  if (['apm', 'rcm', 'program'].includes(String(route.query.view || ''))) view.value = String(route.query.view) as typeof view.value
   if (selectedProcedure.value) stepDraft.value = selectedProcedure.value.steps.join('\n')
 }
 
@@ -184,23 +183,9 @@ function fail(summary: string, error: unknown) {
     </div>
     <SelectButton class="planning-nav" v-model="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" />
 
-    <section v-if="view === 'context'" class="context-layout">
-      <div class="card form-grid">
-        <label>Entity<InputText v-model="data.planning.context.entity" /></label>
-        <label>Period<InputText v-model="data.planning.context.period" /></label>
-        <label class="wide">Objective<Textarea v-model="data.planning.context.objective" rows="2" autoResize /></label>
-        <label class="wide">Scope<Textarea v-model="data.planning.context.scope" rows="3" autoResize /></label>
-        <label>Materiality<InputText v-model="data.planning.context.materiality" /></label>
-        <label>Key contacts<InputText v-model="data.planning.context.key_contacts" /></label>
-        <label class="wide">Background notes<Textarea v-model="data.planning.context.background_notes" rows="4" autoResize /></label>
-        <div class="wide form-actions"><Button label="Save context" icon="pi pi-save" :loading="saving" @click="savePlanning" /></div>
-      </div>
-      <aside class="card basis"><h3>Planning basis</h3><p><strong>{{ workspace.tables.length }}</strong> structured source(s)</p><p><strong>{{ workspace.document_count ?? 0 }}</strong> document(s)</p><p>Structured rows remain local. {{ workspace.settings?.doc_llm_optin ? 'Logged methodology/document disclosures are enabled for this engagement.' : 'Document and methodology disclosure is off for this engagement.' }}</p><h4>Interview answers</h4><p v-if="!Object.keys(data.planning.context.interview_answers).length" class="muted">No interview answers captured yet.</p><div v-else class="interview-answers"><label v-for="(_answer, question) in data.planning.context.interview_answers" :key="question">{{ question }}<Textarea v-model="data.planning.context.interview_answers[question]" rows="2" autoResize /></label><Button label="Save answers" icon="pi pi-save" size="small" outlined :loading="saving" @click="savePlanning" /></div></aside>
-    </section>
-
-    <section v-else-if="view === 'apm'" class="apm-view">
+    <section v-if="view === 'apm'" class="apm-view">
       <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate" /><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning" /></div>
-      <div class="split-editor"><Textarea v-model="data.planning.apm_markdown" spellcheck="false" /><div class="preview card"><MarkdownView :markdown="data.planning.apm_markdown || '*No APM draft yet.*'" /></div></div>
+      <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown" /></div>
     </section>
 
     <RcmGrid v-else-if="view === 'rcm'" :rows="data.rcm" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" @add="addRcm" @update="updateRcm" @remove="removeRcm" />
@@ -225,17 +210,14 @@ function fail(summary: string, error: unknown) {
 .muted { color: var(--aw-muted); font-size: 0.78rem; }
 .planning-nav { align-self: flex-start; }
 .card { background: #fff; border: 1px solid var(--aw-border); border-radius: var(--aw-radius); box-shadow: var(--aw-shadow-sm); padding: 1rem; }
-.context-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr); gap: 1rem; }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
 .wide { grid-column: 1 / -1; }
 .form-actions { display: flex; justify-content: flex-end; }
-.basis h3 { margin-top: 0; }.basis h4 { margin-bottom: 0.4rem; }.interview-answers { display: flex; flex-direction: column; gap: 0.7rem; }
 .section-toolbar { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.7rem; }.section-toolbar > div { display: flex; flex-direction: column; }.grow { flex: 1; }
-.split-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; min-height: 34rem; }.split-editor > :deep(textarea) { width: 100%; height: 100%; resize: vertical; font-family: var(--aw-font-mono); font-size: 0.8rem; }.preview { overflow-y: auto; }
+.apm-editor { min-height: 34rem; }.apm-editor > :deep(.markdown-editor) { min-height: 34rem; }
 .program-layout { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 1rem; }.procedure-rail { padding: 0.55rem; }.rail-head { display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.4rem 0.55rem; }.procedure-rail button { width: 100%; display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.45rem; text-align: left; border: 0; border-radius: 6px; background: transparent; padding: 0.55rem; cursor: pointer; }.procedure-rail button:hover, .procedure-rail button.active { background: var(--p-primary-50); }.procedure-rail button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.procedure-rail button small { grid-column: 2; color: var(--aw-muted); }.procedure-detail { display: flex; flex-direction: column; gap: 0.75rem; }.two { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }.empty { color: var(--aw-muted); }
 .template-editor { width: 100%; font-family: var(--aw-font-mono); font-size: 0.8rem; }
 .methodology-citations { display: grid; gap: .35rem; padding: .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }.methodology-citations small { color: var(--aw-muted); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }.methodology-citations span { color: var(--aw-ink); font-size: var(--aw-text-sm); }
 .test-links { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:var(--aw-canvas) }.test-links small { margin-right:.3rem; text-transform:uppercase; color:var(--aw-muted); font-weight:700 }.test-links a { color:var(--aw-teal); border:1px solid var(--aw-border); border-radius:999px; padding:.2rem .5rem; text-decoration:none; font-size:.75rem }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }
-@media (max-width: 1050px) { .planning-head { flex-direction: column; }.context-layout, .split-editor, .program-layout { grid-template-columns: 1fr; }.procedure-rail { max-height: 15rem; overflow-y: auto; } }
+@media (max-width: 1050px) { .planning-head { flex-direction: column; }.program-layout { grid-template-columns: 1fr; }.procedure-rail { max-height: 15rem; overflow-y: auto; } }
 </style>

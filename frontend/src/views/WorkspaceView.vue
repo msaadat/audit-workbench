@@ -8,6 +8,8 @@ import Tab from 'primevue/tab'
 import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 import Button from 'primevue/button'
+import SelectButton from 'primevue/selectbutton'
+import ToggleSwitch from 'primevue/toggleswitch'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
@@ -35,8 +37,14 @@ const activeTab = ref(String(route.query.tab || 'dashboard'))
 const initialized = ref(false)
 const folderImportOpen = ref(false)
 const dashboardRef = ref<{ load: () => Promise<void> } | null>(null)
+const savingDocumentAi = ref(false)
 
 const agent = useAgentRun(props.id)
+const { launchMode } = agent
+const agentModeOptions = [
+  { label: 'Auto', value: 'auto' },
+  { label: 'Ask', value: 'permission' },
+]
 
 async function reload() {
   try {
@@ -54,6 +62,29 @@ async function reload() {
 async function handleImported() {
   await reload()
   if (activeTab.value === 'dashboard') await dashboardRef.value?.load()
+}
+
+async function setDocumentAi(enabled: boolean) {
+  if (!workspace.value || savingDocumentAi.value) return
+  const previous = Boolean(workspace.value.settings?.doc_llm_optin)
+  savingDocumentAi.value = true
+  try {
+    const settings = await api.patch<NonNullable<WorkspaceSummary['settings']>>(
+      `/api/workspaces/${props.id}/settings`,
+      { doc_llm_optin: enabled },
+    )
+    workspace.value.settings = settings
+    toast.add({
+      severity: enabled ? 'success' : 'secondary',
+      summary: `Document AI ${enabled ? 'enabled' : 'disabled'}`,
+      life: 2500,
+    })
+  } catch (error) {
+    if (workspace.value.settings) workspace.value.settings.doc_llm_optin = previous
+    toast.add({ severity: 'error', summary: 'Could not update Document AI', detail: String(error), life: 5000 })
+  } finally {
+    savingDocumentAi.value = false
+  }
 }
 
 onMounted(async () => {
@@ -77,19 +108,42 @@ onUnmounted(unsubscribe)
 
 <template>
   <div class="page workspace-page" v-if="workspace">
-    <div class="workspace-bar">
-      <div>
-        <p class="eyebrow">Audit engagement</p>
+    <header class="workspace-header">
+      <router-link to="/" class="brand" aria-label="Audit Workbench home">
+        <span class="brand-mark"><i class="pi pi-verified" /></span>
+        <strong>Audit Workbench</strong>
+      </router-link>
+      <span class="header-divider" />
+      <div class="engagement-title">
+        <small>Engagement</small>
         <h1>{{ workspace.name }}</h1>
-        <p class="muted">{{ workspace.description || 'No description.' }}</p>
       </div>
-      <div class="workspace-facts">
-        <span><strong>{{ workspace.tables.length }}</strong> tables</span>
-        <span><strong>{{ workspace.tables.reduce((sum, table) => sum + (table.rows ?? 0), 0).toLocaleString() }}</strong> rows</span>
-        <span><i class="pi pi-lock" /> Rows processed locally</span>
-        <Button label="Import files" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
+      <span class="header-spacer" />
+      <div class="header-setting document-ai-setting" :class="{ saving: savingDocumentAi }">
+        <label for="document-ai">Document AI</label>
+        <ToggleSwitch
+          inputId="document-ai"
+          :modelValue="Boolean(workspace.settings?.doc_llm_optin)"
+          :disabled="savingDocumentAi"
+          @update:modelValue="setDocumentAi"
+        />
       </div>
-    </div>
+      <div class="header-setting agent-mode-setting">
+        <span>Agent</span>
+        <SelectButton
+          v-model="launchMode"
+          :options="agentModeOptions"
+          optionLabel="label"
+          optionValue="value"
+          :allowEmpty="false"
+          size="small"
+          aria-label="Agent permission mode"
+        />
+      </div>
+      <Button label="Import" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
+      <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
+      <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
+    </header>
 
     <div class="workspace-layout">
       <Tabs v-model:value="activeTab" class="workspace-tabs">
@@ -173,31 +227,43 @@ onUnmounted(unsubscribe)
   overflow: hidden;
 }
 
-.workspace-bar {
+.workspace-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 2rem;
-  min-height: 5.5rem;
-  padding: 0.9rem 2rem;
-  background: #fff;
-  border-bottom: 1px solid var(--aw-border);
+  gap: 0.85rem;
+  min-height: 3.75rem;
+  padding: 0.5rem 1.5rem;
+  color: #fff;
+  background: linear-gradient(180deg, var(--aw-navy-900) 0%, var(--aw-navy-950) 100%);
+  border-bottom: 1px solid rgb(94 234 212 / 14%);
   box-shadow: var(--aw-shadow-sm);
 }
 
-h1 {
-  margin: 0 0 0.18rem;
-  font-size: var(--aw-text-xl);
-}
+.brand { display: inline-flex; align-items: center; gap: 0.65rem; flex: 0 0 auto; color: #fff; text-decoration: none; }
+.brand-mark { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-sm); color: var(--aw-navy-950); background: linear-gradient(135deg, var(--aw-mint) 0%, #2dd4bf 100%); box-shadow: 0 0 0 1px rgb(94 234 212 / 25%), 0 2px 8px rgb(45 212 191 / 30%); }
+.brand strong { font-size: 0.95rem; white-space: nowrap; }
+.header-divider { align-self: stretch; width: 1px; margin: 0.15rem 0.1rem; background: rgb(255 255 255 / 16%); }
+.engagement-title { min-width: 0; line-height: 1.1; }
+.engagement-title small { color: #8fa6c2; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.engagement-title h1 { max-width: 22rem; margin: 0.15rem 0 0; overflow: hidden; color: #fff; font-size: 0.96rem; text-overflow: ellipsis; white-space: nowrap; }
+.header-spacer { flex: 1; }
+.header-setting { display: flex; align-items: center; gap: 0.5rem; color: #c7d3e2; font-size: 0.7rem; font-weight: 600; white-space: nowrap; }
+.header-setting.saving { opacity: 0.65; }
+.header-setting :deep(.p-toggleswitch) { width: 2.25rem; height: 1.25rem; }
+.header-setting :deep(.p-toggleswitch-slider::before) { width: 0.85rem; height: 0.85rem; margin-top: -0.425rem; }
+.agent-mode-setting :deep(.p-selectbutton) { display: flex; }
+.agent-mode-setting :deep(.p-togglebutton) { min-width: 2.7rem; padding: 0.32rem 0.55rem; border-color: rgb(255 255 255 / 20%); background: rgb(255 255 255 / 7%); color: #c7d3e2; font-size: 0.68rem; }
+.agent-mode-setting :deep(.p-togglebutton.p-togglebutton-checked) { border-color: var(--aw-mint); background: var(--aw-mint); color: var(--aw-navy-950); }
+.agent-mode-setting :deep(.p-togglebutton-checked .p-togglebutton-content) { background: transparent; box-shadow: none; }
+.workspace-header :deep(.p-button-secondary) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: #fff; }
+.header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-sm); color: #e6edf6; text-decoration: none; transition: background .15s; }
+.header-link:hover { background: rgb(255 255 255 / 10%); }
 
-.workspace-bar p {
-  margin: 0;
+@media (max-width: 1180px) {
+  .brand strong { display: none; }
+  .engagement-title h1 { max-width: 14rem; }
 }
-
-.workspace-facts { display: flex; align-items: center; gap: 1.2rem; color: var(--aw-muted); font-size: 0.75rem; }
-.workspace-facts span { display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
-.workspace-facts strong { color: var(--aw-ink); font-size: 0.9rem; }
 
 .workspace-layout {
   flex: 1;
@@ -240,8 +306,9 @@ h1 {
 
 @media (max-width: 900px) {
   .workspace-page { height: 100%; overflow: hidden; }
-  .workspace-bar { padding-inline: 1.25rem; align-items: flex-start; }
-  .workspace-facts span:nth-child(2) { display: none; }
+  .workspace-header { padding-inline: 0.85rem; }
+  .header-divider, .engagement-title small, .document-ai-setting { display: none; }
+  .engagement-title h1 { max-width: 11rem; }
   .workspace-layout { flex-direction: column; overflow: hidden; }
   .workspace-layout > .agent-drawer { height: 32rem; min-height: 0; border-left: 0; border-top: 1px solid #d5dde7; }
   .workspace-layout > .agent-drawer.collapsed { flex: 0 0 3.25rem; height: 3.25rem; }
@@ -250,5 +317,10 @@ h1 {
   .nav-label, .nav-privacy { display: none; }
   :deep(.workspace-nav .p-tab) { width: auto; white-space: nowrap; }
   .workspace-panels { padding: 1rem; }
+}
+
+@media (max-width: 640px) {
+  .brand, .agent-mode-setting, .workspace-header > .p-button { display: none; }
+  .engagement-title h1 { max-width: none; }
 }
 </style>

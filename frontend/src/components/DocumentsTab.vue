@@ -185,6 +185,8 @@ async function searchPacks() {
 
 watch(() => route.query.doc, id => { if (id && id !== selectedId.value) void selectDocument(String(id), Number(route.query.page || 1)) })
 watch(currentPage, page => { if (selectedId.value) void router.replace({ query: { ...route.query, tab: 'documents', doc: selectedId.value, page: String(page) } }) })
+watch(() => props.workspace.settings?.doc_llm_optin, value => { optin.value = Boolean(value) })
+watch(() => props.workspace.settings?.doc_pii_masking, value => { piiMasking.value = Boolean(value) })
 onMounted(async () => { await loadDocuments(); if (selectedId.value) await selectDocument(selectedId.value, Number(route.query.page || 1)) })
 </script>
 
