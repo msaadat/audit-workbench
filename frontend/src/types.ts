@@ -566,7 +566,7 @@ export interface DashboardTarget {
 }
 
 export interface DashboardPhase {
-  id: 'setup' | 'planning' | 'fieldwork' | 'report'
+  id: 'planning' | 'fieldwork' | 'report'
   label: string
   state: 'not_started' | 'in_progress' | 'complete' | 'attention'
   complete: boolean
@@ -574,6 +574,10 @@ export interface DashboardPhase {
   counts: Record<string, number>
   issues: string[]
   target: DashboardTarget
+}
+
+export interface EngagementStatusPayload {
+  phases: DashboardPhase[]
 }
 
 export interface DashboardAction {

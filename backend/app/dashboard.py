@@ -19,7 +19,7 @@ from .agent.prompts import parse_json_object
 from .workspaces import Workspace
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
-PHASE_TABS = {"setup": "data", "planning": "planning", "fieldwork": "doc-tests", "report": "report"}
+PHASE_TABS = {"planning": "planning", "fieldwork": "doc-tests", "report": "report"}
 ALLOWED_ACTION_TABS = {
     "dashboard", "planning", "documents", "doc-tests", "data", "query",
     "validation", "analysis", "findings", "report",
@@ -160,30 +160,14 @@ def _phase(phase_id: str, state: str, complete: bool, summary: str,
     }
 
 
-def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
+def _engagement_state(workspace: Workspace) -> dict:
     tests = doc_tests.list_tests(workspace)
     quality = report.quality_checks(workspace)
     current_report = report.hydrate(workspace)
-    table_errors: list[str] = []
-    readable_tables = 0
-    total_rows = 0
-    for name in workspace.table_names():
-        try:
-            frame = workspace.get_frame(name)
-            readable_tables += 1
-            total_rows += frame.height
-        except Exception as error:
-            table_errors.append(f"{name}: {error}")
-
     state_counts = {
         state: sum(int(test.get("state_counts", {}).get(state, 0)) for test in tests)
         for state in ("pending", "agent_checked", "confirmed", "exception", "manual_review")
     }
-    broken_tiles = [tile for tile in tiles if tile.get("error")]
-    failed_tiles = [
-        tile for tile in tiles
-        if not tile.get("error") and tile.get("verdict") in {"warn", "fail"}
-    ]
     broken_analyses = [
         item for item in workspace.analyses
         if item.get("kind") != "python" and item.get("table") not in workspace.table_names()
@@ -192,29 +176,6 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
         ruleset.get("runs", [])[-1] for ruleset in workspace.rulesets if ruleset.get("runs")
     ]
     failed_validation = [run for run in latest_validation if run.get("verdict") in {"warn", "fail"}]
-
-    overview = {
-        "tables": len(workspace.table_names()), "readable_tables": readable_tables,
-        "table_errors": len(table_errors), "rows": total_rows,
-        "documents": len(workspace.documents), "rcm_rows": len(workspace.rcm),
-        "procedures": len(workspace.work_program), "document_tests": len(tests),
-        "analyses": len(workspace.analyses), "rulesets": len(workspace.rulesets),
-        "findings": len(workspace.findings), "final_findings": sum(
-            item.get("status") == "final" for item in workspace.findings
-        ),
-        "pinned_tiles": len(workspace.tiles),
-        "report_errors": quality["counts"]["error"],
-        "report_warnings": quality["counts"]["warning"],
-    }
-
-    has_sources = bool(readable_tables or workspace.documents)
-    setup_issues = table_errors[:3]
-    setup_complete = has_sources and not table_errors
-    setup_state = "attention" if table_errors else ("complete" if has_sources else "not_started")
-    setup_summary = (
-        f"{readable_tables} readable table(s) and {len(workspace.documents)} document(s) available."
-        if has_sources else "No source files have been imported yet."
-    )
 
     context = workspace.planning.get("context") or {}
     planning_started = bool(
@@ -290,8 +251,6 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     )
 
     phases = [
-        _phase("setup", setup_state, setup_complete, setup_summary,
-               {"tables": readable_tables, "documents": len(workspace.documents)}, setup_issues),
         _phase("planning", planning_state, planning_complete, planning_summary,
                {"rcm_rows": len(workspace.rcm), "procedures": len(workspace.work_program)}, planning_issues),
         _phase("fieldwork", fieldwork_state, fieldwork_complete, fieldwork_summary,
@@ -301,6 +260,80 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
                {"findings": len(workspace.findings), "draft_findings": len(draft_findings),
                 "quality_errors": len(report_errors)}, report_issues),
     ]
+
+    return {
+        "tests": tests,
+        "quality": quality,
+        "current_report": current_report,
+        "state_counts": state_counts,
+        "broken_analyses": broken_analyses,
+        "planning_started": planning_started,
+        "planning_complete": planning_complete,
+        "planning_issues": planning_issues,
+        "incomplete_procedures": incomplete_procedures,
+        "incomplete_tests": incomplete_tests,
+        "fieldwork_started": fieldwork_started,
+        "fieldwork_complete": fieldwork_complete,
+        "fieldwork_issues": fieldwork_issues,
+        "unresolved_exceptions": unresolved_exceptions,
+        "draft_findings": draft_findings,
+        "report_errors": report_errors,
+        "phases": phases,
+    }
+
+
+def engagement_status_payload(workspace: Workspace) -> dict:
+    return {"phases": _engagement_state(workspace)["phases"]}
+
+
+def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
+    state = _engagement_state(workspace)
+    tests = state["tests"]
+    quality = state["quality"]
+    current_report = state["current_report"]
+    state_counts = state["state_counts"]
+    planning_started = state["planning_started"]
+    planning_complete = state["planning_complete"]
+    planning_issues = state["planning_issues"]
+    incomplete_procedures = state["incomplete_procedures"]
+    incomplete_tests = state["incomplete_tests"]
+    fieldwork_started = state["fieldwork_started"]
+    fieldwork_complete = state["fieldwork_complete"]
+    fieldwork_issues = state["fieldwork_issues"]
+    unresolved_exceptions = state["unresolved_exceptions"]
+    draft_findings = state["draft_findings"]
+    report_errors = state["report_errors"]
+
+    table_errors: list[str] = []
+    readable_tables = 0
+    total_rows = 0
+    for name in workspace.table_names():
+        try:
+            frame = workspace.get_frame(name)
+            readable_tables += 1
+            total_rows += frame.height
+        except Exception as error:
+            table_errors.append(f"{name}: {error}")
+
+    broken_tiles = [tile for tile in tiles if tile.get("error")]
+    failed_tiles = [
+        tile for tile in tiles
+        if not tile.get("error") and tile.get("verdict") in {"warn", "fail"}
+    ]
+    overview = {
+        "tables": len(workspace.table_names()), "readable_tables": readable_tables,
+        "table_errors": len(table_errors), "rows": total_rows,
+        "documents": len(workspace.documents), "rcm_rows": len(workspace.rcm),
+        "procedures": len(workspace.work_program), "document_tests": len(tests),
+        "analyses": len(workspace.analyses), "rulesets": len(workspace.rulesets),
+        "findings": len(workspace.findings), "final_findings": sum(
+            item.get("status") == "final" for item in workspace.findings
+        ),
+        "pinned_tiles": len(workspace.tiles),
+        "report_errors": quality["counts"]["error"],
+        "report_warnings": quality["counts"]["warning"],
+    }
+    has_sources = bool(readable_tables or workspace.documents)
 
     actions = []
     if not has_sources:
@@ -344,7 +377,12 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     for tile in broken_tiles:
         attention.append({"id": f"tile:{tile['id']}", "severity": "error", "title": tile["title"], "message": tile["error"], "target": _target("dashboard")})
 
-    return {"overview": overview, "phases": phases, "actions": actions, "attention": attention[:10]}
+    return {
+        "overview": overview,
+        "phases": state["phases"],
+        "actions": actions,
+        "attention": attention[:10],
+    }
 
 
 def _advice_snapshot(snapshot: dict) -> dict:

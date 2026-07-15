@@ -16,6 +16,7 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
+const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const route = useRoute()
 const agent = useAgentRun(props.workspace.id)
@@ -71,6 +72,7 @@ async function savePlanning() {
       context: data.value.planning.context,
       apm_markdown: data.value.planning.apm_markdown,
     })
+    emit('changed')
     toast.add({ severity: 'success', summary: 'Planning saved', life: 1800 })
   } catch (error) { fail('Could not save planning', error) }
   finally { saving.value = false }
@@ -107,14 +109,15 @@ async function addRcm() {
   try {
     await api.post(`/api/workspaces/${props.workspace.id}/rcm`, { process: 'New process', risk: 'Describe the audit risk', risk_rating: 'medium' })
     await reload()
+    emit('changed')
   } catch (error) { fail('Could not add the risk', error) }
 }
 async function updateRcm(id: string, changes: Partial<RcmRow>) {
-  try { await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${id}`, changes) }
+  try { await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${id}`, changes); emit('changed') }
   catch (error) { fail('Could not update the risk', error) }
 }
 async function removeRcm(id: string) {
-  try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${id}`); await reload() }
+  try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${id}`); await reload(); emit('changed') }
   catch (error) { fail('Could not remove the risk', error) }
 }
 
@@ -122,6 +125,7 @@ async function addProcedure() {
   try {
     const item = await api.post<AuditProcedure>(`/api/workspaces/${props.workspace.id}/procedures`, { objective: 'New audit procedure', steps: [] })
     await reload(); selectedProcedureId.value = item.id; stepDraft.value = ''
+    emit('changed')
   } catch (error) { fail('Could not add the procedure', error) }
 }
 async function saveProcedure() {
@@ -134,13 +138,14 @@ async function saveProcedure() {
       steps: item.steps, method: item.method, expected_evidence: item.expected_evidence,
       result_summary: item.result_summary, conclusion: item.conclusion, scope_limitations: item.scope_limitations,
     })
+    emit('changed')
     toast.add({ severity: 'success', summary: 'Procedure saved', life: 1800 })
   } catch (error) { fail('Could not save the procedure', error) }
 }
 async function removeProcedure() {
   const item = selectedProcedure.value
   if (!item) return
-  try { await api.del(`/api/workspaces/${props.workspace.id}/procedures/${item.id}`); selectedProcedureId.value = null; await reload() }
+  try { await api.del(`/api/workspaces/${props.workspace.id}/procedures/${item.id}`); selectedProcedureId.value = null; await reload(); emit('changed') }
   catch (error) { fail('Could not remove the procedure', error) }
 }
 function selectProcedure(item: AuditProcedure) { selectedProcedureId.value = item.id; stepDraft.value = item.steps.join('\n') }
@@ -159,6 +164,7 @@ async function draftProcedureResults() {
   try {
     await api.post(`/api/workspaces/${props.workspace.id}/procedures/${selectedProcedure.value.id}/draft-results`)
     await reload()
+    emit('changed')
     await openWorkingPaper()
   } catch (error) { fail('Could not draft procedure results', error) }
 }

@@ -17,6 +17,12 @@ async def get_dashboard(workspace_id: str):
     return dashboard.dashboard_payload(ws)
 
 
+@router.get("/dashboard/status")
+async def get_engagement_status(workspace_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    return dashboard.engagement_status_payload(ws)
+
+
 @router.post("/dashboard/advice")
 async def generate_dashboard_advice(workspace_id: str):
     ws = workspaces.load_workspace(workspace_id)

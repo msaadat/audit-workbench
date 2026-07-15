@@ -14,6 +14,7 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import ReportReconcileDialog from './ReportReconcileDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
+const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const router = useRouter()
 const report = ref<AuditReport | null>(null)
@@ -51,6 +52,7 @@ async function save(showToast = true) {
     report.value = await api.patch<AuditReport>(`/api/workspaces/${props.workspace.id}/report`, {
       status: report.value.status, markdown: report.value.markdown,
     })
+    emit('changed')
     if (showToast) toast.add({ severity: 'success', summary: 'Report saved', life: 1800 })
   } catch (error) { fail('Could not save the report', error) }
   finally { busy.value = false }
@@ -70,6 +72,7 @@ async function generate() {
     const result = await api.post<AuditReport>(`/api/workspaces/${props.workspace.id}/report/generate`, { use_model: true })
     report.value = result
     context.value = await api.get<ReportContext>(`/api/workspaces/${props.workspace.id}/report/context`)
+    emit('changed')
     if (result.requires_reconcile) {
       reconcileCurrent.value = result.current_markdown ?? result.markdown
       reconcileGenerated.value = result.candidate_markdown ?? result.generated_markdown
@@ -87,6 +90,7 @@ async function reconcile(action: 'keep' | 'replace') {
   try {
     report.value = await api.post<AuditReport>(`/api/workspaces/${props.workspace.id}/report/reconcile`, { action })
     reconcileOpen.value = false
+    emit('changed')
     toast.add({ severity: 'success', summary: action === 'keep' ? 'Current report retained' : 'Generated report applied', life: 2200 })
   } catch (error) { fail('Could not reconcile the report', error) }
   finally { busy.value = false }

@@ -13,7 +13,7 @@ import ToggleSwitch from 'primevue/toggleswitch'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import type { WorkspaceSummary } from '../types'
+import type { DashboardPhase, EngagementStatusPayload, WorkspaceSummary } from '../types'
 import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
@@ -38,6 +38,7 @@ const initialized = ref(false)
 const folderImportOpen = ref(false)
 const dashboardRef = ref<{ load: () => Promise<void> } | null>(null)
 const savingDocumentAi = ref(false)
+const phaseStatus = ref<Partial<Record<DashboardPhase['id'], DashboardPhase>>>({})
 
 const agent = useAgentRun(props.id)
 const { launchMode } = agent
@@ -45,6 +46,31 @@ const agentModeOptions = [
   { label: 'Auto', value: 'auto' },
   { label: 'Ask', value: 'permission' },
 ]
+const phaseStateIcon: Record<DashboardPhase['state'], string> = {
+  not_started: 'pi pi-circle',
+  in_progress: 'pi pi-clock',
+  complete: 'pi pi-check-circle',
+  attention: 'pi pi-exclamation-triangle',
+}
+const phaseStateLabel: Record<DashboardPhase['state'], string> = {
+  not_started: 'Not started',
+  in_progress: 'In progress',
+  complete: 'Complete',
+  attention: 'Needs attention',
+}
+
+async function loadEngagementStatus() {
+  try {
+    const payload = await api.get<EngagementStatusPayload>(`/api/workspaces/${props.id}/dashboard/status`)
+    phaseStatus.value = Object.fromEntries(payload.phases.map(phase => [phase.id, phase]))
+  } catch {
+    phaseStatus.value = {}
+  }
+}
+
+function statusLabel(phase: DashboardPhase) {
+  return `${phase.label}: ${phaseStateLabel[phase.state]}`
+}
 
 async function reload() {
   try {
@@ -60,8 +86,12 @@ async function reload() {
 }
 
 async function handleImported() {
-  await reload()
+  await Promise.all([reload(), loadEngagementStatus()])
   if (activeTab.value === 'dashboard') await dashboardRef.value?.load()
+}
+
+async function reloadWorkspaceAndStatus() {
+  await Promise.all([reload(), loadEngagementStatus()])
 }
 
 async function setDocumentAi(enabled: boolean) {
@@ -88,7 +118,7 @@ async function setDocumentAi(enabled: boolean) {
 }
 
 onMounted(async () => {
-  await reload()
+  await Promise.all([reload(), loadEngagementStatus()])
   if (route.query.import === '1') {
     folderImportOpen.value = true
     const query = { ...route.query }
@@ -96,12 +126,18 @@ onMounted(async () => {
     await router.replace({ query })
   }
 })
-watch(activeTab, tab => { if (route.query.tab !== tab) void router.replace({ query: { ...route.query, tab } }) })
+watch(activeTab, tab => {
+  if (route.query.tab !== tab) void router.replace({ query: { ...route.query, tab } })
+  void loadEngagementStatus()
+})
 watch(() => route.query.tab, tab => { if (tab && tab !== activeTab.value) activeTab.value = String(tab) })
 
-// Agent-created tables/joins change the workspace summary every tab reads.
+// Agent mutations can change both workspace counts and engagement status.
 const unsubscribe = agent.onWorkspaceChanged((change) => {
   if (change.kind === 'join' || change.kind === 'table') void reload()
+  if (['table', 'join', 'planning', 'rcm', 'procedure', 'doctest', 'ruleset', 'analysis', 'tile', 'finding', 'report'].includes(change.kind)) {
+    void loadEngagementStatus()
+  }
 })
 onUnmounted(unsubscribe)
 </script>
@@ -152,33 +188,33 @@ onUnmounted(unsubscribe)
             <p class="nav-label">Overview</p>
             <Tab value="dashboard"><i class="pi pi-th-large" /><span>Dashboard</span></Tab>
             <p class="nav-label nav-group">Plan</p>
-            <Tab value="planning"><i class="pi pi-map" /><span>Planning</span></Tab>
+            <Tab value="planning" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'Planning'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'Planning'"><i class="pi pi-map" /><span>Planning</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
             <Tab value="documents"><i class="pi pi-folder" /><span>Documents</span></Tab>
             <p class="nav-label nav-group">Fieldwork</p>
-            <Tab value="doc-tests"><i class="pi pi-verified" /><span>Document tests</span></Tab>
+            <Tab value="doc-tests" :aria-label="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'" v-tooltip.right="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'"><i class="pi pi-verified" /><span>Document tests</span><i v-if="phaseStatus.fieldwork" class="phase-status" :class="phaseStateIcon[phaseStatus.fieldwork.state]" :data-state="phaseStatus.fieldwork.state" aria-hidden="true" /></Tab>
             <Tab value="data"><i class="pi pi-database" /><span>Data</span></Tab>
             <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
             <Tab value="validation"><i class="pi pi-check-square" /><span>Validation</span></Tab>
             <Tab value="analysis"><i class="pi pi-shield" /><span>Analysis</span></Tab>
             <p class="nav-label nav-group output-label">Output</p>
             <Tab value="findings"><i class="pi pi-flag" /><span>Findings</span><small v-if="workspace.finding_count">{{ workspace.finding_count }}</small></Tab>
-            <Tab value="report"><i class="pi pi-file-edit" /><span>Report</span></Tab>
+            <Tab value="report" :aria-label="phaseStatus.report ? statusLabel(phaseStatus.report) : 'Report'" v-tooltip.right="phaseStatus.report ? statusLabel(phaseStatus.report) : 'Report'"><i class="pi pi-file-edit" /><span>Report</span><i v-if="phaseStatus.report" class="phase-status" :class="phaseStateIcon[phaseStatus.report.state]" :data-state="phaseStatus.report.state" aria-hidden="true" /></Tab>
           </TabList>
           <TabPanels class="workspace-panels">
           <TabPanel value="dashboard">
             <DashboardTab v-if="activeTab === 'dashboard'" ref="dashboardRef" :workspace="workspace" @import-requested="folderImportOpen = true" />
           </TabPanel>
           <TabPanel value="planning">
-            <PlanningTab v-if="activeTab === 'planning'" :workspace="workspace" />
+            <PlanningTab v-if="activeTab === 'planning'" :workspace="workspace" @changed="loadEngagementStatus" />
           </TabPanel>
           <TabPanel value="documents">
-            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reload" @planning-started="activeTab = 'planning'" />
+            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" @planning-started="activeTab = 'planning'" />
           </TabPanel>
           <TabPanel value="doc-tests">
-            <DocTestsTab v-if="activeTab === 'doc-tests'" :workspace="workspace" />
+            <DocTestsTab v-if="activeTab === 'doc-tests'" :workspace="workspace" @changed="loadEngagementStatus" />
           </TabPanel>
           <TabPanel value="data">
-            <DataTab :workspace="workspace" @changed="reload" />
+            <DataTab :workspace="workspace" @changed="reloadWorkspaceAndStatus" />
           </TabPanel>
           <TabPanel value="query">
             <QueryTab :workspace="workspace" />
@@ -195,10 +231,10 @@ onUnmounted(unsubscribe)
             </KeepAlive>
           </TabPanel>
           <TabPanel value="findings">
-            <FindingsTab v-if="activeTab === 'findings'" :workspace="workspace" @changed="reload" />
+            <FindingsTab v-if="activeTab === 'findings'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" />
           </TabPanel>
           <TabPanel value="report">
-            <ReportTab v-if="activeTab === 'report'" :workspace="workspace" />
+            <ReportTab v-if="activeTab === 'report'" :workspace="workspace" @changed="loadEngagementStatus" />
           </TabPanel>
           </TabPanels>
         </div>
@@ -279,6 +315,11 @@ onUnmounted(unsubscribe)
 .nav-label { margin: 0 0.6rem 0.45rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
 .nav-group { margin-top: 0.7rem; margin-bottom: 0.18rem; }
 .workspace-nav :deep(.p-tab small) { margin-left:auto; min-width:1.25rem; padding:.1rem .35rem; border-radius:999px; background:var(--p-primary-50); color:var(--aw-teal); text-align:center; }
+.workspace-nav :deep(.phase-status) { margin-left:auto; font-size:.78rem; }
+.workspace-nav :deep(.phase-status[data-state='not_started']) { color:#94a3b8; }
+.workspace-nav :deep(.phase-status[data-state='in_progress']) { color:#2563eb; }
+.workspace-nav :deep(.phase-status[data-state='complete']) { color:#16855b; }
+.workspace-nav :deep(.phase-status[data-state='attention']) { color:#d97706; }
 .workspace-panels { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1.25rem 1.5rem 1.75rem; background: var(--aw-canvas); }
 :deep(.workspace-nav .p-tab) {
   display: flex;

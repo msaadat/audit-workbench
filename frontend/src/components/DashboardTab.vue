@@ -16,7 +16,6 @@ import type {
   DashboardAction,
   DashboardAdvice,
   DashboardPayload,
-  DashboardPhase,
   DashboardTarget,
   DashboardTile,
   WorkspaceSummary,
@@ -50,24 +49,6 @@ const verdictCounts = computed(() => ({
   fail: tiles.value.filter((tile) => tile.verdict === 'fail' || tile.error).length,
 }))
 
-const phaseIcon: Record<DashboardPhase['id'], string> = {
-  setup: 'pi pi-folder-open',
-  planning: 'pi pi-map',
-  fieldwork: 'pi pi-verified',
-  report: 'pi pi-file-edit',
-}
-const phaseStateLabel: Record<DashboardPhase['state'], string> = {
-  not_started: 'Not started',
-  in_progress: 'In progress',
-  complete: 'Complete',
-  attention: 'Needs attention',
-}
-const phaseSeverity: Record<DashboardPhase['state'], string> = {
-  not_started: 'secondary',
-  in_progress: 'info',
-  complete: 'success',
-  attention: 'warn',
-}
 const verdictSeverity: Record<string, string> = { ok: 'success', warn: 'warn', fail: 'danger', info: 'info' }
 const tileIcon: Record<string, string> = {
   analytics: 'pi pi-shield', query: 'pi pi-search', python: 'pi pi-code',
@@ -182,7 +163,6 @@ onUnmounted(unsubscribe)
 
   <div v-if="loading && !board" class="dashboard-loading">
     <Skeleton height="8rem" borderRadius="10px" />
-    <div class="phase-grid"><Skeleton v-for="n in 4" :key="n" height="9rem" borderRadius="10px" /></div>
     <Skeleton height="14rem" borderRadius="10px" />
   </div>
 
@@ -209,17 +189,6 @@ onUnmounted(unsubscribe)
         <p>{{ primaryAction.reason }}</p>
       </div>
       <Button label="Open" icon="pi pi-arrow-right" iconPos="right" @click="runAction(primaryAction)" />
-    </section>
-
-    <section class="phase-section">
-      <div class="section-heading"><h3>Engagement status</h3></div>
-      <div class="phase-grid">
-        <button v-for="phase in board.phases" :key="phase.id" type="button" class="phase-card" :data-state="phase.state" @click="navigate(phase.target)">
-          <div class="phase-card-head"><span class="phase-icon"><i :class="phaseIcon[phase.id]" /></span><Tag :value="phaseStateLabel[phase.state]" :severity="phaseSeverity[phase.state]" /></div>
-          <strong>{{ phase.label }}</strong>
-          <p>{{ phase.summary }}</p>
-        </button>
-      </div>
     </section>
 
     <div class="dashboard-columns">
@@ -300,7 +269,7 @@ onUnmounted(unsubscribe)
 </template>
 
 <style scoped>
-.dashboard-heading,.section-heading,.phase-card-head,.next-action-card,.ai-advice-head,.advice-meta,.tile-head,.tile-title,.tile-actions { display:flex; align-items:center }
+.dashboard-heading,.section-heading,.next-action-card,.ai-advice-head,.advice-meta,.tile-head,.tile-title,.tile-actions { display:flex; align-items:center }
 .dashboard-heading { align-items:flex-start; justify-content:space-between; gap:1rem; margin-bottom:.8rem }
 .dashboard-heading h2 { margin:0; font-size:1.25rem }
 .dashboard-loading { display:flex; flex-direction:column; gap:1rem }
@@ -309,11 +278,7 @@ onUnmounted(unsubscribe)
 .onboarding-copy h3,.next-action-card h3,.section-heading h3 { margin:0 }.onboarding-copy p:not(.eyebrow) { color:var(--aw-muted); line-height:1.55 }.onboarding-actions { display:flex; gap:.65rem; flex-wrap:wrap }
 .next-action-card { gap:1rem; padding:1rem 1.1rem; margin-bottom:1rem; border:1px solid #b9d9d5; border-left:4px solid var(--aw-teal); border-radius:10px; background:#fff; box-shadow:var(--aw-shadow-sm) }
 .next-action-mark { display:grid; place-items:center; width:2.6rem; height:2.6rem; flex:none; border-radius:50%; background:var(--aw-teal-soft); color:var(--aw-teal) }.next-action-copy { flex:1 }.next-action-copy > span { color:var(--aw-teal); font-size:.67rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase }.next-action-copy h3 { margin:.15rem 0 }.next-action-copy p { margin:0; color:var(--aw-muted); font-size:.8rem }
-.phase-section,.monitoring-section { margin-top:1rem }.section-heading { justify-content:space-between; gap:1rem; margin-bottom:.55rem }.section-heading h3 { margin:0; font-size:.9rem }
-.phase-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.75rem }
-.phase-card { position:relative; display:flex; flex-direction:column; align-items:stretch; min-width:0; padding:.85rem; border:1px solid var(--aw-border); border-top:3px solid #94a3b8; border-radius:9px; background:#fff; color:inherit; text-align:left; cursor:pointer; box-shadow:var(--aw-shadow-sm); transition:transform .15s,border-color .15s }
-.phase-card:hover { transform:translateY(-1px); border-color:#9ccbc5 }.phase-card[data-state='complete'] { border-top-color:#16855b }.phase-card[data-state='in_progress'] { border-top-color:#3b82f6 }.phase-card[data-state='attention'] { border-top-color:#d97706 }
-.phase-card-head { justify-content:space-between; margin-bottom:.55rem }.phase-icon { display:grid; place-items:center; width:2rem; height:2rem; border-radius:7px; background:var(--aw-canvas); color:var(--aw-teal) }.phase-card > strong { font-size:.85rem }.phase-card p { margin:.25rem 0 0; color:var(--aw-muted); font-size:.72rem; line-height:1.4 }
+.monitoring-section { margin-top:1rem }.section-heading { justify-content:space-between; gap:1rem; margin-bottom:.55rem }.section-heading h3 { margin:0; font-size:.9rem }
 .dashboard-columns { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(18rem,.65fr); gap:1rem; margin-top:1rem }.work-card { min-width:0; padding:1rem; border:1px solid var(--aw-border); border-radius:9px; background:#fff; box-shadow:var(--aw-shadow-sm) }
 .action-list,.attention-list { display:flex; flex-direction:column }.action-row,.attention-row { display:flex; align-items:flex-start; gap:.65rem; width:100%; padding:.65rem .25rem; border:0; border-bottom:1px solid var(--aw-border); background:transparent; color:inherit; text-align:left; cursor:pointer }.action-row:last-child,.attention-row:last-child { border-bottom:0 }.action-row:hover,.attention-row:hover { background:var(--aw-canvas) }.action-row > span:nth-child(2),.attention-row span { flex:1; display:flex; flex-direction:column; gap:.12rem }.action-row strong,.attention-row strong { font-size:.77rem }.action-row small,.attention-row small { color:var(--aw-muted); font-size:.69rem; line-height:1.4 }.action-row > .pi-chevron-right { align-self:center; color:var(--aw-muted); font-size:.65rem }
 .priority-dot { width:.48rem; height:.48rem; flex:none; margin-top:.3rem; border-radius:50%; background:#94a3b8 }.priority-dot[data-priority='high'] { background:#dc2626 }.priority-dot[data-priority='medium'] { background:#d97706 }.priority-dot[data-priority='low'] { background:#3b82f6 }
@@ -323,6 +288,6 @@ onUnmounted(unsubscribe)
 .pin-empty { display:flex; align-items:center; gap:.85rem; padding:1rem; border:1px dashed var(--aw-border); border-radius:9px; background:rgb(255 255 255 / 55%) }.pin-empty > i { color:var(--aw-teal); font-size:1.3rem }.pin-empty > div { flex:1 }.pin-empty strong { font-size:.8rem }.pin-empty p { margin:.15rem 0 0; color:var(--aw-muted); font-size:.7rem }
 .tile-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(420px,1fr)); gap:1rem }.tile { min-width:0; padding:.9rem 1rem 1rem; border:1px solid var(--p-surface-200); border-top:3px solid #94a3b8; border-radius:8px; background:var(--p-surface-0); box-shadow:var(--aw-shadow) }.tile[data-verdict='ok'] { border-top-color:#16855b }.tile[data-verdict='warn'] { border-top-color:#d97706 }.tile[data-verdict='fail'] { border-top-color:#dc2626 }.tile[data-verdict='info'] { border-top-color:#3b82f6 }.tile-flash { animation:tile-flash 2.4s ease-out }@keyframes tile-flash { 0% { box-shadow:0 0 0 3px var(--p-primary-300) } 100% { box-shadow:var(--aw-shadow) } }.tile-error { border-color:var(--p-red-200) }
 .tile-head { justify-content:space-between; align-items:flex-start; gap:.5rem }.tile-title { gap:.5rem; flex-wrap:wrap; min-width:0 }.tile-title i { color:var(--p-primary-500) }.verdict-tag { font-size:.7rem }.tile-actions { flex-shrink:0 }.tile:not(:hover) .tile-actions { opacity:.35 }.tile-actions { transition:opacity .15s }.tile-meta { margin:.15rem 0 .4rem; font-size:.78rem }.tile-note { margin:0 0 .5rem; color:var(--p-surface-600); font-size:.85rem; font-style:italic }.tile-stats { display:flex; flex-wrap:wrap; gap:.4rem 1.1rem; margin-bottom:.6rem }.tile-stat { display:flex; flex-direction:column }.tile-stat .label { color:var(--p-surface-500); font-size:.68rem; letter-spacing:.04em; text-transform:uppercase }.tile-stat .value { font-size:.95rem; font-weight:600 }.tile-error-body { display:flex; align-items:flex-start; gap:.5rem; padding:.75rem 0; color:var(--p-red-600); font-size:.9rem }.edit-note { margin-top:.75rem }
-@media (max-width:1100px) { .phase-grid { grid-template-columns:repeat(2,1fr) }.dashboard-columns { grid-template-columns:1fr } }
-@media (max-width:760px) { .dashboard-heading,.next-action-card { align-items:flex-start; flex-direction:column }.phase-grid { display:flex; overflow-x:auto; padding-bottom:.25rem }.phase-card { flex:0 0 16rem }.monitoring-heading { align-items:flex-start; flex-direction:column }.tile-summary { flex-wrap:wrap }.tile-grid { grid-template-columns:1fr }.onboarding-card { padding:1.25rem }.onboarding-copy { flex-direction:column }.pin-empty { align-items:flex-start; flex-wrap:wrap } }
+@media (max-width:1100px) { .dashboard-columns { grid-template-columns:1fr } }
+@media (max-width:760px) { .dashboard-heading,.next-action-card { align-items:flex-start; flex-direction:column }.monitoring-heading { align-items:flex-start; flex-direction:column }.tile-summary { flex-wrap:wrap }.tile-grid { grid-template-columns:1fr }.onboarding-card { padding:1.25rem }.onboarding-copy { flex-direction:column }.pin-empty { align-items:flex-start; flex-wrap:wrap } }
 </style>

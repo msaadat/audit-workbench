@@ -3,8 +3,13 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import llm, workspaces
-from app.dashboard import dashboard_payload, generate_advice, tile_payload
+from app import doc_tests, findings, llm, workspaces
+from app.dashboard import (
+    dashboard_payload,
+    engagement_status_payload,
+    generate_advice,
+    tile_payload,
+)
 from app.main import create_app
 from app.workspaces import WorkspaceError
 
@@ -151,11 +156,27 @@ def test_empty_workspace_dashboard_drives_onboarding():
 
     assert board["overview"]["tables"] == 0
     assert [phase["state"] for phase in board["phases"]] == [
-        "not_started", "not_started", "not_started", "not_started",
+        "not_started", "not_started", "not_started",
     ]
     assert board["actions"][0]["id"] == "import-sources"
     assert board["actions"][0]["target"]["tab"] == "data"
     assert board["ai_advice"] is None
+
+
+def test_engagement_status_endpoint_is_lightweight(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    client = TestClient(create_app())
+
+    def fail_compute(*_args, **_kwargs):
+        raise AssertionError("status endpoint must not compute dashboard tiles")
+
+    monkeypatch.setattr("app.dashboard.compute_payload", fail_compute)
+    response = client.get(f"/api/workspaces/{ws.id}/dashboard/status")
+
+    assert response.status_code == 200
+    assert [phase["id"] for phase in response.json()["phases"]] == [
+        "planning", "fieldwork", "report",
+    ]
 
 
 def test_derived_phases_can_reach_complete(workspace_with_data):
@@ -175,6 +196,33 @@ def test_derived_phases_can_reach_complete(workspace_with_data):
     assert all(phase["complete"] for phase in phases.values())
     assert phases["fieldwork"]["state"] == "complete"
     assert phases["report"]["counts"]["quality_errors"] == 0
+
+    status = engagement_status_payload(ws)
+    assert all(phase["complete"] for phase in status["phases"])
+
+
+def test_engagement_status_surfaces_attention_and_draft_work(workspace_with_data):
+    ws = workspace_with_data
+    test = doc_tests.create_test(ws, {
+        "kind": "attribute", "title": "Approval review",
+        "items": [{"label": "Sample 1"}],
+    })
+    doc_tests.update_item(ws, test["id"], test["items"][0]["id"], {
+        "auditor_disposition": "needs_manual_check",
+    })
+    findings.add(ws, {"title": "Unsupported transaction", "status": "draft"})
+    ws.report = {"status": "draft", "markdown": "# Audit report\n\n99 findings."}
+    ws.save()
+
+    phases = {
+        phase["id"]: phase for phase in engagement_status_payload(ws)["phases"]
+    }
+
+    assert phases["fieldwork"]["state"] == "attention"
+    assert any("manual review" in issue for issue in phases["fieldwork"]["issues"])
+    assert phases["report"]["state"] == "attention"
+    assert any("remain in draft" in issue for issue in phases["report"]["issues"])
+    assert phases["report"]["counts"]["quality_errors"] > 0
 
 
 def test_dashboard_advice_is_metadata_only_cached_and_marked_stale(

@@ -17,6 +17,7 @@ import type { AuditDocument, DocTest, DocTestItem, DocTestKind, EvidenceRef, Wor
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
+const emit = defineEmits<{ changed: [] }>()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
@@ -111,6 +112,7 @@ async function createTest() {
     }
     createOpen.value = false
     await loadList(created.id)
+    emit('changed')
   } catch (error) { fail('Could not create document test', error) }
   finally { creating.value = false }
 }
@@ -120,12 +122,14 @@ async function attachDocument() {
   try {
     await api.post(`/api/workspaces/${props.workspace.id}/doc-tests/${current.value.id}/items/${selectedItem.value.id}/documents`, { document_id: attachId.value })
     await selectTest(current.value.id)
+    emit('changed')
   } catch (error) { fail('Could not attach evidence', error) }
 }
 async function saveChecks() {
   if (!current.value || !selectedItem.value) return
   try {
     await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${current.value.id}/items/${selectedItem.value.id}/comparisons`, { checks: selectedItem.value.checks ?? [] })
+    emit('changed')
     toast.add({ severity: 'success', summary: 'Comparison settings saved', life: 1800 })
   } catch (error) { fail('Could not save comparisons', error) }
 }
@@ -134,6 +138,7 @@ async function disposition(value: DocTestItem['auditor_disposition']) {
   try {
     await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${current.value.id}/items/${selectedItem.value.id}`, { auditor_disposition: value, auditor_note: selectedItem.value.auditor_note })
     await selectTest(current.value.id)
+    emit('changed')
   } catch (error) { fail('Could not save auditor disposition', error) }
 }
 async function runTest() {
@@ -156,6 +161,7 @@ async function draftResults() {
   try {
     await api.post(`/api/workspaces/${props.workspace.id}/procedures/${procedureId.value}/draft-results`)
     await openWorkingPaper()
+    emit('changed')
     toast.add({ severity: 'success', summary: 'Procedure result draft refreshed', life: 1800 })
   } catch (error) { fail('Could not draft procedure results', error) }
 }
