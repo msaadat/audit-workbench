@@ -240,7 +240,6 @@ function reset() {
         <span>Import supported data and documents from this folder and its subfolders.</span>
         <input type="file" multiple webkitdirectory @change="chooseFolder" />
       </label>
-      <p class="local-note"><i class="pi pi-shield" /> The browser grants access only to your selection. Absolute paths are never sent.</p>
     </section>
 
     <section v-else-if="step === 2" class="upload-step">
@@ -252,7 +251,7 @@ function reset() {
 
     <section v-else-if="step === 3" class="review-step">
       <div class="review-head">
-        <div><h3>Review files</h3><p>Confirm where each file belongs before it is added to the workspace.</p></div>
+        <div><h3>Review files</h3></div>
         <Tag :value="agent.state.run?.status?.replace('_', ' ') || 'starting'" />
       </div>
       <div class="classification-review" v-if="batch">
@@ -323,8 +322,6 @@ function reset() {
 .selection-summary > i { color: var(--aw-teal); }
 .selection-summary span { display: grid; gap: .15rem; }
 .selection-summary small { color: var(--p-surface-500); }
-.local-note { display: flex; align-items: center; gap: .45rem; margin: 0; color: var(--p-surface-500); font-size: .75rem; }
-.local-note i { color: var(--aw-teal); }
 .inline-error { display: flex; gap: .45rem; padding: .65rem; margin-bottom: .8rem; color: var(--p-red-700); background: var(--p-red-50); border-radius: 7px; }
 .upload-step { max-width: 40rem; margin: 3rem auto; text-align: center; }
 .muted { color: var(--p-surface-500); font-size: .75rem; }

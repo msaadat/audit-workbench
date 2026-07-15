@@ -271,9 +271,7 @@ function rangeText(p: ColumnProfile): string {
 <template>
   <div class="section-heading">
     <div>
-      <p class="eyebrow">Data inventory</p>
       <h2>Source tables</h2>
-      <p class="muted">Inspect structure and data health before running audit procedures.</p>
     </div>
     <div class="toolbar">
     <input ref="fileInput" type="file" multiple accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="upload" />
@@ -287,7 +285,6 @@ function rangeText(p: ColumnProfile): string {
       v-tooltip.bottom="workspace.tables.length < 2 ? 'Load at least two tables first' : ''"
       @click="showJoin = true"
     />
-      <span class="muted format-note">CSV, TSV and Excel</span>
     </div>
   </div>
 
@@ -295,7 +292,6 @@ function rangeText(p: ColumnProfile): string {
     <div>
       <span class="empty-state-icon"><i class="pi pi-upload" /></span>
       <h3>Add engagement data</h3>
-      <p>Import one or more CSV, TSV or Excel files. Column types are inferred automatically and all processing stays local.</p>
       <Button label="Choose files" icon="pi pi-upload" :loading="uploading" @click="fileInput?.click()" />
     </div>
   </div>
@@ -511,9 +507,7 @@ function rangeText(p: ColumnProfile): string {
 <style scoped>
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .section-heading h2 { margin: 0; font-size: 1.25rem; }
-.section-heading p:last-child { margin: 0.25rem 0 0; }
 .section-heading .toolbar { justify-content: flex-end; margin-bottom: 0; }
-.format-note { font-size: 0.75rem; }
 .import-empty { min-height: 20rem; }
 .data-workbench { display: grid; grid-template-columns: 18rem minmax(0, 1fr); gap: 1rem; align-items: start; }
 .inventory { overflow: hidden; box-shadow: none; }

@@ -543,7 +543,6 @@ async function exportExcel() {
       <Select v-model="table" :options="tableOptions" placeholder="Pick a table" style="min-width: 14rem" />
     </div>
     <div class="query-context">
-      <p class="eyebrow">Live query</p>
       <strong>{{ querySummary }}</strong>
     </div>
     <span class="grow" />
@@ -576,11 +575,11 @@ async function exportExcel() {
   <div class="query-layout">
     <div class="query-result surface-panel" :class="{ dim: running }">
       <div class="result-titlebar">
-        <div><p class="eyebrow">Result canvas</p><strong>{{ resultSummary }}</strong></div>
+        <div><strong>{{ resultSummary }}</strong></div>
         <span v-if="running" class="computing"><i class="pi pi-spinner pi-spin" /> Recomputing</span>
       </div>
       <div class="result-body">
-      <div v-if="!table" class="empty-state compact-empty"><div><span class="empty-state-icon"><i class="pi pi-table" /></span><h3>Select a source table</h3><p>Choose a table above to inspect rows and build a query.</p></div></div>
+      <div v-if="!table" class="empty-state compact-empty"><div><span class="empty-state-icon"><i class="pi pi-table" /></span><h3>Select a source table</h3></div></div>
       <div v-else-if="lastError" class="error"><i class="pi pi-exclamation-circle" /> {{ lastError }}</div>
       <template v-else-if="result">
         <div class="result-meta" v-if="showChartControls || wasGrouped">

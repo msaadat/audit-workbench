@@ -114,10 +114,6 @@ function confirmDelete(ruleset: RuleSet) {
       />
 
       <p class="rail-title">Engagement rules</p>
-      <p v-if="!loading && rulesets.length === 0" class="muted small">
-        Nothing saved yet — define field-wise checks once, then re-run them on
-        every data refresh.
-      </p>
 
       <button
         v-for="r in rulesets"
@@ -154,11 +150,7 @@ function confirmDelete(ruleset: RuleSet) {
         @ran="onRan"
       />
       <div v-else class="empty-state validation-empty">
-        <div><span class="empty-state-icon"><i class="pi pi-check-square" /></span><h3>Define reusable controls</h3><p>
-          Pick a saved rule set, or start a <strong>New rule set</strong> —
-          attach checks to each field of a table, save once, and re-run on
-          every new or refreshed dataset.
-        </p></div>
+        <div><span class="empty-state-icon"><i class="pi pi-check-square" /></span><h3>Define reusable controls</h3><p>Select or create a rule set.</p></div>
       </div>
     </section>
   </div>

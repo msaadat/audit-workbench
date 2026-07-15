@@ -173,7 +173,7 @@ function fail(summary: string, error: unknown) {
 <template>
   <div v-if="data" class="planning-tab">
     <div class="planning-head">
-      <div><p class="eyebrow">Engagement planning</p><h2>Planning and audit program</h2><p class="muted">Build the planning basis, risk assessment, and linked fieldwork procedures.</p></div>
+      <div><h2>Planning and audit program</h2></div>
       <div class="head-actions">
         <Tag :value="data.planning.status" :severity="data.planning.status === 'final' ? 'success' : 'warn'" />
         <Button :label="data.planning.status === 'final' ? 'Reopen draft' : 'Mark final'" size="small" text severity="secondary" @click="togglePlanningStatus" />

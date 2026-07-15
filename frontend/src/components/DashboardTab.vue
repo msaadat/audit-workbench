@@ -199,7 +199,6 @@ onUnmounted(unsubscribe)
           </div>
         </div>
       </div>
-      <div class="privacy-callout"><i class="pi pi-shield" /><span>Structured rows remain on this device. Document disclosure follows this engagement’s privacy setting.</span></div>
     </section>
 
     <section v-else-if="primaryAction" class="next-action-card">
@@ -308,7 +307,6 @@ onUnmounted(unsubscribe)
 .onboarding-card { min-height:18rem; display:flex; flex-direction:column; justify-content:center; gap:2rem; padding:2.2rem; border:1px solid #b9d9d5; border-radius:12px; background:linear-gradient(135deg,#fff 45%,#eef8f6); box-shadow:var(--aw-shadow-sm) }
 .onboarding-copy { display:flex; align-items:flex-start; gap:1.25rem; max-width:48rem }.onboarding-icon { display:grid; place-items:center; width:4rem; height:4rem; flex:none; border-radius:14px; background:var(--aw-teal-soft); color:var(--aw-teal); font-size:1.8rem }
 .onboarding-copy h3,.next-action-card h3,.section-heading h3 { margin:0 }.onboarding-copy p:not(.eyebrow) { color:var(--aw-muted); line-height:1.55 }.onboarding-actions { display:flex; gap:.65rem; flex-wrap:wrap }
-.privacy-callout { display:flex; align-items:center; gap:.55rem; color:var(--aw-muted); font-size:.75rem }.privacy-callout i { color:var(--aw-teal) }
 .next-action-card { gap:1rem; padding:1rem 1.1rem; margin-bottom:1rem; border:1px solid #b9d9d5; border-left:4px solid var(--aw-teal); border-radius:10px; background:#fff; box-shadow:var(--aw-shadow-sm) }
 .next-action-mark { display:grid; place-items:center; width:2.6rem; height:2.6rem; flex:none; border-radius:50%; background:var(--aw-teal-soft); color:var(--aw-teal) }.next-action-copy { flex:1 }.next-action-copy > span { color:var(--aw-teal); font-size:.67rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase }.next-action-copy h3 { margin:.15rem 0 }.next-action-copy p { margin:0; color:var(--aw-muted); font-size:.8rem }
 .phase-section,.monitoring-section { margin-top:1rem }.section-heading { justify-content:space-between; gap:1rem; margin-bottom:.55rem }.section-heading h3 { margin:0; font-size:.9rem }

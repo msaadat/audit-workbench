@@ -40,7 +40,6 @@ async function copyCitation() {
         <blockquote>{{ anchor.excerpt || 'No excerpt was retained for this legacy or non-document reference.' }}</blockquote>
         <code v-if="anchor.excerpt_hash">Excerpt hash: {{ anchor.excerpt_hash }}</code>
       </div>
-      <p class="muted">Page and excerpt identify the evidence even when reliable page coordinates are unavailable.</p>
     </div>
     <template #footer>
       <Button label="Copy citation" icon="pi pi-copy" severity="secondary" @click="copyCitation" />

@@ -171,7 +171,7 @@ onUnmounted(unsubscribe)
 <template>
   <div class="doc-tests">
     <header class="test-head">
-      <div><p class="eyebrow">Fieldwork</p><h2>Document tests</h2><p class="muted">Freeze worklists, compare source evidence locally, and record an auditor disposition.</p></div>
+      <div><h2>Document tests</h2></div>
       <div class="actions"><Button label="New test" icon="pi pi-plus" outlined @click="createOpen = true"/><Button label="Run selected" icon="pi pi-play" :loading="running" :disabled="!current || agent.isActive.value" @click="runTest"/></div>
     </header>
 

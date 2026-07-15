@@ -197,7 +197,7 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 <template>
   <section class="documents-tab">
     <div class="toolbar doc-toolbar">
-      <div><p class="eyebrow">Evidence library</p><h2>Documents</h2></div>
+      <div><h2>Documents</h2></div>
       <div class="toolbar-actions">
         <input ref="fileInput" type="file" multiple hidden accept=".pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" @change="upload" />
         <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
@@ -282,7 +282,7 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
           <p v-if="!activity.length" class="muted">No model activity references this document.</p>
         </div>
       </main>
-      <div v-else class="empty-state"><div><i class="pi pi-file empty-state-icon" /><h3>Add engagement documents</h3><p>PDF, DOCX, text, Markdown, and common image formats are stored and processed locally.</p></div></div>
+      <div v-else class="empty-state"><div><i class="pi pi-file empty-state-icon" /><h3>Add engagement documents</h3></div></div>
     </div>
 
     <Dialog v-model:visible="confirmOptin" modal header="Enable document AI for this engagement?" :style="{ width: 'min(34rem, 92vw)' }">

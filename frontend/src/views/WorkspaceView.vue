@@ -163,7 +163,6 @@ onUnmounted(unsubscribe)
             <p class="nav-label nav-group output-label">Output</p>
             <Tab value="findings"><i class="pi pi-flag" /><span>Findings</span><small v-if="workspace.finding_count">{{ workspace.finding_count }}</small></Tab>
             <Tab value="report"><i class="pi pi-file-edit" /><span>Report</span></Tab>
-            <div class="nav-privacy"><i class="pi pi-shield" /><span>{{ workspace.settings?.doc_llm_optin ? 'Rows stay local; confirmed document pages may be disclosed.' : 'Raw data and documents remain on this device.' }}</span></div>
           </TabList>
           <TabPanels class="workspace-panels">
           <TabPanel value="dashboard">
@@ -281,9 +280,6 @@ onUnmounted(unsubscribe)
 .nav-group { margin-top: 0.7rem; margin-bottom: 0.18rem; }
 .workspace-nav :deep(.p-tab small) { margin-left:auto; min-width:1.25rem; padding:.1rem .35rem; border-radius:999px; background:var(--p-primary-50); color:var(--aw-teal); text-align:center; }
 .workspace-panels { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1.25rem 1.5rem 1.75rem; background: var(--aw-canvas); }
-.nav-privacy { margin-top: auto; display: flex; gap: 0.55rem; padding: 0.8rem; border-top: 1px solid var(--aw-border); color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.35; }
-.nav-privacy i { color: var(--aw-teal); margin-top: 0.1rem; }
-
 :deep(.workspace-nav .p-tab) {
   display: flex;
   align-items: center;
@@ -314,7 +310,7 @@ onUnmounted(unsubscribe)
   .workspace-layout > .agent-drawer.collapsed { flex: 0 0 3.25rem; height: 3.25rem; }
   .workspace-body { flex-direction: column; }
   .workspace-nav { flex: none; width: 100%; flex-direction: row; overflow-x: auto; padding: 0.55rem 0.75rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
-  .nav-label, .nav-privacy { display: none; }
+  .nav-label { display: none; }
   :deep(.workspace-nav .p-tab) { width: auto; white-space: nowrap; }
   .workspace-panels { padding: 1rem; }
 }

@@ -126,7 +126,7 @@ function openEvidence(value: EvidenceRef) {
 <template>
   <div class="findings-tab">
     <header class="findings-head">
-      <div><p class="eyebrow">Audit output</p><h2>Findings</h2><p class="muted">Develop evidence-linked observations into auditor-owned findings.</p></div>
+      <div><h2>Findings</h2></div>
       <Button label="Add manual finding" icon="pi pi-plus" size="small" @click="addManual" />
     </header>
     <div class="findings-layout">

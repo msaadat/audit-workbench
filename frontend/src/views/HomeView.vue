@@ -81,10 +81,6 @@ onMounted(load)
       <div>
         <p class="eyebrow">Engagement index</p>
         <h1>Your audit workspaces</h1>
-        <p class="muted">
-          Load, validate and analyse engagement data without moving raw records
-          off this device.
-        </p>
       </div>
       <Button label="New workspace" icon="pi pi-plus" @click="openCreate" />
     </div>
@@ -96,7 +92,6 @@ onMounted(load)
       <div>
         <span class="empty-state-icon"><i class="pi pi-folder-open" /></span>
         <h3>Start your first engagement</h3>
-        <p>Create a workspace, then add CSV, TSV or Excel files. Profiling and audit tests run entirely on this machine.</p>
         <Button label="Create workspace" icon="pi pi-plus" @click="openCreate" />
       </div>
     </div>
@@ -111,7 +106,7 @@ onMounted(load)
           </div>
         </template>
         <template #content>
-          <p class="desc">{{ ws.description || 'No description.' }}</p>
+          <p v-if="ws.description" class="desc">{{ ws.description }}</p>
           <div class="workspace-meta">
             <span><i class="pi pi-database" /> {{ ws.table_count }} table{{ ws.table_count === 1 ? '' : 's' }}</span>
             <span><i class="pi pi-calendar" /> Created {{ ws.created || '—' }}</span>
@@ -129,9 +124,7 @@ onMounted(load)
     <Dialog v-model:visible="showCreate" header="New workspace" modal :closable="!creating" :style="{ width: 'min(30rem, 94vw)' }">
       <section class="wizard-panel">
         <div class="wizard-heading">
-          <p class="eyebrow">Engagement details</p>
           <h2>Name this workspace</h2>
-          <p>Use one workspace per audit engagement. You can add source material after it's created.</p>
         </div>
         <div class="field">
           <label for="ws-name">Name</label>
@@ -168,11 +161,6 @@ h1 {
   font-size: var(--aw-text-2xl);
 }
 
-.home-hero p {
-  margin: 0;
-  max-width: 48rem;
-}
-
 .portfolio-strip { display: flex; align-items: stretch; margin-bottom: 1.2rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-md); background: #fff; box-shadow: var(--aw-shadow-sm); overflow: hidden; }
 .portfolio-strip > span { display: flex; flex-direction: column; min-width: 10rem; padding: 0.8rem 1.2rem; border-right: 1px solid var(--aw-border); }
 .portfolio-strip strong { font-size: 1.2rem; font-weight: 600; color: var(--aw-ink); }
@@ -206,7 +194,6 @@ h1 {
 
 .desc {
   margin: 0;
-  min-height: 2.5rem;
   color: var(--p-surface-600);
 }
 
@@ -224,8 +211,6 @@ h1 {
 
 .wizard-panel { display: grid; gap: 1rem; align-content: start; }
 .wizard-heading h2 { margin: 0.15rem 0 0.4rem; font-size: var(--aw-text-xl); }
-.wizard-heading p { margin: 0; color: var(--aw-muted); line-height: 1.5; }
-.wizard-heading .eyebrow { color: var(--aw-teal); }
 .wizard-panel .field { display: grid; gap: 0.35rem; }
 .wizard-panel .field label { color: #46576d; font-size: var(--aw-text-xs); font-weight: 700; }
 

@@ -118,10 +118,6 @@ function confirmDelete(a: SavedAnalysis) {
       </div>
 
       <p class="rail-title">Engagement analyses</p>
-      <p v-if="!loading && analyses.length === 0" class="muted small">
-        Nothing saved yet — create one from the library, your own code, or the
-        Agent panel.
-      </p>
 
       <button
         v-for="a in analyses"
@@ -178,8 +174,7 @@ function confirmDelete(a: SavedAnalysis) {
       />
       <div v-if="!creating && !selected" class="empty-state analysis-empty">
         <div><span class="empty-state-icon"><i class="pi pi-shield" /></span>
-        <h3>Choose an analysis path</h3>
-        <p>Use a predefined audit procedure, write visible Polars code, or ask the Agent panel to analyze for you.</p></div>
+        <h3>Choose an analysis path</h3></div>
       </div>
     </section>
   </div>

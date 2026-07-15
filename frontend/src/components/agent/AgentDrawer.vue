@@ -247,10 +247,6 @@ function fail(summary: string, error: unknown) {
 
       <div v-if="launchVisible" class="section launch">
         <p class="section-title">Run the audit assistant</p>
-        <p class="muted">
-          Choose planning to draft the APM, RCM, and audit program from imported
-          documents, or data analysis to test loaded tables.
-        </p>
         <div v-if="state.status && !state.status.configured" class="warn-note">
           <i class="pi pi-key" />
           The agent's LLM is not configured — set a provider key in
@@ -385,9 +381,6 @@ function fail(summary: string, error: unknown) {
         @steer="steer"
         @settings-changed="emit('settings-changed')"
       />
-      <p class="disclosure">
-        <i class="pi pi-shield" /> Rows stay metadata-only. Attached document text is disclosed only with engagement permission.
-      </p>
     </div>
   </aside>
 </template>
@@ -526,15 +519,6 @@ function fail(summary: string, error: unknown) {
   border-top: 1px solid var(--aw-border, #d5dde7);
   padding: 0.6rem 0.9rem 0.5rem;
   overflow: hidden;
-}
-.disclosure {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin: 0.45rem 0 0;
-  font-size: 0.68rem;
-  color: var(--p-surface-500);
 }
 
 @media (max-width: 900px) {

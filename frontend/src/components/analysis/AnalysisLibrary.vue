@@ -312,7 +312,6 @@ watch(table, () => {
 
   <div v-if="pickerOpen" class="picker">
     <div v-if="selected" class="picker-head">
-      <span class="muted">Pick a different test, or keep the current one.</span>
       <Button label="Keep current" icon="pi pi-times" text size="small" @click="pickerOpen = false" />
     </div>
     <template v-for="group in testGroups" :key="group.name">
@@ -468,10 +467,9 @@ watch(table, () => {
 .picker-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0.6rem;
   margin-bottom: 0.5rem;
-  font-size: 0.85rem;
 }
 .group-title {
   margin: 0.9rem 0 0.45rem;

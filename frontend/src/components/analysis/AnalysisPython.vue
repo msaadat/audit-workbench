@@ -154,8 +154,6 @@ function fail(summary: string, error: unknown) {
     <ChartView :frame="frame" :viz="analysis.viz" height="320px" />
   </div>
 
-  <p class="disclosure"><i class="pi pi-shield" /> Metadata-only — raw rows stayed on this machine.</p>
-
   <PinDialog
     v-model:visible="showPin"
     :defaultTitle="title || analysis.title || 'Python result'"
@@ -208,12 +206,4 @@ function fail(summary: string, error: unknown) {
   margin: 0.4rem 0 0;
 }
 .rows { font-size: 0.8rem; margin: 0 0 0.5rem; }
-.disclosure {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin: 0.75rem 0 0;
-  font-size: 0.75rem;
-  color: var(--p-surface-500);
-}
 </style>
