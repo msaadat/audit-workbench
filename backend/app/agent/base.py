@@ -167,8 +167,8 @@ class BaseRunner:
                 if item.get("run_id") == self.run["id"]
             ]
             template_name = {
-                "agent:interview": "interview", "agent:apm": "apm",
-                "agent:rcm": "rcm", "agent:work_program": "workpaper",
+                "agent:apm": "apm", "agent:rcm": "rcm",
+                "agent:work_program": "workpaper",
             }.get(tag)
             template_versions = []
             if template_name:

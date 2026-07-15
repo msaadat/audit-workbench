@@ -50,13 +50,9 @@ PLANNING_RESPONSES = {
 }
 
 
-def configure_planning_llm(monkeypatch, interview=None):
+def configure_planning_llm(monkeypatch, overrides=None):
     responses = dict(PLANNING_RESPONSES)
-    responses["agent:interview"] = interview or {
-        "action": "conclude",
-        "question": "",
-        "captured": {},
-    }
+    responses.update(overrides or {})
     fake = FakeAgentLLM(responses)
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
@@ -97,7 +93,7 @@ def test_planning_crud_and_user_touch():
 def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     fake = configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("No-table planning")
-    first = runner.start_run(ws, "auto", {"skip_interview": True}, kind="planning")
+    first = runner.start_run(ws, "auto", {}, kind="planning")
     completed = wait_run(ws, first["id"])
     ws = workspaces.load_workspace(ws.id)
 
@@ -110,38 +106,41 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
 
     row_id = ws.rcm[0]["id"]
     ws.update_rcm(row_id, {"control": "Auditor-confirmed manual review"})
-    second = runner.start_run(ws, "auto", {"skip_interview": True}, kind="planning")
+    second = runner.start_run(ws, "auto", {}, kind="planning")
     wait_run(ws, second["id"])
     ws = workspaces.load_workspace(ws.id)
     assert len(ws.rcm) == 1
     assert ws.rcm[0]["control"] == "Auditor-confirmed manual review"
 
 
-def test_planning_interview_waits_for_inbox(monkeypatch):
-    def interview(user):
-        if "The engagement covers FY2026" in user:
-            return {"action": "conclude", "question": "", "captured": {"period": "FY2026"}}
-        return {"action": "ask", "question": "What period is under review?", "captured": {}}
+def test_auto_planning_selects_relevant_documents(monkeypatch):
+    ws = workspaces.create_workspace("Auto document selection", doc_llm_optin=True)
+    policy_text = b"Procurement Policy: purchases require documented approval before commitment."
+    policy = documents.add_document(ws, "Procurement Policy.txt", policy_text, category="policy")
 
-    configure_planning_llm(monkeypatch, interview)
-    ws = workspaces.create_workspace("Interview planning")
+    def select(user):
+        assert policy["id"] in user
+        return {"selected": [{"id": policy["id"], "reason": "Governs procurement approvals."}]}
+
+    fake = configure_planning_llm(monkeypatch, {"agent:document_selection": select})
+    # No document_ids in the run context: the agent must select them itself.
     started = runner.start_run(ws, "auto", {}, kind="planning")
-    waiting = wait_run(ws, started["id"], statuses=("awaiting_input",))
-    assert waiting["interview"]["pending_question"] == "What period is under review?"
-
-    response = runner.steer(ws, started["id"], "The engagement covers FY2026")
-    assert response["handled"] == "steering"
     completed = wait_run(ws, started["id"])
-    ws = workspaces.load_workspace(ws.id)
+    reloaded = workspaces.load_workspace(ws.id)
+
     assert completed["status"] == "completed"
-    assert completed["interview"]["turns"] == 1
-    assert ws.planning["context"]["period"] == "FY2026"
+    assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
+    context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
+    assert policy_text.decode() in context_call["messages"][-1]["content"]
+    disclosures = documents.disclosures(reloaded)["items"]
+    assert any(item["document_id"] == policy["id"] for item in disclosures)
+    assert completed["planning_basis"]["document_content_disclosed"] is True
 
 
 def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
     configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("Permission planning")
-    started = runner.start_run(ws, "permission", {"skip_interview": True}, kind="planning")
+    started = runner.start_run(ws, "permission", {}, kind="planning")
     seen = []
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -162,6 +161,58 @@ def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
     completed = wait_run(ws, started["id"])
     assert completed["status"] == "completed"
     assert [approval["kind"] for approval in completed["approvals"]] == ["apm", "rcm", "work_program"]
+
+
+def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
+    configure_planning_llm(monkeypatch, {
+        "agent:apm": {"apm_markdown": "- Entity: {{entity}}\n- Period: {{period}}\n\n{{prior_audit_findings}}"},
+    })
+    ws = workspaces.create_workspace("Placeholder planning")
+    started = runner.start_run(ws, "auto", {}, kind="planning")
+    completed = wait_run(ws, started["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    apm = reloaded.planning["apm_markdown"]
+    assert "{{" not in apm and "}}" not in apm
+    assert "_[entity — context not available]_" in apm
+    assert "_[prior audit findings — context not available]_" in apm
+
+
+def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
+    ws = workspaces.create_workspace("Permission document selection", doc_llm_optin=True)
+    policy = documents.add_document(
+        ws, "Procurement Policy.txt",
+        b"Procurement Policy: purchases require documented approval.", category="policy",
+    )
+    configure_planning_llm(monkeypatch, {
+        "agent:document_selection": {
+            "selected": [{"id": policy["id"], "reason": "Governs procurement approvals."}]
+        },
+    })
+    started = runner.start_run(ws, "permission", {}, kind="planning")
+    kinds, seen = [], []
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        run = store.load_run(ws, started["id"])
+        if run["status"] == "awaiting_approval":
+            pending = next(item for item in run["approvals"] if item["status"] == "pending")
+            if pending["id"] not in seen:
+                seen.append(pending["id"])
+                kinds.append(pending["kind"])
+                runner.resolve_approval(
+                    ws, run["id"], pending["id"],
+                    [{"item_id": item["id"], "action": "approve"} for item in pending["items"]],
+                )
+        elif run["status"] in store.TERMINAL_STATUSES:
+            break
+        time.sleep(0.02)
+    completed = wait_run(ws, started["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+    assert completed["status"] == "completed"
+    # The auditor confirms the agent's document choice before any content is used.
+    assert kinds[0] == "documents"
+    assert any(item["document_id"] == policy["id"] for item in documents.disclosures(reloaded)["items"])
 
 
 def test_planning_routes():
@@ -195,7 +246,7 @@ def test_planning_cites_opted_in_methodology_pack(monkeypatch):
     started = runner.start_run(
         ws,
         "auto",
-        {"skip_interview": True},
+        {},
         kind="planning",
     )
     completed = wait_run(ws, started["id"])
@@ -222,7 +273,7 @@ def test_planning_update_discloses_selected_imported_documents(monkeypatch):
     started = runner.start_run(
         ws,
         "auto",
-        {"skip_interview": True, "document_ids": [policy["id"]]},
+        {"document_ids": [policy["id"]]},
         kind="planning",
     )
     completed = wait_run(ws, started["id"])

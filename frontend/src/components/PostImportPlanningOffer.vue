@@ -37,7 +37,6 @@ async function startPlanningUpdate() {
       emit('settings-changed')
     }
     await agent.startRun(launchMode.value, {
-      skip_interview: true,
       document_ids: props.action.document_ids,
       objective: 'Review the newly imported policy and procedure documents and update planning context, APM, RCM, and the audit program.',
     }, 'planning')

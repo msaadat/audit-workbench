@@ -1,21 +1,33 @@
-"""Planning interview and draft-generation runner."""
+"""Planning draft-generation runner."""
 
 from __future__ import annotations
+
+import re
 
 from .. import assistant, documents, llm, methodology, templates_store
 from ..workspaces import WorkspaceError, slugify
 from . import prompts, store
 from .base import BaseRunner, Cancelled, LimitExceeded
 
-MAX_INTERVIEW_TURNS = 10
 MAX_SOURCE_DOCUMENTS = 8
-MAX_PAGES_PER_SOURCE_DOCUMENT = 8
-SKIP_PHRASES = ("skip interview", "skip the interview", "conclude interview", "end interview")
+MAX_PAGES_PER_SOURCE_DOCUMENT = 50
+ELIGIBLE_TEXT_STATES = ("extracted", "partial")
+_PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+
+
+def fill_unavailable_placeholders(markdown: str) -> str:
+    """Replace any template placeholder the model left unfilled (e.g. ``{{entity}}``)
+    with a plain-language note so the reader sees the context was not available
+    rather than a raw token."""
+    def replace(match: re.Match) -> str:
+        label = match.group(1).replace("_", " ").strip()
+        return f"_[{label} — context not available]_"
+
+    return _PLACEHOLDER.sub(replace, markdown)
 
 
 class PlanningRunner(BaseRunner):
     stage_titles = {
-        "interview": "Planning interview",
         "context": "Planning context",
         "apm": "Audit planning memorandum",
         "rcm": "Risk and control matrix",
@@ -27,10 +39,8 @@ class PlanningRunner(BaseRunner):
     def execute(self) -> None:
         if not self.run.get("started"):
             self.run["started"] = store.utcnow()
-        self.run.setdefault("interview", {"captured": {}, "turns": 0, "pending_question": None})
         try:
             self.set_status("executing")
-            self.stage_interview()
             basis = self.stage_context()
             apm = self.stage_apm(basis)
             rcm = self.stage_rcm(basis, apm)
@@ -52,57 +62,6 @@ class PlanningRunner(BaseRunner):
             self.run["finished"] = store.utcnow()
             self.set_status("failed")
 
-    def stage_interview(self) -> None:
-        task = self.add_task("interview", "planning:interview", "Capture the planning basis")
-        if task["status"] == "completed":
-            return
-        self.task_status(task, "running")
-        interview = self.run["interview"]
-        if self.context.get("skip_interview"):
-            self.task_status(task, "completed")
-            return
-        template = templates_store.get_template(self.ws, "interview")["markdown"]
-        while int(interview.get("turns") or 0) < MAX_INTERVIEW_TURNS:
-            self.checkpoint()
-            payload = self.llm_json(
-                prompts.INTERVIEW_SYSTEM,
-                prompts.interview_user(
-                    template,
-                    self.ws.planning,
-                    self.run.get("messages", []),
-                    int(interview.get("turns") or 0) + 1,
-                ),
-            )
-            captured = payload.get("captured")
-            if isinstance(captured, dict):
-                interview.setdefault("captured", {}).update(captured)
-                self._merge_captured(captured)
-            action = str(payload.get("action") or "ask").lower()
-            question = str(payload.get("question") or "").strip()
-            if action == "conclude" or not question:
-                break
-            answer = self.wait_for_input(question)
-            interview["turns"] = int(interview.get("turns") or 0) + 1
-            answers = interview.setdefault("captured", {}).setdefault("answers", {})
-            answers[question] = answer
-            self.ws.planning["context"].setdefault("interview_answers", {})[question] = answer
-            self.ws.update_planning({"context": self.ws.planning["context"]}, agent=True)
-            self.save()
-            if any(phrase in answer.lower() for phrase in SKIP_PHRASES):
-                break
-        interview["pending_question"] = None
-        for message in self.run.get("messages", []):
-            if message.get("role") == "user":
-                message["handled"] = True
-        self.save()
-        self.task_status(task, "completed")
-
-    def _merge_captured(self, captured: dict) -> None:
-        known = {"objective", "entity", "period", "scope", "materiality", "key_contacts", "background_notes"}
-        changes = {key: value for key, value in captured.items() if key in known}
-        if changes:
-            self.ws.update_planning({"context": changes}, agent=True)
-
     def stage_context(self) -> dict:
         task = self.add_task("context", "planning:context", "Assemble disclosed planning context")
         if task["status"] == "completed" and self.run.get("planning_basis"):
@@ -122,6 +81,14 @@ class PlanningRunner(BaseRunner):
         missing = requested - {str(doc.get("id")) for doc in self.ws.documents}
         if missing:
             raise WorkspaceError(f"Planning source document not found: {sorted(missing)[0]}.")
+        context = self.ws.planning.get("context") or {}
+        # When the caller did not curate a document set, let the agent pick the
+        # relevant imported documents so their content grounds the planning
+        # basis. Auto mode uses the selection directly; permission mode confirms
+        # it with the auditor before any content is disclosed.
+        if not requested_document_ids and self.ws.settings.get("doc_llm_optin"):
+            requested_document_ids = self._select_planning_documents(task, context)
+            requested = set(requested_document_ids)
         document_metadata = [
             {
                 "id": doc.get("id"),
@@ -133,7 +100,6 @@ class PlanningRunner(BaseRunner):
             }
             for doc in self.ws.documents
         ]
-        context = self.ws.planning.get("context") or {}
         methodology_query = " ".join(
             str(context.get(key) or "") for key in ("objective", "scope", "background_notes")
         ).strip() or "internal audit risk controls procedures"
@@ -177,7 +143,6 @@ class PlanningRunner(BaseRunner):
             )
         basis = {
             "planning": self.ws.planning,
-            "interview": self.run.get("interview", {}),
             "documents": document_metadata,
             "tables": tables,
             "document_content_disclosed": bool(disclosed_documents),
@@ -242,6 +207,64 @@ class PlanningRunner(BaseRunner):
             self.task_status(task, "completed")
         return basis
 
+    def _select_planning_documents(self, task: dict, context: dict) -> list[str]:
+        """Have the agent choose relevant imported documents from metadata only.
+
+        Auto mode applies the selection directly; permission mode surfaces it as
+        an approval gate so the auditor confirms the set before any document
+        content is disclosed. Returns the confirmed document ids.
+        """
+        eligible = [
+            doc for doc in self.ws.documents
+            if str(doc.get("text_state") or "") in ELIGIBLE_TEXT_STATES
+        ]
+        if not eligible:
+            return []
+        eligible_meta = [
+            {
+                "id": doc.get("id"),
+                "title": doc.get("title"),
+                "category": doc.get("category"),
+                "pages": doc.get("pages"),
+                "text_state": doc.get("text_state"),
+            }
+            for doc in eligible
+        ]
+        eligible_ids = {str(doc.get("id")) for doc in eligible}
+        payload = self.llm_json(
+            prompts.DOCUMENT_SELECTION_SYSTEM,
+            prompts.document_selection_user(context, eligible_meta),
+        )
+        proposals = []
+        seen: set[str] = set()
+        for item in payload.get("selected") or []:
+            if not isinstance(item, dict):
+                continue
+            document_id = str(item.get("id") or "")
+            if document_id not in eligible_ids or document_id in seen:
+                continue
+            seen.add(document_id)
+            doc = next(entry for entry in eligible if str(entry.get("id")) == document_id)
+            proposals.append(
+                self.proposal_item(
+                    str(doc.get("title") or document_id),
+                    str(item.get("reason") or "Relevant to the planning basis."),
+                    {"document_id": document_id},
+                )
+            )
+            if len(proposals) >= MAX_SOURCE_DOCUMENTS:
+                break
+        if not proposals:
+            return []
+        confirmed = [
+            str(spec.get("document_id"))
+            for spec in self._accepted_specs("documents", task, proposals)
+            if str(spec.get("document_id") or "") in eligible_ids
+        ]
+        if confirmed:
+            self.disclose(task, f"{len(confirmed)} agent-selected planning document(s)")
+        return confirmed[:MAX_SOURCE_DOCUMENTS]
+
     def _accepted_specs(self, kind: str, task: dict, proposals: list[dict]) -> list[dict]:
         if self.run["mode"] == "permission":
             return [item["spec"] for item in self.request_approval(kind, task, proposals)]
@@ -257,6 +280,7 @@ class PlanningRunner(BaseRunner):
         markdown = str(payload.get("apm_markdown") or "").strip()
         if not markdown:
             raise WorkspaceError("The model returned an empty APM draft.")
+        markdown = fill_unavailable_placeholders(markdown)
         proposals = [self.proposal_item("Audit planning memorandum", "Drafted from the current planning basis.", {"apm_markdown": markdown})]
         accepted = self._accepted_specs("apm", task, proposals)
         if accepted:

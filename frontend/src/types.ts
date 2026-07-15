@@ -916,7 +916,6 @@ export interface AgentRunContext {
   notes?: string
   batch_id?: string
   source_id?: string
-  skip_interview?: boolean
   test_id?: string
   document_ids?: string[]
 }

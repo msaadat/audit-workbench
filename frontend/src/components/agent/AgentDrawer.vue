@@ -247,8 +247,8 @@ function fail(summary: string, error: unknown) {
       <div v-if="launchVisible" class="section launch">
         <p class="section-title">Run the audit assistant</p>
         <p class="muted">
-          Choose planning to interview the audit team and draft the APM, RCM,
-          and audit program, or data analysis to test loaded tables.
+          Choose planning to draft the APM, RCM, and audit program from imported
+          documents, or data analysis to test loaded tables.
         </p>
         <div v-if="state.status && !state.status.configured" class="warn-note">
           <i class="pi pi-key" />

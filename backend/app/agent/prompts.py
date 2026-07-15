@@ -89,20 +89,24 @@ def file_classification_user(payload: dict) -> str:
 
 
 # ----------------------------------------------------------- audit planning
-INTERVIEW_SYSTEM = f"""[agent:interview]
-You conduct a concise internal-audit planning interview. Ask exactly one
-question at a time, or conclude once the planning basis is sufficient. Return:
-{{"action":"ask|conclude","question":"...","captured":{{}}}}.
-The captured object contains normalized facts learned so far. Do not request
-raw transaction rows. {JSON_RULES}"""
+DOCUMENT_SELECTION_SYSTEM = f"""[agent:document_selection]
+You select which imported engagement documents are relevant to ground the audit
+planning basis (context, APM, RCM, and audit program). You see only document
+metadata — title, category, page count, extraction state — never content.
+Choose the policy, procedure, regulation, contract, background, and minutes
+documents most likely to inform planning; skip transaction vouchers, raw
+evidence, and material unrelated to the stated objective and scope. Return an
+object with `selected`: an array of {{"id": document id, "reason": one short
+sentence}}. Include only ids from the provided list; return an empty array if
+none are relevant. {JSON_RULES}"""
 
 
-def interview_user(template: str, planning: dict, messages: list[dict], turn: int) -> str:
+def document_selection_user(context: dict, documents: list[dict]) -> str:
     return (
-        "ACTIVE INTERVIEW TEMPLATE (verbatim):\n"
-        f"{template}\n\nTURN: {turn}/10\nCURRENT PLANNING:\n"
-        f"{json.dumps(planning, default=str)}\n\nCONVERSATION:\n"
-        f"{json.dumps(messages, default=str)}"
+        "CURRENT PLANNING CONTEXT:\n"
+        f"{json.dumps(context, default=str)}\n\n"
+        "ELIGIBLE DOCUMENTS (metadata only):\n"
+        f"{json.dumps(documents, default=str)}"
     )
 
 
@@ -127,8 +131,11 @@ def document_context_user(current: dict, documents: list[dict]) -> str:
 APM_SYSTEM = f"""[agent:apm]
 Draft an audit planning memorandum grounded only in the supplied planning
 basis. Document content and methodology excerpts, when present, were explicitly
-disclosed. Methodology must be cited by pack/version/section. Preserve the selected Markdown template's structure and placeholders
-where facts are unavailable; clearly label assumptions. Return:
+disclosed. Methodology must be cited by pack/version/section. Preserve the
+selected Markdown template's structure. Where a fact is unavailable, do not
+leave the raw {{{{placeholder}}}} token — replace it with a short italic note
+such as _[entity — context not available]_ so the reader knows the information
+was missing; clearly label assumptions. Return:
 {{"apm_markdown":"..."}}. {JSON_RULES}"""
 
 

@@ -36,6 +36,7 @@ const viewOptions = [
   { label: 'Risk & Control Matrix', value: 'rcm' },
   { label: 'Audit program', value: 'program' },
 ]
+const docAiEnabled = computed(() => Boolean(props.workspace.settings?.doc_llm_optin))
 const selectedProcedure = computed(() => data.value?.procedures.find((item) => item.id === selectedProcedureId.value) ?? null)
 function testLabel(ref: string) {
   const item = data.value?.document_tests.find(test => `doctest:${test.id}` === ref)
@@ -80,10 +81,10 @@ async function togglePlanningStatus() {
   await savePlanning()
 }
 
-async function generate(skipInterview: boolean) {
+async function generate() {
   try {
     await savePlanning()
-    await agent.startRun(launchMode.value, { skip_interview: skipInterview }, 'planning')
+    await agent.startRun(launchMode.value, {}, 'planning')
   } catch (error) { fail('Could not start planning', error) }
 }
 
@@ -177,10 +178,10 @@ function fail(summary: string, error: unknown) {
         <Tag :value="data.planning.status" :severity="data.planning.status === 'final' ? 'success' : 'warn'" />
         <Button :label="data.planning.status === 'final' ? 'Reopen draft' : 'Mark final'" size="small" text severity="secondary" @click="togglePlanningStatus" />
         <span v-if="data.planning.updated" class="muted">Updated {{ data.planning.updated.slice(0, 16).replace('T', ' ') }}</span>
-        <Button label="Start interview" icon="pi pi-comments" size="small" outlined :disabled="isActive || !agent.state.status?.configured" @click="generate(false)" />
-        <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate(true)" />
+        <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured || !docAiEnabled" @click="generate()" />
       </div>
     </div>
+    <p v-if="!docAiEnabled" class="doc-ai-note"><i class="pi pi-lock" /> Enable <strong>Document AI</strong> in the Documents tab to use the planning agent — it needs to read your imported documents to draft the APM, RCM, and audit program.</p>
     <SelectButton class="planning-nav" v-model="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" />
 
     <section v-if="view === 'apm'" class="apm-view">
@@ -208,6 +209,7 @@ function fail(summary: string, error: unknown) {
 .planning-head p { margin: 0; }
 .head-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
 .muted { color: var(--aw-muted); font-size: 0.78rem; }
+.doc-ai-note { display: flex; align-items: center; gap: 0.5rem; margin: 0; padding: 0.6rem 0.8rem; border: 1px solid #f0cf9f; border-radius: var(--aw-radius-sm); background: var(--aw-warn-soft); color: var(--p-surface-700); font-size: 0.82rem; }.doc-ai-note i { color: var(--aw-teal); }
 .planning-nav { align-self: flex-start; }
 .card { background: #fff; border: 1px solid var(--aw-border); border-radius: var(--aw-radius); box-shadow: var(--aw-shadow-sm); padding: 1rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
