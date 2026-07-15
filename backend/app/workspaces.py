@@ -91,14 +91,30 @@ class WorkspaceError(ValueError):
 
 
 def _validate_test_refs(workspace: "Workspace", refs: object) -> list[str]:
-    values = [str(ref) for ref in (refs or [])]
+    if not refs:
+        return []
+    # A bare string is malformed input (the model occasionally returns a free-text
+    # citation here). Iterating it would split it into single characters, so wrap
+    # it as one reference rather than exploding it.
+    if isinstance(refs, str):
+        refs = [refs]
+    elif not isinstance(refs, (list, tuple)):
+        raise WorkspaceError("test_refs must be a list of document-test references.")
     from . import doc_tests
-    for ref in values:
-        kind, separator, item_id = ref.partition(":")
-        if kind == "doctest" and (
-            not separator or not item_id or not doc_tests.exists(workspace, item_id)
-        ):
-            raise WorkspaceError(f"Document test reference '{ref}' does not exist.")
+    values: list[str] = []
+    for ref in refs:
+        value = str(ref).strip()
+        if not value:
+            continue
+        kind, separator, item_id = value.partition(":")
+        # test_refs holds document-test links only; they are added automatically
+        # when a doc test is linked to a row. Drop anything that is not a doctest
+        # reference (e.g. a hallucinated citation string) instead of persisting it.
+        if kind != "doctest":
+            continue
+        if not separator or not item_id or not doc_tests.exists(workspace, item_id):
+            raise WorkspaceError(f"Document test reference '{value}' does not exist.")
+        values.append(value)
     return values
 
 

@@ -328,7 +328,7 @@ class PlanningRunner(BaseRunner):
                 self.warn(f"Preserved auditor-edited RCM row '{existing['id']}'.")
                 continue
             if existing:
-                changes = {key: spec.get(key) for key in ("process", "risk", "risk_rating", "assertion", "control", "control_type", "test_procedure", "test_refs")}
+                changes = {key: spec.get(key) for key in ("process", "risk", "risk_rating", "assertion", "control", "control_type", "test_procedure")}
                 item = self.ws.update_rcm(existing["id"], changes, agent=True)
                 action = "updated"
             else:
@@ -370,7 +370,7 @@ class PlanningRunner(BaseRunner):
             if existing and existing.get("created_by") != "agent":
                 self.warn(f"Preserved auditor-edited procedure '{existing['id']}'.")
                 continue
-            fields = ("rcm_refs", "objective", "criteria", "steps", "method", "expected_evidence", "test_refs", "evidence_refs", "methodology_refs", "result_summary", "conclusion", "scope_limitations")
+            fields = ("rcm_refs", "objective", "criteria", "steps", "method", "expected_evidence", "evidence_refs", "methodology_refs", "result_summary", "conclusion", "scope_limitations")
             if existing:
                 item = self.ws.update_procedure(existing["id"], {key: spec.get(key) for key in fields if key in spec}, agent=True)
                 action = "updated"

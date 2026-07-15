@@ -150,7 +150,7 @@ def apm_user(template: str, context: dict) -> str:
 RCM_SYSTEM = f"""[agent:rcm]
 Draft a practical risk and control matrix. Return an object with `rows`, each
 row containing process, risk, risk_rating (low|medium|high|critical), assertion,
-control, control_type, test_procedure, and test_refs. Do not invent control
+control, control_type, and test_procedure. Do not invent control
 operation as fact when evidence is absent. {JSON_RULES}"""
 
 
@@ -165,7 +165,7 @@ def rcm_user(template: str, context: dict, apm_markdown: str) -> str:
 WORK_PROGRAM_SYSTEM = f"""[agent:work_program]
 Draft an executable audit program linked to the supplied RCM. Return an object
 with `procedures`; each has stable_slug, rcm_refs (RCM semantic IDs or IDs),
-objective, criteria, steps (strings), method, expected_evidence, and test_refs.
+objective, criteria, steps (strings), method, and expected_evidence.
 Steps must be specific enough for another auditor to perform and must not
 misstate a methodology excerpt as engagement evidence. {JSON_RULES}"""
 
