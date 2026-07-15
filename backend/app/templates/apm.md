@@ -4,21 +4,20 @@
 
 - Entity: {{entity}}
 - Period: {{period}}
-- Objective: {{objective}}
-- Materiality: {{materiality}}
+- Objective & Scope: The objective of this audit is to review and assess the entity's performance against the established controls and procedures.
 
-## Scope and approach
+## Introduction and background
 
-{{scope}}
+{{introduction}}
 
-## Background
+## Process flow and understanding
 
-{{background_notes}}
+{{process_flow}}
+
+## Prior audit findings
+
+{{prior_audit_findings}}
 
 ## Key risks and planned response
 
 <!-- section: Summarize the risk assessment, planned reliance on controls, data analytics, and substantive procedures. Distinguish assumptions from established facts. -->
-
-## Reporting and communication
-
-{{key_contacts}}
