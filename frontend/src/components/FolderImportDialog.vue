@@ -336,8 +336,8 @@ function reset() {
 .route-summary span { display: inline-flex; align-items: center; gap: .4rem; padding: .45rem .7rem; border: 1px solid var(--p-surface-200); border-radius: 999px; color: var(--p-surface-600); background: var(--p-surface-50); font-size: .75rem; }
 .route-summary i { color: var(--aw-teal); }
 .route-summary strong { color: var(--p-surface-900); }
-.file-review-list { display: grid; gap: .7rem; max-height: min(58vh, 38rem); overflow-y: auto; padding: .1rem .25rem .1rem .1rem; }
-.file-review-card { overflow: hidden; border: 1px solid var(--p-surface-200); border-radius: 10px; background: var(--p-surface-0); box-shadow: 0 1px 2px rgb(15 23 42 / 4%); }
+.file-review-list { display: flex; flex-direction: column; gap: .7rem; max-height: min(58vh, 38rem); overflow-y: auto; padding: .1rem .25rem .1rem .1rem; }
+.file-review-card { flex: 0 0 auto; overflow: hidden; border: 1px solid var(--p-surface-200); border-radius: 10px; background: var(--p-surface-0); box-shadow: 0 1px 2px rgb(15 23 42 / 4%); }
 .file-review-header { display: flex; align-items: center; gap: .7rem; padding: .75rem .85rem; }
 .file-icon { display: grid; flex: 0 0 2.2rem; height: 2.2rem; place-items: center; border-radius: 8px; color: var(--p-surface-600); background: var(--p-surface-100); }
 .file-icon.route-table { color: var(--aw-teal); background: var(--aw-teal-soft); }
