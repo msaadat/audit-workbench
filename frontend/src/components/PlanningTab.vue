@@ -11,6 +11,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import type { AuditProcedure, MarkdownTemplate, PlanningPayload, RcmRow, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
@@ -22,6 +23,7 @@ const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const route = useRoute()
 const agent = useAgentRun(props.workspace.id)
+const assistantChat = useAssistantChat(props.workspace.id)
 const { isActive, launchMode } = agent
 
 const data = ref<PlanningPayload | null>(null)
@@ -81,7 +83,7 @@ async function savePlanning() {
 async function generate() {
   try {
     await savePlanning()
-    await agent.startCommand(launchMode.value, 'Update the planning context, APM, RCM, and audit procedures using the current engagement evidence.', 'planning', 'tab_button')
+    await assistantChat.send('Update the planning context, APM, RCM, and audit procedures using the current engagement evidence.', 'act', launchMode.value, { goalTemplate: 'planning', source: 'tab_button' })
   } catch (error) { fail('Could not start planning', error) }
 }
 

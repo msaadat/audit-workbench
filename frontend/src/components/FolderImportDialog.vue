@@ -9,6 +9,7 @@ import Tag from 'primevue/tag'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import type {
   AgentDecision,
   IntakeBatch,
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   'settings-changed': []
 }>()
 const agent = useAgentRun(props.workspaceId)
+const assistantChat = useAssistantChat(props.workspaceId)
 const { launchMode } = agent
 
 const step = ref(1)
@@ -171,11 +173,13 @@ async function compareAndUpload() {
     )
     seedEdits(batch.value.items)
     step.value = 3
-    await agent.startRun(
-      launchMode.value,
-      { batch_id: batch.value.id, source_id: batch.value.source_id },
-      'intake',
+    const started = await assistantChat.send(
+      `Classify and import the selected folder (${batch.value.manifest_count} files).`,
+      'act', launchMode.value,
+      { source: 'folder_intake', runKind: 'intake', runContext: { batch_id: batch.value.id, source_id: batch.value.source_id } },
     )
+    const runId = String(started?.outcome?.run_id ?? '')
+    if (runId) await agent.openRun(runId)
   } catch (cause) {
     error.value = String(cause)
     if (batch.value?.status === 'uploading') {

@@ -187,9 +187,14 @@ async def test_assistant_settings_endpoint_persists_provider_model(monkeypatch):
 
 
 def test_ask_without_key_raises(monkeypatch, workspace_with_data):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    # Keep this provider-agnostic as the supported profile list grows.
+    for provider in assistant_settings.PROVIDERS.values():
+        monkeypatch.delenv(str(provider["api_key_env"]), raising=False)
+    monkeypatch.setenv("LLM_BACKEND", "mistral")
+    monkeypatch.setattr(assistant_settings, "DEFAULT_PROVIDER", "mistral")
+    monkeypatch.setattr(assistant_settings, "DEFAULT_SETTINGS", {
+        "provider": "mistral", "model": assistant_settings.PROVIDERS["mistral"]["default_model"],
+    })
     with pytest.raises(llm.LLMError, match="not configured"):
         assistant.ask(workspace_with_data, "anything")
 

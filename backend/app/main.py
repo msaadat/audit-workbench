@@ -21,6 +21,7 @@ from .routes.agent_routes import router as agent_router
 from .routes.analyses_routes import router as analyses_router
 from .routes.analysis_routes import router as analysis_router
 from .routes.assistant_routes import router as assistant_router
+from .routes.assistant_chat_routes import router as assistant_chat_router
 from .routes.dashboard_routes import router as dashboard_router
 from .routes.document_routes import router as document_router
 from .routes.doc_test_routes import router as doc_test_router
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_router)
     app.include_router(analyses_router)
     app.include_router(assistant_router)
+    app.include_router(assistant_chat_router)
     app.include_router(validation_router)
     app.include_router(agent_router)
     app.include_router(intake_router)

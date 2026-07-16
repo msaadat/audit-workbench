@@ -14,6 +14,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import type { AuditDocument, DocTest, DocTestItem, DocTestKind, EvidenceRef, PlanningPayload, WorkspaceSummary, WorkingPaper } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
@@ -26,6 +27,7 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const agent = useAgentRun(props.workspace.id)
+const assistantChat = useAssistantChat(props.workspace.id)
 const { launchMode } = agent
 
 const tests = ref<DocTest[]>([])
@@ -161,14 +163,14 @@ async function runTest() {
   if (!current.value) return
   running.value = true
   try {
-    await agent.startCommand(launchMode.value, `Run document test ${current.value.id} and preserve its results.`, 'document_testing', 'tab_button')
+    await assistantChat.send(`Run document test ${current.value.id} and preserve its results.`, 'act', launchMode.value, { goalTemplate: 'document_testing', source: 'tab_button' })
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant drawer.', life: 3000 })
   } catch (error) { fail('Could not start document test', error) }
   finally { running.value = false }
 }
 async function prepareTests() {
   try {
-    await agent.startCommand(launchMode.value, 'Prepare the next appropriate document tests from the audit program and available evidence.', 'document_testing', 'tab_button')
+    await assistantChat.send('Prepare the next appropriate document tests from the audit program and available evidence.', 'act', launchMode.value, { goalTemplate: 'document_testing', source: 'tab_button' })
     toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress and any required decisions in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start document test preparation', error) }
 }

@@ -86,6 +86,8 @@ def new_run(
     parent_run_id: str | None = None,
     limits: dict | None = None,
     kind: str = "analysis",
+    chat_id: str | None = None,
+    source_message_id: str | None = None,
 ) -> dict:
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
@@ -98,6 +100,8 @@ def new_run(
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
+        "chat_id": chat_id,
+        "source_message_id": source_message_id,
         "kind": kind,
         "mode": mode,
         "context": dict(context or {}),
@@ -151,6 +155,8 @@ def new_command_run(
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
+        "chat_id": str(command.get("chat_id") or "").strip() or None,
+        "source_message_id": str(command.get("source_message_id") or "").strip() or None,
         "kind": "audit",
         "mode": mode,
         "context": {},
@@ -158,6 +164,9 @@ def new_command_run(
             "id": command_id, "source": source, "text": text,
             "goal_template": template, "submitted_at": utcnow(),
             "status": "queued", "parent_command_id": command.get("parent_command_id"),
+            "chat_id": str(command.get("chat_id") or "").strip() or None,
+            "source_message_id": str(command.get("source_message_id") or "").strip() or None,
+            "context_refs": list(command.get("context_refs") or []),
         },
         "goal": {"objective": text, "constraints": [], "completion_criteria": []},
         "graph_revision": 0,
@@ -210,6 +219,8 @@ def _hydrate_run(run: dict) -> None:
     """Read-compatible defaults; schema-v1 history is never rewritten."""
     run.setdefault("schema_version", 1)
     run.setdefault("kind", "analysis")
+    run.setdefault("chat_id", None)
+    run.setdefault("source_message_id", None)
     if run["schema_version"] >= 2:
         run.setdefault("actions", [])
         run.setdefault("interactions", [])
@@ -222,6 +233,14 @@ def _hydrate_run(run: dict) -> None:
         run.setdefault("artifacts", [])
         run.setdefault("findings", [])
         run.setdefault("warnings", [])
+        command = run.setdefault("command", {})
+        command.setdefault("chat_id", run.get("chat_id"))
+        command.setdefault("source_message_id", run.get("source_message_id"))
+        command.setdefault("context_refs", [])
+        for pending in run.get("pending_commands") or []:
+            pending.setdefault("chat_id", None)
+            pending.setdefault("source_message_id", None)
+            pending.setdefault("context_refs", [])
 
 
 def list_runs(workspace: Workspace) -> list[dict]:
@@ -264,6 +283,8 @@ def run_summary(run: dict) -> dict:
         "id": run["id"],
         "workspace_id": run["workspace_id"],
         "parent_run_id": run.get("parent_run_id"),
+        "chat_id": run.get("chat_id"),
+        "source_message_id": run.get("source_message_id"),
         "kind": run.get("kind", "analysis"),
         "mode": run["mode"],
         "status": run["status"],

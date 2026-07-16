@@ -101,6 +101,8 @@ def start_run(
     context: dict | None = None,
     parent_run_id: str | None = None,
     kind: str = "analysis",
+    chat_id: str | None = None,
+    source_message_id: str | None = None,
 ) -> dict:
     recover_workspace(workspace)
     if kind not in ("analysis", "intake", "planning", "doc_test"):
@@ -132,7 +134,8 @@ def start_run(
         doc_tests.load_test(workspace, test_id)
 
     run = store.new_run(
-        workspace, mode, context, parent_run_id, kind=kind
+        workspace, mode, context, parent_run_id, kind=kind,
+        chat_id=chat_id, source_message_id=source_message_id,
     )
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
     _launch(workspace.id, run["id"])
@@ -245,7 +248,15 @@ def resolve_interaction(
     return run
 
 
-def steer(workspace: Workspace, run_id: str, content: str) -> dict:
+def steer(
+    workspace: Workspace,
+    run_id: str,
+    content: str,
+    *,
+    chat_id: str | None = None,
+    source_message_id: str | None = None,
+    context_refs: list[dict] | None = None,
+) -> dict:
     """A message to a run: steering while it's live, a persisted note while
     paused, or a linked follow-up run once it has finished."""
     content = str(content or "").strip()
@@ -256,7 +267,9 @@ def steer(workspace: Workspace, run_id: str, content: str) -> dict:
     if run.get("schema_version", 1) >= 2 and run["status"] in store.TERMINAL_STATUSES:
         follow_up = start_command_run(
             workspace, run["mode"],
-            {"source": "follow_up", "text": content, "parent_command_id": (run.get("command") or {}).get("id")},
+            {"source": "follow_up", "text": content, "parent_command_id": (run.get("command") or {}).get("id"),
+             "chat_id": chat_id, "source_message_id": source_message_id,
+             "context_refs": list(context_refs or [])},
             parent_run_id=run_id,
         )
         return {"handled": "follow_up_run", "run": follow_up}
@@ -266,6 +279,8 @@ def steer(workspace: Workspace, run_id: str, content: str) -> dict:
             "id": f"cmd_{__import__('uuid').uuid4().hex[:12]}", "source": "follow_up",
             "text": content, "goal_template": None, "submitted_at": store.utcnow(),
             "status": "queued", "parent_command_id": (run.get("command") or {}).get("id"),
+            "chat_id": chat_id, "source_message_id": source_message_id,
+            "context_refs": list(context_refs or []),
         }
         handle = get_handle(run_id)
         if handle is not None:
@@ -276,7 +291,7 @@ def steer(workspace: Workspace, run_id: str, content: str) -> dict:
             run.setdefault("pending_commands", []).append(command)
             store.save_run(workspace, run)
         store.append_event(workspace, run_id, "command_queued", {"command": command})
-        return {"handled": "queued_command", "run": run}
+        return {"handled": "queued_command", "run": run, "command": command}
 
     # Intake is an operational import run, not an engagement command. Once it
     # has finished, text entered in the shared assistant drawer must start the

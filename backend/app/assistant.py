@@ -43,6 +43,12 @@ SMALL_RESULT_ROWS = 25
 # Low-cardinality string columns get their category labels surfaced as metadata.
 CATEGORY_SAMPLE_MAX = 30
 
+# Conversation history is text-only and deliberately small.  These named
+# budgets are security boundaries as well as prompt-size controls.
+HISTORY_MAX_MESSAGES = 8
+HISTORY_MAX_CHARACTERS = 12_000
+HISTORY_MAX_MESSAGE_CHARACTERS = 2_000
+
 DISCLOSURE = (
     "Only schema (table/column names and types) and aggregate statistics "
     "(counts, distinct counts, numeric ranges, category labels, and previews "
@@ -353,8 +359,8 @@ class _Session:
             extra={"code": code, "stdout": stdout or None},
         )
         content = {"result": _frame_for_model(result, allow_rows=allow_rows)}
-        if stdout:
-            content["stdout"] = stdout
+        # stdout stays in the local artifact only.  It can contain arbitrary
+        # row-like values and is never part of the model-facing tool result.
         return content, artifact
 
     def _artifact(self, *, tool, title, table, kind, spec, viz, frame, extra=None):
@@ -471,6 +477,7 @@ def ask(
     document_ids: list[str] | None = None,
     *,
     mask_pii: bool | None = None,
+    prior_turns: list[dict] | None = None,
 ) -> dict:
     """Run the tool-calling loop for one question. Returns answer + trace +
     artifacts. Raises :class:`llm.LLMError` if the backend isn't configured."""
@@ -497,10 +504,11 @@ def ask(
     system_prompt = SYSTEM_PROMPT % schema_text
     if document_context:
         system_prompt += DOCUMENT_CONTEXT_RULES % _document_prompt(document_context)
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
-    ]
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(_bounded_history(prior_turns or []))
+    # The current question is appended after applying history budgets and is
+    # therefore never truncated by the conversation-context policy.
+    messages.append({"role": "user", "content": question})
 
     answer = ""
     for _ in range(MAX_STEPS):
@@ -585,6 +593,35 @@ def ask(
             "character_budget": document_context["character_budget"],
         } if document_context else None),
     }
+
+
+def _bounded_history(prior_turns: list[dict]) -> list[dict]:
+    """Return the newest contiguous, text-only history within all budgets.
+
+    Eligibility (including document-disclosure boundaries) is decided by the
+    durable chat service.  This final choke point accepts only completed text
+    roles and never tool messages, frames, traces, citations, or artifacts.
+    """
+    if not isinstance(prior_turns, list):
+        raise WorkspaceError("prior_turns must be an array.")
+    eligible: list[dict] = []
+    for item in prior_turns:
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content") or "")[:HISTORY_MAX_MESSAGE_CHARACTERS]
+        if not content:
+            continue
+        eligible.append({"role": item["role"], "content": content})
+
+    selected: list[dict] = []
+    characters = 0
+    for item in reversed(eligible[-HISTORY_MAX_MESSAGES:]):
+        length = len(item["content"])
+        if characters + length > HISTORY_MAX_CHARACTERS:
+            break
+        selected.append(item)
+        characters += length
+    return list(reversed(selected))
 
 
 def run_python_snippet(workspace: Workspace, code: str) -> dict:

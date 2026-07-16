@@ -81,6 +81,7 @@ export interface EvidenceRef {
   confirmed_by: string | null
   confirmed_at: string | null
   legacy_ref?: string
+  available?: boolean
 }
 
 export interface DisclosureEvent {
@@ -792,6 +793,100 @@ export interface AssistantArtifact {
   verdict?: 'ok' | 'warn' | 'fail' | 'info'
   verdict_text?: string
   stats?: StatChip[]
+  chat_id?: string
+  message_id?: string
+  created_at?: string
+  updated_at?: string
+  revision?: number
+  last_run_at?: string | null
+  last_error?: string | null
+}
+
+export type AssistantMessageIntent = 'auto' | 'ask' | 'act'
+
+export interface AssistantChatSummary {
+  id: string
+  workspace_id: string
+  title: string
+  title_source: 'auto' | 'user'
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+export interface AssistantChatMessage {
+  id: string
+  ordinal: number
+  type: 'message'
+  derived: boolean
+  role: 'user' | 'assistant'
+  kind: 'text' | 'clarification' | 'error'
+  content: string
+  created_at: string
+  request_id: string | null
+  state: 'pending' | 'complete' | 'failed'
+  requested_intent: AssistantMessageIntent | null
+  resolved_intent: 'ask' | 'act' | 'interaction_response' | 'clarify' | null
+  reply_to_id: string | null
+  artifact_ids: string[]
+  citations?: EvidenceRef[]
+  citation_ids?: string[]
+  tool_trace?: AssistantStep[]
+  document_manifest?: AssistantAnswer['document_context']
+  outcome: { kind: string; run_id?: string; command_id?: string; message_id?: string; position?: number } | null
+  error: string | null
+}
+
+export interface AssistantRunProjection extends AgentRunSummary {
+  id: string
+  type: 'run'
+  derived: true
+  run_id: string
+  source_message_id?: string
+  created_at: string
+  title: string
+  current_activity: string
+  pending_attention: boolean
+  summary_line: string
+}
+
+export interface AssistantInteractionProjection {
+  id: string
+  type: 'interaction'
+  derived: true
+  run_id: string
+  created_at: string
+  interaction: AgentInteraction
+}
+
+export interface AssistantApprovalProjection {
+  id: string
+  type: 'approval'
+  derived: true
+  run_id: string
+  created_at: string
+  approval: AgentApproval
+}
+
+export interface AssistantCapabilities {
+  ask: boolean
+  act: boolean
+  assistant: AssistantStatus
+  agent: AssistantStatus
+}
+
+export interface AssistantChat extends Omit<AssistantChatSummary, 'message_count'> {
+  schema_version: number
+  next_ordinal: number
+  composer_context: { document_ids: string[] }
+  messages: AssistantChatMessage[]
+  transcript: Array<AssistantChatMessage | AssistantRunProjection | AssistantInteractionProjection | AssistantApprovalProjection>
+  artifacts: Record<string, AssistantArtifact>
+  artifact_errors: Array<{ id: string; error: string }>
+  runs: AssistantRunProjection[]
+  missing_document_ids: string[]
+  capabilities: AssistantCapabilities
+  active_workspace_run: AssistantRunProjection | null
 }
 
 export interface AssistantAnswer {
@@ -950,6 +1045,8 @@ export interface AgentRun {
   id: string
   workspace_id: string
   parent_run_id: string | null
+  chat_id?: string | null
+  source_message_id?: string | null
   kind: 'audit' | 'analysis' | 'intake' | 'planning' | 'doc_test'
   mode: 'auto' | 'permission'
   context: AgentRunContext
@@ -992,6 +1089,8 @@ export interface AgentRunSummary {
   id: string
   workspace_id: string
   parent_run_id: string | null
+  chat_id?: string | null
+  source_message_id?: string | null
   kind: 'audit' | 'analysis' | 'intake' | 'planning' | 'doc_test'
   mode: 'auto' | 'permission'
   status: AgentRunStatus
@@ -1031,6 +1130,9 @@ export interface AgentCommand {
   submitted_at: string
   status: string
   parent_command_id: string | null
+  chat_id?: string | null
+  source_message_id?: string | null
+  context_refs?: Array<Record<string, unknown>>
 }
 
 export interface AgentGoal {

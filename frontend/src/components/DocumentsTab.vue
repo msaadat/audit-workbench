@@ -10,7 +10,7 @@ import Dialog from 'primevue/dialog'
 import Checkbox from 'primevue/checkbox'
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import { useAssistantContext } from '../composables/useAssistantContext'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
 import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -22,7 +22,7 @@ const emit = defineEmits<{ changed: []; 'planning-started': [] }>()
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
-const assistantContext = useAssistantContext(props.workspace.id)
+const assistantChat = useAssistantChat(props.workspace.id)
 const agent = useAgentRun(props.workspace.id)
 
 const documents = ref<AuditDocument[]>([])
@@ -133,7 +133,7 @@ async function reextract() {
 async function remove() {
   if (!selected.value || !window.confirm(`Delete ${selected.value.title}? Existing evidence references will remain visibly stale.`)) return
   await api.del(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}`)
-  assistantContext.remove(selected.value.id)
+  await assistantChat.removeDocument(selected.value.id)
   selectedId.value = ''; await loadDocuments(); if (selectedId.value) await loadDetail(); emit('changed')
 }
 
@@ -157,9 +157,9 @@ async function openDisclosures() {
   disclosuresOpen.value = true
 }
 
-function attachToAssistant() {
+async function attachToAssistant() {
   if (!selected.value) return
-  assistantContext.add(selected.value)
+  await assistantChat.addDocument(selected.value)
   if (!agent.state.drawerOpen) agent.toggleDrawer()
   toast.add({ severity: 'success', summary: 'Added to assistant', detail: selected.value.title, life: 2500 })
 }

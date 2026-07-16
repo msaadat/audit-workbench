@@ -6,6 +6,7 @@ import Tag from 'primevue/tag'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import type { IntakeSuggestedAction } from '../types'
 
 const props = defineProps<{
@@ -15,6 +16,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'planning-started': []; 'settings-changed': [] }>()
 const agent = useAgentRun(props.workspaceId)
+const assistantChat = useAssistantChat(props.workspaceId)
 const { launchMode } = agent
 
 const confirmOpen = ref(false)
@@ -36,11 +38,9 @@ async function startPlanningUpdate() {
       enabledForRun.value = true
       emit('settings-changed')
     }
-    await agent.startCommand(
-      launchMode.value,
+    await assistantChat.send(
       `Review newly imported documents ${props.action.document_ids.join(', ')} and update planning context, APM, RCM, and audit procedures.`,
-      'planning',
-      'tab_button',
+      'act', launchMode.value, { goalTemplate: 'planning', source: 'tab_button' },
     )
     confirmOpen.value = false
     emit('planning-started')
