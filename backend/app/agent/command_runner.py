@@ -60,12 +60,27 @@ class CommandRunner(BaseRunner):
             self.run["finished"] = store.utcnow()
             self.set_status("cancelled")
         except (LimitExceeded, llm.LLMError) as error:
+            self._fail_running_plan_tasks(str(error))
             self.warn(str(error))
             self._finish(force_issue=True)
         except Exception as error:
+            self._fail_running_plan_tasks(str(error))
             self.run["error"] = str(error)
             self.run["finished"] = store.utcnow()
             self.set_status("failed")
+
+    def _fail_running_plan_tasks(self, error: str) -> None:
+        """Close embedded planning tasks when a command run ends abruptly.
+
+        Full-audit commands prepare their APM, RCM, and audit program before
+        the action graph is interpreted.  Those tasks live in the legacy plan
+        projection, so a transport error would otherwise leave the current
+        planning task permanently displayed as running after the run failed.
+        """
+        for stage in self.run.get("plan", {}).get("stages", []):
+            for task in stage.get("tasks", []):
+                if task.get("status") == "running":
+                    self.task_status(task, "failed", error)
 
     def _catalog(self) -> list[dict]:
         return [

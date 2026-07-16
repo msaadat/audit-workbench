@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Tag from 'primevue/tag'
-import type { AgentAction, AgentActionStatus } from '../../types'
+import type { AgentAction, AgentActionStatus, AgentRunStatus } from '../../types'
 
-const props = defineProps<{ actions: AgentAction[] }>()
+const props = defineProps<{
+  actions: AgentAction[]
+  runStatus?: AgentRunStatus
+}>()
 const counts = computed(() => {
   const values: Record<string, number> = {}
   for (const action of props.actions) values[action.status] = (values[action.status] ?? 0) + 1
@@ -13,6 +16,14 @@ const severity: Partial<Record<AgentActionStatus, string>> = {
   succeeded: 'success', failed: 'danger', blocked: 'danger', running: 'info',
   awaiting_input: 'warn', awaiting_confirmation: 'warn', skipped: 'secondary', cancelled: 'secondary',
 }
+const emptyMessage = computed(() => {
+  if (props.runStatus === 'failed') return 'The run ended before an action plan was created.'
+  if (props.runStatus === 'cancelled') return 'The run was cancelled before an action plan was created.'
+  if (props.runStatus === 'completed' || props.runStatus === 'completed_with_issues') {
+    return 'No command actions were needed.'
+  }
+  return 'The command is being interpreted.'
+})
 </script>
 
 <template>
@@ -23,7 +34,7 @@ const severity: Partial<Record<AgentActionStatus, string>> = {
       <span v-if="counts.blocked">{{ counts.blocked }} blocked</span>
       <span v-if="counts.succeeded">{{ counts.succeeded }} committed</span>
     </div>
-    <p v-else class="muted">The command is being interpreted.</p>
+    <p v-else class="muted">{{ emptyMessage }}</p>
     <div v-for="action in actions" :key="action.id" class="action" :class="action.status">
       <i
         :class="action.status === 'succeeded' ? 'pi pi-check-circle'

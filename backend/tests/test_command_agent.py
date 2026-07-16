@@ -737,6 +737,36 @@ def test_full_audit_command_uses_disclosed_documents_and_planning_templates(monk
     assert any(item["stage"] == "agent:apm" and item["template_versions"] for item in activity)
 
 
+def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto",
+        {"source": "follow_up", "text": "do the full audit"},
+    )
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    command = command_runner.CommandRunner(workspace_with_data, run, handle)
+
+    def fail_during_planning():
+        completed = command.add_task("apm", "planning:apm", "Draft the APM")
+        command.task_status(completed, "completed")
+        running = command.add_task("work_program", "planning:work_program", "Draft the audit program")
+        command.task_status(running, "running")
+        raise ConnectionError("remote connection closed")
+
+    monkeypatch.setattr(command, "_prepare_full_audit_planning", fail_during_planning)
+    command.execute()
+
+    saved = store.load_run(workspace_with_data, run["id"])
+    tasks = {
+        task["id"]: task
+        for stage in saved["plan"]["stages"]
+        for task in stage["tasks"]
+    }
+    assert saved["status"] == "failed"
+    assert tasks["planning:apm"]["status"] == "completed"
+    assert tasks["planning:work_program"]["status"] == "failed"
+    assert tasks["planning:work_program"]["error"] == "remote connection closed"
+
+
 def test_document_test_kind_is_validated_before_execution(workspace_with_data):
     run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "test documents"})
     with pytest.raises(workspaces.WorkspaceError, match="unsupported value"):

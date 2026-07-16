@@ -73,6 +73,12 @@ const launchVisible = computed(
 const runFinished = computed(() =>
   ['completed', 'completed_with_issues', 'failed', 'cancelled'].includes(state.run?.status ?? ''),
 )
+const planningStages = computed(() =>
+  (state.run?.plan.stages ?? []).filter((stage) => stage.id !== 'actions'),
+)
+const hasPlanningTasks = computed(() =>
+  planningStages.value.some((stage) => stage.tasks.length > 0),
+)
 
 onMounted(() => {
   const savedWidth = Number(window.localStorage.getItem(WIDTH_STORAGE_KEY))
@@ -376,8 +382,25 @@ function fail(summary: string, error: unknown) {
 
         <details class="section drawer-disclosure" :open="isActive && !pendingApproval && !pendingInteraction">
           <summary><span>{{ state.run.kind === 'audit' ? 'Current work' : 'Plan' }}</span></summary>
-          <AgentActionList v-if="state.run.kind === 'audit'" :actions="state.run.actions ?? []" />
-          <AgentTaskList v-else :stages="state.run.plan.stages" />
+          <template v-if="state.run.kind === 'audit'">
+            <AgentTaskList
+              v-if="hasPlanningTasks"
+              :stages="planningStages"
+              :runStatus="state.run.status"
+              :runError="state.run.error"
+            />
+            <AgentActionList
+              v-if="state.run.actions?.length || !hasPlanningTasks"
+              :actions="state.run.actions ?? []"
+              :runStatus="state.run.status"
+            />
+          </template>
+          <AgentTaskList
+            v-else
+            :stages="state.run.plan.stages"
+            :runStatus="state.run.status"
+            :runError="state.run.error"
+          />
         </details>
 
         <div v-if="state.run.pending_commands?.length" class="section next-commands">

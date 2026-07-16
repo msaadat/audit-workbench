@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { AgentStage, AgentTaskStatus } from '../../types'
+import type { AgentRunStatus, AgentStage, AgentTaskStatus } from '../../types'
 
 // The Codex-style live plan: stages with their tasks, statuses updating as
 // SSE events land. Result refs surface as small "what this produced" chips.
-const props = defineProps<{ stages: AgentStage[] }>()
+const props = defineProps<{
+  stages: AgentStage[]
+  runStatus?: AgentRunStatus
+  runError?: string | null
+}>()
 
 const statusIcon: Record<AgentTaskStatus, string> = {
   queued: 'pi pi-circle',
@@ -16,7 +20,23 @@ const statusIcon: Record<AgentTaskStatus, string> = {
   failed: 'pi pi-times-circle',
 }
 
-const visibleStages = computed(() => props.stages.filter((s) => s.tasks.length))
+const visibleStages = computed(() => props.stages
+  .filter((stage) => stage.tasks.length)
+  .map((stage) => ({
+    ...stage,
+    tasks: stage.tasks.map((task) => {
+      // Older persisted runs can contain a running task if the process or LLM
+      // transport failed before task cleanup.  Never show a spinner beneath a
+      // terminal run status.
+      if (props.runStatus === 'failed' && task.status === 'running') {
+        return { ...task, status: 'failed' as const, error: task.error || props.runError || 'The run ended before this task completed.' }
+      }
+      if (props.runStatus === 'cancelled' && task.status === 'running') {
+        return { ...task, status: 'skipped' as const }
+      }
+      return task
+    }),
+  })))
 
 // Singular / plural noun per artifact kind, so a task that produced many refs
 // collapses to one informative pill ("12 risks") instead of a row of identical
