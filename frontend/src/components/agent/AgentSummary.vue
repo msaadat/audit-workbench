@@ -25,7 +25,7 @@ const severitySeverity: Record<string, string> = {
 async function promote(finding: AgentFinding) {
   try {
     const saved = await api.post<AuditFinding>(`/api/workspaces/${props.workspaceId}/findings/promote`, { run_id: props.runId, finding_id: finding.id })
-    toast.add({ severity: 'success', summary: 'Draft finding created', detail: 'Review and complete the IIA fields before finalizing.', life: 2600 })
+    toast.add({ severity: 'success', summary: 'Draft finding created', detail: 'Review and complete the IIA fields as needed.', life: 2600 })
     await router.replace({ query: { ...router.currentRoute.value.query, tab: 'findings', finding: saved.id } })
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Could not promote the observation', detail: error instanceof ApiError ? error.message : String(error), life: 6000 })

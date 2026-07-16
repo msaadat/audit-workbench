@@ -12,7 +12,6 @@ from .evidence import normalize_anchor, normalize_many
 from .workspaces import Workspace, WorkspaceError, slugify
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
-STATUSES = ("draft", "final")
 SOURCES = ("agent", "manual", "promoted")
 
 
@@ -97,14 +96,9 @@ def _severity(value: object) -> str:
     return result
 
 
-def _status(value: object) -> str:
-    result = str(value or "draft").lower()
-    if result not in STATUSES:
-        raise WorkspaceError("Finding status must be 'draft' or 'final'.")
-    return result
-
-
 def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
+    if "status" in payload:
+        raise WorkspaceError("Unknown finding field: status.")
     title = str(payload.get("title") or "").strip()
     if not title:
         raise WorkspaceError("Finding title is required.")
@@ -128,7 +122,6 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         "effect": str(payload.get("effect") or ""),
         "recommendation": str(payload.get("recommendation") or ""),
         "management_response": str(payload.get("management_response") or ""),
-        "status": _status(payload.get("status")),
         "rcm_refs": rcm_refs,
         "procedure_refs": procedure_refs,
         "evidence_refs": evidence_refs,
@@ -147,7 +140,7 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
     item = _record(workspace, finding_id)
     allowed = {
         "title", "severity", "condition", "criteria", "cause", "effect",
-        "recommendation", "management_response", "status", "rcm_refs",
+        "recommendation", "management_response", "rcm_refs",
         "procedure_refs", "evidence_refs",
     }
     unknown = set(changes) - allowed
@@ -157,8 +150,6 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
         raise WorkspaceError("Finding title is required.")
     if "severity" in changes:
         changes = {**changes, "severity": _severity(changes["severity"])}
-    if "status" in changes:
-        changes = {**changes, "status": _status(changes["status"])}
     if "rcm_refs" in changes or "procedure_refs" in changes:
         rcm_refs, procedure_refs = _validate_links(
             workspace,
@@ -233,7 +224,6 @@ def promote(workspace: Workspace, run_id: str, agent_finding_id: str) -> dict:
             "severity": source.get("severity") or "medium",
             "condition": statement,
             "evidence_refs": anchors,
-            "status": "draft",
         },
         source="promoted",
     )
@@ -243,7 +233,7 @@ def rollups(workspace: Workspace) -> dict:
     by_rcm: dict[str, list[dict]] = {}
     by_procedure: dict[str, list[dict]] = {}
     for item in workspace.findings:
-        summary = {key: item.get(key) for key in ("id", "title", "severity", "status")}
+        summary = {key: item.get(key) for key in ("id", "title", "severity")}
         for ref in item.get("rcm_refs") or []:
             by_rcm.setdefault(ref, []).append(summary)
         for ref in item.get("procedure_refs") or []:

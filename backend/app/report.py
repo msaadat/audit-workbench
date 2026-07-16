@@ -14,7 +14,6 @@ from .documents import append_activity
 from .findings import artifact
 from .workspaces import Workspace, WorkspaceError
 
-REPORT_STATUSES = ("draft", "final")
 REQUIRED_FINDING_FIELDS = ("condition", "criteria", "cause", "effect", "recommendation")
 MODEL_CONTEXT_LIMIT = 30_000
 
@@ -24,8 +23,7 @@ def _now() -> str:
 
 
 def hydrate(workspace: Workspace) -> dict:
-    return {
-        "status": "draft",
+    defaults = {
         "markdown": "",
         "generated_markdown": "",
         "generated_at": None,
@@ -33,8 +31,9 @@ def hydrate(workspace: Workspace) -> dict:
         "edited": False,
         "updated": None,
         "generation_warnings": [],
-        **dict(workspace.report or {}),
     }
+    stored = workspace.report or {}
+    return {**defaults, **{key: stored[key] for key in defaults if key in stored}}
 
 
 def _safe_finding(item: dict) -> dict:
@@ -42,7 +41,7 @@ def _safe_finding(item: dict) -> dict:
         key: item.get(key)
         for key in (
             "id", "title", "severity", "condition", "criteria", "cause", "effect",
-            "recommendation", "management_response", "status", "rcm_refs",
+            "recommendation", "management_response", "rcm_refs",
             "procedure_refs", "source",
         )
     } | {
@@ -88,7 +87,6 @@ def build_context(workspace: Workspace) -> dict:
     return {
         "workspace": {"id": workspace.id, "name": workspace.name, "description": workspace.description},
         "planning": {
-            "status": workspace.planning.get("status"),
             "objective": context.get("objective"), "entity": context.get("entity"),
             "period": context.get("period"), "scope": context.get("scope"),
             "materiality": context.get("materiality"),
@@ -109,9 +107,7 @@ def build_context(workspace: Workspace) -> dict:
         ],
         "statistics": {
             "rcm_rows": len(workspace.rcm), "procedures": len(workspace.work_program),
-            "findings": len(workspace.findings), "final_findings": sum(
-                item.get("status") == "final" for item in workspace.findings
-            ),
+            "findings": len(workspace.findings),
             "document_tests": len(tests), **totals,
         },
     }
@@ -311,16 +307,11 @@ def generate(workspace: Workspace, *, use_model: bool = True, run_id: str | None
 
 
 def update(workspace: Workspace, changes: dict) -> dict:
-    allowed = {"status", "markdown"}
+    allowed = {"markdown"}
     unknown = set(changes) - allowed
     if unknown:
         raise WorkspaceError(f"Unknown report field: {sorted(unknown)[0]}.")
     current = hydrate(workspace)
-    if "status" in changes:
-        status = str(changes["status"] or "").lower()
-        if status not in REPORT_STATUSES:
-            raise WorkspaceError("Report status must be 'draft' or 'final'.")
-        current["status"] = status
     if "markdown" in changes:
         current["markdown"] = str(changes["markdown"] or "")
         current["edited"] = current["markdown"] != current["generated_markdown"]

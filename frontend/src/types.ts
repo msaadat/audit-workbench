@@ -219,7 +219,6 @@ export interface PlanningContext {
 }
 
 export interface PlanningRecord {
-  status: 'draft' | 'final'
   context: PlanningContext
   apm_markdown: string
   created_by: 'agent' | 'user'
@@ -286,7 +285,6 @@ export interface AuditFinding {
   effect: string
   recommendation: string
   management_response: string
-  status: 'draft' | 'final'
   rcm_refs: string[]
   procedure_refs: string[]
   evidence_refs: EvidenceRef[]
@@ -299,7 +297,6 @@ export interface FindingSummary {
   id: string
   title: string
   severity: FindingSeverity
-  status: 'draft' | 'final'
 }
 
 export interface FindingRollups {
@@ -332,7 +329,6 @@ export interface ReportQuality {
 }
 
 export interface AuditReport {
-  status: 'draft' | 'final'
   markdown: string
   generated_markdown: string
   generated_at: string | null
@@ -618,7 +614,6 @@ export interface DashboardOverview {
   analyses: number
   rulesets: number
   findings: number
-  final_findings: number
   pinned_tiles: number
   report_errors: number
   report_warnings: number

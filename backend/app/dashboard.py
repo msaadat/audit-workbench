@@ -184,8 +184,6 @@ def _engagement_state(workspace: Workspace) -> dict:
         or context.get("interview_answers")
     )
     planning_issues = []
-    if workspace.planning.get("status") != "final":
-        planning_issues.append("Planning has not been marked final.")
     if not workspace.rcm:
         planning_issues.append("No risks or controls are recorded in the RCM.")
     if not workspace.work_program:
@@ -193,7 +191,7 @@ def _engagement_state(workspace: Workspace) -> dict:
     planning_complete = not planning_issues
     planning_state = "complete" if planning_complete else ("in_progress" if planning_started else "not_started")
     planning_summary = (
-        "Planning is final with an RCM and audit program."
+        "Planning includes an RCM and audit program."
         if planning_complete else f"{len(workspace.rcm)} RCM row(s) and {len(workspace.work_program)} procedure(s)."
     )
 
@@ -231,22 +229,19 @@ def _engagement_state(workspace: Workspace) -> dict:
         if fieldwork_complete else f"{len(tests)} test(s), {state_counts['pending'] + state_counts['manual_review']} item(s) awaiting review."
     )
 
-    draft_findings = [item for item in workspace.findings if item.get("status") != "final"]
     report_started = bool(current_report.get("markdown") or workspace.findings)
     report_errors = [issue for issue in quality["issues"] if issue["severity"] == "error"]
     report_issues = []
-    if current_report.get("status") != "final":
-        report_issues.append("The report has not been marked final.")
-    if draft_findings:
-        report_issues.append(f"{len(draft_findings)} finding(s) remain in draft.")
+    if not str(current_report.get("markdown") or "").strip():
+        report_issues.append("The report has no Markdown content.")
     report_issues.extend(issue["message"] for issue in report_errors[:3])
-    report_complete = current_report.get("status") == "final" and not draft_findings and not report_errors
+    report_complete = bool(str(current_report.get("markdown") or "").strip()) and not report_errors
     report_state = (
         "attention" if report_errors else "complete" if report_complete
         else "in_progress" if report_started else "not_started"
     )
     report_summary = (
-        "The report and all findings are final with no quality errors."
+        "The report has content and no quality errors."
         if report_complete else f"{len(workspace.findings)} finding(s), {quality['counts']['error']} quality error(s)."
     )
 
@@ -257,8 +252,8 @@ def _engagement_state(workspace: Workspace) -> dict:
                {"tests": len(tests), "pending_items": state_counts["pending"],
                 "exceptions": state_counts["exception"]}, fieldwork_issues),
         _phase("report", report_state, report_complete, report_summary,
-               {"findings": len(workspace.findings), "draft_findings": len(draft_findings),
-                "quality_errors": len(report_errors)}, report_issues),
+               {"findings": len(workspace.findings), "quality_errors": len(report_errors)},
+               report_issues),
     ]
 
     return {
@@ -276,7 +271,6 @@ def _engagement_state(workspace: Workspace) -> dict:
         "fieldwork_complete": fieldwork_complete,
         "fieldwork_issues": fieldwork_issues,
         "unresolved_exceptions": unresolved_exceptions,
-        "draft_findings": draft_findings,
         "report_errors": report_errors,
         "phases": phases,
     }
@@ -301,7 +295,6 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     fieldwork_complete = state["fieldwork_complete"]
     fieldwork_issues = state["fieldwork_issues"]
     unresolved_exceptions = state["unresolved_exceptions"]
-    draft_findings = state["draft_findings"]
     report_errors = state["report_errors"]
 
     table_errors: list[str] = []
@@ -326,9 +319,7 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
         "documents": len(workspace.documents), "rcm_rows": len(workspace.rcm),
         "procedures": len(workspace.work_program), "document_tests": len(tests),
         "analyses": len(workspace.analyses), "rulesets": len(workspace.rulesets),
-        "findings": len(workspace.findings), "final_findings": sum(
-            item.get("status") == "final" for item in workspace.findings
-        ),
+        "findings": len(workspace.findings),
         "pinned_tiles": len(workspace.tiles),
         "report_errors": quality["counts"]["error"],
         "report_warnings": quality["counts"]["warning"],
@@ -350,14 +341,10 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
         actions.append(_action("start-fieldwork", "Start fieldwork", "Run document tests, validation rules, or data analyses against the planned procedures.", "doc-tests", priority="high"))
     if state_counts["manual_review"] or unresolved_exceptions:
         actions.append(_action("resolve-exceptions", "Resolve fieldwork exceptions", fieldwork_issues[-1], "doc-tests", priority="high"))
-    if draft_findings:
-        actions.append(_action("finalize-findings", "Complete draft findings", f"{len(draft_findings)} finding(s) still need review and finalization.", "findings", priority="medium", object_id=draft_findings[0]["id"]))
-    elif fieldwork_complete and not current_report.get("markdown"):
+    if fieldwork_complete and not current_report.get("markdown"):
         actions.append(_action("generate-report", "Generate the audit report", "Fieldwork is ready to be summarized in an evidence-linked report.", "report", priority="medium"))
-    elif report_errors:
+    if report_errors:
         actions.append(_action("fix-report-quality", "Resolve report quality errors", report_errors[0]["message"], "report", priority="high"))
-    elif current_report.get("markdown") and current_report.get("status") != "final":
-        actions.append(_action("finalize-report", "Review and finalize the report", "The report has content but remains a draft.", "report", priority="medium"))
     if broken_tiles:
         actions.append(_action("repair-dashboard", "Repair broken pinned items", f"{len(broken_tiles)} pinned item(s) could not be recomputed.", "dashboard", priority="medium"))
     elif failed_tiles:

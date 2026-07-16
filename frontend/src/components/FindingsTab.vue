@@ -69,7 +69,7 @@ watch(selectedId, id => {
 async function addManual() {
   try {
     const item = await api.post<AuditFinding>(`/api/workspaces/${props.workspace.id}/findings`, {
-      title: 'New audit finding', severity: 'medium', status: 'draft',
+      title: 'New audit finding', severity: 'medium',
     })
     await reload(item.id)
     emit('changed')
@@ -85,7 +85,7 @@ async function save() {
       title: item.title, severity: item.severity, condition: item.condition,
       criteria: item.criteria, cause: item.cause, effect: item.effect,
       recommendation: item.recommendation, management_response: item.management_response,
-      status: item.status, rcm_refs: item.rcm_refs, procedure_refs: item.procedure_refs,
+      rcm_refs: item.rcm_refs, procedure_refs: item.procedure_refs,
       evidence_refs: item.evidence_refs,
     })
     await reload(item.id)
@@ -136,18 +136,18 @@ function openEvidence(value: EvidenceRef) {
         <div class="rail-filters"><InputText v-model="search" placeholder="Search findings" /><Select v-model="severityFilter" :options="severityOptions" /></div>
         <button v-for="item in filtered" :key="item.id" :class="{ active: item.id === selectedId }" @click="selectedId = item.id">
           <span class="rail-title"><strong>{{ item.id }}</strong><Tag :value="item.severity" :severity="severityTone[item.severity]" /></span>
-          <span>{{ item.title }}</span><small>{{ item.status }} · {{ item.source }}</small>
+          <span>{{ item.title }}</span><small>{{ item.source }}</small>
         </button>
         <p v-if="!filtered.length" class="empty">No findings match this view.</p>
       </aside>
 
       <section v-if="selected" class="finding-detail card">
         <div class="detail-toolbar">
-          <div class="provenance"><strong>{{ selected.id }}</strong><Tag :value="selected.status" :severity="selected.status === 'final' ? 'success' : 'warn'"/><Tag :value="selected.source" severity="secondary"/><span v-if="selected.agent_run_id" class="muted">Run {{ selected.agent_run_id }}</span></div>
+          <div class="provenance"><strong>{{ selected.id }}</strong><Tag :value="selected.source" severity="secondary"/><span v-if="selected.agent_run_id" class="muted">Run {{ selected.agent_run_id }}</span></div>
           <span class="grow"/><Button label="Save finding" icon="pi pi-save" size="small" :loading="saving" @click="save"/>
         </div>
         <h3 class="form-section-title">Finding</h3>
-        <div class="top-fields"><label>Title<InputText v-model="selected.title" /></label><label>Severity<Select v-model="selected.severity" :options="severities" /></label><label>State<Select v-model="selected.status" :options="['draft','final']" /></label></div>
+        <div class="top-fields"><label>Title<InputText v-model="selected.title" /></label><label>Severity<Select v-model="selected.severity" :options="severities" /></label></div>
         <div class="iia-grid">
           <label>Condition<Textarea v-model="selected.condition" rows="4" autoResize placeholder="What was observed?" /></label>
           <label>Criteria<Textarea v-model="selected.criteria" rows="4" autoResize placeholder="What should have occurred?" /></label>
@@ -164,7 +164,7 @@ function openEvidence(value: EvidenceRef) {
         <div class="source-links">
           <h3>Traceability and evidence</h3>
           <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning('rcm', id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.procedure_refs" :key="`procedure:${id}`" @click="openPlanning('procedure', id)"><i class="pi pi-list-check"/> {{ id }}</button></div>
-          <p v-if="!selected.evidence_refs.length" class="warning"><i class="pi pi-exclamation-triangle"/> No typed evidence is linked. Add evidence through a promoted agent observation or an evidence-enabled workflow before finalizing.</p>
+          <p v-if="!selected.evidence_refs.length" class="warning"><i class="pi pi-exclamation-triangle"/> No typed evidence is linked. Add evidence through a promoted agent observation or an evidence-enabled workflow.</p>
           <div v-else class="evidence-list"><div v-for="value in selected.evidence_refs" :key="value.id"><button @click="openEvidence(value)"><i class="pi pi-link"/><span>{{ value.source_kind }}:{{ value.source_id }}<small v-if="value.page">page {{ value.page }}</small></span><code>{{ value.source_sha1?.slice(0, 10) }}</code></button><Button icon="pi pi-times" text rounded severity="danger" size="small" aria-label="Remove evidence link" @click="removeEvidence(value.id)"/></div></div>
           <details v-if="availableEvidence.length" class="evidence-picker"><summary>Add evidence already captured in fieldwork</summary><button v-for="option in availableEvidence" :key="option.anchor.id" @click="addEvidence(option.anchor)"><i class="pi pi-plus"/>{{ option.label }}</button></details>
         </div>

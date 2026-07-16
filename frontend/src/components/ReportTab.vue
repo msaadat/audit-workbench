@@ -52,18 +52,12 @@ async function save(showToast = true) {
   busy.value = true
   try {
     report.value = await api.patch<AuditReport>(`/api/workspaces/${props.workspace.id}/report`, {
-      status: report.value.status, markdown: report.value.markdown,
+      markdown: report.value.markdown,
     })
     emit('changed')
     if (showToast) toast.add({ severity: 'success', summary: 'Report saved', life: 1800 })
   } catch (error) { fail('Could not save the report', error) }
   finally { busy.value = false }
-}
-
-async function toggleStatus() {
-  if (!report.value) return
-  report.value.status = report.value.status === 'draft' ? 'final' : 'draft'
-  await save()
 }
 
 async function generate() {
@@ -149,10 +143,8 @@ const secondaryActions = computed(() => [
 
 <template>
   <div v-if="report" class="report-tab">
-    <UiPageHeader title="Draft audit report" description="Generate, edit, review, and finalize the engagement report">
-        <Tag :value="report.status" :severity="report.status === 'final' ? 'success' : 'warn'"/>
+    <UiPageHeader title="Draft audit report" description="Generate, edit, and review the engagement report">
         <Tag v-if="report.edited" value="auditor edited" severity="info"/>
-        <Button :label="report.status === 'final' ? 'Reopen draft' : 'Mark final'" text size="small" @click="toggleStatus"/>
         <Button :label="report.generated_at ? 'Regenerate' : 'Generate report'" icon="pi pi-sparkles" size="small" :loading="busy" @click="generate"/>
         <UiOverflowMenu :items="secondaryActions" />
     </UiPageHeader>
@@ -164,7 +156,7 @@ const secondaryActions = computed(() => [
     </section>
     <section v-else class="quality-view">
       <div class="quality-card card">
-        <div class="quality-head"><div><strong>Deterministic checks</strong><p>Advisory only — warnings never disable editing, generation, final labels, or copy-out.</p></div><div class="quality-counts"><Tag :value="`${report.quality.counts.error} errors`" :severity="report.quality.counts.error ? 'danger' : 'success'"/><Tag :value="`${report.quality.counts.warning} warnings`" :severity="report.quality.counts.warning ? 'warn' : 'secondary'"/><Button label="Optional editorial review" icon="pi pi-sparkles" size="small" outlined :loading="busy" @click="runQuality(true)"/></div></div>
+        <div class="quality-head"><div><strong>Deterministic checks</strong><p>Advisory only — warnings never disable editing, generation, or copy-out.</p></div><div class="quality-counts"><Tag :value="`${report.quality.counts.error} errors`" :severity="report.quality.counts.error ? 'danger' : 'success'"/><Tag :value="`${report.quality.counts.warning} warnings`" :severity="report.quality.counts.warning ? 'warn' : 'secondary'"/><Button label="Optional editorial review" icon="pi pi-sparkles" size="small" outlined :loading="busy" @click="runQuality(true)"/></div></div>
         <div v-if="allIssues().length" class="issue-list"><article v-for="(issue,index) in allIssues()" :key="`${issue.source}:${issue.code}:${index}`"><Tag :value="issue.severity" :severity="issueTone[issue.severity]"/><div><strong>{{ issue.code.replaceAll('_',' ') }}</strong><p>{{ issue.message }}</p><span v-if="issue.source === 'editorial'" class="muted">Optional editorial suggestion</span><div v-if="issue.refs.length" class="refs"><button v-for="ref in issue.refs" :key="ref" @click="openIssueRef(ref)">{{ ref }}</button></div></div></article></div>
         <p v-else class="quality-ok"><i class="pi pi-check-circle"/> No quality issues were identified.</p>
       </div>

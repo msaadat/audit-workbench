@@ -371,7 +371,7 @@ class PlanningRunner(BaseRunner):
                 self.warn("Preserved the auditor-edited APM; the rerun draft was not applied.")
             else:
                 self.ws.update_planning(
-                    {"apm_markdown": accepted_markdown, "created_by": "agent", "agent_run_id": self.run["id"], "status": "draft"},
+                    {"apm_markdown": accepted_markdown, "created_by": "agent", "agent_run_id": self.run["id"]},
                     agent=True,
                 )
                 self.record_artifact("planning", "apm", "planning:apm", "updated", task)

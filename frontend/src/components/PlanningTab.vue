@@ -70,7 +70,6 @@ async function savePlanning() {
   saving.value = true
   try {
     data.value.planning = await api.patch<PlanningPayload['planning']>(`/api/workspaces/${props.workspace.id}/planning`, {
-      status: data.value.planning.status,
       context: data.value.planning.context,
       apm_markdown: data.value.planning.apm_markdown,
     })
@@ -79,12 +78,6 @@ async function savePlanning() {
   } catch (error) { fail('Could not save planning', error) }
   finally { saving.value = false }
 }
-async function togglePlanningStatus() {
-  if (!data.value) return
-  data.value.planning.status = data.value.planning.status === 'draft' ? 'final' : 'draft'
-  await savePlanning()
-}
-
 async function generate() {
   try {
     await savePlanning()
@@ -181,8 +174,6 @@ function fail(summary: string, error: unknown) {
 <template>
   <div v-if="data" class="planning-tab">
     <UiPageHeader title="Planning and audit program" description="Define scope, risks, controls, and fieldwork procedures">
-        <Tag :value="data.planning.status" :severity="data.planning.status === 'final' ? 'success' : 'warn'" />
-        <Button :label="data.planning.status === 'final' ? 'Reopen draft' : 'Mark final'" size="small" text severity="secondary" @click="togglePlanningStatus" />
         <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured || !docAiEnabled" @click="generate()" />
     </UiPageHeader>
     <p v-if="!docAiEnabled" class="doc-ai-note"><i class="pi pi-lock" /><span>Planning drafts need Document AI to read explicitly disclosed engagement documents.</span><a href="?tab=documents">Open Documents</a></p>

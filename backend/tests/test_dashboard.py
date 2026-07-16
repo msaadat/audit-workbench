@@ -181,14 +181,14 @@ def test_engagement_status_endpoint_is_lightweight(workspace_with_data, monkeypa
 
 def test_derived_phases_can_reach_complete(workspace_with_data):
     ws = workspace_with_data
-    ws.update_planning({"status": "final", "apm_markdown": "# Planning"})
+    ws.update_planning({"apm_markdown": "# Planning"})
     ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
     procedure = ws.add_procedure({"objective": "Test recorded revenue"})
     ws.update_procedure(procedure["id"], {
         "result_summary": "Testing completed.",
         "conclusion": "Recorded revenue is supported.",
     })
-    ws.report = {"status": "final", "markdown": "# Audit report\n\nNo findings."}
+    ws.report = {"markdown": "# Audit report\n\nNo findings."}
     ws.save()
 
     board = dashboard_payload(ws)
@@ -201,7 +201,7 @@ def test_derived_phases_can_reach_complete(workspace_with_data):
     assert all(phase["complete"] for phase in status["phases"])
 
 
-def test_engagement_status_surfaces_attention_and_draft_work(workspace_with_data):
+def test_engagement_status_surfaces_attention_and_report_quality(workspace_with_data):
     ws = workspace_with_data
     test = doc_tests.create_test(ws, {
         "kind": "attribute", "title": "Approval review",
@@ -210,8 +210,8 @@ def test_engagement_status_surfaces_attention_and_draft_work(workspace_with_data
     doc_tests.update_item(ws, test["id"], test["items"][0]["id"], {
         "auditor_disposition": "needs_manual_check",
     })
-    findings.add(ws, {"title": "Unsupported transaction", "status": "draft"})
-    ws.report = {"status": "draft", "markdown": "# Audit report\n\n99 findings."}
+    findings.add(ws, {"title": "Unsupported transaction"})
+    ws.report = {"markdown": "# Audit report\n\n99 findings."}
     ws.save()
 
     phases = {
@@ -221,15 +221,15 @@ def test_engagement_status_surfaces_attention_and_draft_work(workspace_with_data
     assert phases["fieldwork"]["state"] == "attention"
     assert any("manual review" in issue for issue in phases["fieldwork"]["issues"])
     assert phases["report"]["state"] == "attention"
-    assert any("remain in draft" in issue for issue in phases["report"]["issues"])
     assert phases["report"]["counts"]["quality_errors"] > 0
+    assert "draft_findings" not in phases["report"]["counts"]
 
 
 def test_dashboard_advice_is_metadata_only_cached_and_marked_stale(
     workspace_with_data, monkeypatch,
 ):
     ws = workspace_with_data
-    ws.report = {"status": "draft", "markdown": "PRIVATE REPORT BODY 1001 C1"}
+    ws.report = {"markdown": "PRIVATE REPORT BODY 1001 C1"}
     ws.save()
     captured = {}
 

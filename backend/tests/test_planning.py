@@ -223,6 +223,8 @@ def test_planning_routes():
     response = client.patch(f"{base}/planning", json={"context": {"scope": "Head office"}})
     assert response.status_code == 200
     assert response.json()["context"]["scope"] == "Head office"
+    assert "status" not in response.json()
+    assert client.patch(f"{base}/planning", json={"status": "final"}).status_code == 400
     row = client.post(f"{base}/rcm", json={"process": "Cash", "risk": "Cash is misstated"}).json()
     assert client.patch(f"{base}/rcm/{row['id']}", json={"risk_rating": "high"}).json()["risk_rating"] == "high"
     procedure = client.post(f"{base}/procedures", json={"objective": "Test cash", "rcm_refs": [row["id"]]}).json()

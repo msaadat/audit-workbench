@@ -245,7 +245,6 @@ class Workspace:
         }
         self.documents: list[dict] = list(definition.get("documents") or [])
         self.planning: dict = {
-            "status": "draft",
             "context": {
                 "objective": "",
                 "entity": "",
@@ -287,9 +286,11 @@ class Workspace:
             item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
             item.setdefault("rcm_refs", [])
             item.setdefault("procedure_refs", [])
-            item.setdefault("status", "draft")
+            item.pop("status", None)
             item.setdefault("source", "manual")
         self.report: dict = dict(definition.get("report") or {})
+        self.planning.pop("status", None)
+        self.report.pop("status", None)
 
     # ------------------------------------------------------------- persistence
     @property
@@ -869,20 +870,18 @@ class Workspace:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def update_planning(self, changes: dict, *, agent: bool = False) -> dict:
-        allowed = {"status", "context", "apm_markdown", "agent_run_id", "created_by"}
+        allowed = {"context", "apm_markdown", "agent_run_id", "created_by"}
         unknown = set(changes) - allowed
         if unknown:
             raise WorkspaceError(f"Unknown planning field: {sorted(unknown)[0]}.")
         if not agent and ({"agent_run_id", "created_by"} & set(changes)):
             raise WorkspaceError("Planning provenance is managed by the workbench.")
-        if "status" in changes and changes["status"] not in ("draft", "final"):
-            raise WorkspaceError("Planning status must be 'draft' or 'final'.")
         if "context" in changes:
             context = changes["context"]
             if not isinstance(context, dict):
                 raise WorkspaceError("Planning context must be an object.")
             self.planning["context"].update(context)
-        for key in ("status", "apm_markdown", "agent_run_id", "created_by"):
+        for key in ("apm_markdown", "agent_run_id", "created_by"):
             if key in changes:
                 self.planning[key] = changes[key]
         if not agent and self.planning.get("created_by") == "agent":

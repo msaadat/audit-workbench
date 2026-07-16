@@ -52,8 +52,9 @@ def test_finding_crud_validates_typed_sources_and_rolls_up(workspace_with_data):
     assert item["evidence_refs"][0]["source_sha1"]
     assert findings.rollups(ws)["by_rcm"][rcm["id"]][0]["id"] == item["id"]
 
-    updated = findings.update(ws, item["id"], {"status": "final", "severity": "critical"})
-    assert updated["status"] == "final"
+    updated = findings.update(ws, item["id"], {"severity": "critical"})
+    assert updated["severity"] == "critical"
+    assert "status" not in updated
     assert workspaces.load_workspace(ws.id).find_semantic("findings", item["semantic_id"])["id"] == item["id"]
 
     broken = {**anchor, "source_id": "missing"}
@@ -79,7 +80,7 @@ def test_agent_finding_promotion_is_explicit_typed_and_idempotent(workspace_with
     again = findings.promote(ws, run["id"], "finding-1")
     assert promoted["id"] == again["id"]
     assert promoted["source"] == "promoted"
-    assert promoted["status"] == "draft"
+    assert "status" not in promoted
     assert promoted["condition"] == "A duplicate invoice was observed."
     assert promoted["evidence_refs"][0]["source_kind"] == "analysis"
 
@@ -178,5 +179,26 @@ def test_finding_and_report_routes(monkeypatch, workspace_with_data):
     generated = client.post(f"{base}/report/generate", json={"use_model": False})
     assert generated.status_code == 200
     assert client.post(f"{base}/report/quality", json={}).status_code == 200
-    assert client.patch(f"{base}/report", json={"status": "final"}).json()["status"] == "final"
+    assert client.post(f"{base}/findings", json={"title": "Old payload", "status": "draft"}).status_code == 400
+    assert client.patch(f"{base}/report", json={"status": "final"}).status_code == 400
+    assert client.patch(f"{base}/findings/{finding_id}", json={"status": "final"}).status_code == 400
     assert client.delete(f"{base}/findings/{finding_id}").json() == {"ok": True}
+
+
+def test_removed_artifact_statuses_are_discarded_when_loading(workspace_with_data):
+    ws = workspace_with_data
+    ws.planning["status"] = "final"
+    ws.findings.append({"id": "F-OLD", "title": "Legacy finding", "status": "draft"})
+    ws.report = {"status": "final", "markdown": "# Existing report"}
+    ws.save()
+
+    loaded = workspaces.load_workspace(ws.id)
+    assert "status" not in loaded.planning
+    assert "status" not in loaded.findings[0]
+    assert "status" not in loaded.report
+    loaded.save()
+
+    persisted = json.loads(loaded.definition_path.read_text(encoding="utf-8"))
+    assert "status" not in persisted["planning"]
+    assert "status" not in persisted["findings"][0]
+    assert "status" not in persisted["report"]
