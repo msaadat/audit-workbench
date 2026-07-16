@@ -171,7 +171,11 @@ async function compareAndUpload() {
     )
     seedEdits(batch.value.items)
     step.value = 3
-    await agent.startCommand(launchMode.value, `Classify and apply staged import batch ${batch.value.id}.`, undefined, 'tab_button')
+    await agent.startRun(
+      launchMode.value,
+      { batch_id: batch.value.id, source_id: batch.value.source_id },
+      'intake',
+    )
   } catch (cause) {
     error.value = String(cause)
     if (batch.value?.status === 'uploading') {

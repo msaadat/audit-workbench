@@ -349,3 +349,48 @@ def test_intake_run_needs_no_table_or_configured_model(monkeypatch):
     assert current["kind"] == "intake"
     assert current["intake"]["imported"] == 1
     assert workspaces.load_workspace(ws.id).tables
+
+
+def test_intake_run_uses_model_file_classification(fake_agent_llm):
+    ws = _workspace()
+    content = b"Procurement policy requires approval before commitment.\n"
+    source, batch = _source_and_batch(
+        ws,
+        [{"relative_path": "Audit/guidance.txt", "size": len(content), "last_modified": 1}],
+        "auto",
+    )
+    _stage(ws, batch, "Audit/guidance.txt", content)
+    batch = intake.complete_upload(ws, batch["id"])
+    item_id = batch["items"][0]["id"]
+    fake_agent_llm.overrides["agent:file_classification"] = {
+        "items": [
+            {
+                "id": item_id,
+                "route": "document",
+                "document_category": "policy",
+                "confidence": "high",
+                "rationale": "The filename indicates audit guidance.",
+                "proposed_action": "import",
+            }
+        ]
+    }
+
+    run = runner.start_run(
+        ws,
+        "auto",
+        {"batch_id": batch["id"], "source_id": source["id"]},
+        kind="intake",
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = store.load_run(ws, run["id"])
+        if current["status"] in store.TERMINAL_STATUSES:
+            break
+        time.sleep(0.02)
+
+    imported = intake.load_batch(ws, batch["id"])
+    document = workspaces.load_workspace(ws.id).documents[0]
+    assert current["status"] == "completed", current.get("error")
+    assert [call["tag"] for call in fake_agent_llm.calls] == ["agent:file_classification"]
+    assert imported["items"][0]["classification"]["document_category"] == "policy"
+    assert document["category"] == "policy"

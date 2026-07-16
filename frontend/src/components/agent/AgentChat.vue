@@ -28,9 +28,9 @@ interface Turn {
   pending: boolean
 }
 
-// The drawer's conversation surface (successor of the standalone Ask AI tab):
-// Chat is the durable command queue: it launches a command when no run exists,
-// queues follow-up work while one runs, and starts a linked run after terminal.
+// The drawer combines ad-hoc Q&A with durable agent commands. During a live
+// run the composer queues a command; after completion the explicit sparkle
+// action starts a linked run, while the normal send action remains Q&A.
 const props = defineProps<{
   workspace: WorkspaceSummary
   messages: AgentMessage[]
@@ -75,18 +75,23 @@ const placeholder = computed(() => {
   if (!props.configured) return 'Configure an LLM key to talk to the agent'
   if (props.pendingQuestion) return 'Use the focused interaction above to respond'
   if (props.runActive) return 'Queue the next command — it will not interrupt this run'
-  if (props.runFinished) return 'Start a linked follow-up command'
-  return 'Give the audit assistant a command… (Enter to send)'
+  if (props.runFinished) return 'Ask a question, or give the agent a follow-up task'
+  return 'Ask about your data or documents… (Enter to send)'
 })
 
-function send(_followUp = false) {
+function send(followUp = false) {
   const text = draft.value.trim()
   if (!text || busy.value) return
+  if (!props.runActive && !followUp && context.documentIds.value.length && !documentAiEnabled.value) {
+    pickerOpen.value = true
+    return
+  }
   draft.value = ''
-  emit('steer', text)
-  // Keep the local Q&A renderer available for legacy history without routing
-  // new chat around the durable command queue.
-  if (false) void ask(text)
+  if (props.runActive || followUp) {
+    emit('steer', text)
+    return
+  }
+  void ask(text)
 }
 
 async function ask(question: string) {
@@ -364,9 +369,21 @@ function fail(summary: string, error: unknown) {
           @click="pickerOpen = true"
         />
         <Button
+          v-if="runFinished && !runActive"
+          icon="pi pi-sparkles"
+          size="small"
+          severity="secondary"
+          outlined
+          aria-label="Start a linked agent command"
+          v-tooltip.top="'Start a linked agent run with this instruction'"
+          :disabled="!configured || !draft.trim()"
+          @click="send(true)"
+        />
+        <Button
           :icon="runActive ? 'pi pi-clock' : 'pi pi-send'"
           size="small"
-          v-tooltip.top="runActive ? 'Queue follow-up command' : 'Send command'"
+          :aria-label="runActive ? 'Queue follow-up command' : 'Ask the LLM'"
+          v-tooltip.top="runActive ? 'Queue follow-up command' : 'Ask the LLM'"
           :disabled="!configured || !draft.trim()"
           :loading="busy"
           @click="send()"

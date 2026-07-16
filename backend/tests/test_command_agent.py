@@ -534,6 +534,49 @@ def test_general_chat_queues_follow_up_without_altering_graph(monkeypatch, works
     assert wait_run(workspace_with_data, follow_up["id"])["status"] == "completed"
 
 
+def test_completed_intake_message_starts_unified_command(monkeypatch, workspace_with_data):
+    intake_run = store.new_run(
+        workspace_with_data,
+        "auto",
+        {"batch_id": "completed-batch", "source_id": "folder-source"},
+        kind="intake",
+    )
+    intake_run["status"] = "completed"
+    store.save_run(workspace_with_data, intake_run)
+    captured = {}
+
+    def fake_start_command(workspace, mode, command, parent_run_id=None):
+        captured.update(
+            workspace=workspace,
+            mode=mode,
+            command=command,
+            parent_run_id=parent_run_id,
+        )
+        return {
+            "schema_version": 2,
+            "id": "follow-up-audit",
+            "kind": "audit",
+            "parent_run_id": parent_run_id,
+            "command": command,
+        }
+
+    monkeypatch.setattr(runner, "start_command_run", fake_start_command)
+
+    result = runner.steer(workspace_with_data, intake_run["id"], "do the full audit")
+
+    assert result["handled"] == "follow_up_run"
+    assert result["run"]["schema_version"] == 2
+    assert result["run"]["kind"] == "audit"
+    assert captured["workspace"] is workspace_with_data
+    assert captured["mode"] == "auto"
+    assert captured["parent_run_id"] == intake_run["id"]
+    assert captured["command"] == {
+        "source": "follow_up",
+        "text": "do the full audit",
+        "parent_command_id": None,
+    }
+
+
 def test_reversible_edit_can_be_undone_while_postcondition_is_current(monkeypatch, workspace_with_data):
     finding = findings.add(workspace_with_data, {"title": "Duplicate invoice risk", "severity": "medium"})
     response = {

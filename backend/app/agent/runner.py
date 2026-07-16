@@ -278,6 +278,18 @@ def steer(workspace: Workspace, run_id: str, content: str) -> dict:
         store.append_event(workspace, run_id, "command_queued", {"command": command})
         return {"handled": "queued_command", "run": run}
 
+    # Intake is an operational import run, not an engagement command. Once it
+    # has finished, text entered in the shared assistant drawer must start the
+    # unified command runner instead of replaying the same completed batch.
+    if run["status"] in store.TERMINAL_STATUSES and run.get("kind") == "intake":
+        follow_up = start_command_run(
+            workspace,
+            run["mode"],
+            {"source": "follow_up", "text": content, "parent_command_id": None},
+            parent_run_id=run_id,
+        )
+        return {"handled": "follow_up_run", "run": follow_up}
+
     if run["status"] in store.TERMINAL_STATUSES:
         context = dict(run.get("context") or {})
         objective = (context.get("objective") or "").strip()
