@@ -59,7 +59,15 @@ PROVIDERS = {
     },
 }
 
-DEFAULT_PROVIDER = "mistral"
+FALLBACK_PROVIDER = "mistral"
+
+
+def _default_provider() -> str:
+    provider = (os.environ.get("LLM_BACKEND") or FALLBACK_PROVIDER).strip().lower()
+    return provider if provider in PROVIDERS else FALLBACK_PROVIDER
+
+
+DEFAULT_PROVIDER = _default_provider()
 DEFAULT_SETTINGS = {
     "provider": DEFAULT_PROVIDER,
     "model": PROVIDERS[DEFAULT_PROVIDER]["default_model"],
