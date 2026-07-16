@@ -351,6 +351,102 @@ def test_narrow_command_executes_only_requested_action(monkeypatch, workspace_wi
     assert reloaded.findings[0]["title"] == "Duplicate invoices need review"
 
 
+def test_dependent_mutations_rebase_to_succeeded_dependency(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "update planning"}
+    )
+    created = ledger.append_actions(run, [
+        {
+            "id": "context", "type": "update_planning_context",
+            "args": {"changes": {"objective": "Audit procurement"}},
+        },
+        {
+            "id": "apm", "type": "edit_apm",
+            "args": {"apm_markdown": "# Procurement audit plan"},
+            "depends_on": ["context"],
+        },
+    ])
+    command = command_runner.CommandRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+
+    # The graph prepares both actions against the original planning artifact.
+    for action in created:
+        command._resolve_and_gate(action)
+    original_sha1 = created[1]["precondition"]["artifact_sha1"]
+    assert created[0]["precondition"]["artifact_sha1"] == original_sha1
+
+    command._execute_action(created[0])
+    dependency_sha1 = created[0]["receipt"]["post_sha1"]
+    assert dependency_sha1 != original_sha1
+
+    command._execute_action(created[1])
+
+    assert created[1]["status"] == "succeeded"
+    assert created[1]["precondition"]["artifact_sha1"] == dependency_sha1
+    assert run["interactions"] == []
+    assert workspace_with_data.planning["context"]["objective"] == "Audit procurement"
+    assert workspace_with_data.planning["apm_markdown"] == "# Procurement audit plan"
+
+
+def test_external_change_still_requires_conflict_resolution(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "edit planning"}
+    )
+    action = ledger.append_actions(run, [{
+        "id": "apm", "type": "edit_apm",
+        "args": {"apm_markdown": "# Proposed audit plan"},
+    }])[0]
+    command = command_runner.CommandRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+    command._resolve_and_gate(action)
+
+    workspace_with_data.update_planning({"context": {"objective": "Auditor revision"}})
+    command._execute_action(action)
+
+    assert action["status"] == "awaiting_input"
+    assert workspace_with_data.planning["apm_markdown"] == ""
+    assert run["interactions"][-1]["type"] == "conflict_resolution"
+
+
+def test_persisted_self_conflict_is_dismissed_on_resume(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "update planning"}
+    )
+    context, apm = ledger.append_actions(run, [
+        {
+            "id": "context", "type": "update_planning_context",
+            "args": {"changes": {"objective": "Audit procurement"}},
+        },
+        {
+            "id": "apm", "type": "edit_apm",
+            "args": {"apm_markdown": "# Procurement audit plan"},
+            "depends_on": ["context"],
+        },
+    ])
+    command = command_runner.CommandRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+    command._resolve_and_gate(context)
+    command._resolve_and_gate(apm)
+    command._execute_action(context)
+
+    ledger.transition(apm, "awaiting_input")
+    interaction = ledger.interaction(
+        run, apm, "conflict_resolution", "The target changed after planning."
+    )
+
+    assert command._dismiss_obsolete_interaction(apm, interaction) is True
+    assert interaction["status"] == "resolved"
+    assert interaction["response"]["dependency_action_id"] == "context"
+    assert apm["status"] == "ready"
+    assert apm["precondition"]["artifact_sha1"] == context["receipt"]["post_sha1"]
+
+    command._execute_action(apm)
+    assert apm["status"] == "succeeded"
+
+
 def test_destructive_command_executes_without_confirmation_in_auto_mode(monkeypatch, workspace_with_data):
     finding = __import__("app.findings", fromlist=["add"]).add(workspace_with_data, {"title": "Duplicate invoices"})
     response = {

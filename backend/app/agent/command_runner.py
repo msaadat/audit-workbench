@@ -275,7 +275,7 @@ class CommandRunner(BaseRunner):
             pending_interaction = next((item for item in self.run.get("interactions") or [] if item["status"] == "pending"), None)
             if pending_interaction:
                 action = self._action(pending_interaction["action_id"])
-                if self._dismiss_obsolete_target_interaction(action, pending_interaction):
+                if self._dismiss_obsolete_interaction(action, pending_interaction):
                     continue
                 self._wait_interaction(action, pending_interaction)
                 continue
@@ -328,8 +328,41 @@ class CommandRunner(BaseRunner):
             pending.extend(dependency.get("depends_on") or [])
         return None
 
-    def _dismiss_obsolete_target_interaction(self, action: dict, interaction: dict) -> bool:
-        """Resume runs paused by pre-fix lookup of a graph-created target."""
+    def _dismiss_obsolete_interaction(self, action: dict, interaction: dict) -> bool:
+        """Resume runs paused by interactions made obsolete by local dependencies."""
+        if interaction.get("type") == "conflict_resolution":
+            target = action.get("target") or {}
+            if not target.get("kind") or not target.get("resolved_id"):
+                return False
+            resolution = artifact_index.resolve(
+                artifact_index.build(self.ws), target["kind"], None, target["resolved_id"]
+            )
+            dependency = self._dependency_post_state_source(action, resolution)
+            if dependency is None:
+                return False
+            snapshot = actions.artifact_snapshot(self.ws, target["kind"], target["resolved_id"])
+            interaction.update(
+                status="resolved",
+                response={
+                    "decision": "rebased_to_dependency",
+                    "dependency_action_id": dependency["id"],
+                },
+                actor="orchestrator",
+                resolved_at=store.utcnow(),
+            )
+            action["resolution"] = resolution
+            action["precondition"] = {
+                "artifact_sha1": artifact_index.canonical_sha1(snapshot) if snapshot is not None else None,
+                "snapshot": store.write_sidecar(self.ws, self.run["id"], snapshot) if snapshot is not None else None,
+            }
+            if action["status"] == "awaiting_input":
+                ledger.transition(action, "ready")
+            self._save_action(action)
+            self.emit("interaction_resolved", {
+                "interaction_id": interaction["id"], "action_id": action["id"],
+                "decision": "rebased_to_dependency",
+            })
+            return True
         if interaction.get("type") not in {"clarification", "target_choice"}:
             return False
         adjustments = ledger.normalize_created_targets(self.run, [action])
@@ -448,7 +481,14 @@ class CommandRunner(BaseRunner):
             index = artifact_index.build(self.ws)
             resolution = artifact_index.resolve(index, action["target"]["kind"], None, action["target"].get("resolved_id"))
             previous = action.get("resolution") or {}
-            if not resolution.get("resolved_id") or (previous.get("sha1") and previous.get("sha1") != resolution.get("sha1")):
+            resolution_changed = bool(
+                previous.get("sha1") and previous.get("sha1") != resolution.get("sha1")
+            )
+            dependency_source = (
+                self._dependency_post_state_source(action, resolution)
+                if resolution_changed else None
+            )
+            if not resolution.get("resolved_id") or (resolution_changed and dependency_source is None):
                 ledger.transition(action, "awaiting_input")
                 current_snapshot = actions.artifact_snapshot(self.ws, action["target"]["kind"], action["target"]["resolved_id"])
                 comparison = store.write_sidecar(self.ws, self.run["id"], {
@@ -464,7 +504,7 @@ class CommandRunner(BaseRunner):
                 return
             action["resolution"] = resolution
             snapshot = actions.artifact_snapshot(self.ws, action["target"]["kind"], action["target"]["resolved_id"])
-            if not action.get("precondition"):
+            if dependency_source is not None or not action.get("precondition"):
                 action["precondition"] = {
                     "artifact_sha1": artifact_index.canonical_sha1(snapshot) if snapshot is not None else None,
                     "snapshot": store.write_sidecar(self.ws, self.run["id"], snapshot) if snapshot is not None else None,
@@ -607,6 +647,38 @@ class CommandRunner(BaseRunner):
     def _dependencies_succeeded(self, action: dict) -> bool:
         by_id = {item["id"]: item for item in self.run["actions"]}
         return all(by_id[value]["status"] == "succeeded" for value in action["depends_on"])
+
+    def _dependency_post_state_source(self, action: dict, resolution: dict) -> dict | None:
+        """Identify a dependency that produced the target's current version.
+
+        Proposed actions are resolved before ready actions execute, so two
+        dependent mutations of the same artifact initially retain the same
+        optimistic snapshot.  The second action may safely rebase only when
+        the current artifact exactly matches a succeeded dependency's durable
+        receipt; any later auditor or external edit still becomes a conflict.
+        """
+        current_sha1 = resolution.get("sha1")
+        target_ref = resolution.get("resolved_ref")
+        if not current_sha1 or not target_ref:
+            return None
+        by_id = {item["id"]: item for item in self.run.get("actions") or []}
+        pending = list(action.get("depends_on") or [])
+        seen = set()
+        while pending:
+            dependency_id = pending.pop()
+            if dependency_id in seen or dependency_id not in by_id:
+                continue
+            seen.add(dependency_id)
+            dependency = by_id[dependency_id]
+            receipt = dependency.get("receipt") or {}
+            if (
+                dependency.get("status") == "succeeded"
+                and receipt.get("post_sha1") == current_sha1
+                and target_ref in (dependency.get("result_refs") or [])
+            ):
+                return dependency
+            pending.extend(dependency.get("depends_on") or [])
+        return None
 
     def _action(self, action_id: str) -> dict:
         return next(item for item in self.run["actions"] if item["id"] == action_id)
