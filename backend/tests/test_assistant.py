@@ -141,11 +141,19 @@ def test_assistant_status_unconfigured(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
     body = llm.status()
     assert body["configured"] is False
     assert body["backend"] == assistant_settings.DEFAULT_PROVIDER
     assert body["model"]
     assert any(provider["id"] == "mistral" for provider in body["providers"])
+    opencode = next(provider for provider in body["providers"] if provider["id"] == "opencode")
+    assert opencode["label"] == "OpenCode Zen"
+    assert opencode["default_model"] == "deepseek-v4-flash-free"
+    cerebras = next(provider for provider in body["providers"] if provider["id"] == "cerebras")
+    assert cerebras["label"] == "Cerebras"
+    assert cerebras["default_model"] == "gpt-oss-120b"
 
 
 def test_assistant_status_lmstudio_configured_without_cloud_key(monkeypatch):
@@ -271,6 +279,64 @@ def test_llm_chat_supports_mistral(monkeypatch):
     assert captured["url"] == "https://api.mistral.ai/v1/chat/completions"
     assert captured["headers"]["authorization"] == "Bearer mistral-key"
     assert captured["body"]["model"] == "mistral-large-latest"
+
+
+def test_llm_chat_supports_opencode_zen_with_default_model(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "opencode", "model": ""})
+    monkeypatch.setenv("OPENCODE_API_KEY", "zen-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["url"] == "https://opencode.ai/zen/v1/chat/completions"
+    assert captured["headers"]["authorization"] == "Bearer zen-key"
+    assert captured["body"]["model"] == "deepseek-v4-flash-free"
+
+
+def test_llm_chat_supports_cerebras_with_default_model(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "cerebras", "model": ""})
+    monkeypatch.setenv("CEREBRAS_API_KEY", "cerebras-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert captured["url"] == "https://api.cerebras.ai/v1/chat/completions"
+    assert captured["headers"]["authorization"] == "Bearer cerebras-key"
+    assert captured["body"]["model"] == "gpt-oss-120b"
 
 
 def test_llm_chat_supports_lmstudio(monkeypatch):

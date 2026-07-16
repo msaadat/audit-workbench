@@ -18,6 +18,8 @@ def isolated_workspaces(tmp_path, monkeypatch):
     """Point workspace storage at a temp folder and clear the frame cache."""
     monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "Workspaces")
     monkeypatch.setattr(assistant_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    for provider in assistant_settings.PROVIDERS:
+        monkeypatch.delenv(f"{provider.upper()}_MODEL", raising=False)
     loader.clear_cache()
     yield
 

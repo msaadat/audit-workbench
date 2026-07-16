@@ -10,6 +10,8 @@ provider and model are normal application settings saved through the UI:
     GROQ_API_KEY             Groq API key
     OPENROUTER_API_KEY       OpenRouter API key
     MISTRAL_API_KEY          Mistral API key
+    OPENCODE_API_KEY         OpenCode Zen API key
+    CEREBRAS_API_KEY         Cerebras API key
     LMSTUDIO_API_KEY         optional local dummy key
     LLM_REQUEST_TIMEOUT      optional request timeout in seconds
     AGENT_PROVIDER           optional provider override for agent runs

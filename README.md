@@ -94,15 +94,19 @@ Configuration can live in a local `.env` file at the repository root. Copy
 GROQ_API_KEY=your-key
 OPENROUTER_API_KEY=your-key
 MISTRAL_API_KEY=your-key
+OPENCODE_API_KEY=your-key
+CEREBRAS_API_KEY=your-key
 ```
 
 The assistant is optional. Without a configured key, model-assisted actions
 show a setup or deterministic-fallback state while local analysis, evidence,
 findings, and editing continue to work. Provider/model choices are saved from
-Assistant settings. LM Studio uses `http://localhost:1234/v1` and defaults its
-dummy key to `lm-studio`. Cloud requests default to 60 seconds and local LM
-Studio requests to 300 seconds. Real environment variables override `.env`.
-The LLM transport and dotenv loader use only the Python standard library.
+Assistant settings. OpenCode Zen defaults to `deepseek-v4-flash-free`, and
+Cerebras defaults to `gpt-oss-120b`. LM Studio uses
+`http://localhost:1234/v1` and defaults its dummy key to `lm-studio`. Cloud
+requests default to 60 seconds and local LM Studio requests to 300 seconds.
+Real environment variables override `.env`. The LLM transport and dotenv
+loader use only the Python standard library.
 
 ## Stack
 
