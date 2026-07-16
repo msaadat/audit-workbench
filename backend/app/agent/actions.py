@@ -115,29 +115,28 @@ def validate_action(action: dict) -> ActionDefinition:
 
 def allocate_create_id(action: dict) -> None:
     args = action.setdefault("args", {})
-    if args.get("id"):
-        return
     prefixes = {
         "create_rcm_row": "RCM-", "create_procedure": "PROC-", "create_finding": "F-",
         "create_document_test": "DT-",
     }
-    if action["type"] in prefixes:
+    if not args.get("id") and action["type"] in prefixes:
         args["id"] = prefixes[action["type"]] + uuid.uuid4().hex[:6].upper()
-    elif action["type"] in {"create_validation_rules", "create_custom_analysis", "pin_dashboard_tile"}:
+    elif not args.get("id") and action["type"] in {"create_validation_rules", "create_custom_analysis", "pin_dashboard_tile"}:
         args["id"] = uuid.uuid4().hex[:10]
+    if action["type"] == "create_document_test":
+        for item in args.get("items") or []:
+            if isinstance(item, dict) and not item.get("id"):
+                item["id"] = f"ITEM-{uuid.uuid4().hex[:8].upper()}"
 
 
 def approval_required(definition: ActionDefinition, run: dict, action: dict) -> bool:
-    if definition.risk == "destructive" or definition.risk == "broad_rewrite":
-        return True
-    if run["mode"] == "permission" and definition.risk not in {"read", "compute"}:
-        return True
-    resolution = action.get("resolution") or {}
-    if definition.risk == "reversible_mutation" and resolution.get("created_by") == "user":
-        command = run.get("command") or {}
-        explicit = command.get("source") in {"chat", "tab_button"} and resolution.get("confidence") == 1.0
-        return not explicit
-    return False
+    # Auto mode is an explicit authorization to execute every locally
+    # validated action without an approval checkpoint. Permission mode keeps
+    # approval gates for every mutation, including destructive actions and
+    # broad rewrites.
+    if run["mode"] == "auto":
+        return False
+    return definition.risk not in {"read", "compute"}
 
 
 def artifact_snapshot(workspace: Workspace, kind: str, item_id: str) -> dict | None:
@@ -321,7 +320,16 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         workspace.remove_tile(target_id); return _receipt(action, refs=[f"tile:{target_id}"])
     if type_ == "create_document_test":
         kind = args.get("kind")
-        builder = {"vouching": doc_tests.build_vouching, "attribute": doc_tests.build_attribute, "review": doc_tests.build_review, "qa": doc_tests.build_qa}.get(kind, doc_tests.create_test)
+        # Explicitly planned items already have durable IDs allocated by the
+        # ledger so later actions can target them. Preserve those items rather
+        # than invoking a convenience builder that would replace them and
+        # invalidate the graph's child-item references.
+        builder = doc_tests.create_test if args.get("items") else {
+            "vouching": doc_tests.build_vouching,
+            "attribute": doc_tests.build_attribute,
+            "review": doc_tests.build_review,
+            "qa": doc_tests.build_qa,
+        }.get(kind, doc_tests.create_test)
         item = builder(workspace, args)
         return _receipt(action, item, refs=[f"doctest:{item['id']}"])
     if type_ == "edit_document_test":
@@ -362,9 +370,13 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         return _receipt(action, result={"ok": result["ok"], "issues": result["issues"]})
     if type_ == "classify_import_batch":
         batch = intake.load_batch(workspace, args["batch_id"])
-        proposals = [intake.deterministic_classification(item) for item in batch.get("items") or []]
-        intake.merge_model_classifications(batch, proposals); intake.save_batch(workspace, batch)
-        return _receipt(action, result={"batch_id": batch["id"], "items": len(proposals)})
+        missing = [item for item in batch.get("items") or [] if not item.get("classification")]
+        if missing:
+            intake.merge_model_classifications(
+                batch, [intake.deterministic_classification(item) for item in missing]
+            )
+        intake.save_batch(workspace, batch)
+        return _receipt(action, result={"batch_id": batch["id"], "items": len(batch.get("items") or [])})
     if type_ == "apply_import_batch":
         result = intake.apply_batch(workspace, args["batch_id"], args.get("decisions"))
         return _receipt(action, result={key: result.get(key) for key in ("id", "status", "summary")})
@@ -470,10 +482,23 @@ def _register(type_: str, description: str, risk: str, targets=(), required=(), 
 _register("update_planning_context", "Update engagement planning context", "reversible_mutation", ("planning",), ("changes",), {"changes": OBJ})
 _register("generate_apm", "Generate APM working content", "broad_rewrite", ("planning",), ("apm_markdown",), {"apm_markdown": STR}, model="draft")
 _register("edit_apm", "Edit APM content", "reversible_mutation", ("planning",), ("apm_markdown",), {"apm_markdown": STR}, model="draft")
-_register("create_rcm_row", "Create one RCM row", "create", required=("risk",), properties={"risk": STR})
+_register(
+    "create_rcm_row", "Create one complete RCM row", "create", required=("risk",),
+    properties={
+        "process": STR, "risk": STR,
+        "risk_rating": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+        "assertion": STR, "control": STR, "control_type": STR, "test_procedure": STR,
+    },
+)
 _register("edit_rcm_row", "Edit one RCM row", "reversible_mutation", ("rcm",), ("changes",), {"changes": OBJ})
 _register("delete_rcm_row", "Delete one RCM row", "destructive", ("rcm",))
-_register("create_procedure", "Create one audit procedure", "create", required=("objective",), properties={"objective": STR})
+_register(
+    "create_procedure", "Create one executable audit procedure", "create", required=("objective",),
+    properties={
+        "rcm_refs": ARR, "objective": STR, "criteria": STR, "steps": ARR,
+        "method": STR, "expected_evidence": STR,
+    },
+)
 _register("edit_procedure", "Edit one audit procedure", "reversible_mutation", ("procedure",), ("changes",), {"changes": OBJ})
 _register("delete_procedure", "Delete one audit procedure", "destructive", ("procedure",))
 _register("infer_relationships", "Infer table relationships locally", "compute")
@@ -488,7 +513,14 @@ _register("run_custom_analysis", "Run a saved custom analysis", "compute", ("ana
 _register("pin_dashboard_tile", "Pin a dashboard tile", "create", required=("kind", "title", "spec"))
 _register("edit_dashboard_tile", "Edit a dashboard tile", "reversible_mutation", ("tile",), ("changes",), {"changes": OBJ})
 _register("remove_dashboard_tile", "Remove a dashboard tile", "destructive", ("tile",))
-_register("create_document_test", "Create a document test", "create", required=("kind", "title"), properties={"kind": STR, "title": STR})
+_register(
+    "create_document_test", "Create a document test", "create",
+    required=("kind", "title"),
+    properties={
+        "kind": {"type": "string", "enum": ["vouching", "attribute", "review", "qa"]},
+        "title": STR, "items": ARR,
+    },
+)
 _register("edit_document_test", "Edit a document test", "reversible_mutation", ("doctest",), ("changes",), {"changes": OBJ})
 _register("delete_document_test", "Delete a document test", "destructive", ("doctest",))
 _register("attach_document_to_test", "Attach a document to a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
@@ -505,7 +537,7 @@ _register("generate_report", "Generate report working content", "broad_rewrite",
 _register("edit_report", "Edit report working content", "reversible_mutation", ("report",), ("changes",), {"changes": OBJ}, model="draft")
 _register("reconcile_report", "Reconcile generated and edited report content", "broad_rewrite", ("report",), ("action",), {"action": {"type": "string", "enum": ["keep", "replace"]}})
 _register("run_report_quality", "Run deterministic report quality checks", "compute")
-_register("classify_import_batch", "Classify a staged import batch", "compute", required=("batch_id",), properties={"batch_id": STR})
+_register("classify_import_batch", "Classify a staged import batch", "compute", required=("batch_id",), properties={"batch_id": STR}, model="plan")
 _register("apply_import_batch", "Apply a classified import batch", "create", required=("batch_id",), properties={"batch_id": STR})
 _register("undo_action", "Undo an eligible reversible action", "reversible_mutation", required=("action_id",), properties={"action_id": STR, "run_id": STR})
 

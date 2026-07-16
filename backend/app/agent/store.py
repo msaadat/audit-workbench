@@ -162,6 +162,8 @@ def new_command_run(
         "goal": {"objective": text, "constraints": [], "completion_criteria": []},
         "graph_revision": 0,
         "actions": [],
+        "rejected_proposals": [],
+        "lifecycle_adjustments": [],
         "interactions": [],
         "pending_commands": [],
         "status": "queued",

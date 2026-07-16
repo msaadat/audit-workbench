@@ -937,6 +937,19 @@ export interface AgentRunContext {
   document_ids?: string[]
 }
 
+export interface AgentRejectedProposal {
+  at: string
+  stage: 'command_interpreter' | 'command_planner' | string
+  error: string
+  actions: {
+    id: string
+    type: string
+    target: { kind: string | null; selector: string | null; resolved_id: string | null }
+    depends_on: string[]
+    arg_keys: string[]
+  }[]
+}
+
 export interface AgentRun {
   schema_version?: number
   id: string
@@ -969,6 +982,8 @@ export interface AgentRun {
   goal?: AgentGoal
   graph_revision?: number
   actions?: AgentAction[]
+  rejected_proposals?: AgentRejectedProposal[]
+  lifecycle_adjustments?: Record<string, unknown>[]
   interactions?: AgentInteraction[]
   pending_commands?: AgentCommand[]
   interview?: {

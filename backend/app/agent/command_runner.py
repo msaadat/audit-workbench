@@ -22,8 +22,15 @@ GOAL_TEMPLATES = {
     "report": {"objective": "Prepare evidence-linked audit report working content and run quality checks."},
 }
 
+SEMANTIC_PROPOSAL_ATTEMPTS = 2
+
 
 class CommandRunner(BaseRunner):
+    PLANNING_ACTION_TYPES = {
+        "update_planning_context", "generate_apm", "edit_apm",
+        "create_rcm_row", "edit_rcm_row", "create_procedure", "edit_procedure",
+    }
+
     def _drain_inbox(self) -> None:
         """General chat is durable follow-up work, never active-graph steering."""
         with self.handle.lock:
@@ -40,6 +47,8 @@ class CommandRunner(BaseRunner):
         try:
             self._recover_running_actions()
             if not self.run.get("actions"):
+                if self._requests_full_audit():
+                    self._prepare_full_audit_planning()
                 self._interpret()
             self._drive_graph()
             self._finish()
@@ -76,20 +85,37 @@ class CommandRunner(BaseRunner):
         template = GOAL_TEMPLATES.get(command.get("goal_template"))
         if command.get("goal_template") and template is None:
             raise WorkspaceError("Unknown goal template.")
-        payload = self.llm_json(
-            prompts.COMMAND_INTERPRETER_SYSTEM,
-            prompts.command_interpreter_user(command, template, artifact_index.compact(index), self._catalog(), self.run["limits"]),
+        base_user = prompts.command_interpreter_user(
+            command, template, artifact_index.compact(index), self._catalog(), self.run["limits"],
+            prepared_planning=self.run.get("prepared_planning"),
         )
-        objective = str(payload.get("objective") or (template or {}).get("objective") or command.get("text") or "").strip()
-        self.run["goal"] = {
-            "objective": objective,
-            "constraints": [str(value) for value in payload.get("constraints") or (template or {}).get("constraints") or []],
-            "completion_criteria": [str(value) for value in payload.get("completion_criteria") or []],
-        }
-        proposals = payload.get("actions") or []
-        if not isinstance(proposals, list):
-            raise WorkspaceError("Command interpreter actions must be a list.")
-        created = ledger.append_actions(self.run, proposals)
+        attempt_user = base_user
+        created = []
+        payload = {}
+        for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
+            payload = self.llm_json(prompts.COMMAND_INTERPRETER_SYSTEM, attempt_user)
+            objective = str(payload.get("objective") or (template or {}).get("objective") or command.get("text") or "").strip()
+            goal = {
+                "objective": objective,
+                "constraints": [str(value) for value in payload.get("constraints") or (template or {}).get("constraints") or []],
+                "completion_criteria": [str(value) for value in payload.get("completion_criteria") or []],
+            }
+            self.run["goal"] = goal
+            proposals = payload.get("actions") or []
+            if self.run.get("prepared_planning") and isinstance(proposals, list):
+                proposals = self._remove_redundant_planning_actions(proposals)
+            try:
+                if not isinstance(proposals, list):
+                    raise WorkspaceError("Command interpreter actions must be a list.")
+                created = ledger.append_actions(
+                    self.run, proposals, audit_lifecycle=self._is_full_audit_goal(goal)
+                )
+                break
+            except WorkspaceError as error:
+                self._record_rejected_proposals("command_interpreter", proposals, error)
+                if attempt + 1 >= SEMANTIC_PROPOSAL_ATTEMPTS:
+                    raise
+                attempt_user = self._proposal_repair_user(base_user, payload, error)
         if payload.get("needs_planning_wave") and not any(item.get("planning_significant") for item in created):
             for item in reversed(created):
                 definition = actions.REGISTRY.get(item["type"], item["definition_version"])
@@ -99,6 +125,106 @@ class CommandRunner(BaseRunner):
         self.run["command"]["status"] = "planned"
         self.save()
         self.emit("graph_update", {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]})
+
+    def _requests_full_audit(self) -> bool:
+        command = self.run.get("command") or {}
+        if command.get("goal_template") == "full_audit_working_draft":
+            return True
+        text = str(command.get("text") or "").casefold()
+        return any(phrase in text for phrase in (
+            "full audit", "complete the audit", "complete audit", "entire audit",
+            "end-to-end audit", "end to end audit",
+        ))
+
+    def _prepare_full_audit_planning(self) -> None:
+        """Prepare grounded planning before asking for downstream audit work."""
+        if self.run.get("prepared_planning"):
+            return
+        from .planning_runner import PlanningRunner
+
+        self.set_status("executing")
+        self.run.setdefault("context", {})["require_planning_quality"] = True
+        planning = PlanningRunner(self.ws, self.run, self.handle)
+        basis = planning.stage_context()
+        apm = planning.stage_apm(basis)
+        rcm = planning.stage_rcm(basis, apm)
+        planning.stage_work_program(basis, rcm)
+        self.run["prepared_planning"] = {
+            "apm": bool(str(self.ws.planning.get("apm_markdown") or "").strip()),
+            "rcm_refs": [item["id"] for item in self.ws.rcm],
+            "procedure_refs": [item["id"] for item in self.ws.work_program],
+            "document_content_disclosed": bool(basis.get("document_content_disclosed")),
+        }
+        self.save()
+
+    def _remove_redundant_planning_actions(self, proposals: list[dict]) -> list[dict]:
+        removed_ids = {
+            str(item.get("id") or "") for item in proposals
+            if isinstance(item, dict) and item.get("type") in self.PLANNING_ACTION_TYPES
+        }
+        cleaned = []
+        for proposal in proposals:
+            if not isinstance(proposal, dict) or proposal.get("type") in self.PLANNING_ACTION_TYPES:
+                continue
+            item = dict(proposal)
+            dependencies = item.get("depends_on") or []
+            if isinstance(dependencies, list):
+                item["depends_on"] = [str(value) for value in dependencies if str(value) not in removed_ids]
+            cleaned.append(item)
+        return cleaned
+
+    def _is_full_audit_goal(self, goal: dict | None = None) -> bool:
+        command = self.run.get("command") or {}
+        if self._requests_full_audit():
+            return True
+        goal = goal or self.run.get("goal") or {}
+        combined = " ".join([
+            str(command.get("text") or ""),
+            str(goal.get("objective") or ""),
+            *[str(value) for value in goal.get("completion_criteria") or []],
+        ]).casefold()
+        wants_report = "report" in combined and any(word in combined for word in ("draft", "generate", "complete"))
+        wants_full_cycle = any(phrase in combined for phrase in (
+            "complete the audit", "full audit", "all steps", "all procedures", "all_procedures",
+        ))
+        return wants_report and wants_full_cycle
+
+    @staticmethod
+    def _proposal_repair_user(base_user: str, payload: dict, error: Exception) -> str:
+        return (
+            f"{base_user}\n\nYour previous JSON parsed, but its action graph violated the registered "
+            f"contract: {error}. Return a corrected complete JSON object. Preserve the intended goal and "
+            f"valid dependencies, use only catalog target kinds and required args. Previous JSON: "
+            f"{json.dumps(payload, default=str)}"
+        )
+
+    def _record_rejected_proposals(self, stage: str, proposals: object, error: Exception) -> None:
+        safe_actions = []
+        if isinstance(proposals, list):
+            for proposal in proposals[: int(self.run["limits"].get("max_actions", 60))]:
+                if not isinstance(proposal, dict):
+                    safe_actions.append({"value_type": type(proposal).__name__})
+                    continue
+                target = proposal.get("target") if isinstance(proposal.get("target"), dict) else {}
+                args = proposal.get("args") if isinstance(proposal.get("args"), dict) else {}
+                dependencies = proposal.get("depends_on") if isinstance(proposal.get("depends_on"), list) else []
+                safe_actions.append({
+                    "id": str(proposal.get("id") or ""),
+                    "type": str(proposal.get("type") or ""),
+                    "target": {
+                        "kind": target.get("kind"),
+                        "selector": str(target.get("selector"))[:200] if target.get("selector") else None,
+                        "resolved_id": str(target.get("resolved_id"))[:200] if target.get("resolved_id") else None,
+                    },
+                    "depends_on": [str(value) for value in dependencies],
+                    "arg_keys": sorted(str(key) for key in args),
+                })
+        diagnostic = {
+            "at": store.utcnow(), "stage": stage, "error": str(error), "actions": safe_actions,
+        }
+        self.run.setdefault("rejected_proposals", []).append(diagnostic)
+        self.save()
+        self.emit("proposal_rejected", diagnostic)
 
     def _recover_running_actions(self) -> None:
         changed = False
@@ -134,6 +260,8 @@ class CommandRunner(BaseRunner):
             pending_interaction = next((item for item in self.run.get("interactions") or [] if item["status"] == "pending"), None)
             if pending_interaction:
                 action = self._action(pending_interaction["action_id"])
+                if self._dismiss_obsolete_target_interaction(action, pending_interaction):
+                    continue
                 self._wait_interaction(action, pending_interaction)
                 continue
             proposed = next((action for action in self.run["actions"] if action["status"] == "proposed"), None)
@@ -149,17 +277,102 @@ class CommandRunner(BaseRunner):
                 continue
             break
 
+    def _pending_target_producer(self, action: dict) -> dict | None:
+        """Return a dependency that will create this action's target locally."""
+        target = action.get("target") or {}
+        target_kind = str(target.get("kind") or "")
+        target_id = str(target.get("resolved_id") or "")
+        if not target_kind or not target_id:
+            return None
+        by_id = {item["id"]: item for item in self.run.get("actions") or []}
+        pending = list(action.get("depends_on") or [])
+        seen = set()
+        while pending:
+            dependency_id = pending.pop()
+            if dependency_id in seen or dependency_id not in by_id:
+                continue
+            seen.add(dependency_id)
+            dependency = by_id[dependency_id]
+            if dependency["status"] != "succeeded":
+                expected = actions.expected_postcondition(dependency)
+                produced_kind = str(expected.get("kind") or "")
+                produced_id = str(expected.get("id") or "")
+                exact_match = produced_kind == target_kind and produced_id == target_id
+                child_match = (
+                    target_kind == "doctest_item"
+                    and produced_kind == "doctest"
+                    and bool(produced_id)
+                    and target_id.startswith(f"{produced_id}:")
+                )
+                generated_report = (
+                    target_kind == "report" and target_id == "working"
+                    and dependency["type"] in {"generate_report", "edit_report"}
+                )
+                if exact_match or child_match or generated_report:
+                    return dependency
+            pending.extend(dependency.get("depends_on") or [])
+        return None
+
+    def _dismiss_obsolete_target_interaction(self, action: dict, interaction: dict) -> bool:
+        """Resume runs paused by pre-fix lookup of a graph-created target."""
+        if interaction.get("type") not in {"clarification", "target_choice"}:
+            return False
+        adjustments = ledger.normalize_created_targets(self.run, [action])
+        if adjustments:
+            self.run.setdefault("lifecycle_adjustments", []).extend(adjustments)
+        producer = self._pending_target_producer(action)
+        if producer is None:
+            return False
+        interaction.update(
+            status="resolved",
+            response={"decision": "deferred_to_dependency", "producer_action_id": producer["id"]},
+            actor="orchestrator",
+            resolved_at=store.utcnow(),
+        )
+        action["target"]["selector"] = None
+        action["resolution"] = None
+        action["precondition"] = None
+        if action["status"] == "awaiting_input":
+            ledger.transition(action, "proposed")
+        self._save_action(action)
+        self.emit("interaction_resolved", {
+            "interaction_id": interaction["id"], "action_id": action["id"],
+            "decision": "deferred_to_dependency",
+        })
+        return True
+
     def _resolve_and_gate(self, action: dict) -> None:
-        definition = actions.validate_action(action)
         target = action["target"]
+        definition = actions.REGISTRY.get(action["type"], action["definition_version"])
+        # Also normalize pre-fix persisted proposals when an interrupted run
+        # is resumed. New proposals are normalized by the ledger.
+        adjustments = ledger.normalize_created_targets(self.run, [action])
+        if adjustments:
+            self.run.setdefault("lifecycle_adjustments", []).extend(adjustments)
+        if definition.target_kinds and not target.get("kind") and len(definition.target_kinds) == 1:
+            target["kind"] = definition.target_kinds[0]
+        definition = actions.validate_action(action)
         if definition.target_kinds:
-            if not target.get("kind") and len(definition.target_kinds) == 1:
-                target["kind"] = definition.target_kinds[0]
             defaults = {"planning": "apm", "report": "working"}
             if not target.get("resolved_id") and target.get("kind") in defaults and not target.get("selector"):
                 target["resolved_id"] = defaults[target["kind"]]
             index = artifact_index.build(self.ws)
-            resolution = artifact_index.resolve(index, target["kind"], target.get("selector"), target.get("resolved_id"))
+            producer = self._pending_target_producer(action)
+            if producer is not None:
+                resolution = {
+                    "index_revision": index["revision"],
+                    "resolved_id": target["resolved_id"],
+                    "resolved_ref": f"{target['kind']}:{target['resolved_id']}",
+                    "confidence": 1.0,
+                    "reason": f"target will be created by dependency '{producer['id']}'",
+                    "candidates": [], "sha1": None,
+                    "title": target["resolved_id"], "created_by": "agent",
+                    "producer_action_id": producer["id"],
+                }
+            else:
+                resolution = artifact_index.resolve(
+                    index, target["kind"], target.get("selector"), target.get("resolved_id")
+                )
             action["resolution"] = resolution
             if not resolution.get("resolved_id"):
                 if resolution.get("candidates"):
@@ -178,7 +391,7 @@ class CommandRunner(BaseRunner):
                 self.emit("interaction_request", {"interaction": interaction})
                 return
             target["resolved_id"] = resolution["resolved_id"]
-            if definition.risk not in {"read", "compute"}:
+            if producer is None and definition.risk not in {"read", "compute"}:
                 snapshot = actions.artifact_snapshot(self.ws, target["kind"], target["resolved_id"])
                 action["precondition"] = {
                     "artifact_sha1": artifact_index.canonical_sha1(snapshot) if snapshot is not None else None,
@@ -208,6 +421,13 @@ class CommandRunner(BaseRunner):
     def _execute_action(self, action: dict) -> None:
         definition = actions.validate_action(action)
         self.checkpoint()
+        if action["type"] == "classify_import_batch":
+            from .. import intake
+            from .intake_runner import IntakeRunner
+
+            batch = intake.load_batch(self.ws, action["args"]["batch_id"])
+            IntakeRunner(self.ws, self.run, self.handle)._classify(batch)
+            intake.save_batch(self.ws, batch)
         # Re-resolve immediately before mutations and capture a hashed before snapshot.
         if definition.target_kinds:
             index = artifact_index.build(self.ws)
@@ -284,25 +504,35 @@ class CommandRunner(BaseRunner):
         safe_result = safe_result if safe_result is not None else ((action.get("receipt") or {}).get("result") or {})
         usage["planner_waves"] += 1; self.save()
         index = artifact_index.build(self.ws)
-        payload = self.llm_json(
-            prompts.COMMAND_PLANNER_SYSTEM,
-            prompts.command_planner_user(
-                self.run["goal"],
-                [{"id": item["id"], "type": item["type"], "status": item["status"], "result_refs": item["result_refs"]} for item in self.run["actions"]],
-                [{"action_id": action["id"], "result": safe_result}],
-                artifact_index.compact(index), self._catalog(), self.run["limits"],
-            ),
+        base_user = prompts.command_planner_user(
+            self.run["goal"],
+            [{"id": item["id"], "type": item["type"], "status": item["status"], "result_refs": item["result_refs"]} for item in self.run["actions"]],
+            [{"action_id": action["id"], "result": safe_result}],
+            artifact_index.compact(index), self._catalog(), self.run["limits"],
         )
-        proposals = payload.get("actions") or []
-        if proposals:
-            # Expansion is opportunistic follow-up planning; an invalid
-            # proposal must not fail work that already committed.
-            try:
-                created = ledger.append_actions(self.run, proposals, depth=action["depth"] + 1)
-            except WorkspaceError as error:
-                self.warn(f"Discarded an invalid planning proposal: {error}")
+        attempt_user = base_user
+        for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
+            payload = self.llm_json(prompts.COMMAND_PLANNER_SYSTEM, attempt_user)
+            proposals = payload.get("actions") or []
+            if not proposals:
                 return
-            self.save(); self.emit("graph_update", {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]})
+            # Expansion is opportunistic follow-up planning; even repeated
+            # invalid proposals must not fail work that already committed.
+            try:
+                created = ledger.append_actions(
+                    self.run, proposals, depth=action["depth"] + 1,
+                    audit_lifecycle=self._is_full_audit_goal(),
+                )
+            except WorkspaceError as error:
+                self._record_rejected_proposals("command_planner", proposals, error)
+                if attempt + 1 >= SEMANTIC_PROPOSAL_ATTEMPTS:
+                    self.warn(f"Discarded an invalid planning proposal: {error}")
+                    return
+                attempt_user = self._proposal_repair_user(base_user, payload, error)
+                continue
+            self.save()
+            self.emit("graph_update", {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]})
+            return
 
     def _wait_interaction(self, action: dict, interaction: dict) -> None:
         self.set_status("awaiting_input" if interaction["type"] in {"clarification", "target_choice", "conflict_resolution"} else "awaiting_approval")

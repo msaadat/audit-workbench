@@ -28,6 +28,19 @@ def _stage(ws, batch, relative_path, content):
     )
 
 
+def test_deterministic_document_categories_use_safe_filename_metadata():
+    def classify(path):
+        return intake.deterministic_classification({
+            "relative_path": path,
+            "local_metadata": {"route": "document", "parse_ok": True},
+        })["document_category"]
+
+    assert classify("Planning/Procurement SOP Extracts.docx") == "policy"
+    assert classify("Planning/Minutes of Meeting - CFO.docx") == "minutes"
+    assert classify("Planning/Email from Senior.docx") == "correspondence"
+    assert classify("Samples/INV001_Signed_Payment_Voucher.pdf") == "voucher"
+
+
 def test_manifest_compare_is_incremental_and_reports_exclusions():
     ws = _workspace()
     source, first = _source_and_batch(

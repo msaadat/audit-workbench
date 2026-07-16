@@ -275,13 +275,87 @@ class PlanningRunner(BaseRunner):
             return [item["spec"] for item in self.request_approval(kind, task, proposals)]
         return [item["spec"] for item in proposals]
 
+    def _quality_draft(self, system: str, user: str, validator, label: str) -> dict:
+        payload = self.llm_json(system, user)
+        if not self.context.get("require_planning_quality"):
+            return payload
+        error = validator(payload)
+        if not error:
+            return payload
+        repair = (
+            f"{user}\n\nThe previous {label} draft failed the engagement quality gate: {error}. "
+            "Return a complete corrected JSON object that satisfies every supplied template and field requirement."
+        )
+        payload = self.llm_json(system, repair)
+        error = validator(payload)
+        if error:
+            raise WorkspaceError(f"The {label} draft failed the engagement quality gate: {error}")
+        return payload
+
+    @staticmethod
+    def _apm_quality(payload: dict, template: str) -> str | None:
+        markdown = str(payload.get("apm_markdown") or "").strip()
+        if not markdown:
+            return "the memorandum is empty"
+        headings = {
+            match.group(1).strip().casefold()
+            for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", markdown, re.MULTILINE)
+        }
+        required = [
+            match.group(1).strip().casefold()
+            for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", template, re.MULTILINE)
+        ]
+        missing = [heading for heading in required if heading not in headings]
+        if missing:
+            return f"missing template section '{missing[0]}'"
+        return None
+
+    @staticmethod
+    def _rcm_quality(payload: dict) -> str | None:
+        rows = payload.get("rows") or []
+        if not isinstance(rows, list) or not rows:
+            return "no RCM rows were proposed"
+        required = ("process", "risk", "risk_rating", "assertion", "control", "control_type", "test_procedure")
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                return f"RCM row {index} is not an object"
+            missing = [key for key in required if not str(row.get(key) or "").strip()]
+            if missing:
+                return f"RCM row {index} is missing {missing[0]}"
+            if str(row.get("risk_rating")).casefold() not in {"low", "medium", "high", "critical"}:
+                return f"RCM row {index} has an unsupported risk rating"
+        return None
+
+    @staticmethod
+    def _program_quality(payload: dict) -> str | None:
+        procedures = payload.get("procedures") or []
+        if not isinstance(procedures, list) or not procedures:
+            return "no audit procedures were proposed"
+        required = ("objective", "criteria", "method", "expected_evidence")
+        for index, procedure in enumerate(procedures, start=1):
+            if not isinstance(procedure, dict):
+                return f"procedure {index} is not an object"
+            missing = [key for key in required if not str(procedure.get(key) or "").strip()]
+            if missing:
+                return f"procedure {index} is missing {missing[0]}"
+            if not isinstance(procedure.get("steps"), list) or not any(
+                str(value or "").strip() for value in procedure["steps"]
+            ):
+                return f"procedure {index} has no executable steps"
+            if not isinstance(procedure.get("rcm_refs"), list) or not procedure["rcm_refs"]:
+                return f"procedure {index} is not linked to an RCM row"
+        return None
+
     def stage_apm(self, basis: dict) -> str:
         task = self.add_task("apm", "planning:apm", "Draft the audit planning memorandum")
         if task["status"] == "completed":
             return str(self.ws.planning.get("apm_markdown") or "")
         self.task_status(task, "running")
         template = templates_store.get_template(self.ws, "apm")["markdown"]
-        payload = self.llm_json(prompts.APM_SYSTEM, prompts.apm_user(template, basis))
+        payload = self._quality_draft(
+            prompts.APM_SYSTEM, prompts.apm_user(template, basis),
+            lambda value: self._apm_quality(value, template), "APM",
+        )
         markdown = str(payload.get("apm_markdown") or "").strip()
         if not markdown:
             raise WorkspaceError("The model returned an empty APM draft.")
@@ -310,7 +384,10 @@ class PlanningRunner(BaseRunner):
             return self.ws.rcm
         self.task_status(task, "running")
         template = templates_store.get_template(self.ws, "rcm")["markdown"]
-        payload = self.llm_json(prompts.RCM_SYSTEM, prompts.rcm_user(template, basis, apm))
+        payload = self._quality_draft(
+            prompts.RCM_SYSTEM, prompts.rcm_user(template, basis, apm),
+            self._rcm_quality, "RCM",
+        )
         proposals = []
         for row in payload.get("rows") or []:
             if not isinstance(row, dict) or not str(row.get("risk") or "").strip():
@@ -344,9 +421,9 @@ class PlanningRunner(BaseRunner):
             return
         self.task_status(task, "running")
         template = templates_store.get_template(self.ws, "workpaper")["markdown"]
-        payload = self.llm_json(
-            prompts.WORK_PROGRAM_SYSTEM,
-            prompts.work_program_user(template, basis, rcm_rows),
+        payload = self._quality_draft(
+            prompts.WORK_PROGRAM_SYSTEM, prompts.work_program_user(template, basis, rcm_rows),
+            self._program_quality, "audit program",
         )
         proposals = []
         for procedure in payload.get("procedures") or []:
@@ -417,7 +494,6 @@ class PlanningRunner(BaseRunner):
             "# Planning draft summary\n\n"
             f"Prepared an audit planning memorandum, **{len(self.ws.rcm)}** RCM row(s), "
             f"and **{len(self.ws.work_program)}** audit procedure(s). "
-            "All outputs remain drafts until the auditor finalizes them."
         )
         self.save()
         self.task_status(task, "completed")

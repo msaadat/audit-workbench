@@ -414,9 +414,32 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
     route = meta.get("route") if meta.get("parse_ok") else "unsupported"
     route = route if route in ROUTES else "unsupported"
     name = slugify(Path(item["relative_path"]).stem).replace("-", "_") or "imported_file"
+    document_category = None
+    if route == "document":
+        label = str(item.get("relative_path") or "").casefold()
+        if any(token in label for token in ("minute", "meeting note")):
+            document_category = "minutes"
+        elif any(token in label for token in ("policy", "procedure", "sop", "guideline", "manual")):
+            document_category = "policy"
+        elif any(token in label for token in ("regulation", "regulatory", "statute")):
+            document_category = "regulation"
+        elif any(token in label for token in ("contract", "agreement")):
+            document_category = "contract"
+        elif any(token in label for token in ("email", "correspondence", "letter")):
+            document_category = "correspondence"
+        elif any(token in label for token in ("voucher", "payment request")):
+            document_category = "voucher"
+        elif any(token in label for token in ("invoice", "receipt", "requisition", "purchase order", "quotation", "approval")):
+            document_category = "evidence"
+        elif any(token in label for token in ("prior audit", "audit report")):
+            document_category = "prior_report"
+        elif any(token in label for token in ("org chart", "organisation chart", "organization chart", "briefing", "background")):
+            document_category = "background"
+        else:
+            document_category = "other"
     return {
         "route": route,
-        "document_category": "other" if route == "document" else None,
+        "document_category": document_category,
         "table_role": "unknown" if route == "table" else None,
         "subtype": "",
         "proposed_name": name,
