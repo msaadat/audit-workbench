@@ -205,41 +205,45 @@ onUnmounted(unsubscribe)
     <div class="dashboard-columns">
       <section class="work-card">
         <div class="section-heading"><h3>Suggested actions</h3></div>
-        <div v-if="board.actions.length" class="action-list">
-          <button v-for="action in board.actions" :key="action.id" type="button" class="action-row" @click="runAction(action)">
-            <span class="priority-dot" :data-priority="action.priority" />
-            <span><strong>{{ action.title }}</strong><small>{{ action.reason }}</small></span>
-            <i class="pi pi-chevron-right" />
-          </button>
-        </div>
-        <div v-else class="compact-empty"><i class="pi pi-check-circle" /><span>No deterministic next action is outstanding.</span></div>
-
-        <div class="ai-advice-head">
-          <div><strong>Audit assistant</strong><small>Optional suggestions</small></div>
-          <Button :label="board.ai_advice ? 'Refresh' : 'Generate'" icon="pi pi-sparkles" size="small" outlined :loading="adviceLoading" :disabled="!agent.state.status?.configured" @click="refreshAdvice" />
-        </div>
-        <p v-if="!agent.state.status?.configured" class="advice-note"><i class="pi pi-info-circle" /> Configure the audit assistant to add judgment-based suggestions.</p>
-        <p v-if="adviceError" class="advice-error"><i class="pi pi-exclamation-circle" /> {{ adviceError }}</p>
-        <template v-if="board.ai_advice">
-          <div class="advice-meta"><Tag v-if="board.ai_advice.stale" value="Refresh recommended" severity="warn" /><span>Generated {{ board.ai_advice.generated_at.slice(0, 16).replace('T', ' ') }} · {{ board.ai_advice.model }}</span></div>
-          <div v-if="board.ai_advice.items.length" class="action-list ai-list">
-            <button v-for="action in board.ai_advice.items" :key="action.id" type="button" class="action-row" @click="runAction(action)">
-              <i class="pi pi-sparkles ai-mark" /><span><strong>{{ action.title }}</strong><small>{{ action.reason }}</small></span><i class="pi pi-chevron-right" />
+        <div class="work-card-body">
+          <div v-if="board.actions.length" class="action-list">
+            <button v-for="action in board.actions" :key="action.id" type="button" class="action-row" @click="runAction(action)">
+              <span class="priority-dot" :data-priority="action.priority" />
+              <span><strong>{{ action.title }}</strong><small>{{ action.reason }}</small></span>
+              <i class="pi pi-chevron-right" />
             </button>
           </div>
-          <p v-else class="advice-note">The assistant did not add any suggestions beyond the deterministic actions.</p>
-        </template>
+          <div v-else class="compact-empty"><i class="pi pi-check-circle" /><span>No deterministic next action is outstanding.</span></div>
+
+          <div class="ai-advice-head">
+            <div><strong>Audit assistant</strong><small>Optional suggestions</small></div>
+            <Button :label="board.ai_advice ? 'Refresh' : 'Generate'" icon="pi pi-sparkles" size="small" outlined :loading="adviceLoading" :disabled="!agent.state.status?.configured" @click="refreshAdvice" />
+          </div>
+          <p v-if="!agent.state.status?.configured" class="advice-note"><i class="pi pi-info-circle" /> Configure the audit assistant to add judgment-based suggestions.</p>
+          <p v-if="adviceError" class="advice-error"><i class="pi pi-exclamation-circle" /> {{ adviceError }}</p>
+          <template v-if="board.ai_advice">
+            <div class="advice-meta"><Tag v-if="board.ai_advice.stale" value="Refresh recommended" severity="warn" /><span>Generated {{ board.ai_advice.generated_at.slice(0, 16).replace('T', ' ') }} · {{ board.ai_advice.model }}</span></div>
+            <div v-if="board.ai_advice.items.length" class="action-list ai-list">
+              <button v-for="action in board.ai_advice.items" :key="action.id" type="button" class="action-row" @click="runAction(action)">
+                <i class="pi pi-sparkles ai-mark" /><span><strong>{{ action.title }}</strong><small>{{ action.reason }}</small></span><i class="pi pi-chevron-right" />
+              </button>
+            </div>
+            <p v-else class="advice-note">The assistant did not add any suggestions beyond the deterministic actions.</p>
+          </template>
+        </div>
       </section>
 
       <section class="work-card attention-card">
         <div class="section-heading"><h3>Needs attention</h3><Tag :value="String(board.attention.length)" :severity="board.attention.length ? 'warn' : 'success'" /></div>
-        <div v-if="board.attention.length" class="attention-list">
-          <button v-for="item in board.attention" :key="item.id" type="button" class="attention-row" @click="navigate(item.target)">
-            <i :class="item.severity === 'error' ? 'pi pi-times-circle' : 'pi pi-exclamation-triangle'" :data-severity="item.severity" />
-            <span><strong>{{ item.title }}</strong><small>{{ item.message }}</small></span>
-          </button>
+        <div class="work-card-body">
+          <div v-if="board.attention.length" class="attention-list">
+            <button v-for="item in board.attention" :key="item.id" type="button" class="attention-row" @click="navigate(item.target)">
+              <i :class="item.severity === 'error' ? 'pi pi-times-circle' : 'pi pi-exclamation-triangle'" :data-severity="item.severity" />
+              <span><strong>{{ item.title }}</strong><small>{{ item.message }}</small></span>
+            </button>
+          </div>
+          <div v-else class="compact-empty"><i class="pi pi-check-circle" /><span>No current exceptions or quality issues.</span></div>
         </div>
-        <div v-else class="compact-empty"><i class="pi pi-check-circle" /><span>No current exceptions or quality issues.</span></div>
       </section>
     </div>
 
@@ -287,7 +291,7 @@ onUnmounted(unsubscribe)
 .next-action-card { gap:1rem; padding:1rem 1.1rem; margin-bottom:1rem; border:1px solid #b9d9d5; border-left:4px solid var(--aw-teal); border-radius:10px; background:#fff; box-shadow:var(--aw-shadow-sm) }
 .next-action-mark { display:grid; place-items:center; width:2.6rem; height:2.6rem; flex:none; border-radius:50%; background:var(--aw-teal-soft); color:var(--aw-teal) }.next-action-copy { flex:1 }.next-action-copy > span { color:var(--aw-teal); font-size:.67rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase }.next-action-copy h3 { margin:.15rem 0 }.next-action-copy p { margin:0; color:var(--aw-muted); font-size:.8rem }
 .monitoring-section { margin-top:1rem }.section-heading { justify-content:space-between; gap:1rem; margin-bottom:.55rem }.section-heading h3 { margin:0; font-size:.9rem }
-.dashboard-columns { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(18rem,.65fr); gap:1rem; margin-top:1rem }.work-card { min-width:0; padding:1rem; border:1px solid var(--aw-border); border-radius:9px; background:#fff; box-shadow:var(--aw-shadow-sm) }
+.dashboard-columns { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(18rem,.65fr); align-items:stretch; gap:1rem; margin-top:1rem }.work-card { display:flex; flex-direction:column; min-width:0; max-height:32rem; padding:1rem; overflow:hidden; border:1px solid var(--aw-border); border-radius:9px; background:#fff; box-shadow:var(--aw-shadow-sm) }.work-card > .section-heading { flex:none }.work-card-body { min-height:0; overflow-y:auto; scrollbar-gutter:stable }
 .action-list,.attention-list { display:flex; flex-direction:column }.action-row,.attention-row { display:flex; align-items:flex-start; gap:.65rem; width:100%; padding:.65rem .25rem; border:0; border-bottom:1px solid var(--aw-border); background:transparent; color:inherit; text-align:left; cursor:pointer }.action-row:last-child,.attention-row:last-child { border-bottom:0 }.action-row:hover,.attention-row:hover { background:var(--aw-canvas) }.action-row > span:nth-child(2),.attention-row span { flex:1; display:flex; flex-direction:column; gap:.12rem }.action-row strong,.attention-row strong { font-size:.77rem }.action-row small,.attention-row small { color:var(--aw-muted); font-size:.69rem; line-height:1.4 }.action-row > .pi-chevron-right { align-self:center; color:var(--aw-muted); font-size:.65rem }
 .priority-dot { width:.48rem; height:.48rem; flex:none; margin-top:.3rem; border-radius:50%; background:#94a3b8 }.priority-dot[data-priority='high'] { background:#dc2626 }.priority-dot[data-priority='medium'] { background:#d97706 }.priority-dot[data-priority='low'] { background:#3b82f6 }
 .ai-advice-head { justify-content:space-between; gap:1rem; margin-top:.85rem; padding-top:.85rem; border-top:1px solid var(--aw-border) }.ai-advice-head > div { display:flex; flex-direction:column }.ai-advice-head strong { font-size:.77rem }.ai-advice-head small,.advice-note { color:var(--aw-muted); font-size:.68rem }.advice-note,.advice-error { margin:.55rem 0 }.advice-error { color:#b42318; font-size:.7rem }.advice-meta { gap:.45rem; margin-top:.55rem; color:var(--aw-muted); font-size:.64rem }.ai-list { margin-top:.25rem }.ai-mark { margin-top:.15rem; color:#7c3aed }
