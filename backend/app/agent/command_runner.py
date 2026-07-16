@@ -240,26 +240,11 @@ class CommandRunner(BaseRunner):
         action["attempts"] += 1; action["prepared_at"] = store.utcnow(); action["started_at"] = store.utcnow()
         self.run["usage"]["actions_started"] += 1
         self._save_action(action)
+        # Only the executor call may route to the failure path. Once the
+        # action commits as succeeded, post-success bookkeeping and planning
+        # waves must never flip its outcome — succeeded is terminal.
         try:
             receipt = definition.executor(self.ws, action, self.run)
-            action["receipt"] = receipt
-            action["result_refs"] = list(receipt.get("result_refs") or [])
-            action["finished_at"] = store.utcnow()
-            ledger.transition(action, "succeeded")
-            self.run["artifacts"].extend(
-                {"kind": ref.partition(":")[0], "id": ref.partition(":")[2], "semantic_id": "", "action": "updated"}
-                for ref in action["result_refs"]
-                if not any(item.get("kind") == ref.partition(":")[0] and item.get("id") == ref.partition(":")[2] for item in self.run["artifacts"])
-            )
-            self._save_action(action)
-            warning = (receipt.get("result") or {}).get("warning")
-            if warning:
-                self.warn(str(warning))
-            for ref in action["result_refs"]:
-                kind, _, item_id = ref.partition(":")
-                self.emit("workspace_changed", {"kind": kind, "id": item_id, "action": "removed" if definition.risk == "destructive" else "updated"})
-            if action.get("planning_significant"):
-                self._expand_after(action)
         except Exception as error:
             action["error"] = str(error); action["finished_at"] = store.utcnow()
             ledger.transition(action, "failed")
@@ -271,6 +256,25 @@ class CommandRunner(BaseRunner):
                 self._expand_after(action, {"error": str(error)})
             if definition.failure_policy == "stop_run":
                 raise
+            return
+        action["receipt"] = receipt
+        action["result_refs"] = list(receipt.get("result_refs") or [])
+        action["finished_at"] = store.utcnow()
+        ledger.transition(action, "succeeded")
+        self.run["artifacts"].extend(
+            {"kind": ref.partition(":")[0], "id": ref.partition(":")[2], "semantic_id": "", "action": "updated"}
+            for ref in action["result_refs"]
+            if not any(item.get("kind") == ref.partition(":")[0] and item.get("id") == ref.partition(":")[2] for item in self.run["artifacts"])
+        )
+        self._save_action(action)
+        warning = (receipt.get("result") or {}).get("warning")
+        if warning:
+            self.warn(str(warning))
+        for ref in action["result_refs"]:
+            kind, _, item_id = ref.partition(":")
+            self.emit("workspace_changed", {"kind": kind, "id": item_id, "action": "removed" if definition.risk == "destructive" else "updated"})
+        if action.get("planning_significant"):
+            self._expand_after(action)
 
     def _expand_after(self, action: dict, safe_result: dict | None = None) -> None:
         usage = self.run["usage"]
@@ -291,7 +295,13 @@ class CommandRunner(BaseRunner):
         )
         proposals = payload.get("actions") or []
         if proposals:
-            created = ledger.append_actions(self.run, proposals, depth=action["depth"] + 1)
+            # Expansion is opportunistic follow-up planning; an invalid
+            # proposal must not fail work that already committed.
+            try:
+                created = ledger.append_actions(self.run, proposals, depth=action["depth"] + 1)
+            except WorkspaceError as error:
+                self.warn(f"Discarded an invalid planning proposal: {error}")
+                return
             self.save(); self.emit("graph_update", {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]})
 
     def _wait_interaction(self, action: dict, interaction: dict) -> None:

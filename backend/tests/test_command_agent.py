@@ -151,6 +151,45 @@ def test_reversible_edit_can_be_undone_while_postcondition_is_current(monkeypatc
     assert workspaces.load_workspace(workspace_with_data.id).findings[0]["severity"] == "medium"
 
 
+def test_post_success_planner_failure_keeps_committed_work(monkeypatch, workspace_with_data):
+    """Regression: an invalid planner proposal after an action succeeded must
+    become a warning, not an illegal succeeded → failed transition that fails
+    the run and strands the remaining ready actions."""
+    interpreter = {
+        "objective": "Create two findings", "constraints": [], "completion_criteria": [],
+        "actions": [
+            {"id": "first", "type": "create_finding", "args": {"title": "First finding"}, "planning_significant": True},
+            {"id": "second", "type": "create_finding", "args": {"title": "Second finding"}, "depends_on": ["first"]},
+        ],
+    }
+    planner = {"actions": [{"id": "bad", "type": "run_analytics", "args": {}}]}
+    fake = FakeAgentLLM({"agent:command_interpreter": interpreter, "agent:command_planner": planner})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "backend": "fake", "model": "fake"})
+    started = runner.start_command_run(workspace_with_data, "auto", {"source": "chat", "text": "create two findings"})
+    completed = wait_run(workspace_with_data, started["id"])
+    by_id = {item["id"]: item for item in completed["actions"]}
+    assert completed["status"] == "completed"
+    assert by_id["first"]["status"] == "succeeded" and by_id["first"]["error"] is None
+    assert by_id["second"]["status"] == "succeeded"
+    assert any("invalid planning proposal" in warning for warning in completed["warnings"])
+    assert len(workspaces.load_workspace(workspace_with_data.id).findings) == 2
+
+
+def test_append_actions_rolls_back_a_rejected_batch(workspace_with_data):
+    run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "test"})
+    ledger.append_actions(run, [{"id": "a1", "type": "run_report_quality", "args": {}}])
+    revision = run["graph_revision"]
+    with pytest.raises(workspaces.WorkspaceError, match="unknown action"):
+        ledger.append_actions(run, [
+            {"id": "b1", "type": "create_finding", "args": {"title": "Valid"}},
+            {"id": "b2", "type": "create_finding", "args": {"title": "Broken"}, "depends_on": ["missing"]},
+        ])
+    assert [item["id"] for item in run["actions"]] == ["a1"]
+    assert run["graph_revision"] == revision
+    assert [task["id"] for task in run["plan"]["stages"][0]["tasks"]] == ["a1"]
+
+
 def test_create_reconciler_detects_after_apply_before_receipt(workspace_with_data):
     run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "create finding"})
     action = ledger.append_actions(run, [{"id": "create", "type": "create_finding", "args": {"title": "Crash-safe finding"}}])[0]

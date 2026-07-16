@@ -111,7 +111,14 @@ def append_actions(run: dict, proposals: list[dict], *, depth: int = 0) -> list[
             raise WorkspaceError(f"Duplicate proposed action id '{item['id']}'.")
         created.append(item); existing_ids.add(item["id"])
     run.setdefault("actions", []).extend(created)
-    validate_graph(run)
+    try:
+        validate_graph(run)
+    except WorkspaceError:
+        # Keep the append atomic: a rejected batch must not leave a
+        # partially-extended graph behind in the run.
+        if created:
+            del run["actions"][-len(created):]
+        raise
     run["graph_revision"] = int(run.get("graph_revision") or 0) + 1
     project_legacy_plan(run)
     return created
