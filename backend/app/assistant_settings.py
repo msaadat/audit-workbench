@@ -100,6 +100,10 @@ def _default_model(provider: str) -> str:
     return str(PROVIDERS[provider]["default_model"])
 
 
+def _env_model(provider: str) -> str:
+    return (os.environ.get(f"{provider.upper()}_MODEL") or "").strip()
+
+
 def load() -> dict:
     settings = dict(DEFAULT_SETTINGS)
     if SETTINGS_PATH.exists():
@@ -111,7 +115,7 @@ def load() -> dict:
             raise SettingsError(f"Could not read assistant settings: {error}") from error
 
     provider = _clean_provider(settings.get("provider"))
-    model = str(settings.get("model") or "").strip()
+    model = _env_model(provider) or str(settings.get("model") or "").strip()
     if not model:
         model = _default_model(provider)
     return {"provider": provider, "model": model}
