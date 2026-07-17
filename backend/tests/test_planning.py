@@ -138,6 +138,29 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     assert ws.rcm[0]["control"] == "Auditor-confirmed manual review"
 
 
+def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
+    ws = workspaces.create_workspace("Planning provider failure")
+
+    def disconnect(_user):
+        raise llm.LLMError("LLM request failed: Remote end closed connection without response")
+
+    configure_planning_llm(monkeypatch, {"agent:apm": disconnect})
+    completed = wait_run(ws, start_planning(ws)["id"])
+
+    tasks = {
+        task["id"]: task
+        for stage in completed["plan"]["stages"]
+        for task in stage["tasks"]
+    }
+    assert completed["status"] == "failed"
+    assert completed["command"]["status"] == "failed"
+    assert completed["error"] == "LLM request failed: Remote end closed connection without response"
+    assert not completed["summary_markdown"]
+    assert tasks["planning:context"]["status"] == "completed"
+    assert tasks["planning:apm"]["status"] == "failed"
+    assert "planning:rcm" not in tasks
+
+
 def test_auto_planning_selects_relevant_documents(monkeypatch):
     ws = workspaces.create_workspace("Auto document selection", doc_llm_optin=True)
     policy_text = b"Procurement Policy: purchases require documented approval before commitment."

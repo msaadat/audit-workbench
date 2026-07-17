@@ -86,14 +86,23 @@ class CommandRunner(BaseRunner):
             self.run["finished"] = store.utcnow()
             self.set_status("cancelled")
         except (LimitExceeded, llm.LLMError) as error:
-            self._fail_running_plan_tasks(str(error))
-            self.warn(str(error))
-            self._finish(force_issue=True)
+            if self._is_planning_command() or (
+                self._requests_full_audit() and not self.run.get("prepared_planning")
+            ):
+                self._fail_run(str(error))
+            else:
+                self._fail_running_plan_tasks(str(error))
+                self.warn(str(error))
+                self._finish(force_issue=True)
         except Exception as error:
-            self._fail_running_plan_tasks(str(error))
-            self.run["error"] = str(error)
-            self.run["finished"] = store.utcnow()
-            self.set_status("failed")
+            self._fail_run(str(error))
+
+    def _fail_run(self, error: str) -> None:
+        self._fail_running_plan_tasks(error)
+        self.run["error"] = error
+        self.run["finished"] = store.utcnow()
+        self.run["command"]["status"] = "failed"
+        self.set_status("failed")
 
     def _fail_running_plan_tasks(self, error: str) -> None:
         """Close embedded planning tasks when a command run ends abruptly.
