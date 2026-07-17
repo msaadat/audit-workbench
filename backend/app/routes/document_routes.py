@@ -99,7 +99,11 @@ async def serve_document(workspace_id: str, doc_id: str):
     doc = next((item for item in ws.documents if item.get("id") == doc_id), None)
     if doc is None:
         raise workspaces.WorkspaceError(f"Document '{doc_id}' not found.")
-    return FileResponse(documents.document_path(ws, doc), filename=doc.get("source") or doc["file"])
+    return FileResponse(
+        documents.document_path(ws, doc),
+        filename=doc.get("source") or doc["file"],
+        content_disposition_type="inline",
+    )
 
 
 @router.post("/doc-chat")
