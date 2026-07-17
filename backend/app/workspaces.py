@@ -238,7 +238,25 @@ class Workspace:
         self.rulesets: list[dict] = list(definition.get("rulesets") or [])
         # Full-audit-cycle records hydrate defensively so every pre-extension
         # workspace remains readable without a migration step.
-        self.documents: list[dict] = list(definition.get("documents") or [])
+        stored_documents = list(definition.get("documents") or [])
+        # Document versions were removed in favor of explicit in-place
+        # replacement. Keep only the current member of each legacy chain and
+        # hydrate it into the simpler document shape. A later save persists the
+        # migration while old evidence IDs remain visibly unavailable.
+        superseded_ids = {
+            str(item.get("supersedes"))
+            for item in stored_documents
+            if item.get("supersedes")
+        }
+        self.documents: list[dict] = []
+        for stored in stored_documents:
+            if str(stored.get("id")) in superseded_ids:
+                continue
+            document = dict(stored)
+            document.pop("version", None)
+            document.pop("supersedes", None)
+            document.setdefault("updated", None)
+            self.documents.append(document)
         self.planning: dict = {
             "context": {
                 "objective": "",

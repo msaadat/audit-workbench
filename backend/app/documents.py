@@ -6,7 +6,6 @@ import hashlib
 import json
 import mimetypes
 import re
-import shutil
 import threading
 import uuid
 import zipfile
@@ -68,7 +67,7 @@ def cache_path(workspace: Workspace, doc_id: str) -> Path:
     return _documents_dir(workspace) / ".extracted" / f"{doc_id}.json"
 
 
-def add_document(workspace: Workspace, filename: str, content: bytes, *, category: str = "other", note: str = "") -> dict:
+def _validate_upload(filename: str, category: str) -> tuple[str, str, str]:
     source = Path(filename or "document").name
     suffix = Path(source).suffix.lower()
     if suffix not in DOCUMENT_SUFFIXES:
@@ -76,14 +75,36 @@ def add_document(workspace: Workspace, filename: str, content: bytes, *, categor
     category = str(category or "other").lower()
     if category not in CATEGORIES:
         raise WorkspaceError("Unknown document category.")
-    sha1 = _sha1_bytes(content)
-    latest = max(
-        (doc for doc in workspace.documents if str(doc.get("source") or "").lower() == source.lower()),
-        key=lambda doc: int(doc.get("version") or 1),
-        default=None,
+    return source, suffix, category
+
+
+def document_by_source(workspace: Workspace, filename: str) -> dict | None:
+    source = Path(filename or "document").name.casefold()
+    return next(
+        (doc for doc in workspace.documents if str(doc.get("source") or "").casefold() == source),
+        None,
     )
-    if latest and latest.get("sha1") == sha1:
-        return latest
+
+
+def add_document(
+    workspace: Workspace,
+    filename: str,
+    content: bytes,
+    *,
+    category: str = "other",
+    note: str = "",
+    replace: bool = False,
+) -> dict:
+    source, suffix, category = _validate_upload(filename, category)
+    existing = document_by_source(workspace, source)
+    if existing is not None:
+        if not replace:
+            raise WorkspaceError(
+                f"Document '{source}' already exists. Confirm replacement to overwrite it."
+            )
+        return replace_document(workspace, existing["id"], source, content)
+
+    sha1 = _sha1_bytes(content)
     doc_id = uuid.uuid4().hex[:10]
     target = _documents_dir(workspace) / f"{doc_id}{suffix}"
     target.write_bytes(content)
@@ -97,17 +118,51 @@ def add_document(workspace: Workspace, filename: str, content: bytes, *, categor
         "category": category,
         "pages": None,
         "sha1": sha1,
-        "version": int(latest.get("version") or 1) + 1 if latest else 1,
-        "supersedes": latest.get("id") if latest else None,
         "text_state": "image_only" if suffix in IMAGE_SUFFIXES else "pending",
         "note": str(note or ""),
         "created": utcnow(),
+        "updated": None,
         "created_by": "user",
         "agent_run_id": None,
     }
     workspace.documents.append(doc)
     workspace.save()
     extract_document(workspace, doc_id)
+    return _document(workspace, doc_id)
+
+
+def replace_document(workspace: Workspace, doc_id: str, filename: str, content: bytes) -> dict:
+    """Replace a document's content in place after the caller confirms it.
+
+    The stable document ID lets existing links resolve to the current file while
+    their stored source hash continues to reveal that the evidence has changed.
+    """
+    doc = _document(workspace, doc_id)
+    source, suffix, _ = _validate_upload(filename, str(doc.get("category") or "other"))
+    target = _documents_dir(workspace) / f"{doc_id}{suffix}"
+    temporary = _documents_dir(workspace) / f".{doc_id}.upload{suffix}"
+    temporary.write_bytes(content)
+    old_path = None
+    try:
+        old_path = document_path(workspace, doc)
+    except WorkspaceError:
+        pass
+    temporary.replace(target)
+    if old_path is not None and old_path != target:
+        old_path.unlink(missing_ok=True)
+    cache_path(workspace, doc_id).unlink(missing_ok=True)
+    doc.update(
+        file=target.name,
+        source=source,
+        pages=None,
+        sha1=_sha1_bytes(content),
+        text_state="image_only" if suffix in IMAGE_SUFFIXES else "pending",
+        updated=utcnow(),
+    )
+    doc.pop("version", None)
+    doc.pop("supersedes", None)
+    workspace.save()
+    extract_document(workspace, doc_id, force=True)
     return _document(workspace, doc_id)
 
 
@@ -437,20 +492,6 @@ def activities(workspace: Workspace, cursor: int = 0, limit: int = 100, document
     if document_id:
         result["items"] = [item for item in result["items"] if document_id in (item.get("document_ids") or [])]
     return result
-
-
-def versions(workspace: Workspace, doc_id: str) -> list[dict]:
-    doc = _document(workspace, doc_id)
-    chain = {doc["id"]}
-    changed = True
-    while changed:
-        changed = False
-        for candidate in workspace.documents:
-            if candidate.get("id") in chain or candidate.get("supersedes") in chain:
-                before = len(chain); chain.add(candidate["id"]); changed = changed or len(chain) != before
-            if candidate.get("id") in chain and candidate.get("supersedes"):
-                before = len(chain); chain.add(candidate["supersedes"]); changed = changed or len(chain) != before
-    return sorted((item for item in workspace.documents if item.get("id") in chain), key=lambda item: int(item.get("version") or 1), reverse=True)
 
 
 def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[int] | None,

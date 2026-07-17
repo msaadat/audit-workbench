@@ -28,15 +28,14 @@ const documents = ref<AuditDocument[]>([])
 const selectedId = ref('')
 const previewPages = ref<DocumentPage[]>([])
 const currentPage = ref(1)
-const view = ref<'preview' | 'versions' | 'activity'>('preview')
-const detailViews = ['preview', 'versions', 'activity'] as const
+const view = ref<'preview' | 'activity'>('preview')
+const detailViews = ['preview', 'activity'] as const
 const search = ref('')
 const category = ref('all')
 const state = ref('all')
 const busy = ref(false)
 const classificationBusy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-const versions = ref<AuditDocument[]>([])
 const activity = ref<AIActivityEvent[]>([])
 const knowledgeOpen = ref(false)
 const packs = ref<KnowledgePack[]>([])
@@ -93,11 +92,7 @@ async function loadDetail() {
     const data = await api.get<{ pages: DocumentPage[] }>(`/api/workspaces/${props.workspace.id}/documents/${selectedId.value}/preview`)
     previewPages.value = data.pages
     if (!data.pages.some(page => page.page === currentPage.value)) currentPage.value = data.pages[0]?.page || 1
-    const [versionData, activityData] = await Promise.all([
-      api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents/${selectedId.value}/versions`),
-      api.get<{ items: AIActivityEvent[] }>(`/api/workspaces/${props.workspace.id}/ai-activity?document_id=${selectedId.value}`),
-    ])
-    versions.value = versionData.items; activity.value = activityData.items
+    activity.value = (await api.get<{ items: AIActivityEvent[] }>(`/api/workspaces/${props.workspace.id}/ai-activity?document_id=${selectedId.value}`)).items
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Document unavailable', detail: String(error), life: 5000 })
   }
@@ -106,13 +101,40 @@ async function loadDetail() {
 async function upload(event: Event) {
   const files = Array.from((event.target as HTMLInputElement).files || [])
   if (!files.length) return
+  const selectedNames = files.map(file => file.name.toLocaleLowerCase())
+  if (new Set(selectedNames).size !== selectedNames.length) {
+    toast.add({ severity: 'warn', summary: 'Duplicate filenames', detail: 'Choose each document filename only once per upload.', life: 4500 })
+    if (fileInput.value) fileInput.value.value = ''
+    return
+  }
+  const existingNames = new Set(documents.value.map(document => document.source.toLocaleLowerCase()))
+  const replacements = files.filter(file => existingNames.has(file.name.toLocaleLowerCase()))
+  if (replacements.length) {
+    const names = replacements.map(file => file.name).join(', ')
+    const confirmed = window.confirm(
+      `Replace ${replacements.length === 1 ? names : `${replacements.length} existing documents (${names})`}?\n\n` +
+      'The stored content will be overwritten. Existing evidence citations will remain linked but will show that the source changed until reviewed.',
+    )
+    if (!confirmed) {
+      if (fileInput.value) fileInput.value.value = ''
+      return
+    }
+  }
   busy.value = true
   try {
-    const result = await api.upload<{ suggested_actions?: IntakeSuggestedAction[] }>(`/api/workspaces/${props.workspace.id}/documents`, files)
+    const result = await api.upload<{
+      added: AuditDocument[]
+      replaced: AuditDocument[]
+      suggested_actions?: IntakeSuggestedAction[]
+    }>(`/api/workspaces/${props.workspace.id}/documents`, files, { replace: String(replacements.length > 0) })
     planningAction.value = result.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
     await loadDocuments(); if (selectedId.value) await loadDetail()
     emit('changed')
-    toast.add({ severity: 'success', summary: 'Documents added', detail: `${files.length} file(s) stored and extracted locally.`, life: 3500 })
+    const changes = [
+      result.added.length ? `${result.added.length} added` : '',
+      result.replaced.length ? `${result.replaced.length} replaced` : '',
+    ].filter(Boolean).join(', ')
+    toast.add({ severity: 'success', summary: 'Documents updated', detail: `${changes}. Content was stored and extracted locally.`, life: 3500 })
   } catch (error) { toast.add({ severity: 'error', summary: 'Upload failed', detail: String(error), life: 5000 }) }
   finally { busy.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
@@ -215,7 +237,7 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
           <h4>{{ String(group).replace('_', ' ') }} <span>{{ items.length }}</span></h4>
           <button v-for="doc in items" :key="doc.id" class="doc-row" :class="{ active: doc.id === selectedId }" @click="selectDocument(doc.id, 1)">
             <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
-            <span class="doc-identity"><strong>{{ doc.title }}</strong><small>{{ doc.source }}</small><small>{{ doc.pages || 0 }} page{{ doc.pages === 1 ? '' : 's' }} · version {{ doc.version }}</small></span>
+            <span class="doc-identity"><strong>{{ doc.title }}</strong><small>{{ doc.source }}</small><small>{{ doc.pages || 0 }} page{{ doc.pages === 1 ? '' : 's' }}</small></span>
             <span class="state-pill" :class="`state-${doc.text_state}`">{{ doc.text_state.replace('_', ' ') }}</span>
           </button>
         </div>
@@ -226,7 +248,7 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
           <div class="detail-identity">
             <p class="eyebrow">{{ selected.category.replace('_', ' ') }}</p>
             <h3>{{ selected.title }}</h3>
-            <p>{{ selected.source }} · {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }} · version {{ selected.version }}</p>
+            <p>{{ selected.source }} · {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }}</p>
           </div>
           <div class="detail-actions">
             <label class="classification-field">
@@ -258,12 +280,8 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
           <pre v-else class="page-text">{{ current?.text || 'No extractable text on this page.' }}</pre>
           <details class="technical-details">
             <summary>Technical details</summary>
-            <dl><div><dt>Document ID</dt><dd><code>{{ selected.id }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy document ID" @click="copyText(selected.id, 'Document ID')" /></dd></div><div><dt>Content hash</dt><dd><code>{{ selected.sha1 }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy content hash" @click="copyText(selected.sha1, 'Content hash')" /></dd></div><div><dt>Stored file</dt><dd><code>{{ selected.file }}</code></dd></div><div v-if="selected.relative_path"><dt>Imported path</dt><dd>{{ selected.relative_path }}</dd></div><div><dt>Added</dt><dd>{{ selected.created }}</dd></div></dl>
+            <dl><div><dt>Document ID</dt><dd><code>{{ selected.id }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy document ID" @click="copyText(selected.id, 'Document ID')" /></dd></div><div><dt>Content hash</dt><dd><code>{{ selected.sha1 }}</code><Button icon="pi pi-copy" text rounded size="small" aria-label="Copy content hash" @click="copyText(selected.sha1, 'Content hash')" /></dd></div><div><dt>Stored file</dt><dd><code>{{ selected.file }}</code></dd></div><div v-if="selected.relative_path"><dt>Imported path</dt><dd>{{ selected.relative_path }}</dd></div><div><dt>Added</dt><dd>{{ selected.created }}</dd></div><div v-if="selected.updated"><dt>Replaced</dt><dd>{{ selected.updated }}</dd></div></dl>
           </details>
-        </div>
-
-        <div v-else-if="view === 'versions'" class="detail-content timeline">
-          <article v-for="item in versions" :key="item.id"><i class="pi pi-history" /><div><strong>Version {{ item.version }} <Tag v-if="item.id === selected.id" value="current" severity="info" /></strong><p>{{ item.created }} · {{ item.source }}</p><details><summary>Technical details</summary><code>{{ item.id }} · {{ item.sha1 }}</code></details><Button label="Open version" text size="small" @click="selectDocument(item.id, 1)" /></div></article>
         </div>
 
         <div v-else class="detail-content timeline">

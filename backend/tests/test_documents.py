@@ -39,14 +39,44 @@ def test_text_docx_and_image_extraction_cache():
     assert image["text_state"] == "image_only"
 
 
-def test_document_versions_do_not_retarget_typed_anchor():
-    ws = workspaces.create_workspace("Document versions")
+def test_document_replacement_is_explicit_and_keeps_stable_id():
+    ws = workspaces.create_workspace("Document replacement")
     first = documents.add_document(ws, "policy.txt", b"Version one policy")
     anchor = evidence.document_anchor(first, 1, "Version one", generated_by="test")
-    second = documents.add_document(ws, "policy.txt", b"Version two policy")
-    assert second["version"] == 2 and second["supersedes"] == first["id"]
-    assert anchor["source_id"] == first["id"]
-    assert anchor["source_sha1"] == first["sha1"] != second["sha1"]
+    with pytest.raises(workspaces.WorkspaceError, match="Confirm replacement"):
+        documents.add_document(ws, "policy.txt", b"Version two policy")
+
+    replaced = documents.add_document(
+        ws, "policy.txt", b"Version two policy", replace=True,
+    )
+
+    assert replaced["id"] == first["id"]
+    assert len(ws.documents) == 1
+    assert "version" not in replaced and "supersedes" not in replaced
+    assert documents.preview(ws, replaced["id"])["pages"][0]["text"] == "Version two policy"
+    assert anchor["source_id"] == replaced["id"]
+    assert anchor["source_sha1"] != replaced["sha1"]
+
+
+def test_legacy_document_version_chain_hydrates_only_current_record():
+    ws = workspaces.create_workspace("Legacy document versions")
+    first = documents.add_document(ws, "policy.txt", b"Old policy")
+    latest = {
+        **first,
+        "id": "latestdoc1",
+        "sha1": "new-content-hash",
+        "version": 2,
+        "supersedes": first["id"],
+    }
+    first.update(version=1, supersedes=None)
+    ws.documents.append(latest)
+    ws.save()
+
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert [item["id"] for item in reloaded.documents] == [latest["id"]]
+    assert "version" not in reloaded.documents[0]
+    assert "supersedes" not in reloaded.documents[0]
 
 
 def test_document_classification_can_be_updated():
@@ -135,7 +165,17 @@ def test_document_and_knowledge_apis(monkeypatch):
     assert upload.status_code == 200
     assert upload.json()["suggested_actions"][0]["agent_kind"] == "planning"
     doc = upload.json()["added"][0]
-    assert client.get(f"{base}/documents/{doc['id']}/preview").json()["pages"][0]["text"] == "Policy evidence"
+    conflict = client.post(f"{base}/documents", files={"files": ("policy.txt", b"Changed policy", "text/plain")})
+    assert conflict.status_code == 400
+    replacement = client.post(
+        f"{base}/documents",
+        data={"replace": "true"},
+        files={"files": ("policy.txt", b"Changed policy", "text/plain")},
+    )
+    assert replacement.status_code == 200
+    assert replacement.json()["replaced"][0]["id"] == doc["id"]
+    assert len(replacement.json()["items"]) == 1
+    assert client.get(f"{base}/documents/{doc['id']}/preview").json()["pages"][0]["text"] == "Changed policy"
     assert client.post(f"{base}/doc-chat", json={"document_id": doc["id"], "question": "What?", "pages": [1]}).status_code == 503
     assert client.patch(f"{base}/settings", json={}).status_code == 405
     pack = client.post(

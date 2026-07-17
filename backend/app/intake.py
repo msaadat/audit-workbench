@@ -566,14 +566,13 @@ def apply_batch(workspace: Workspace, batch_id: str, decisions: list[dict] | Non
         item["source_id"] = batch["source_id"]
         already = _already_incorporated(workspace, item, route)
         if already is not None:
-            target_id, target_version = already
+            target_id = already
         elif route == "table":
             target_id = _incorporate_table_from_path(
                 workspace, staged, item, classification, existing
             )
-            target_version = None
         else:
-            target_id, target_version = _incorporate_document_from_path(
+            target_id = _incorporate_document_from_path(
                 workspace, staged, item, classification, existing
             )
         item["target_ref"] = f"{route}:{target_id}"
@@ -588,7 +587,6 @@ def apply_batch(workspace: Workspace, batch_id: str, decisions: list[dict] | Non
             "category": classification.get("document_category"),
             "role": classification.get("table_role"),
             "target_id": target_id,
-            "target_version": target_version,
             "imported_at": utcnow(),
             "history": [],
         }
@@ -603,7 +601,6 @@ def apply_batch(workspace: Workspace, batch_id: str, decisions: list[dict] | Non
                         "last_modified",
                         "route",
                         "target_id",
-                        "target_version",
                         "imported_at",
                     )
                 }
@@ -698,7 +695,7 @@ def planning_actions_for_documents(imported_documents: list[dict]) -> list[dict]
 
 def _already_incorporated(
     workspace: Workspace, item: dict, route: str
-) -> tuple[str, int | None] | None:
+) -> str | None:
     collection = workspace.tables if route == "table" else workspace.documents
     match = next(
         (
@@ -712,7 +709,7 @@ def _already_incorporated(
     )
     if match is None:
         return None
-    return match.get("name", match.get("id")), match.get("version")
+    return match.get("name", match.get("id"))
 
 
 def _incorporate_table_from_path(workspace: Workspace, staged: Path, item: dict, classification: dict, existing: dict | None) -> str:
@@ -741,17 +738,35 @@ def _incorporate_table_from_path(workspace: Workspace, staged: Path, item: dict,
     return name
 
 
-def _incorporate_document_from_path(workspace: Workspace, staged: Path, item: dict, classification: dict, existing: dict | None) -> tuple[str, int]:
+def _incorporate_document_from_path(workspace: Workspace, staged: Path, item: dict, classification: dict, existing: dict | None) -> str:
+    from . import documents
+
     documents_dir = workspace.root / "Documents"
     documents_dir.mkdir(parents=True, exist_ok=True)
     previous = None
     if existing and existing.get("route") == "document":
         previous = next((doc for doc in workspace.documents if doc.get("id") == existing.get("target_id")), None)
+    if previous is not None:
+        replaced = documents.replace_document(
+            workspace,
+            previous["id"],
+            Path(item["relative_path"]).name,
+            staged.read_bytes(),
+        )
+        replaced.update(
+            source_id=item.get("source_id"),
+            relative_path=item["relative_path"],
+            title=classification.get("proposed_name") or replaced.get("title") or Path(item["relative_path"]).stem,
+            category=classification.get("document_category") or "other",
+            created_by="intake",
+        )
+        workspace.save()
+        return replaced["id"]
+
     doc_id = uuid.uuid4().hex[:10]
     suffix = staged.suffix.lower()
     target = documents_dir / f"{doc_id}{suffix}"
     shutil.copyfile(staged, target)
-    version = int(previous.get("version") or 1) + 1 if previous else 1
     doc = {
         "id": doc_id,
         "file": target.name,
@@ -762,19 +777,17 @@ def _incorporate_document_from_path(workspace: Workspace, staged: Path, item: di
         "category": classification.get("document_category") or "other",
         "pages": None,
         "sha1": item["sha1"],
-        "version": version,
-        "supersedes": previous.get("id") if previous else None,
         "text_state": "image_only" if (item.get("local_metadata") or {}).get("image_only") else "pending",
         "note": "",
         "created": utcnow(),
+        "updated": None,
         "created_by": "intake",
         "agent_run_id": None,
     }
     workspace.documents.append(doc)
     workspace.save()
-    from . import documents
     documents.extract_document(workspace, doc_id)
-    return doc_id, version
+    return doc_id
 
 
 def cancel_batch(workspace: Workspace, batch_id: str) -> None:

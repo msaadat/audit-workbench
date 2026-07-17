@@ -85,17 +85,20 @@ def test_local_multi_document_matching_records_anchors_and_conflicts(workspace_w
     assert conflicted["document_conflicts"]["duplicate_documents"]
 
 
-def test_version_conflicts_are_explicit(workspace_with_data):
+def test_replaced_document_does_not_create_an_attachment_conflict(workspace_with_data):
     ws = workspace_with_data
-    old = documents.add_document(ws, "voucher.txt", b"Voucher 1001 amount 150")
-    new = documents.add_document(ws, "voucher.txt", b"Voucher 1001 amount 151")
+    document = documents.add_document(ws, "voucher.txt", b"Voucher 1001 amount 150")
+    replaced = documents.add_document(
+        ws, "voucher.txt", b"Voucher 1001 amount 151", replace=True,
+    )
     test = doc_tests.create_test(ws, {
-        "kind": "vouching", "title": "Version check",
-        "items": [{"label": "1001", "checks": [{"field": "id", "expected": 1001}], "document_ids": [old["id"], new["id"]]}],
+        "kind": "vouching", "title": "Replacement check",
+        "items": [{"label": "1001", "checks": [{"field": "id", "expected": 1001}], "document_ids": [document["id"]]}],
     })
     item = doc_tests.run_item(ws, test["id"], test["items"][0]["id"])
-    assert item["state"] == "manual_review"
-    assert item["document_conflicts"]["version_conflicts"] == [{"newer": new["id"], "older": old["id"]}]
+    assert replaced["id"] == document["id"]
+    assert item["state"] == "agent_checked"
+    assert item["document_conflicts"] == {"duplicate_documents": []}
 
 
 def test_all_four_builders_and_auditor_dispositions(workspace_with_data):

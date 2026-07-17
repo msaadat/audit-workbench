@@ -190,7 +190,7 @@ def test_same_hash_candidates_are_proposed_as_duplicates_once():
     assert duplicates[0]["classification"]["proposed_action"] == "ignore"
 
 
-def test_apply_batch_imports_table_and_versions_changed_document():
+def test_apply_batch_imports_table_and_replaces_changed_document_in_place():
     ws = _workspace()
     csv = b"id,amount\n1,10\n"
     source, batch = _source_and_batch(
@@ -216,6 +216,7 @@ def test_apply_batch_imports_table_and_versions_changed_document():
     _stage(reloaded, batch, "Audit/policy.txt", doc1)
     intake.complete_upload(reloaded, batch["id"])
     policy_result = intake.apply_batch(reloaded, batch["id"])
+    original_document_id = policy_result["items"][0]["target_ref"].split(":", 1)[1]
     recommendation = policy_result["suggested_actions"][0]
     assert recommendation["agent_kind"] == "planning"
     assert recommendation["document_ids"] == [policy_result["items"][0]["target_ref"].split(":", 1)[1]]
@@ -232,9 +233,10 @@ def test_apply_batch_imports_table_and_versions_changed_document():
     intake.complete_upload(reloaded, batch["id"])
     intake.apply_batch(reloaded, batch["id"])
     final = workspaces.load_workspace(ws.id)
-    assert len(final.documents) == 2
-    assert final.documents[1]["version"] == 2
-    assert final.documents[1]["supersedes"] == final.documents[0]["id"]
+    assert len(final.documents) == 1
+    assert final.documents[0]["id"] == original_document_id
+    assert final.documents[0]["sha1"] == hashlib.sha1(doc2).hexdigest()
+    assert "version" not in final.documents[0]
 
 
 def test_changed_folder_table_replaces_in_place_and_keeps_history():

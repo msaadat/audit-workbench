@@ -571,15 +571,7 @@ def _document_conflicts(workspace: Workspace, document_ids: list[str]) -> dict:
     for doc in docs:
         hashes.setdefault(doc.get("sha1") or "", []).append(doc["id"])
     duplicates = [ids for sha1, ids in hashes.items() if sha1 and len(ids) > 1]
-    version_conflicts = []
-    for index, left in enumerate(docs):
-        chain = {value["id"] for value in documents.versions(workspace, left["id"])}
-        for right in docs[index + 1:]:
-            if right["id"] not in chain or left.get("sha1") == right.get("sha1"):
-                continue
-            newer, older = sorted((left, right), key=lambda value: int(value.get("version") or 1), reverse=True)
-            version_conflicts.append({"newer": newer["id"], "older": older["id"]})
-    return {"duplicate_documents": duplicates, "version_conflicts": version_conflicts}
+    return {"duplicate_documents": duplicates}
 
 
 def run_item(workspace: Workspace, test_id: str, item_id: str, *, run_id: str | None = None) -> dict:
@@ -662,11 +654,11 @@ def run_item(workspace: Workspace, test_id: str, item_id: str, *, run_id: str | 
         check["verdict"] = "match" if matched else "mismatch" if any(value not in {"missing", "missing_document"} for value in results) else "missing"
         all_anchors.extend(anchors)
     item["evidence_refs"] = all_anchors
-    has_conflict = bool(conflicts["duplicate_documents"] or conflicts["version_conflicts"])
+    has_conflict = bool(conflicts["duplicate_documents"])
     if not any_usable or has_conflict:
         item["state"] = "manual_review"
         item["auditor_disposition"] = "needs_manual_check"
-        item["runner_note"] = "Manual check required because evidence could not be matched or attached document versions conflict."
+        item["runner_note"] = "Manual check required because evidence could not be matched or duplicate documents are attached."
     else:
         item["state"] = "agent_checked"
         item["auditor_disposition"] = "pending"

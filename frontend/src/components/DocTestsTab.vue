@@ -56,7 +56,7 @@ const kinds = [
 const methods = ['exact', 'normalized', 'fuzzy', 'numeric_tolerance', 'date_tolerance']
 const selectedItem = computed(() => current.value?.items.find(item => item.id === selectedItemId.value) ?? null)
 const tableOptions = computed(() => props.workspace.tables.map(table => table.name))
-const documentOptions = computed(() => documents.value.map(doc => ({ label: `${doc.title} · v${doc.version}`, value: doc.id })))
+const documentOptions = computed(() => documents.value.map(doc => ({ label: doc.title, value: doc.id })))
 const procedureOptions = computed(() => current.value?.procedure_refs ?? [])
 const planningProcedureOptions = computed(() => (planning.value?.procedures ?? []).map(item => ({ label: `${item.id} · ${item.objective}`, value: item.id })))
 const rcmOptions = computed(() => (planning.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
@@ -236,7 +236,7 @@ onUnmounted(unsubscribe)
           <section v-if="selectedItem" class="item-detail card">
             <div class="item-title"><div><span class="eyebrow">{{ selectedItem.id }}</span><h3>{{ selectedItem.label }}</h3></div><Tag :value="selectedItem.auditor_disposition.replaceAll('_',' ')" :severity="severity(selectedItem.state)"/></div>
             <p v-if="selectedItem.runner_note" class="runner-note"><i class="pi pi-info-circle"/> {{ selectedItem.runner_note }}</p>
-            <div v-if="selectedItem.document_conflicts?.duplicate_documents.length || selectedItem.document_conflicts?.version_conflicts.length" class="conflict"><strong>Document conflict</strong><span>Duplicate evidence or multiple versions are attached. Resolve this manually before accepting.</span></div>
+            <div v-if="selectedItem.document_conflicts?.duplicate_documents.length" class="conflict"><strong>Document conflict</strong><span>Duplicate evidence is attached. Resolve this manually before accepting.</span></div>
             <div class="attach"><Select v-model="attachId" :options="documentOptions" optionLabel="label" optionValue="value" filter placeholder="Attach a document"/><Button label="Attach" icon="pi pi-paperclip" outlined @click="attachDocument"/></div>
             <div class="attached"><Tag v-for="docId in selectedItem.document_ids" :key="docId" :value="documents.find(doc => doc.id === docId)?.title || docId" severity="info"/></div>
 

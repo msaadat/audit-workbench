@@ -210,7 +210,7 @@ def _document_snapshot(workspace: Workspace, document_ids: list[str], *, manifes
     return {
         "document_ids": list(document_ids),
         "sources": [
-            {"document_id": value, "sha1": by_id[value].get("sha1"), "version": by_id[value].get("version")}
+            {"document_id": value, "sha1": by_id[value].get("sha1")}
             for value in document_ids if value in by_id
         ],
         "manifest": list(manifest or []),

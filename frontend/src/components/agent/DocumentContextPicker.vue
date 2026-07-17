@@ -65,7 +65,7 @@ function apply() {
         <span class="file-icon"><i class="pi pi-file" /></span>
         <span class="identity">
           <strong>{{ doc.title }}</strong>
-          <small>{{ doc.source }} · {{ doc.pages || 0 }} page{{ doc.pages === 1 ? '' : 's' }} · v{{ doc.version }}</small>
+          <small>{{ doc.source }} · {{ doc.pages || 0 }} page{{ doc.pages === 1 ? '' : 's' }}</small>
         </span>
         <Tag :value="doc.text_state.replace('_', ' ')" :severity="doc.text_state === 'extracted' ? 'success' : doc.text_state === 'failed' ? 'danger' : 'warn'" />
       </label>

@@ -29,22 +29,47 @@ async def list_documents(workspace_id: str):
 
 
 @router.post("/documents")
-async def upload_documents(workspace_id: str, files: list[UploadFile] = File(...), category: str = Form("other")):
+async def upload_documents(
+    workspace_id: str,
+    files: list[UploadFile] = File(...),
+    category: str = Form("other"),
+    replace: bool = Form(False),
+):
     ws = _ws(workspace_id)
+    uploads = [(file.filename or "document", await file.read()) for file in files]
+    normalized_names = [name.casefold() for name, _ in uploads]
+    if len(normalized_names) != len(set(normalized_names)):
+        raise workspaces.WorkspaceError("Upload each document filename only once per batch.")
+    conflicts = [
+        name for name, _ in uploads
+        if documents.document_by_source(ws, name) is not None
+    ]
+    if conflicts and not replace:
+        names = ", ".join(conflicts)
+        raise workspaces.WorkspaceError(
+            f"Document(s) already exist: {names}. Confirm replacement to overwrite them."
+        )
     added = []
-    for file in files:
-        added.append(documents.add_document(ws, file.filename or "document", await file.read(), category=category))
+    replaced = []
+    for filename, content in uploads:
+        existed = documents.document_by_source(ws, filename) is not None
+        document = documents.add_document(
+            ws, filename, content, category=category, replace=replace,
+        )
+        (replaced if existed else added).append(document)
+    changed = [*added, *replaced]
     return {
         "added": added,
+        "replaced": replaced,
         "items": ws.documents,
-        "suggested_actions": intake.planning_actions_for_documents(added),
+        "suggested_actions": intake.planning_actions_for_documents(changed),
     }
 
 
 @router.get("/documents/{doc_id}")
 async def get_document(workspace_id: str, doc_id: str):
     ws = _ws(workspace_id)
-    return documents.preview(ws, doc_id, None) | {"versions": documents.versions(ws, doc_id)}
+    return documents.preview(ws, doc_id, None)
 
 
 @router.patch("/documents/{doc_id}")
@@ -75,11 +100,6 @@ async def serve_document(workspace_id: str, doc_id: str):
     if doc is None:
         raise workspaces.WorkspaceError(f"Document '{doc_id}' not found.")
     return FileResponse(documents.document_path(ws, doc), filename=doc.get("source") or doc["file"])
-
-
-@router.get("/documents/{doc_id}/versions")
-async def document_versions(workspace_id: str, doc_id: str):
-    return {"items": documents.versions(_ws(workspace_id), doc_id)}
 
 
 @router.post("/doc-chat")

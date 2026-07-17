@@ -14,7 +14,7 @@ engagement values.
 - **Incremental audit-folder intake** — select a mixed local folder, compare it
   with prior imports, stage only new/changed files, review editable routing
   proposals, and import supported tables and documents idempotently. Changed
-  tables retain stable links; changed documents create citation-safe versions.
+  tables and documents replace their prior content while retaining stable links.
 - **Planning** — capture engagement context through an assistant interview,
   then generate and edit an Audit Planning Memorandum, Risk & Control Matrix,
   and linked audit program. Markdown templates and local methodology packs are
@@ -33,8 +33,8 @@ engagement values.
   output as chart/table tiles. Tiles store reproducible specifications and
   recompute against the current source files.
 - **Documents and evidence** — ingest PDF, TXT/Markdown, DOCX, and common image
-  formats; preview extracted pages, track versions, ask cited questions, and
-  navigate immutable typed evidence anchors. AI-activity logs retain provider,
+  formats; preview extracted pages, explicitly confirm replacements, ask cited
+  questions, and navigate immutable typed evidence anchors. AI-activity logs retain provider,
   model, page, source-hash, and artifact provenance without duplicating raw
   content into the ledger.
 - **Document tests and working papers** — perform vouching/tracing, attribute

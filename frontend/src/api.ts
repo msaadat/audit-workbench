@@ -47,8 +47,9 @@ export const api = {
     return fetch(url, { method: 'DELETE' }).then((r) => handle<T>(r))
   },
 
-  upload<T>(url: string, files: File[]): Promise<T> {
+  upload<T>(url: string, files: File[], fields: Record<string, string> = {}): Promise<T> {
     const form = new FormData()
+    for (const [key, value] of Object.entries(fields)) form.append(key, value)
     for (const file of files) form.append('files', file)
     return fetch(url, { method: 'POST', body: form }).then((r) => handle<T>(r))
   },

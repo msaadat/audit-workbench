@@ -49,11 +49,10 @@ export interface AuditDocument {
   category: DocumentCategory
   pages: number | null
   sha1: string
-  version: number
-  supersedes: string | null
   text_state: DocumentTextState
   note: string
   created: string
+  updated: string | null
   created_by: string
   agent_run_id: string | null
 }
@@ -155,7 +154,7 @@ export interface DocTestItem {
   response?: string
   citations?: EvidenceRef[]
   runner_note?: string
-  document_conflicts?: { duplicate_documents: string[][]; version_conflicts: Array<{ newer: string; older: string }> }
+  document_conflicts?: { duplicate_documents: string[][] }
 }
 
 export interface DocTestRollup {
