@@ -380,17 +380,14 @@ def test_interrupted_run_can_resume_to_completion(workspace_with_data, fake_agen
     assert done["status"] == "completed"
 
 
-# -------------------------------------------------------------- disclosure
-def test_no_raw_rows_reach_the_model(workspace_with_data, fake_agent_llm):
-    """The metadata-only guarantee: raw cell values that only exist in data
-    rows (not as category labels) never appear in any prompt."""
+# ----------------------------------------------------------- model context
+def test_unmasked_profile_values_reach_the_model(workspace_with_data, fake_agent_llm):
     run = _start(workspace_with_data)
     wait_run(workspace_with_data, run["id"])
-    # amounts 2000.0 / 99.5 are raw numeric cell values; they may only reach
-    # the model inside aggregate summaries (min/max/mean), which for these
-    # test frames is fine — but a raw multi-column row dump would pair the
-    # invoice with its date string. Assert no verbatim row serialization.
-    for call in fake_agent_llm.calls:
-        for message in call["messages"]:
-            assert '"1001","C1"' not in message["content"]
-            assert "1001,C1" not in message["content"]
+    outbound = "\n".join(
+        message["content"]
+        for call in fake_agent_llm.calls
+        for message in call["messages"]
+    )
+    assert "C1" in outbound
+    assert "sensitive_identifier" not in outbound

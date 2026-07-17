@@ -3,8 +3,8 @@
 The browser supplies relative manifest keys; they are never treated as local
 filesystem paths.  Uploaded candidates are staged under generated item IDs,
 inspected locally, then incorporated idempotently into ``Data`` or
-``Documents``.  The batch only stores metadata that is safe to disclose to a
-classification model.
+``Documents``. The batch stores technical metadata used by the classification
+model.
 """
 
 from __future__ import annotations
@@ -452,7 +452,7 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
 
 
 def classification_payload_for_model(workspace: Workspace, batch: dict) -> dict:
-    """The sole safe model-context builder for folder classification.
+    """Build focused model context for folder classification.
 
     No staging path, absolute path, cell value, row preview, formula, comment,
     or extracted document text is included here.
@@ -634,7 +634,7 @@ def apply_batch(workspace: Workspace, batch_id: str, decisions: list[dict] | Non
 
 
 def suggested_actions(workspace: Workspace, batch: dict) -> list[dict]:
-    """Return safe, metadata-only next steps for newly imported material."""
+    """Return metadata-based next steps for newly imported material."""
     imported_documents = []
     for item in batch.get("items") or []:
         classification = dict(item.get("classification") or {})

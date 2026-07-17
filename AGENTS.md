@@ -34,7 +34,7 @@ the LLM transport uses only the standard library (no SDK dependency).
 
 **Audit-cycle extension (implemented 2026-07-14):** M1-M5 of
 `docs/full-audit-cycle-plan.md` are shipped. The audit assistant now spans
-incremental folder intake, APM/RCM/audit-program planning, document disclosure
+incremental folder intake, APM/RCM/audit-program planning, document context
 and typed evidence, resumable document tests, working papers, findings, and
 edit-aware report generation. M6 is optional polish rather than required core
 scope.
@@ -69,10 +69,10 @@ backend/app/
 │                                configured via .env or GROQ_API_KEY/MODEL/BASE_URL
 ├─ sandbox.py                 ── AST-guarded local Polars executor (no imports,
 │                                no dunder/OS); powers run_python + python tiles
-├─ assistant.py               ── NL agent: metadata-only context + tool loop
+├─ assistant.py               ── NL agent: bounded unmasked context + tool loop
 │                                (list_tables, describe_table, query_table,
 │                                run_analytics, run_python); gates what the
-│                                model sees so raw rows never leave the machine
+│                                model sees compact row/result previews
 ├─ agent/                     ── durable audit-assistant run framework:
 │  ├─ store.py                ── durable runs: Workspaces/<id>/AgentRuns/<run>/
 │  │                             {run.json (atomic), events.jsonl (replayable)}
@@ -90,7 +90,7 @@ backend/app/
 │  │                             row-multiplication guard)
 │  ├─ suggest.py              ── deterministic profile-based rule suggestions
 │  │                             (shared by the Validation tab + agent runs)
-│  ├─ prompts.py              ── stage prompts (metadata-only) + JSON parsing;
+│  ├─ prompts.py              ── stage prompts (bounded context) + JSON parsing;
 │  │                             every prompt starts with a stable
 │  │                             [agent:<stage>] tag tests key their fakes on
 │  └─ summary.py              ── findings validation + fallback markdown
@@ -107,7 +107,7 @@ backend/app/
    │                              approvals, messages, GET suggest-rules
    ├─ intake_routes.py        ── source manifests, staging, classification/apply
    ├─ planning_routes.py      ── planning, templates, RCM, and procedure CRUD
-   ├─ document_routes.py      ── documents, extraction, disclosure, Q&A, packs
+   ├─ document_routes.py      ── documents, extraction, Q&A, activity, packs
    ├─ doc_test_routes.py      ── document tests, matching, and working papers
    └─ report_routes.py        ── findings, report drafts, reconciliation, quality
 
@@ -163,7 +163,7 @@ frontend/src/
   manifests, safe local classification metadata, staging, and idempotent
   routing into tables/documents.
 - `documents.py`, `evidence.py`, and `methodology.py` implement extraction,
-  versioning, opt-in disclosure/activity logs, typed immutable anchors, cited
+  versioning, AI-activity logs, typed immutable anchors, cited
   document Q&A, and local methodology packs.
 - `agent/base.py`, `agent/command_runner.py`, and `agent/doc_test_runner.py`
   provide shared durable-run plumbing, enriched planning drafts within the
@@ -231,11 +231,10 @@ cd frontend && npm run build
 - V2 complete: Chart.js charts in Explore, pinned dashboard (spec-storing
   tiles, live recompute, per-tile error degradation), Dashboard tab is the
   landing tab when tiles exist.
-- V3 complete: NL Assistant with a Groq tool-calling loop (list_tables,
+- V3 complete: NL Assistant with a configurable tool-calling loop (list_tables,
   describe_table, query_table, run_analytics, run_python), AST-sandboxed
-  local Polars, metadata-only guarantee (verified on real 604-row data: raw
-  run_python results reach the browser in full but the model sees only
-  shape/stats), and a new **python** tile kind so NL→Python results pin as
+  local Polars, bounded unmasked model previews, and a new **python** tile kind
+  so NL→Python results pin as
   live dashboard tiles.
 - V4 complete (2026-07-12, per docs/agent-workflow-plan.md): the LLM-driven
   **data-analyst agent**. One run populates the whole workspace — joins,
@@ -251,7 +250,7 @@ cd frontend && npm run build
 - Audit-cycle M1-M5 complete (2026-07-14, per
   `docs/full-audit-cycle-plan.md`): incremental audit-folder intake; planning
   interviews and editable APM/RCM/audit programs; versioned documents,
-  per-engagement disclosure opt-in, typed evidence anchors, and methodology
+  automatic bounded document context, typed evidence anchors, and methodology
   packs; resumable vouching/tracing/attribute/review/Q&A tests; evidence-linked
   working papers; findings CRUD/promotion; and editable report drafting with
   deterministic quality checks and explicit side-by-side regeneration.

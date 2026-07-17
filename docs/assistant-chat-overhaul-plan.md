@@ -3,6 +3,12 @@
 > **Status (2026-07-16): proposed.** This is an implementation plan, not a
 > description of current behavior. The current drawer still combines an
 > in-memory Q&A transcript with one selected durable run.
+>
+> **Context update (2026-07-17):** the implemented local-model design no longer
+> has document opt-in, PII masking, disclosure logs, or metadata-only structured
+> context. References to those controls below are retained as historical design
+> rationale. Current chats use bounded unmasked previews, automatic attached
+> document context, source/version checks, and AI-activity provenance.
 
 ## Outcome
 

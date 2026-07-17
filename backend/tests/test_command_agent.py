@@ -4,7 +4,7 @@ import time
 import polars as pl
 import pytest
 
-from app import assistant, doc_tests, documents, findings, llm, privacy, workspaces
+from app import assistant, doc_tests, documents, findings, llm, model_context, workspaces
 from app.agent import actions, artifact_index, command_runner, ledger, runner, store
 from conftest import FakeAgentLLM, wait_run
 
@@ -389,13 +389,12 @@ def test_artifact_resolution_exact_ambiguous_and_no_match(workspace_with_data):
     assert duplicate_titles["resolved_id"] is None and len(duplicate_titles["candidates"]) == 2
 
 
-def test_privacy_projector_masks_identifier_aliases_and_embedded_patterns():
+def test_model_context_includes_unmasked_identifier_values():
     frame = pl.DataFrame({"acct_no": [123456789, 987654321], "branch": ["North", "South"], "amount": [10.0, 20.0]})
-    projected = privacy.project_frame(frame, allow_rows=True)
-    assert "acct_no" not in projected["numeric_summary"]
-    assert projected["rows"][0][0] == "[sensitive identifier withheld]"
+    projected = model_context.project_frame(frame)
+    assert projected["numeric_summary"]["acct_no"]["max"] == 987654321
+    assert projected["rows"][0][0] == 123456789
     assert projected["rows"][0][1:] == ["North", 10.0]
-    assert "person@example.com" not in privacy.scrub_text("Contact person@example.com")
 
 
 def test_narrow_command_executes_only_requested_action(monkeypatch, workspace_with_data):
@@ -864,9 +863,7 @@ def test_create_reconciler_detects_after_apply_before_receipt(workspace_with_dat
     assert len(workspaces.load_workspace(workspace_with_data.id).findings) == 1
 
 
-def test_full_audit_command_uses_disclosed_documents_and_planning_templates(monkeypatch, workspace_with_data):
-    workspace_with_data.settings["doc_llm_optin"] = True
-    workspace_with_data.save()
+def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, workspace_with_data):
     policy = documents.add_document(
         workspace_with_data, "Procurement SOP.txt",
         b"Procurement SOP: requisitions require approval before a purchase order is issued.",
@@ -881,7 +878,7 @@ def test_full_audit_command_uses_disclosed_documents_and_planning_templates(monk
 
     def interpret(user):
         payload = json.loads(user)
-        assert payload["prepared_planning"]["document_content_disclosed"] is True
+        assert payload["prepared_planning"]["document_content_included"] is True
         kinds = {item["kind"] for item in payload["workspace_index"]["artifacts"]}
         assert {"planning", "rcm", "procedure"} <= kinds
         return {
@@ -951,7 +948,7 @@ def test_full_audit_command_uses_disclosed_documents_and_planning_templates(monk
     assert "## Key risks and planned response" in reloaded.planning["apm_markdown"]
     assert reloaded.rcm[-1]["control"] == "Approval before commitment"
     assert reloaded.work_program[-1]["steps"] == ["Select purchases and inspect approval evidence."]
-    assert completed["prepared_planning"]["document_content_disclosed"] is True
+    assert completed["prepared_planning"]["document_content_included"] is True
     assert [call["tag"] for call in fake.calls].count("agent:apm") == 2
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(item["stage"] == "agent:apm" and policy["id"] in item["document_ids"] for item in activity)

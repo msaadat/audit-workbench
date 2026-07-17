@@ -7,7 +7,7 @@ import hashlib
 import time
 import uuid
 
-from .. import assistant, llm
+from .. import llm
 from ..workspaces import Workspace
 from . import prompts, store
 
@@ -157,15 +157,12 @@ class BaseRunner:
                 [{"role": "system", "content": system}, {"role": "user", "content": attempt_user}],
                 profile="agent",
             )
-            # The ledger stores provenance and hashes, never prompt/document
-            # content. Document disclosures are linked by their separate log.
-            from ..documents import append_activity, disclosures
+            # The ledger stores provenance and hashes, never full prompt or
+            # document content.
+            from ..documents import append_activity
             tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
             profile = llm.agent_status()
-            disclosed = [
-                item for item in disclosures(self.ws, 0, 250)["items"]
-                if item.get("run_id") == self.run["id"]
-            ]
+            sources = list(self.run.get("model_sources") or [])
             template_name = {
                 "agent:apm": "apm", "agent:rcm": "rcm",
                 "agent:work_program": "workpaper",
@@ -183,10 +180,10 @@ class BaseRunner:
                 provider=profile.get("provider"), model=profile.get("model"), vision_used=False,
                 prompt_version=hashlib.sha1(f"{system}\n{user}".encode("utf-8")).hexdigest(),
                 template_versions=template_versions,
-                knowledge_packs=[{"source_ref": item["source_ref"], "sha1": item.get("source_sha1")} for item in disclosed if str(item.get("source_ref", "")).startswith("pack:")],
-                document_ids=[item["document_id"] for item in disclosed if not str(item.get("source_ref", "")).startswith("pack:")],
-                page_ranges=sorted({page for item in disclosed for page in item.get("pages", [])}),
-                source_hashes=sorted({item["source_sha1"] for item in disclosed if item.get("source_sha1")}),
+                knowledge_packs=[{"source_ref": item["source_ref"], "sha1": item.get("source_sha1")} for item in sources if str(item.get("source_ref", "")).startswith("pack:")],
+                document_ids=[item["document_id"] for item in sources if not str(item.get("source_ref", "")).startswith("pack:")],
+                page_ranges=sorted({page for item in sources for page in item.get("pages", [])}),
+                source_hashes=sorted({item["source_sha1"] for item in sources if item.get("source_sha1")}),
                 response_at=store.utcnow(), response_hash=hashlib.sha1(str(message.get("content") or "").encode("utf-8")).hexdigest(),
                 artifact_ref=None, disposition="generated",
             )
@@ -227,7 +224,7 @@ class BaseRunner:
             "status": "queued",
             "error": None,
             "result_refs": [],
-            "disclosure": [],
+            "context_notes": [],
         }
         self._stage(stage_id)["tasks"].append(task)
         self.save()
@@ -240,9 +237,23 @@ class BaseRunner:
         self.save()
         self.emit("task_update", {"task": task})
 
-    def disclose(self, task: dict, note: str) -> None:
-        if note not in task["disclosure"]:
-            task["disclosure"].append(note)
+    def note_context(self, task: dict, note: str) -> None:
+        notes = task.setdefault("context_notes", [])
+        if note not in notes:
+            notes.append(note)
+
+    def record_model_source(self, source: dict) -> None:
+        """Record document/methodology provenance used by later model turns."""
+        entry = {
+            "source_ref": source.get("source_ref"),
+            "document_id": source.get("document_id"),
+            "source_sha1": source.get("source_sha1"),
+            "pages": [int(page["page"]) for page in source.get("pages") or []],
+        }
+        sources = self.run.setdefault("model_sources", [])
+        if entry not in sources:
+            sources.append(entry)
+            self.save()
 
     def record_artifact(self, kind: str, item_id: str, semantic_id: str, action: str, task: dict | None) -> str:
         ref = f"{kind}:{item_id}"
@@ -351,7 +362,6 @@ class BaseRunner:
             "rationale": rationale,
             "spec": spec,
             "evidence": evidence or {},
-            "disclosure": assistant.DISCLOSURE,
             "decision": None,
             "edited_spec": None,
         }

@@ -13,7 +13,7 @@ persisted through :mod:`.store` so the frontend can replay events and a
 restarted backend can resume an interrupted run from its persisted plan.
 
 Everything the model sees is assembled from :mod:`..assistant`'s
-disclosure-gated metadata views — raw data rows never enter a prompt.
+bounded workspace views supplied by the orchestrator.
 """
 
 from __future__ import annotations
@@ -586,7 +586,7 @@ class _Runner(BaseRunner):
         except Exception as error:
             self.task_status(task, "failed", str(error))
             return
-        self.disclose(task, "aggregate join diagnostics (key match rates)")
+        self.note_context(task, "aggregate join diagnostics (key match rates)")
 
         creatable = [c for c in candidates if c["strength"] == "strong"]
         proposed = [c for c in candidates if c["strength"] == "moderate"]
@@ -683,7 +683,7 @@ class _Runner(BaseRunner):
 
     def _validate_table(self, table: str, task: dict) -> None:
         baseline = suggest.suggest_rules(self.ws, table)
-        self.disclose(task, f"column profile of {table} (aggregates only)")
+        self.note_context(task, f"column profile and bounded values for {table}")
         proposals = list(baseline)
         try:
             payload = self.llm_json(
@@ -775,7 +775,7 @@ class _Runner(BaseRunner):
             self.ws.get_frame(table), ruleset["rules"], table, resolve=self.ws.get_frame
         )
         self.ws.record_run(ruleset["id"], run_result)
-        self.disclose(task, "validation verdict counts (aggregates only)")
+        self.note_context(task, "validation verdict counts")
         self.task_status(task, "completed")
 
     def _preflight_rules(self, table: str, rules: list[dict]) -> list[dict]:
@@ -946,7 +946,7 @@ class _Runner(BaseRunner):
     def _run_library(self, spec: dict, task: dict) -> None:
         frame = self.ws.get_frame(spec["table"])
         result = analytics.run_test(frame, spec["test"], spec.get("params") or {})
-        self.disclose(task, "analytics verdict and aggregate summary")
+        self.note_context(task, "analytics verdict and bounded result preview")
         self._save_analysis(
             kind="analytics",
             table=spec["table"],
@@ -982,7 +982,7 @@ class _Runner(BaseRunner):
                 raise
             sandbox.run(code, frames)  # raises if still broken
         self.run["usage"]["custom_analyses"] += 1
-        self.disclose(task, "shape/aggregate stats of the custom result")
+        self.note_context(task, "bounded custom-result preview")
         title = spec.get("title") or "Custom Polars test"
         self._save_analysis(
             kind="python",
@@ -1067,7 +1067,7 @@ class _Runner(BaseRunner):
             except Exception as error:
                 self.warn(f"Dropped proposed chart '{title}': {error}")
                 continue
-            self.disclose(task, "aggregated query result (preview)")
+            self.note_context(task, "bounded query-result preview")
             self._pin_tile(
                 task,
                 kind="query",

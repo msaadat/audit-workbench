@@ -491,15 +491,15 @@
       <div class="shell">
         <div class="hero-copy" data-reveal>
           <p class="eyebrow light">Internal product overview · 2026</p>
-          <h1>Audit intelligence.<br><span>Evidence stays here.</span></h1>
-          <p class="hero-lede">A local-first workbench where an AI analyst can understand, plan and orchestrate an engagement—without raw audit records ever leaving the machine.</p>
+          <h1>Audit intelligence.<br><span>Evidence stays traceable.</span></h1>
+          <p class="hero-lede">A local-first workbench where an AI analyst can understand, plan and orchestrate an engagement through bounded data previews, document context and locally executed tools.</p>
           <div class="hero-actions">
             <a class="button primary" href="#product">See it in action <span>↓</span></a>
             <a class="button" href="#moat">Understand the architecture</a>
           </div>
         </div>
         <div class="hero-proof" data-reveal data-reveal-delay="1" aria-label="Key product facts">
-          <div class="proof-item"><strong data-count="0">0</strong><small>raw rows sent to the model</small></div>
+          <div class="proof-item"><strong data-count="40">0</strong><small>row model-preview cap</small></div>
           <div class="proof-item"><strong data-count="15">0</strong><small>built-in audit analytics</small></div>
           <div class="proof-item"><strong>1 run</strong><small>from files to review-ready workspace</small></div>
           <div class="proof-item"><strong>Local</strong><small>Polars execution on the auditor's device</small></div>
@@ -511,23 +511,23 @@
       <div class="shell moat-grid">
         <div class="moat-copy" data-reveal>
           <p class="eyebrow">The architectural moat</p>
-          <h2>The model sees the map. Never the records.</h2>
-          <p>Traditional AI analysis sends data outward. Audit Workbench reverses the flow: the model receives <strong>metadata, aggregate statistics and safe previews</strong>, then calls tightly governed tools that execute locally.</p>
-          <p>The result is useful agentic analysis with a defensible data boundary—and a visible, editable Polars escape hatch when a standard procedure is not enough.</p>
+          <h2>The model sees focused evidence, not an uncontrolled dump.</h2>
+          <p>Audit Workbench gives the configured model <strong>bounded row previews, aggregate statistics and attached document context</strong>, then calls tightly governed tools that execute locally.</p>
+          <p>The result is useful agentic analysis with predictable context limits—and a visible, editable Polars escape hatch when a standard procedure is not enough.</p>
         </div>
         <div class="boundary" data-reveal data-reveal-delay="1" aria-label="Local-first data boundary diagram">
           <div class="boundary-label"><span>Auditor's machine</span><span class="secure"><i></i> protected boundary</span></div>
           <div class="local-core">
-            <div class="core-title">Raw engagement data remains here</div>
+            <div class="core-title">Full engagement populations remain here</div>
             <div class="local-node"><b>CSV / Excel files</b><small>Typed loading and cached local frames</small></div>
             <div class="local-node"><b>Polars engine</b><small>Queries, joins, tests and custom code</small></div>
             <div class="local-node"><b>Evidence &amp; results</b><small>Full detail stays in the browser</small></div>
             <div class="local-node"><b>Audit workspace</b><small>Dashboards, rules and saved analyses</small></div>
           </div>
-          <div class="gate"><span>metadata-only choke point</span></div>
+          <div class="gate"><span>bounded model context</span></div>
           <div class="cloud">
-            <div><strong>Configurable LLM</strong><small>Schema · column names · aggregates</small></div>
-            <span class="zero">0 rows</span>
+            <div><strong>Configurable LLM</strong><small>Schema · bounded rows · documents</small></div>
+            <span class="zero">capped</span>
           </div>
           <p class="boundary-note">The orchestrator—not the model—decides whether a mutation executes.</p>
         </div>
@@ -640,7 +640,7 @@
             <h3>A response that disappears when the conversation ends.</h3>
             <ul class="check-list">
               <li>Opaque analysis with no durable working papers</li>
-              <li>Raw records sent to a remote model</li>
+              <li>Unbounded datasets copied into one prompt</li>
               <li>Recommendations detached from evidence</li>
               <li>Unreviewed model actions</li>
             </ul>
@@ -650,7 +650,7 @@
             <h3>A workspace that remains useful after the agent stops.</h3>
             <ul class="check-list">
               <li>Persistent joins, rules, analyses and dashboards</li>
-              <li>Metadata-only model context by design</li>
+              <li>Bounded, inspectable model context</li>
               <li>Findings linked back to computed evidence</li>
               <li>Orchestrator validation and auditor approvals</li>
             </ul>

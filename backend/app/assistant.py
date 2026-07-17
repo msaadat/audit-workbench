@@ -7,18 +7,8 @@ library, and an escape hatch that runs visible, editable Polars — so simple
 requests ("top 10 vendors by spend", "run Benford on amount") are one tool
 call away and anything bespoke drops down to Python the auditor can inspect.
 
-**Metadata-only guarantee.** The data never leaves the machine. The only
-workspace-derived text that enters the LLM conversation is:
-
-  * schema — table names, column names, dtypes;
-  * aggregate statistics — row counts, null counts, distinct counts, numeric
-    min/max/mean, and low-cardinality category labels; and
-  * previews of *aggregated* results (a group-by summary, an analytics
-    verdict) — never row-level detail from the raw dataset.
-
-:func:`_frame_for_model` is the choke point: raw (non-aggregated) results are
-reduced to their shape and numeric summary before going back to the model,
-while the full result is returned to the browser (same machine) for display.
+Model tool results include compact, unmasked previews. Full computations stay
+local and previews are bounded only to protect the model's context window.
 """
 
 from __future__ import annotations
@@ -29,38 +19,26 @@ import uuid
 
 import polars as pl
 
-from . import analytics, documents, explore, llm, privacy, profiler, sandbox
+from . import analytics, documents, explore, llm, model_context, profiler, sandbox
 from .workspaces import Workspace, WorkspaceError
 
 MAX_STEPS = 8
-# Aggregated previews handed to the model are capped hard — a summary, not data.
+# Model previews are capped hard so large populations fit in context.
 MODEL_PREVIEW_ROWS = 40
 # Full results streamed to the browser (local) are capped only to stay light.
 ARTIFACT_ROWS = 200
-# A run_python result this small is treated as a derived summary the model may
-# see in full; anything larger is summarized (shape + stats) only.
-SMALL_RESULT_ROWS = 25
 # Low-cardinality string columns get their category labels surfaced as metadata.
 CATEGORY_SAMPLE_MAX = 30
 
-# Conversation history is text-only and deliberately small.  These named
-# budgets are security boundaries as well as prompt-size controls.
+# Conversation history is text-only and deliberately small.
 HISTORY_MAX_MESSAGES = 8
 HISTORY_MAX_CHARACTERS = 12_000
 HISTORY_MAX_MESSAGE_CHARACTERS = 2_000
 
-DISCLOSURE = (
-    "Only schema (table/column names and types) and aggregate statistics "
-    "(counts, distinct counts, numeric ranges, category labels, and previews "
-    "of aggregated results) are sent to the language model. Raw data rows "
-    "never leave this machine."
-)
-
-
 # ============================================================ metadata context
 def _column_meta(profile: dict) -> dict:
-    """Compact, aggregate-only metadata for one column (from the profiler)."""
-    return privacy.project_column_profile(profile)
+    """Compact profiler metadata for one column."""
+    return model_context.project_column_profile(profile, category_limit=CATEGORY_SAMPLE_MAX)
 
 
 def table_metadata(workspace: Workspace, table: str) -> dict:
@@ -95,32 +73,9 @@ def schema_brief(workspace: Workspace) -> list[dict]:
 
 
 # ================================================================ model views
-def _numeric_summary(df: pl.DataFrame) -> dict:
-    summary = {}
-    for name, dtype in df.schema.items():
-        if dtype.is_numeric():
-            col = df[name]
-            summary[name] = {
-                "min": _round(col.min()),
-                "max": _round(col.max()),
-                "mean": _round(col.mean()),
-                "nulls": int(col.null_count()),
-            }
-    return summary
-
-
-def _round(value):
-    return round(value, 4) if isinstance(value, float) else value
-
-
-def _frame_for_model(df: pl.DataFrame, allow_rows: bool) -> dict:
-    """Reduce a result frame to what the model is allowed to see.
-
-    Always: shape, columns, dtypes, numeric aggregate summary. Row values are
-    included only when ``allow_rows`` (i.e. the result is an aggregate/summary,
-    not raw rows) and the frame is small.
-    """
-    return privacy.project_frame(df, allow_rows=allow_rows, row_limit=MODEL_PREVIEW_ROWS)
+def _frame_for_model(df: pl.DataFrame) -> dict:
+    """Return a bounded, unmasked model preview of a result frame."""
+    return model_context.project_frame(df, row_limit=MODEL_PREVIEW_ROWS)
 
 
 def _artifact_frame(df: pl.DataFrame) -> dict:
@@ -242,8 +197,8 @@ TOOLS = [
                 "Run Polars code for anything the other tools can't express. "
                 "`pl` is Polars; every table is available by name and via "
                 "tables['name']. Assign the output DataFrame to `result`. "
-                "You see only the shape and aggregate stats of large/raw "
-                "results; the auditor sees the full table."
+                "You receive an unmasked preview capped to the model row "
+                "limit; the auditor sees the larger local artifact."
             ),
             "parameters": {
                 "type": "object",
@@ -313,7 +268,7 @@ class _Session:
             viz=_default_viz(result, aggregated),
             frame=result,
         )
-        content = {"result": _frame_for_model(result, allow_rows=aggregated)}
+        content = {"result": _frame_for_model(result)}
         return content, artifact
 
     def run_analytics(self, args: dict):
@@ -341,15 +296,13 @@ class _Session:
             "verdict": result.verdict,
             "verdict_text": result.verdict_text,
             "stats": result.stats,
-            # summary frames are aggregates → the model may see them
-            "summary": _frame_for_model(summary, allow_rows=True) if summary is not None else None,
+            "summary": _frame_for_model(summary) if summary is not None else None,
         }
         return content, artifact
 
     def run_python(self, args: dict):
         code = str(args.get("code") or "")
         result, stdout = sandbox.run(code, self.all_frames())
-        allow_rows = result.height <= SMALL_RESULT_ROWS
         artifact = self._artifact(
             tool="run_python",
             title=args.get("title") or "Python result",
@@ -360,9 +313,12 @@ class _Session:
             frame=result,
             extra={"code": code, "stdout": stdout or None},
         )
-        content = {"result": _frame_for_model(result, allow_rows=allow_rows)}
-        # stdout stays in the local artifact only.  It can contain arbitrary
-        # row-like values and is never part of the model-facing tool result.
+        output = stdout or ""
+        content = {
+            "result": _frame_for_model(result),
+            "stdout": output[:4_000],
+            "stdout_truncated": len(output) > 4_000,
+        }
         return content, artifact
 
     def _artifact(self, *, tool, title, table, kind, spec, viz, frame, extra=None):
@@ -419,13 +375,12 @@ list_tables / describe_table before querying unfamiliar columns.
 - Prefer query_table for filters and group-by aggregations, run_analytics for \
 the canned audit tests, and run_python only when the structured tools can't \
 express the task. Keep run_python to Polars, assign the answer to `result`.
-- For structured tables, you only ever see schema, aggregate statistics and \
-previews of aggregated results — raw rows are withheld from you by design. Do \
-not ask for raw rows; compute aggregates instead. Explicitly attached document \
-text is the only exception and is governed by a separate disclosure gate.
+- Structured tools return bounded previews of real rows and computed results. \
+Use filters and aggregates for large populations rather than asking for an \
+entire table at once. Attached document text is also available as context.
 - When done, give a short, plain-English answer grounded in the tool results. \
-Mention the concrete figures you were shown. Note any caveats (withheld rows, \
-data quality) briefly.
+Mention the concrete figures you were shown. Note truncation or data-quality \
+caveats briefly.
 
 Workspace tables and columns:
 %s
@@ -433,14 +388,14 @@ Workspace tables and columns:
 
 
 DOCUMENT_CONTEXT_RULES = """
-The auditor explicitly attached the documents below. Treat their disclosed
-text as evidence and use it alongside the local data tools when relevant.
+The auditor attached the documents below. Treat their text as evidence and use
+it alongside the local data tools when relevant.
 When you finish, respond with one JSON object only:
 {"answer": "plain-language answer", "citations": [
   {"document_id": "attached id", "page": 1, "excerpt": "exact short excerpt"}
 ]}
 Include citations only for claims grounded in attached documents. Excerpts
-must be exact text from the disclosed page. Do not cite omitted content.
+must be exact text from the included page. Do not cite omitted content.
 
 ATTACHED DOCUMENTS:
 %s
@@ -478,7 +433,6 @@ def ask(
     question: str,
     document_ids: list[str] | None = None,
     *,
-    mask_pii: bool | None = None,
     prior_turns: list[dict] | None = None,
 ) -> dict:
     """Run the tool-calling loop for one question. Returns answer + trace +
@@ -490,14 +444,8 @@ def ask(
     if document_ids is not None and not isinstance(document_ids, list):
         raise WorkspaceError("document_ids must be an array.")
     attached_ids = [str(value) for value in (document_ids or [])]
-    effective_masking = (
-        bool(workspace.settings.get("doc_pii_masking"))
-        if mask_pii is None else bool(mask_pii)
-    )
     document_context = (
-        documents.assistant_document_context(
-            workspace, attached_ids, mask_pii=effective_masking,
-        )
+        documents.assistant_document_context(workspace, attached_ids)
         if attached_ids else None
     )
 
@@ -560,7 +508,7 @@ def ask(
         answer, raw_citations = _parse_document_answer(answer)
     citations = (
         documents.assistant_document_citations(
-            workspace, raw_citations, document_context, mask_pii=effective_masking,
+            workspace, raw_citations, document_context,
         )
         if document_context else []
     )
@@ -575,7 +523,7 @@ def ask(
             page_ranges=sorted({
                 page for item in document_context["manifest"] for page in item["included_pages"]
             }),
-            source_hashes=[event.get("source_sha1") for event in document_context["disclosures"]],
+            source_hashes=[doc.get("source_sha1") for doc in document_context["documents"]],
             response_at=documents.utcnow(),
             response_hash=hashlib.sha1(raw_answer.encode()).hexdigest() if raw_answer else None,
             artifact_ref="assistant_chat", disposition="generated",
@@ -584,10 +532,6 @@ def ask(
         "answer": answer,
         "steps": session.steps,
         "artifacts": session.artifacts,
-        "disclosure": (
-            DISCLOSURE + " Explicitly attached document text was also disclosed under the engagement's Document AI setting."
-            if document_context else DISCLOSURE
-        ),
         "citations": citations,
         "document_context": ({
             "manifest": document_context["manifest"],
@@ -600,8 +544,7 @@ def ask(
 def _bounded_history(prior_turns: list[dict]) -> list[dict]:
     """Return the newest contiguous, text-only history within all budgets.
 
-    Eligibility (including document-disclosure boundaries) is decided by the
-    durable chat service.  This final choke point accepts only completed text
+    Eligibility is decided by the durable chat service. This final choke point accepts only completed text
     roles and never tool messages, frames, traces, citations, or artifacts.
     """
     if not isinstance(prior_turns, list):

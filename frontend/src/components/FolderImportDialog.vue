@@ -18,12 +18,11 @@ import type {
 } from '../types'
 import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 
-const props = defineProps<{ workspaceId: string; modelValue: boolean; documentAiEnabled?: boolean }>()
+const props = defineProps<{ workspaceId: string; modelValue: boolean }>()
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   imported: []
   'planning-started': []
-  'settings-changed': []
 }>()
 const agent = useAgentRun(props.workspaceId)
 const assistantChat = useAssistantChat(props.workspaceId)
@@ -319,8 +318,6 @@ function reset() {
         v-if="planningAction"
         :workspaceId="workspaceId"
         :action="planningAction"
-        :documentAiEnabled="Boolean(documentAiEnabled)"
-        @settings-changed="emit('settings-changed')"
         @planning-started="emit('planning-started'); close()"
       />
       <div class="review-actions"><Button label="Import another folder" severity="secondary" @click="reset" /><Button label="Done" @click="close" /></div>

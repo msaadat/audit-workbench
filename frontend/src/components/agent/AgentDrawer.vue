@@ -14,7 +14,6 @@ import ChatTranscript from './ChatTranscript.vue'
 import DocumentContextPicker from './DocumentContextPicker.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
-const emit = defineEmits<{ 'settings-changed': [] }>()
 const toast = useToast()
 const agent = useAgentRun(props.workspace.id)
 const chats = useAssistantChat(props.workspace.id)
@@ -37,8 +36,6 @@ const displayChat = computed<AssistantChat | null>(() => {
   if (!chat || !global || chat.runs.some(item => item.run_id === global.run_id)) return chat
   return { ...chat, transcript: [global, ...chat.transcript] }
 })
-const documentAiEnabled = ref(Boolean(props.workspace.settings?.doc_llm_optin))
-const piiMasking = ref(Boolean(props.workspace.settings?.doc_pii_masking))
 
 onMounted(async () => {
   const saved = Number(window.localStorage.getItem(WIDTH_KEY))
@@ -50,8 +47,6 @@ onUnmounted(stopResize)
 watch(() => `${agent.state.run?.id}:${agent.state.run?.status}:${agent.state.run?.graph_revision ?? 0}:${agent.state.run?.pending_commands?.length ?? 0}`, () => {
   if (chats.state.activeChatId) void chats.refresh()
 })
-watch(() => props.workspace.settings?.doc_llm_optin, value => { documentAiEnabled.value = Boolean(value) })
-watch(() => props.workspace.settings?.doc_pii_masking, value => { piiMasking.value = Boolean(value) })
 
 async function loadDocuments() {
   documents.value = (await api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)).items
@@ -78,16 +73,6 @@ async function remove() {
   showHistory.value = false
 }
 async function applyDocuments(values: AuditDocument[]) { await chats.setDocuments(values) }
-async function enableDocumentAi() {
-  const settings = await api.patch<NonNullable<WorkspaceSummary['settings']>>(`/api/workspaces/${props.workspace.id}/settings`, { doc_llm_optin: true })
-  documentAiEnabled.value = settings.doc_llm_optin
-  emit('settings-changed')
-}
-async function setMasking(value: boolean) {
-  await api.patch(`/api/workspaces/${props.workspace.id}/settings`, { doc_pii_masking: value })
-  piiMasking.value = value
-  emit('settings-changed')
-}
 async function respond(runId: string, interaction: AgentInteraction, response: Record<string, unknown>) {
   await api.post(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}/interactions/${interaction.id}/respond`, response)
   await chats.refresh()
@@ -141,11 +126,7 @@ function fail(summary: string, error: unknown) { toast.add({ severity: 'error', 
     v-model:visible="pickerOpen"
     :workspaceId="workspace.id"
     :selectedIds="activeChat?.composer_context.document_ids ?? []"
-    :documentAiEnabled="documentAiEnabled"
-    :piiMasking="piiMasking"
     @apply="applyDocuments"
-    @enable="enableDocumentAi"
-    @masking="setMasking"
   />
 </template>
 

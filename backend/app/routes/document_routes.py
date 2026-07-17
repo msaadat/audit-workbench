@@ -1,4 +1,4 @@
-"""Document, privacy, AI-activity, and methodology-pack endpoints."""
+"""Document, AI-activity, and methodology-pack endpoints."""
 
 from __future__ import annotations
 
@@ -39,11 +39,6 @@ async def upload_documents(workspace_id: str, files: list[UploadFile] = File(...
         "items": ws.documents,
         "suggested_actions": intake.planning_actions_for_documents(added),
     }
-
-
-@router.get("/documents/disclosures")
-async def list_disclosures(workspace_id: str, cursor: int = 0, limit: int = 100):
-    return documents.disclosures(_ws(workspace_id), cursor, limit)
 
 
 @router.get("/documents/{doc_id}")
@@ -87,29 +82,12 @@ async def document_versions(workspace_id: str, doc_id: str):
     return {"items": documents.versions(_ws(workspace_id), doc_id)}
 
 
-@router.patch("/settings")
-async def patch_workspace_settings(workspace_id: str, payload: dict = Body(...)):
-    ws = _ws(workspace_id)
-    allowed = {"doc_llm_optin", "doc_pii_masking"}
-    if set(payload) - allowed:
-        raise workspaces.WorkspaceError("Unknown workspace setting.")
-    if "doc_llm_optin" in payload:
-        enabled = bool(payload["doc_llm_optin"])
-        ws.settings["doc_llm_optin"] = enabled
-        ws.settings["doc_llm_optin_at"] = documents.utcnow() if enabled else None
-    if "doc_pii_masking" in payload:
-        ws.settings["doc_pii_masking"] = bool(payload["doc_pii_masking"])
-    ws.save()
-    return ws.settings
-
-
 @router.post("/doc-chat")
 async def doc_chat(workspace_id: str, payload: dict = Body(...)):
     ws = _ws(workspace_id)
     return documents.document_chat(
         ws, str(payload.get("document_id") or ""), str(payload.get("question") or ""),
-        payload.get("pages"), mask_pii=bool(payload.get("mask_pii", ws.settings.get("doc_pii_masking"))),
-        run_id=payload.get("run_id"),
+        payload.get("pages"), run_id=payload.get("run_id"),
     )
 
 

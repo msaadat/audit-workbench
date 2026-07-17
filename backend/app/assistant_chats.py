@@ -213,8 +213,6 @@ def _document_snapshot(workspace: Workspace, document_ids: list[str], *, manifes
             {"document_id": value, "sha1": by_id[value].get("sha1"), "version": by_id[value].get("version")}
             for value in document_ids if value in by_id
         ],
-        "document_ai_enabled": bool(workspace.settings.get("doc_llm_optin")),
-        "mask_pii": bool(workspace.settings.get("doc_pii_masking")),
         "manifest": list(manifest or []),
     }
 
@@ -223,12 +221,6 @@ def _context_matches(current: dict, prior: dict | None) -> bool:
     if not prior:
         return not current["document_ids"]
     if current["document_ids"] != list(prior.get("document_ids") or []):
-        return False
-    if current["mask_pii"] != bool(prior.get("mask_pii")):
-        return False
-    if current["document_ids"] and (
-        not current["document_ai_enabled"] or not prior.get("document_ai_enabled")
-    ):
         return False
     return current["sources"] == list(prior.get("sources") or [])
 
@@ -576,7 +568,7 @@ def _process_message(
         history = _eligible_history(record, current)
         result = assistant.ask(
             workspace, user["content"], doc_ids,
-            mask_pii=current["mask_pii"], prior_turns=history,
+            prior_turns=history,
         )
         final_snapshot = _document_snapshot(
             workspace, doc_ids, manifest=(result.get("document_context") or {}).get("manifest") or []
@@ -591,7 +583,7 @@ def _process_message(
                 reply_to=stored["id"], document_context=final_snapshot, artifact_ids=artifact_ids,
                 outcome=outcome, citation_ids=[str(item.get("id") or _new_id("citation")) for item in result.get("citations") or []],
                 citations=result.get("citations") or [], tool_trace=_safe_trace(result.get("steps") or []),
-                disclosure=result.get("disclosure"), document_manifest=result.get("document_context"),
+                document_manifest=result.get("document_context"),
             )
             answer["id"] = answer_id
         _finalize(workspace, chat_id, user["id"], done)

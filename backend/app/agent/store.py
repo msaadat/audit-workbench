@@ -220,6 +220,9 @@ def _hydrate_run(run: dict) -> None:
     run.setdefault("kind", "analysis")
     run.setdefault("chat_id", None)
     run.setdefault("source_message_id", None)
+    for stage in (run.get("plan") or {}).get("stages") or []:
+        for task in stage.get("tasks") or []:
+            task.setdefault("context_notes", list(task.get("disclosure") or []))
     if run["schema_version"] >= 2:
         run.setdefault("actions", [])
         run.setdefault("interactions", [])

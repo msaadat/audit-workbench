@@ -133,32 +133,25 @@ def test_doc_test_runner_persists_each_item_and_completes(workspace_with_data):
     assert saved["status"] == "in_progress"
 
 
-def test_qa_runner_uses_disclosure_gate_and_manual_fallback(workspace_with_data, monkeypatch):
+def test_qa_runner_uses_document_context_without_workspace_setting(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     document = documents.add_document(ws, "policy.txt", b"Purchases require manager approval.")
     test = doc_tests.build_qa(ws, {
         "title": "Policy question", "document_ids": [document["id"]],
         "questions": ["Is manager approval required?"],
     })
-    item = doc_tests.run_item(ws, test["id"], test["items"][0]["id"])
-    assert item["state"] == "manual_review"
-    assert "Document AI is off" in item["runner_note"]
-    assert documents.disclosures(ws)["items"] == []
-
-    ws.settings["doc_llm_optin"] = True
-    ws.save()
     monkeypatch.setattr(llm, "chat", lambda *args, **kwargs: {
         "content": json.dumps({
             "answer": "Yes, manager approval is required.",
             "citations": [{"page": 1, "excerpt": "Purchases require manager approval."}],
         })
     })
-    checked = doc_tests.run_item(ws, test["id"], item["id"], run_id="RUN-QA")
+    checked = doc_tests.run_item(ws, test["id"], test["items"][0]["id"], run_id="RUN-QA")
     assert checked["state"] == "agent_checked"
     assert checked["citations"][0]["source_sha1"] == document["sha1"]
-    disclosure = documents.disclosures(ws)["items"][0]
-    assert disclosure["purpose"] == "document_qa"
-    assert disclosure["run_id"] == "RUN-QA"
+    activity = documents.activities(ws)["items"][0]
+    assert activity["purpose"] == "document_qa"
+    assert activity["run_id"] == "RUN-QA"
 
 
 def test_working_paper_draft_traceability_and_safe_html(workspace_with_data):

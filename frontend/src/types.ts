@@ -34,7 +34,6 @@ export interface WorkspaceSummary {
   tile_count?: number
   document_count?: number
   finding_count?: number
-  settings?: { doc_llm_optin: boolean; doc_llm_optin_at: string | null; doc_pii_masking?: boolean }
 }
 
 export type DocumentCategory = 'background' | 'policy' | 'regulation' | 'contract' | 'minutes' | 'voucher' | 'evidence' | 'prior_report' | 'correspondence' | 'other'
@@ -82,19 +81,6 @@ export interface EvidenceRef {
   confirmed_at: string | null
   legacy_ref?: string
   available?: boolean
-}
-
-export interface DisclosureEvent {
-  id: string
-  at: string
-  document_id: string
-  source_sha1: string
-  pages: number[]
-  purpose: string
-  pii_masked: boolean
-  characters_disclosed?: number
-  truncated_pages?: number[]
-  omitted_pages?: number[]
 }
 
 export interface AIActivityEvent {
@@ -893,7 +879,6 @@ export interface AssistantAnswer {
   answer: string
   steps: AssistantStep[]
   artifacts: AssistantArtifact[]
-  disclosure: string
   citations: EvidenceRef[]
   document_context: {
     manifest: Array<{
@@ -903,7 +888,7 @@ export interface AssistantAnswer {
       included_pages: number[]
       truncated_pages: number[]
       omitted_pages: number[]
-      characters_disclosed: number
+      characters_included: number
       trimmed: boolean
       text_state: DocumentTextState
     }>
@@ -962,7 +947,7 @@ export interface AgentTask {
   status: AgentTaskStatus
   error: string | null
   result_refs: string[]
-  disclosure: string[]
+  context_notes?: string[]
 }
 
 export interface AgentStage {
@@ -977,7 +962,6 @@ export interface AgentApprovalItem {
   rationale: string
   spec: Record<string, unknown>
   evidence: Record<string, unknown>
-  disclosure: string
   decision: 'approved' | 'rejected' | 'edited' | null
   edited_spec: Record<string, unknown> | null
 }

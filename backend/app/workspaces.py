@@ -238,12 +238,6 @@ class Workspace:
         self.rulesets: list[dict] = list(definition.get("rulesets") or [])
         # Full-audit-cycle records hydrate defensively so every pre-extension
         # workspace remains readable without a migration step.
-        self.settings: dict = {
-            "doc_llm_optin": False,
-            "doc_llm_optin_at": None,
-            "doc_pii_masking": False,
-            **dict(definition.get("settings") or {}),
-        }
         self.documents: list[dict] = list(definition.get("documents") or [])
         self.planning: dict = {
             "context": {
@@ -310,7 +304,6 @@ class Workspace:
             "tiles": self.tiles,
             "analyses": self.analyses,
             "rulesets": self.rulesets,
-            "settings": self.settings,
             "documents": self.documents,
             "planning": self.planning,
             "rcm": self.rcm,
@@ -1136,7 +1129,6 @@ class Workspace:
             "tile_count": len(self.tiles),
             "document_count": len(self.documents),
             "finding_count": len(self.findings),
-            "settings": self.settings,
         }
 
 
@@ -1171,9 +1163,7 @@ def load_workspace(workspace_id: str) -> Workspace:
     return Workspace(root)
 
 
-def create_workspace(
-    name: str, description: str = "", doc_llm_optin: bool = False
-) -> Workspace:
+def create_workspace(name: str, description: str = "") -> Workspace:
     name = str(name).strip()
     if not name:
         raise WorkspaceError("Workspace name is required.")
@@ -1190,15 +1180,6 @@ def create_workspace(
                 "name": name,
                 "description": str(description).strip(),
                 "created": date.today().isoformat(),
-                "settings": {
-                    "doc_llm_optin": bool(doc_llm_optin),
-                    "doc_llm_optin_at": (
-                        datetime.now(timezone.utc).isoformat(timespec="seconds")
-                        if doc_llm_optin
-                        else None
-                    ),
-                    "doc_pii_masking": False,
-                },
                 "tables": [],
                 "joins": [],
             },

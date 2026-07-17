@@ -217,12 +217,12 @@ class CommandRunner(BaseRunner):
             "apm": bool(str(self.ws.planning.get("apm_markdown") or "").strip()),
             "rcm_refs": [item["id"] for item in self.ws.rcm],
             "procedure_refs": [item["id"] for item in self.ws.work_program],
-            "document_content_disclosed": bool(basis.get("document_content_disclosed")),
+            "document_content_included": bool(basis.get("document_content_included")),
         }
         self.save()
 
     def stage_context(self) -> dict:
-        task = self.add_task("context", "planning:context", "Assemble disclosed planning context")
+        task = self.add_task("context", "planning:context", "Assemble planning context")
         if task["status"] == "completed" and self.run.get("planning_basis"):
             return self.run["planning_basis"]
         if task["status"] != "completed":
@@ -241,7 +241,7 @@ class CommandRunner(BaseRunner):
         if missing:
             raise WorkspaceError(f"Planning source document not found: {sorted(missing)[0]}.")
         context = self.ws.planning.get("context") or {}
-        if not requested_document_ids and self.ws.settings.get("doc_llm_optin"):
+        if not requested_document_ids:
             requested_document_ids = self._select_planning_documents(task, context)
             requested = set(requested_document_ids)
         document_metadata = [
@@ -260,67 +260,59 @@ class CommandRunner(BaseRunner):
         ).strip() or "internal audit risk controls procedures"
         pack_results = methodology.search(self.ws, methodology_query, limit=5)
         methodology_context = []
-        disclosed_documents = []
-        disclosed_names: list[str] = []
-        disclosed_packs: dict[str, dict] = {}
-        if self.ws.settings.get("doc_llm_optin"):
-            for document_id in requested_document_ids:
-                doc = next(item for item in self.ws.documents if item.get("id") == document_id)
-                disclosed_names.append(
-                    Path(str(doc.get("source") or doc.get("title") or document_id)).name
-                )
-                page_count = max(1, int(doc.get("pages") or 1))
-                disclosed = documents.disclosable_content(
-                    self.ws,
-                    document_id,
-                    "planning_update",
-                    self.run["id"],
-                    list(range(1, min(page_count, MAX_PAGES_PER_SOURCE_DOCUMENT) + 1)),
-                    mask_pii=bool(self.ws.settings.get("doc_pii_masking")),
-                )
-                disclosed_documents.append(
-                    {
-                        "id": document_id,
-                        "title": doc.get("title"),
-                        "category": doc.get("category"),
-                        "source_sha1": disclosed.get("source_sha1"),
-                        "pages": disclosed.get("pages") or [],
-                    }
-                )
-            for result in pack_results:
-                source_ref = f"pack:{result['scope']}:{result['pack_id']}"
-                if source_ref not in disclosed_packs:
-                    disclosed_packs[source_ref] = documents.disclosable_content(
-                        self.ws, source_ref, "planning_methodology", self.run["id"], [1]
-                    )
-                content = disclosed_packs[source_ref]["pages"][0]["text"]
-                excerpt = result["excerpt"] if result["excerpt"] in content else ""
-                methodology_context.append({**result, "excerpt": excerpt})
-        elif requested_document_ids:
-            self.warn(
-                "Document AI is off; planning can use imported document metadata but not document content."
+        included_documents = []
+        included_names: list[str] = []
+        included_packs: dict[str, dict] = {}
+        for document_id in requested_document_ids:
+            doc = next(item for item in self.ws.documents if item.get("id") == document_id)
+            included_names.append(
+                Path(str(doc.get("source") or doc.get("title") or document_id)).name
             )
+            page_count = max(1, int(doc.get("pages") or 1))
+            included = documents.prompt_content(
+                self.ws,
+                document_id,
+                list(range(1, min(page_count, MAX_PAGES_PER_SOURCE_DOCUMENT) + 1)),
+            )
+            self.record_model_source(included)
+            included_documents.append(
+                {
+                    "id": document_id,
+                    "title": doc.get("title"),
+                    "category": doc.get("category"),
+                    "source_sha1": included.get("source_sha1"),
+                    "pages": included.get("pages") or [],
+                }
+            )
+        for result in pack_results:
+            source_ref = f"pack:{result['scope']}:{result['pack_id']}"
+            if source_ref not in included_packs:
+                included_packs[source_ref] = documents.prompt_content(self.ws, source_ref, [1])
+                self.record_model_source(included_packs[source_ref])
+            content = included_packs[source_ref]["pages"][0]["text"]
+            excerpt = result["excerpt"] if result["excerpt"] in content else ""
+            methodology_context.append({**result, "excerpt": excerpt})
         basis = {
             "planning": self.ws.planning,
             "documents": document_metadata,
             "tables": tables,
-            "document_content_disclosed": bool(disclosed_documents),
-            "document_content": disclosed_documents,
+            "document_content_included": bool(included_documents),
+            "document_content": included_documents,
             "methodology_available": [
                 {key: pack.get(key) for key in ("id", "name", "scope", "version", "sha1")}
                 for pack in methodology.list_packs(self.ws)
             ],
             "methodology": methodology_context,
         }
-        if disclosed_documents:
-            self.disclose(
+        if included_documents:
+            self.note_context(
                 task,
-                f"{', '.join(disclosed_names)} "
-                f"({len(disclosed_names)} file{'s' if len(disclosed_names) != 1 else ''})",
+                f"{', '.join(included_names)} "
+                f"({len(included_names)} file{'s' if len(included_names) != 1 else ''})",
             )
             payload = self.llm_json(
                 prompts.DOCUMENT_CONTEXT_SYSTEM,
-                prompts.document_context_user(context, disclosed_documents),
+                prompts.document_context_user(context, included_documents),
             )
             proposed_context = {
                 key: value

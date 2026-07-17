@@ -162,7 +162,7 @@ def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
 
 
 def test_auto_planning_selects_relevant_documents(monkeypatch):
-    ws = workspaces.create_workspace("Auto document selection", doc_llm_optin=True)
+    ws = workspaces.create_workspace("Auto document selection")
     policy_text = b"Procurement Policy: purchases require documented approval before commitment."
     policy = documents.add_document(ws, "Procurement Policy.txt", policy_text, category="policy")
 
@@ -180,9 +180,9 @@ def test_auto_planning_selects_relevant_documents(monkeypatch):
     assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
     assert policy_text.decode() in context_call["messages"][-1]["content"]
-    disclosures = documents.disclosures(reloaded)["items"]
-    assert any(item["document_id"] == policy["id"] for item in disclosures)
-    assert completed["planning_basis"]["document_content_disclosed"] is True
+    activity = documents.activities(reloaded, limit=250)["items"]
+    assert any(policy["id"] in item.get("document_ids", []) for item in activity)
+    assert completed["planning_basis"]["document_content_included"] is True
 
 
 def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
@@ -237,7 +237,7 @@ def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
 
 
 def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
-    ws = workspaces.create_workspace("Permission document selection", doc_llm_optin=True)
+    ws = workspaces.create_workspace("Permission document selection")
     policy = documents.add_document(
         ws, "Procurement Policy.txt",
         b"Procurement Policy: purchases require documented approval.", category="policy",
@@ -269,7 +269,7 @@ def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
     assert completed["status"] == "completed"
     # The auditor confirms the agent's document choice before any content is used.
     assert kinds[0] == "documents"
-    assert any(item["document_id"] == policy["id"] for item in documents.disclosures(reloaded)["items"])
+    assert any(policy["id"] in item.get("document_ids", []) for item in documents.activities(reloaded, limit=250)["items"])
 
 
 def test_planning_routes():
@@ -292,7 +292,7 @@ def test_planning_routes():
     assert template.json()["source"] == "workspace"
 
 
-def test_planning_cites_opted_in_methodology_pack(monkeypatch):
+def test_planning_cites_methodology_pack(monkeypatch):
     configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("Methodology planning")
     methodology.save_pack(
@@ -300,8 +300,6 @@ def test_planning_cites_opted_in_methodology_pack(monkeypatch):
         "Firm AP Guide",
         "# Duplicate payments\nAudit procedures should address duplicate-payment risk and preventive controls.",
     )
-    ws.settings["doc_llm_optin"] = True
-    ws.save()
     started = start_planning(ws)
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
@@ -309,8 +307,6 @@ def test_planning_cites_opted_in_methodology_pack(monkeypatch):
     refs = reloaded.work_program[0]["methodology_refs"]
     assert refs[0]["pack_name"] == "Firm AP Guide"
     assert refs[0]["section"] == "Duplicate payments"
-    logged = documents.disclosures(reloaded)["items"]
-    assert logged[0]["purpose"] == "planning_methodology"
     activity = documents.activities(reloaded)["items"]
     assert any(item.get("artifact_ref") == "planning:apm" for item in activity)
     apm_call = next(item for item in activity if item.get("stage") == "agent:apm")
@@ -318,9 +314,9 @@ def test_planning_cites_opted_in_methodology_pack(monkeypatch):
     assert apm_call["knowledge_packs"][0]["sha1"] == refs[0]["sha1"]
 
 
-def test_planning_update_discloses_selected_imported_documents(monkeypatch):
+def test_planning_update_includes_selected_imported_documents(monkeypatch):
     fake = configure_planning_llm(monkeypatch)
-    ws = workspaces.create_workspace("Policy planning update", doc_llm_optin=True)
+    ws = workspaces.create_workspace("Policy planning update")
     policy_text = b"Procurement Policy: purchases require documented approval before commitment."
     policy = documents.add_document(ws, "Procurement Policy.txt", policy_text, category="policy")
 
@@ -332,7 +328,6 @@ def test_planning_update_discloses_selected_imported_documents(monkeypatch):
     assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
     assert policy_text.decode() in context_call["messages"][-1]["content"]
-    disclosures = documents.disclosures(reloaded)["items"]
-    assert disclosures[0]["document_id"] == policy["id"]
-    assert disclosures[0]["purpose"] == "planning_update"
-    assert completed["planning_basis"]["document_content_disclosed"] is True
+    activity = documents.activities(reloaded, limit=250)["items"]
+    assert any(policy["id"] in item.get("document_ids", []) for item in activity)
+    assert completed["planning_basis"]["document_content_included"] is True

@@ -1,4 +1,4 @@
-"""Privacy-safe engagement artifact index and deterministic target resolver."""
+"""Engagement artifact index and deterministic target resolver."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import re
 from difflib import SequenceMatcher
 
-from .. import doc_tests, privacy, report
+from .. import doc_tests, report
 from ..workspaces import Workspace
 
 STRONG_SCORE = 0.86
@@ -28,13 +28,13 @@ def _entry(kind: str, item_id: str, primary: str, item: dict, *, body: str = "",
     ref = f"{kind}:{item_id}"
     return {
         "ref": ref, "kind": kind, "id": item_id,
-        "title": privacy.scrub_text(primary),
+        "title": str(primary or ""),
         "status": item.get("status"), "created_by": item.get("created_by"),
         "agent_run_id": item.get("agent_run_id"), "semantic_id": item.get("semantic_id"),
         "updated": item.get("updated") or item.get("created"),
         "sha1": canonical_sha1(item), "linked_refs": list(linked or []),
-        "search_primary": privacy.scrub_text(primary).casefold(),
-        "search_body": privacy.scrub_text(body).casefold(),
+        "search_primary": str(primary or "").casefold(),
+        "search_body": str(body or "").casefold(),
     }
 
 

@@ -5,7 +5,7 @@
   POST /api/workspaces/{id}/assistant               ask a question (tool loop)
   POST /api/workspaces/{id}/run-python              execute an edited snippet
 
-All computation is local; only metadata reaches the LLM (see :mod:`.assistant`).
+Computations are local and model-facing result previews are bounded.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ async def ask(workspace_id: str, payload: dict = Body(...)):
         ws,
         payload.get("question", ""),
         payload.get("document_ids"),
-        mask_pii=payload.get("mask_pii"),
     )
 
 

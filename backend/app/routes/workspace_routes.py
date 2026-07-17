@@ -16,13 +16,9 @@ async def list_workspaces():
 
 @router.post("")
 async def create_workspace(payload: dict = Body(...)):
-    doc_llm_optin = payload.get("doc_llm_optin", False)
-    if not isinstance(doc_llm_optin, bool):
-        raise workspaces.WorkspaceError("Document AI choice must be true or false.")
     ws = workspaces.create_workspace(
         payload.get("name", ""),
         payload.get("description", ""),
-        doc_llm_optin=doc_llm_optin,
     )
     return ws.summary()
 

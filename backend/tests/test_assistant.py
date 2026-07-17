@@ -56,43 +56,41 @@ def test_sandbox_runtime_error_is_user_facing():
         sandbox_run("result = df.select(pl.col('nope'))", {"df": pl.DataFrame({"a": [1]})})
 
 
-# ---------------------------------------------------------------- metadata only
-def test_table_metadata_is_aggregate_only(workspace_with_data):
+# -------------------------------------------------------------- model context
+def test_table_metadata_includes_unmasked_low_cardinality_values(workspace_with_data):
     meta = assistant.table_metadata(workspace_with_data, "transactions")
     assert meta["rows"] == 6
     by_name = {c["name"]: c for c in meta["columns"]}
-    # numeric column exposes ranges, not values
     assert set(by_name["amount"]) >= {"nulls_pct", "distinct", "min", "max", "mean"}
     assert "rows" not in by_name["amount"]
-    # identifier-like fields retain schema/count metadata but never values
-    assert by_name["cust_id"]["classification"] == "sensitive_identifier"
-    assert "values" not in by_name["cust_id"]
+    assert set(by_name["cust_id"]["values"]) == {"C1", "C2", "C3"}
 
 
-def test_frame_for_model_withholds_raw_rows():
+def test_frame_for_model_returns_bounded_unmasked_rows():
     raw = pl.DataFrame({"amount": list(range(10))})
-    withheld = assistant._frame_for_model(raw, allow_rows=False)
-    assert "rows" not in withheld
-    assert "note" in withheld
-    assert withheld["numeric_summary"]["amount"]["max"] == 9
+    shown = assistant._frame_for_model(raw)
+    assert shown["rows"] == [[value] for value in range(10)]
+    assert shown["truncated"] is False
+    assert shown["numeric_summary"]["amount"]["max"] == 9
 
     agg = pl.DataFrame({"branch": ["A", "B"], "total": [10.0, 20.0]})
-    shown = assistant._frame_for_model(agg, allow_rows=True)
-    assert shown["rows"] == [["A", 10.0], ["B", 20.0]]
+    preview = assistant._frame_for_model(agg)
+    assert preview["rows"] == [["A", 10.0], ["B", 20.0]]
 
 
 # ------------------------------------------------------------------- tools
-def test_query_tool_aggregated_shows_rows_raw_hides(workspace_with_data):
+def test_query_tool_shows_bounded_rows_for_aggregated_and_raw_results(workspace_with_data):
     session = assistant._Session(workspace_with_data)
     agg, artifact = session.query_table(
         {"table": "transactions", "group_by": ["cust_id"], "aggregates": [{"column": "amount", "func": "sum"}]}
     )
     assert artifact["kind"] == "query"
-    assert agg["result"]["rows"]  # aggregated → model sees the summary
+    assert agg["result"]["rows"]
     assert artifact["total_rows"] == 3
 
     raw, _ = session.query_table({"table": "transactions"})
-    assert "rows" not in raw["result"]  # raw rows withheld from the model
+    assert raw["result"]["rows"]
+    assert raw["result"]["rows"][0][0] == 1001
 
 
 def test_analytics_tool_returns_verdict_and_artifact(workspace_with_data):
@@ -139,6 +137,7 @@ def test_python_tile_requires_code(workspace_with_data):
 
 # ----------------------------------------------------------------- llm status
 def test_assistant_status_unconfigured(monkeypatch):
+    assistant_settings.save({"provider": "mistral", "model": "mistral-small-latest"})
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
@@ -146,7 +145,7 @@ def test_assistant_status_unconfigured(monkeypatch):
     monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
     body = llm.status()
     assert body["configured"] is False
-    assert body["backend"] == assistant_settings.DEFAULT_PROVIDER
+    assert body["backend"] == "mistral"
     assert body["model"]
     assert any(provider["id"] == "mistral" for provider in body["providers"])
     opencode = next(provider for provider in body["providers"] if provider["id"] == "opencode")
@@ -523,10 +522,9 @@ def test_ask_runs_tool_loop(monkeypatch, workspace_with_data):
     assert result["artifacts"][0]["kind"] == "query"
     assert result["steps"][0]["tool"] == "query_table"
     assert result["steps"][0]["ok"] is True
-    # The tool result fed back to the model must be aggregated JSON, no raw dump.
+    # The tool result fed back to the model includes the bounded result preview.
     tool_msg = next(m for m in calls[1] if m.get("role") == "tool")
-    assert '"rows"' in tool_msg["content"]  # aggregated summary allowed
-    assert "disclosure" in result
+    assert '"rows"' in tool_msg["content"]
 
 
 def test_ask_reports_tool_error_to_model(monkeypatch, workspace_with_data):
@@ -552,7 +550,7 @@ def test_ask_reports_tool_error_to_model(monkeypatch, workspace_with_data):
     assert result["answer"] == "That table does not exist."
 
 
-def test_ask_with_documents_discloses_context_and_returns_validated_citation(
+def test_ask_with_documents_includes_context_and_returns_validated_citation(
     monkeypatch, workspace_with_data,
 ):
     doc = documents.add_document(
@@ -560,8 +558,6 @@ def test_ask_with_documents_discloses_context_and_returns_validated_citation(
         "approval-policy.txt",
         b"The finance director approves invoices before payment.",
     )
-    workspace_with_data.settings.update(doc_llm_optin=True, doc_pii_masking=False)
-    workspace_with_data.save()
     calls = []
 
     def fake_chat(messages, tools=None, temperature=0.0):
@@ -578,21 +574,21 @@ def test_ask_with_documents_discloses_context_and_returns_validated_citation(
     monkeypatch.setattr(assistant.llm, "status", lambda: {
         "configured": True, "provider": "fake", "model": "fake",
     })
-    result = assistant.ask(
-        workspace_with_data, "Who approves invoices?", [doc["id"]], mask_pii=False,
-    )
+    result = assistant.ask(workspace_with_data, "Who approves invoices?", [doc["id"]])
 
     assert result["answer"] == "The finance director approves invoices."
     assert result["citations"][0]["source_id"] == doc["id"]
     assert result["document_context"]["trimmed"] is False
     assert "finance director" in calls[0][0]["content"]
-    assert documents.disclosures(workspace_with_data)["items"][0]["purpose"] == "assistant_chat"
     activity = documents.activities(workspace_with_data)["items"][0]
     assert activity["document_ids"] == [doc["id"]]
     assert "finance director" not in json.dumps(activity)
 
 
-def test_ask_with_documents_requires_optin(workspace_with_data):
-    doc = documents.add_document(workspace_with_data, "local.txt", b"Stays local")
-    with pytest.raises(documents.DocPrivacyError):
-        assistant.ask(workspace_with_data, "What does it say?", [doc["id"]])
+def test_ask_with_documents_requires_no_workspace_setting(monkeypatch, workspace_with_data):
+    doc = documents.add_document(workspace_with_data, "local.txt", b"Always available")
+    monkeypatch.setattr(assistant.llm, "chat", lambda *args, **kwargs: {
+        "content": json.dumps({"answer": "Always available", "citations": []}),
+    })
+    result = assistant.ask(workspace_with_data, "What does it say?", [doc["id"]])
+    assert result["answer"] == "Always available"

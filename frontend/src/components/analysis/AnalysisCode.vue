@@ -42,7 +42,7 @@ function starterCode(): string {
   }
   lines.push(
     '#',
-    '# Everything runs on this machine — raw rows never leave it.',
+    '# Execution runs on this machine; bounded results may be shown to the configured model.',
     '# Assign your output to `result` (DataFrame, Series, dict, or scalar);',
     '# `print(...)` output shows up below the editor.',
     '',

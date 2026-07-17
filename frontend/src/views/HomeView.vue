@@ -43,7 +43,6 @@ async function create() {
     const ws = await api.post<WorkspaceSummary>('/api/workspaces', {
       name: name.value,
       description: '',
-      doc_llm_optin: true,
     })
     showCreate.value = false
     await router.push({ path: `/workspace/${ws.id}` })
@@ -175,9 +174,6 @@ h1 {
 .portfolio-strip > span { display: flex; flex-direction: column; min-width: 10rem; padding: 0.8rem 1.2rem; border-right: 1px solid var(--aw-border); }
 .portfolio-strip strong { font-size: 1.2rem; font-weight: 600; color: var(--aw-ink); }
 .portfolio-strip small { margin-top: 0.15rem; color: var(--aw-muted); font-size: var(--aw-text-xs); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-.portfolio-strip .privacy-fact { margin-left: auto; flex-direction: row; align-items: center; gap: 0.6rem; border-right: 0; }
-.privacy-fact > i { color: var(--aw-teal); }
-.privacy-fact > span { display: flex; flex-direction: column; }
 
 .grid {
   display: grid;

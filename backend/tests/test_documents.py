@@ -61,50 +61,33 @@ def test_document_classification_can_be_updated():
         documents.update_document(ws, doc["id"], {"category": "invalid"})
 
 
-def test_disclosure_requires_optin_selects_pages_masks_and_logs():
-    ws = workspaces.create_workspace("Disclosure")
+def test_prompt_content_selects_pages_without_masking_or_optin():
+    ws = workspaces.create_workspace("Document context")
     doc = documents.add_document(ws, "contact.txt", b"Contact jane@example.com or +1 202 555 0188.")
-    with pytest.raises(documents.DocPrivacyError):
-        documents.disclosable_content(ws, doc["id"], "document_qa", pages=[1])
-
-    ws.settings.update(doc_llm_optin=True, doc_llm_optin_at=documents.utcnow())
-    ws.save()
-    result = documents.disclosable_content(ws, doc["id"], "document_qa", pages=[1], mask_pii=True)
-    assert result["pages"][0]["text"] == "Contact [email masked] or [number masked]."
-    logged = documents.disclosures(ws)["items"]
-    assert logged[0]["pages"] == [1]
-    assert logged[0]["source_sha1"] == doc["sha1"]
-    assert "jane@example.com" not in json.dumps(logged)
+    result = documents.prompt_content(ws, doc["id"], pages=[1])
+    assert result["pages"][0]["text"] == "Contact jane@example.com or +1 202 555 0188."
+    assert result["source_sha1"] == doc["sha1"]
     with pytest.raises(workspaces.WorkspaceError):
-        documents.disclosable_content(ws, doc["id"], "document_qa", pages=[])
+        documents.prompt_content(ws, doc["id"], pages=[])
 
 
 def test_assistant_document_context_shares_budget_and_reports_trimming():
     ws = workspaces.create_workspace("Assistant document budget")
     first = documents.add_document(ws, "first.txt", b"A" * 120)
     second = documents.add_document(ws, "second.txt", b"B" * 20)
-    ws.settings["doc_llm_optin"] = True
-    ws.save()
-
     context = documents.assistant_document_context(
         ws, [first["id"], second["id"], first["id"]], max_characters=60,
     )
 
     assert [item["document_id"] for item in context["manifest"]] == [first["id"], second["id"]]
-    assert sum(item["characters_disclosed"] for item in context["manifest"]) == 60
+    assert sum(item["characters_included"] for item in context["manifest"]) == 60
     assert context["trimmed"] is True
-    assert context["manifest"][1]["characters_disclosed"] == 20
-    logged = documents.disclosures(ws)["items"]
-    assert len(logged) == 2
-    assert all(item["purpose"] == "assistant_chat" for item in logged)
-    assert all("characters_disclosed" in item for item in logged)
+    assert context["manifest"][1]["characters_included"] == 20
 
 
 def test_doc_chat_creates_citations_and_content_free_activity(monkeypatch):
     ws = workspaces.create_workspace("Document Q&A")
     doc = documents.add_document(ws, "policy.txt", b"Invoices require approval by the finance director before payment.")
-    ws.settings["doc_llm_optin"] = True
-    ws.save()
     calls = []
 
     def fake_chat(messages, **kwargs):
@@ -144,7 +127,7 @@ def test_methodology_pack_versions_and_lexical_citations():
     assert result["section"] == "Sampling"
 
 
-def test_document_privacy_and_knowledge_apis(monkeypatch):
+def test_document_and_knowledge_apis(monkeypatch):
     client = TestClient(create_app())
     workspace_id = client.post("/api/workspaces", json={"name": "Document API"}).json()["id"]
     base = f"/api/workspaces/{workspace_id}"
@@ -153,9 +136,8 @@ def test_document_privacy_and_knowledge_apis(monkeypatch):
     assert upload.json()["suggested_actions"][0]["agent_kind"] == "planning"
     doc = upload.json()["added"][0]
     assert client.get(f"{base}/documents/{doc['id']}/preview").json()["pages"][0]["text"] == "Policy evidence"
-    assert client.post(f"{base}/doc-chat", json={"document_id": doc["id"], "question": "What?", "pages": [1]}).status_code == 400
-    settings = client.patch(f"{base}/settings", json={"doc_llm_optin": True}).json()
-    assert settings["doc_llm_optin_at"]
+    assert client.post(f"{base}/doc-chat", json={"document_id": doc["id"], "question": "What?", "pages": [1]}).status_code == 503
+    assert client.patch(f"{base}/settings", json={}).status_code == 405
     pack = client.post(
         f"{base}/knowledge-packs",
         data={"name": "Firm Guide", "scope": "workspace"},

@@ -2,9 +2,9 @@
 
 A local-first audit workbench spanning data analysis, engagement planning,
 document evidence, fieldwork, findings, and report drafting. Structured data
-is computed on your machine and raw rows never reach an LLM. Document content
-can reach a configured model only after an explicit per-engagement opt-in;
-every such disclosure is logged.
+is computed on your machine. Configured models receive bounded, unmasked result
+previews and attached document context so local models can work with real
+engagement values.
 
 ## Capabilities
 
@@ -34,9 +34,9 @@ every such disclosure is logged.
   recompute against the current source files.
 - **Documents and evidence** — ingest PDF, TXT/Markdown, DOCX, and common image
   formats; preview extracted pages, track versions, ask cited questions, and
-  navigate immutable typed evidence anchors. Disclosure and AI-activity logs
-  retain provider, model, page, source-hash, and artifact provenance without
-  duplicating raw content into the ledger.
+  navigate immutable typed evidence anchors. AI-activity logs retain provider,
+  model, page, source-hash, and artifact provenance without duplicating raw
+  content into the ledger.
 - **Document tests and working papers** — perform vouching/tracing, attribute
   testing, document/minutes review, and cited document Q&A. Comparisons remain
   explainable through exact, normalized, fuzzy-similarity, numeric-tolerance,
@@ -52,23 +52,25 @@ every such disclosure is logged.
 - **Natural-language assistant** — ask questions in plain English. A configured
   Groq, OpenRouter, Mistral, or local LM Studio model calls tools that discover
   schemas, run structured queries and analytics, or write visible, editable
-  Polars. Only metadata, aggregate statistics, and aggregated previews are
-  returned to the model; raw structured rows stay local.
+  Polars. Tool results include compact, unmasked row previews with explicit
+  truncation when a result exceeds the model-context limit.
 - **Durable audit-assistant runs** — auto or permission-mode runs can build
   joins, validation rules, analyses, and dashboards; conduct planning
   interviews; classify staged folder imports; and execute selected document
   tests. Runs support SSE replay, pause/resume/cancel, steering, editable
   approvals, restart recovery, and user-safe rerun reconciliation.
 
-## Privacy model
+## Model context
 
-Structured-data and document privacy are separate controls:
+The workbench is optimized for a locally hosted model:
 
-- Raw structured rows never leave the device. Model tools receive schemas,
-  column names, aggregate statistics, and previews of aggregated results.
-- Document pages and methodology excerpts are unavailable to models until
-  document AI is explicitly enabled for that workspace. Every disclosure is
-  recorded with its purpose, pages, and immutable source hash.
+- Model tools receive schemas, aggregate statistics, and bounded unmasked row
+  previews. Entire large populations are never inserted into one prompt.
+- Documents attached to assistant questions and planning workflows are included
+  automatically within a shared character budget. Citations remain tied to
+  immutable source hashes and exact included text.
+- No per-engagement consent switch or automatic PII masking is applied. Use
+  cloud backends only with synthetic or otherwise appropriate data.
 - Deterministic matching and quality checks run locally. Model interpretation
   is presented separately and never replaces stored comparison evidence or
   clears deterministic report-quality failures.

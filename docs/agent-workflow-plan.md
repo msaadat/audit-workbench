@@ -9,6 +9,12 @@
 > orchestrator executes mutations (rather than exposing mutation tools to the
 > model); queries/charts persist only as dashboard tiles (no separate saved
 > query store); V1 summary lives on the run record.
+>
+> **Context update (2026-07-17):** privacy-boundary sections below describe the
+> original implementation. The current local-model design uses bounded,
+> unmasked row previews and automatic document context; consent switches,
+> masking, and disclosure logs were removed. Context-size limits, provenance,
+> citations, sandboxing, and mutation approvals remain.
 
 ## Vision
 

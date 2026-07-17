@@ -19,8 +19,7 @@ provider and model are normal application settings saved through the UI:
 
 This module is a thin transport: it knows how to send a chat request (with
 optional tool schemas) and hand back the raw assistant message. It never sees
-a workspace or a frame; the metadata-only guarantee is enforced one layer up,
-in :mod:`.assistant`, which decides what text is allowed into ``messages``.
+a workspace or a frame; callers assemble bounded model context one layer up.
 """
 
 from __future__ import annotations

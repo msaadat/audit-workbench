@@ -187,14 +187,12 @@ onUnmounted(unsubscribe)
           </TabPanels>
         </div>
       </Tabs>
-      <AgentDrawer :workspace="workspace" @settings-changed="reload" />
+      <AgentDrawer :workspace="workspace" />
     </div>
     <FolderImportDialog
       v-model="folderImportOpen"
       :workspaceId="props.id"
-      :documentAiEnabled="Boolean(workspace.settings?.doc_llm_optin)"
       @imported="handleImported"
-      @settings-changed="reload"
       @planning-started="activeTab = 'planning'"
     />
   </div>

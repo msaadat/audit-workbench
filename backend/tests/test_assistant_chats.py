@@ -33,11 +33,11 @@ def test_q_and_a_is_durable_idempotent_and_uses_bounded_history(workspace_with_d
     configured(monkeypatch)
     calls = []
 
-    def fake_ask(workspace, question, document_ids, *, mask_pii, prior_turns):
+    def fake_ask(workspace, question, document_ids, *, prior_turns):
         calls.append((question, prior_turns))
         return {
             "answer": f"Answer to {question}", "steps": [{"tool": "list_tables", "args": {}, "ok": True}],
-            "artifacts": [], "citations": [], "disclosure": "metadata only", "document_context": None,
+            "artifacts": [], "citations": [], "document_context": None,
         }
 
     monkeypatch.setattr(assistant_chats.assistant, "ask", fake_ask)
@@ -70,7 +70,7 @@ def test_artifact_sidecar_edit_rerun_and_revision_conflict(workspace_with_data, 
     ws = workspace_with_data
     configured(monkeypatch)
     monkeypatch.setattr(assistant_chats.assistant, "ask", lambda *args, **kwargs: {
-        "answer": "Computed locally", "steps": [], "citations": [], "disclosure": "metadata only",
+        "answer": "Computed locally", "steps": [], "citations": [],
         "document_context": None, "artifacts": [{
             "id": "temporary", "tool": "run_python", "title": "Totals", "table": None,
             "kind": "python", "spec": {"code": "result = transactions.head(1)"},

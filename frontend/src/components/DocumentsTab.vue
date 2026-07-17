@@ -7,11 +7,10 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
-import Checkbox from 'primevue/checkbox'
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentCategory, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
+import type { AIActivityEvent, AuditDocument, DocumentCategory, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
 import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
@@ -37,11 +36,6 @@ const state = ref('all')
 const busy = ref(false)
 const classificationBusy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-const optin = ref(Boolean(props.workspace.settings?.doc_llm_optin))
-const piiMasking = ref(Boolean(props.workspace.settings?.doc_pii_masking))
-const confirmOptin = ref(false)
-const disclosuresOpen = ref(false)
-const disclosures = ref<DisclosureEvent[]>([])
 const versions = ref<AuditDocument[]>([])
 const activity = ref<AIActivityEvent[]>([])
 const knowledgeOpen = ref(false)
@@ -69,7 +63,6 @@ const groups = computed(() => {
 const current = computed(() => previewPages.value.find(page => page.page === currentPage.value) || previewPages.value[0])
 const secondaryActions = computed(() => [
   { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
-  { label: 'Disclosure log', icon: 'pi pi-list', command: () => void openDisclosures() },
 ])
 
 function severity(value: string): 'success' | 'danger' | 'warn' | 'secondary' {
@@ -155,35 +148,11 @@ async function remove() {
   selectedId.value = ''; await loadDocuments(); if (selectedId.value) await loadDetail(); emit('changed')
 }
 
-async function enableOptin() {
-  const settings = await api.patch<{ doc_llm_optin: boolean }>(`/api/workspaces/${props.workspace.id}/settings`, { doc_llm_optin: true })
-  optin.value = settings.doc_llm_optin; confirmOptin.value = false; emit('changed')
-}
-
-async function disableOptin() {
-  await api.patch(`/api/workspaces/${props.workspace.id}/settings`, { doc_llm_optin: false })
-  optin.value = false; emit('changed')
-}
-
-async function setMasking() {
-  await api.patch(`/api/workspaces/${props.workspace.id}/settings`, { doc_pii_masking: piiMasking.value })
-  emit('changed')
-}
-
-async function openDisclosures() {
-  disclosures.value = (await api.get<{ items: DisclosureEvent[] }>(`/api/workspaces/${props.workspace.id}/documents/disclosures`)).items
-  disclosuresOpen.value = true
-}
-
 async function attachToAssistant() {
   if (!selected.value) return
   await assistantChat.addDocument(selected.value)
   if (!agent.state.drawerOpen) agent.toggleDrawer()
   toast.add({ severity: 'success', summary: 'Added to assistant', detail: selected.value.title, life: 2500 })
-}
-
-function documentLabel(id: string) {
-  return documents.value.find(doc => doc.id === id)?.title || 'Document'
 }
 
 function fileIcon(doc: AuditDocument) {
@@ -214,8 +183,6 @@ async function searchPacks() {
 
 watch(() => route.query.doc, id => { if (id && id !== selectedId.value) void selectDocument(String(id), Number(route.query.page || 1)) })
 watch(currentPage, page => { if (selectedId.value) void router.replace({ query: { ...route.query, tab: 'documents', doc: selectedId.value, page: String(page) } }) })
-watch(() => props.workspace.settings?.doc_llm_optin, value => { optin.value = Boolean(value) })
-watch(() => props.workspace.settings?.doc_pii_masking, value => { piiMasking.value = Boolean(value) })
 onMounted(async () => { await loadDocuments(); if (selectedId.value) await selectDocument(selectedId.value, Number(route.query.page || 1)) })
 </script>
 
@@ -227,21 +194,10 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
       <UiOverflowMenu :items="secondaryActions" />
     </UiPageHeader>
 
-    <div class="privacy-strip" :class="{ enabled: optin }">
-      <i :class="optin ? 'pi pi-shield' : 'pi pi-lock'" />
-      <span v-if="optin"><strong>Document AI on.</strong> Only documents attached in the assistant may be disclosed; every disclosure is logged.</span>
-      <span v-else><strong>Documents stay local.</strong> Enable Document AI when you want to attach them to assistant questions.</span>
-      <label v-if="optin"><Checkbox v-model="piiMasking" binary @change="setMasking" /> Mask common email/number patterns before disclosure</label>
-      <Button v-if="!optin" label="Enable" size="small" severity="secondary" @click="confirmOptin = true" />
-      <Button v-else icon="pi pi-times" text rounded severity="secondary" aria-label="Turn off Document AI" v-tooltip.top="'Turn off Document AI'" @click="disableOptin" />
-    </div>
-
     <PostImportPlanningOffer
       v-if="planningAction"
       :workspaceId="workspace.id"
       :action="planningAction"
-      :documentAiEnabled="optin"
-      @settings-changed="optin = true; emit('changed')"
       @planning-started="emit('planning-started')"
     />
 
@@ -321,15 +277,6 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
       <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
     </UiEmptyState>
 
-    <Dialog v-model:visible="confirmOptin" modal header="Enable document AI for this engagement?" :style="{ width: 'min(34rem, 92vw)' }">
-      <p>Structured data rows will still never leave this device. For documents only, the pages and purpose shown in each disclosure preview may be sent to your configured model. Every disclosure and model result is appended to the engagement logs.</p>
-      <template #footer><Button label="Keep off" severity="secondary" @click="confirmOptin = false" /><Button label="Enable document AI" icon="pi pi-check" @click="enableOptin" /></template>
-    </Dialog>
-
-    <Dialog v-model:visible="disclosuresOpen" modal header="Document disclosure log" :style="{ width: 'min(58rem, 94vw)' }">
-      <div class="timeline"><article v-for="item in disclosures" :key="item.id"><i class="pi pi-cloud-upload" /><div><strong>{{ documentLabel(item.document_id) }} · pages {{ item.pages.join(', ') || 'none' }}</strong><p>{{ item.at }} · {{ item.purpose.replace('_', ' ') }} · {{ item.pii_masked ? 'PII masking on' : 'Unmasked' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · {{ item.document_id }} · {{ item.source_sha1 }}</code></details></div></article><p v-if="!disclosures.length" class="muted">Nothing has been disclosed.</p></div>
-    </Dialog>
-
     <Dialog v-model:visible="knowledgeOpen" modal header="Methodology knowledge packs" :style="{ width: 'min(64rem, 95vw)' }">
       <div class="pack-toolbar"><input ref="packInput" type="file" hidden accept=".md,.markdown,.txt" @change="uploadPack" /><Button label="Add Markdown pack" icon="pi pi-plus" @click="packInput?.click()" /><InputText v-model="packSearch" placeholder="Search local methodology" @keyup.enter="searchPacks" /><Button label="Search" severity="secondary" @click="searchPacks" /></div>
       <div class="pack-grid"><article v-for="pack in packs" :key="`${pack.scope}:${pack.id}`"><strong>{{ pack.name }}</strong><Tag :value="pack.scope" severity="secondary" /><p>Version {{ pack.version }} · updated {{ pack.updated }}</p><details><summary>Technical details</summary><code>{{ pack.id }} · {{ pack.sha1 }}</code></details></article></div>
@@ -341,8 +288,6 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 <style scoped>
 .documents-tab { display: grid; gap: 1rem; min-height: 100%; }
 .detail-head h3 { margin: 0; }
-.privacy-strip { display: flex; align-items: center; gap: .55rem; min-height:2.5rem; padding: .45rem .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-xs); }
-.privacy-strip.enabled { background: var(--aw-teal-soft); color: var(--aw-ink); border-color: #b7e3dc; }.privacy-strip label { margin-left: auto; display: flex; align-items: center; gap: .45rem; }
 .document-layout { display: grid; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 36rem; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff; }
 .document-rail { padding:.75rem; border-right:1px solid var(--aw-border); background:var(--p-surface-50); overflow-y:auto; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--p-surface-200); background:var(--p-surface-50); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--p-surface-400); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr 1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:.76rem; }
 .doc-group { display:grid; gap:.15rem; }.doc-group h4 { display:flex; justify-content:space-between; margin:.7rem .25rem .05rem; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; }.doc-row { width:100%; min-height:var(--aw-row-height); display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.42rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-sm); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:#fff; }.doc-row.active { border-color:#a7ded8; background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.8rem; height:1.8rem; place-items:center; border-radius:6px; color:var(--p-blue-600); background:var(--p-blue-50); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.8rem; }.doc-identity small { color:var(--aw-muted); font-size:.63rem; }.state-pill { width:.55rem; height:.55rem; overflow:hidden; padding:0; border-radius:999px; color:transparent; background:var(--p-surface-300); font-size:0; }.state-extracted { background:var(--p-green-500); }.state-failed { background:var(--p-red-500); }.state-partial,.state-image_only { background:var(--p-orange-500); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
@@ -350,5 +295,5 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 .classification-field { display:grid; gap:.2rem; min-width:10rem; color:var(--aw-muted); font-size:.65rem; font-weight:700; }.classification-field :deep(.p-select) { width:100%; min-height:2rem; font-size:.76rem; font-weight:400; text-transform:capitalize; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--p-surface-200); border-radius:8px; background:var(--p-surface-50); color:var(--p-surface-500); font-size:.7rem; }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: .7rem; }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
-@media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.privacy-strip { align-items: flex-start; flex-wrap: wrap; }.privacy-strip label { margin-left: 0; width: 100%; }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }
+@media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }
 </style>

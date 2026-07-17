@@ -594,15 +594,14 @@ def run_item(workspace: Workspace, test_id: str, item_id: str, *, run_id: str | 
             answers, citations = [], []
             for doc_id in item["document_ids"]:
                 answer = documents.document_chat(
-                    workspace, doc_id, item["question"], item.get("pages"),
-                    mask_pii=bool(workspace.settings.get("doc_pii_masking")), run_id=run_id,
+                    workspace, doc_id, item["question"], item.get("pages"), run_id=run_id,
                 )
                 answers.append(str(answer.get("answer") or ""))
                 citations.extend(answer.get("citations") or [])
             item.update(
                 response="\n\n".join(value for value in answers if value), citations=citations,
                 evidence_refs=citations, state="agent_checked", auditor_disposition="pending",
-                runner_note="Cited answer generated from explicitly disclosed pages; auditor disposition is still required.",
+                runner_note="Cited answer generated from the attached pages; auditor disposition is still required.",
             )
         except Exception as error:
             item.update(

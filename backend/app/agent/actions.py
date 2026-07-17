@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .. import (
-    analytics, doc_tests, explore, findings, intake, privacy, report, sandbox, validation,
+    analytics, doc_tests, explore, findings, intake, model_context, report, sandbox, validation,
     working_papers,
 )
 from ..field_names import resolve_columns
@@ -346,14 +346,14 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         ruleset = artifact_snapshot(workspace, "ruleset", target_id)
         result = validation.run_rules(workspace.get_frame(ruleset["table"]), ruleset["rules"], ruleset["table"], resolve=workspace.get_frame)
         workspace.record_run(target_id, result)
-        safe = {key: result.get(key) for key in ("run_at", "table", "rows", "verdict", "counts")}
-        return _receipt(action, ruleset, refs=[f"ruleset:{target_id}"], result=safe)
+        summary = {key: result.get(key) for key in ("run_at", "table", "rows", "verdict", "counts")}
+        return _receipt(action, ruleset, refs=[f"ruleset:{target_id}"], result=summary)
     if type_ == "run_analytics":
         result = analytics.run_test(workspace.get_frame(args["table"]), args["test"], args.get("params") or {})
-        safe = {"title": result.title, "verdict": result.verdict, "verdict_text": result.verdict_text, "stats": result.stats}
+        model_result = {"title": result.title, "verdict": result.verdict, "verdict_text": result.verdict_text, "stats": result.stats}
         if result.summary is not None:
-            safe["summary"] = privacy.project_frame(result.summary, allow_rows=True)
-        return _receipt(action, result=safe)
+            model_result["summary"] = model_context.project_frame(result.summary)
+        return _receipt(action, result=model_result)
     if type_ == "create_custom_analysis":
         sandbox.run(str((args.get("spec") or {}).get("code") or ""), {name: workspace.get_frame(name) for name in workspace.table_names()})
         item = workspace.add_analysis({**args, "kind": "python", "agent_run_id": run["id"], "source": "ai"})
@@ -367,7 +367,7 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "run_custom_analysis":
         item = artifact_snapshot(workspace, "analysis", target_id)
         result, stdout = sandbox.run(item["spec"]["code"], {name: workspace.get_frame(name) for name in workspace.table_names()})
-        return _receipt(action, item, refs=[f"analysis:{target_id}"], result={"frame": privacy.project_frame(result, allow_rows=result.height <= 25), "stdout": privacy.scrub_text(stdout)})
+        return _receipt(action, item, refs=[f"analysis:{target_id}"], result={"frame": model_context.project_frame(result), "stdout": (stdout or "")[:4_000], "stdout_truncated": len(stdout or "") > 4_000})
     if type_ == "pin_dashboard_tile":
         item = workspace.add_tile({**args, "agent_run_id": run["id"]})
         return _receipt(action, item, refs=[f"tile:{item['id']}"])
@@ -406,10 +406,8 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         test = doc_tests.load_test(workspace, target_id)
         results = [doc_tests.run_item(workspace, target_id, item["id"], run_id=run["id"]) for item in test.get("items") or []]
         refreshed = doc_tests.load_test(workspace, target_id)
-        safe_result = {"rollup": doc_tests.result_rollup(refreshed), "items_run": len(results)}
-        if test.get("kind") == "qa" and not workspace.settings.get("doc_llm_optin"):
-            safe_result["warning"] = "Document AI is off; the Q&A test continued with metadata/local fallbacks and may require manual review."
-        return _receipt(action, refreshed, refs=[f"doctest:{target_id}"], result=safe_result)
+        test_result = {"rollup": doc_tests.result_rollup(refreshed), "items_run": len(results)}
+        return _receipt(action, refreshed, refs=[f"doctest:{target_id}"], result=test_result)
     if type_ == "generate_working_paper":
         item = working_papers.draft_results(workspace, target_id)
         rendered = working_papers.render(workspace, target_id)

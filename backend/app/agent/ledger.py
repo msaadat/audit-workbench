@@ -382,7 +382,7 @@ def project_legacy_plan(run: dict) -> None:
             "id": action["id"], "stage": "actions", "title": definition.description,
             "detail": action["type"], "status": status_map[action["status"]],
             "error": action.get("error"), "result_refs": action.get("result_refs") or [],
-            "disclosure": [],
+            "context_notes": [],
         })
     existing = [
         stage for stage in (run.get("plan") or {}).get("stages") or []

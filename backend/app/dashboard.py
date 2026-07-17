@@ -373,7 +373,7 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
 
 
 def _advice_snapshot(snapshot: dict) -> dict:
-    """Privacy-safe dashboard facts allowed to reach the configured model."""
+    """Focused dashboard facts for the configured model."""
     return {
         "overview": snapshot["overview"],
         "phases": [

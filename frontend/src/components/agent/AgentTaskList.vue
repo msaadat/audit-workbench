@@ -87,7 +87,7 @@ function summarizeRefs(refs: string[]): string[] {
           <small v-else-if="task.detail && task.status === 'queued'" class="muted">
             {{ task.detail }}
           </small>
-          <small v-for="note in task.disclosure" :key="note" class="muted disclosure">
+          <small v-for="note in task.context_notes ?? []" :key="note" class="muted context-note">
             {{ note }}
           </small>
           <div v-if="summarizeRefs(task.result_refs).length" class="refs">
@@ -134,7 +134,7 @@ function summarizeRefs(refs: string[]): string[] {
 .task.completed .task-title { color: var(--p-surface-600); }
 .task-error { color: var(--p-red-500); font-size: 0.72rem; }
 .muted { color: var(--p-surface-500); font-size: 0.72rem; }
-.disclosure { line-height: 1.35; word-break: break-word; }
+.context-note { line-height: 1.35; word-break: break-word; }
 .refs { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.2rem; }
 .ref {
   font-size: 0.65rem;
