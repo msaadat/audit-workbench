@@ -36,11 +36,11 @@ const stepDraft = ref('')
 const paperOpen = ref(false)
 const workingPaper = ref<WorkingPaper | null>(null)
 
-const viewOptions = [
-  { label: 'APM', value: 'apm' },
-  { label: 'Risk & Control Matrix', value: 'rcm' },
-  { label: 'Audit program', value: 'program' },
-]
+const viewOptions = computed(() => [
+  { label: 'APM', value: 'apm', complete: Boolean(data.value?.planning.apm_markdown.trim()) },
+  { label: 'Risk & Control Matrix', value: 'rcm', count: data.value?.rcm.length ?? 0 },
+  { label: 'Audit program', value: 'program', count: data.value?.procedures.length ?? 0 },
+])
 const docAiEnabled = computed(() => Boolean(props.workspace.settings?.doc_llm_optin))
 const selectedProcedure = computed(() => data.value?.procedures.find((item) => item.id === selectedProcedureId.value) ?? null)
 function testLabel(ref: string) {
@@ -179,12 +179,15 @@ function fail(summary: string, error: unknown) {
         <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured || !docAiEnabled" @click="generate()" />
     </UiPageHeader>
     <p v-if="!docAiEnabled" class="doc-ai-note"><i class="pi pi-lock" /><span>Planning drafts need Document AI to read explicitly disclosed engagement documents.</span><a href="?tab=documents">Open Documents</a></p>
-    <div class="planning-progress">
-      <span :class="{ complete: Boolean(data.planning.apm_markdown.trim()) }"><i class="pi pi-file-edit" /> APM</span>
-      <span :class="{ complete: data.rcm.length > 0 }"><i class="pi pi-th-large" /> {{ data.rcm.length }} risks & controls</span>
-      <span :class="{ complete: data.procedures.length > 0 }"><i class="pi pi-list-check" /> {{ data.procedures.length }} procedures</span>
-    </div>
-    <SelectButton class="planning-nav" v-model="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" />
+    <SelectButton class="planning-nav" v-model="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" dataKey="value">
+      <template #option="{ option }">
+        <span class="nav-option">
+          {{ option.label }}
+          <span v-if="option.count !== undefined" class="nav-count" :class="{ filled: option.count > 0 }">{{ option.count }}</span>
+          <i v-else-if="option.complete" class="pi pi-check nav-check" />
+        </span>
+      </template>
+    </SelectButton>
 
     <section v-if="view === 'apm'" class="apm-view">
       <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate" /><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning" /></div>
@@ -234,6 +237,10 @@ function fail(summary: string, error: unknown) {
 .muted { color: var(--aw-muted); font-size: 0.78rem; }
 .doc-ai-note { display: flex; align-items: center; gap: 0.5rem; margin: 0; padding: 0.6rem 0.8rem; border: 1px solid #f0cf9f; border-radius: var(--aw-radius-sm); background: var(--aw-warn-soft); color: var(--p-surface-700); font-size: 0.82rem; }.doc-ai-note i { color: var(--aw-teal); }
 .planning-nav { align-self: flex-start; }
+.nav-option { display: inline-flex; align-items: center; gap: .4rem; }
+.nav-count { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem; padding: 0 .35rem; border-radius: 999px; border: 1px solid var(--aw-border); background: var(--aw-canvas); color: var(--aw-muted); font-size: .68rem; font-weight: 700; line-height: 1; }
+.nav-count.filled { border-color: #b7e3dc; color: var(--aw-ok); background: var(--aw-ok-soft); }
+.nav-check { color: var(--aw-ok); font-size: .72rem; }
 .card { background: #fff; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-md); padding: 1rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
 .wide { grid-column: 1 / -1; }
@@ -241,9 +248,6 @@ label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font
 .section-toolbar { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.7rem; }.section-toolbar > div { display: flex; flex-direction: column; }.grow { flex: 1; }
 .sticky-actions { position: sticky; top: -.05rem; z-index: 3; margin: -1rem -1rem .7rem; padding: .65rem 1rem; border-bottom: 1px solid var(--aw-border); background: #fff; }
 .form-section-title { margin: .3rem 0 -.25rem; color: var(--aw-muted); font-size: .72rem; letter-spacing: .07em; text-transform: uppercase; }
-.planning-progress { display: flex; gap: .4rem; flex-wrap: wrap; }
-.planning-progress span { display: inline-flex; align-items: center; gap: .35rem; padding: .35rem .55rem; border: 1px solid var(--aw-border); border-radius: 999px; color: var(--aw-muted); background: #fff; font-size: .72rem; }
-.planning-progress span.complete { border-color: #b7e3dc; color: var(--aw-ok); background: var(--aw-ok-soft); }
 .doc-ai-note a { margin-left: auto; color: var(--aw-teal); font-weight: 700; }
 .apm-editor { min-height: 34rem; }.apm-editor > :deep(.markdown-editor) { min-height: 34rem; }
 .program-layout { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 1rem; }.procedure-rail { padding: 0.55rem; }.rail-head { display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.4rem 0.55rem; }.procedure-rail button { width: 100%; display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.45rem; text-align: left; border: 0; border-radius: 6px; background: transparent; padding: 0.55rem; cursor: pointer; }.procedure-rail button:hover, .procedure-rail button.active { background: var(--p-primary-50); }.procedure-rail button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.procedure-rail button small { grid-column: 2; color: var(--aw-muted); }.procedure-detail { display: flex; flex-direction: column; gap: 0.75rem; }.two { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }.empty { color: var(--aw-muted); }
