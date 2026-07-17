@@ -111,8 +111,8 @@ def test_explicit_action_starts_linked_schema_v2_run(workspace_with_data, monkey
     monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
     chat = assistant_chats.create_chat(ws)
     result = assistant_chats.send_message(ws, chat["id"], {
-        "content": "Prepare the report", "intent": "act", "mode": "permission",
-        "request_id": "request-action", "source": "shortcut", "goal_template": "report",
+        "content": "Start data analysis work for this engagement.", "intent": "act", "mode": "permission",
+        "request_id": "request-action", "source": "shortcut", "goal_template": "data_analysis",
     })
     assert result["outcome"]["kind"] == "run_started"
     assert launched["chat_id"] == chat["id"]

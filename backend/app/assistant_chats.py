@@ -628,7 +628,7 @@ def _process_message(
         return outcome
 
     refs = []
-    if re.search(r"\b(that|it|this)\b", user["content"], re.I):
+    if not goal_template and re.search(r"\b(that|it|this)\b", user["content"], re.I):
         preceding = next((item for item in reversed(record.get("messages") or []) if item.get("role") == "assistant"), None)
         ids = list((preceding or {}).get("artifact_ids") or [])
         if len(ids) != 1:
