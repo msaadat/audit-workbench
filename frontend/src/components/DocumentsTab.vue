@@ -11,7 +11,7 @@ import Checkbox from 'primevue/checkbox'
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
+import type { AIActivityEvent, AuditDocument, DisclosureEvent, DocumentCategory, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
 import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
@@ -35,6 +35,7 @@ const search = ref('')
 const category = ref('all')
 const state = ref('all')
 const busy = ref(false)
+const classificationBusy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const optin = ref(Boolean(props.workspace.settings?.doc_llm_optin))
 const piiMasking = ref(Boolean(props.workspace.settings?.doc_pii_masking))
@@ -53,6 +54,7 @@ const planningAction = ref<IntakeSuggestedAction | null>(null)
 const categories = ['all', 'background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other']
 const states = ['all', 'extracted', 'partial', 'image_only', 'pending', 'failed']
 const categoryOptions = categories.map(value => ({ value, label: value === 'all' ? 'All types' : value.replace('_', ' ') }))
+const documentCategoryOptions = categoryOptions.filter(option => option.value !== 'all')
 const stateOptions = states.map(value => ({ value, label: value === 'all' ? 'All statuses' : value.replace('_', ' ') }))
 const selected = computed(() => documents.value.find(doc => doc.id === selectedId.value) || null)
 const filtered = computed(() => documents.value.filter(doc => {
@@ -128,6 +130,22 @@ async function reextract() {
   try { await api.post(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/re-extract`); await loadDocuments(); await loadDetail() }
   catch (error) { toast.add({ severity: 'error', summary: 'Extraction failed', detail: String(error), life: 5000 }) }
   finally { busy.value = false }
+}
+
+async function updateClassification(value: DocumentCategory) {
+  const document = selected.value
+  if (!document || value === document.category || classificationBusy.value) return
+  classificationBusy.value = true
+  try {
+    const updated = await api.patch<AuditDocument>(`/api/workspaces/${props.workspace.id}/documents/${document.id}`, { category: value })
+    documents.value = documents.value.map(item => item.id === updated.id ? updated : item)
+    emit('changed')
+    toast.add({ severity: 'success', summary: 'Classification updated', detail: updated.title, life: 2200 })
+  } catch (error) {
+    toast.add({ severity: 'error', summary: 'Classification not updated', detail: String(error), life: 5000 })
+  } finally {
+    classificationBusy.value = false
+  }
 }
 
 async function remove() {
@@ -255,6 +273,18 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
             <p>{{ selected.source }} · {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }} · version {{ selected.version }}</p>
           </div>
           <div class="detail-actions">
+            <label class="classification-field">
+              <span>Classification</span>
+              <Select
+                :modelValue="selected.category"
+                :options="documentCategoryOptions"
+                optionLabel="label"
+                optionValue="value"
+                :disabled="classificationBusy"
+                aria-label="Document classification"
+                @update:modelValue="updateClassification"
+              />
+            </label>
             <Tag :value="selected.text_state.replace('_', ' ')" :severity="severity(selected.text_state)" />
             <Button label="Add to assistant" icon="pi pi-paperclip" size="small" @click="attachToAssistant" />
             <Button icon="pi pi-refresh" text rounded aria-label="Re-extract" v-tooltip.top="'Re-extract'" @click="reextract" />
@@ -317,6 +347,7 @@ onMounted(async () => { await loadDocuments(); if (selectedId.value) await selec
 .document-rail { padding:.75rem; border-right:1px solid var(--aw-border); background:var(--p-surface-50); overflow-y:auto; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--p-surface-200); background:var(--p-surface-50); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--p-surface-400); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr 1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:.76rem; }
 .doc-group { display:grid; gap:.15rem; }.doc-group h4 { display:flex; justify-content:space-between; margin:.7rem .25rem .05rem; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; }.doc-row { width:100%; min-height:var(--aw-row-height); display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.42rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-sm); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:#fff; }.doc-row.active { border-color:#a7ded8; background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.8rem; height:1.8rem; place-items:center; border-radius:6px; color:var(--p-blue-600); background:var(--p-blue-50); }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.8rem; }.doc-identity small { color:var(--aw-muted); font-size:.63rem; }.state-pill { width:.55rem; height:.55rem; overflow:hidden; padding:0; border-radius:999px; color:transparent; background:var(--p-surface-300); font-size:0; }.state-extracted { background:var(--p-green-500); }.state-failed { background:var(--p-red-500); }.state-partial,.state-image_only { background:var(--p-orange-500); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
 .document-detail { min-width:0; display:flex; flex-direction:column; }.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { min-width:0; }.detail-identity p { margin:.25rem 0 0; color:var(--aw-muted); font-size:.73rem; }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }.detail-tabs { display:flex; padding:0 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-tabs button { padding:.75rem .85rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--aw-muted); cursor:pointer; text-transform:capitalize; }.detail-tabs button.active { color:var(--aw-teal); border-color:var(--aw-teal); font-weight:700; }.detail-content { padding:1.25rem; overflow-y:auto; }.page-tools { display:flex; align-items:center; gap:.4rem; margin-bottom:.75rem; }.page-tools a { margin-left:auto; color:var(--aw-teal); }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:10px; background:#fff; font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow:0 1px 2px rgb(15 23 42 / 4%); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }
+.classification-field { display:grid; gap:.2rem; min-width:10rem; color:var(--aw-muted); font-size:.65rem; font-weight:700; }.classification-field :deep(.p-select) { width:100%; min-height:2rem; font-size:.76rem; font-weight:400; text-transform:capitalize; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--p-surface-200); border-radius:8px; background:var(--p-surface-50); color:var(--p-surface-500); font-size:.7rem; }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: .7rem; }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
 @media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.privacy-strip { align-items: flex-start; flex-wrap: wrap; }.privacy-strip label { margin-left: 0; width: 100%; }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }

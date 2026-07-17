@@ -49,6 +49,18 @@ def test_document_versions_do_not_retarget_typed_anchor():
     assert anchor["source_sha1"] == first["sha1"] != second["sha1"]
 
 
+def test_document_classification_can_be_updated():
+    ws = workspaces.create_workspace("Document classification")
+    doc = documents.add_document(ws, "agreement.txt", b"Supplier terms", category="other")
+
+    updated = documents.update_document(ws, doc["id"], {"category": "contract"})
+
+    assert updated["category"] == "contract"
+    assert workspaces.load_workspace(ws.id).documents[0]["category"] == "contract"
+    with pytest.raises(workspaces.WorkspaceError, match="Unknown document category"):
+        documents.update_document(ws, doc["id"], {"category": "invalid"})
+
+
 def test_disclosure_requires_optin_selects_pages_masks_and_logs():
     ws = workspaces.create_workspace("Disclosure")
     doc = documents.add_document(ws, "contact.txt", b"Contact jane@example.com or +1 202 555 0188.")
