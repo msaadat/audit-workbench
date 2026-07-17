@@ -105,9 +105,9 @@ def start_run(
     source_message_id: str | None = None,
 ) -> dict:
     recover_workspace(workspace)
-    if kind not in ("analysis", "intake", "planning", "doc_test"):
+    if kind not in ("analysis", "intake", "doc_test"):
         raise WorkspaceError("Unknown agent run kind.")
-    if kind in ("analysis", "planning") and not llm.agent_status()["configured"]:
+    if kind == "analysis" and not llm.agent_status()["configured"]:
         raise llm.LLMError(
             "The agent's LLM is not configured. Set an API key for the "
             "assistant provider (or AGENT_PROVIDER/AGENT_MODEL) first."
@@ -147,6 +147,7 @@ def start_command_run(
     mode: str,
     command: dict,
     parent_run_id: str | None = None,
+    context: dict | None = None,
 ) -> dict:
     """Start the schema-v2 unified engagement command runner."""
     recover_workspace(workspace)
@@ -163,7 +164,9 @@ def start_command_run(
         )
     if len(live) >= _max_concurrent():
         raise AgentBusyError("The agent is busy with another workspace right now; try again when it finishes.")
-    run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+    run = store.new_command_run(
+        workspace, mode, command, parent_run_id=parent_run_id, context=context
+    )
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
     _launch(workspace.id, run["id"])
     return run
@@ -256,6 +259,8 @@ def steer(
     chat_id: str | None = None,
     source_message_id: str | None = None,
     context_refs: list[dict] | None = None,
+    run_context: dict | None = None,
+    goal_template: str | None = None,
 ) -> dict:
     """A message to a run: steering while it's live, a persisted note while
     paused, or a linked follow-up run once it has finished."""
@@ -267,20 +272,23 @@ def steer(
     if run.get("schema_version", 1) >= 2 and run["status"] in store.TERMINAL_STATUSES:
         follow_up = start_command_run(
             workspace, run["mode"],
-            {"source": "follow_up", "text": content, "parent_command_id": (run.get("command") or {}).get("id"),
+            {"source": "follow_up", "text": content, "goal_template": goal_template,
+             "parent_command_id": (run.get("command") or {}).get("id"),
              "chat_id": chat_id, "source_message_id": source_message_id,
              "context_refs": list(context_refs or [])},
             parent_run_id=run_id,
+            context=run_context,
         )
         return {"handled": "follow_up_run", "run": follow_up}
 
     if run.get("schema_version", 1) >= 2:
         command = {
             "id": f"cmd_{__import__('uuid').uuid4().hex[:12]}", "source": "follow_up",
-            "text": content, "goal_template": None, "submitted_at": store.utcnow(),
+            "text": content, "goal_template": goal_template, "submitted_at": store.utcnow(),
             "status": "queued", "parent_command_id": (run.get("command") or {}).get("id"),
             "chat_id": chat_id, "source_message_id": source_message_id,
             "context_refs": list(context_refs or []),
+            "run_context": dict(run_context or {}),
         }
         handle = get_handle(run_id)
         if handle is not None:
@@ -366,10 +374,6 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
             from .intake_runner import IntakeRunner
 
             IntakeRunner(workspace, run, handle).execute()
-        elif run.get("kind") == "planning":
-            from .planning_runner import PlanningRunner
-
-            PlanningRunner(workspace, run, handle).execute()
         elif run.get("kind") == "doc_test":
             from .doc_test_runner import DocTestRunner
 
@@ -420,7 +424,10 @@ def _launch_next_command(workspace: Workspace, run: dict) -> None:
     command = pending.pop(0)
     store.save_run(workspace, run)
     try:
-        start_command_run(workspace, run["mode"], command, parent_run_id=run["id"])
+        start_command_run(
+            workspace, run["mode"], command, parent_run_id=run["id"],
+            context=command.get("run_context") or {},
+        )
     except Exception as error:
         run = store.load_run(workspace, run["id"])
         run.setdefault("pending_commands", []).insert(0, command)

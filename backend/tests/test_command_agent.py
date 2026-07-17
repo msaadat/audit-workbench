@@ -630,6 +630,26 @@ def test_general_chat_queues_follow_up_without_altering_graph(monkeypatch, works
     assert wait_run(workspace_with_data, follow_up["id"])["status"] == "completed"
 
 
+def test_queued_planning_command_keeps_goal_and_document_context(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "current command"}
+    )
+    run["status"] = "paused"
+    store.save_run(workspace_with_data, run)
+
+    result = runner.steer(
+        workspace_with_data,
+        run["id"],
+        "update planning",
+        goal_template="planning",
+        run_context={"document_ids": ["doc-1"]},
+    )
+
+    command = result["command"]
+    assert command["goal_template"] == "planning"
+    assert command["run_context"] == {"document_ids": ["doc-1"]}
+
+
 def test_completed_intake_message_starts_unified_command(monkeypatch, workspace_with_data):
     intake_run = store.new_run(
         workspace_with_data,
@@ -712,6 +732,48 @@ def test_post_success_planner_failure_keeps_committed_work(monkeypatch, workspac
     assert by_id["second"]["status"] == "succeeded"
     assert any("invalid planning proposal" in warning for warning in completed["warnings"])
     assert len(workspaces.load_workspace(workspace_with_data.id).findings) == 2
+
+
+def test_post_success_planner_transport_error_keeps_running_graph(
+    monkeypatch, workspace_with_data
+):
+    interpreter = {
+        "objective": "Create two findings", "constraints": [], "completion_criteria": [],
+        "actions": [
+            {
+                "id": "first", "type": "create_finding",
+                "args": {"title": "First finding"}, "planning_significant": True,
+            },
+            {
+                "id": "second", "type": "create_finding",
+                "args": {"title": "Second finding"}, "depends_on": ["first"],
+                "planning_significant": True,
+            },
+        ],
+    }
+
+    def disconnected(_user):
+        raise llm.LLMError("LLM request failed: Remote end closed connection without response")
+
+    fake = FakeAgentLLM({
+        "agent:command_interpreter": interpreter,
+        "agent:command_planner": disconnected,
+    })
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm, "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    started = runner.start_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "create two findings"}
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert [item["status"] for item in completed["actions"]] == ["succeeded", "succeeded"]
+    assert completed["planning_expansion_disabled"] is True
+    assert any("Further planning expansion skipped" in warning for warning in completed["warnings"])
+    assert [call["tag"] for call in fake.calls].count("agent:command_planner") == 1
 
 
 def test_append_actions_rolls_back_a_rejected_batch(workspace_with_data):
@@ -848,7 +910,7 @@ def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, w
         command.task_status(running, "running")
         raise ConnectionError("remote connection closed")
 
-    monkeypatch.setattr(command, "_prepare_full_audit_planning", fail_during_planning)
+    monkeypatch.setattr(command, "_prepare_planning", fail_during_planning)
     command.execute()
 
     saved = store.load_run(workspace_with_data, run["id"])

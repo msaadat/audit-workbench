@@ -165,9 +165,9 @@ frontend/src/
 - `documents.py`, `evidence.py`, and `methodology.py` implement extraction,
   versioning, opt-in disclosure/activity logs, typed immutable anchors, cited
   document Q&A, and local methodology packs.
-- `agent/base.py`, `agent/planning_runner.py`, and
-  `agent/doc_test_runner.py` provide shared durable-run plumbing, planning
-  interviews/drafts, and resumable per-item document testing.
+- `agent/base.py`, `agent/command_runner.py`, and `agent/doc_test_runner.py`
+  provide shared durable-run plumbing, enriched planning drafts within the
+  unified command graph, and resumable per-item document testing.
 - `doc_tests.py` provides vouching/tracing, attribute, review, and Q&A tests
   with explainable exact/normalized/fuzzy/tolerance comparisons.
 - `working_papers.py` assembles procedure-linked Markdown/HTML workpapers.

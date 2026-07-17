@@ -40,7 +40,10 @@ async function startPlanningUpdate() {
     }
     await assistantChat.send(
       `Review newly imported documents ${props.action.document_ids.join(', ')} and update planning context, APM, RCM, and audit procedures.`,
-      'act', launchMode.value, { goalTemplate: 'planning', source: 'tab_button' },
+      'act', launchMode.value, {
+        goalTemplate: 'planning', source: 'tab_button',
+        runContext: { document_ids: props.action.document_ids },
+      },
     )
     confirmOpen.value = false
     emit('planning-started')

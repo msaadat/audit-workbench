@@ -91,7 +91,7 @@ def new_run(
 ) -> dict:
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
-    if kind not in ("analysis", "intake", "planning", "doc_test"):
+    if kind not in ("analysis", "intake", "doc_test"):
         raise WorkspaceError("Unknown agent run kind.")
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -121,9 +121,7 @@ def new_run(
         "warnings": [],
         "error": None,
     }
-    if kind == "planning":
-        run["interview"] = {"captured": {}, "turns": 0, "pending_question": None}
-    elif kind == "doc_test":
+    if kind == "doc_test":
         run["doc_test"] = {"test_id": str((context or {}).get("test_id") or "")}
     save_run(workspace, run)
     return run
@@ -136,6 +134,7 @@ def new_command_run(
     *,
     parent_run_id: str | None = None,
     limits: dict | None = None,
+    context: dict | None = None,
 ) -> dict:
     """Create a schema-v2 audit run driven by a command/action ledger."""
     if mode not in MODES:
@@ -159,7 +158,7 @@ def new_command_run(
         "source_message_id": str(command.get("source_message_id") or "").strip() or None,
         "kind": "audit",
         "mode": mode,
-        "context": {},
+        "context": dict(context or {}),
         "command": {
             "id": command_id, "source": source, "text": text,
             "goal_template": template, "submitted_at": utcnow(),

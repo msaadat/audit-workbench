@@ -500,8 +500,12 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
 
             run_kind = str(payload.get("run_kind") or "").strip() or None
             run_context = payload.get("run_context") or {}
+            if not isinstance(run_context, dict):
+                raise WorkspaceError("Run context must be an object.")
             if run_kind and (source != "folder_intake" or requested != "act" or run_kind != "intake" or not isinstance(run_context, dict)):
                 raise WorkspaceError("Specialized run context is only accepted for folder intake actions.")
+            if run_context and not run_kind and (requested != "act" or goal_template != "planning"):
+                raise WorkspaceError("Command run context is only accepted for planning actions.")
             outcome = _process_message(workspace, chat_id, user, record, mode, goal_template, run_kind, run_context)
             return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
         except Exception as error:
@@ -643,10 +647,16 @@ def _process_message(
         "text": user["content"], "goal_template": goal_template,
         "chat_id": chat_id, "source_message_id": user["id"], "context_refs": refs,
     }
+    planning_context = dict(run_context or {})
+    if goal_template == "planning" and not planning_context.get("document_ids"):
+        planning_context["document_ids"] = list(
+            (user.get("document_context") or {}).get("document_ids") or []
+        )
     if active:
         response = runner.steer(
             workspace, active["id"], user["content"], chat_id=chat_id,
             source_message_id=user["id"], context_refs=refs,
+            run_context=planning_context, goal_template=goal_template,
         )
         queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
         pending_count = len(store.load_run(workspace, active["id"]).get("pending_commands") or [])
@@ -666,7 +676,15 @@ def _process_message(
                     pass
                 break
         try:
-            run = runner.start_command_run(workspace, mode, command, parent_run_id=parent_id)
+            if planning_context:
+                run = runner.start_command_run(
+                    workspace, mode, command, parent_run_id=parent_id,
+                    context=planning_context,
+                )
+            else:
+                run = runner.start_command_run(
+                    workspace, mode, command, parent_run_id=parent_id,
+                )
             outcome = {"kind": "run_started", "run_id": run["id"], "command_id": run["command"]["id"]}
         except runner.AgentBusyError:
             raced = _active_run(workspace)
@@ -675,6 +693,7 @@ def _process_message(
             response = runner.steer(
                 workspace, raced["id"], user["content"], chat_id=chat_id,
                 source_message_id=user["id"], context_refs=refs,
+                run_context=planning_context, goal_template=goal_template,
             )
             queued = response.get("command") or {}
             outcome = {"kind": "command_queued", "run_id": raced["id"], "command_id": queued.get("id"), "position": 1}

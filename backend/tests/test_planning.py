@@ -16,7 +16,16 @@ PLANNING_RESPONSES = {
             "background_notes": "Procurement approvals are governed by the disclosed policy.",
         }
     },
-    "agent:apm": {"apm_markdown": "# APM\n\nScope covers accounts payable."},
+    "agent:apm": {
+        "apm_markdown": (
+            "# Audit Planning Memorandum\n\n"
+            "## Engagement\nScope covers accounts payable.\n\n"
+            "## Introduction and background\nPlanning background.\n\n"
+            "## Process flow and understanding\nAccounts payable processing.\n\n"
+            "## Prior audit findings\nNo information available.\n\n"
+            "## Key risks and planned response\nTest duplicate payments."
+        )
+    },
     "agent:rcm": {
         "rows": [
             {
@@ -63,6 +72,19 @@ def configure_planning_llm(monkeypatch, overrides=None):
     return fake
 
 
+def start_planning(ws, mode="auto", context=None):
+    return runner.start_command_run(
+        ws,
+        mode,
+        {
+            "source": "goal_template",
+            "text": "Update planning using current engagement evidence.",
+            "goal_template": "planning",
+        },
+        context=context or {},
+    )
+
+
 def test_templates_default_override_and_reset():
     ws = workspaces.create_workspace("Planning templates")
     default = templates_store.get_template(ws, "apm")
@@ -93,12 +115,15 @@ def test_planning_crud_and_user_touch():
 def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     fake = configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("No-table planning")
-    first = runner.start_run(ws, "auto", {}, kind="planning")
+    first = start_planning(ws)
     completed = wait_run(ws, first["id"])
     ws = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
-    assert ws.planning["apm_markdown"].startswith("# APM")
+    assert completed["schema_version"] == 2
+    assert completed["kind"] == "audit"
+    assert completed["actions"] == []
+    assert ws.planning["apm_markdown"].startswith("# Audit Planning Memorandum")
     assert len(ws.rcm) == 1
     assert len(ws.work_program) == 1
     assert ws.work_program[0]["rcm_refs"] == [ws.rcm[0]["id"]]
@@ -106,7 +131,7 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
 
     row_id = ws.rcm[0]["id"]
     ws.update_rcm(row_id, {"control": "Auditor-confirmed manual review"})
-    second = runner.start_run(ws, "auto", {}, kind="planning")
+    second = start_planning(ws)
     wait_run(ws, second["id"])
     ws = workspaces.load_workspace(ws.id)
     assert len(ws.rcm) == 1
@@ -124,7 +149,7 @@ def test_auto_planning_selects_relevant_documents(monkeypatch):
 
     fake = configure_planning_llm(monkeypatch, {"agent:document_selection": select})
     # No document_ids in the run context: the agent must select them itself.
-    started = runner.start_run(ws, "auto", {}, kind="planning")
+    started = start_planning(ws)
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
 
@@ -140,7 +165,7 @@ def test_auto_planning_selects_relevant_documents(monkeypatch):
 def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
     configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("Permission planning")
-    started = runner.start_run(ws, "permission", {}, kind="planning")
+    started = start_planning(ws, "permission")
     seen = []
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -165,18 +190,27 @@ def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
 
 def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
     configure_planning_llm(monkeypatch, {
-        "agent:apm": {"apm_markdown": "- Entity: {{entity}}\n- Period: {{period}}\n\n{{prior_audit_findings}}"},
+        "agent:apm": {
+            "apm_markdown": (
+                "# Audit Planning Memorandum\n\n"
+                "## Engagement\n- Entity: {{entity}}\n- Period: {{period}}\n\n"
+                "## Introduction and background\n{{introduction}}\n\n"
+                "## Process flow and understanding\n{{process_flow}}\n\n"
+                "## Prior audit findings\n{{prior_audit_findings}}\n\n"
+                "## Key risks and planned response\n{{key_risks}}"
+            )
+        },
     })
     ws = workspaces.create_workspace("Placeholder planning")
-    started = runner.start_run(ws, "auto", {}, kind="planning")
+    started = start_planning(ws)
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
     apm = reloaded.planning["apm_markdown"]
     assert "{{" not in apm and "}}" not in apm
-    assert "_[entity — context not available]_" in apm
-    assert "_[prior audit findings — context not available]_" in apm
+    assert "_[entity - context not available]_" in apm
+    assert "_[prior audit findings - context not available]_" in apm
 
 
 def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
@@ -190,7 +224,7 @@ def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
             "selected": [{"id": policy["id"], "reason": "Governs procurement approvals."}]
         },
     })
-    started = runner.start_run(ws, "permission", {}, kind="planning")
+    started = start_planning(ws, "permission")
     kinds, seen = [], []
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -245,12 +279,7 @@ def test_planning_cites_opted_in_methodology_pack(monkeypatch):
     )
     ws.settings["doc_llm_optin"] = True
     ws.save()
-    started = runner.start_run(
-        ws,
-        "auto",
-        {},
-        kind="planning",
-    )
+    started = start_planning(ws)
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
     assert completed["status"] == "completed"
@@ -272,12 +301,7 @@ def test_planning_update_discloses_selected_imported_documents(monkeypatch):
     policy_text = b"Procurement Policy: purchases require documented approval before commitment."
     policy = documents.add_document(ws, "Procurement Policy.txt", policy_text, category="policy")
 
-    started = runner.start_run(
-        ws,
-        "auto",
-        {"document_ids": [policy["id"]]},
-        kind="planning",
-    )
+    started = start_planning(ws, context={"document_ids": [policy["id"]]})
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
 

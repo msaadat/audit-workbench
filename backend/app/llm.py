@@ -249,7 +249,10 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
         raise LLMError(f"LLM request failed ({error.code}): {detail}") from error
     except urllib.error.URLError as error:
         raise LLMError(f"Could not reach the LLM endpoint: {error.reason}") from error
-    except (TimeoutError, json.JSONDecodeError) as error:
+    # ``urllib`` normally wraps socket failures in URLError, but
+    # http.client.RemoteDisconnected and related connection failures can
+    # escape directly when an upstream closes before sending a response.
+    except (TimeoutError, ConnectionError, json.JSONDecodeError) as error:
         raise LLMError(f"LLM request failed: {error}") from error
 
     choices = payload.get("choices") or []

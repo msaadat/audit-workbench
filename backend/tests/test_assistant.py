@@ -1,3 +1,4 @@
+import http.client
 import json
 import urllib.error
 
@@ -226,6 +227,18 @@ def test_llm_chat_sends_user_agent(monkeypatch):
     assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
     assert captured["headers"]["User-agent"] == llm.USER_AGENT
     assert captured["timeout"] == llm.REQUEST_TIMEOUT
+
+
+def test_llm_chat_wraps_remote_disconnect(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+    assistant_settings.save({"provider": "groq", "model": "llama-3.3-70b-versatile"})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(llm.LLMError, match="Remote end closed connection"):
+        llm.chat([{"role": "user", "content": "hello"}])
 
 
 def test_llm_chat_supports_openrouter(monkeypatch):

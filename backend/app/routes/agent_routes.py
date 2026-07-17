@@ -54,6 +54,7 @@ async def create_run(workspace_id: str, payload: dict = Body(default={})):
             run = await asyncio.to_thread(
                 runner.start_command_run, ws, payload.get("mode") or "auto",
                 payload["command"], payload.get("parent_run_id"),
+                payload.get("context") or {},
             )
         else:
             run = await asyncio.to_thread(

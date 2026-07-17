@@ -1047,7 +1047,7 @@ export interface AgentRun {
   parent_run_id: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake' | 'planning' | 'doc_test'
+  kind: 'audit' | 'analysis' | 'intake' | 'doc_test'
   mode: 'auto' | 'permission'
   context: AgentRunContext
   status: AgentRunStatus
@@ -1091,7 +1091,7 @@ export interface AgentRunSummary {
   parent_run_id: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake' | 'planning' | 'doc_test'
+  kind: 'audit' | 'analysis' | 'intake' | 'doc_test'
   mode: 'auto' | 'permission'
   status: AgentRunStatus
   created: string

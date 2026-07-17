@@ -122,6 +122,33 @@ def test_explicit_action_starts_linked_schema_v2_run(workspace_with_data, monkey
     assert any(item["type"] == "run" for item in result["chat"]["transcript"])
 
 
+def test_planning_action_passes_structured_run_context(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.update(command=command, context=context)
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Update planning from selected policies", "intent": "act", "mode": "auto",
+        "request_id": "request-planning-context", "source": "tab_button",
+        "goal_template": "planning", "run_context": {"document_ids": ["doc-1", "doc-2"]},
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    assert launched["command"]["goal_template"] == "planning"
+    assert launched["context"] == {"document_ids": ["doc-1", "doc-2"]}
+
+
 def test_pending_turn_is_recovered_as_failed(workspace_with_data):
     ws = workspace_with_data
     chat = assistant_chats.create_chat(ws)
