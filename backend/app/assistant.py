@@ -72,7 +72,7 @@ def table_metadata(workspace: Workspace, table: str) -> dict:
     }
 
 
-def _schema_brief(workspace: Workspace) -> list[dict]:
+def schema_brief(workspace: Workspace) -> list[dict]:
     """A light table/column listing for the opening system prompt."""
     brief = []
     for name in workspace.table_names():
@@ -285,7 +285,7 @@ class _Session:
 
     # -- tool implementations; each returns (content_for_model, artifact|None)
     def list_tables(self, _args: dict):
-        return {"tables": _schema_brief(self.workspace)}, None
+        return {"tables": schema_brief(self.workspace)}, None
 
     def describe_table(self, args: dict):
         table = args.get("table")
@@ -301,6 +301,7 @@ class _Session:
             "page": 1,
             "page_size": min(int(args.get("limit") or ARTIFACT_ROWS), ARTIFACT_ROWS),
         }
+        spec = explore.canonicalize_query_spec(self.frame(table), spec)
         result, _ = explore.run_query_full(self.frame(table), spec)
         aggregated = bool(spec["group_by"] or spec["aggs"])
         artifact = self._artifact(
@@ -319,6 +320,7 @@ class _Session:
         table = args.get("table")
         test = args.get("test")
         params = args.get("params") or {}
+        params = analytics.canonicalize_params(self.frame(table), test, params)
         result = analytics.run_test(self.frame(table), test, params)
         summary = result.summary
         artifact = self._artifact(
@@ -500,7 +502,7 @@ def ask(
     )
 
     session = _Session(workspace)
-    schema_text = json.dumps(_schema_brief(workspace), indent=1)
+    schema_text = json.dumps(schema_brief(workspace), indent=1)
     system_prompt = SYSTEM_PROMPT % schema_text
     if document_context:
         system_prompt += DOCUMENT_CONTEXT_RULES % _document_prompt(document_context)

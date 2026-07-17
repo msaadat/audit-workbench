@@ -270,6 +270,41 @@ def test_join_validation_errors(workspace_with_data):
     assert ws.joins == []
 
 
+def test_join_scalar_keys_are_normalized(workspace_with_data):
+    ws = workspace_with_data
+    join = ws.add_join(
+        {
+            "name": "enriched",
+            "left": "transactions",
+            "right": "customers",
+            "how": "left",
+            "left_on": "CUST_ID",
+            "right_on": "ID",
+        }
+    )
+
+    assert join["left_on"] == ["cust_id"]
+    assert join["right_on"] == ["id"]
+    assert ws.get_frame("enriched").height == ws.get_frame("transactions").height
+
+
+def test_join_scalar_missing_column_reports_the_whole_name(workspace_with_data):
+    ws = workspace_with_data
+    with pytest.raises(WorkspaceError, match="Column 'missing' not found"):
+        ws.add_join(
+            {
+                "name": "bad",
+                "left": "transactions",
+                "right": "customers",
+                "how": "left",
+                "left_on": "missing",
+                "right_on": "id",
+            }
+        )
+
+    assert ws.joins == []
+
+
 def test_persistence_roundtrip(workspace_with_data):
     ws = workspace_with_data
     ws.add_join(

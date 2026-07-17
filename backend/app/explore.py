@@ -31,6 +31,8 @@ from datetime import date, datetime, time
 
 import polars as pl
 
+from .field_names import matching_column, resolve_column, resolve_columns
+
 PAGE_SIZE_MAX = 500
 
 # A cross-tab explodes horizontally; past this the result is unreadable anyway.
@@ -81,10 +83,10 @@ def _cast_value(raw: str, dtype: pl.DataType):
 
 
 def _filter_expr(spec: dict, schema: dict[str, pl.DataType]) -> pl.Expr:
-    column = spec.get("column")
+    column = resolve_column(
+        spec.get("column"), list(schema), error_type=QueryError
+    )
     op = spec.get("op")
-    if column not in schema:
-        raise QueryError(f"Unknown column '{column}'.")
     if op not in FILTER_OPS:
         raise QueryError(f"Unknown filter operator '{op}'.")
 
@@ -140,9 +142,9 @@ def _agg_expr(spec: dict, schema: dict[str, pl.DataType]) -> pl.Expr:
     if func == "count":
         return pl.len().alias("row_count")
 
-    column = spec.get("column")
-    if column not in schema:
-        raise QueryError(f"Unknown column '{column}'.")
+    column = resolve_column(
+        spec.get("column"), list(schema), error_type=QueryError
+    )
     col = pl.col(column)
     alias = f"{column}_{func}"
     if func in ("sum", "mean") and not schema[column].is_numeric():
@@ -217,17 +219,26 @@ def build_crosstab(
         df = df.filter(pl.all_horizontal([_filter_expr(f, schema) for f in filters]))
     filtered_rows = df.height
 
-    row_fields = [c for c in (row_fields or []) if c]
+    row_fields = resolve_columns(row_fields, list(schema), error_type=QueryError)
     if not row_fields:
         raise QueryError("A cross-tab needs at least one Group by field.")
 
-    for field in row_fields + ([split_field] if split_field else []):
-        if field not in schema:
-            raise QueryError(f"Unknown column '{field}'.")
+    split_field = (
+        resolve_column(split_field, list(schema), error_type=QueryError)
+        if split_field else None
+    )
     if split_field is not None and split_field in row_fields:
         raise QueryError(f"'{split_field}' cannot be both a Group by and a Split by field.")
 
-    value_specs = [v for v in (value_specs or []) if v.get("func")] or [{"func": "count"}]
+    raw_value_specs = [v for v in (value_specs or []) if v.get("func")] or [{"func": "count"}]
+    value_specs = []
+    for value in raw_value_specs:
+        current = dict(value)
+        if current.get("func") != "count" and current.get("column"):
+            current["column"] = resolve_column(
+                current["column"], list(schema), error_type=QueryError
+            )
+        value_specs.append(current)
     agg_exprs = [_agg_expr(v, schema) for v in value_specs]
     value_names = [_value_name(v) for v in value_specs]
     if len(set(value_names)) != len(value_names):
@@ -304,6 +315,57 @@ def build_crosstab(
     return wide, grand_raw, meta
 
 
+def canonicalize_query_spec(df: pl.DataFrame, spec: dict | None) -> dict:
+    """Copy a declarative query while restoring exact source field casing."""
+    source = dict(spec or {})
+    normalized = dict(source)
+    normalized["filters"] = []
+    for item in source.get("filters") or []:
+        current = dict(item)
+        if current.get("column"):
+            current["column"] = resolve_column(
+                current["column"], df.columns, error_type=QueryError
+            )
+        normalized["filters"].append(current)
+    normalized["group_by"] = resolve_columns(
+        source.get("group_by"), df.columns, error_type=QueryError
+    )
+    if source.get("split_by"):
+        normalized["split_by"] = resolve_column(
+            source["split_by"], df.columns, error_type=QueryError
+        )
+    normalized["aggs"] = []
+    for item in source.get("aggs") or []:
+        current = dict(item)
+        if current.get("func") != "count" and current.get("column"):
+            current["column"] = resolve_column(
+                current["column"], df.columns, error_type=QueryError
+            )
+        normalized["aggs"].append(current)
+    if source.get("columns"):
+        normalized["columns"] = resolve_columns(
+            source["columns"], df.columns, error_type=QueryError
+        )
+
+    result_columns = list(df.columns)
+    if normalized["group_by"] or normalized["aggs"]:
+        result_columns = list(normalized["group_by"])
+        result_columns.extend(
+            "row_count" if item.get("func") == "count"
+            else f"{item.get('column')}_{item.get('func')}"
+            for item in normalized["aggs"]
+            if item.get("func")
+        )
+    normalized["sort"] = []
+    for item in source.get("sort") or []:
+        current = dict(item)
+        match = matching_column(current.get("column"), result_columns)
+        if match is not None:
+            current["column"] = match
+        normalized["sort"].append(current)
+    return normalized
+
+
 def run_query_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
     """Filters → grouping/aggregation → sort. Returns (frame, filtered_row_count).
 
@@ -312,6 +374,7 @@ def run_query_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
     grouped/filtered frame. No pagination — this is the full result, used
     directly for Excel export and sliced by :func:`run_query` for the UI.
     """
+    spec = canonicalize_query_spec(df, spec)
     if spec.get("split_by"):
         wide, grand_raw, meta = build_crosstab(
             df,
@@ -335,11 +398,10 @@ def run_query_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
         df = df.filter(pl.all_horizontal([_filter_expr(f, schema) for f in filters]))
     filtered_rows = df.height
 
-    group_by = [c for c in (spec.get("group_by") or []) if c]
+    group_by = resolve_columns(
+        spec.get("group_by"), list(schema), error_type=QueryError
+    )
     aggs = [a for a in (spec.get("aggs") or []) if a.get("func")]
-    for column in group_by:
-        if column not in schema:
-            raise QueryError(f"Unknown column '{column}'.")
 
     if group_by:
         agg_exprs = [_agg_expr(a, schema) for a in aggs] or [pl.len().alias("row_count")]
@@ -348,15 +410,14 @@ def run_query_full(df: pl.DataFrame, spec: dict) -> tuple[pl.DataFrame, int]:
         df = df.select([_agg_expr(a, schema) for a in aggs])
 
     for sort in reversed(spec.get("sort") or []):
-        column = sort.get("column")
+        column = matching_column(sort.get("column"), df.columns)
         if column in df.columns:
             df = df.sort(column, descending=bool(sort.get("desc")), nulls_last=True)
 
-    projection = [c for c in (spec.get("columns") or []) if c]
+    projection = resolve_columns(
+        spec.get("columns"), list(schema), error_type=QueryError
+    ) if spec.get("columns") else []
     if projection and not group_by and not aggs:
-        unknown = [c for c in projection if c not in schema]
-        if unknown:
-            raise QueryError(f"Unknown column '{unknown[0]}'.")
         seen = set()
         projection = [c for c in projection if not (c in seen or seen.add(c))]
         df = df.select(projection)

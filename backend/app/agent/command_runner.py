@@ -40,6 +40,11 @@ def fill_unavailable_placeholders(markdown: str) -> str:
 SEMANTIC_PROPOSAL_ATTEMPTS = 2
 
 
+def _text_list(value: object) -> list[str]:
+    values = [value] if isinstance(value, str) else list(value or [])
+    return [str(item) for item in values]
+
+
 class CommandRunner(BaseRunner):
     stage_titles = {
         "context": "Planning context",
@@ -137,6 +142,7 @@ class CommandRunner(BaseRunner):
             raise WorkspaceError("Unknown goal template.")
         base_user = prompts.command_interpreter_user(
             command, template, artifact_index.compact(index), self._catalog(), self.run["limits"],
+            assistant.schema_brief(self.ws),
             prepared_planning=self.run.get("prepared_planning"),
         )
         attempt_user = base_user
@@ -147,8 +153,10 @@ class CommandRunner(BaseRunner):
             objective = str(payload.get("objective") or (template or {}).get("objective") or command.get("text") or "").strip()
             goal = {
                 "objective": objective,
-                "constraints": [str(value) for value in payload.get("constraints") or (template or {}).get("constraints") or []],
-                "completion_criteria": [str(value) for value in payload.get("completion_criteria") or []],
+                "constraints": _text_list(
+                    payload.get("constraints") or (template or {}).get("constraints") or []
+                ),
+                "completion_criteria": _text_list(payload.get("completion_criteria")),
             }
             self.run["goal"] = goal
             proposals = payload.get("actions") or []
@@ -157,6 +165,9 @@ class CommandRunner(BaseRunner):
             try:
                 if not isinstance(proposals, list):
                     raise WorkspaceError("Command interpreter actions must be a list.")
+                for proposal in proposals:
+                    if isinstance(proposal, dict):
+                        actions.canonicalize_action_fields(self.ws, proposal)
                 created = ledger.append_actions(
                     self.run, proposals, audit_lifecycle=self._is_full_audit_goal(goal)
                 )
@@ -921,6 +932,7 @@ class CommandRunner(BaseRunner):
 
     def _resolve_and_gate(self, action: dict) -> None:
         target = action["target"]
+        actions.canonicalize_action_fields(self.ws, action)
         definition = actions.REGISTRY.get(action["type"], action["definition_version"])
         # Also normalize pre-fix persisted proposals when an interrupted run
         # is resumed. New proposals are normalized by the ledger.
@@ -1096,6 +1108,7 @@ class CommandRunner(BaseRunner):
             [{"id": item["id"], "type": item["type"], "status": item["status"], "result_refs": item["result_refs"]} for item in self.run["actions"]],
             [{"action_id": action["id"], "result": safe_result}],
             artifact_index.compact(index), self._catalog(), self.run["limits"],
+            assistant.schema_brief(self.ws),
         )
         attempt_user = base_user
         for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
@@ -1114,6 +1127,9 @@ class CommandRunner(BaseRunner):
             # Expansion is opportunistic follow-up planning; even repeated
             # invalid proposals must not fail work that already committed.
             try:
+                for proposal in proposals:
+                    if isinstance(proposal, dict):
+                        actions.canonicalize_action_fields(self.ws, proposal)
                 created = ledger.append_actions(
                     self.run, proposals, depth=action["depth"] + 1,
                     audit_lifecycle=self._is_full_audit_goal(),

@@ -38,11 +38,22 @@ def _normalize(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", name.lower())
 
 
+def _relationship_base(name: str) -> str:
+    normalized = _normalize(name)
+    for suffix in ("reference", "link", "ref", "fk"):
+        if normalized.endswith(suffix) and len(normalized) > len(suffix):
+            return normalized[: -len(suffix)]
+    return normalized
+
+
 def _name_affinity(left: str, right: str, right_table: str) -> float:
     """How strongly two column names suggest a relationship."""
     l, r = _normalize(left), _normalize(right)
     if l == r:
         return 1.0
+    if _relationship_base(left) == _relationship_base(right):
+        # Explicit foreign-key naming such as PO_NUMBER_LINK -> PO_NUMBER.
+        return 0.9
     table = _normalize(right_table).rstrip("s")
     # e.g. transactions.cust_id ↔ customers.id
     if r in ("id", "key", "code") and table and table[:4] in l:

@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .. import (
-    analytics, doc_tests, findings, intake, privacy, report, sandbox, validation,
+    analytics, doc_tests, explore, findings, intake, privacy, report, sandbox, validation,
     working_papers,
 )
-from ..workspaces import Workspace, WorkspaceError, slugify
+from ..field_names import resolve_columns
+from ..workspaces import JOIN_TYPES, Workspace, WorkspaceError, slugify
 from . import artifact_index, joins
 
 RISKS = {"read", "compute", "create", "reversible_mutation", "broad_rewrite", "destructive"}
@@ -233,7 +234,64 @@ def _receipt(action: dict, item: dict | None = None, *, refs=None, result=None) 
     }
 
 
+def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
+    """Canonicalize field-bearing declarative action args before approval/run."""
+    type_ = str(action.get("type") or "")
+    args = action.get("args")
+    if not isinstance(args, dict):
+        return
+    try:
+        if type_ == "create_join":
+            left, right = args.get("left"), args.get("right")
+            if left in workspace.table_names() and right in workspace.table_names():
+                args["left_on"] = resolve_columns(
+                    args.get("left_on"), workspace.get_frame(left).columns,
+                    table=left, error_type=WorkspaceError,
+                )
+                args["right_on"] = resolve_columns(
+                    args.get("right_on"), workspace.get_frame(right).columns,
+                    table=right, error_type=WorkspaceError,
+                )
+        elif type_ == "run_analytics":
+            table = args.get("table")
+            if table in workspace.table_names():
+                args["params"] = analytics.canonicalize_params(
+                    workspace.get_frame(table), args.get("test"), args.get("params")
+                )
+        elif type_ == "create_validation_rules":
+            table = args.get("table")
+            if table in workspace.table_names() and isinstance(args.get("rules"), list):
+                args["rules"] = validation.canonicalize_rules(
+                    workspace.get_frame(table), args.get("rules") or [],
+                    resolve=workspace.get_frame, strict=True,
+                )
+        elif type_ == "pin_dashboard_tile":
+            table = args.get("table")
+            if table not in workspace.table_names():
+                return
+            frame = workspace.get_frame(table)
+            kind = args.get("kind")
+            spec = dict(args.get("spec") or {})
+            if kind == "query":
+                args["spec"] = explore.canonicalize_query_spec(frame, spec)
+            elif kind == "analytics":
+                spec["params"] = analytics.canonicalize_params(
+                    frame, spec.get("test"), spec.get("params")
+                )
+                args["spec"] = spec
+            elif kind == "validation":
+                spec["rules"] = validation.canonicalize_rules(
+                    frame, spec.get("rules") or [], resolve=workspace.get_frame, strict=True
+                )
+                args["spec"] = spec
+    except WorkspaceError:
+        raise
+    except ValueError as error:
+        raise WorkspaceError(str(error)) from error
+
+
 def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
+    canonicalize_action_fields(workspace, action)
     type_, args = action["type"], action.get("args") or {}
     target_id = None
     if REGISTRY.get(type_).target_kinds:
@@ -468,6 +526,16 @@ def _schema(required=(), properties=None) -> dict:
 
 
 OBJ = {"type": "object"}; STR = {"type": "string"}; ARR = {"type": "array"}
+ARR_STR = {"type": "array", "items": STR}
+PYTHON_SPEC = {
+    "type": "object", "required": ["code"],
+    "properties": {"code": STR}, "additionalProperties": True,
+}
+RULE_SPEC = {
+    "type": "object", "required": ["check"],
+    "properties": {"column": STR, "check": STR, "params": OBJ},
+    "additionalProperties": True,
+}
 
 
 def _register(type_: str, description: str, risk: str, targets=(), required=(), properties=None, model="none", failure="stop_dependents"):
@@ -502,12 +570,24 @@ _register(
 _register("edit_procedure", "Edit one audit procedure", "reversible_mutation", ("procedure",), ("changes",), {"changes": OBJ})
 _register("delete_procedure", "Delete one audit procedure", "destructive", ("procedure",))
 _register("infer_relationships", "Infer table relationships locally", "compute")
-_register("create_join", "Create a validated table join", "create", required=("name", "left", "right", "left_on", "right_on"))
-_register("create_validation_rules", "Create validation rules", "create", required=("title", "table", "rules"))
+_register(
+    "create_join", "Create a validated table join", "create",
+    required=("name", "left", "right", "left_on", "right_on"),
+    properties={
+        "name": STR, "left": STR, "right": STR,
+        "left_on": ARR_STR, "right_on": ARR_STR,
+        "how": {"type": "string", "enum": list(JOIN_TYPES)},
+    },
+)
+_register(
+    "create_validation_rules", "Create validation rules", "create",
+    required=("title", "table", "rules"),
+    properties={"title": STR, "table": STR, "rules": {"type": "array", "items": RULE_SPEC}},
+)
 _register("edit_validation_rules", "Edit validation rules", "reversible_mutation", ("ruleset",), ("changes",), {"changes": OBJ})
 _register("run_validation_rules", "Run a saved validation ruleset", "compute", ("ruleset",))
-_register("run_analytics", "Run a library audit analytic", "compute", required=("table", "test"), properties={"table": STR, "test": STR})
-_register("create_custom_analysis", "Create a sandboxed Polars analysis", "create", required=("title", "spec"), properties={"title": STR, "spec": OBJ}, model="draft")
+_register("run_analytics", "Run a library audit analytic", "compute", required=("table", "test"), properties={"table": STR, "test": STR, "params": OBJ})
+_register("create_custom_analysis", "Create a sandboxed Polars analysis", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
 _register("edit_custom_analysis", "Edit a custom analysis", "reversible_mutation", ("analysis",), ("changes",), {"changes": OBJ}, model="draft")
 _register("run_custom_analysis", "Run a saved custom analysis", "compute", ("analysis",))
 _register("pin_dashboard_tile", "Pin a dashboard tile", "create", required=("kind", "title", "spec"))

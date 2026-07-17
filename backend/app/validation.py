@@ -20,6 +20,7 @@ from typing import Callable
 import polars as pl
 
 from .explore import QueryError, frame_payload
+from .field_names import matching_column, resolve_column, resolve_columns
 
 DETAIL_PREVIEW_ROWS = 50
 SEVERITIES = ("fail", "warn")
@@ -32,9 +33,7 @@ Resolve = Callable[[str], pl.DataFrame]
 def _column(df: pl.DataFrame, column: str | None) -> str:
     if not column:
         raise QueryError("This check needs a column.")
-    if column not in df.columns:
-        raise QueryError(f"Column '{column}' not found in this table.")
-    return column
+    return resolve_column(column, df.columns, error_type=QueryError)
 
 
 def _numeric(df: pl.DataFrame, column: str) -> pl.Expr:
@@ -181,8 +180,9 @@ def check_referential(
         lookup = resolve(lookup_table)
     except Exception as error:
         raise QueryError(f"Could not load lookup table '{lookup_table}': {error}") from error
-    if lookup_column not in lookup.columns:
-        raise QueryError(f"Column '{lookup_column}' not found in '{lookup_table}'.")
+    lookup_column = resolve_column(
+        lookup_column, lookup.columns, table=lookup_table, error_type=QueryError
+    )
     # Values compare as trimmed strings so an int code matches its text twin.
     allowed = (
         lookup.select(
@@ -264,12 +264,11 @@ def check_expression(df: pl.DataFrame, column: str | None, params: dict) -> pl.E
 
 # -------------------------------------------------------- table-scope checks
 def check_unique_key(df: pl.DataFrame, column: str | None, params: dict) -> pl.Expr:
-    columns = [c for c in (params.get("columns") or []) if c]
+    columns = resolve_columns(
+        params.get("columns"), df.columns, error_type=QueryError
+    )
     if not columns:
         raise QueryError("Unique key needs at least one column.")
-    missing = [c for c in columns if c not in df.columns]
-    if missing:
-        raise QueryError(f"Column '{missing[0]}' not found in this table.")
     return pl.struct(columns).is_duplicated()
 
 
@@ -503,6 +502,77 @@ CHECKS: dict[str, dict] = {
         "func": check_row_count,
     },
 }
+
+
+def canonicalize_rules(
+    df: pl.DataFrame,
+    rules: list[dict],
+    *,
+    resolve: Resolve | None = None,
+    strict: bool = True,
+) -> list[dict]:
+    """Copy rules while resolving declarative field references safely."""
+    normalized = []
+    for source in rules or []:
+        rule = {**source, "params": dict(source.get("params") or {})}
+        meta = CHECKS.get(rule.get("check"))
+        if meta is None:
+            if strict:
+                raise QueryError(f"Unknown check '{rule.get('check')}'.")
+            normalized.append(rule)
+            continue
+
+        if meta.get("scope") == "column" and rule.get("column"):
+            match = matching_column(rule["column"], df.columns)
+            if match is not None:
+                rule["column"] = match
+            elif strict:
+                rule["column"] = resolve_column(
+                    rule["column"], df.columns, error_type=QueryError
+                )
+
+        for parameter in meta.get("params") or []:
+            name = parameter.get("name")
+            value = rule["params"].get(name)
+            if value in (None, "", []):
+                continue
+            kind = parameter.get("kind")
+            if kind == "column":
+                match = matching_column(value, df.columns)
+                if match is not None:
+                    rule["params"][name] = match
+                elif strict:
+                    rule["params"][name] = resolve_column(
+                        value, df.columns, error_type=QueryError
+                    )
+            elif kind == "columns":
+                values = [value] if isinstance(value, str) else list(value or [])
+                matches = [matching_column(item, df.columns) for item in values]
+                if all(match is not None for match in matches):
+                    rule["params"][name] = matches
+                elif strict:
+                    rule["params"][name] = resolve_columns(
+                        values, df.columns, error_type=QueryError
+                    )
+            elif kind == "lookup_column" and resolve is not None:
+                table = str(rule["params"].get("lookup_table") or "").strip()
+                if not table:
+                    continue
+                try:
+                    lookup = resolve(table)
+                except Exception:
+                    if strict:
+                        raise
+                    continue
+                match = matching_column(value, lookup.columns)
+                if match is not None:
+                    rule["params"][name] = match
+                elif strict:
+                    rule["params"][name] = resolve_column(
+                        value, lookup.columns, table=table, error_type=QueryError
+                    )
+        normalized.append(rule)
+    return normalized
 
 
 def registry_payload() -> list[dict]:

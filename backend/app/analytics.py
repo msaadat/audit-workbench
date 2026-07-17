@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import polars as pl
 
 from .explore import QueryError, frame_payload
+from .field_names import resolve_column, resolve_columns
 
 SUMMARY_MAX_ROWS = 500
 DETAIL_PREVIEW_ROWS = 50
@@ -1207,8 +1208,30 @@ def registry_payload() -> list[dict]:
     ]
 
 
+def canonicalize_params(df: pl.DataFrame, test_id: str, params: dict | None) -> dict:
+    """Resolve analytics column parameters to their exact source spelling."""
+    meta = ANALYTICS.get(test_id)
+    if meta is None:
+        raise QueryError(f"Unknown analytics test '{test_id}'.")
+    normalized = dict(params or {})
+    for parameter in meta.get("params") or []:
+        name = parameter.get("name")
+        value = normalized.get(name)
+        if value in (None, "", []):
+            continue
+        if parameter.get("kind") == "column":
+            normalized[name] = resolve_column(
+                value, df.columns, error_type=QueryError
+            )
+        elif parameter.get("kind") == "columns":
+            normalized[name] = resolve_columns(
+                value, df.columns, error_type=QueryError
+            )
+    return normalized
+
+
 def run_test(df: pl.DataFrame, test_id: str, params: dict) -> AnalyticsResult:
     meta = ANALYTICS.get(test_id)
     if meta is None:
         raise QueryError(f"Unknown analytics test '{test_id}'.")
-    return meta["func"](df, params or {})
+    return meta["func"](df, canonicalize_params(df, test_id, params))

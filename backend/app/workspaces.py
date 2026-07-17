@@ -32,6 +32,7 @@ import polars as pl
 
 from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
 from . import loader, profiler
+from .field_names import resolve_columns
 
 SCHEMA_VERSION = 1
 JOIN_TYPES = ("inner", "left", "full", "semi", "anti", "cross")
@@ -562,16 +563,17 @@ class Workspace:
         if name in (left, right):
             raise WorkspaceError("A join cannot reference itself.")
 
-        left_on = [c for c in (spec.get("left_on") or []) if c]
-        right_on = [c for c in (spec.get("right_on") or []) if c]
+        left_columns = self.get_frame(left).columns
+        right_columns = self.get_frame(right).columns
+        left_on = resolve_columns(
+            spec.get("left_on"), left_columns, table=left, error_type=WorkspaceError
+        )
+        right_on = resolve_columns(
+            spec.get("right_on"), right_columns, table=right, error_type=WorkspaceError
+        )
         if how != "cross":
             if not left_on or len(left_on) != len(right_on):
                 raise WorkspaceError("Join keys are required and must pair up.")
-            for column, table in [(c, left) for c in left_on] + [
-                (c, right) for c in right_on
-            ]:
-                if column not in self.get_frame(table).columns:
-                    raise WorkspaceError(f"Column '{column}' not found in '{table}'.")
 
         entry = _apply_provenance(
             {
@@ -746,7 +748,7 @@ class Workspace:
     # A rule set is the validation sibling of an analysis: field-wise checks
     # bound to a table by name, stored as a spec and recomputed live — so a
     # replaced or refreshed table re-validates with the same saved rules.
-    def _normalize_rules(self, rules: list) -> list[dict]:
+    def _normalize_rules(self, rules: list, table: str | None = None) -> list[dict]:
         from . import validation
 
         normalized = []
@@ -769,6 +771,10 @@ class Workspace:
                     "enabled": rule.get("enabled") is not False,
                 }
             )
+        if table in self.table_names():
+            normalized = validation.canonicalize_rules(
+                self.get_frame(table), normalized, resolve=self.get_frame, strict=False
+            )
         return normalized
 
     def add_ruleset(self, payload: dict) -> dict:
@@ -783,7 +789,7 @@ class Workspace:
                 "id": str(payload.get("id") or uuid.uuid4().hex[:10]),
                 "title": title,
                 "table": table,
-                "rules": self._normalize_rules(payload.get("rules") or []),
+                "rules": self._normalize_rules(payload.get("rules") or [], table),
                 "note": str(payload.get("note") or "").strip(),
                 "created": date.today().isoformat(),
             },
@@ -817,7 +823,11 @@ class Workspace:
                 raise WorkspaceError(f"Unknown table '{changes['table']}'.")
             ruleset["table"] = changes["table"]
         if "rules" in changes:
-            ruleset["rules"] = self._normalize_rules(changes["rules"])
+            ruleset["rules"] = self._normalize_rules(changes["rules"], ruleset["table"])
+        elif "table" in changes:
+            ruleset["rules"] = self._normalize_rules(
+                ruleset.get("rules") or [], ruleset["table"]
+            )
         self.save()
         return ruleset
 

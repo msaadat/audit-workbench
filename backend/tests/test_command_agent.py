@@ -83,6 +83,69 @@ def test_command_interpreter_repairs_semantically_invalid_action_graph(monkeypat
     assert "requires target kind: doctest" in rejected["error"]
 
 
+def test_command_interpreter_receives_schema_and_canonicalizes_fields(
+    monkeypatch, workspace_with_data
+):
+    def interpret(user):
+        payload = json.loads(user)
+        schemas = {item["table"]: item for item in payload["table_schemas"]}
+        transaction_fields = {item["name"] for item in schemas["transactions"]["columns"]}
+        assert {"cust_id", "invoice_no", "amount"} <= transaction_fields
+        return {
+            "objective": "Join transactions to customers",
+            "constraints": [],
+            "completion_criteria": "join created",
+            "actions": [
+                {
+                    "id": "join",
+                    "type": "create_join",
+                    "args": {
+                        "name": "enriched",
+                        "left": "transactions",
+                        "right": "customers",
+                        "left_on": ["CUST_ID"],
+                        "right_on": ["ID"],
+                        "how": "left",
+                    },
+                },
+                {
+                    "id": "duplicates",
+                    "type": "run_analytics",
+                    "args": {
+                        "table": "transactions",
+                        "test": "duplicates",
+                        "params": {"columns": ["INVOICE_NO"]},
+                    },
+                },
+            ],
+        }
+
+    configured(monkeypatch, interpret)
+    started = runner.start_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "join customer data"}
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["goal"]["completion_criteria"] == ["join created"]
+    assert completed["actions"][0]["args"]["left_on"] == ["cust_id"]
+    assert completed["actions"][0]["args"]["right_on"] == ["id"]
+    assert completed["actions"][1]["args"]["params"]["columns"] == ["invoice_no"]
+    assert workspaces.load_workspace(workspace_with_data.id).joins[0]["name"] == "enriched"
+
+
+def test_custom_analysis_contract_requires_executable_code(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "analyze data"}
+    )
+    with pytest.raises(workspaces.WorkspaceError, match="args.spec.code is required"):
+        ledger.append_actions(run, [{
+            "id": "analysis",
+            "type": "create_custom_analysis",
+            "args": {"title": "Broken", "spec": {"steps": []}},
+        }])
+
+
 def test_full_audit_lifecycle_dependencies_and_document_test_binding(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto",

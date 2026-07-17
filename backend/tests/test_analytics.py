@@ -55,6 +55,14 @@ def test_duplicates(transactions_df):
     assert unique.verdict == "ok"
 
 
+def test_analytics_column_params_are_canonicalized(transactions_df):
+    result = run_test(
+        transactions_df, "duplicates", {"columns": ["INVOICE_NO"]}
+    )
+    assert result.verdict == "fail"
+    assert result.detail.height == 2
+
+
 def test_gaps(transactions_df):
     result = run_test(transactions_df, "gaps", {"column": "invoice_no"})
     assert result.verdict == "warn"

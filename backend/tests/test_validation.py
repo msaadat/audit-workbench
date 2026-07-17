@@ -42,6 +42,14 @@ def test_required_counts_nulls_and_blank_strings(dirty_df):
     assert _run_one(dirty_df, "required", "amount")["fail_count"] == 1
 
 
+def test_validation_field_names_are_canonicalized(dirty_df):
+    assert _run_one(dirty_df, "required", "INVOICE_NO")["fail_count"] == 1
+    key = _run_one(
+        dirty_df, "unique_key", params={"columns": ["INVOICE_NO", "CATEGORY"]}
+    )
+    assert key["error"] is None
+
+
 def test_numeric_sign_modes(dirty_df):
     assert _run_one(dirty_df, "numeric_sign", "amount", {"mode": "positive"})["fail_count"] == 2
     assert _run_one(dirty_df, "numeric_sign", "amount", {"mode": "non_negative"})["fail_count"] == 1

@@ -39,6 +39,18 @@ def test_low_match_rate_is_not_strong():
     assert joins.classify(d) == "weak"
 
 
+def test_candidate_keys_recognize_link_suffixes():
+    invoices = pl.DataFrame(
+        {"GRN_ID_LINK": ["G1", "G2", "G3"], "INVOICE_ID": [1, 2, 3]}
+    )
+    purchase_orders = pl.DataFrame(
+        {"GRN_ID": ["G1", "G2", "G3"], "PO_NUMBER": ["P1", "P2", "P3"]}
+    )
+
+    candidates = joins.candidate_keys(invoices, purchase_orders, "po_data")
+    assert ("GRN_ID_LINK", "GRN_ID", 0.9) in candidates
+
+
 def test_existing_join_not_reproposed(workspace_with_data):
     workspace_with_data.add_join(
         {

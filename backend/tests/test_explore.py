@@ -52,6 +52,21 @@ def test_group_by_aggregation_and_sort(transactions_df):
     assert result["rows"][0][1] == pytest.approx(2300.0)
 
 
+def test_query_field_names_are_canonicalized_case_insensitively(transactions_df):
+    result = run_query(
+        transactions_df,
+        {
+            "filters": [{"column": "AMOUNT", "op": "gte", "value": "100"}],
+            "group_by": ["CUST_ID"],
+            "aggs": [{"column": "AMOUNT", "func": "sum"}],
+            "sort": [{"column": "AMOUNT_SUM", "desc": True}],
+        },
+    )
+
+    assert result["columns"] == ["cust_id", "amount_sum"]
+    assert result["rows"][0][0] == "C2"
+
+
 def test_global_aggregation_without_grouping(transactions_df):
     result = run_query(
         transactions_df, {"aggs": [{"column": "amount", "func": "mean"}]}
@@ -113,9 +128,9 @@ def test_split_by_builds_cross_tab(transactions_df):
     result = run_query(
         df,
         {
-            "group_by": ["cust_id"],
-            "split_by": "month",
-            "aggs": [{"column": "amount", "func": "sum"}],
+            "group_by": ["CUST_ID"],
+            "split_by": "MONTH",
+            "aggs": [{"column": "AMOUNT", "func": "sum"}],
         },
     )
     assert result["split_field"] == "month"
