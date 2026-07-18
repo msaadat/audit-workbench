@@ -10,7 +10,7 @@ import type {
   AssistantMessageIntent,
   AuditDocument,
 } from '../types'
-import type { AgentMode } from './useAgentRun'
+import { useAgentRun, type AgentMode } from './useAgentRun'
 
 interface ChatState {
   workspaceId: string
@@ -58,6 +58,7 @@ function requestId(): string {
 
 export function useAssistantChat(workspaceId: string) {
   const store = state(workspaceId)
+  const agent = useAgentRun(workspaceId)
 
   async function loadSummaries() {
     const result = await api.get<{ chats: AssistantChatSummary[] }>(
@@ -187,6 +188,8 @@ export function useAssistantChat(workspaceId: string) {
       )
       store.chat = result.chat
       store.capabilities = result.chat.capabilities
+      const runId = String(result.outcome?.run_id ?? '')
+      if (runId) await agent.openRun(runId).catch(() => undefined)
       const outcome = result.outcome as { kind?: string; message?: string } | undefined
       if (outcome?.kind === 'error') {
         throw new Error(outcome.message || 'The assistant could not process this message.')

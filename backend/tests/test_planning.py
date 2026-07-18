@@ -112,6 +112,30 @@ def test_planning_crud_and_user_touch():
     assert ws.work_program[0]["rcm_refs"] == []
 
 
+def test_unchanged_apm_save_preserves_agent_ownership():
+    ws = workspaces.create_workspace("Planning provenance")
+    ws.update_planning(
+        {
+            "apm_markdown": "# Agent draft",
+            "created_by": "agent",
+            "agent_run_id": "run-1",
+        },
+        agent=True,
+    )
+
+    unchanged = ws.update_planning(
+        {
+            "context": {"entity": "Example Co"},
+            "apm_markdown": "# Agent draft",
+        }
+    )
+    assert unchanged["created_by"] == "agent"
+    assert unchanged["agent_run_id"] == "run-1"
+
+    edited = ws.update_planning({"apm_markdown": "# Auditor revision"})
+    assert edited["created_by"] == "user"
+
+
 def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     fake = configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("No-table planning")

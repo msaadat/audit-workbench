@@ -269,13 +269,11 @@ async function refineWithAssistant() {
   error.value = ''
   refining.value = true
   try {
-    const started = await assistantChat.send(
+    await assistantChat.send(
       `Classify and import the selected files (${batch.value.manifest_count} files).`,
       'act', launchMode.value,
       { source: 'folder_intake', runKind: 'intake', runContext: { batch_id: batch.value.id, source_id: batch.value.source_id } },
     )
-    const runId = String(started?.outcome?.run_id ?? '')
-    if (runId) await agent.openRun(runId)
   } catch (cause) {
     refining.value = false
     error.value = String(cause)

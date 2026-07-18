@@ -62,9 +62,7 @@ async function loadDocuments() {
 }
 async function send(content: string, sendIntent: AssistantMessageIntent = 'auto', goalTemplate?: string, source: 'composer'|'shortcut'|'tab_button'|'folder_intake' = 'composer') {
   try {
-    const result = await chats.send(content, sendIntent, mode.value, { goalTemplate, source })
-    const runId = String(result?.outcome?.run_id ?? '')
-    if (runId) await agent.openRun(runId).catch(() => undefined)
+    await chats.send(content, sendIntent, mode.value, { goalTemplate, source })
   } catch (error) { fail('Message failed', error) }
 }
 function shortcut(label: string, template: string) {

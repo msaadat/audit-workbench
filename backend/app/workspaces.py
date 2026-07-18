@@ -897,6 +897,10 @@ class Workspace:
             raise WorkspaceError(f"Unknown planning field: {sorted(unknown)[0]}.")
         if not agent and ({"agent_run_id", "created_by"} & set(changes)):
             raise WorkspaceError("Planning provenance is managed by the workbench.")
+        apm_changed = (
+            "apm_markdown" in changes
+            and changes["apm_markdown"] != self.planning.get("apm_markdown")
+        )
         if "context" in changes:
             context = changes["context"]
             if not isinstance(context, dict):
@@ -905,7 +909,7 @@ class Workspace:
         for key in ("apm_markdown", "agent_run_id", "created_by"):
             if key in changes:
                 self.planning[key] = changes[key]
-        if not agent and self.planning.get("created_by") == "agent":
+        if not agent and apm_changed and self.planning.get("created_by") == "agent":
             self.planning["created_by"] = "user"
         self.planning["updated"] = self._updated_now()
         self.save()
