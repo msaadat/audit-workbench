@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderAsync } from 'docx-preview'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
+import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
@@ -10,6 +11,7 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import { api } from '../api'
+import { documentStatus } from '../composables/documentStatus'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import type { AIActivityEvent, AgentRun, AuditDocument, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
@@ -21,6 +23,7 @@ import UiPageHeader from './ui/UiPageHeader.vue'
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
 const toast = useToast()
+const confirm = useConfirm()
 const route = useRoute()
 const router = useRouter()
 const assistantChat = useAssistantChat(props.workspace.id)
@@ -57,6 +60,7 @@ const contentSearchOpen = ref(false)
 const contentSearch = ref('')
 const sourceSearch = ref('')
 const searchResults = ref<DocumentSearchResult[]>([])
+const sourceResults = ref<DocumentSearchResult[]>([])
 const searchBusy = ref(false)
 const indexingStatus = ref<DocumentIndexingStatus | null>(null)
 let indexingTimer: number | undefined
@@ -126,6 +130,18 @@ const secondaryActions = computed(() => [
   { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
 ])
 
+const selectedStatus = computed(() => selected.value ? documentStatus(selected.value) : null)
+const selectedStatusSeverity = computed(() => {
+  const status = selectedStatus.value
+  if (!status) return 'secondary'
+  if (status.level === 'attention') return status.failed ? 'danger' : 'warn'
+  return status.level === 'processing' ? 'info' : 'secondary'
+})
+const documentActions = computed(() => [
+  { label: 'Re-extract text', icon: 'pi pi-refresh', command: () => void reextract() },
+  { label: 'Delete document', icon: 'pi pi-trash', command: () => remove() },
+])
+
 const prefsKey = `aw-doc-rail:${props.workspace.id}`
 
 function loadRailPrefs() {
@@ -146,13 +162,6 @@ function toggleGroup(key: string) {
   else next.add(key)
   collapsedGroups.value = next
   saveRailPrefs()
-}
-
-function severity(value: string): 'success' | 'danger' | 'warn' | 'secondary' {
-  if (value === 'extracted') return 'success'
-  if (value === 'failed') return 'danger'
-  if (value === 'partial' || value === 'image_only') return 'warn'
-  return 'secondary'
 }
 
 async function loadDocuments() {
@@ -193,6 +202,10 @@ function beginIndexingPolling() {
 }
 
 async function selectDocument(id: string, page?: number) {
+  if (id !== selectedId.value) {
+    sourceSearch.value = ''
+    sourceResults.value = []
+  }
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
   await router.replace({ query: { ...route.query, tab: 'documents', doc: id, page: String(currentPage.value) } })
@@ -296,7 +309,8 @@ async function runContentSearch(documentIds?: string[]) {
   searchBusy.value = true
   try {
     const result = await api.post<{ results: DocumentSearchResult[] }>(`/api/workspaces/${props.workspace.id}/documents/search`, { query, document_ids: documentIds, top_k: 6 })
-    searchResults.value = result.results
+    if (documentIds) sourceResults.value = result.results
+    else searchResults.value = result.results
   } catch (error) { toast.add({ severity: 'error', summary: 'Search failed', detail: String(error), life: 5000 }) }
   finally { searchBusy.value = false }
 }
@@ -377,11 +391,21 @@ async function updateClassification(value: DocumentCategory) {
   }
 }
 
-async function remove() {
-  if (!selected.value || !window.confirm(`Delete ${selected.value.title}? Existing evidence references will remain visibly stale.`)) return
-  await api.del(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}`)
-  await assistantChat.removeDocument(selected.value.id)
-  selectedId.value = ''; await loadDocuments(); if (selectedId.value) await loadDetail(); emit('changed')
+function remove() {
+  const doc = selected.value
+  if (!doc) return
+  confirm.require({
+    header: 'Delete document',
+    message: `Delete "${doc.title}"? Existing evidence references will remain visibly stale.`,
+    icon: 'pi pi-exclamation-triangle',
+    acceptProps: { label: 'Delete', severity: 'danger' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      await api.del(`/api/workspaces/${props.workspace.id}/documents/${doc.id}`)
+      await assistantChat.removeDocument(doc.id)
+      selectedId.value = ''; await loadDocuments(); if (selectedId.value) await loadDetail(); emit('changed')
+    },
+  })
 }
 
 async function attachToAssistant() {
@@ -418,6 +442,21 @@ function fileIcon(doc: AuditDocument) {
   if (/\.(png|jpe?g|webp|bmp|tiff?)$/i.test(doc.source)) return 'pi pi-image'
   if (/\.pdf$/i.test(doc.source)) return 'pi pi-file-pdf'
   return 'pi pi-file'
+}
+
+function normalizedName(value: string) {
+  return value.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function showSource(doc: AuditDocument) {
+  return normalizedName(doc.source) !== normalizedName(doc.title)
+}
+
+function openContentSearchFromRail() {
+  contentSearch.value = search.value.trim()
+  searchResults.value = []
+  contentSearchOpen.value = true
+  void runContentSearch()
 }
 
 async function copyText(value: string, label: string) {
@@ -500,27 +539,33 @@ onUnmounted(() => {
               :title="`${doc.source} · ${doc.pages || 0} page${doc.pages === 1 ? '' : 's'}`" @click="selectDocument(doc.id, 1)"
             >
               <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
-              <span class="doc-identity"><strong>{{ doc.title }}</strong><small v-if="doc.source !== doc.title">{{ doc.source }}</small></span>
-              <span class="state-cluster" :title="`Extraction: ${doc.text_state}; analysis: ${doc.analysis_coverage_state}/${doc.analysis_validity_state || 'none'}; search: ${doc.search_index_state}`">
-                <span class="state-pill" :class="`state-${doc.text_state}`">{{ doc.text_state.replace('_', ' ') }}</span>
-                <span class="state-pill" :class="`state-analysis-${doc.analysis_coverage_state}`">{{ doc.analysis_coverage_state }}</span>
-                <span class="state-pill" :class="`state-search-${doc.search_index_state}`">{{ doc.search_index_state }}</span>
-              </span>
+              <span class="doc-identity"><strong>{{ doc.title }}</strong><small v-if="showSource(doc)">{{ doc.source }}</small></span>
+              <template v-for="status in [documentStatus(doc)]" :key="`${doc.id}:status`">
+                <span
+                  v-if="status.level !== 'ready'" class="doc-status" :class="[status.level, { failed: status.failed }]"
+                  :title="`${status.label} — ${status.detail}`"
+                >
+                  <i :class="status.level === 'processing' ? 'pi pi-spin pi-spinner' : 'pi pi-exclamation-circle'" />
+                </span>
+              </template>
             </button>
           </template>
         </div>
+        <button v-if="search.trim()" class="rail-deep-search" @click="openContentSearchFromRail">
+          <i class="pi pi-search" /><span>Search inside documents for “{{ search.trim() }}”</span>
+        </button>
       </aside>
 
       <main v-if="selected" class="document-detail">
         <header class="detail-head">
           <div class="detail-identity">
-            <p class="eyebrow">{{ selected.category.replace('_', ' ') }}</p>
             <h3>{{ selected.title }}</h3>
             <p>{{ selected.source }} · {{ selected.pages || 0 }} page{{ selected.pages === 1 ? '' : 's' }}</p>
           </div>
           <div class="detail-actions">
+            <Tag v-if="selectedStatus" :value="selectedStatus.label" :severity="selectedStatusSeverity" v-tooltip.bottom="selectedStatus.detail" />
             <label class="classification-field">
-              <span>Classification</span>
+              <span>Type</span>
               <Select
                 :modelValue="selected.category"
                 :options="documentCategoryOptions"
@@ -531,12 +576,8 @@ onUnmounted(() => {
                 @update:modelValue="updateClassification"
               />
             </label>
-            <Tag :value="selected.text_state.replace('_', ' ')" :severity="severity(selected.text_state)" />
-            <Tag :value="`analysis ${selected.analysis_coverage_state}`" :severity="selected.analysis_validity_state === 'stale' ? 'warn' : selected.analysis_coverage_state === 'complete' ? 'success' : 'secondary'" />
-            <Tag :value="`search ${selected.search_index_state}`" :severity="selected.search_index_state === 'ready' ? 'success' : selected.search_index_state === 'failed' ? 'danger' : 'secondary'" />
-            <Button label="Add to assistant" icon="pi pi-paperclip" size="small" @click="attachToAssistant" />
-            <Button icon="pi pi-refresh" text rounded aria-label="Re-extract" v-tooltip.top="'Re-extract'" @click="reextract" />
-            <Button icon="pi pi-trash" text rounded severity="danger" aria-label="Delete" v-tooltip.top="'Delete document'" @click="remove" />
+            <Button label="Add to assistant" icon="pi pi-paperclip" size="small" outlined @click="attachToAssistant" />
+            <UiOverflowMenu :items="documentActions" tooltip="Document actions" />
           </div>
         </header>
         <nav class="detail-tabs">
@@ -545,7 +586,7 @@ onUnmounted(() => {
 
         <div v-if="view === 'preview'" class="detail-content preview-view">
           <div class="page-tools">
-            <template v-if="showTextView">
+            <template v-if="!isImage">
               <Button icon="pi pi-angle-left" text :disabled="currentPage <= 1" @click="currentPage--" /><span>Page {{ currentPage }} of {{ selected.pages || previewPages.length || 1 }}</span><Button icon="pi pi-angle-right" text :disabled="currentPage >= (selected.pages || previewPages.length || 1)" @click="currentPage++" />
             </template>
             <div v-if="hasOriginalView" class="source-toggle" role="group" aria-label="Preview mode">
@@ -553,6 +594,13 @@ onUnmounted(() => {
               <button :class="{ active: sourceView === 'text' }" @click="sourceView = 'text'">Extracted text</button>
             </div>
             <a :href="fileUrl" target="_blank">Open original</a>
+          </div>
+          <div class="source-search-bar">
+            <InputText v-model="sourceSearch" placeholder="Search inside this document" @keyup.enter="runContentSearch(selected ? [selected.id] : [])" />
+            <Button label="Search" icon="pi pi-search" severity="secondary" outlined :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
+          </div>
+          <div v-if="sourceResults.length && sourceSearch" class="inline-search-results">
+            <button v-for="result in sourceResults" :key="result.citation_id" @click="openSearchResult(result)"><strong>Page {{ result.page }}</strong><span>{{ result.excerpt }}</span></button>
           </div>
           <div v-if="current?.image_only && showTextView" class="scan-notice"><i class="pi pi-image" /><div><strong>Image-only page</strong><p>This page has insufficient extractable text. Use the original image/PDF or a configured vision workflow; tiled scans may require uploading the page as an image.</p></div></div>
           <img v-if="isImage" class="document-image" :src="fileUrl" :alt="selected.title" />
@@ -586,14 +634,6 @@ onUnmounted(() => {
             <span>Partial source coverage. Analyzed pages {{ analysis.effective?.coverage.analyzed_pages.join(', ') || '—' }}; omitted {{ analysis.effective?.coverage.omitted_pages.join(', ') || '—' }}.</span>
           </div>
           <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity and is excluded from agent context.</span></div>
-
-          <div class="source-search-bar">
-            <InputText v-model="sourceSearch" placeholder="Search this source" @keyup.enter="runContentSearch(selected ? [selected.id] : [])" />
-            <Button label="Search source" icon="pi pi-search" severity="secondary" :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
-          </div>
-          <div v-if="searchResults.length && sourceSearch" class="inline-search-results">
-            <button v-for="result in searchResults" :key="result.citation_id" @click="openSearchResult(result)"><strong>Page {{ result.page }}</strong><span>{{ result.excerpt }}</span></button>
-          </div>
 
           <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyze this document once" description="Create a reusable summary and freeform audit notes. Source indexing remains local and independent." compact />
           <template v-else>
@@ -653,9 +693,11 @@ onUnmounted(() => {
 .document-layout { display: grid; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 36rem; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff; }
 .indexing-notice { display:flex; align-items:flex-start; gap:.7rem; margin:0 0 .85rem; padding:.75rem .9rem; border:1px solid var(--p-blue-200); border-radius:var(--aw-radius-sm); background:var(--p-blue-50); color:var(--p-blue-800); }.indexing-notice > i { margin-top:.15rem; }.indexing-notice p { margin:.15rem 0 0; color:var(--p-blue-700); font-size:.78rem; }
 .document-rail { padding:.75rem; border-right:1px solid var(--aw-border); background:var(--p-surface-50); overflow-y:auto; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--p-surface-200); background:var(--p-surface-50); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--p-surface-400); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:.76rem; }
-.doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-sm); background:transparent; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:.6rem; }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-sm); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:#fff; }.doc-row.active { border-color:#a7ded8; background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:6px; color:var(--p-blue-600); background:var(--p-blue-50); font-size:.75rem; }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.8rem; }.doc-identity small { color:var(--aw-muted); font-size:.63rem; }.state-cluster { display:flex; gap:.2rem; }.state-pill { width:.48rem; height:.48rem; overflow:hidden; padding:0; border-radius:999px; color:transparent; background:var(--p-surface-300); font-size:0; }.state-extracted,.state-analysis-complete,.state-search-ready { background:var(--p-green-500); }.state-failed,.state-analysis-failed,.state-search-failed { background:var(--p-red-500); }.state-partial,.state-image_only,.state-analysis-partial,.state-search-stale { background:var(--p-orange-500); }.state-search-indexing,.state-analysis-analyzing { background:var(--p-blue-500); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
+.doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-sm); background:transparent; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:.6rem; }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-sm); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:#fff; }.doc-row.active { border-color:#a7ded8; background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:6px; color:var(--p-blue-600); background:var(--p-blue-50); font-size:.75rem; }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.8rem; }.doc-identity small { color:var(--aw-muted); font-size:.63rem; }.doc-status { display:grid; place-items:center; width:1.1rem; font-size:.72rem; }.doc-status.processing { color:var(--p-blue-500); }.doc-status.attention { color:var(--p-orange-500); }.doc-status.attention.failed { color:var(--p-red-500); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
+.rail-deep-search { display:flex; align-items:center; gap:.45rem; width:100%; margin-top:.7rem; padding:.5rem .6rem; border:1px dashed var(--aw-border); border-radius:var(--aw-radius-sm); background:transparent; color:var(--aw-teal); font-size:.72rem; text-align:left; cursor:pointer; }.rail-deep-search:hover { border-color:var(--aw-teal); background:var(--aw-teal-soft); }.rail-deep-search span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .document-detail { min-width:0; display:flex; flex-direction:column; }.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { min-width:0; }.detail-identity p { margin:.25rem 0 0; color:var(--aw-muted); font-size:.73rem; }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }.detail-tabs { display:flex; padding:0 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-tabs button { padding:.75rem .85rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--aw-muted); cursor:pointer; text-transform:capitalize; }.detail-tabs button.active { color:var(--aw-teal); border-color:var(--aw-teal); font-weight:700; }.detail-content { padding:1.25rem; overflow-y:auto; }.page-tools { display:flex; align-items:center; gap:.4rem; margin-bottom:.75rem; }.page-tools a { margin-left:auto; color:var(--aw-teal); }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:10px; background:#fff; font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow:0 1px 2px rgb(15 23 42 / 4%); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }.document-frame { width:100%; height:calc(100vh - 26rem); min-height:32rem; border:1px solid var(--aw-border); border-radius:10px; background:#fff; }.docx-frame { height:calc(100vh - 26rem); min-height:32rem; overflow:auto; border:1px solid var(--aw-border); border-radius:10px; background:var(--p-surface-100); }.docx-frame.loading { opacity:.5; }.docx-frame :deep(.docx-wrapper) { background:var(--p-surface-100); padding:1.25rem; }.docx-frame :deep(.docx-wrapper > section.docx) { margin-bottom:1rem; box-shadow:0 2px 8px rgb(15 23 42 / 12%); }.source-toggle { display:flex; margin-left:.5rem; border:1px solid var(--aw-border); border-radius:999px; overflow:hidden; }.source-toggle button { padding:.28rem .75rem; border:0; background:transparent; color:var(--aw-muted); font-size:.72rem; cursor:pointer; }.source-toggle button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:600; }
-.classification-field { display:grid; gap:.2rem; min-width:10rem; color:var(--aw-muted); font-size:.65rem; font-weight:700; }.classification-field :deep(.p-select) { width:100%; min-height:2rem; font-size:.76rem; font-weight:400; text-transform:capitalize; }
+.classification-field { display:flex; align-items:center; gap:.4rem; color:var(--aw-muted); font-size:.72rem; }.classification-field :deep(.p-select) { min-width:8rem; min-height:2rem; font-size:.76rem; text-transform:capitalize; }
+.preview-view .source-search-bar,.preview-view .inline-search-results { margin-bottom:.75rem; }.preview-view .source-search-bar .p-inputtext { max-width:24rem; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--p-surface-200); border-radius:8px; background:var(--p-surface-50); color:var(--p-surface-500); font-size:.7rem; }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: .7rem; }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
 .analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); color:#7c4b00; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.analysis-editor header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small { color:var(--aw-muted); }.analysis-editor .p-textarea { width:100%; font-family:ui-monospace,monospace; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--p-blue-200); border-radius:var(--aw-radius-sm); background:var(--p-blue-50); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }
