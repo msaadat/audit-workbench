@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .. import (
     analytics, assistant, document_analysis, documents, llm, methodology, templates_store,
-    validation,
+    sandbox, validation,
 )
 from ..workspaces import Workspace, WorkspaceError, slugify
 from . import actions, artifact_index, ledger, prompts, store
@@ -883,9 +883,16 @@ class CommandRunner(BaseRunner):
                 "action with a supported library test or create_custom_analysis; do not only fix "
                 "the first named test."
             )
+        custom_code_guidance = ""
+        if "custom analysis code" in str(error).casefold():
+            custom_code_guidance = (
+                " Correct every create_custom_analysis snippet, not only the first one. `pl`, "
+                "workspace table variables, and `tables['name']` are already available. Remove "
+                "all imports and file reads/writes, and assign one summarized DataFrame to `result`."
+            )
         return (
             f"{base_user}\n\nYour previous JSON parsed, but its action graph violated the registered "
-            f"contract: {error}.{validation_guidance}{analytics_guidance} "
+            f"contract: {error}.{validation_guidance}{analytics_guidance}{custom_code_guidance} "
             f"Return a corrected complete JSON object. "
             f"Preserve the intended goal and "
             f"valid dependencies, use only catalog target kinds and required args. Previous JSON: "
@@ -1214,7 +1221,11 @@ class CommandRunner(BaseRunner):
         if definition.risk not in {"read", "compute"}:
             action["postcondition"] = actions.expected_postcondition(action)
         ledger.transition(action, "running")
-        action["attempts"] += 1; action["prepared_at"] = store.utcnow(); action["started_at"] = store.utcnow()
+        action["attempts"] += 1
+        action["error"] = None
+        action["finished_at"] = None
+        action["prepared_at"] = store.utcnow()
+        action["started_at"] = store.utcnow()
         self.run["usage"]["actions_started"] += 1
         self._save_action(action)
         # Only the executor call may route to the failure path. Once the
@@ -1226,7 +1237,10 @@ class CommandRunner(BaseRunner):
             action["error"] = str(error); action["finished_at"] = store.utcnow()
             ledger.transition(action, "failed")
             attempts = int(self.run["limits"].get("max_execution_attempts", 2))
-            if action["attempts"] < attempts and definition.failure_policy != "stop_run":
+            retry = action["attempts"] < attempts and definition.failure_policy != "stop_run"
+            if retry and action["type"] in {"create_custom_analysis", "edit_custom_analysis"}:
+                retry = self._repair_custom_analysis(action, error)
+            if retry:
                 ledger.transition(action, "ready")
             self._save_action(action)
             if action.get("planning_significant") and action["status"] == "failed":
@@ -1252,6 +1266,35 @@ class CommandRunner(BaseRunner):
             self.emit("workspace_changed", {"kind": kind, "id": item_id, "action": "removed" if definition.risk == "destructive" else "updated"})
         if action.get("planning_significant"):
             self._expand_after(action)
+
+    def _repair_custom_analysis(self, action: dict, error: Exception) -> bool:
+        """Replace failed custom code before the executor's one permitted retry."""
+        args = action.get("args") or {}
+        if action["type"] == "create_custom_analysis":
+            spec = args.get("spec") or {}
+        else:
+            spec = (args.get("changes") or {}).get("spec") or {}
+        code = str(spec.get("code") or "")
+        try:
+            payload = self.llm_json(
+                prompts.FIX_CODE_SYSTEM,
+                prompts.fix_code_user(
+                    code,
+                    str(error),
+                    {"tables": assistant.schema_brief(self.ws)},
+                ),
+            )
+            repaired = str(payload.get("code") or "").strip()
+            if not repaired:
+                return False
+            # Reject an unsafe/non-result repair now instead of executing the
+            # same deterministic failure as a nominal second attempt.
+            sandbox.validate(repaired)
+        except Exception as repair_error:
+            self.warn(f"Custom analysis repair failed for {action['id']}: {repair_error}")
+            return False
+        spec["code"] = repaired
+        return True
 
     def _expand_after(self, action: dict, safe_result: dict | None = None) -> None:
         if self.run.get("planning_expansion_disabled"):

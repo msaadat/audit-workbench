@@ -44,6 +44,11 @@ _SAFE_BUILTIN_NAMES = (
     "sum", "tuple", "zip",
 )
 
+# Polars can reach the filesystem without Python's ``open`` builtin.  Keep the
+# advertised in-memory contract honest by rejecting its I/O entry points too.
+_DENIED_ATTRIBUTE_PREFIXES = ("read_", "scan_", "write_", "sink_")
+_DENIED_ATTRIBUTES = frozenset({"serialize", "deserialize"})
+
 
 class SandboxError(ValueError):
     """A user-facing problem with the snippet (unsafe construct or runtime error)."""
@@ -57,7 +62,8 @@ def _safe_builtins() -> dict:
     return allowed
 
 
-def _assert_safe(code: str) -> None:
+def validate(code: str) -> None:
+    """Validate the static sandbox contract without executing the snippet."""
     if len(code) > MAX_CODE_CHARS:
         raise SandboxError("Snippet is too long.")
     try:
@@ -72,8 +78,26 @@ def _assert_safe(code: str) -> None:
             raise SandboxError("`global` / `nonlocal` are not allowed.")
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             raise SandboxError(f"Access to '{node.attr}' is not allowed.")
+        if isinstance(node, ast.Attribute) and (
+            node.attr.startswith(_DENIED_ATTRIBUTE_PREFIXES)
+            or node.attr in _DENIED_ATTRIBUTES
+        ):
+            raise SandboxError(
+                "File I/O is not allowed — use the in-memory workspace table variables."
+            )
         if isinstance(node, ast.Name) and node.id in _DENIED_NAMES:
             raise SandboxError(f"Use of '{node.id}' is not allowed.")
+
+    if not any(
+        isinstance(node, ast.Name)
+        and node.id == "result"
+        and isinstance(node.ctx, ast.Store)
+        for node in ast.walk(tree)
+    ):
+        raise SandboxError(
+            "Snippet finished without assigning `result`. Assign your output "
+            "DataFrame to a variable named `result`."
+        )
 
 
 def _coerce_result(value) -> pl.DataFrame:
@@ -99,7 +123,7 @@ def run(code: str, frames: dict[str, pl.DataFrame]) -> tuple[pl.DataFrame, str]:
     variable when its name is a valid identifier. Raises :class:`SandboxError`
     on unsafe constructs or a runtime failure.
     """
-    _assert_safe(code)
+    validate(code)
 
     namespace: dict = {"__builtins__": _safe_builtins(), "pl": pl}
     namespace["tables"] = dict(frames)

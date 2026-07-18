@@ -263,6 +263,87 @@ def test_custom_analysis_contract_requires_executable_code(workspace_with_data):
         }])
 
 
+def test_command_interpreter_repairs_unsafe_custom_analysis_contract(
+    monkeypatch, workspace_with_data
+):
+    def interpret(user):
+        common = {
+            "objective": "Analyze transaction totals", "constraints": [],
+            "completion_criteria": ["Analysis saved"], "needs_planning_wave": False,
+        }
+        if "previous JSON parsed" not in user:
+            code = "import polars as pl\nresult = pl.read_parquet('transactions.parquet')"
+        else:
+            assert "Correct every create_custom_analysis snippet" in user
+            assert "Remove all imports and file reads/writes" in user
+            code = "result = transactions.group_by('cust_id').agg(pl.col('amount').sum())"
+        return {
+            **common,
+            "actions": [{
+                "id": "custom", "type": "create_custom_analysis",
+                "args": {"title": "Customer totals", "spec": {"code": code}},
+            }],
+        }
+
+    fake = configured(monkeypatch, interpret)
+    started = runner.start_command_run(
+        workspace_with_data, "auto",
+        {"source": "goal_template", "text": "Analyze data", "goal_template": "data_analysis"},
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert "import" in completed["rejected_proposals"][0]["error"].casefold()
+    saved = workspaces.load_workspace(workspace_with_data.id).analyses[0]
+    assert saved["spec"]["code"].startswith("result = transactions")
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:command_interpreter", "agent:command_interpreter",
+    ]
+
+
+def test_failed_custom_analysis_gets_repaired_code_before_retry(
+    monkeypatch, workspace_with_data
+):
+    response = {
+        "objective": "Analyze transaction totals", "constraints": [],
+        "completion_criteria": ["Analysis saved"], "needs_planning_wave": False,
+        "actions": [{
+            "id": "custom", "type": "create_custom_analysis",
+            "args": {
+                "title": "Customer totals",
+                "spec": {"code": "result = transactions.group_by('missing').agg(pl.len())"},
+            },
+        }],
+    }
+    fake = FakeAgentLLM({
+        "agent:command_interpreter": response,
+        "agent:fix_code": {
+            "code": "result = transactions.group_by('cust_id').agg(pl.col('amount').sum())"
+        },
+    })
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm, "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        workspace_with_data, "auto",
+        {"source": "goal_template", "text": "Analyze data", "goal_template": "data_analysis"},
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    action = completed["actions"][0]
+    assert completed["status"] == "completed"
+    assert action["status"] == "succeeded"
+    assert action["attempts"] == 2
+    assert action["error"] is None
+    assert "cust_id" in action["args"]["spec"]["code"]
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:command_interpreter", "agent:fix_code",
+    ]
+
+
 def test_full_audit_lifecycle_dependencies_and_document_test_binding(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto",

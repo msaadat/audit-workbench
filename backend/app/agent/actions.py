@@ -108,6 +108,18 @@ def validate_schema(value: object, schema: dict, path: str = "args") -> None:
 def validate_action(action: dict) -> ActionDefinition:
     definition = REGISTRY.get(str(action.get("type") or ""), int(action.get("definition_version") or 1))
     validate_schema(action.get("args") or {}, definition.input_schema)
+    if definition.type == "create_custom_analysis":
+        try:
+            sandbox.validate(str(((action.get("args") or {}).get("spec") or {}).get("code") or ""))
+        except sandbox.SandboxError as error:
+            raise WorkspaceError(f"Invalid custom analysis code: {error}") from error
+    elif definition.type == "edit_custom_analysis":
+        spec = (((action.get("args") or {}).get("changes") or {}).get("spec"))
+        if isinstance(spec, dict) and "code" in spec:
+            try:
+                sandbox.validate(str(spec.get("code") or ""))
+            except sandbox.SandboxError as error:
+                raise WorkspaceError(f"Invalid custom analysis code: {error}") from error
     target = action.get("target") or {}
     if definition.target_kinds and target.get("kind") not in definition.target_kinds:
         raise WorkspaceError(f"Action '{definition.type}' requires target kind: {', '.join(definition.target_kinds)}.")
@@ -528,7 +540,14 @@ OBJ = {"type": "object"}; STR = {"type": "string"}; ARR = {"type": "array"}
 ARR_STR = {"type": "array", "items": STR}
 PYTHON_SPEC = {
     "type": "object", "required": ["code"],
-    "properties": {"code": STR}, "additionalProperties": True,
+    "properties": {"code": {
+        "type": "string",
+        "description": (
+            "In-memory Polars only: pl and workspace tables are already available; "
+            "no imports or file I/O; assign the aggregate output to result."
+        ),
+    }},
+    "additionalProperties": True,
 }
 RULE_SPEC = {
     "type": "object", "required": ["check"],
@@ -598,7 +617,7 @@ _register(
         "params": OBJ,
     },
 )
-_register("create_custom_analysis", "Create a sandboxed Polars analysis", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
+_register("create_custom_analysis", "Create an in-memory sandboxed Polars analysis (no imports or file I/O; assign result)", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
 _register("edit_custom_analysis", "Edit a custom analysis", "reversible_mutation", ("analysis",), ("changes",), {"changes": OBJ}, model="draft")
 _register("run_custom_analysis", "Run a saved custom analysis", "compute", ("analysis",))
 _register("pin_dashboard_tile", "Pin a dashboard tile", "create", required=("kind", "title", "spec"))

@@ -43,6 +43,8 @@ def test_sandbox_collects_lazyframe_result():
         ("result = ().__class__", "not allowed"),
         ("result = open('x')", "not allowed"),
         ("result = eval('1')", "not allowed"),
+        ("result = pl.read_parquet('x.parquet')", "File I/O is not allowed"),
+        ("df.write_parquet('x.parquet')\nresult = df", "File I/O is not allowed"),
         ("total = 1", "assigning `result`"),
     ],
 )
