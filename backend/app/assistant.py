@@ -19,7 +19,7 @@ import uuid
 
 import polars as pl
 
-from . import analytics, documents, explore, llm, model_context, profiler, sandbox
+from . import analytics, document_context as document_context_module, document_search, documents, explore, llm, model_context, profiler, sandbox
 from .workspaces import Workspace, WorkspaceError
 
 MAX_STEPS = 8
@@ -84,6 +84,22 @@ def _artifact_frame(df: pl.DataFrame) -> dict:
 
 # ====================================================================== tools
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_documents",
+            "description": "Search locally indexed engagement documents and return only bounded page-linked source excerpts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "document_ids": {"type": "array", "items": {"type": "string"}},
+                    "top_k": {"type": "integer", "minimum": 1, "maximum": 6},
+                },
+                "required": ["query"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -242,6 +258,31 @@ class _Session:
     def list_tables(self, _args: dict):
         return {"tables": schema_brief(self.workspace)}, None
 
+    def search_documents(self, args: dict):
+        query = str(args.get("query") or "")
+        result = document_search.search(
+            self.workspace, query,
+            document_ids=args.get("document_ids"), top_k=min(6, max(1, int(args.get("top_k") or 6))),
+        )
+        documents.append_activity(
+            self.workspace, run_id=None, stage="assistant_chat", task=None,
+            purpose="assistant_document_search", provider=None, model=None, vision_used=False,
+            prompt_version=None, template_versions=[], knowledge_packs=[],
+            document_ids=sorted({item["document_id"] for item in result["results"]}),
+            page_ranges=sorted({item["page"] for item in result["results"]}),
+            source_hashes=sorted({item["citation"]["source_sha1"] for item in result["results"]}),
+            response_at=documents.utcnow(), response_hash=None, artifact_ref=None,
+            disposition="retrieved", representation="excerpt",
+            search_query_hash=hashlib.sha1(query.encode()).hexdigest(),
+            characters_supplied=result["characters"], cache_hit=True,
+            retrieval_duration_ms=result["duration_ms"], model_duration_ms=None,
+            context_outcome="trimmed" if result["trimmed"] else ("supplied" if result["results"] else "unavailable"),
+        )
+        return {"results": [
+            {key: item[key] for key in ("document_id", "title", "page", "excerpt", "citation_id")}
+            for item in result["results"]
+        ], "trimmed": result["trimmed"]}, None
+
     def describe_table(self, args: dict):
         table = args.get("table")
         return table_metadata(self.workspace, table), None
@@ -341,6 +382,7 @@ class _Session:
 
     def dispatch(self, name: str, args: dict):
         handler = {
+            "search_documents": self.search_documents,
             "list_tables": self.list_tables,
             "describe_table": self.describe_table,
             "query_table": self.query_table,
@@ -375,6 +417,9 @@ list_tables / describe_table before querying unfamiliar columns.
 - Prefer query_table for filters and group-by aggregations, run_analytics for \
 the canned audit tests, and run_python only when the structured tools can't \
 express the task. Keep run_python to Polars, assign the answer to `result`.
+- Use search_documents for a concrete source question. It runs locally and \
+returns only bounded cited excerpts; never imply that an oversized unscoped \
+attachment was fully considered.
 - Structured tools return bounded previews of real rows and computed results. \
 Use filters and aggregates for large populations rather than asking for an \
 entire table at once. Attached document text is also available as context.
@@ -409,7 +454,13 @@ def _document_prompt(context: dict) -> str:
             "document_id": doc["document_id"], "title": doc["title"], "source": doc["source"],
             "pages": [{"page": page["page"], "text": page.get("text") or ""} for page in doc["pages"]],
         })
-    return json.dumps(payload, ensure_ascii=False, default=str)
+    unavailable = [
+        {"document_id": item["document_id"], "title": item["title"],
+         "context_outcome": item.get("context_outcome"),
+         "instruction": "Use search_documents with a concrete query or ask the auditor for pages."}
+        for item in context.get("manifest") or [] if not item.get("included_pages")
+    ]
+    return json.dumps({"supplied": payload, "scope_required": unavailable}, ensure_ascii=False, default=str)
 
 
 def _parse_document_answer(value: str) -> tuple[str, list[dict]]:
@@ -445,7 +496,7 @@ def ask(
         raise WorkspaceError("document_ids must be an array.")
     attached_ids = [str(value) for value in (document_ids or [])]
     document_context = (
-        documents.assistant_document_context(workspace, attached_ids)
+        document_context_module.assistant_attachments(workspace, attached_ids)
         if attached_ids else None
     )
 
@@ -523,10 +574,14 @@ def ask(
             page_ranges=sorted({
                 page for item in document_context["manifest"] for page in item["included_pages"]
             }),
-            source_hashes=[doc.get("source_sha1") for doc in document_context["documents"]],
+            source_hashes=[item.get("source_sha1") for item in document_context["manifest"] if item.get("source_sha1")],
             response_at=documents.utcnow(),
             response_hash=hashlib.sha1(raw_answer.encode()).hexdigest() if raw_answer else None,
             artifact_ref="assistant_chat", disposition="generated",
+            representation="raw_pages",
+            characters_supplied=sum(item["characters_included"] for item in document_context["manifest"]),
+            cache_hit=True, retrieval_duration_ms=None, model_duration_ms=None,
+            context_outcome="scope_required" if document_context.get("scope_required") else ("trimmed" if document_context["trimmed"] else "supplied"),
         )
     return {
         "answer": answer,

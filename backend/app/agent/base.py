@@ -143,7 +143,7 @@ class BaseRunner:
     def context(self) -> dict:
         return self.run.get("context") or {}
 
-    def llm_json(self, system: str, user: str) -> dict:
+    def llm_json(self, system: str, user: str, activity: dict | None = None) -> dict:
         last_error = ""
         attempt_user = user
         for _ in range(LLM_JSON_ATTEMPTS):
@@ -163,6 +163,7 @@ class BaseRunner:
             tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
             profile = llm.agent_status()
             sources = list(self.run.get("model_sources") or [])
+            activity_fields = dict(activity or {})
             template_name = {
                 "agent:apm": "apm", "agent:rcm": "rcm",
                 "agent:work_program": "workpaper",
@@ -181,11 +182,12 @@ class BaseRunner:
                 prompt_version=hashlib.sha1(f"{system}\n{user}".encode("utf-8")).hexdigest(),
                 template_versions=template_versions,
                 knowledge_packs=[{"source_ref": item["source_ref"], "sha1": item.get("source_sha1")} for item in sources if str(item.get("source_ref", "")).startswith("pack:")],
-                document_ids=[item["document_id"] for item in sources if not str(item.get("source_ref", "")).startswith("pack:")],
-                page_ranges=sorted({page for item in sources for page in item.get("pages", [])}),
-                source_hashes=sorted({item["source_sha1"] for item in sources if item.get("source_sha1")}),
+                document_ids=activity_fields.pop("document_ids", [item["document_id"] for item in sources if not str(item.get("source_ref", "")).startswith("pack:")]),
+                page_ranges=activity_fields.pop("page_ranges", sorted({page for item in sources for page in item.get("pages", [])})),
+                source_hashes=activity_fields.pop("source_hashes", sorted({item["source_sha1"] for item in sources if item.get("source_sha1")})),
                 response_at=store.utcnow(), response_hash=hashlib.sha1(str(message.get("content") or "").encode("utf-8")).hexdigest(),
                 artifact_ref=None, disposition="generated",
+                **activity_fields,
             )
             try:
                 return prompts.parse_json_object(message.get("content") or "")

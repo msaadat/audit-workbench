@@ -625,6 +625,17 @@ def apply_batch(workspace: Workspace, batch_id: str, decisions: list[dict] | Non
         "ambiguous": sum(bool(item.get("error")) and item.get("action") != "ignore" for item in batch["items"]),
     }
     batch["suggested_actions"] = suggested_actions(workspace, batch)
+    imported_document_ids = [
+        str(item["target_ref"]).split(":", 1)[1]
+        for item in batch["items"]
+        if item.get("action") == "imported"
+        and str(item.get("target_ref") or "").startswith("document:")
+    ]
+    if imported_document_ids:
+        from . import document_search
+        batch["indexing_job"] = document_search.enqueue_indexing(
+            workspace, imported_document_ids, reason="folder_intake",
+        )
     save_batch(workspace, batch)
     shutil.rmtree(batch_dir(workspace, batch_id) / "Staging", ignore_errors=True)
     return batch

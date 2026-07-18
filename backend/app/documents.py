@@ -128,6 +128,8 @@ def add_document(
     workspace.documents.append(doc)
     workspace.save()
     extract_document(workspace, doc_id)
+    from . import document_analysis
+    document_analysis.update_status(workspace, doc_id, search_index_state="pending")
     return _document(workspace, doc_id)
 
 
@@ -137,33 +139,37 @@ def replace_document(workspace: Workspace, doc_id: str, filename: str, content: 
     The stable document ID lets existing links resolve to the current file while
     their stored source hash continues to reveal that the evidence has changed.
     """
-    doc = _document(workspace, doc_id)
-    source, suffix, _ = _validate_upload(filename, str(doc.get("category") or "other"))
-    target = _documents_dir(workspace) / f"{doc_id}{suffix}"
-    temporary = _documents_dir(workspace) / f".{doc_id}.upload{suffix}"
-    temporary.write_bytes(content)
-    old_path = None
-    try:
-        old_path = document_path(workspace, doc)
-    except WorkspaceError:
-        pass
-    temporary.replace(target)
-    if old_path is not None and old_path != target:
-        old_path.unlink(missing_ok=True)
-    cache_path(workspace, doc_id).unlink(missing_ok=True)
-    doc.update(
-        file=target.name,
-        source=source,
-        pages=None,
-        sha1=_sha1_bytes(content),
-        text_state="image_only" if suffix in IMAGE_SUFFIXES else "pending",
-        updated=utcnow(),
-    )
-    doc.pop("version", None)
-    doc.pop("supersedes", None)
-    workspace.save()
-    extract_document(workspace, doc_id, force=True)
-    return _document(workspace, doc_id)
+    from . import document_analysis, document_search
+    with document_analysis.document_lock(workspace, doc_id):
+        doc = _document(workspace, doc_id)
+        source, suffix, _ = _validate_upload(filename, str(doc.get("category") or "other"))
+        target = _documents_dir(workspace) / f"{doc_id}{suffix}"
+        temporary = _documents_dir(workspace) / f".{doc_id}.upload{suffix}"
+        temporary.write_bytes(content)
+        old_path = None
+        try:
+            old_path = document_path(workspace, doc)
+        except WorkspaceError:
+            pass
+        temporary.replace(target)
+        if old_path is not None and old_path != target:
+            old_path.unlink(missing_ok=True)
+        cache_path(workspace, doc_id).unlink(missing_ok=True)
+        doc.update(
+            file=target.name,
+            source=source,
+            pages=None,
+            sha1=_sha1_bytes(content),
+            text_state="image_only" if suffix in IMAGE_SUFFIXES else "pending",
+            updated=utcnow(),
+        )
+        doc.pop("version", None)
+        doc.pop("supersedes", None)
+        workspace.save()
+        document_analysis.invalidate_for_replacement(workspace, doc_id)
+        document_search.invalidate(workspace, doc_id)
+        extract_document(workspace, doc_id, force=True)
+        return _document(workspace, doc_id)
 
 
 def update_document(workspace: Workspace, doc_id: str, changes: dict) -> dict:
@@ -186,6 +192,9 @@ def remove_document(workspace: Workspace, doc_id: str) -> None:
     except WorkspaceError:
         pass
     cache_path(workspace, doc_id).unlink(missing_ok=True)
+    from . import document_analysis, document_search
+    document_analysis.remove_sidecars(workspace, doc_id)
+    document_search.remove_sidecars(workspace, doc_id)
     workspace.documents.remove(doc)
     workspace.save()
 
@@ -262,9 +271,19 @@ def extract_document(workspace: Workspace, doc_id: str, *, force: bool = False) 
         payload = {"document_id": doc_id, "source_sha1": doc["sha1"], "state": state, "pages": pages, "extracted_at": utcnow(), "error": None}
     except Exception as error:
         payload = {"document_id": doc_id, "source_sha1": doc.get("sha1"), "state": "failed", "pages": [], "extracted_at": utcnow(), "error": str(error)}
+    digest = hashlib.sha1()
+    for page in payload.get("pages") or []:
+        digest.update(f"\n\fPAGE:{int(page.get('page') or 0)}\n".encode())
+        digest.update(str(page.get("text") or "").encode("utf-8"))
+    payload["extracted_text_sha1"] = digest.hexdigest()
     write_json_atomic(cache, payload)
     doc.update(pages=len(payload["pages"]) or None, text_state=payload["state"])
     workspace.save()
+    from . import document_analysis
+    document_analysis.repair_status(workspace, doc_id)
+    document_analysis.update_status(
+        workspace, doc_id, search_index_state="unsupported" if payload["state"] == "image_only" else "pending",
+    )
     return payload
 
 
@@ -500,7 +519,21 @@ def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[
     if not question:
         raise WorkspaceError("A document question is required.")
     doc = _document(workspace, doc_id)
-    included = prompt_content(workspace, doc_id, pages)
+    from . import document_context
+    context_mode = "pages" if pages else "search_excerpts"
+    context = document_context.get_document_context(
+        workspace, doc_id, context_mode, query=question if not pages else None,
+        pages=pages, purpose="document_qa", run_id=run_id, stage="document_qa",
+        record_activity=False,
+    )
+    if context_mode == "pages":
+        included_pages = context.get("page_items") or []
+    else:
+        included_pages = [
+            {"page": citation["page"], "text": citation["excerpt"]}
+            for citation in context.get("citations") or []
+        ]
+    included = {"pages": included_pages}
     if not included["pages"]:
         raise WorkspaceError("The selected document pages contain no extractable text.")
     system = """[agent:document_qa]\nAnswer only from the included pages. Return JSON with answer and citations. Each citation has page and a short verbatim excerpt. If the answer is absent, say so. Do not invent facts."""
@@ -538,5 +571,10 @@ def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[
             document_ids=[doc_id], page_ranges=[page["page"] for page in included["pages"]], source_hashes=[doc["sha1"]],
             response_at=utcnow(), response_hash=hashlib.sha1(response_text.encode()).hexdigest() if response_text else None,
             artifact_ref=f"document_qa:{doc_id}", disposition=disposition,
+            representation="raw_pages" if pages else "excerpt",
+            search_query_hash=hashlib.sha1(question.encode()).hexdigest() if not pages else None,
+            characters_supplied=context.get("characters", 0), cache_hit=not bool(pages),
+            retrieval_duration_ms=context.get("retrieval_duration_ms"), model_duration_ms=None,
+            context_outcome=context.get("outcome"),
         )
     return result

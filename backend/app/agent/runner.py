@@ -105,9 +105,9 @@ def start_run(
     source_message_id: str | None = None,
 ) -> dict:
     recover_workspace(workspace)
-    if kind not in ("analysis", "intake", "doc_test"):
+    if kind not in ("analysis", "intake", "doc_test", "document_analysis"):
         raise WorkspaceError("Unknown agent run kind.")
-    if kind == "analysis" and not llm.agent_status()["configured"]:
+    if kind in {"analysis", "document_analysis"} and not llm.agent_status()["configured"]:
         raise llm.LLMError(
             "The agent's LLM is not configured. Set an API key for the "
             "assistant provider (or AGENT_PROVIDER/AGENT_MODEL) first."
@@ -132,6 +132,15 @@ def start_run(
         if not test_id:
             raise WorkspaceError("A document-test run requires context.test_id.")
         doc_tests.load_test(workspace, test_id)
+    if kind == "document_analysis":
+        document_ids = list(dict.fromkeys(str(value) for value in ((context or {}).get("document_ids") or [])))
+        if not document_ids:
+            raise WorkspaceError("Select at least one document to analyze.")
+        known = {str(document.get("id")) for document in workspace.documents}
+        if any(document_id not in known for document_id in document_ids):
+            raise WorkspaceError("A selected analysis document was not found.")
+        if str((context or {}).get("action") or "analyze") not in {"analyze", "refresh"}:
+            raise WorkspaceError("Document analysis action must be analyze or refresh.")
 
     run = store.new_run(
         workspace, mode, context, parent_run_id, kind=kind,
@@ -378,6 +387,10 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
             from .doc_test_runner import DocTestRunner
 
             DocTestRunner(workspace, run, handle).execute()
+        elif run.get("kind") == "document_analysis":
+            from .document_analysis_runner import DocumentAnalysisRunner
+
+            DocumentAnalysisRunner(workspace, run, handle).execute()
         elif run.get("kind") == "audit":
             from .command_runner import CommandRunner
 

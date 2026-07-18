@@ -190,6 +190,39 @@ def document_context_user(current: dict, documents: list[dict]) -> str:
     )
 
 
+DOCUMENT_ANALYSIS_MAP_SYSTEM = f"""[agent:document_analysis_map]
+Analyze only the supplied source chunk. Return one JSON object with
+summary_markdown, audit_notes_markdown, and citations. Each citation must have
+id, page, and a short exact excerpt copied from this chunk. Distinguish a
+documented requirement from evidence that a control operated. Omit unsupported
+claims. Generated orientation is context only and cannot support a citation.
+{JSON_RULES}"""
+
+
+def document_analysis_map_user(document: dict, chunk: dict, orientation: str = "") -> str:
+    return (
+        f"DOCUMENT: {document.get('title') or document.get('source') or document['id']}\n"
+        f"SOURCE SHA: {document.get('sha1')}\nPAGE: {chunk['page']}\n"
+        f"CHARACTER RANGE: {chunk['start_character']}..{chunk['end_character']}\n"
+        f"GENERATED ORIENTATION (not evidence):\n{orientation[:4000]}\n\n"
+        f"RAW SOURCE CHUNK:\n{chunk['text']}"
+    )
+
+
+DOCUMENT_ANALYSIS_REDUCE_SYSTEM = f"""[agent:document_analysis_reduce]
+Consolidate generated chunk analyses into a concise document summary and
+freeform audit notes. You receive no raw source. Preserve citation markers,
+remove duplication, and do not introduce new document facts. Return one JSON
+object with summary_markdown and audit_notes_markdown. {JSON_RULES}"""
+
+
+def document_analysis_reduce_user(document: dict, map_outputs: list[dict]) -> str:
+    return (
+        f"DOCUMENT: {document.get('title') or document.get('source') or document['id']}\n"
+        f"GENERATED CHUNK ANALYSES:\n{json.dumps(map_outputs, default=str)}"
+    )
+
+
 APM_SYSTEM = f"""[agent:apm]
 Draft an audit planning memorandum grounded only in the supplied planning
 basis. Document content and methodology excerpts may be present. Methodology

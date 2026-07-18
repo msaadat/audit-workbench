@@ -31,6 +31,7 @@ from .routes.report_routes import router as report_router
 from .routes.validation_routes import router as validation_router
 from .routes.workspace_routes import router as workspace_router
 from .assistant_settings import SettingsError
+from .document_analysis import AnalysisConflict
 from .sandbox import SandboxError
 from .workspaces import WorkspaceError
 
@@ -58,6 +59,10 @@ def create_app() -> FastAPI:
     async def llm_error(request: Request, error: Exception):
         # 503: the request was fine, the LLM backend just isn't available.
         return JSONResponse({"detail": str(error)}, status_code=503)
+
+    @app.exception_handler(AnalysisConflict)
+    async def analysis_conflict(request: Request, error: Exception):
+        return JSONResponse({"detail": str(error)}, status_code=409)
 
     app.include_router(workspace_router)
     app.include_router(analysis_router)

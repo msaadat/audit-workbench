@@ -313,6 +313,10 @@ function reset() {
         <span><strong>{{ batch.summary.ignored }}</strong> ignored</span>
         <span><strong>{{ batch.summary.ambiguous }}</strong> manual review</span>
       </div>
+      <div v-if="batch?.indexing_job?.document_ids.length" class="selection-summary">
+        <i class="pi pi-spin pi-spinner" />
+        <span><strong>Search indexing continues in the background</strong><small>{{ batch.indexing_job.document_ids.length }} imported document{{ batch.indexing_job.document_ids.length === 1 ? '' : 's' }} will become searchable automatically.</small></span>
+      </div>
       <p v-if="agent.state.run?.error" class="inline-error">{{ agent.state.run.error }}</p>
       <PostImportPlanningOffer
         v-if="planningAction"

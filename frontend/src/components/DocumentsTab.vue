@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderAsync } from 'docx-preview'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
+import Textarea from 'primevue/textarea'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import type { AIActivityEvent, AuditDocument, DocumentCategory, DocumentPage, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
+import type { AIActivityEvent, AgentRun, AuditDocument, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
+import MarkdownView from './MarkdownView.vue'
 import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
@@ -29,8 +31,8 @@ const documents = ref<AuditDocument[]>([])
 const selectedId = ref('')
 const previewPages = ref<DocumentPage[]>([])
 const currentPage = ref(1)
-const view = ref<'preview' | 'activity'>('preview')
-const detailViews = ['preview', 'activity'] as const
+const view = ref<'preview' | 'analysis' | 'activity'>('preview')
+const detailViews = ['preview', 'analysis', 'activity'] as const
 const search = ref('')
 const groupBy = ref<'type' | 'folder' | 'status'>('type')
 const collapsedGroups = ref<Set<string>>(new Set())
@@ -47,6 +49,22 @@ const packSearch = ref('')
 const packResults = ref<Array<Record<string, unknown>>>([])
 const packInput = ref<HTMLInputElement | null>(null)
 const planningAction = ref<IntakeSuggestedAction | null>(null)
+const analysis = ref<DocumentAnalysisDetail | null>(null)
+const summaryDraft = ref('')
+const notesDraft = ref('')
+const summaryPreview = ref(true)
+const notesPreview = ref(true)
+const analysisBusy = ref(false)
+const compareCandidate = ref(false)
+const contentSearchOpen = ref(false)
+const contentSearch = ref('')
+const sourceSearch = ref('')
+const searchResults = ref<DocumentSearchResult[]>([])
+const searchBusy = ref(false)
+const indexingStatus = ref<DocumentIndexingStatus | null>(null)
+let indexingTimer: number | undefined
+let indexingPollRunning = false
+let unsubscribeWorkspaceChanged: (() => void) | undefined
 
 const categories = ['background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other']
 const documentCategoryOptions = categories.map(value => ({ value, label: value.replace('_', ' ') }))
@@ -94,7 +112,20 @@ const isImage = computed(() => !!selected.value && /\.(png|jpe?g|webp|bmp)$/i.te
 const hasOriginalView = computed(() => isPdf.value || isDocx.value)
 const showTextView = computed(() => !isImage.value && (!hasOriginalView.value || sourceView.value === 'text'))
 const fileUrl = computed(() => selected.value ? `/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/file` : '')
+const indexingActive = computed(() =>
+  indexingStatus.value?.state === 'indexing' || documents.value.some(document => document.search_index_state === 'indexing'),
+)
+const indexingDetail = computed(() => {
+  const status = indexingStatus.value
+  if (!status || status.state !== 'indexing') return 'New documents will become searchable automatically.'
+  const completed = Math.min(status.completed_documents, status.total_documents)
+  return `Preparing local search ${completed} of ${status.total_documents} complete. Ready documents can already be searched.`
+})
 const secondaryActions = computed(() => [
+  { label: 'Search contents', icon: 'pi pi-search', command: () => { contentSearchOpen.value = true } },
+  { label: 'Analyze eligible documents', icon: 'pi pi-sparkles', command: () => void batchAnalyze() },
+  { label: 'Continue partial analyses', icon: 'pi pi-play', command: () => void continuePartialAnalyses() },
+  { label: 'Reindex documents', icon: 'pi pi-sync', command: () => void reindexAll() },
   { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
 ])
 
@@ -135,6 +166,35 @@ async function loadDocuments() {
   else if (!selectedId.value || !result.items.some(doc => doc.id === selectedId.value)) selectedId.value = result.items[0]?.id || ''
 }
 
+function scheduleIndexingPoll(delay = 800) {
+  if (indexingTimer !== undefined) window.clearTimeout(indexingTimer)
+  indexingTimer = window.setTimeout(() => { void refreshIndexingStatus() }, delay)
+}
+
+async function refreshIndexingStatus() {
+  if (indexingPollRunning) return
+  indexingPollRunning = true
+  const wasActive = indexingActive.value
+  try {
+    indexingStatus.value = await api.get<DocumentIndexingStatus>(`/api/workspaces/${props.workspace.id}/documents/indexing-status`)
+    if (indexingStatus.value.state === 'indexing' || wasActive) await loadDocuments()
+  } catch {
+    // Indexing is best-effort background work; ordinary document actions remain available.
+  } finally {
+    indexingPollRunning = false
+  }
+  if (indexingStatus.value?.state === 'indexing') scheduleIndexingPoll(900)
+}
+
+function beginIndexingPolling() {
+  indexingStatus.value = indexingStatus.value || {
+    state: 'indexing', job_count: 1, total_documents: 0, completed_documents: 0,
+    remaining_documents: 0, active_document_id: null, pace_seconds: 0,
+  }
+  indexingStatus.value.state = 'indexing'
+  scheduleIndexingPoll(150)
+}
+
 async function selectDocument(id: string, page?: number) {
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
@@ -149,9 +209,151 @@ async function loadDetail() {
     previewPages.value = data.pages
     if (!data.pages.some(page => page.page === currentPage.value)) currentPage.value = data.pages[0]?.page || 1
     activity.value = (await api.get<{ items: AIActivityEvent[] }>(`/api/workspaces/${props.workspace.id}/ai-activity?document_id=${selectedId.value}`)).items
+    await loadAnalysis()
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Document unavailable', detail: String(error), life: 5000 })
   }
+}
+
+async function loadAnalysis() {
+  if (!selectedId.value) return
+  analysis.value = await api.get<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${selectedId.value}/analysis`)
+  summaryDraft.value = analysis.value.effective?.summary_markdown || ''
+  notesDraft.value = analysis.value.effective?.audit_notes_markdown || ''
+}
+
+async function waitForAnalysis(runId: string) {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const run = await api.get<AgentRun>(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}`)
+    if (['completed', 'completed_with_issues', 'failed', 'cancelled', 'paused', 'interrupted'].includes(run.status)) return run
+    await new Promise(resolve => window.setTimeout(resolve, 500))
+  }
+  throw new Error('Analysis is still running. Its progress remains available in the assistant.')
+}
+
+async function startAnalysis(action: 'analyze' | 'refresh') {
+  if (!selected.value) return
+  analysisBusy.value = true
+  try {
+    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis-runs`, { action })
+    const finished = await waitForAnalysis(run.id)
+    await loadDocuments(); await loadAnalysis()
+    if (finished.status === 'failed') throw new Error(finished.error || 'Document analysis failed.')
+    toast.add({ severity: finished.status === 'paused' ? 'warn' : 'success', summary: finished.status === 'paused' ? 'Analysis paused at its coverage limit' : 'Document analysis ready', life: 3200 })
+  } catch (error) {
+    toast.add({ severity: 'error', summary: 'Analysis unavailable', detail: String(error), life: 5000 })
+  } finally { analysisBusy.value = false }
+}
+
+async function continueAnalysis() {
+  const runId = analysis.value?.status.analysis_resumable_run_id
+  if (!runId) return
+  analysisBusy.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}/resume`)
+    await waitForAnalysis(runId); await loadDocuments(); await loadAnalysis()
+  } catch (error) { toast.add({ severity: 'error', summary: 'Could not continue analysis', detail: String(error), life: 5000 }) }
+  finally { analysisBusy.value = false }
+}
+
+async function saveAnalysis(reviewed = false) {
+  if (!selected.value || !analysis.value) return
+  analysisBusy.value = true
+  try {
+    analysis.value = await api.patch<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis/review`, {
+      review_revision: analysis.value.review_revision,
+      summary_markdown: summaryDraft.value,
+      audit_notes_markdown: notesDraft.value,
+      review_state: reviewed ? 'reviewed' : 'needs_review',
+    })
+    await loadDocuments()
+    toast.add({ severity: 'success', summary: reviewed ? 'Analysis reviewed' : 'Analysis edits saved', life: 2200 })
+  } catch (error) { toast.add({ severity: 'error', summary: 'Analysis not saved', detail: String(error), life: 5000 }) }
+  finally { analysisBusy.value = false }
+}
+
+async function revertAnalysisField(field: 'summary' | 'notes') {
+  if (!selected.value || !analysis.value) return
+  const payload: Record<string, unknown> = { review_revision: analysis.value.review_revision }
+  payload[field === 'summary' ? 'summary_markdown' : 'audit_notes_markdown'] = null
+  analysis.value = await api.patch<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis/review`, payload)
+  summaryDraft.value = analysis.value.effective?.summary_markdown || ''
+  notesDraft.value = analysis.value.effective?.audit_notes_markdown || ''
+  await loadDocuments()
+}
+
+async function acceptCandidate() {
+  if (!selected.value || !analysis.value?.candidate) return
+  analysisBusy.value = true
+  try {
+    analysis.value = await api.post<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis/accept-candidate`, {
+      index_revision: analysis.value.index_revision, review_revision: analysis.value.review_revision,
+    })
+    compareCandidate.value = false; await loadDocuments(); await loadAnalysis()
+  } finally { analysisBusy.value = false }
+}
+
+async function runContentSearch(documentIds?: string[]) {
+  const query = (documentIds ? sourceSearch.value : contentSearch.value).trim()
+  if (!query) return
+  searchBusy.value = true
+  try {
+    const result = await api.post<{ results: DocumentSearchResult[] }>(`/api/workspaces/${props.workspace.id}/documents/search`, { query, document_ids: documentIds, top_k: 6 })
+    searchResults.value = result.results
+  } catch (error) { toast.add({ severity: 'error', summary: 'Search failed', detail: String(error), life: 5000 }) }
+  finally { searchBusy.value = false }
+}
+
+async function openSearchResult(result: DocumentSearchResult) {
+  contentSearchOpen.value = false
+  await selectDocument(result.document_id, result.page)
+  view.value = 'preview'; sourceView.value = 'text'
+}
+
+async function openCitation(page: number) {
+  if (!selected.value) return
+  currentPage.value = page; view.value = 'preview'; sourceView.value = 'text'
+  await router.replace({ query: { ...route.query, tab: 'documents', doc: selected.value.id, page: String(page) } })
+}
+
+async function reindexAll() {
+  if (!documents.value.length) return
+  busy.value = true
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/documents/reindex`, { document_ids: documents.value.map(document => document.id) })
+    await loadDocuments(); beginIndexingPolling()
+    toast.add({ severity: 'info', summary: 'Search indexing started', detail: 'Documents will become searchable in the background.', life: 3200 })
+  } catch (error) { toast.add({ severity: 'error', summary: 'Reindex failed', detail: String(error), life: 5000 }) }
+  finally { busy.value = false }
+}
+
+async function batchAnalyze() {
+  const eligible = documents.value.filter(document => ['extracted', 'partial'].includes(document.text_state) && document.analysis_validity_state !== 'current')
+  if (!eligible.length) {
+    toast.add({ severity: 'info', summary: 'All eligible documents already have current analysis', life: 2600 }); return
+  }
+  analysisBusy.value = true
+  try {
+    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/analysis-runs`, { document_ids: eligible.map(document => document.id), action: 'analyze' })
+    await waitForAnalysis(run.id); await loadDocuments(); if (selectedId.value) await loadAnalysis()
+  } catch (error) { toast.add({ severity: 'error', summary: 'Batch analysis unavailable', detail: String(error), life: 5000 }) }
+  finally { analysisBusy.value = false }
+}
+
+async function continuePartialAnalyses() {
+  const runIds = [...new Set(documents.value.map(document => document.analysis_resumable_run_id).filter((value): value is string => !!value))]
+  if (!runIds.length) {
+    toast.add({ severity: 'info', summary: 'No resumable document analyses', life: 2400 }); return
+  }
+  analysisBusy.value = true
+  try {
+    for (const runId of runIds) {
+      await api.post(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}/resume`)
+      await waitForAnalysis(runId)
+    }
+    await loadDocuments(); if (selectedId.value) await loadAnalysis()
+  } catch (error) { toast.add({ severity: 'error', summary: 'Could not continue all analyses', detail: String(error), life: 5000 }) }
+  finally { analysisBusy.value = false }
 }
 
 async function upload(event: Event) {
@@ -169,7 +371,7 @@ async function upload(event: Event) {
     const names = replacements.map(file => file.name).join(', ')
     const confirmed = window.confirm(
       `Replace ${replacements.length === 1 ? names : `${replacements.length} existing documents (${names})`}?\n\n` +
-      'The stored content will be overwritten. Existing evidence citations will remain linked but will show that the source changed until reviewed.',
+      'The current source file will be replaced and will not remain available as a prior version. Extraction and local search will rebuild, existing analysis will become stale, and evidence tied to the prior content hash may need reconfirmation.',
     )
     if (!confirmed) {
       if (fileInput.value) fileInput.value.value = ''
@@ -181,16 +383,18 @@ async function upload(event: Event) {
     const result = await api.upload<{
       added: AuditDocument[]
       replaced: AuditDocument[]
+      indexing_job?: { document_ids: string[]; coalesced_document_ids: string[] }
       suggested_actions?: IntakeSuggestedAction[]
     }>(`/api/workspaces/${props.workspace.id}/documents`, files, { replace: String(replacements.length > 0) })
     planningAction.value = result.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
     await loadDocuments(); if (selectedId.value) await loadDetail()
+    if ((result.indexing_job?.document_ids.length || 0) > 0) beginIndexingPolling()
     emit('changed')
     const changes = [
       result.added.length ? `${result.added.length} added` : '',
       result.replaced.length ? `${result.replaced.length} replaced` : '',
     ].filter(Boolean).join(', ')
-    toast.add({ severity: 'success', summary: 'Documents updated', detail: `${changes}. Content was stored and extracted locally.`, life: 3500 })
+    toast.add({ severity: 'success', summary: 'Documents updated', detail: `${changes}. Content was stored locally; search indexing is continuing in the background.`, life: 4200 })
   } catch (error) { toast.add({ severity: 'error', summary: 'Upload failed', detail: String(error), life: 5000 }) }
   finally { busy.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
@@ -198,7 +402,7 @@ async function upload(event: Event) {
 async function reextract() {
   if (!selected.value) return
   busy.value = true
-  try { await api.post(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/re-extract`); await loadDocuments(); await loadDetail() }
+  try { await api.post(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/re-extract`); await loadDocuments(); await loadDetail(); beginIndexingPolling() }
   catch (error) { toast.add({ severity: 'error', summary: 'Extraction failed', detail: String(error), life: 5000 }) }
   finally { busy.value = false }
 }
@@ -291,7 +495,22 @@ watch([selected, groupBy], () => {
   const key = `${groupBy.value}:${groupValue(doc)}`
   if (collapsedGroups.value.has(key)) toggleGroup(key)
 })
-onMounted(async () => { loadRailPrefs(); await loadDocuments(); if (selectedId.value) await selectDocument(selectedId.value, Number(route.query.page || 1)) })
+onMounted(async () => {
+  loadRailPrefs()
+  await loadDocuments()
+  await refreshIndexingStatus()
+  unsubscribeWorkspaceChanged = agent.onWorkspaceChanged(change => {
+    if (change.kind === 'document') {
+      void loadDocuments()
+      scheduleIndexingPoll(150)
+    }
+  })
+  if (selectedId.value) await selectDocument(selectedId.value, Number(route.query.page || 1))
+})
+onUnmounted(() => {
+  if (indexingTimer !== undefined) window.clearTimeout(indexingTimer)
+  unsubscribeWorkspaceChanged?.()
+})
 </script>
 
 <template>
@@ -308,6 +527,11 @@ onMounted(async () => { loadRailPrefs(); await loadDocuments(); if (selectedId.v
       :action="planningAction"
       @planning-started="emit('planning-started')"
     />
+
+    <div v-if="indexingActive" class="indexing-notice" role="status" aria-live="polite">
+      <i class="pi pi-spin pi-spinner" />
+      <div><strong>Indexing documents for search</strong><p>{{ indexingDetail }}</p></div>
+    </div>
 
     <div v-if="documents.length" class="document-layout surface-panel">
       <aside class="document-rail">
@@ -331,7 +555,11 @@ onMounted(async () => { loadRailPrefs(); await loadDocuments(); if (selectedId.v
             >
               <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
               <span class="doc-identity"><strong>{{ doc.title }}</strong><small v-if="doc.source !== doc.title">{{ doc.source }}</small></span>
-              <span class="state-pill" :class="`state-${doc.text_state}`">{{ doc.text_state.replace('_', ' ') }}</span>
+              <span class="state-cluster" :title="`Extraction: ${doc.text_state}; analysis: ${doc.analysis_coverage_state}/${doc.analysis_validity_state || 'none'}; search: ${doc.search_index_state}`">
+                <span class="state-pill" :class="`state-${doc.text_state}`">{{ doc.text_state.replace('_', ' ') }}</span>
+                <span class="state-pill" :class="`state-analysis-${doc.analysis_coverage_state}`">{{ doc.analysis_coverage_state }}</span>
+                <span class="state-pill" :class="`state-search-${doc.search_index_state}`">{{ doc.search_index_state }}</span>
+              </span>
             </button>
           </template>
         </div>
@@ -358,6 +586,8 @@ onMounted(async () => { loadRailPrefs(); await loadDocuments(); if (selectedId.v
               />
             </label>
             <Tag :value="selected.text_state.replace('_', ' ')" :severity="severity(selected.text_state)" />
+            <Tag :value="`analysis ${selected.analysis_coverage_state}`" :severity="selected.analysis_validity_state === 'stale' ? 'warn' : selected.analysis_coverage_state === 'complete' ? 'success' : 'secondary'" />
+            <Tag :value="`search ${selected.search_index_state}`" :severity="selected.search_index_state === 'ready' ? 'success' : selected.search_index_state === 'failed' ? 'danger' : 'secondary'" />
             <Button label="Add to assistant" icon="pi pi-paperclip" size="small" @click="attachToAssistant" />
             <Button icon="pi pi-refresh" text rounded aria-label="Re-extract" v-tooltip.top="'Re-extract'" @click="reextract" />
             <Button icon="pi pi-trash" text rounded severity="danger" aria-label="Delete" v-tooltip.top="'Delete document'" @click="remove" />
@@ -389,6 +619,65 @@ onMounted(async () => { loadRailPrefs(); await loadDocuments(); if (selectedId.v
           </details>
         </div>
 
+        <div v-else-if="view === 'analysis'" class="detail-content analysis-view">
+          <div class="analysis-toolbar">
+            <div class="analysis-states">
+              <Tag :value="analysis?.status.analysis_run_state || 'idle'" severity="secondary" />
+              <Tag :value="analysis?.status.analysis_coverage_state || 'none'" :severity="analysis?.status.analysis_coverage_state === 'complete' ? 'success' : analysis?.status.analysis_coverage_state === 'partial' ? 'warn' : 'secondary'" />
+              <Tag v-if="analysis?.status.analysis_validity_state" :value="analysis.status.analysis_validity_state" :severity="analysis.status.analysis_validity_state === 'current' ? 'success' : 'warn'" />
+              <Tag v-if="analysis?.status.analysis_review_state !== 'not_applicable'" :value="analysis?.status.analysis_review_state?.replace('_', ' ')" severity="secondary" />
+            </div>
+            <div class="analysis-actions">
+              <Button v-if="!analysis?.generated" label="Analyze" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
+              <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" />
+              <Button v-if="analysis?.status.analysis_resumable_run_id" label="Continue" icon="pi pi-play" size="small" severity="warn" :loading="analysisBusy" @click="continueAnalysis" />
+              <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" @click="compareCandidate = !compareCandidate" />
+            </div>
+          </div>
+
+          <div v-if="analysis?.status.analysis_coverage_state === 'partial'" class="coverage-warning">
+            <i class="pi pi-exclamation-triangle" />
+            <span>Partial source coverage. Analyzed pages {{ analysis.effective?.coverage.analyzed_pages.join(', ') || '—' }}; omitted {{ analysis.effective?.coverage.omitted_pages.join(', ') || '—' }}.</span>
+          </div>
+          <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity and is excluded from agent context.</span></div>
+
+          <div class="source-search-bar">
+            <InputText v-model="sourceSearch" placeholder="Search this source" @keyup.enter="runContentSearch(selected ? [selected.id] : [])" />
+            <Button label="Search source" icon="pi pi-search" severity="secondary" :loading="searchBusy" @click="runContentSearch(selected ? [selected.id] : [])" />
+          </div>
+          <div v-if="searchResults.length && sourceSearch" class="inline-search-results">
+            <button v-for="result in searchResults" :key="result.citation_id" @click="openSearchResult(result)"><strong>Page {{ result.page }}</strong><span>{{ result.excerpt }}</span></button>
+          </div>
+
+          <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyze this document once" description="Create a reusable summary and freeform audit notes. Source indexing remains local and independent." compact />
+          <template v-else>
+            <section class="analysis-editor">
+              <header><div><h4>Summary</h4><small>Auditor edits are stored separately from the generated basis.</small></div><div><Button :label="summaryPreview ? 'Edit' : 'Preview'" text size="small" @click="summaryPreview = !summaryPreview" /><Button v-if="analysis.review.summary_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('summary')" /></div></header>
+              <MarkdownView v-if="summaryPreview" :markdown="summaryDraft" />
+              <Textarea v-else v-model="summaryDraft" rows="10" autoResize />
+            </section>
+            <section class="analysis-editor">
+              <header><div><h4>Audit Notes</h4><small>Freeform observations are not evidence that a control operated.</small></div><div><Button :label="notesPreview ? 'Edit' : 'Preview'" text size="small" @click="notesPreview = !notesPreview" /><Button v-if="analysis.review.audit_notes_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('notes')" /></div></header>
+              <MarkdownView v-if="notesPreview" :markdown="notesDraft" />
+              <Textarea v-else v-model="notesDraft" rows="14" autoResize />
+            </section>
+            <div class="save-analysis"><Button label="Save edits" icon="pi pi-save" severity="secondary" :loading="analysisBusy" @click="saveAnalysis(false)" /><Button label="Save and mark reviewed" icon="pi pi-check" :loading="analysisBusy" @click="saveAnalysis(true)" /></div>
+
+            <section v-if="compareCandidate && analysis.candidate" class="candidate-compare">
+              <h4>Refresh candidate</h4>
+              <div><article><strong>Current effective summary</strong><MarkdownView :markdown="summaryDraft" /></article><article><strong>Candidate summary</strong><MarkdownView :markdown="analysis.candidate.summary_markdown" /></article></div>
+              <div class="candidate-actions"><Button label="Copy candidate summary into edits" severity="secondary" @click="summaryDraft = analysis.candidate.summary_markdown; summaryPreview = false" /><Button label="Copy candidate notes into edits" severity="secondary" @click="notesDraft = analysis.candidate.audit_notes_markdown; notesPreview = false" /><Button label="Accept candidate as generated basis" icon="pi pi-check" @click="acceptCandidate" /></div>
+            </section>
+
+            <section class="analysis-sources">
+              <h4>Sources</h4>
+              <button v-for="citation in analysis.effective.citations" :key="`${citation.id}:${citation.page}`" @click="openCitation(citation.page)"><strong>[{{ citation.id }}] Page {{ citation.page }}</strong><span>{{ citation.excerpt }}</span></button>
+              <p v-if="!analysis.effective.citations.length" class="muted">No validated source citations were generated.</p>
+            </section>
+            <details class="technical-details"><summary>Technical provenance</summary><dl><div><dt>Analysis ID</dt><dd><code>{{ analysis.effective.id }}</code></dd></div><div><dt>Generated</dt><dd>{{ analysis.effective.generated_at }}</dd></div><div><dt>Provider / model</dt><dd>{{ analysis.effective.provider || '—' }} / {{ analysis.effective.model || '—' }}</dd></div><div><dt>Prompt version</dt><dd><code>{{ analysis.effective.prompt_version }}</code></dd></div><div><dt>Extracted text hash</dt><dd><code>{{ analysis.effective.extracted_text_sha1 }}</code></dd></div></dl></details>
+          </template>
+        </div>
+
         <div v-else class="detail-content timeline">
           <article v-for="item in activity" :key="item.id"><i class="pi pi-sparkles" /><div><strong>{{ item.purpose.replace('_', ' ') }} · {{ item.disposition }}</strong><p>{{ item.at }} · {{ item.provider }} / {{ item.model }}</p><p>Pages {{ item.page_ranges?.join(', ') || '—' }}</p><details><summary>Technical details</summary><code>{{ item.id }} · response {{ item.response_hash || 'not available' }}</code></details></div></article>
           <p v-if="!activity.length" class="muted">No model activity references this document.</p>
@@ -405,6 +694,10 @@ onMounted(async () => { loadRailPrefs(); await loadDocuments(); if (selectedId.v
       <div class="pack-grid"><article v-for="pack in packs" :key="`${pack.scope}:${pack.id}`"><strong>{{ pack.name }}</strong><Tag :value="pack.scope" severity="secondary" /><p>Version {{ pack.version }} · updated {{ pack.updated }}</p><details><summary>Technical details</summary><code>{{ pack.id }} · {{ pack.sha1 }}</code></details></article></div>
       <div v-if="packResults.length" class="search-results"><h4>Cited sections</h4><article v-for="(result, index) in packResults" :key="index"><strong>{{ result.citation }}</strong><p>{{ result.excerpt }}</p></article></div>
     </Dialog>
+    <Dialog v-model:visible="contentSearchOpen" modal header="Search document contents" :style="{ width: 'min(58rem, 95vw)' }">
+      <div class="global-search-bar"><InputText v-model="contentSearch" autofocus placeholder="Clause, amount, policy name, person, or audit concept" @keyup.enter="runContentSearch()" /><Button label="Search" icon="pi pi-search" :loading="searchBusy" @click="runContentSearch()" /></div>
+      <div class="global-search-results"><button v-for="result in searchResults" :key="result.citation_id" @click="openSearchResult(result)"><div><strong>{{ result.title }}</strong><Tag :value="`Page ${result.page}`" severity="secondary" /></div><p>{{ result.excerpt }}</p><small>Relevance {{ result.score.toFixed(2) }}</small></button><p v-if="contentSearch && !searchBusy && !searchResults.length" class="muted">No indexed source excerpts matched.</p></div>
+    </Dialog>
   </section>
 </template>
 
@@ -412,11 +705,13 @@ onMounted(async () => { loadRailPrefs(); await loadDocuments(); if (selectedId.v
 .documents-tab { display: grid; gap: 1rem; min-height: 100%; }
 .detail-head h3 { margin: 0; }
 .document-layout { display: grid; grid-template-columns: minmax(17rem, 20rem) minmax(0, 1fr); min-height: 36rem; overflow: hidden; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff; }
+.indexing-notice { display:flex; align-items:flex-start; gap:.7rem; margin:0 0 .85rem; padding:.75rem .9rem; border:1px solid var(--p-blue-200); border-radius:var(--aw-radius-sm); background:var(--p-blue-50); color:var(--p-blue-800); }.indexing-notice > i { margin-top:.15rem; }.indexing-notice p { margin:.15rem 0 0; color:var(--p-blue-700); font-size:.78rem; }
 .document-rail { padding:.75rem; border-right:1px solid var(--aw-border); background:var(--p-surface-50); overflow-y:auto; }.rail-tools { position:sticky; top:-.75rem; z-index:1; margin:-.75rem -.75rem .75rem; padding:.75rem; border-bottom:1px solid var(--p-surface-200); background:var(--p-surface-50); }.search-wrap { position:relative; display:block; }.search-wrap > i { position:absolute; z-index:1; left:.75rem; top:50%; translate:0 -50%; color:var(--p-surface-400); }.rail-search { width:100%; padding-left:2.2rem; }.filters { display:grid; grid-template-columns:1fr; gap:.45rem; margin-top:.5rem; }.filters :deep(.p-select) { min-width:0; font-size:.76rem; }
-.doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-sm); background:transparent; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:.6rem; }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-sm); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:#fff; }.doc-row.active { border-color:#a7ded8; background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:6px; color:var(--p-blue-600); background:var(--p-blue-50); font-size:.75rem; }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.8rem; }.doc-identity small { color:var(--aw-muted); font-size:.63rem; }.state-pill { width:.55rem; height:.55rem; overflow:hidden; padding:0; border-radius:999px; color:transparent; background:var(--p-surface-300); font-size:0; }.state-extracted { background:var(--p-green-500); }.state-failed { background:var(--p-red-500); }.state-partial,.state-image_only { background:var(--p-orange-500); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
+.doc-group { display:grid; gap:.15rem; }.group-head { display:flex; align-items:center; gap:.4rem; width:100%; margin:.55rem 0 .05rem; padding:.2rem .25rem; border:0; border-radius:var(--aw-radius-sm); background:transparent; color:var(--aw-muted); text-transform:uppercase; font-size:var(--aw-text-xs); letter-spacing:.06em; font-weight:700; text-align:left; cursor:pointer; }.group-head:hover { color:var(--aw-teal); }.group-head i { font-size:.6rem; }.group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.group-count { margin-left:auto; font-weight:400; }.doc-row { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.55rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:var(--aw-radius-sm); background:transparent; color:inherit; text-align:left; cursor:pointer; transition:border-color .15s, background .15s; }.doc-row:hover { border-color:var(--aw-border); background:#fff; }.doc-row.active { border-color:#a7ded8; background:var(--aw-teal-soft); box-shadow:inset 3px 0 0 var(--aw-teal); }.doc-icon { display:grid; width:1.55rem; height:1.55rem; place-items:center; border-radius:6px; color:var(--p-blue-600); background:var(--p-blue-50); font-size:.75rem; }.doc-identity { display:grid; min-width:0; gap:.04rem; }.doc-identity strong,.doc-identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.doc-identity strong { font-size:.8rem; }.doc-identity small { color:var(--aw-muted); font-size:.63rem; }.state-cluster { display:flex; gap:.2rem; }.state-pill { width:.48rem; height:.48rem; overflow:hidden; padding:0; border-radius:999px; color:transparent; background:var(--p-surface-300); font-size:0; }.state-extracted,.state-analysis-complete,.state-search-ready { background:var(--p-green-500); }.state-failed,.state-analysis-failed,.state-search-failed { background:var(--p-red-500); }.state-partial,.state-image_only,.state-analysis-partial,.state-search-stale { background:var(--p-orange-500); }.state-search-indexing,.state-analysis-analyzing { background:var(--p-blue-500); }.rail-empty { padding:2rem .5rem; text-align:center; color:var(--aw-muted); }
 .document-detail { min-width:0; display:flex; flex-direction:column; }.detail-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1rem 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-identity { min-width:0; }.detail-identity p { margin:.25rem 0 0; color:var(--aw-muted); font-size:.73rem; }.detail-actions { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }.detail-tabs { display:flex; padding:0 1.25rem; border-bottom:1px solid var(--aw-border); }.detail-tabs button { padding:.75rem .85rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--aw-muted); cursor:pointer; text-transform:capitalize; }.detail-tabs button.active { color:var(--aw-teal); border-color:var(--aw-teal); font-weight:700; }.detail-content { padding:1.25rem; overflow-y:auto; }.page-tools { display:flex; align-items:center; gap:.4rem; margin-bottom:.75rem; }.page-tools a { margin-left:auto; color:var(--aw-teal); }.page-text { min-height:25rem; margin:0; padding:1.35rem; border:1px solid var(--aw-border); border-radius:10px; background:#fff; font-family:var(--aw-font-sans); white-space:pre-wrap; line-height:1.65; box-shadow:0 1px 2px rgb(15 23 42 / 4%); }.scan-notice { display:flex; gap:.75rem; padding:.9rem; margin-bottom:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); }.scan-notice p { margin:.25rem 0 0; }.document-image { display:block; max-width:100%; max-height:34rem; margin:auto; }.document-frame { width:100%; height:calc(100vh - 26rem); min-height:32rem; border:1px solid var(--aw-border); border-radius:10px; background:#fff; }.docx-frame { height:calc(100vh - 26rem); min-height:32rem; overflow:auto; border:1px solid var(--aw-border); border-radius:10px; background:var(--p-surface-100); }.docx-frame.loading { opacity:.5; }.docx-frame :deep(.docx-wrapper) { background:var(--p-surface-100); padding:1.25rem; }.docx-frame :deep(.docx-wrapper > section.docx) { margin-bottom:1rem; box-shadow:0 2px 8px rgb(15 23 42 / 12%); }.source-toggle { display:flex; margin-left:.5rem; border:1px solid var(--aw-border); border-radius:999px; overflow:hidden; }.source-toggle button { padding:.28rem .75rem; border:0; background:transparent; color:var(--aw-muted); font-size:.72rem; cursor:pointer; }.source-toggle button.active { background:var(--aw-teal-soft); color:var(--aw-teal); font-weight:600; }
 .classification-field { display:grid; gap:.2rem; min-width:10rem; color:var(--aw-muted); font-size:.65rem; font-weight:700; }.classification-field :deep(.p-select) { width:100%; min-height:2rem; font-size:.76rem; font-weight:400; text-transform:capitalize; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--p-surface-200); border-radius:8px; background:var(--p-surface-50); color:var(--p-surface-500); font-size:.7rem; }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: .7rem; }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
+.analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); color:#7c4b00; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.analysis-editor header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small { color:var(--aw-muted); }.analysis-editor .p-textarea { width:100%; font-family:ui-monospace,monospace; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--p-blue-200); border-radius:var(--aw-radius-sm); background:var(--p-blue-50); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }
 @media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }
 </style>

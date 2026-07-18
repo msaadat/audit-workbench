@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-from .. import assistant, documents, llm, methodology, templates_store
+from .. import assistant, document_analysis, documents, llm, methodology, templates_store
 from ..workspaces import Workspace, WorkspaceError, slugify
 from . import actions, artifact_index, ledger, prompts, store
 from .base import BaseRunner, Cancelled, LimitExceeded
@@ -25,7 +25,7 @@ GOAL_TEMPLATES = {
 }
 
 MAX_SOURCE_DOCUMENTS = 8
-MAX_PAGES_PER_SOURCE_DOCUMENT = 50
+MAX_PLANNING_DOSSIER_CHARACTERS = 60_000
 ELIGIBLE_TEXT_STATES = ("extracted", "partial")
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 
@@ -244,6 +244,7 @@ class CommandRunner(BaseRunner):
         if not requested_document_ids:
             requested_document_ids = self._select_planning_documents(task, context)
             requested = set(requested_document_ids)
+        document_states = document_analysis.status_catalog(self.ws)["entries"]
         document_metadata = [
             {
                 "id": doc.get("id"),
@@ -251,6 +252,7 @@ class CommandRunner(BaseRunner):
                 "category": doc.get("category"),
                 "pages": doc.get("pages"),
                 "text_state": doc.get("text_state"),
+                **dict(document_states.get(str(doc.get("id"))) or {}),
                 "selected_for_update": doc.get("id") in requested,
             }
             for doc in self.ws.documents
@@ -268,22 +270,11 @@ class CommandRunner(BaseRunner):
             included_names.append(
                 Path(str(doc.get("source") or doc.get("title") or document_id)).name
             )
-            page_count = max(1, int(doc.get("pages") or 1))
-            included = documents.prompt_content(
-                self.ws,
-                document_id,
-                list(range(1, min(page_count, MAX_PAGES_PER_SOURCE_DOCUMENT) + 1)),
-            )
-            self.record_model_source(included)
-            included_documents.append(
-                {
-                    "id": document_id,
-                    "title": doc.get("title"),
-                    "category": doc.get("category"),
-                    "source_sha1": included.get("source_sha1"),
-                    "pages": included.get("pages") or [],
-                }
-            )
+            analysis = self._ensure_planning_analysis(doc)
+            if analysis is None:
+                self.warn(f"Could not obtain a current analysis for '{doc.get('title') or document_id}'; planning will use metadata only.")
+                continue
+            included_documents.append(analysis)
         for result in pack_results:
             source_ref = f"pack:{result['scope']}:{result['pack_id']}"
             if source_ref not in included_packs:
@@ -292,12 +283,13 @@ class CommandRunner(BaseRunner):
             content = included_packs[source_ref]["pages"][0]["text"]
             excerpt = result["excerpt"] if result["excerpt"] in content else ""
             methodology_context.append({**result, "excerpt": excerpt})
+        included_documents = self._bounded_dossier(included_documents)
         basis = {
             "planning": self.ws.planning,
             "documents": document_metadata,
             "tables": tables,
             "document_content_included": bool(included_documents),
-            "document_content": included_documents,
+            "document_analyses": included_documents,
             "methodology_available": [
                 {key: pack.get(key) for key in ("id", "name", "scope", "version", "sha1")}
                 for pack in methodology.list_packs(self.ws)
@@ -313,6 +305,13 @@ class CommandRunner(BaseRunner):
             payload = self.llm_json(
                 prompts.DOCUMENT_CONTEXT_SYSTEM,
                 prompts.document_context_user(context, included_documents),
+                {"representation": "summary", "characters_supplied": sum(
+                    len(str(item.get("summary_markdown") or "")) + len(str(item.get("audit_notes_markdown") or ""))
+                    for item in included_documents
+                ), "context_outcome": "supplied", "cache_hit": True,
+                 "document_ids": requested_document_ids,
+                 "page_ranges": sorted({citation["page"] for item in included_documents for citation in item.get("citations") or []}),
+                 "source_hashes": [item["source_sha1"] for item in included_documents if item.get("source_sha1")]},
             )
             proposed_context = {
                 key: value
@@ -358,6 +357,92 @@ class CommandRunner(BaseRunner):
             self.task_status(task, "completed")
         return basis
 
+    @staticmethod
+    def _bounded_dossier(items: list[dict]) -> list[dict]:
+        lengths = [
+            len(str(item.get("summary_markdown") or ""))
+            + len(str(item.get("audit_notes_markdown") or ""))
+            + sum(len(str(citation.get("excerpt") or "")) for citation in item.get("citations") or [])
+            for item in items
+        ]
+        allocations = documents._fair_character_allocations(lengths, MAX_PLANNING_DOSSIER_CHARACTERS)
+        output = []
+        for item, allocation, original_length in zip(items, allocations, lengths, strict=True):
+            bounded = dict(item); remaining = allocation
+            field_order = ["summary_markdown", "audit_notes_markdown"]
+            if item.get("audit_notes_overridden") and not item.get("summary_overridden"):
+                field_order.reverse()
+            values = {}
+            for field in field_order:
+                value = str(item.get(field) or "")
+                values[field] = value[:remaining]
+                remaining -= len(values[field])
+            bounded.update(values)
+            citations = []
+            for citation in item.get("citations") or []:
+                excerpt = str(citation.get("excerpt") or "")
+                if len(excerpt) > remaining:
+                    break
+                citations.append(citation); remaining -= len(excerpt)
+            bounded["citations"] = citations
+            bounded["dossier_trimmed"] = allocation < original_length
+            bounded["dossier_characters"] = allocation - remaining
+            output.append(bounded)
+        return output
+
+    def _ensure_planning_analysis(self, document: dict) -> dict | None:
+        """Reuse or create persistent analysis; raw text appears only in map calls."""
+        current = document_analysis.compact_artifact(self.ws, document["id"])
+        if current is not None:
+            return current
+        extracted = documents.extract_document(self.ws, document["id"])
+        if extracted.get("state") in {"failed", "image_only"}:
+            return None
+        chunks = document_analysis.analysis_chunks(extracted)
+        maps, orientation = [], ""
+        for chunk in chunks:
+            self.record_model_source({
+                "source_ref": document["id"], "document_id": document["id"],
+                "source_sha1": document.get("sha1"),
+                "pages": [{"page": page} for page in chunk["pages"]],
+            })
+            # The planning runner uses its existing bounded document-context
+            # prompt tag for compatibility with providers that do not support
+            # a nested tool loop. This is still the one raw-source map pass.
+            payload = self.llm_json(
+                prompts.DOCUMENT_CONTEXT_SYSTEM,
+                prompts.document_analysis_map_user(document, chunk, orientation),
+                {"representation": "raw_pages", "characters_supplied": len(chunk["text"]),
+                 "context_outcome": "supplied", "cache_hit": False,
+                 "document_ids": [document["id"]], "page_ranges": chunk["pages"],
+                 "source_hashes": [document["sha1"]]},
+            )
+            context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else None
+            summary = str(payload.get("summary_markdown") or "").strip()
+            if not summary and context_payload:
+                summary = "\n".join(f"- **{key.replace('_', ' ').title()}:** {value}" for key, value in context_payload.items())
+            mapped = {
+                "summary_markdown": summary,
+                "audit_notes_markdown": str(payload.get("audit_notes_markdown") or "").strip(),
+                "citations": document_analysis.validate_citations(payload.get("citations") or [], [chunk], document["sha1"]),
+            }
+            maps.append(mapped); orientation = (orientation + "\n\n" + summary)[-4000:]
+        if not maps:
+            return None
+        # Deterministic consolidation keeps workflow-required analysis bounded
+        # and avoids rereading source. Explicit analysis runs use the reducer.
+        output = {
+            "summary_markdown": "\n\n".join(value["summary_markdown"] for value in maps if value["summary_markdown"]),
+            "audit_notes_markdown": "\n\n".join(value["audit_notes_markdown"] for value in maps if value["audit_notes_markdown"]),
+            "citations": [citation for value in maps for citation in value["citations"]],
+        }
+        profile = llm.agent_status()
+        document_analysis.persist_analysis(
+            self.ws, document, extracted, output, provider=profile.get("provider") or profile.get("backend"),
+            model=profile.get("model"), action="analyze",
+        )
+        return document_analysis.compact_artifact(self.ws, document["id"])
+
     def _select_planning_documents(self, task: dict, context: dict) -> list[str]:
         eligible = [
             doc for doc in self.ws.documents
@@ -365,6 +450,7 @@ class CommandRunner(BaseRunner):
         ]
         if not eligible:
             return []
+        document_states = document_analysis.status_catalog(self.ws)["entries"]
         eligible_meta = [
             {
                 "id": doc.get("id"),
@@ -372,6 +458,7 @@ class CommandRunner(BaseRunner):
                 "category": doc.get("category"),
                 "pages": doc.get("pages"),
                 "text_state": doc.get("text_state"),
+                **dict(document_states.get(str(doc.get("id"))) or {}),
             }
             for doc in eligible
         ]
@@ -544,7 +631,7 @@ class CommandRunner(BaseRunner):
         template = templates_store.get_template(self.ws, "rcm")["markdown"]
         payload = self._quality_draft(
             prompts.RCM_SYSTEM,
-            prompts.rcm_user(template, basis, apm),
+            prompts.rcm_user(template, self._downstream_planning_basis(basis, "rcm"), apm),
             self._rcm_quality,
             "RCM",
         )
@@ -596,7 +683,7 @@ class CommandRunner(BaseRunner):
         template = templates_store.get_template(self.ws, "workpaper")["markdown"]
         payload = self._quality_draft(
             prompts.WORK_PROGRAM_SYSTEM,
-            prompts.work_program_user(template, basis, rcm_rows),
+            prompts.work_program_user(template, self._downstream_planning_basis(basis, "work_program"), rcm_rows),
             self._program_quality,
             "audit program",
         )
@@ -649,6 +736,24 @@ class CommandRunner(BaseRunner):
                 action = "created"
             self.record_artifact("procedure", item["id"], semantic, action, task)
         self.task_status(task, "completed")
+
+    @staticmethod
+    def _downstream_planning_basis(basis: dict, stage: str) -> dict:
+        """Prevent broad document analysis from cascading into later prompts."""
+        common = {
+            "planning": basis.get("planning"), "tables": basis.get("tables"),
+            "documents": basis.get("documents"), "methodology": basis.get("methodology"),
+        }
+        if stage == "rcm":
+            common["document_sources"] = [
+                {
+                    "document_id": item.get("document_id"), "title": item.get("title"),
+                    "source_sha1": item.get("source_sha1"), "analysis_id": item.get("analysis_id"),
+                    "coverage": item.get("coverage"), "citations": item.get("citations"),
+                }
+                for item in basis.get("document_analyses") or []
+            ]
+        return common
 
     def _resolve_rcm_refs(self, refs: list) -> list[str]:
         resolved = []

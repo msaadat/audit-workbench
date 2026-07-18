@@ -91,7 +91,7 @@ def new_run(
 ) -> dict:
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
-    if kind not in ("analysis", "intake", "doc_test"):
+    if kind not in ("analysis", "intake", "doc_test", "document_analysis"):
         raise WorkspaceError("Unknown agent run kind.")
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -123,6 +123,12 @@ def new_run(
     }
     if kind == "doc_test":
         run["doc_test"] = {"test_id": str((context or {}).get("test_id") or "")}
+    if kind == "document_analysis":
+        run["document_analysis"] = {
+            "document_ids": list((context or {}).get("document_ids") or []),
+            "action": str((context or {}).get("action") or "analyze"),
+            "documents": {},
+        }
     save_run(workspace, run)
     return run
 

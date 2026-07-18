@@ -55,6 +55,82 @@ export interface AuditDocument {
   updated: string | null
   created_by: string
   agent_run_id: string | null
+  analysis_run_state: DocumentAnalysisRunState
+  analysis_coverage_state: DocumentAnalysisCoverageState
+  analysis_validity_state: 'current' | 'stale' | null
+  analysis_updated_at: string | null
+  analysis_review_state: 'not_applicable' | 'needs_review' | 'reviewed'
+  has_analysis_overrides: boolean
+  candidate_analysis_id: string | null
+  analysis_resumable_run_id: string | null
+  search_index_state: DocumentSearchIndexState
+}
+
+export type DocumentAnalysisRunState = 'idle' | 'queued' | 'analyzing' | 'paused' | 'interrupted' | 'failed' | 'cancelled'
+export type DocumentAnalysisCoverageState = 'none' | 'complete' | 'partial' | 'unsupported'
+export type DocumentSearchIndexState = 'pending' | 'indexing' | 'ready' | 'stale' | 'failed' | 'unsupported'
+
+export interface DocumentIndexingStatus {
+  state: 'idle' | 'indexing'
+  job_count: number
+  total_documents: number
+  completed_documents: number
+  remaining_documents: number
+  active_document_id: string | null
+  pace_seconds: number
+}
+
+export interface DocumentAnalysisCitation {
+  id: string
+  page: number
+  excerpt: string
+  excerpt_hash: string
+  source_sha1: string
+}
+
+export interface GeneratedDocumentAnalysis {
+  id: string
+  document_id: string
+  source_sha1: string
+  extracted_text_sha1: string
+  prompt_version: string
+  provider: string | null
+  model: string | null
+  generated_at: string
+  summary_markdown: string
+  audit_notes_markdown: string
+  citations: DocumentAnalysisCitation[]
+  coverage: { state: DocumentAnalysisCoverageState; analyzed_pages: number[]; omitted_pages: number[]; reason?: string | null }
+}
+
+export interface DocumentAnalysisDetail {
+  document_id: string
+  index_revision: number
+  review_revision: number
+  generated: GeneratedDocumentAnalysis | null
+  effective: GeneratedDocumentAnalysis | null
+  candidate: GeneratedDocumentAnalysis | null
+  review: {
+    revision: number
+    summary_override: string | null
+    audit_notes_override: string | null
+    review_state: 'not_applicable' | 'needs_review' | 'reviewed'
+    reviewed_at: string | null
+    updated_at: string | null
+  }
+  status: Pick<AuditDocument, 'analysis_run_state' | 'analysis_coverage_state' | 'analysis_validity_state' | 'analysis_updated_at' | 'analysis_review_state' | 'has_analysis_overrides' | 'candidate_analysis_id' | 'analysis_resumable_run_id' | 'search_index_state'>
+}
+
+export interface DocumentSearchResult {
+  document_id: string
+  title: string
+  page: number
+  excerpt: string
+  score: number
+  lexical_score: number
+  vector_score: number
+  citation_id: string
+  citation: EvidenceRef
 }
 
 export interface DocumentPage {
@@ -94,6 +170,14 @@ export interface AIActivityEvent {
   source_hashes: string[]
   response_hash: string | null
   disposition: string
+  representation?: 'raw_pages' | 'summary' | 'audit_notes' | 'excerpt'
+  analysis_id?: string | null
+  search_query_hash?: string | null
+  characters_supplied?: number
+  cache_hit?: boolean
+  retrieval_duration_ms?: number | null
+  model_duration_ms?: number | null
+  context_outcome?: 'supplied' | 'trimmed' | 'scope_required' | 'unavailable'
 }
 
 export interface KnowledgePack {
@@ -400,6 +484,12 @@ export interface IntakeBatch {
   unsupported_count: number
   items: IntakeBatchItem[]
   summary?: { imported: number; unchanged: number; ignored: number; ambiguous: number }
+  indexing_job?: {
+    id: string
+    state: 'queued' | 'indexing' | 'completed' | 'completed_with_issues'
+    document_ids: string[]
+    coalesced_document_ids: string[]
+  }
   suggested_actions?: IntakeSuggestedAction[]
 }
 
@@ -890,8 +980,11 @@ export interface AssistantAnswer {
       characters_included: number
       trimmed: boolean
       text_state: DocumentTextState
+      context_outcome?: 'supplied' | 'trimmed' | 'scope_required' | 'unavailable'
+      source_sha1?: string
     }>
     trimmed: boolean
+    scope_required?: boolean
     character_budget: number
   } | null
 }
@@ -1030,7 +1123,7 @@ export interface AgentRun {
   parent_run_id: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake' | 'doc_test'
+  kind: 'audit' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
   mode: 'auto' | 'permission'
   context: AgentRunContext
   status: AgentRunStatus
@@ -1074,7 +1167,7 @@ export interface AgentRunSummary {
   parent_run_id: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake' | 'doc_test'
+  kind: 'audit' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
   mode: 'auto' | 'permission'
   status: AgentRunStatus
   created: string

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, File, Form, Query, UploadFile
+import asyncio
+import hashlib
+
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from .. import documents, intake, methodology, workspaces
+from .. import document_analysis, document_search, documents, embedding, intake, methodology, workspaces
+from ..agent import runner, store
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["documents"])
 
@@ -25,7 +29,9 @@ def _pages(value: str | None) -> list[int] | None:
 
 @router.get("/documents")
 async def list_documents(workspace_id: str):
-    return {"items": _ws(workspace_id).documents}
+    ws = _ws(workspace_id)
+    document_search.recover_indexing(ws)
+    return {"items": document_analysis.inventory(ws)}
 
 
 @router.post("/documents")
@@ -58,18 +64,121 @@ async def upload_documents(
         )
         (replaced if existed else added).append(document)
     changed = [*added, *replaced]
+    indexing_job = document_search.enqueue_indexing(
+        ws, [document["id"] for document in changed], reason="upload",
+    )
     return {
         "added": added,
         "replaced": replaced,
-        "items": ws.documents,
+        "items": document_analysis.inventory(ws),
+        "indexing_job": indexing_job,
         "suggested_actions": intake.planning_actions_for_documents(changed),
     }
+
+
+@router.post("/documents/search")
+async def search_documents(workspace_id: str, payload: dict = Body(...)):
+    ws = _ws(workspace_id)
+    query = str(payload.get("query") or "")
+    result = await asyncio.to_thread(
+        document_search.search, ws, query,
+        document_ids=payload.get("document_ids"), top_k=payload.get("top_k") or 6,
+        max_characters=payload.get("max_characters") or 8_000,
+    )
+    documents.append_activity(
+        ws, run_id=payload.get("run_id"), stage=payload.get("stage") or "document_search",
+        task=None, purpose=payload.get("purpose") or "document_search", provider=None, model=None,
+        vision_used=False, prompt_version=None, template_versions=[], knowledge_packs=[],
+        document_ids=sorted({item["document_id"] for item in result["results"]}),
+        page_ranges=sorted({item["page"] for item in result["results"]}),
+        source_hashes=sorted({item["citation"]["source_sha1"] for item in result["results"]}),
+        response_at=documents.utcnow(), response_hash=None, artifact_ref=None, disposition="retrieved",
+        representation="excerpt", search_query_hash=hashlib.sha1(query.encode()).hexdigest(),
+        characters_supplied=result["characters"], cache_hit=True,
+        retrieval_duration_ms=result["duration_ms"], model_duration_ms=None,
+        context_outcome="trimmed" if result["trimmed"] else ("supplied" if result["results"] else "unavailable"),
+    )
+    return result
+
+
+@router.get("/documents/search-status")
+async def document_search_status(workspace_id: str):
+    ws = _ws(workspace_id)
+    return {"embedding": embedding.status(), "queue": document_search.queue_status(ws), "documents": [
+        document_search.manifest_state(ws, document["id"]) for document in ws.documents
+    ]}
+
+
+@router.get("/documents/indexing-status")
+async def document_indexing_status(workspace_id: str):
+    return document_search.queue_status(_ws(workspace_id))
+
+
+@router.post("/documents/reindex")
+async def reindex_documents(workspace_id: str, payload: dict = Body(...)):
+    return await asyncio.to_thread(
+        document_search.reindex_job, _ws(workspace_id), payload.get("document_ids") or []
+    )
+
+
+@router.post("/documents/analysis-runs")
+async def create_document_analysis_run(workspace_id: str, payload: dict = Body(...)):
+    ws = _ws(workspace_id)
+    try:
+        return await asyncio.to_thread(
+            runner.start_run, ws, payload.get("mode") or "auto",
+            {"document_ids": payload.get("document_ids") or [], "action": payload.get("action") or "analyze"},
+            kind="document_analysis",
+        )
+    except runner.AgentBusyError as error:
+        raise HTTPException(409, detail=str(error)) from error
 
 
 @router.get("/documents/{doc_id}")
 async def get_document(workspace_id: str, doc_id: str):
     ws = _ws(workspace_id)
     return documents.preview(ws, doc_id, None)
+
+
+@router.get("/documents/{doc_id}/analysis")
+async def get_document_analysis(workspace_id: str, doc_id: str):
+    return document_analysis.load_analysis(_ws(workspace_id), doc_id)
+
+
+@router.post("/documents/{doc_id}/analysis-runs")
+async def create_single_document_analysis_run(workspace_id: str, doc_id: str, payload: dict = Body(default={})):
+    ws = _ws(workspace_id)
+    try:
+        return await asyncio.to_thread(
+            runner.start_run, ws, payload.get("mode") or "auto",
+            {"document_ids": [doc_id], "action": payload.get("action") or "analyze"},
+            kind="document_analysis",
+        )
+    except runner.AgentBusyError as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
+@router.get("/documents/{doc_id}/analysis-runs/{run_id}")
+async def get_document_analysis_run(workspace_id: str, doc_id: str, run_id: str):
+    run = store.load_run(_ws(workspace_id), run_id)
+    if doc_id not in ((run.get("document_analysis") or {}).get("document_ids") or []):
+        raise workspaces.WorkspaceError("This run does not analyze the selected document.")
+    return run
+
+
+@router.patch("/documents/{doc_id}/analysis/review")
+async def patch_document_analysis_review(workspace_id: str, doc_id: str, payload: dict = Body(...)):
+    return document_analysis.patch_review(_ws(workspace_id), doc_id, payload)
+
+
+@router.post("/documents/{doc_id}/analysis/accept-candidate")
+async def accept_document_analysis_candidate(workspace_id: str, doc_id: str, payload: dict = Body(...)):
+    return document_analysis.accept_candidate(_ws(workspace_id), doc_id, payload)
+
+
+@router.post("/documents/{doc_id}/reindex")
+async def reindex_document(workspace_id: str, doc_id: str):
+    return await asyncio.to_thread(document_search.reindex_job, _ws(workspace_id), [doc_id])
 
 
 @router.patch("/documents/{doc_id}")
@@ -85,7 +194,10 @@ async def delete_document(workspace_id: str, doc_id: str):
 
 @router.post("/documents/{doc_id}/re-extract")
 async def reextract_document(workspace_id: str, doc_id: str):
-    return documents.extract_document(_ws(workspace_id), doc_id, force=True)
+    ws = _ws(workspace_id)
+    extracted = await asyncio.to_thread(documents.extract_document, ws, doc_id, force=True)
+    job = document_search.enqueue_indexing(ws, [doc_id], reason="reextract")
+    return {**extracted, "indexing_job": job}
 
 
 @router.get("/documents/{doc_id}/preview")
