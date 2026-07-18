@@ -89,8 +89,13 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
     def interpret(user):
         payload = json.loads(user)
         schemas = {item["table"]: item for item in payload["table_schemas"]}
+        profiles = {item["table"]: item for item in payload["table_profiles"]}
         transaction_fields = {item["name"] for item in schemas["transactions"]["columns"]}
         assert {"cust_id", "invoice_no", "amount"} <= transaction_fields
+        amount = next(
+            item for item in profiles["transactions"]["columns"] if item["name"] == "amount"
+        )
+        assert amount["min"] == "99.5" and amount["max"] == "2,000"
         analytics_ids = {item["id"] for item in payload["analytics_tests"]}
         assert {"duplicates", "benford", "sampling"} <= analytics_ids
         run_analytics = next(
@@ -200,6 +205,44 @@ def test_command_interpreter_repair_lists_supported_validation_checks():
     assert "Supported validation check ids are:" in message
     assert "required" in message
     assert "Use `required` for null or blank checks." in message
+
+
+def test_command_interpreter_repairs_semantically_empty_validation_rule(
+    monkeypatch, workspace_with_data
+):
+    def interpret(user):
+        common = {
+            "objective": "Validate approvals", "constraints": [],
+            "completion_criteria": ["Rules saved"], "needs_planning_wave": False,
+        }
+        if "semantic preflight" not in user:
+            return {
+                **common,
+                "actions": [{
+                    "id": "rules", "type": "create_validation_rules",
+                    "args": {
+                        "title": "Approval rules", "table": "transactions",
+                        "rules": [{
+                            "column": "cust_id", "check": "conditional_required",
+                            "params": {"when_column": "amount", "when_value": 50_000},
+                        }],
+                    },
+                }],
+            }
+        return {**common, "actions": []}
+
+    fake = configured(monkeypatch, interpret)
+    started = runner.start_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "validate approvals"}
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert not workspaces.load_workspace(workspace_with_data.id).rulesets
+    assert "matches zero rows" in completed["rejected_proposals"][0]["error"]
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:command_interpreter", "agent:command_interpreter",
+    ]
 
 
 def test_command_interpreter_reports_all_unsupported_analytics_and_repairs(
@@ -609,6 +652,42 @@ def test_narrow_command_executes_only_requested_action(monkeypatch, workspace_wi
     assert completed["status"] == "completed"
     assert [item["type"] for item in completed["actions"]] == ["create_finding"]
     assert reloaded.findings[0]["title"] == "Duplicate invoices need review"
+
+
+def test_failed_command_retry_preserves_context_and_links_fresh_run(
+    monkeypatch, workspace_with_data
+):
+    failed = store.new_command_run(
+        workspace_with_data,
+        "permission",
+        {
+            "source": "goal_template", "text": "Start data analysis",
+            "goal_template": "data_analysis", "chat_id": "chat-1",
+            "source_message_id": "msg-1",
+            "context_refs": [{"kind": "document", "id": "doc-1"}],
+        },
+        context={"document_ids": ["doc-1"]},
+    )
+    failed["status"] = "failed"
+    failed["error"] = "LLM returned no choices."
+    failed["finished"] = store.utcnow()
+    store.save_run(workspace_with_data, failed)
+    configured(monkeypatch, {
+        "objective": "Analyze data", "constraints": [], "completion_criteria": [],
+        "actions": [], "needs_planning_wave": False,
+    })
+
+    retried = runner.retry_run(workspace_with_data, failed["id"])
+    completed = wait_run(workspace_with_data, retried["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["id"] != failed["id"]
+    assert completed["parent_run_id"] == failed["id"]
+    assert completed["mode"] == "permission"
+    assert completed["command"]["goal_template"] == "data_analysis"
+    assert completed["command"]["source_message_id"] == "msg-1"
+    assert completed["command"]["context_refs"] == [{"kind": "document", "id": "doc-1"}]
+    assert completed["context"] == {"document_ids": ["doc-1"]}
 
 
 def test_dependent_mutations_rebase_to_succeeded_dependency(workspace_with_data):

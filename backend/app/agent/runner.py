@@ -196,6 +196,32 @@ def resume_run(workspace: Workspace, run_id: str) -> dict:
     return run
 
 
+def retry_run(workspace: Workspace, run_id: str) -> dict:
+    """Start a fresh linked attempt without rewriting the failed run ledger."""
+    previous = store.load_run(workspace, run_id)
+    if previous.get("status") != "failed":
+        raise WorkspaceError("Only a failed run can be retried.")
+    if previous.get("schema_version", 1) < 2 or previous.get("kind") != "audit":
+        raise WorkspaceError("This run type cannot be retried as a command.")
+    original = previous.get("command") or {}
+    command = {
+        "source": original.get("source") or "chat",
+        "text": original.get("text") or "",
+        "goal_template": original.get("goal_template"),
+        "parent_command_id": original.get("id"),
+        "chat_id": previous.get("chat_id") or original.get("chat_id"),
+        "source_message_id": previous.get("source_message_id") or original.get("source_message_id"),
+        "context_refs": list(original.get("context_refs") or []),
+    }
+    return start_command_run(
+        workspace,
+        previous["mode"],
+        command,
+        parent_run_id=previous["id"],
+        context=dict(previous.get("context") or {}),
+    )
+
+
 def pause_run(workspace: Workspace, run_id: str) -> dict:
     run = store.load_run(workspace, run_id)
     handle = get_handle(run_id)

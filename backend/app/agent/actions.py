@@ -278,6 +278,13 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
                     workspace.get_frame(table), args.get("rules") or [],
                     resolve=workspace.get_frame, strict=True,
                 )
+                issues = validation.generated_rule_issues(
+                    workspace.get_frame(table), args["rules"], resolve=workspace.get_frame
+                )
+                if issues:
+                    raise WorkspaceError(
+                        "Generated validation rule failed semantic preflight: " + "; ".join(issues)
+                    )
         elif type_ == "pin_dashboard_tile":
             table = args.get("table")
             if table not in workspace.table_names():

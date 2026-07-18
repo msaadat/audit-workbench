@@ -279,6 +279,7 @@ button, input, textarea, select { font: inherit; }
 
 @media (max-width: 900px) {
   .page { padding: 1.25rem; }
+  .workspace-page { padding: 0; }
   .ui-page-header { align-items: stretch; flex-direction: column; }
   .ui-page-header__actions { justify-content: flex-start; }
 }

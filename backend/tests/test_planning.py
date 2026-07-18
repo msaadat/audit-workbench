@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.agent import runner, store
 from app.main import create_app
-from app import documents, llm, methodology, templates_store, workspaces
+from app import document_analysis, documents, llm, methodology, templates_store, workspaces
 
 from conftest import FakeAgentLLM, wait_run
 
@@ -217,6 +217,44 @@ def test_auto_planning_selects_relevant_documents(monkeypatch):
     assert "Selecting relevant documents for audit planning…" in context_details
     assert "Analyzing document 1 of 1: Procurement Policy.txt" in context_details
     assert "Synthesizing planning context from 1 document…" in context_details
+
+
+def test_planning_recovers_labelled_context_when_synthesis_returns_empty(monkeypatch):
+    ws = workspaces.create_workspace("Planning context fallback")
+    policy = documents.add_document(
+        ws, "Procurement Policy.txt", b"Procurement approvals require documented authorization.",
+        category="policy",
+    )
+    extracted = documents.extract_document(ws, policy["id"])
+    document_analysis.persist_analysis(
+        ws,
+        policy,
+        extracted,
+        {
+            "summary_markdown": (
+                "- **Objective:** Review procurement approvals\n"
+                "- **Scope:** Procurement authorization controls"
+            ),
+            "audit_notes_markdown": "",
+            "citations": [],
+        },
+        provider="fake",
+        model="fake",
+    )
+    fake = configure_planning_llm(monkeypatch, {"agent:document_context": {}})
+
+    completed = wait_run(
+        ws,
+        start_planning(ws, context={"document_ids": [policy["id"]]})["id"],
+    )
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert reloaded.planning["context"]["objective"] == "Review procurement approvals"
+    assert reloaded.planning["context"]["scope"] == "Procurement authorization controls"
+    assert completed["planning_basis"]["planning"]["context"]["objective"] == "Review procurement approvals"
+    assert [call["tag"] for call in fake.calls].count("agent:document_context") == 2
+    assert any("recovered labelled facts" in warning for warning in completed["warnings"])
 
 
 def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):

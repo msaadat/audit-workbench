@@ -60,6 +60,7 @@ const documentOptions = computed(() => documents.value.map(doc => ({ label: doc.
 const procedureOptions = computed(() => current.value?.procedure_refs ?? [])
 const planningProcedureOptions = computed(() => (planning.value?.procedures ?? []).map(item => ({ label: `${item.id} · ${item.objective}`, value: item.id })))
 const rcmOptions = computed(() => (planning.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
+const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
 const draftReady = computed(() => {
   if (draft.value.kind === 'vouching') return Boolean(draft.value.table)
   if (draft.value.kind === 'review' || draft.value.kind === 'qa') return Boolean(draft.value.documentId)
@@ -169,6 +170,14 @@ async function runTest() {
   finally { running.value = false }
 }
 async function prepareTests() {
+  if (assistantUnavailable.value) {
+    toast.add({
+      severity: 'info', summary: 'Assistant is already working',
+      detail: 'Finish or cancel the active run before preparing another document-test batch.',
+      life: 3000,
+    })
+    return
+  }
   try {
     await assistantChat.send('Prepare the next appropriate document tests from the audit program and available evidence.', 'act', launchMode.value, { goalTemplate: 'document_testing', source: 'tab_button' })
     toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress and any required decisions in the assistant.', life: 3000 })
@@ -202,7 +211,7 @@ onUnmounted(unsubscribe)
 <template>
   <div class="doc-tests">
     <UiPageHeader title="Document tests" description="Execute and document evidence-based fieldwork">
-      <Button label="Prepare with assistant" icon="pi pi-sparkles" :disabled="agent.isActive.value" @click="prepareTests"/>
+      <Button v-if="tests.length" label="Prepare with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="prepareTests"/>
       <Button label="Create manually" icon="pi pi-plus" outlined @click="openManualCreate"/>
       <Button v-if="current" label="Run selected" icon="pi pi-play" severity="secondary" :loading="running" :disabled="agent.isActive.value" @click="runTest"/>
     </UiPageHeader>
@@ -267,7 +276,7 @@ onUnmounted(unsubscribe)
       </main>
       <main v-else><UiEmptyState icon="pi pi-verified" title="Loading test" description="Preparing the selected worklist." /></main>
     </div>
-    <UiEmptyState v-else icon="pi pi-verified" title="Prepare document fieldwork" description="Let the assistant derive tests from the audit program, or create a test manually."><Button label="Prepare with assistant" icon="pi pi-sparkles" @click="prepareTests"/><Button label="Create manually" icon="pi pi-plus" severity="secondary" outlined @click="openManualCreate"/></UiEmptyState>
+    <UiEmptyState v-else icon="pi pi-verified" title="Prepare document fieldwork" description="Let the assistant derive tests from the audit program, or create a test manually."><Button label="Prepare with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="prepareTests"/><Button label="Create manually" icon="pi pi-plus" severity="secondary" outlined @click="openManualCreate"/></UiEmptyState>
 
     <Dialog v-model:visible="createOpen" modal header="New document test" :style="{width:'min(44rem,94vw)'}">
       <div class="wizard-steps"><span v-for="n in 3" :key="n" :class="{ active: createStep === n, done: createStep > n }"><i>{{ n }}</i>{{ ['Type','Source & scope','Review'][n-1] }}</span></div>
@@ -289,5 +298,5 @@ onUnmounted(unsubscribe)
 .doc-tests { display:flex; flex-direction:column; gap:1rem; min-height:100%; }.test-head,.actions,.detail-title,.rollups,.rail-title,.item-title,.check-head,.attach,.paper-actions,.dispositions { display:flex; align-items:center; gap:.55rem }.test-head,.detail-title,.rail-title,.item-title,.check-head { justify-content:space-between }.test-head h2,.detail-title h3,.item-title h3 { margin:.1rem 0 }.test-head p { margin:0 }.test-layout { display:grid; grid-template-columns:17rem minmax(0,1fr); gap:1rem }.card { background:#fff; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); padding:1rem }.test-rail { padding:.55rem; align-self:start }.test-rail button,.worklist button { border:0; background:transparent; width:100%; min-height:var(--aw-row-height); text-align:left; padding:.5rem .6rem; border-radius:7px; cursor:pointer }.test-rail button:hover,.test-rail button.active,.worklist button:hover,.worklist button.active { background:var(--p-primary-50) }.test-rail button span,.worklist button span { display:flex; justify-content:space-between; gap:.5rem; align-items:center }.test-rail small,.worklist small { display:block; margin-top:.25rem; color:var(--aw-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }.test-detail { min-width:0; display:flex; flex-direction:column; gap:.8rem }.work-layout { display:grid; grid-template-columns:minmax(14rem,.75fr) minmax(22rem,1.6fr); gap:1rem }.worklist { padding:.5rem; max-height:36rem; overflow:auto }.item-detail { display:flex; flex-direction:column; gap:.8rem }.muted,.empty { color:var(--aw-muted); font-size:.8rem }.attach :deep(.p-select) { flex:1 }.attached,.rollups { display:flex; gap:.35rem; flex-wrap:wrap }.runner-note,.conflict { padding:.7rem; border-radius:7px; background:var(--p-blue-50); margin:0 }.conflict { display:grid; background:var(--p-orange-50); color:var(--p-orange-800) }.checks { display:grid; gap:.75rem }.checks article,.attributes article { border:1px solid var(--aw-border); border-radius:7px; padding:.7rem }.comparison-settings { display:grid; grid-template-columns:1fr 12rem 9rem; gap:.5rem; align-items:center }.result-row { display:grid; grid-template-columns:1fr 1fr auto auto; gap:.5rem; align-items:center; padding:.45rem 0; border-top:1px solid var(--aw-border); font-size:.78rem }code { font-family:var(--aw-font-mono); font-size:.75rem }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.dispositions { position:sticky; bottom:-1rem; z-index:2; flex-wrap:wrap; margin:0 -1rem -1rem; padding:.7rem 1rem; border-top:1px solid var(--aw-border); background:#fff }.paper-actions { flex-wrap:wrap }.paper-preview { max-width:58rem; margin:1rem auto; line-height:1.6 }.create-form { display:grid; gap:.8rem }.two { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }blockquote { margin:0; padding:.8rem; border-left:3px solid var(--aw-teal); background:var(--aw-canvas) }
 .grow { flex:1 }
 .wizard-steps { display:grid; grid-template-columns:repeat(3,1fr); margin-bottom:1rem; border-bottom:1px solid var(--aw-border) }.wizard-steps span { display:flex; align-items:center; gap:.4rem; padding:.55rem; color:var(--aw-muted); font-size:.72rem; font-weight:700 }.wizard-steps i { display:grid; place-items:center; width:1.45rem; height:1.45rem; border-radius:999px; background:var(--aw-raised); font-style:normal }.wizard-steps span.active { color:var(--aw-teal); border-bottom:2px solid var(--aw-teal) }.wizard-steps span.active i,.wizard-steps span.done i { color:white; background:var(--aw-teal) }.review-summary { display:grid; gap:.2rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:var(--aw-canvas) }.review-summary span { color:var(--aw-muted); font-size:.76rem }
-@media(max-width:1100px){.test-layout,.work-layout{grid-template-columns:1fr}.test-rail{display:flex;overflow:auto}.test-rail button{min-width:15rem}.worklist{max-height:16rem}}@media(max-width:700px){.test-head,.detail-title{align-items:flex-start;flex-direction:column}.comparison-settings,.result-row,.two{grid-template-columns:1fr}}
+@media(max-width:1100px){.test-layout,.work-layout{grid-template-columns:1fr}.test-rail{display:flex;overflow:auto}.test-rail button{min-width:15rem}.worklist{max-height:16rem}}@media(max-width:900px){.dispositions{bottom:2.25rem}}@media(max-width:700px){.test-head,.detail-title{align-items:flex-start;flex-direction:column}.comparison-settings,.result-row,.two{grid-template-columns:1fr}}
 </style>

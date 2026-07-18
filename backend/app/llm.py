@@ -28,6 +28,7 @@ from dataclasses import dataclass
 import json
 import os
 import base64
+import time
 import urllib.error
 import urllib.request
 
@@ -38,6 +39,9 @@ DEFAULT_LMSTUDIO_API_KEY = "lm-studio"
 USER_AGENT = "audit-workbench/0.1"
 REQUEST_TIMEOUT = 60  # seconds
 LOCAL_REQUEST_TIMEOUT = 300  # seconds
+MAX_REQUEST_ATTEMPTS = 3
+MAX_RETRY_DELAY = 2.0
+RETRYABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 
 
 class LLMError(RuntimeError):
@@ -237,27 +241,53 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=settings.timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = _error_detail(error)
-        hint = _http_error_hint(settings, error)
-        if hint:
-            detail = f"{detail} {hint}"
-        raise LLMError(f"LLM request failed ({error.code}): {detail}") from error
-    except urllib.error.URLError as error:
-        raise LLMError(f"Could not reach the LLM endpoint: {error.reason}") from error
-    # ``urllib`` normally wraps socket failures in URLError, but
-    # http.client.RemoteDisconnected and related connection failures can
-    # escape directly when an upstream closes before sending a response.
-    except (TimeoutError, ConnectionError, json.JSONDecodeError) as error:
-        raise LLMError(f"LLM request failed: {error}") from error
+    for attempt in range(MAX_REQUEST_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=settings.timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            detail = _error_detail(error)
+            hint = _http_error_hint(settings, error)
+            if hint:
+                detail = f"{detail} {hint}"
+            if error.code in RETRYABLE_HTTP_CODES and attempt + 1 < MAX_REQUEST_ATTEMPTS:
+                _wait_before_retry(
+                    attempt, error.headers.get("Retry-After") if error.headers else None
+                )
+                continue
+            raise LLMError(f"LLM request failed ({error.code}): {detail}") from error
+        except urllib.error.URLError as error:
+            if attempt + 1 < MAX_REQUEST_ATTEMPTS:
+                _wait_before_retry(attempt)
+                continue
+            raise LLMError(f"Could not reach the LLM endpoint: {error.reason}") from error
+        # ``urllib`` normally wraps socket failures in URLError, but
+        # http.client.RemoteDisconnected and related connection failures can
+        # escape directly when an upstream closes before sending a response.
+        except (TimeoutError, ConnectionError, json.JSONDecodeError) as error:
+            if attempt + 1 < MAX_REQUEST_ATTEMPTS:
+                _wait_before_retry(attempt)
+                continue
+            raise LLMError(f"LLM request failed: {error}") from error
 
-    choices = payload.get("choices") or []
-    if not choices:
-        raise LLMError("LLM returned no choices.")
-    return choices[0].get("message") or {}
+        choices = payload.get("choices") or []
+        if choices:
+            return choices[0].get("message") or {}
+        if attempt + 1 < MAX_REQUEST_ATTEMPTS:
+            _wait_before_retry(attempt)
+            continue
+        raise LLMError(f"LLM returned no choices after {MAX_REQUEST_ATTEMPTS} attempts.")
+    raise LLMError("LLM request failed after retrying.")
+
+
+def _wait_before_retry(attempt: int, retry_after: str | None = None) -> None:
+    delay = min(0.25 * (2 ** attempt), MAX_RETRY_DELAY)
+    if retry_after:
+        try:
+            delay = min(max(delay, float(retry_after)), MAX_RETRY_DELAY)
+        except ValueError:
+            pass
+    time.sleep(delay)
 
 
 def _error_detail(error: urllib.error.HTTPError) -> str:

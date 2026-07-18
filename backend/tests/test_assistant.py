@@ -415,6 +415,63 @@ def test_llm_request_timeout_can_be_overridden(monkeypatch):
     assert captured["timeout"] == 900
 
 
+def test_llm_retries_empty_choices_then_succeeds(monkeypatch):
+    responses = [
+        {"choices": []},
+        {"choices": [{"message": {"content": "ok"}}]},
+    ]
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
+    monkeypatch.setattr(
+        llm.urllib.request, "urlopen",
+        lambda request, timeout: FakeResponse(responses.pop(0)),
+    )
+    monkeypatch.setattr(llm.time, "sleep", lambda delay: None)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert responses == []
+
+
+def test_llm_empty_choices_exhaustion_is_explicit(monkeypatch):
+    calls = 0
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[]}'
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "sleep", lambda delay: None)
+
+    with pytest.raises(llm.LLMError, match="after 3 attempts"):
+        llm.chat([{"role": "user", "content": "hello"}])
+    assert calls == llm.MAX_REQUEST_ATTEMPTS
+
+
 def test_llm_error_detail_keeps_plain_text_body():
     error = urllib.error.HTTPError(
         url="https://example.test",
@@ -451,6 +508,7 @@ def test_openrouter_rate_limit_error_includes_retry_hint(monkeypatch):
     assistant_settings.save({"provider": "openrouter", "model": "openai/test-model"})
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "sleep", lambda delay: None)
 
     with pytest.raises(llm.LLMError) as raised:
         llm.chat([{"role": "user", "content": "hello"}])

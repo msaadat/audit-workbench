@@ -113,6 +113,15 @@ async def resume_run(workspace_id: str, run_id: str):
     return await asyncio.to_thread(runner.resume_run, ws, run_id)
 
 
+@router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/retry")
+async def retry_run(workspace_id: str, run_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    try:
+        return await asyncio.to_thread(runner.retry_run, ws, run_id)
+    except runner.AgentBusyError as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
 @router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/cancel")
 async def cancel_run(workspace_id: str, run_id: str):
     ws = workspaces.load_workspace(workspace_id)

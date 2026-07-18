@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
@@ -31,6 +32,19 @@ MAX_SOURCE_DOCUMENTS = 8
 MAX_PLANNING_DOSSIER_CHARACTERS = 60_000
 ELIGIBLE_TEXT_STATES = ("extracted", "partial")
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+_CONTEXT_FIELDS = {
+    "objective", "entity", "period", "scope", "materiality",
+    "key_contacts", "background_notes",
+}
+_CONTEXT_LABELS = {
+    "objective": "objective",
+    "entity": "entity",
+    "period": "period",
+    "scope": "scope",
+    "materiality": "materiality",
+    "key contacts": "key_contacts",
+    "background notes": "background_notes",
+}
 
 
 def fill_unavailable_placeholders(markdown: str) -> str:
@@ -61,6 +75,44 @@ class CommandRunner(BaseRunner):
         "update_planning_context", "generate_apm", "edit_apm",
         "create_rcm_row", "edit_rcm_row", "create_procedure", "edit_procedure",
     }
+
+    @staticmethod
+    def _planning_context(payload: dict) -> dict:
+        value = payload.get("context")
+        if not isinstance(value, dict):
+            return {}
+        return {
+            key: field
+            for key, field in value.items()
+            if key in _CONTEXT_FIELDS and str(field or "").strip()
+        }
+
+    @staticmethod
+    def _context_fallback(document_analyses: list[dict]) -> dict:
+        """Recover labelled planning facts from already-generated summaries.
+
+        This is deliberately narrow: it only accepts the labelled fields emitted
+        by the document-analysis contract and never tries to infer facts from raw
+        prose. It protects the planning/report chain when a synthesis model returns
+        valid JSON with a missing or empty ``context`` object.
+        """
+        recovered: dict[str, object] = {}
+        pattern = re.compile(r"^\s*[-*]?\s*\*\*([^*]+?):\*\*\s*(.+?)\s*$")
+        for analysis in document_analyses:
+            text = "\n".join(
+                str(analysis.get(field) or "")
+                for field in ("summary_markdown", "audit_notes_markdown")
+            )
+            for line in text.splitlines():
+                match = pattern.match(line)
+                if not match:
+                    continue
+                label = re.sub(r"\s+", " ", match.group(1).strip().casefold())
+                key = _CONTEXT_LABELS.get(label)
+                value = match.group(2).strip()
+                if key and value and key not in recovered:
+                    recovered[key] = value
+        return recovered
 
     def _drain_inbox(self) -> None:
         """General chat is durable follow-up work, never active-graph steering."""
@@ -136,6 +188,15 @@ class CommandRunner(BaseRunner):
             for value in actions.REGISTRY.all()
         ]
 
+    def _table_profiles(self) -> list[dict]:
+        profiles = []
+        for name in self.ws.table_names():
+            try:
+                profiles.append(assistant.table_metadata(self.ws, name))
+            except Exception as error:
+                self.warn(f"Could not profile '{name}' for command planning: {error}")
+        return profiles
+
     def _interpret(self) -> None:
         self.set_status("interpreting")
         index = artifact_index.build(self.ws)
@@ -146,6 +207,7 @@ class CommandRunner(BaseRunner):
         base_user = prompts.command_interpreter_user(
             command, template, artifact_index.compact(index), self._catalog(), self.run["limits"],
             assistant.schema_brief(self.ws),
+            self._table_profiles(),
             prepared_planning=self.run.get("prepared_planning"),
         )
         attempt_user = base_user
@@ -305,7 +367,7 @@ class CommandRunner(BaseRunner):
             methodology_context.append({**result, "excerpt": excerpt})
         included_documents = self._bounded_dossier(included_documents)
         basis = {
-            "planning": self.ws.planning,
+            "planning": copy.deepcopy(self.ws.planning),
             "documents": document_metadata,
             "tables": tables,
             "document_content_included": bool(included_documents),
@@ -327,9 +389,10 @@ class CommandRunner(BaseRunner):
                 f"{', '.join(included_names)} "
                 f"({len(included_names)} file{'s' if len(included_names) != 1 else ''})",
             )
+            context_user = prompts.document_context_user(context, included_documents)
             payload = self.llm_json(
                 prompts.DOCUMENT_CONTEXT_SYSTEM,
-                prompts.document_context_user(context, included_documents),
+                context_user,
                 {"representation": "summary", "characters_supplied": sum(
                     len(str(item.get("summary_markdown") or "")) + len(str(item.get("audit_notes_markdown") or ""))
                     for item in included_documents
@@ -338,16 +401,22 @@ class CommandRunner(BaseRunner):
                  "page_ranges": sorted({citation["page"] for item in included_documents for citation in item.get("citations") or []}),
                  "source_hashes": [item["source_sha1"] for item in included_documents if item.get("source_sha1")]},
             )
-            proposed_context = {
-                key: value
-                for key, value in dict(payload.get("context") or {}).items()
-                if key
-                in {
-                    "objective", "entity", "period", "scope", "materiality",
-                    "key_contacts", "background_notes",
-                }
-                and str(value or "").strip()
-            }
+            proposed_context = self._planning_context(payload)
+            fallback_context = self._context_fallback(included_documents)
+            if not proposed_context and fallback_context:
+                repair_user = (
+                    f"{context_user}\n\nYour previous response omitted every supported planning "
+                    "fact even though the labelled document summaries contain them. Return a "
+                    "corrected object with a non-empty `context` grounded only in those summaries."
+                )
+                repaired = self.llm_json(prompts.DOCUMENT_CONTEXT_SYSTEM, repair_user)
+                proposed_context = self._planning_context(repaired)
+            if not proposed_context and fallback_context:
+                proposed_context = fallback_context
+                self.warn(
+                    "Planning-context synthesis returned no usable fields; recovered labelled "
+                    "facts from the persisted document analyses."
+                )
             proposals = []
             if proposed_context:
                 proposals.append(
@@ -367,15 +436,15 @@ class CommandRunner(BaseRunner):
                         key: value
                         for key, value in accepted_context.items()
                         if key
-                        in {
-                            "objective", "entity", "period", "scope", "materiality",
-                            "key_contacts", "background_notes",
-                        }
+                        in _CONTEXT_FIELDS
                         and str(value or "").strip()
                     }
                     if accepted_context:
                         self.ws.update_planning({"context": accepted_context}, agent=True)
                         self.record_artifact("planning", "context", "planning:context", "updated", task)
+        # Store an immutable provenance snapshot that includes any context just
+        # persisted above. Later planning mutations must not rewrite this basis.
+        basis["planning"] = copy.deepcopy(self.ws.planning)
         self.run["planning_basis"] = basis
         self.save()
         if task["status"] != "completed":
@@ -543,7 +612,7 @@ class CommandRunner(BaseRunner):
         return payload
 
     @staticmethod
-    def _apm_quality(payload: dict, template: str) -> str | None:
+    def _apm_quality(payload: dict, template: str, context: dict | None = None) -> str | None:
         markdown = str(payload.get("apm_markdown") or "").strip()
         if not markdown:
             return "the memorandum is empty"
@@ -558,6 +627,14 @@ class CommandRunner(BaseRunner):
         missing = [heading for heading in required if heading not in headings]
         if missing:
             return f"missing template section '{missing[0]}'"
+        normalized = re.sub(r"\s+", " ", markdown.casefold())
+        context = context or {}
+        for field in ("objective", "scope"):
+            if context.get(field) and re.search(
+                rf"\b{field}\b.{{0,80}}\b(?:not available|not defined|undefined)\b",
+                normalized,
+            ):
+                return f"the memorandum says {field} is unavailable despite structured context"
         return None
 
     @staticmethod
@@ -608,7 +685,9 @@ class CommandRunner(BaseRunner):
         payload = self._quality_draft(
             prompts.APM_SYSTEM,
             prompts.apm_user(template, basis),
-            lambda value: self._apm_quality(value, template),
+            lambda value: self._apm_quality(
+                value, template, (basis.get("planning") or {}).get("context") or {}
+            ),
             "APM",
         )
         markdown = str(payload.get("apm_markdown") or "").strip()
@@ -807,6 +886,13 @@ class CommandRunner(BaseRunner):
             missing = [ref for ref in procedure.get("rcm_refs", []) if ref not in rcm_ids]
             if missing:
                 issues.append(f"{procedure['id']} has missing RCM links: {', '.join(missing)}")
+        if (self.run.get("planning_basis") or {}).get("document_analyses"):
+            recovered = self._context_fallback(self.run["planning_basis"]["document_analyses"])
+            if recovered and not any(
+                str((self.ws.planning.get("context") or {}).get(key) or "").strip()
+                for key in recovered
+            ):
+                issues.append("Planning documents contain labelled engagement facts, but planning context is empty.")
         self.run["verification"] = {"ok": not issues, "issues": issues}
         for issue in issues:
             self.warn(issue)
@@ -1312,6 +1398,7 @@ class CommandRunner(BaseRunner):
             [{"action_id": action["id"], "result": safe_result}],
             artifact_index.compact(index), self._catalog(), self.run["limits"],
             assistant.schema_brief(self.ws),
+            self._table_profiles(),
         )
         attempt_user = base_user
         for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):

@@ -4,6 +4,7 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
 import { api } from '../../api'
+import { useAgentRun } from '../../composables/useAgentRun'
 import type { AgentDecision, AgentInteraction, AgentRun, AssistantRunProjection } from '../../types'
 import AgentActionList from './AgentActionList.vue'
 import AgentApprovalCard from './AgentApprovalCard.vue'
@@ -16,6 +17,7 @@ import AgentTaskList from './AgentTaskList.vue'
 // projected into this transcript) shows them inline.
 const props = defineProps<{ workspaceId: string; projection: AssistantRunProjection; showAttention?: boolean }>()
 const emit = defineEmits<{ changed: [] }>()
+const agent = useAgentRun(props.workspaceId)
 const expanded = ref(false)
 const run = ref<AgentRun | null>(null)
 const busy = ref(false)
@@ -36,6 +38,14 @@ async function control(action: 'pause'|'resume'|'cancel') {
   busy.value = true
   try { await api.post(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/${action}`); await load(); emit('changed') }
   finally { busy.value = false }
+}
+async function retryRun() {
+  busy.value = true
+  try {
+    const retried = await api.post<AgentRun>(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/retry`)
+    await agent.openRun(retried.id)
+    emit('changed')
+  } finally { busy.value = false }
 }
 async function decide(approvalId: string, decisions: AgentDecision[]) {
   busy.value = true
@@ -64,6 +74,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
         <Button v-if="active && !['paused','interrupted'].includes(run.status)" icon="pi pi-pause" text size="small" :disabled="busy" @click="control('pause')" />
         <Button v-if="['paused','interrupted'].includes(run.status)" icon="pi pi-play" text size="small" :disabled="busy" @click="control('resume')" />
         <Button v-if="active" icon="pi pi-stop-circle" text size="small" severity="danger" :disabled="busy" @click="control('cancel')" />
+        <Button v-if="run.status === 'failed'" label="Retry run" icon="pi pi-refresh" size="small" :loading="busy" @click="retryRun" />
         <span class="grow" /><Button icon="pi pi-refresh" text size="small" :loading="busy" @click="load" />
       </div>
       <template v-if="run">

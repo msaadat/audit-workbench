@@ -96,6 +96,27 @@ def test_report_context_excludes_rows_and_document_excerpts(workspace_with_data)
     assert "Duplicate invoices were processed" in serialized
 
 
+def test_report_context_falls_back_to_labelled_apm_fields(workspace_with_data):
+    workspace_with_data.update_planning({
+        "apm_markdown": (
+            "# APM\n\n## Engagement\n\n"
+            "- Entity: Global Bank\n"
+            "- Period: January–December 2025\n"
+            "- Objective & Scope: Review procurement approvals.\n"
+        )
+    })
+
+    planning = report.build_context(workspace_with_data)["planning"]
+
+    assert planning == {
+        "objective": "Review procurement approvals.",
+        "entity": "Global Bank",
+        "period": "January–December 2025",
+        "scope": "Review procurement approvals.",
+        "materiality": None,
+    }
+
+
 def test_deterministic_report_edit_aware_regeneration_and_reconcile(monkeypatch, workspace_with_data):
     ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
     item = findings.add(ws, complete_finding_payload(rcm, procedure, anchor))
@@ -155,6 +176,23 @@ def test_quality_checks_are_advisory_and_detect_traceability_arithmetic_and_exce
     assert checked["ok"] is False
     assert ws.findings[0]["id"] == item["id"]
     assert doc_tests.exists(ws, test["id"])
+
+
+def test_bare_markdown_finding_reference_is_a_citation_and_model_output_is_normalized(
+    monkeypatch, workspace_with_data
+):
+    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
+    item = findings.add(ws, complete_finding_payload(rcm, procedure, anchor))
+    checked = report.quality_checks(ws, f"# Report\n\n### Finding [{item['id']}]: Duplicate invoices")
+    assert "finding_missing_from_report" not in {issue["code"] for issue in checked["issues"]}
+
+    monkeypatch.setattr(
+        llm, "chat",
+        lambda *args, **kwargs: {"content": f"# Report\n\n### Finding [{item['id']}]: Duplicate invoices"},
+    )
+    monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "fake", "model": "fake"})
+    generated = report.generate(ws)
+    assert f"[Finding {item['id']}](?tab=findings&finding={item['id']})" in generated["markdown"]
 
 
 def test_report_html_escapes_content_and_only_allows_safe_links():

@@ -175,6 +175,38 @@ def test_conditional_required():
     assert result["fail_count"] == 1  # blank approval on the second HIGH row
 
 
+def test_conditional_required_supports_numeric_thresholds():
+    df = pl.DataFrame({"amount": [49_999, 50_001, 75_000], "approval": [None, None, "CFO"]})
+    result = _run_one(
+        df,
+        "conditional_required",
+        "approval",
+        {"when_column": "amount", "when_op": "gt", "when_value": 50_000},
+    )
+    assert result["fail_count"] == 1
+    assert result["label"] == "Required when amount > 50000"
+
+
+def test_generated_rule_preflight_rejects_zero_trigger_and_disjoint_domain():
+    df = pl.DataFrame({
+        "amount": [80_000, 90_000],
+        "approval": ["A", "B"],
+        "currency": ["PKR", "PKR"],
+    })
+    issues = validation.generated_rule_issues(df, [
+        {
+            "check": "conditional_required", "column": "approval",
+            "params": {"when_column": "amount", "when_value": 50_000},
+        },
+        {
+            "check": "allowed_values", "column": "currency",
+            "params": {"values": ["USD", "EUR"]},
+        },
+    ])
+    assert any("matches zero rows" in issue for issue in issues)
+    assert any("no overlap" in issue for issue in issues)
+
+
 def test_expression_check():
     df = pl.DataFrame({"qty": [2, 3], "price": [5.0, 5.0], "total": [10.0, 14.0]})
     result = _run_one(

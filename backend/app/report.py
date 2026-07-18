@@ -16,6 +16,7 @@ from .workspaces import Workspace, WorkspaceError
 
 REQUIRED_FINDING_FIELDS = ("condition", "criteria", "cause", "effect", "recommendation")
 MODEL_CONTEXT_LIMIT = 30_000
+_PLANNING_FIELDS = ("objective", "entity", "period", "scope", "materiality")
 
 
 def _now() -> str:
@@ -56,6 +57,40 @@ def _safe_finding(item: dict) -> dict:
     }
 
 
+def _apm_context(markdown: str) -> dict:
+    """Narrow fallback for older workspaces whose APM predates context storage."""
+    labels = {
+        "objective": "objective", "entity": "entity", "period": "period",
+        "scope": "scope", "materiality": "materiality",
+        "objective & scope": "objective_scope",
+    }
+    recovered = {}
+    pattern = re.compile(r"^\s*[-*]?\s*(?:\*\*)?([^:*]+?)(?:\*\*)?\s*:\s*(.+?)\s*$")
+    for line in str(markdown or "").splitlines():
+        match = pattern.match(line)
+        if not match:
+            continue
+        key = labels.get(re.sub(r"\s+", " ", match.group(1).strip().casefold()))
+        value = match.group(2).strip()
+        if not key or not value:
+            continue
+        if key == "objective_scope":
+            recovered.setdefault("objective", value)
+            recovered.setdefault("scope", value)
+        else:
+            recovered.setdefault(key, value)
+    return recovered
+
+
+def _planning_context(workspace: Workspace) -> dict:
+    structured = dict(workspace.planning.get("context") or {})
+    fallback = _apm_context(str(workspace.planning.get("apm_markdown") or ""))
+    return {
+        key: structured.get(key) or fallback.get(key)
+        for key in _PLANNING_FIELDS
+    }
+
+
 def build_context(workspace: Workspace) -> dict:
     """Build report context without structured rows or document excerpts."""
     tests = doc_tests.list_tests(workspace)
@@ -73,7 +108,7 @@ def build_context(workspace: Workspace) -> dict:
                 "procedure_refs": test.get("procedure_refs") or [], "rollup": rollup,
             }
         )
-    context = workspace.planning.get("context") or {}
+    context = _planning_context(workspace)
     procedures = [
         {
             key: item.get(key)
@@ -115,6 +150,27 @@ def build_context(workspace: Workspace) -> dict:
 
 def _finding_link(item: dict) -> str:
     return f"[Finding {item['id']}](?tab=findings&finding={quote(str(item['id']))})"
+
+
+def _finding_citations(markdown: str) -> set[str]:
+    citations = {
+        match.group(1)
+        for match in re.finditer(r"\?tab=findings&finding=([A-Za-z0-9_-]+)", markdown)
+    }
+    citations.update(
+        match.group(1)
+        for match in re.finditer(r"\[\s*(?:Finding\s+)?(F-[A-Za-z0-9_-]+)\s*\](?!\s*\()", markdown)
+    )
+    return citations
+
+
+def _normalize_finding_citations(workspace: Workspace, markdown: str) -> str:
+    normalized = str(markdown)
+    for finding in workspace.findings:
+        finding_id = str(finding["id"])
+        pattern = re.compile(rf"\[\s*(?:Finding\s+)?{re.escape(finding_id)}\s*\](?!\s*\()")
+        normalized = pattern.sub(_finding_link(finding), normalized)
+    return normalized
 
 
 def _template_order(workspace: Workspace, generated: str, context: dict) -> str:
@@ -274,6 +330,7 @@ def generate(workspace: Workspace, *, use_model: bool = True, run_id: str | None
         try:
             template = templates_store.get_template(workspace, "report")["markdown"]
             candidate, chunked = _generate_with_model(template, context)
+            candidate = _normalize_finding_citations(workspace, candidate)
             used_model = True
             _record_activity(workspace, candidate, run_id=run_id, chunked=chunked)
         except (llm.LLMError, ValueError, TypeError) as error:
@@ -346,6 +403,7 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
     issues: list[dict] = []
     known_rcm = {item.get("id") for item in workspace.rcm}
     known_procedures = {item.get("id"): item for item in workspace.work_program}
+    cited_findings = _finding_citations(text)
     for finding in workspace.findings:
         ref = f"finding:{finding['id']}"
         missing = [field for field in REQUIRED_FINDING_FIELDS if not str(finding.get(field) or "").strip()]
@@ -367,7 +425,7 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
                 issues.append(_issue("broken_evidence", "error", f"{finding['id']} has a broken evidence reference.", [ref, str(anchor.get('id'))]))
             elif anchor.get("source_sha1") != resolved["sha1"]:
                 issues.append(_issue("stale_evidence", "error", f"{finding['id']} evidence {anchor.get('id')} no longer matches its source hash.", [ref, str(anchor.get('id'))]))
-        if text and f"finding={finding['id']}" not in text:
+        if text and finding["id"] not in cited_findings:
             issues.append(_issue("finding_missing_from_report", "warning", f"{finding['id']} is not cited in the report.", [ref]))
 
     linked_tests: set[str] = set()

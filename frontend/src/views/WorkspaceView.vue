@@ -326,7 +326,6 @@ onUnmounted(() => {
   overflow: hidden;
 }
 .workspace-tabs { flex: 1; min-width: 0; min-height: 0; height: 100%; }
-.workspace-layout > .agent-drawer { height: 100%; min-height: 0; }
 
 .workspace-body { display: flex; height: 100%; min-height: 0; }
 .workspace-nav { flex: 0 0 12.5rem; display: flex; flex-direction: column; align-items: stretch; gap: 0.16rem; padding: 1rem 0.65rem; background: var(--aw-raised); border-right: 1px solid var(--aw-border); }
@@ -367,25 +366,13 @@ onUnmounted(() => {
   .engagement-title h1 { max-width: 11rem; }
   .workspace-layout { overflow: hidden; }
   .workspace-tabs { width: 100%; }
-  .workspace-layout > .agent-drawer {
-    position: absolute;
-    z-index: 30;
-    inset: auto 0 0;
-    width: 100% !important;
-    height: min(32rem, calc(100% - 3.5rem));
-    min-height: 0;
-    border-left: 0;
-    border-top: 1px solid #d5dde7;
-    box-shadow: 0 -10px 30px rgb(7 22 43 / 14%);
-  }
-  .workspace-layout > .agent-drawer.collapsed { height: 3.25rem; box-shadow: none; }
   .workspace-body { flex-direction: column; }
   .workspace-nav { flex: none; display: block; width: 100%; padding: 0.45rem 0.65rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
   .nav-label { display: none; }
   :deep(.workspace-nav .p-tablist-content) { overflow-x: auto; scrollbar-width: thin; }
   :deep(.workspace-nav .p-tablist-tab-list) { display: flex; flex-direction: row; gap: 0.16rem; width: max-content; }
   :deep(.workspace-nav .p-tab) { flex: 0 0 auto; width: auto; white-space: nowrap; }
-  .workspace-panels { padding: 1rem; }
+  .workspace-panels { padding: 1rem 1rem calc(4.25rem); }
 }
 
 @media (max-width: 640px) {

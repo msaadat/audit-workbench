@@ -232,17 +232,47 @@ def check_compare_fields(df: pl.DataFrame, column: str, params: dict) -> pl.Expr
     return ~held
 
 
+def _conditional_trigger(df: pl.DataFrame, params: dict) -> pl.Expr:
+    when_column = _column(df, str(params.get("when_column") or ""))
+    raw_value = params.get("when_value")
+    if raw_value in (None, ""):
+        raise QueryError("Conditional required needs a trigger value.")
+    op = str(params.get("when_op") or "eq")
+    if op not in _COMPARE_OPS:
+        raise QueryError(f"Unknown conditional comparison '{op}'.")
+    mode = str(params.get("compare_as") or "auto")
+    dtype = df.schema[when_column]
+    if mode == "auto":
+        mode = "number" if dtype.is_numeric() else "date" if dtype.is_temporal() else "text"
+    if mode == "number":
+        try:
+            expected = float(raw_value)
+        except (TypeError, ValueError) as error:
+            raise QueryError("Conditional trigger value must be a number.") from error
+        left = _numeric(df, when_column)
+    elif mode == "date":
+        expected = _parse_date(raw_value, "Conditional trigger value")
+        if expected is None:
+            raise QueryError("Conditional required needs a trigger date.")
+        left = _date(df, when_column)
+    elif mode == "text":
+        expected = str(raw_value).strip()
+        left = _text(df, when_column).str.strip_chars()
+    else:
+        raise QueryError(f"Unknown conditional comparison mode '{mode}'.")
+    return {
+        "ge": left >= expected, "gt": left > expected, "eq": left == expected,
+        "ne": left != expected, "le": left <= expected, "lt": left < expected,
+    }[op].fill_null(False)
+
+
 def check_conditional_required(df: pl.DataFrame, column: str, params: dict) -> pl.Expr:
     target = _column(df, column)
-    when_column = _column(df, str(params.get("when_column") or ""))
-    when_value = str(params.get("when_value") or "").strip()
-    if not when_value:
-        raise QueryError("Conditional required needs a trigger value.")
-    triggered = _text(df, when_column).str.strip_chars() == when_value
+    triggered = _conditional_trigger(df, params)
     blank = pl.col(target).is_null()
     if df.schema[target] == pl.String:
         blank = blank | (pl.col(target).str.strip_chars() == "")
-    return triggered.fill_null(False) & blank
+    return triggered & blank
 
 
 def check_expression(df: pl.DataFrame, column: str | None, params: dict) -> pl.Expr:
@@ -461,10 +491,32 @@ CHECKS: dict[str, dict] = {
         "icon": "pi pi-question-circle",
         "scope": "column",
         "column_kinds": ["numeric", "date", "boolean", "text"],
-        "description": "Value must be present whenever another field equals a trigger value — e.g. approval_ref required when amount_band = 'HIGH'.",
+        "description": "Value must be present whenever another field meets a typed comparison — e.g. approval_ref required when amount > 50000.",
         "params": [
             {"name": "when_column", "kind": "column", "label": "When this field"},
-            {"name": "when_value", "kind": "text", "label": "Equals (exact value)"},
+            {
+                "name": "when_op", "kind": "select", "label": "Comparison",
+                "options": [
+                    {"label": "= (equal to)", "value": "eq"},
+                    {"label": "≠ (different from)", "value": "ne"},
+                    {"label": "> (greater than)", "value": "gt"},
+                    {"label": "≥ (at least)", "value": "ge"},
+                    {"label": "< (less than)", "value": "lt"},
+                    {"label": "≤ (at most)", "value": "le"},
+                ],
+                "default": "eq",
+            },
+            {"name": "when_value", "kind": "text", "label": "Trigger value"},
+            {
+                "name": "compare_as", "kind": "select", "label": "Compare as",
+                "options": [
+                    {"label": "Auto (from field type)", "value": "auto"},
+                    {"label": "Numbers", "value": "number"},
+                    {"label": "Dates", "value": "date"},
+                    {"label": "Text", "value": "text"},
+                ],
+                "default": "auto",
+            },
         ],
         "func": check_conditional_required,
     },
@@ -644,7 +696,10 @@ def rule_label(rule: dict) -> str:
         )
         return f"{symbol} {params.get('other') or '?'}"
     if check == "conditional_required":
-        return f"Required when {params.get('when_column') or '?'} = {params.get('when_value') or '?'}"
+        symbol = {"ge": "≥", "gt": ">", "eq": "=", "ne": "≠", "le": "≤", "lt": "<"}.get(
+            params.get("when_op") or "eq", "="
+        )
+        return f"Required when {params.get('when_column') or '?'} {symbol} {params.get('when_value') or '?'}"
     if check == "expression":
         return str(params.get("name") or "").strip() or label
     return label
@@ -668,6 +723,41 @@ def rule_failures(
 ) -> pl.DataFrame:
     """All rows violating one rule (full frame, for drill-in and export)."""
     return df.filter(_violations(df, rule, resolve))
+
+
+def generated_rule_issues(
+    df: pl.DataFrame, rules: list[dict], resolve: Resolve | None = None
+) -> list[str]:
+    """Semantic preflight for model-generated rules before auto-persistence."""
+    issues = []
+    for index, rule in enumerate(rules, start=1):
+        try:
+            df.select(_violations(df, rule, resolve).sum())
+            if rule.get("check") == "conditional_required":
+                trigger_count = int(
+                    df.select(_conditional_trigger(df, rule.get("params") or {}).sum()).item() or 0
+                )
+                if df.height and trigger_count == 0:
+                    issues.append(f"rule {index} conditional trigger matches zero rows")
+            elif rule.get("check") == "allowed_values":
+                column = _column(df, rule.get("column"))
+                params = rule.get("params") or {}
+                ignore_case = bool(params.get("ignore_case"))
+                allowed = {
+                    str(value).strip().casefold() if ignore_case else str(value).strip()
+                    for value in params.get("values") or []
+                    if str(value).strip()
+                }
+                observed = {
+                    str(value).strip().casefold() if ignore_case else str(value).strip()
+                    for value in df[column].drop_nulls().unique().head(1000).to_list()
+                    if str(value).strip()
+                }
+                if observed and allowed and observed.isdisjoint(allowed):
+                    issues.append(f"rule {index} allowed values have no overlap with observed values")
+        except Exception as error:
+            issues.append(f"rule {index} is invalid: {error}")
+    return issues
 
 
 def run_rules(

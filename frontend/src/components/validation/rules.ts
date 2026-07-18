@@ -51,7 +51,9 @@ export function ruleLabel(rule: ValidationRule, checks: CheckMeta[]): string {
       return `${symbol} ${p.other ?? '?'}`
     }
     case 'conditional_required':
-      return `Required when ${p.when_column ?? '?'} = ${p.when_value ?? '?'}`
+      return `Required when ${p.when_column ?? '?'} ${
+        { ge: '≥', gt: '>', eq: '=', ne: '≠', le: '≤', lt: '<' }[String(p.when_op ?? 'eq')] ?? '='
+      } ${p.when_value ?? '?'}`
     case 'expression':
       return String(p.name ?? '').trim() || label
     default:
