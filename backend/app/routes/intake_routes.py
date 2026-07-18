@@ -90,6 +90,16 @@ async def complete_folder_upload(workspace_id: str, batch_id: str):
     return intake.complete_upload(ws, batch_id)
 
 
+@router.post("/{workspace_id}/folder-imports/{batch_id}/apply")
+async def apply_folder_import(workspace_id: str, batch_id: str, payload: dict = Body(default={})):
+    """Apply the batch from deterministic classifications plus user edits.
+
+    This is the assistant-free path: no agent run or model call is involved.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    return intake.apply_batch(ws, batch_id, (payload or {}).get("decisions") or [])
+
+
 @router.get("/{workspace_id}/folder-imports/{batch_id}")
 async def get_folder_import(workspace_id: str, batch_id: str):
     ws = workspaces.load_workspace(workspace_id)

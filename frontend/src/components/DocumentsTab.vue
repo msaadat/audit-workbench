@@ -12,15 +12,14 @@ import Dialog from 'primevue/dialog'
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import type { AIActivityEvent, AgentRun, AuditDocument, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, IntakeSuggestedAction, KnowledgePack, WorkspaceSummary } from '../types'
+import type { AIActivityEvent, AgentRun, AuditDocument, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
 import MarkdownView from './MarkdownView.vue'
-import PostImportPlanningOffer from './PostImportPlanningOffer.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
-const emit = defineEmits<{ changed: []; 'planning-started': [] }>()
+const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
@@ -41,14 +40,12 @@ const docxContainer = ref<HTMLElement | null>(null)
 const docxLoading = ref(false)
 const busy = ref(false)
 const classificationBusy = ref(false)
-const fileInput = ref<HTMLInputElement | null>(null)
 const activity = ref<AIActivityEvent[]>([])
 const knowledgeOpen = ref(false)
 const packs = ref<KnowledgePack[]>([])
 const packSearch = ref('')
 const packResults = ref<Array<Record<string, unknown>>>([])
 const packInput = ref<HTMLInputElement | null>(null)
-const planningAction = ref<IntakeSuggestedAction | null>(null)
 const analysis = ref<DocumentAnalysisDetail | null>(null)
 const summaryDraft = ref('')
 const notesDraft = ref('')
@@ -356,49 +353,6 @@ async function continuePartialAnalyses() {
   finally { analysisBusy.value = false }
 }
 
-async function upload(event: Event) {
-  const files = Array.from((event.target as HTMLInputElement).files || [])
-  if (!files.length) return
-  const selectedNames = files.map(file => file.name.toLocaleLowerCase())
-  if (new Set(selectedNames).size !== selectedNames.length) {
-    toast.add({ severity: 'warn', summary: 'Duplicate filenames', detail: 'Choose each document filename only once per upload.', life: 4500 })
-    if (fileInput.value) fileInput.value.value = ''
-    return
-  }
-  const existingNames = new Set(documents.value.map(document => document.source.toLocaleLowerCase()))
-  const replacements = files.filter(file => existingNames.has(file.name.toLocaleLowerCase()))
-  if (replacements.length) {
-    const names = replacements.map(file => file.name).join(', ')
-    const confirmed = window.confirm(
-      `Replace ${replacements.length === 1 ? names : `${replacements.length} existing documents (${names})`}?\n\n` +
-      'The current source file will be replaced and will not remain available as a prior version. Extraction and local search will rebuild, existing analysis will become stale, and evidence tied to the prior content hash may need reconfirmation.',
-    )
-    if (!confirmed) {
-      if (fileInput.value) fileInput.value.value = ''
-      return
-    }
-  }
-  busy.value = true
-  try {
-    const result = await api.upload<{
-      added: AuditDocument[]
-      replaced: AuditDocument[]
-      indexing_job?: { document_ids: string[]; coalesced_document_ids: string[] }
-      suggested_actions?: IntakeSuggestedAction[]
-    }>(`/api/workspaces/${props.workspace.id}/documents`, files, { replace: String(replacements.length > 0) })
-    planningAction.value = result.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
-    await loadDocuments(); if (selectedId.value) await loadDetail()
-    if ((result.indexing_job?.document_ids.length || 0) > 0) beginIndexingPolling()
-    emit('changed')
-    const changes = [
-      result.added.length ? `${result.added.length} added` : '',
-      result.replaced.length ? `${result.replaced.length} replaced` : '',
-    ].filter(Boolean).join(', ')
-    toast.add({ severity: 'success', summary: 'Documents updated', detail: `${changes}. Content was stored locally; search indexing is continuing in the background.`, life: 4200 })
-  } catch (error) { toast.add({ severity: 'error', summary: 'Upload failed', detail: String(error), life: 5000 }) }
-  finally { busy.value = false; if (fileInput.value) fileInput.value.value = '' }
-}
-
 async function reextract() {
   if (!selected.value) return
   busy.value = true
@@ -516,17 +470,9 @@ onUnmounted(() => {
 <template>
   <section class="documents-tab">
     <UiPageHeader title="Documents" description="Engagement evidence and reference material">
-      <input ref="fileInput" type="file" multiple hidden accept=".pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" @change="upload" />
-      <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
+      <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
       <UiOverflowMenu :items="secondaryActions" />
     </UiPageHeader>
-
-    <PostImportPlanningOffer
-      v-if="planningAction"
-      :workspaceId="workspace.id"
-      :action="planningAction"
-      @planning-started="emit('planning-started')"
-    />
 
     <div v-if="indexingActive" class="indexing-notice" role="status" aria-live="polite">
       <i class="pi pi-spin pi-spinner" />
@@ -686,7 +632,7 @@ onUnmounted(() => {
       <UiEmptyState v-else icon="pi pi-file" title="Choose a document" description="Select a document from the inventory to preview it." compact />
     </div>
     <UiEmptyState v-else icon="pi pi-file-plus" title="Add engagement documents" description="Upload policies, contracts, evidence, reports, and other files. Extraction happens locally.">
-      <Button label="Add documents" icon="pi pi-plus" :loading="busy" @click="fileInput?.click()" />
+      <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
     </UiEmptyState>
 
     <Dialog v-model:visible="knowledgeOpen" modal header="Methodology knowledge packs" :style="{ width: 'min(64rem, 95vw)' }">

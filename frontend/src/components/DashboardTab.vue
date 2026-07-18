@@ -184,9 +184,9 @@ onUnmounted(unsubscribe)
         <div>
           <p class="eyebrow">Start the engagement</p>
           <h3>Bring in your audit files</h3>
-          <p>Select an audit folder. The workbench stages and classifies supported data and documents before importing them.</p>
+          <p>Drop files anywhere, or pick files or a folder. The workbench stages and classifies supported data and documents before importing them.</p>
           <div class="onboarding-actions">
-            <Button label="Choose folder" icon="pi pi-folder-open" @click="emit('import-requested')" />
+            <Button label="Import files" icon="pi pi-upload" @click="emit('import-requested')" />
           </div>
         </div>
       </div>

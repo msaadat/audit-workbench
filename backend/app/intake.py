@@ -46,6 +46,7 @@ PLANNING_DOCUMENT_TERMS = re.compile(
     re.IGNORECASE,
 )
 MAX_SUGGESTED_PLANNING_DOCUMENTS = 8
+DIRECT_UPLOADS_LABEL = "Direct uploads"
 EXCLUDED_NAMES = frozenset({".ds_store", "thumbs.db"})
 EXCLUDED_FOLDER_NAMES = frozenset(
     {".git", ".cache", "__pycache__", "node_modules", "staging", ".extracted"}
@@ -115,10 +116,23 @@ def resolve_source(workspace: Workspace, root_name: str, manifest: list[dict]) -
     stable identity available is the selected root name plus overlap with the
     paths imported previously.  Ambiguous matches create a new source rather
     than risk updating files from an unrelated same-named folder.
+
+    Batches without a root name (loose files, or a mix of files and folders)
+    share one durable "Direct uploads" source so re-uploads of the same path
+    still dedupe incrementally.
     """
     root_name = _clean_root_name(root_name)
     if not root_name:
-        raise WorkspaceError("Selected folder name is required.")
+        index = load_index(workspace)
+        direct = next(
+            (
+                source
+                for source in index["sources"]
+                if not source.get("root_name") and source.get("label") == DIRECT_UPLOADS_LABEL
+            ),
+            None,
+        )
+        return direct or create_source(workspace, DIRECT_UPLOADS_LABEL)
 
     selected_paths = {
         normalize_relative_path(item.get("relative_path")) for item in manifest or []
@@ -414,9 +428,21 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
     route = meta.get("route") if meta.get("parse_ok") else "unsupported"
     route = route if route in ROUTES else "unsupported"
     name = slugify(Path(item["relative_path"]).stem).replace("-", "_") or "imported_file"
+    label = str(item.get("relative_path") or "").casefold()
+    table_role = None
+    if route == "table":
+        if any(token in label for token in ("master", "lookup", "mapping", "chart of accounts", "reference")):
+            table_role = "master_lookup"
+        elif any(token in label for token in ("prior", "last year", "previous year", "comparative")):
+            table_role = "prior_period"
+        elif any(token in label for token in ("param", "rate", "threshold", "config", "setting")):
+            table_role = "parameters"
+        elif any(token in label for token in ("schedule", "register", "listing", "log")):
+            table_role = "schedule"
+        else:
+            table_role = "unknown"
     document_category = None
     if route == "document":
-        label = str(item.get("relative_path") or "").casefold()
         if any(token in label for token in ("minute", "meeting note")):
             document_category = "minutes"
         elif any(token in label for token in ("policy", "procedure", "sop", "guideline", "manual")):
@@ -437,14 +463,28 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
             document_category = "background"
         else:
             document_category = "other"
+    uncertain_metadata = document_category == "other" or table_role == "unknown"
+    if not meta.get("parse_ok"):
+        confidence = "low"
+        rationale = meta.get("error") or "Unsupported format."
+    elif uncertain_metadata:
+        confidence = "medium"
+        rationale = (
+            "Supported format parsed locally; the document category needs confirmation."
+            if route == "document"
+            else "Supported format parsed locally; the table role needs confirmation."
+        )
+    else:
+        confidence = "high"
+        rationale = "Supported format parsed locally."
     return {
         "route": route,
         "document_category": document_category,
-        "table_role": "unknown" if route == "table" else None,
+        "table_role": table_role,
         "subtype": "",
         "proposed_name": name,
-        "confidence": "high" if meta.get("parse_ok") else "low",
-        "rationale": "Supported format parsed locally." if meta.get("parse_ok") else (meta.get("error") or "Unsupported format."),
+        "confidence": confidence,
+        "rationale": rationale,
         "duplicate_ref": duplicate.get("target_id") if duplicate else None,
         "proposed_action": "ignore" if duplicate or route == "unsupported" else "import",
         "deterministic_route": route,

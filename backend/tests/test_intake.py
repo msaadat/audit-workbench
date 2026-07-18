@@ -396,3 +396,80 @@ def test_intake_run_uses_model_file_classification(fake_agent_llm):
     assert [call["tag"] for call in fake_agent_llm.calls] == ["agent:file_classification"]
     assert imported["items"][0]["classification"]["document_category"] == "policy"
     assert document["category"] == "policy"
+
+
+def test_rootless_batches_share_one_direct_uploads_source():
+    ws = _workspace()
+    manifest = [{"relative_path": "ledger.csv", "size": 8, "last_modified": 10}]
+    first = intake.resolve_source(ws, "", manifest)
+    assert first["label"] == intake.DIRECT_UPLOADS_LABEL
+    assert first["root_name"] == ""
+    second = intake.resolve_source(ws, "", [{"relative_path": "policy.pdf", "size": 4, "last_modified": 11}])
+    assert second["id"] == first["id"]
+    assert len(intake.list_sources(ws)) == 1
+
+
+def test_deterministic_table_roles_and_confidence_tiers():
+    def classify(path, route="table"):
+        return intake.deterministic_classification({
+            "relative_path": path,
+            "local_metadata": {"route": route, "parse_ok": True},
+        })
+
+    assert classify("Data/vendor master list.xlsx")["table_role"] == "master_lookup"
+    assert classify("Data/prior year ledger.csv")["table_role"] == "prior_period"
+    assert classify("Data/depreciation rates.csv")["table_role"] == "parameters"
+    assert classify("Data/fixed asset register.csv")["table_role"] == "schedule"
+
+    known_role = classify("Data/vendor master list.xlsx")
+    unknown_role = classify("Data/q3_extract.csv")
+    assert known_role["confidence"] == "high"
+    assert unknown_role["table_role"] == "unknown"
+    assert unknown_role["confidence"] == "medium"
+
+    known_category = classify("Docs/procurement policy.pdf", route="document")
+    unknown_category = classify("Docs/scan0001.pdf", route="document")
+    assert known_category["confidence"] == "high"
+    assert unknown_category["document_category"] == "other"
+    assert unknown_category["confidence"] == "medium"
+
+
+def test_apply_endpoint_imports_files_without_an_agent_run():
+    ws = _workspace()
+    csv = b"id,amount\n1,10\n"
+    text = b"Procurement policy requires approval before commitment.\n"
+    client = TestClient(create_app())
+    compared = client.post(
+        f"/api/workspaces/{ws.id}/folder-imports",
+        json={
+            "root_name": "",
+            "mode": "permission",
+            "manifest": [
+                {"relative_path": "ledger.csv", "size": len(csv), "last_modified": 1},
+                {"relative_path": "scan0001.txt", "size": len(text), "last_modified": 1},
+            ],
+        },
+    ).json()
+    batch_id = compared["batch"]["id"]
+    for name, content, mime in (("ledger.csv", csv, "text/csv"), ("scan0001.txt", text, "text/plain")):
+        response = client.post(
+            f"/api/workspaces/{ws.id}/folder-imports/{batch_id}/files",
+            data={"relative_path": name},
+            files={"file": (name, content, mime)},
+        )
+        assert response.status_code == 200
+    completed = client.post(
+        f"/api/workspaces/{ws.id}/folder-imports/{batch_id}/complete-upload"
+    ).json()
+    document_item = next(item for item in completed["items"] if item["relative_path"] == "scan0001.txt")
+    assert document_item["classification"]["document_category"] == "other"
+
+    applied = client.post(
+        f"/api/workspaces/{ws.id}/folder-imports/{batch_id}/apply",
+        json={"decisions": [{"item_id": document_item["id"], "document_category": "evidence"}]},
+    )
+    assert applied.status_code == 200
+    assert applied.json()["summary"]["imported"] == 2
+    reloaded = workspaces.load_workspace(ws.id)
+    assert [table["source_id"] for table in reloaded.tables] == [compared["batch"]["source_id"]]
+    assert reloaded.documents[0]["category"] == "evidence"

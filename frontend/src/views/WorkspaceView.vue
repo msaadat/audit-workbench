@@ -18,7 +18,8 @@ import DataTab from '../components/DataTab.vue'
 import QueryTab from '../components/QueryTab.vue'
 import AnalysisTab from '../components/AnalysisTab.vue'
 import ValidationTab from '../components/validation/ValidationTab.vue'
-import FolderImportDialog from '../components/FolderImportDialog.vue'
+import ImportDialog from '../components/ImportDialog.vue'
+import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
 import PlanningTab from '../components/PlanningTab.vue'
 import DocumentsTab from '../components/DocumentsTab.vue'
 import DocTestsTab from '../components/DocTestsTab.vue'
@@ -34,6 +35,9 @@ const workspace = ref<WorkspaceSummary | null>(null)
 const activeTab = ref(String(route.query.tab || 'dashboard'))
 const initialized = ref(false)
 const folderImportOpen = ref(false)
+const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
+const dropActive = ref(false)
+let dragDepth = 0
 const dashboardRef = ref<{ load: () => Promise<void> } | null>(null)
 const phaseStatus = ref<Partial<Record<DashboardPhase['id'], DashboardPhase>>>({})
 
@@ -86,7 +90,43 @@ async function reloadWorkspaceAndStatus() {
   await Promise.all([reload(), loadEngagementStatus()])
 }
 
+// Workspace-wide desktop drop target. Listeners live on window so a drop on
+// any part of the page (including the dialog mask portal) never triggers the
+// browser's default file navigation.
+function onWindowDragEnter(event: DragEvent) {
+  if (!dragHasFiles(event) || folderImportOpen.value) return
+  dragDepth += 1
+  dropActive.value = true
+}
+
+function onWindowDragOver(event: DragEvent) {
+  if (dragHasFiles(event)) event.preventDefault()
+}
+
+function onWindowDragLeave(event: DragEvent) {
+  if (!dragHasFiles(event) || folderImportOpen.value) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) dropActive.value = false
+}
+
+async function onWindowDrop(event: DragEvent) {
+  if (!dragHasFiles(event)) return
+  event.preventDefault()
+  dragDepth = 0
+  dropActive.value = false
+  // The open dialog's own dropzone handles its drops.
+  if (folderImportOpen.value) return
+  const files = await collectDroppedFiles(event)
+  if (!files.length) return
+  importDialogRef.value?.stageExternal(files)
+  folderImportOpen.value = true
+}
+
 onMounted(async () => {
+  window.addEventListener('dragenter', onWindowDragEnter)
+  window.addEventListener('dragover', onWindowDragOver)
+  window.addEventListener('dragleave', onWindowDragLeave)
+  window.addEventListener('drop', onWindowDrop)
   await Promise.all([reload(), loadEngagementStatus()])
   if (route.query.import === '1') {
     folderImportOpen.value = true
@@ -108,7 +148,13 @@ const unsubscribe = agent.onWorkspaceChanged((change) => {
     void loadEngagementStatus()
   }
 })
-onUnmounted(unsubscribe)
+onUnmounted(() => {
+  unsubscribe()
+  window.removeEventListener('dragenter', onWindowDragEnter)
+  window.removeEventListener('dragover', onWindowDragOver)
+  window.removeEventListener('dragleave', onWindowDragLeave)
+  window.removeEventListener('drop', onWindowDrop)
+})
 </script>
 
 <template>
@@ -124,7 +170,7 @@ onUnmounted(unsubscribe)
         <h1>{{ workspace.name }}</h1>
       </div>
       <span class="header-spacer" />
-      <Button label="Import folder" icon="pi pi-folder-open" size="small" severity="secondary" @click="folderImportOpen = true" />
+      <Button label="Import" icon="pi pi-upload" size="small" severity="secondary" @click="folderImportOpen = true" />
       <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
       <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
     </header>
@@ -156,13 +202,13 @@ onUnmounted(unsubscribe)
             <PlanningTab v-if="activeTab === 'planning'" :workspace="workspace" @changed="loadEngagementStatus" />
           </TabPanel>
           <TabPanel value="documents">
-            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" @planning-started="activeTab = 'planning'" />
+            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" @import-requested="folderImportOpen = true" />
           </TabPanel>
           <TabPanel value="doc-tests">
             <DocTestsTab v-if="activeTab === 'doc-tests'" :workspace="workspace" @changed="loadEngagementStatus" />
           </TabPanel>
           <TabPanel value="data">
-            <DataTab :workspace="workspace" @changed="reloadWorkspaceAndStatus" />
+            <DataTab :workspace="workspace" @changed="reloadWorkspaceAndStatus" @import-requested="folderImportOpen = true" />
           </TabPanel>
           <TabPanel value="query">
             <QueryTab :workspace="workspace" />
@@ -189,12 +235,20 @@ onUnmounted(unsubscribe)
       </Tabs>
       <AgentDrawer :workspace="workspace" />
     </div>
-    <FolderImportDialog
+    <ImportDialog
+      ref="importDialogRef"
       v-model="folderImportOpen"
       :workspaceId="props.id"
       @imported="handleImported"
       @planning-started="activeTab = 'planning'"
     />
+    <div v-if="dropActive" class="drop-overlay" aria-hidden="true">
+      <div class="drop-overlay-card">
+        <i class="pi pi-cloud-upload" />
+        <strong>Drop to import</strong>
+        <span>Files and folders are staged for review before anything is added.</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -237,6 +291,31 @@ onUnmounted(unsubscribe)
   .brand strong { display: none; }
   .engagement-title h1 { max-width: 14rem; }
 }
+
+.drop-overlay {
+  position: fixed;
+  z-index: 1300;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(7 22 43 / 45%);
+  pointer-events: none;
+}
+.drop-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 2.2rem 3rem;
+  border: 2px dashed var(--aw-mint);
+  border-radius: 14px;
+  background: var(--aw-navy-950);
+  color: #fff;
+  box-shadow: 0 18px 50px rgb(2 10 22 / 45%);
+}
+.drop-overlay-card i { font-size: 2.4rem; color: var(--aw-mint); }
+.drop-overlay-card strong { font-size: 1.05rem; }
+.drop-overlay-card span { color: #8fa6c2; font-size: 0.78rem; }
 
 .workspace-layout {
   position: relative;

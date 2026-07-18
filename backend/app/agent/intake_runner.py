@@ -130,6 +130,8 @@ class IntakeRunner(BaseRunner):
         for spec in specs:
             local_route = spec.get("deterministic_route")
             agreed = spec.get("route") == local_route
-            safe = spec.get("confidence") == "high" and not spec.get("duplicate_ref")
+            # Medium confidence means the route is certain but category/role is a
+            # default guess; auto mode still imports those.
+            safe = spec.get("confidence") in ("high", "medium") and not spec.get("duplicate_ref")
             decisions.append({**spec, "proposed_action": "import" if agreed and safe else "ignore"})
         return decisions

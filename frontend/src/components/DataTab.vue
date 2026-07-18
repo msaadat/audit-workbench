@@ -25,16 +25,14 @@ import FrameTable from './FrameTable.vue'
 import JoinDialog from './JoinDialog.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
-const emit = defineEmits<{ changed: [] }>()
+const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
 
 const toast = useToast()
 const confirm = useConfirm()
 
-const fileInput = ref<HTMLInputElement>()
 const replaceInput = ref<HTMLInputElement>()
 const replaceTarget = ref<string | null>(null)
 const replacing = ref(false)
-const uploading = ref(false)
 const renameTarget = ref<TableInfo | null>(null)
 const renameName = ref('')
 const renaming = ref(false)
@@ -63,22 +61,6 @@ const typeSeverity: Record<string, string> = {
 function fail(summary: string, error: unknown) {
   const detail = error instanceof ApiError ? error.message : String(error)
   toast.add({ severity: 'error', summary, detail, life: 6000 })
-}
-
-async function upload(event: Event) {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
-  input.value = ''
-  if (!files.length) return
-  uploading.value = true
-  try {
-    await api.upload(`/api/workspaces/${props.workspace.id}/tables`, files)
-    emit('changed')
-  } catch (error) {
-    fail('Upload failed', error)
-  } finally {
-    uploading.value = false
-  }
 }
 
 function startReplace(table: TableInfo) {
@@ -282,9 +264,8 @@ function rangeText(p: ColumnProfile): string {
 
 <template>
   <UiPageHeader title="Source tables" description="Loaded data and derived joins">
-    <input ref="fileInput" type="file" multiple accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="upload" />
     <input ref="replaceInput" type="file" accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="replaceData" />
-    <Button label="Add files" icon="pi pi-upload" :loading="uploading" @click="fileInput?.click()" />
+    <Button label="Add files" icon="pi pi-upload" @click="emit('import-requested')" />
     <Button
       label="Add join"
       icon="pi pi-link"
@@ -299,7 +280,7 @@ function rangeText(p: ColumnProfile): string {
     <div>
       <span class="empty-state-icon"><i class="pi pi-upload" /></span>
       <h3>Add engagement data</h3>
-      <Button label="Choose files" icon="pi pi-upload" :loading="uploading" @click="fileInput?.click()" />
+      <Button label="Choose files" icon="pi pi-upload" @click="emit('import-requested')" />
     </div>
   </div>
 

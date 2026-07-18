@@ -10,6 +10,7 @@ import Tag from 'primevue/tag'
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
+import { collectDroppedFiles, type StagedFile } from '../composables/useFileDrop'
 import type {
   AgentDecision,
   IntakeBatch,
@@ -29,10 +30,11 @@ const assistantChat = useAssistantChat(props.workspaceId)
 const { launchMode } = agent
 
 const step = ref(1)
-const files = ref<File[]>([])
-const folderName = ref('')
+const staged = ref<StagedFile[]>([])
+const dragActive = ref(false)
 const batch = ref<IntakeBatch | null>(null)
 const busy = ref(false)
+const refining = ref(false)
 const error = ref('')
 const uploaded = ref(0)
 const edits = ref<Record<string, IntakeClassification>>({})
@@ -57,7 +59,12 @@ const uploadedItems = computed(() => batch.value?.items.filter((item) => item.up
 const reviewItems = computed(() => showAll.value
   ? uploadedItems.value
   : uploadedItems.value.filter(item => item.error || !edits.value[item.id] || edits.value[item.id].confidence !== 'high'))
-const classificationEditable = computed(() => agent.state.run?.mode === 'permission' && Boolean(pendingClassification.value))
+const classificationEditable = computed(() => !refining.value
+  || (agent.state.run?.mode === 'permission' && Boolean(pendingClassification.value)))
+const importCount = computed(() => uploadedItems.value.filter((item) => {
+  const classification = edits.value[item.id]
+  return classification && classification.proposed_action !== 'ignore' && !['ignore', 'unsupported'].includes(classification.route)
+}).length)
 const routeCounts = computed(() => {
   const counts = { table: 0, document: 0, excluded: 0 }
   for (const item of uploadedItems.value) {
@@ -75,6 +82,22 @@ const routeCounts = computed(() => {
 const planningAction = computed(() => (
   batch.value?.suggested_actions?.find(action => action.agent_kind === 'planning') ?? null
 ))
+// Everything from a single dropped/selected folder keeps that folder as its
+// incremental source; loose files and mixed batches share "Direct uploads".
+const rootName = computed(() => {
+  const roots = new Set(staged.value.map(({ relativePath }) => relativePath.includes('/') ? relativePath.split('/')[0] : ''))
+  return roots.size === 1 ? [...roots][0] : ''
+})
+const batchLabel = computed(() => rootName.value || `${staged.value.length} file${staged.value.length === 1 ? '' : 's'}`)
+const stagedSize = computed(() => formatBytes(staged.value.reduce((total, { file }) => total + file.size, 0)))
+const assistantAvailable = computed(() => Boolean(agent.state.status?.configured))
+
+watch(() => props.modelValue, (open) => {
+  if (!open) return
+  if (!agent.state.status) void agent.refreshStatus()
+  // A finished batch stays visible until close; reopening starts fresh.
+  if (step.value === 4) reset()
+})
 
 watch(pendingClassification, (approval) => {
   if (!approval) return
@@ -85,20 +108,42 @@ watch(pendingClassification, (approval) => {
 })
 
 watch(() => agent.state.run?.status, (status) => {
-  if (!batch.value || agent.state.run?.kind !== 'intake') return
+  if (!batch.value || !refining.value || agent.state.run?.kind !== 'intake') return
   if (status === 'completed' || status === 'failed' || status === 'cancelled') {
     void refreshBatch().then(() => { step.value = 4; if (status === 'completed') emit('imported') })
   }
 })
 
+function addStaged(files: StagedFile[]) {
+  if (!files.length) return
+  const merged = new Map(staged.value.map((entry) => [entry.relativePath, entry]))
+  for (const entry of files) merged.set(entry.relativePath, entry)
+  staged.value = [...merged.values()]
+  error.value = ''
+}
+
+function stageExternal(files: StagedFile[]) {
+  // A workspace-wide drop during an active upload/review must not clobber it.
+  if (step.value === 4) reset()
+  if (step.value === 1) addStaged(files)
+}
+defineExpose({ stageExternal })
+
+function chooseFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  addStaged(Array.from(input.files ?? []).map((file) => ({ file, relativePath: file.name })))
+  input.value = ''
+}
+
 function chooseFolder(event: Event) {
   const input = event.target as HTMLInputElement
-  files.value = Array.from(input.files ?? [])
-  error.value = ''
-  if (!files.value.length) return
-  const first = relativePath(files.value[0])
-  folderName.value = first.includes('/') ? first.split('/')[0] : ''
-  void compareAndUpload()
+  addStaged(Array.from(input.files ?? []).map((file) => ({ file, relativePath: relativePath(file) })))
+  input.value = ''
+}
+
+async function onDrop(event: DragEvent) {
+  dragActive.value = false
+  addStaged(await collectDroppedFiles(event))
 }
 
 function relativePath(file: File): string {
@@ -138,27 +183,26 @@ function routeLabel(item: IntakeBatchItem): string {
   return classification.route
 }
 
-async function compareAndUpload() {
-  if (!files.value.length) return
+async function startImport() {
+  if (!staged.value.length || busy.value) return
   busy.value = true
   error.value = ''
   try {
-    const manifest = files.value.map((file) => ({
-      relative_path: relativePath(file),
+    const manifest = staged.value.map(({ file, relativePath: path }) => ({
+      relative_path: path,
       size: file.size,
       last_modified: file.lastModified,
       mime: file.type,
     }))
     const compared = await api.post<{ batch: IntakeBatch; upload_paths: string[] }>(
       `/api/workspaces/${props.workspaceId}/folder-imports`,
-      { root_name: folderName.value, manifest, mode: launchMode.value },
+      { root_name: rootName.value, manifest, mode: launchMode.value },
     )
     batch.value = compared.batch
     step.value = 2
     uploaded.value = 0
     const requested = new Set(compared.upload_paths)
-    for (const file of files.value) {
-      const path = relativePath(file)
+    for (const { file, relativePath: path } of staged.value) {
       if (!requested.has(path)) continue
       await api.uploadOne(
         `/api/workspaces/${props.workspaceId}/folder-imports/${batch.value.id}/files`,
@@ -172,24 +216,16 @@ async function compareAndUpload() {
     )
     seedEdits(batch.value.items)
     step.value = 3
-    const started = await assistantChat.send(
-      `Classify and import the selected folder (${batch.value.manifest_count} files).`,
-      'act', launchMode.value,
-      { source: 'folder_intake', runKind: 'intake', runContext: { batch_id: batch.value.id, source_id: batch.value.source_id } },
-    )
-    const runId = String(started?.outcome?.run_id ?? '')
-    if (runId) await agent.openRun(runId)
   } catch (cause) {
     error.value = String(cause)
     if (batch.value?.status === 'uploading') {
       try {
         await api.del(`/api/workspaces/${props.workspaceId}/folder-imports/${batch.value.id}`)
       } catch {
-        /* A later folder selection creates a fresh durable batch. */
+        /* A later selection creates a fresh durable batch. */
       }
     }
     step.value = 1
-    files.value = []
     batch.value = null
     uploaded.value = 0
   } finally {
@@ -206,6 +242,46 @@ function seedEdits(items: IntakeBatchItem[]) {
 async function refreshBatch() {
   if (!batch.value) return
   batch.value = await api.get<IntakeBatch>(`/api/workspaces/${props.workspaceId}/folder-imports/${batch.value.id}`)
+}
+
+async function applyNow() {
+  if (!batch.value || busy.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    const decisions = uploadedItems.value.map((item) => ({ item_id: item.id, ...(edits.value[item.id] || {}) }))
+    batch.value = await api.post<IntakeBatch>(
+      `/api/workspaces/${props.workspaceId}/folder-imports/${batch.value.id}/apply`,
+      { decisions },
+    )
+    step.value = 4
+    emit('imported')
+  } catch (cause) {
+    error.value = String(cause)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function refineWithAssistant() {
+  if (!batch.value || busy.value) return
+  busy.value = true
+  error.value = ''
+  refining.value = true
+  try {
+    const started = await assistantChat.send(
+      `Classify and import the selected files (${batch.value.manifest_count} files).`,
+      'act', launchMode.value,
+      { source: 'folder_intake', runKind: 'intake', runContext: { batch_id: batch.value.id, source_id: batch.value.source_id } },
+    )
+    const runId = String(started?.outcome?.run_id ?? '')
+    if (runId) await agent.openRun(runId)
+  } catch (cause) {
+    refining.value = false
+    error.value = String(cause)
+  } finally {
+    busy.value = false
+  }
 }
 
 async function applyClassifications() {
@@ -232,41 +308,65 @@ function close() {
 
 function reset() {
   step.value = 1
-  files.value = []
-  folderName.value = ''
+  staged.value = []
   batch.value = null
   uploaded.value = 0
   edits.value = {}
   showAll.value = false
+  refining.value = false
   error.value = ''
 }
 </script>
 
 <template>
-  <Dialog :visible="modelValue" modal header="Import audit folder" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
+  <Dialog :visible="modelValue" modal header="Import files and folders" class="folder-import-dialog" :style="{ width: 'min(94vw, 78rem)' }" @update:visible="close">
     <div v-if="error" class="inline-error"><i class="pi pi-exclamation-triangle" />{{ error }}</div>
-    <nav class="wizard-progress" aria-label="Import progress"><span v-for="(label,index) in ['Choose folder','Upload','Review','Complete']" :key="label" :class="{ active: step === index + 1, done: step > index + 1 }"><i>{{ index + 1 }}</i>{{ label }}</span></nav>
+    <nav class="wizard-progress" aria-label="Import progress"><span v-for="(label,index) in ['Add files','Upload','Review','Complete']" :key="label" :class="{ active: step === index + 1, done: step > index + 1 }"><i>{{ index + 1 }}</i>{{ label }}</span></nav>
 
     <section v-if="step === 1" class="select-step">
-      <label class="folder-picker">
-        <i class="pi pi-folder-open" />
-        <strong>Choose folder</strong>
-        <span>Import supported data and documents from this folder and its subfolders.</span>
-        <input type="file" multiple webkitdirectory @change="chooseFolder" />
-      </label>
+      <div
+        class="dropzone"
+        :class="{ active: dragActive }"
+        @dragover.prevent="dragActive = true"
+        @dragleave.self="dragActive = false"
+        @drop.prevent="onDrop"
+      >
+        <i class="pi pi-cloud-upload" />
+        <strong>Drop files or folders here</strong>
+        <span>Data tables (CSV, Excel) and documents (PDF, DOCX, images, text) are detected and routed automatically.</span>
+        <div class="picker-actions">
+          <label class="picker-button">
+            <i class="pi pi-file" /> Choose files
+            <input type="file" multiple @change="chooseFiles" />
+          </label>
+          <label class="picker-button">
+            <i class="pi pi-folder-open" /> Choose folder
+            <input type="file" multiple webkitdirectory @change="chooseFolder" />
+          </label>
+        </div>
+      </div>
+      <div v-if="staged.length" class="staged-summary">
+        <i class="pi pi-inbox" />
+        <span class="staged-copy">
+          <strong>{{ staged.length }} file{{ staged.length === 1 ? '' : 's' }} ready</strong>
+          <small>{{ rootName ? `Folder "${rootName}"` : 'Selected files' }} · {{ stagedSize }}. Unchanged files are skipped automatically.</small>
+        </span>
+        <Button label="Clear" text size="small" severity="secondary" :disabled="busy" @click="staged = []" />
+        <Button :label="`Import ${staged.length} file${staged.length === 1 ? '' : 's'}`" icon="pi pi-arrow-right" iconPos="right" :loading="busy" @click="startImport" />
+      </div>
     </section>
 
     <section v-else-if="step === 2" class="upload-step">
-      <h3>Importing {{ folderName }}</h3>
+      <h3>Importing {{ batchLabel }}</h3>
       <p>{{ uploaded }} of {{ uploadTotal }} requested files uploaded. Unchanged and excluded files stay untouched.</p>
       <ProgressBar :value="progress" />
-      <p class="muted">Keep this dialog open until staging finishes. Classification can continue after the upload is durable.</p>
+      <p class="muted">Keep this dialog open until staging finishes.</p>
     </section>
 
     <section v-else-if="step === 3" class="review-step">
       <div class="review-head">
         <div><h3>Review files</h3></div>
-        <Tag :value="agent.state.run?.status?.replace('_', ' ') || 'starting'" />
+        <Tag v-if="refining" :value="agent.state.run?.status?.replace('_', ' ') || 'starting'" />
       </div>
       <div class="classification-review" v-if="batch">
         <div class="route-summary" aria-label="Classification summary">
@@ -299,14 +399,21 @@ function reset() {
         </div>
       </div>
       <div class="review-actions">
-        <span v-if="agent.state.run?.mode === 'permission' && !pendingClassification" class="muted">The assistant is preparing the editable approval batch…</span>
-        <span v-if="agent.state.run?.mode === 'auto'" class="muted">Auto mode is applying only locally valid high-confidence agreements.</span>
-        <Button v-if="agent.state.run?.mode === 'permission'" label="Apply classifications" icon="pi pi-check" :disabled="!pendingClassification || busy" :loading="busy" @click="applyClassifications" />
+        <template v-if="!refining">
+          <span class="muted">Routing was determined locally. Adjust anything above, then import.</span>
+          <Button v-if="assistantAvailable" label="Refine with assistant" icon="pi pi-sparkles" severity="secondary" outlined :disabled="busy" @click="refineWithAssistant" />
+          <Button :label="`Import ${importCount} file${importCount === 1 ? '' : 's'}`" icon="pi pi-check" :disabled="busy || !importCount" :loading="busy" @click="applyNow" />
+        </template>
+        <template v-else>
+          <span v-if="agent.state.run?.mode === 'permission' && !pendingClassification" class="muted">The assistant is preparing the editable approval batch…</span>
+          <span v-if="agent.state.run?.mode === 'auto'" class="muted">Auto mode is applying only locally valid high-confidence agreements.</span>
+          <Button v-if="agent.state.run?.mode === 'permission'" label="Apply classifications" icon="pi pi-check" :disabled="!pendingClassification || busy" :loading="busy" @click="applyClassifications" />
+        </template>
       </div>
     </section>
 
     <section v-else class="summary-step">
-      <h3>{{ agent.state.run?.status === 'completed' ? 'Import complete' : 'Import stopped' }}</h3>
+      <h3>{{ !refining || agent.state.run?.status === 'completed' ? 'Import complete' : 'Import stopped' }}</h3>
       <div class="summary-cards" v-if="batch?.summary">
         <span><strong>{{ batch.summary.imported }}</strong> imported</span>
         <span><strong>{{ batch.summary.unchanged }}</strong> unchanged</span>
@@ -317,26 +424,34 @@ function reset() {
         <i class="pi pi-spin pi-spinner" />
         <span><strong>Search indexing continues in the background</strong><small>{{ batch.indexing_job.document_ids.length }} imported document{{ batch.indexing_job.document_ids.length === 1 ? '' : 's' }} will become searchable automatically.</small></span>
       </div>
-      <p v-if="agent.state.run?.error" class="inline-error">{{ agent.state.run.error }}</p>
+      <p v-if="refining && agent.state.run?.error" class="inline-error">{{ agent.state.run.error }}</p>
       <PostImportPlanningOffer
         v-if="planningAction"
         :workspaceId="workspaceId"
         :action="planningAction"
         @planning-started="emit('planning-started'); close()"
       />
-      <div class="review-actions"><Button label="Import another folder" severity="secondary" @click="reset" /><Button label="Done" @click="close" /></div>
+      <div class="review-actions"><Button label="Import more" severity="secondary" @click="reset" /><Button label="Done" @click="close" /></div>
     </section>
   </Dialog>
 </template>
 
 <style scoped>
-.select-step { display: grid; gap: 1rem; max-width: 42rem; margin: auto; }
+.select-step { display: grid; gap: 1rem; max-width: 46rem; margin: auto; }
 .wizard-progress { display:grid; grid-template-columns:repeat(4,1fr); margin:-.25rem 0 1rem; border-bottom:1px solid var(--aw-border) }.wizard-progress span { display:flex; justify-content:center; align-items:center; gap:.4rem; padding:.55rem; color:var(--aw-muted); font-size:.72rem; font-weight:700 }.wizard-progress i { display:grid; place-items:center; width:1.35rem; height:1.35rem; border-radius:999px; background:var(--aw-raised); font-style:normal }.wizard-progress span.active { color:var(--aw-teal); border-bottom:2px solid var(--aw-teal) }.wizard-progress span.done i,.wizard-progress span.active i { color:white; background:var(--aw-teal) }
-.folder-picker { display: flex; flex-direction: column; align-items: center; gap: .4rem; padding: 1.5rem; border: 1px dashed var(--p-surface-300); border-radius: 10px; background: var(--p-surface-50); text-align: center; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
-.folder-picker:hover { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
-.folder-picker i { font-size: 2rem; color: var(--aw-teal); }
-.folder-picker span { color: var(--p-surface-500); font-size: .75rem; }
-.folder-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.dropzone { display: flex; flex-direction: column; align-items: center; gap: .45rem; padding: 2.2rem 1.5rem; border: 2px dashed var(--p-surface-300); border-radius: 12px; background: var(--p-surface-50); text-align: center; transition: border-color .15s, background .15s; }
+.dropzone.active { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
+.dropzone > i { font-size: 2.2rem; color: var(--aw-teal); }
+.dropzone > span { max-width: 30rem; color: var(--p-surface-500); font-size: .75rem; }
+.picker-actions { display: flex; gap: .65rem; margin-top: .7rem; flex-wrap: wrap; justify-content: center; }
+.picker-button { position: relative; display: inline-flex; align-items: center; gap: .45rem; padding: .5rem .95rem; border: 1px solid var(--p-surface-300); border-radius: 8px; background: #fff; font-size: .8rem; font-weight: 600; cursor: pointer; transition: border-color .15s, color .15s; }
+.picker-button:hover { border-color: var(--aw-teal); color: var(--aw-teal); }
+.picker-button i { color: var(--aw-teal); }
+.picker-button input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.staged-summary { display: flex; align-items: center; gap: .7rem; padding: .7rem .85rem; border: 1px solid #b7e3dc; border-radius: 8px; background: var(--aw-teal-soft); }
+.staged-summary > i { color: var(--aw-teal); }
+.staged-copy { display: grid; flex: 1; gap: .15rem; min-width: 0; }
+.staged-copy small { color: var(--p-surface-500); }
 .selection-summary { display: flex; align-items: center; gap: .65rem; padding: .7rem .85rem; border: 1px solid #b7e3dc; border-radius: 8px; background: var(--aw-teal-soft); }
 .selection-summary > i { color: var(--aw-teal); }
 .selection-summary span { display: grid; gap: .15rem; }
@@ -346,6 +461,8 @@ function reset() {
 .muted { color: var(--p-surface-500); font-size: .75rem; }
 .review-step { max-width: 66rem; margin: auto; }
 .review-head, .review-actions { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.review-actions { justify-content: flex-end; }
+.review-actions .muted { margin-right: auto; text-align: left; }
 .review-head h3, .review-head p { margin: 0 0 .2rem; }
 .classification-review { display: grid; gap: .85rem; margin: 1rem 0; }
 .route-summary { display: flex; flex-wrap: wrap; gap: .55rem; }
@@ -382,5 +499,7 @@ function reset() {
   .classification-fields { grid-template-columns: 1fr; }
   .route-label { display: none; }
   .summary-cards { grid-template-columns: 1fr 1fr; }
+  .staged-summary { flex-wrap: wrap; }
+  .review-actions { flex-wrap: wrap; }
 }
 </style>
