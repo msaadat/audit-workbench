@@ -4,7 +4,7 @@
     {
       "name": "backend",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "--no-project", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8010"],
+      "runtimeArgs": ["run", "--no-project", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8010", "--reload"],
       "port": 8010,
       "autoPort": false
     },
@@ -25,7 +25,7 @@
     {
       "name": "app",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "--no-project", "uvicorn", "app.main:app", "--app-dir", "backend", "--host", "127.0.0.1", "--port", "8000"],
+      "runtimeArgs": ["run", "--no-project", "uvicorn", "app.main:app", "--app-dir", "backend", "--host", "127.0.0.1", "--port", "8000", "--reload"],
       "port": 8000,
       "autoPort": false
     }

@@ -8,7 +8,8 @@ import time
 from pathlib import Path
 
 from .. import (
-    assistant, document_analysis, documents, llm, methodology, templates_store, validation,
+    analytics, assistant, document_analysis, documents, llm, methodology, templates_store,
+    validation,
 )
 from ..workspaces import Workspace, WorkspaceError, slugify
 from . import actions, artifact_index, ledger, prompts, store
@@ -167,9 +168,7 @@ class CommandRunner(BaseRunner):
             try:
                 if not isinstance(proposals, list):
                     raise WorkspaceError("Command interpreter actions must be a list.")
-                for proposal in proposals:
-                    if isinstance(proposal, dict):
-                        actions.canonicalize_action_fields(self.ws, proposal)
+                self._canonicalize_proposals(proposals)
                 created = ledger.append_actions(
                     self.run, proposals, audit_lifecycle=self._is_full_audit_goal(goal)
                 )
@@ -876,13 +875,44 @@ class CommandRunner(BaseRunner):
                 " Supported validation check ids are: "
                 f"{', '.join(validation.CHECKS)}. Use `required` for null or blank checks."
             )
+        analytics_guidance = ""
+        if "Unknown analytics test" in str(error):
+            analytics_guidance = (
+                " Supported analytics test ids are: "
+                f"{', '.join(analytics.ANALYTICS)}. Replace every unsupported run_analytics "
+                "action with a supported library test or create_custom_analysis; do not only fix "
+                "the first named test."
+            )
         return (
             f"{base_user}\n\nYour previous JSON parsed, but its action graph violated the registered "
-            f"contract: {error}.{validation_guidance} Return a corrected complete JSON object. "
+            f"contract: {error}.{validation_guidance}{analytics_guidance} "
+            f"Return a corrected complete JSON object. "
             f"Preserve the intended goal and "
             f"valid dependencies, use only catalog target kinds and required args. Previous JSON: "
             f"{json.dumps(payload, default=str)}"
         )
+
+    def _canonicalize_proposals(self, proposals: list[object]) -> None:
+        """Normalize a proposal batch and report all invented analytics ids."""
+        unknown_analytics = set()
+        for proposal in proposals:
+            if not isinstance(proposal, dict) or proposal.get("type") != "run_analytics":
+                continue
+            args = proposal.get("args")
+            if not isinstance(args, dict):
+                continue
+            if "test" not in args:
+                continue
+            test_id = analytics.canonical_test_id(args.get("test"))
+            args["test"] = test_id
+            if test_id and test_id not in analytics.ANALYTICS:
+                unknown_analytics.add(test_id)
+        if unknown_analytics:
+            names = ", ".join(sorted(unknown_analytics))
+            raise WorkspaceError(f"Unknown analytics tests: {names}.")
+        for proposal in proposals:
+            if isinstance(proposal, dict):
+                actions.canonicalize_action_fields(self.ws, proposal)
 
     def _record_rejected_proposals(self, stage: str, proposals: object, error: Exception) -> None:
         safe_actions = []
@@ -1257,9 +1287,7 @@ class CommandRunner(BaseRunner):
             # Expansion is opportunistic follow-up planning; even repeated
             # invalid proposals must not fail work that already committed.
             try:
-                for proposal in proposals:
-                    if isinstance(proposal, dict):
-                        actions.canonicalize_action_fields(self.ws, proposal)
+                self._canonicalize_proposals(proposals)
                 created = ledger.append_actions(
                     self.run, proposals, depth=action["depth"] + 1,
                     audit_lifecycle=self._is_full_audit_goal(),

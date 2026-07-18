@@ -1201,6 +1201,19 @@ ANALYTICS: dict[str, dict] = {
 }
 
 
+ANALYTICS_ALIASES = {
+    # The model sometimes copies a library test's display label instead of
+    # its stable registry id.
+    "duplicate_detection": "duplicates",
+}
+
+
+def canonical_test_id(value: object) -> str:
+    """Return the registered id for an analytics test or a known alias."""
+    test_id = str(value or "").strip()
+    return ANALYTICS_ALIASES.get(test_id, test_id)
+
+
 def registry_payload() -> list[dict]:
     return [
         {key: value for key, value in {**meta, "id": test_id}.items() if key != "func"}
@@ -1210,6 +1223,7 @@ def registry_payload() -> list[dict]:
 
 def canonicalize_params(df: pl.DataFrame, test_id: str, params: dict | None) -> dict:
     """Resolve analytics column parameters to their exact source spelling."""
+    test_id = canonical_test_id(test_id)
     meta = ANALYTICS.get(test_id)
     if meta is None:
         raise QueryError(f"Unknown analytics test '{test_id}'.")
@@ -1231,6 +1245,7 @@ def canonicalize_params(df: pl.DataFrame, test_id: str, params: dict | None) -> 
 
 
 def run_test(df: pl.DataFrame, test_id: str, params: dict) -> AnalyticsResult:
+    test_id = canonical_test_id(test_id)
     meta = ANALYTICS.get(test_id)
     if meta is None:
         raise QueryError(f"Unknown analytics test '{test_id}'.")

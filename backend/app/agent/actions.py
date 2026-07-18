@@ -255,6 +255,7 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
         elif type_ == "run_analytics":
             table = args.get("table")
             if table in workspace.table_names():
+                args["test"] = analytics.canonical_test_id(args.get("test"))
                 args["params"] = analytics.canonicalize_params(
                     workspace.get_frame(table), args.get("test"), args.get("params")
                 )
@@ -588,7 +589,15 @@ _register(
 )
 _register("edit_validation_rules", "Edit validation rules", "reversible_mutation", ("ruleset",), ("changes",), {"changes": OBJ})
 _register("run_validation_rules", "Run a saved validation ruleset", "compute", ("ruleset",))
-_register("run_analytics", "Run a library audit analytic", "compute", required=("table", "test"), properties={"table": STR, "test": STR, "params": OBJ})
+_register(
+    "run_analytics", "Run a library audit analytic", "compute",
+    required=("table", "test"),
+    properties={
+        "table": STR,
+        "test": {"type": "string", "enum": list(analytics.ANALYTICS)},
+        "params": OBJ,
+    },
+)
 _register("create_custom_analysis", "Create a sandboxed Polars analysis", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
 _register("edit_custom_analysis", "Edit a custom analysis", "reversible_mutation", ("analysis",), ("changes",), {"changes": OBJ}, model="draft")
 _register("run_custom_analysis", "Run a saved custom analysis", "compute", ("analysis",))

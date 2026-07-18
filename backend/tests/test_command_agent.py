@@ -91,6 +91,14 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
         schemas = {item["table"]: item for item in payload["table_schemas"]}
         transaction_fields = {item["name"] for item in schemas["transactions"]["columns"]}
         assert {"cust_id", "invoice_no", "amount"} <= transaction_fields
+        analytics_ids = {item["id"] for item in payload["analytics_tests"]}
+        assert {"duplicates", "benford", "sampling"} <= analytics_ids
+        run_analytics = next(
+            item for item in payload["action_catalog"]
+            if item["type"] == "run_analytics"
+        )
+        test_schema = run_analytics["input_schema"]["properties"]["test"]
+        assert set(test_schema["enum"]) == analytics_ids
         return {
             "objective": "Join transactions to customers",
             "constraints": [],
@@ -113,7 +121,7 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
                     "type": "run_analytics",
                     "args": {
                         "table": "transactions",
-                        "test": "duplicates",
+                        "test": "duplicate_detection",
                         "params": {"columns": ["INVOICE_NO"]},
                     },
                 },
@@ -130,6 +138,7 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
     assert completed["goal"]["completion_criteria"] == ["join created"]
     assert completed["actions"][0]["args"]["left_on"] == ["cust_id"]
     assert completed["actions"][0]["args"]["right_on"] == ["id"]
+    assert completed["actions"][1]["args"]["test"] == "duplicates"
     assert completed["actions"][1]["args"]["params"]["columns"] == ["invoice_no"]
     assert workspaces.load_workspace(workspace_with_data.id).joins[0]["name"] == "enriched"
 
@@ -191,6 +200,55 @@ def test_command_interpreter_repair_lists_supported_validation_checks():
     assert "Supported validation check ids are:" in message
     assert "required" in message
     assert "Use `required` for null or blank checks." in message
+
+
+def test_command_interpreter_reports_all_unsupported_analytics_and_repairs(
+    monkeypatch, workspace_with_data
+):
+    def interpret(user):
+        common = {
+            "objective": "Analyze procurement",
+            "constraints": [],
+            "completion_criteria": ["Analysis planned"],
+            "needs_planning_wave": False,
+        }
+        if "previous JSON parsed" not in user:
+            return {
+                **common,
+                "actions": [
+                    {
+                        "id": "three-way", "type": "run_analytics",
+                        "args": {"table": "transactions", "test": "three_way_match"},
+                    },
+                    {
+                        "id": "approvals", "type": "run_analytics",
+                        "args": {"table": "transactions", "test": "approval_limits"},
+                    },
+                ],
+            }
+        assert "Unknown analytics tests: approval_limits, three_way_match" in user
+        assert "Supported analytics test ids are:" in user
+        assert "Replace every unsupported run_analytics action" in user
+        assert "create_custom_analysis" in user
+        return {**common, "actions": []}
+
+    fake = configured(monkeypatch, interpret)
+    started = runner.start_command_run(
+        workspace_with_data, "auto",
+        {
+            "source": "goal_template", "text": "Analyze data",
+            "goal_template": "data_analysis",
+        },
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["rejected_proposals"][0]["error"] == (
+        "Unknown analytics tests: approval_limits, three_way_match."
+    )
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:command_interpreter", "agent:command_interpreter",
+    ]
 
 
 def test_custom_analysis_contract_requires_executable_code(workspace_with_data):
