@@ -7,7 +7,9 @@ import re
 import time
 from pathlib import Path
 
-from .. import assistant, document_analysis, documents, llm, methodology, templates_store
+from .. import (
+    assistant, document_analysis, documents, llm, methodology, templates_store, validation,
+)
 from ..workspaces import Workspace, WorkspaceError, slugify
 from . import actions, artifact_index, ledger, prompts, store
 from .base import BaseRunner, Cancelled, LimitExceeded
@@ -868,9 +870,16 @@ class CommandRunner(BaseRunner):
 
     @staticmethod
     def _proposal_repair_user(base_user: str, payload: dict, error: Exception) -> str:
+        validation_guidance = ""
+        if "Unknown check" in str(error):
+            validation_guidance = (
+                " Supported validation check ids are: "
+                f"{', '.join(validation.CHECKS)}. Use `required` for null or blank checks."
+            )
         return (
             f"{base_user}\n\nYour previous JSON parsed, but its action graph violated the registered "
-            f"contract: {error}. Return a corrected complete JSON object. Preserve the intended goal and "
+            f"contract: {error}.{validation_guidance} Return a corrected complete JSON object. "
+            f"Preserve the intended goal and "
             f"valid dependencies, use only catalog target kinds and required args. Previous JSON: "
             f"{json.dumps(payload, default=str)}"
         )

@@ -285,6 +285,23 @@ def test_ruleset_validation_errors(workspace_with_data):
         )
 
 
+def test_not_null_aliases_are_saved_as_required(workspace_with_data):
+    ws = workspace_with_data
+    first = ws.add_ruleset({
+        "title": "Not-null alias",
+        "table": "transactions",
+        "rules": [{"check": "not_null", "column": "invoice_no"}],
+    })
+    second = ws.add_ruleset({
+        "title": "Polars alias",
+        "table": "transactions",
+        "rules": [{"check": "is_not_null", "column": "invoice_no"}],
+    })
+
+    assert first["rules"][0]["check"] == "required"
+    assert second["rules"][0]["check"] == "required"
+
+
 # --------------------------------------------------------------------- API
 def test_validation_api_round_trip(workspace_with_data):
     ws = workspace_with_data

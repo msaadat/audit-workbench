@@ -134,6 +134,65 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
     assert workspaces.load_workspace(workspace_with_data.id).joins[0]["name"] == "enriched"
 
 
+def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
+    monkeypatch, workspace_with_data
+):
+    def interpret(user):
+        payload = json.loads(user)
+        check_ids = {item["id"] for item in payload["validation_checks"]}
+        assert {"required", "range", "unique", "referential"} <= check_ids
+        create_rules = next(
+            item for item in payload["action_catalog"]
+            if item["type"] == "create_validation_rules"
+        )
+        check_schema = (
+            create_rules["input_schema"]["properties"]["rules"]
+            ["items"]["properties"]["check"]
+        )
+        assert set(check_schema["enum"]) == check_ids
+        return {
+            "objective": "Validate transaction completeness",
+            "constraints": [],
+            "completion_criteria": ["Rules saved"],
+            "needs_planning_wave": False,
+            "actions": [{
+                "id": "rules",
+                "type": "create_validation_rules",
+                "args": {
+                    "title": "Transaction completeness",
+                    "table": "transactions",
+                    "rules": [{"column": "invoice_no", "check": "is_not_null"}],
+                },
+            }],
+        }
+
+    fake = configured(monkeypatch, interpret)
+    started = runner.start_command_run(
+        workspace_with_data, "auto",
+        {
+            "source": "goal_template", "text": "Start data analysis",
+            "goal_template": "data_analysis",
+        },
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["actions"][0]["args"]["rules"][0]["check"] == "required"
+    saved = workspaces.load_workspace(workspace_with_data.id).rulesets[0]
+    assert saved["rules"][0]["check"] == "required"
+    assert [call["tag"] for call in fake.calls] == ["agent:command_interpreter"]
+
+
+def test_command_interpreter_repair_lists_supported_validation_checks():
+    message = command_runner.CommandRunner._proposal_repair_user(
+        "base", {"actions": []}, workspaces.WorkspaceError("Unknown check 'invented'.")
+    )
+
+    assert "Supported validation check ids are:" in message
+    assert "required" in message
+    assert "Use `required` for null or blank checks." in message
+
+
 def test_custom_analysis_contract_requires_executable_code(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto", {"source": "chat", "text": "analyze data"}

@@ -531,7 +531,11 @@ PYTHON_SPEC = {
 }
 RULE_SPEC = {
     "type": "object", "required": ["check"],
-    "properties": {"column": STR, "check": STR, "params": OBJ},
+    "properties": {
+        "column": STR,
+        "check": {"type": "string", "enum": list(validation.CHECKS)},
+        "params": OBJ,
+    },
     "additionalProperties": True,
 }
 

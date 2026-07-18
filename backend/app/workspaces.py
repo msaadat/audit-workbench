@@ -764,7 +764,7 @@ class Workspace:
 
         normalized = []
         for rule in rules or []:
-            check = (rule or {}).get("check")
+            check = validation.canonical_check_id((rule or {}).get("check"))
             meta = validation.CHECKS.get(check)
             if meta is None:
                 raise WorkspaceError(f"Unknown check '{check}'.")

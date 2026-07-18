@@ -504,6 +504,20 @@ CHECKS: dict[str, dict] = {
 }
 
 
+CHECK_ALIASES = {
+    # Models commonly borrow these spellings from dataframe APIs. In the
+    # validation registry the equivalent presence check is named `required`.
+    "not_null": "required",
+    "is_not_null": "required",
+}
+
+
+def canonical_check_id(value: object) -> str:
+    """Return the registered id for a validation check or a known alias."""
+    check = str(value or "").strip()
+    return CHECK_ALIASES.get(check, check)
+
+
 def canonicalize_rules(
     df: pl.DataFrame,
     rules: list[dict],
@@ -515,7 +529,8 @@ def canonicalize_rules(
     normalized = []
     for source in rules or []:
         rule = {**source, "params": dict(source.get("params") or {})}
-        meta = CHECKS.get(rule.get("check"))
+        rule["check"] = canonical_check_id(rule.get("check"))
+        meta = CHECKS.get(rule["check"])
         if meta is None:
             if strict:
                 raise QueryError(f"Unknown check '{rule.get('check')}'.")
