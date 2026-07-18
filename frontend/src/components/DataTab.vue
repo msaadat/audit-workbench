@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -45,8 +45,92 @@ const selected = ref<string | null>(null)
 const profile = ref<TableProfile | null>(null)
 const profiling = ref(false)
 const expandedRows = ref({})
-// dup-row count per table once profiled, so cards can show a health signal.
+// dup-row count per table once profiled, so rows can show a health signal.
 const dupCache = ref<Record<string, number>>({})
+const filter = ref('')
+
+function matchesFilter(table: TableInfo): boolean {
+  const q = filter.value.trim().toLowerCase()
+  return !q || table.name.toLowerCase().includes(q)
+}
+
+const fileTables = computed(() =>
+  props.workspace.tables.filter((t) => t.kind !== 'join' && matchesFilter(t)),
+)
+const joinTables = computed(() =>
+  props.workspace.tables.filter((t) => t.kind === 'join' && matchesFilter(t)),
+)
+const hasJoins = computed(() => props.workspace.tables.some((t) => t.kind === 'join'))
+// Selectable tables in display order, for arrow-key navigation.
+const navigable = computed(() =>
+  [...fileTables.value, ...joinTables.value].filter((t) => !t.error),
+)
+// The row holding tabindex=0 (roving tabindex): the selection when visible, else the first row.
+const focusName = computed(() => {
+  const list = navigable.value
+  return list.some((t) => t.name === selected.value) ? selected.value : list[0]?.name ?? null
+})
+
+const rowEls: Record<string, HTMLElement> = {}
+function setRowEl(name: string, el: unknown) {
+  if (el instanceof HTMLElement) rowEls[name] = el
+  else delete rowEls[name]
+}
+
+function onListKeydown(event: KeyboardEvent) {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  const list = navigable.value
+  if (!list.length) return
+  event.preventDefault()
+  const idx = list.findIndex((t) => t.name === selected.value)
+  const next =
+    idx === -1
+      ? 0
+      : event.key === 'ArrowDown'
+        ? Math.min(idx + 1, list.length - 1)
+        : Math.max(idx - 1, 0)
+  const table = list[next]
+  selected.value = table.name
+  rowEls[table.name]?.focus()
+}
+
+// Profile every table in the background so health dots are consistent, not
+// just filled in for tables the user happened to select. Results are cached
+// server-side, so repeat fetches are cheap.
+let profileSweepToken = 0
+async function sweepProfiles() {
+  const token = ++profileSweepToken
+  const pending = props.workspace.tables.filter(
+    (t) => !t.error && dupCache.value[t.name] === undefined,
+  )
+  for (const table of pending) {
+    if (token !== profileSweepToken) return
+    try {
+      const result = await api.get<TableProfile>(
+        `/api/workspaces/${props.workspace.id}/tables/${table.name}/profile`,
+      )
+      if (token !== profileSweepToken) return
+      dupCache.value = { ...dupCache.value, [table.name]: result.duplicate_rows }
+    } catch {
+      // Leave the dot in its "not profiled" state; selecting the table surfaces the error.
+    }
+  }
+}
+onBeforeUnmount(() => {
+  profileSweepToken += 1
+})
+
+type HealthState = 'ok' | 'warn' | 'unknown'
+function health(table: TableInfo): HealthState {
+  const dups = dupCache.value[table.name]
+  if (dups === undefined) return 'unknown'
+  return dups > 0 ? 'warn' : 'ok'
+}
+function healthTooltip(table: TableInfo): string {
+  const dups = dupCache.value[table.name]
+  if (dups === undefined) return 'Not profiled yet'
+  return dups > 0 ? `${dups.toLocaleString()} duplicate rows` : 'No duplicate rows'
+}
 
 const typeSeverity: Record<string, string> = {
   numeric: 'success',
@@ -96,6 +180,10 @@ async function renameTable() {
     )
     if (selected.value === renamed.old_name) selected.value = renamed.name
     if (preview.value?.table === renamed.old_name) preview.value = null
+    if (renamed.old_name in dupCache.value) {
+      const { [renamed.old_name]: moved, ...rest } = dupCache.value
+      dupCache.value = { ...rest, [renamed.name]: moved }
+    }
     emit('changed')
 
     const total =
@@ -133,6 +221,8 @@ async function replaceData(event: Event) {
     const { replaced } = await api.replace<{
       replaced: { removed_columns: string[]; added_columns: string[] }
     }>(`/api/workspaces/${props.workspace.id}/tables/${table}`, file)
+    const { [table]: stale, ...rest } = dupCache.value
+    dupCache.value = rest
     emit('changed')
     const { removed_columns, added_columns } = replaced
     if (removed_columns.length) {
@@ -201,6 +291,7 @@ watch(
       const first = tables.find((t) => !t.error)
       if (first) selected.value = first.name
     }
+    void sweepProfiles()
   },
   { immediate: true, deep: true },
 )
@@ -288,46 +379,69 @@ function rangeText(p: ColumnProfile): string {
     <div class="data-workbench">
     <aside class="inventory surface-panel">
       <div class="inventory-head"><span>Tables</span><Tag :value="String(workspace.tables.length)" severity="secondary" /></div>
-    <div class="cards" role="tablist">
-      <div
-        v-for="table in workspace.tables"
-        :key="table.name"
-        class="card"
-        :class="{ active: selected === table.name, broken: !!table.error }"
-        role="tab"
-        tabindex="0"
-        :aria-selected="selected === table.name"
-        @click="selectTable(table)"
-        @keydown.enter="selectTable(table)"
-        @keydown.space.prevent="selectTable(table)"
-      >
-        <div class="card-head">
-          <strong class="card-name" :title="table.name">{{ table.name }}</strong>
-          <Tag :value="table.kind" :severity="table.kind === 'join' ? 'info' : 'secondary'" />
-        </div>
-
-        <div v-if="table.error" class="card-signal error" v-tooltip.bottom="table.error">
-          <i class="pi pi-exclamation-triangle" /> failed to load
-        </div>
-        <template v-else>
-          <div class="card-meta">
-            {{ table.rows?.toLocaleString() }} rows · {{ table.columns }} cols
+      <div v-if="workspace.tables.length > 5" class="inventory-filter">
+        <i class="pi pi-search" />
+        <input v-model="filter" type="search" placeholder="Filter tables" aria-label="Filter tables" />
+      </div>
+      <div class="table-list" role="listbox" aria-label="Tables" @keydown="onListKeydown">
+        <template v-for="group in [
+          { label: 'Files', tables: fileTables },
+          { label: 'Joins', tables: joinTables },
+        ]" :key="group.label">
+          <div v-if="hasJoins && group.tables.length" class="group-label">
+            {{ group.label }} · {{ group.tables.length }}
           </div>
           <div
-            v-if="dupCache[table.name] !== undefined"
-            class="card-signal"
-            :class="dupCache[table.name] > 0 ? 'warn' : 'ok'"
+            v-for="table in group.tables"
+            :key="table.name"
+            :ref="(el) => setRowEl(table.name, el)"
+            class="row"
+            :class="{ active: selected === table.name, broken: !!table.error }"
+            role="option"
+            :tabindex="table.error ? -1 : table.name === focusName ? 0 : -1"
+            :aria-selected="selected === table.name"
+            :aria-disabled="!!table.error"
+            @click="selectTable(table)"
+            @dblclick="!table.error && openPreview(table)"
+            @keydown.enter="selectTable(table)"
+            @keydown.space.prevent="selectTable(table)"
           >
-            <i :class="dupCache[table.name] > 0 ? 'pi pi-exclamation-triangle' : 'pi pi-check'" />
-            {{ dupCache[table.name] > 0
-              ? `${dupCache[table.name].toLocaleString()} dup rows`
-              : 'no dup rows' }}
+            <i class="row-icon pi" :class="table.kind === 'join' ? 'pi-link' : 'pi-file'" />
+            <div class="row-main">
+              <span class="row-name" :title="table.name">{{ table.name }}</span>
+              <span v-if="table.error" class="row-sub error" v-tooltip.bottom="table.error">
+                {{ table.error }}
+              </span>
+              <span v-else-if="table.join" class="row-sub" :title="`${table.join.left} ⋈ ${table.join.right}`">
+                {{ table.join.left }} ⋈ {{ table.join.right }}
+              </span>
+            </div>
+            <button
+              v-if="table.error && table.kind === 'file'"
+              class="row-fix"
+              type="button"
+              @click.stop="startReplace(table)"
+            >
+              Replace
+            </button>
+            <span v-if="!table.error" class="row-meta">
+              {{ table.rows?.toLocaleString() }}×{{ table.columns }}
+            </span>
+            <span
+              v-if="!table.error"
+              class="dot"
+              :class="health(table)"
+              v-tooltip.bottom="healthTooltip(table)"
+            />
+            <div class="row-actions" @click.stop @dblclick.stop>
+              <UiOverflowMenu :items="tableActions(table)" />
+            </div>
           </div>
         </template>
-
-        <div class="card-actions" @click.stop><UiOverflowMenu :items="tableActions(table)" /></div>
+        <p v-if="!fileTables.length && !joinTables.length" class="muted no-match">
+          No tables match “{{ filter }}”
+        </p>
       </div>
-    </div>
     </aside>
 
     <section class="profile-panel surface-panel">
@@ -336,7 +450,18 @@ function rangeText(p: ColumnProfile): string {
       <template v-else-if="profile && selectedTable">
         <div class="profile-head">
           <div><p class="eyebrow">Selected table</p><h3 class="profile-title">{{ selectedTable.name }}</h3></div>
-          <Tag :value="profile.duplicate_rows ? 'Review data health' : 'Profile complete'" :severity="profile.duplicate_rows ? 'warn' : 'success'" />
+          <div class="profile-head-actions">
+            <Button
+              label="Preview"
+              icon="pi pi-eye"
+              size="small"
+              severity="secondary"
+              outlined
+              :loading="previewLoading"
+              @click="openPreview(selectedTable)"
+            />
+            <Tag :value="profile.duplicate_rows ? 'Review data health' : 'Profile complete'" :severity="profile.duplicate_rows ? 'warn' : 'success'" />
+          </div>
         </div>
 
         <div class="stat-cards" style="margin-bottom: 1rem">
@@ -464,92 +589,198 @@ function rangeText(p: ColumnProfile): string {
 <style scoped>
 .import-empty { min-height: 20rem; }
 .data-workbench { display: grid; grid-template-columns: 18rem minmax(0, 1fr); gap: 1rem; align-items: start; }
-.inventory { overflow: hidden; box-shadow: none; }
-.inventory-head { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--aw-border); color: #43546d; font-size: 0.75rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
-.cards {
+
+.inventory {
+  position: sticky;
+  top: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  overflow: visible;
-  padding: 0.65rem;
+  max-height: calc(100vh - 8.5rem);
+  overflow: hidden;
+  box-shadow: none;
 }
 
-.card {
+.inventory-head { display: flex; flex: none; align-items: center; justify-content: space-between; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--aw-border); color: var(--aw-muted); font-size: 0.75rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+
+.inventory-filter {
   position: relative;
   flex: none;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--aw-border);
+}
+
+.inventory-filter .pi-search {
+  position: absolute;
+  top: 50%;
+  left: 1.2rem;
+  transform: translateY(-50%);
+  font-size: 0.75rem;
+  color: var(--aw-muted);
+  pointer-events: none;
+}
+
+.inventory-filter input {
   width: 100%;
-  text-align: left;
-  background: var(--p-surface-0);
-  min-height: var(--aw-row-height);
-  border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 0.55rem 0.65rem;
-  cursor: pointer;
+  padding: 0.35rem 0.5rem 0.35rem 1.7rem;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-sm);
+  background: var(--aw-panel);
   font: inherit;
+  font-size: var(--aw-text-sm);
   color: inherit;
-  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.card:hover:not(.broken) {
-  border-color: var(--aw-border);
-  background: #fff;
+.inventory-filter input:focus {
+  outline: none;
+  border-color: var(--aw-teal-600);
 }
 
-.card.active {
-  border-color: var(--p-primary-500);
-  box-shadow: inset 3px 0 0 var(--aw-teal);
-  background: #f4fbfa;
+.table-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.35rem 0;
 }
 
-.card.broken {
-  cursor: default;
-  opacity: 0.75;
+.group-label {
+  padding: 0.45rem 0.9rem 0.2rem;
+  color: var(--aw-muted);
+  font-size: var(--aw-text-xs);
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
 }
 
-.card-head {
+.group-label + .group-label,
+.row + .group-label {
+  margin-top: 0.35rem;
+  border-top: 1px solid var(--aw-border);
+}
+
+.row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
-  margin-bottom: 0.4rem;
+  min-height: 2.25rem;
+  padding: 0.3rem 0.6rem 0.3rem 0.9rem;
+  border-left: 2px solid transparent;
+  cursor: pointer;
 }
 
-.card-name {
+.row:hover:not(.broken) {
+  background: var(--aw-raised);
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--aw-teal-600);
+  outline-offset: -2px;
+}
+
+.row.active {
+  border-left-color: var(--aw-teal);
+  background: var(--aw-teal-soft);
+}
+
+.row.broken {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.row-icon {
+  flex: none;
+  font-size: 0.8rem;
+  color: var(--aw-muted);
+}
+
+.row.active .row-icon {
+  color: var(--aw-teal);
+}
+
+.row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-name {
+  display: block;
   overflow: hidden;
+  font-weight: 600;
+  font-size: var(--aw-text-base);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.card-meta {
-  font-size: 0.82rem;
-  color: var(--p-surface-500);
+.row-sub {
+  display: block;
+  overflow: hidden;
+  color: var(--aw-muted);
+  font-size: var(--aw-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.card-signal {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.78rem;
-  margin-top: 0.35rem;
+.row-sub.error {
+  color: var(--aw-danger);
 }
 
-.card-signal.ok {
-  color: var(--p-green-600);
+.row-meta {
+  flex: none;
+  color: var(--aw-muted);
+  font-size: var(--aw-text-xs);
+  font-variant-numeric: tabular-nums;
 }
 
-.card-signal.warn {
-  color: var(--p-orange-500);
-}
-
-.card-signal.error {
-  color: var(--p-red-500);
+.row-fix {
+  flex: none;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--aw-border-strong);
+  border-radius: var(--aw-radius-sm);
+  background: var(--aw-panel);
+  color: var(--aw-teal);
+  font: inherit;
+  font-size: var(--aw-text-xs);
   font-weight: 600;
+  cursor: pointer;
 }
 
-.card-actions {
+.row-fix:hover {
+  border-color: var(--aw-teal-600);
+}
+
+.dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
+.dot.ok { background: var(--aw-ok); }
+.dot.warn { background: var(--aw-warn); }
+.dot.unknown { border: 1px solid var(--aw-border-strong); }
+
+.row-actions {
   display: flex;
-  gap: 0.15rem;
-  margin-top: 0.5rem;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.row:hover .row-actions,
+.row:focus-within .row-actions,
+.row.active .row-actions {
+  opacity: 1;
+}
+
+.no-match {
+  padding: 0.75rem 0.9rem;
+  font-size: var(--aw-text-sm);
+}
+
+.profile-head-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .profile-panel {
@@ -618,8 +849,8 @@ function rangeText(p: ColumnProfile): string {
 
 @media (max-width: 1050px) {
   .data-workbench { grid-template-columns: 1fr; }
-  .cards { flex-direction: row; max-height: none; overflow-x: auto; }
-  .card { min-width: 15rem; width: 15rem; }
+  .inventory { position: static; max-height: 18rem; }
+  .row-actions { opacity: 1; }
 }
 
 @media (max-width: 700px) {
