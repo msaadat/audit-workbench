@@ -239,6 +239,14 @@ class BaseRunner:
         self.save()
         self.emit("task_update", {"task": task})
 
+    def task_detail(self, task: dict, detail: str) -> None:
+        """Persist and broadcast a user-facing progress message for a task."""
+        if task.get("detail") == detail:
+            return
+        task["detail"] = detail
+        self.save()
+        self.emit("task_update", {"task": task})
+
     def note_context(self, task: dict, note: str) -> None:
         notes = task.setdefault("context_notes", [])
         if note not in notes:

@@ -222,7 +222,12 @@ class CommandRunner(BaseRunner):
         self.save()
 
     def stage_context(self) -> dict:
-        task = self.add_task("context", "planning:context", "Assemble planning context")
+        task = self.add_task(
+            "context",
+            "planning:context",
+            "Assemble planning context",
+            "Reviewing workspace data and available documents…",
+        )
         if task["status"] == "completed" and self.run.get("planning_basis"):
             return self.run["planning_basis"]
         if task["status"] != "completed":
@@ -242,6 +247,7 @@ class CommandRunner(BaseRunner):
             raise WorkspaceError(f"Planning source document not found: {sorted(missing)[0]}.")
         context = self.ws.planning.get("context") or {}
         if not requested_document_ids:
+            self.task_detail(task, "Selecting relevant documents for audit planning…")
             requested_document_ids = self._select_planning_documents(task, context)
             requested = set(requested_document_ids)
         document_states = document_analysis.status_catalog(self.ws)["entries"]
@@ -265,12 +271,25 @@ class CommandRunner(BaseRunner):
         included_documents = []
         included_names: list[str] = []
         included_packs: dict[str, dict] = {}
-        for document_id in requested_document_ids:
+        document_count = len(requested_document_ids)
+        for document_index, document_id in enumerate(requested_document_ids, start=1):
             doc = next(item for item in self.ws.documents if item.get("id") == document_id)
-            included_names.append(
-                Path(str(doc.get("source") or doc.get("title") or document_id)).name
-            )
-            analysis = self._ensure_planning_analysis(doc)
+            document_name = Path(
+                str(doc.get("source") or doc.get("title") or document_id)
+            ).name
+            included_names.append(document_name)
+            analysis = document_analysis.compact_artifact(self.ws, document_id)
+            if analysis is None:
+                self.task_detail(
+                    task,
+                    f"Analyzing document {document_index} of {document_count}: {document_name}",
+                )
+                analysis = self._ensure_planning_analysis(doc)
+            else:
+                self.task_detail(
+                    task,
+                    f"Loading document analysis {document_index} of {document_count}: {document_name}",
+                )
             if analysis is None:
                 self.warn(f"Could not obtain a current analysis for '{doc.get('title') or document_id}'; planning will use metadata only.")
                 continue
@@ -297,6 +316,11 @@ class CommandRunner(BaseRunner):
             "methodology": methodology_context,
         }
         if included_documents:
+            self.task_detail(
+                task,
+                f"Synthesizing planning context from {len(included_documents)} "
+                f"document{'s' if len(included_documents) != 1 else ''}…",
+            )
             self.note_context(
                 task,
                 f"{', '.join(included_names)} "

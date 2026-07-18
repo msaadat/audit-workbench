@@ -183,6 +183,16 @@ def test_auto_planning_selects_relevant_documents(monkeypatch):
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(policy["id"] in item.get("document_ids", []) for item in activity)
     assert completed["planning_basis"]["document_content_included"] is True
+    context_details = [
+        event["data"]["task"]["detail"]
+        for event in store.read_events(ws, started["id"])
+        if event["type"] == "task_update"
+        and event["data"]["task"]["id"] == "planning:context"
+        and event["data"]["task"].get("detail")
+    ]
+    assert "Selecting relevant documents for audit planning…" in context_details
+    assert "Analyzing document 1 of 1: Procurement Policy.txt" in context_details
+    assert "Synthesizing planning context from 1 document…" in context_details
 
 
 def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):

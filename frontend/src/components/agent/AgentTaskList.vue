@@ -84,7 +84,10 @@ function summarizeRefs(refs: string[]): string[] {
           <small v-if="task.status === 'failed' && task.error" class="task-error">
             {{ task.error }}
           </small>
-          <small v-else-if="task.detail && task.status === 'queued'" class="muted">
+          <small
+            v-else-if="task.detail && (task.status === 'queued' || task.status === 'running')"
+            class="muted"
+          >
             {{ task.detail }}
           </small>
           <small v-for="note in task.context_notes ?? []" :key="note" class="muted context-note">
