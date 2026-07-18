@@ -28,6 +28,21 @@ const title = computed(() => ({
   conflict_resolution: 'Resolve a conflict',
 }[props.interaction.type]))
 
+const resolved = computed(() => props.interaction.status !== 'pending')
+const resolvedSummary = computed(() => {
+  const response = props.interaction.response
+  if (!response) return 'Resolved'
+  if (typeof response.text === 'string' && response.text.trim()) return `Answered: ${response.text.trim()}`
+  if (typeof response.choice === 'string' && response.choice) {
+    const option = props.interaction.options?.find(item => (item.ref || item.id || item.value) === response.choice)
+    return `Selected: ${option?.title || option?.label || response.choice}`
+  }
+  if (typeof response.decision === 'string') {
+    return { approve: 'Approved', reject: 'Rejected', skip: 'Skipped', retry: 'Retried' }[response.decision] ?? `Decision: ${response.decision}`
+  }
+  return 'Resolved'
+})
+
 function choose(option: AgentInteraction['options'][number]) {
   selected.value = option.ref || option.id || option.value || ''
 }
@@ -53,13 +68,15 @@ function readablePreview(value: unknown) {
 </script>
 
 <template>
-  <div class="interaction" :class="interaction.type">
+  <div class="interaction" :class="[interaction.type, { resolved }]">
     <strong>{{ title }}</strong>
     <p>{{ interaction.prompt }}</p>
     <small v-if="interaction.policy_reason">{{ interaction.policy_reason }}</small>
-    <details v-if="detail" class="technical"><summary>Technical comparison</summary><pre>{{ JSON.stringify(detail, null, 2) }}</pre></details>
+    <details v-if="detail && !resolved" class="technical"><summary>Technical comparison</summary><pre>{{ JSON.stringify(detail, null, 2) }}</pre></details>
 
-    <template v-if="interaction.type === 'clarification'">
+    <div v-if="resolved" class="resolution"><i class="pi pi-check-circle" /> {{ resolvedSummary }}</div>
+
+    <template v-else-if="interaction.type === 'clarification'">
       <Textarea v-model="text" rows="2" autoResize placeholder="Provide the missing detail…" />
       <Button label="Continue" size="small" :loading="busy" :disabled="!text.trim()" @click="emit('respond', { text })" />
     </template>
@@ -106,6 +123,9 @@ function readablePreview(value: unknown) {
 <style scoped>
 .interaction { display: grid; gap: .6rem; padding: .75rem; border: 1px solid var(--p-amber-300); background: var(--p-amber-50); border-radius: .55rem; }
 .interaction.confirmation { border-color: var(--p-red-300); background: var(--p-red-50); }
+.interaction.resolved { border-color: var(--aw-border, #d5dde7); background: var(--p-surface-50); }
+.resolution { display: flex; align-items: center; gap: .4rem; color: var(--aw-muted); font-size: .75rem; }
+.resolution i { color: var(--aw-teal, #0b625c); }
 .interaction p, .interaction small { margin: 0; }
 .interaction > small { color: var(--p-text-muted-color); }
 .choice { display: grid; text-align: left; gap: .15rem; padding: .55rem; border: 1px solid var(--aw-border, #d5dde7); border-radius: .4rem; background: white; cursor: pointer; }

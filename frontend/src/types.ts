@@ -923,6 +923,8 @@ export interface AssistantRunProjection extends AgentRunSummary {
   current_activity: string
   pending_attention: boolean
   summary_line: string
+  /** Injected client-side for an active run owned by another chat. */
+  foreign?: boolean
 }
 
 export interface AssistantInteractionProjection {

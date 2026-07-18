@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
@@ -41,6 +41,19 @@ for (const item of props.approval.items) {
   }
 }
 const submitting = ref(false)
+// Reset the local loading state when the parent's busy flag clears, so a
+// failed decide call doesn't leave the Apply button spinning forever.
+watch(() => props.busy, (value) => { if (!value) submitting.value = false })
+
+const resolved = computed(() => props.approval.status !== 'pending')
+const resolvedSummary = computed(() => {
+  const counts = { approved: 0, rejected: 0, edited: 0 }
+  for (const item of props.approval.items) {
+    if (item.decision && item.decision in counts) counts[item.decision as keyof typeof counts] += 1
+  }
+  const parts = Object.entries(counts).filter(([, value]) => value > 0).map(([key, value]) => `${value} ${key}`)
+  return parts.length ? `Decided: ${parts.join(', ')}` : 'Resolved'
+})
 
 function toggle(itemId: string) {
   const state = items[itemId]
@@ -84,13 +97,25 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
 </script>
 
 <template>
-  <div class="approval">
+  <div class="approval" :class="{ resolved }">
     <div class="head">
-      <i class="pi pi-pause-circle" />
+      <i :class="resolved ? 'pi pi-check-circle' : 'pi pi-pause-circle'" />
       <strong>{{ kindLabel[approval.kind] ?? approval.kind }}</strong>
       <span class="grow" />
-      <Tag :value="`${approval.items.length}`" severity="warn" />
+      <Tag v-if="!resolved" :value="`${approval.items.length}`" severity="warn" />
     </div>
+
+    <template v-if="resolved">
+      <p class="hint">{{ resolvedSummary }}</p>
+      <ul class="decided">
+        <li v-for="item in approval.items" :key="item.id">
+          <i :class="item.decision === 'rejected' ? 'pi pi-times' : 'pi pi-check'" />
+          {{ item.title }}<small v-if="item.decision"> · {{ item.decision }}</small>
+        </li>
+      </ul>
+    </template>
+
+    <template v-else>
     <p class="hint">
       Review each proposal — approve, reject, or edit its exact configuration.
       Nothing is applied until you decide.
@@ -152,6 +177,7 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
       :loading="busy || submitting"
       @click="apply"
     />
+    </template>
   </div>
 </template>
 
@@ -162,6 +188,12 @@ function readableSpec(spec: Record<string, unknown>): Array<{ label: string; val
   border-radius: 8px;
   padding: 0.7rem 0.8rem;
 }
+.approval.resolved { border-color: var(--aw-border, #d5dde7); background: var(--p-surface-50); }
+.approval.resolved .head i { color: var(--aw-teal, #0b625c); }
+.decided { margin: 0.2rem 0 0; padding: 0; list-style: none; }
+.decided li { display: flex; align-items: center; gap: 0.4rem; padding: 0.15rem 0; font-size: 0.76rem; }
+.decided li i { font-size: 0.66rem; color: var(--aw-muted); }
+.decided li small { color: var(--aw-muted); }
 .head { display: flex; align-items: center; gap: 0.5rem; }
 .head i { color: var(--p-amber-500); }
 .head strong { font-size: 0.88rem; }

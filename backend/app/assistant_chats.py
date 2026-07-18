@@ -20,6 +20,13 @@ from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 CHATS_DIRNAME = "AssistantChats"
 CHAT_SCHEMA_VERSION = 1
+# A pending message younger than this is assumed to still be processing (the
+# in-process marker cannot be seen from other workers); older ones are
+# recovered as failed.
+PENDING_RECOVERY_GRACE_SECONDS = 15 * 60
+# Derived transcript items carry no chat ordinal; they sort after every chat
+# message that shares their timestamp.
+DERIVED_ORDINAL = 1e12
 CHAT_ID_RE = re.compile(r"chat_[0-9]{8}_[0-9]{6}_[0-9a-f]{6}\Z")
 MESSAGE_ID_RE = re.compile(r"msg_[0-9a-f]{12}\Z")
 ARTIFACT_ID_RE = re.compile(r"art_[0-9a-f]{12}\Z")
@@ -40,7 +47,9 @@ class RevisionConflict(WorkspaceError):
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Millisecond precision keeps transcript ordering stable: chat messages,
+    # run projections, and run events are interleaved by timestamp string.
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _lock(path: Path) -> threading.RLock:
@@ -114,7 +123,10 @@ def _read(workspace: Workspace, chat_id: str, *, recover: bool = True) -> dict:
         record.setdefault("next_ordinal", len(record["messages"]) + 1)
         key = str(path.resolve())
         if recover and key not in _processing_paths:
-            pending = [item for item in record["messages"] if item.get("state") == "pending"]
+            pending = [
+                item for item in record["messages"]
+                if item.get("state") == "pending" and _pending_expired(item)
+            ]
             if pending:
                 for item in pending:
                     item["state"] = "failed"
@@ -122,6 +134,25 @@ def _read(workspace: Workspace, chat_id: str, *, recover: bool = True) -> dict:
                 record["updated_at"] = utcnow()
                 write_json_atomic(path, record)
         return record
+
+
+def _pending_expired(message: dict) -> bool:
+    """True when a pending message is old enough to be a genuine orphan.
+
+    The in-process ``_processing_paths`` marker is invisible to other worker
+    processes, so a fresh pending message read elsewhere must not be failed
+    while its LLM round-trip may still be running. Unparseable or missing
+    timestamps are treated as expired so real orphans are always recovered.
+    """
+    raw = str(message.get("created_at") or "")
+    try:
+        created = datetime.fromisoformat(raw)
+    except ValueError:
+        return True
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - created).total_seconds()
+    return age > PENDING_RECOVERY_GRACE_SECONDS
 
 
 def _summary(record: dict) -> dict:
@@ -192,6 +223,13 @@ def delete_chat(workspace: Workspace, chat_id: str) -> None:
     if not (target / "chat.json").is_file():
         raise WorkspaceError(f"Assistant chat '{chat_id}' not found.")
     shutil.rmtree(target)
+    # Drop the per-path locks so long-lived processes don't accumulate one
+    # entry per deleted chat.
+    key = str((target / "chat.json"))
+    with _file_locks_guard:
+        _file_locks.pop(key, None)
+    with _processing_locks_guard:
+        _processing_locks.pop(key, None)
 
 
 def capabilities() -> dict:
@@ -365,12 +403,14 @@ def _touch(workspace: Workspace, chat_id: str) -> None:
         write_json_atomic(path, record)
 
 
-def _active_run(workspace: Workspace) -> dict | None:
+def _active_run(workspace: Workspace, summaries: list[dict] | None = None) -> dict | None:
     active = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
-    summaries = [item for item in store.list_runs(workspace) if item.get("status") in active]
-    if not summaries:
+    if summaries is None:
+        summaries = store.list_runs(workspace)
+    matches = [item for item in summaries if item.get("status") in active]
+    if not matches:
         return None
-    return store.load_run(workspace, summaries[0]["id"])
+    return store.load_run(workspace, matches[0]["id"])
 
 
 ASK_WORDS = {"explain", "summarize", "compare", "inspect", "count", "calculate", "show", "what", "why", "how", "which", "who", "when"}
@@ -381,13 +421,14 @@ def _deterministic_intent(content: str) -> str | None:
     words = re.findall(r"[a-z]+", content.casefold())
     if not words:
         return None
-    # Interrogative shape wins over action words used as nouns (for example,
-    # "What did the last run do?").  Only obvious imperatives take the local
-    # action fast path; everything else is classified or clarified.
-    if words[0] in ASK_WORDS or content.rstrip().endswith("?"):
-        return "ask"
+    # An explicit leading imperative wins even when phrased with a trailing
+    # question mark ("Delete the Q3 join?"); interrogative openers stay
+    # questions ("What did the last run do?"). Everything else is classified
+    # or clarified.
     if words[0] in ACT_WORDS or (words[0] == "please" and len(words) > 1 and words[1] in ACT_WORDS):
         return "act"
+    if words[0] in ASK_WORDS or content.rstrip().endswith("?"):
+        return "ask"
     return None
 
 
@@ -414,7 +455,9 @@ def _classifier(record: dict, content: str, active: bool) -> dict:
         value = {}
     if value.get("intent") not in {"ask", "act", "clarify"} or value.get("confidence") not in {"high", "medium", "low"}:
         return {"intent": "clarify", "confidence": "low", "clarification": "I could not safely tell whether you want an answer or a workspace change. Choose Ask or Act."}
-    if value["intent"] == "act" and value["confidence"] != "high":
+    # Actions run through the command runner's own approval policy, so only a
+    # genuinely uncertain classification needs a clarify round-trip.
+    if value["intent"] == "act" and value["confidence"] == "low":
         value["intent"] = "clarify"
         value["clarification"] = value.get("clarification") or "Should I answer this as a question, or carry it out as an action?"
     return value
@@ -470,8 +513,13 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
         try:
             with _lock(path):
                 record = _read(workspace, chat_id, recover=False)
-                existing = next((item for item in record["messages"] if item.get("request_id") == request_id), None)
-                if existing:
+                # Idempotency: replay the newest attempt for this request id,
+                # but let an explicitly failed attempt be retried.
+                existing = next(
+                    (item for item in reversed(record["messages"]) if item.get("request_id") == request_id),
+                    None,
+                )
+                if existing and existing.get("state") != "failed":
                     return {"outcome": existing.get("outcome"), "chat": get_chat(workspace, chat_id)}
                 doc_ids = list(record.get("composer_context", {}).get("document_ids") or [])
                 snapshot = _document_snapshot(workspace, doc_ids)
@@ -502,14 +550,15 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
             return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
         except Exception as error:
             try:
+                outcome = {"kind": "error", "message": str(error)}
                 def fail(record, user):
                     user["state"] = "failed"
                     user["error"] = str(error)
-                    user["outcome"] = {"kind": "error"}
-                    _append_assistant(record, kind="error", content=str(error), resolved=user.get("resolved_intent") or "clarify", reply_to=user["id"], error=str(error), outcome={"kind": "error"})
+                    user["outcome"] = outcome
+                    _append_assistant(record, kind="error", content=str(error), resolved=user.get("resolved_intent") or "clarify", reply_to=user["id"], error=str(error), outcome=outcome)
                 if 'user_id' in locals():
                     _finalize(workspace, chat_id, user_id, fail)
-                    return {"outcome": {"kind": "error"}, "chat": get_chat(workspace, chat_id)}
+                    return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
             except Exception:
                 pass
             raise
@@ -736,13 +785,17 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
         except WorkspaceError as error:
             artifact_errors.append({"id": artifact_id, "error": str(error)})
 
+    run_summaries = store.list_runs(workspace)
     linked = []
-    for summary in store.list_runs(workspace):
+    linked_runs: dict[str, dict] = {}
+    for summary in run_summaries:
         if summary.get("chat_id") == chat_id:
             try:
-                linked.append(_run_projection(store.load_run(workspace, summary["id"])))
+                run = store.load_run(workspace, summary["id"])
             except WorkspaceError:
                 continue
+            linked_runs[run["id"]] = run
+            linked.append(_run_projection(run))
     by_run = {item["run_id"]: item for item in linked}
     transcript = [dict(item, type="message", derived=False) for item in record.get("messages") or []]
     documents_by_id = {str(item.get("id")): item for item in workspace.documents}
@@ -782,17 +835,22 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
     # Run-owned conversational messages and typed attention items are response
     # projections.  They retain stable derived IDs and are never written back
     # through chat APIs.
+    # Steered chat messages are echoed into run message logs without a source
+    # id, so they are hidden by content — but only chat messages that actually
+    # fed a run are compared, so unrelated identical text stays visible.
+    steered_user_text = {
+        str(item.get("content") or "") for item in record.get("messages") or []
+        if item.get("role") == "user" and (
+            (item.get("outcome") or {}).get("run_id")
+            or item.get("resolved_intent") == "interaction_response"
+        )
+    }
     for projection in linked:
-        try:
-            run = store.load_run(workspace, projection["run_id"])
-        except WorkspaceError:
+        run = linked_runs.get(projection["run_id"])
+        if run is None:
             continue
-        stored_user_text = {
-            str(item.get("content") or "") for item in record.get("messages") or []
-            if item.get("role") == "user"
-        }
         for index, message in enumerate(run.get("messages") or []):
-            if message.get("role") == "user" and str(message.get("content") or "") in stored_user_text:
+            if message.get("role") == "user" and str(message.get("content") or "") in steered_user_text:
                 continue
             transcript.append({
                 "id": f"run:{run['id']}:message:{index}", "type": "message", "derived": True,
@@ -815,13 +873,29 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 "derived": True, "run_id": run["id"], "created_at": approval.get("created") or run.get("created"),
                 "approval": approval,
             })
-    transcript.sort(key=lambda item: (str(item.get("created_at") or ""), int(item.get("ordinal") or 0), item.get("id") or ""))
+    # Run projections keep their fractional anchor (source ordinal + 0.5) and
+    # derived items without an ordinal sort after every chat message sharing
+    # their timestamp — both would be destroyed by an int() truncation.
+    transcript.sort(key=lambda item: (
+        str(item.get("created_at") or ""),
+        float(item.get("ordinal") if item.get("ordinal") is not None else DERIVED_ORDINAL),
+        str(item.get("id") or ""),
+    ))
 
     result = dict(record)
     result.update({
         "transcript": transcript, "artifacts": artifacts, "artifact_errors": artifact_errors,
         "runs": linked, "missing_document_ids": missing, "capabilities": capabilities(),
     })
-    active = _active_run(workspace)
+    active_statuses = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
+    active_summary = next((item for item in run_summaries if item.get("status") in active_statuses), None)
+    active = None
+    if active_summary is not None:
+        active = linked_runs.get(active_summary["id"])
+        if active is None:
+            try:
+                active = store.load_run(workspace, active_summary["id"])
+            except WorkspaceError:
+                active = None
     result["active_workspace_run"] = _run_projection(active) if active else None
     return result

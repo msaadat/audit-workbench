@@ -18,6 +18,7 @@ interface ChatState {
   activeChatId: string | null
   chat: AssistantChat | null
   capabilities: AssistantCapabilities | null
+  initialized: boolean
   loading: boolean
   busy: boolean
   error: string | null
@@ -44,7 +45,7 @@ function state(workspaceId: string): ChatState {
   if (!value) {
     value = reactive<ChatState>({
       workspaceId, summaries: [], activeChatId: null, chat: null,
-      capabilities: null, loading: false, busy: false, error: null,
+      capabilities: null, initialized: false, loading: false, busy: false, error: null,
     })
     stores.set(workspaceId, value)
   }
@@ -95,6 +96,9 @@ export function useAssistantChat(workspaceId: string) {
   }
 
   async function init() {
+    // Idempotent: sends and document changes await this freely without
+    // re-fetching summaries and the active chat on every call.
+    if (store.initialized) return
     const existing = initializers.get(workspaceId)
     if (existing) return existing
     const task = (async () => {
@@ -105,6 +109,7 @@ export function useAssistantChat(workspaceId: string) {
         const target = summaries.find(item => item.id === remembered)?.id ?? summaries[0]?.id
         if (target) await switchChat(target)
         else await createChat()
+        store.initialized = true
       } finally { store.loading = false }
     })()
     initializers.set(workspaceId, task)
@@ -155,34 +160,59 @@ export function useAssistantChat(workspaceId: string) {
     content: string,
     intent: AssistantMessageIntent = 'auto',
     mode: AgentMode = 'auto',
-    options: { goalTemplate?: string | null; source?: 'composer' | 'shortcut' | 'tab_button' | 'folder_intake'; runKind?: 'intake'; runContext?: Record<string, unknown> } = {},
+    options: { goalTemplate?: string | null; source?: 'composer' | 'shortcut' | 'tab_button' | 'folder_intake'; runKind?: 'intake'; runContext?: Record<string, unknown>; requestId?: string } = {},
   ) {
     await init()
     if (!store.activeChatId || store.busy) return
     store.busy = true
     store.error = null
+    const rid = options.requestId ?? requestId()
+    // Show the user's message immediately; the server response replaces it.
+    const optimistic: AssistantChatMessage = {
+      id: `optimistic-${rid}`, ordinal: store.chat?.next_ordinal ?? 0, type: 'message',
+      derived: false, role: 'user', kind: 'text', content,
+      created_at: new Date().toISOString(), request_id: rid, state: 'pending',
+      requested_intent: intent, resolved_intent: null, reply_to_id: null,
+      artifact_ids: [], outcome: null, error: null,
+    }
+    store.chat?.transcript.push(optimistic)
     try {
       const result = await api.post<{ outcome: Record<string, unknown>; chat: AssistantChat }>(
         `/api/workspaces/${workspaceId}/assistant/chats/${store.activeChatId}/messages`,
         {
-          content, intent, mode, request_id: requestId(),
+          content, intent, mode, request_id: rid,
           goal_template: options.goalTemplate ?? null, source: options.source ?? 'composer',
           run_kind: options.runKind ?? null, run_context: options.runContext ?? null,
         },
       )
       store.chat = result.chat
       store.capabilities = result.chat.capabilities
+      const outcome = result.outcome as { kind?: string; message?: string } | undefined
+      if (outcome?.kind === 'error') {
+        throw new Error(outcome.message || 'The assistant could not process this message.')
+      }
       await loadSummaries()
       return result
     } catch (error) {
-      store.error = error instanceof Error ? error.message : String(error)
+      const detail = error instanceof Error ? error.message : String(error)
+      store.error = detail
       await refresh().catch(() => undefined)
+      // If the server never recorded the message (network/validation error),
+      // keep a failed copy in the transcript so Retry stays available.
+      if (store.chat) {
+        store.chat.transcript = store.chat.transcript.filter(item => item.id !== optimistic.id)
+        if (!store.chat.messages.some(item => item.request_id === rid)) {
+          store.chat.transcript.push({ ...optimistic, state: 'failed', error: detail })
+        }
+      }
       throw error
     } finally { store.busy = false }
   }
 
   async function retry(message: AssistantChatMessage, mode: AgentMode) {
-    return send(message.content, message.requested_intent ?? 'auto', mode, { source: 'composer' })
+    return send(message.content, message.requested_intent ?? 'auto', mode, {
+      source: 'composer', requestId: message.request_id ?? undefined,
+    })
   }
 
   async function updateArtifact(artifact: AssistantArtifact, changes: Record<string, unknown>) {

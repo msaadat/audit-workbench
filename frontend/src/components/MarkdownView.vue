@@ -39,14 +39,21 @@ function cells(line: string): string[] {
 
 const html = computed(() => {
   const out: string[] = []
-  let inList = false
+  let listTag: 'ul' | 'ol' | null = null
+  function closeList() {
+    if (listTag) { out.push(`</${listTag}>`); listTag = null }
+  }
+  function pushItem(tag: 'ul' | 'ol', content: string) {
+    if (listTag !== tag) { closeList(); out.push(`<${tag}>`); listTag = tag }
+    out.push(`<li>${inline(content)}</li>`)
+  }
   const lines = (props.markdown || '').split('\n')
   for (let index = 0; index < lines.length; index += 1) {
     const raw = lines[index]
     const line = raw.trimEnd()
     const next = lines[index + 1]?.trim() ?? ''
     if (line.includes('|') && /^\|?\s*:?-{3,}/.test(next) && next.includes('|')) {
-      if (inList) { out.push('</ul>'); inList = false }
+      closeList()
       const headers = cells(line)
       out.push(`<table><thead><tr>${headers.map(cell => `<th>${inline(cell)}</th>`).join('')}</tr></thead><tbody>`)
       index += 2
@@ -60,16 +67,14 @@ const html = computed(() => {
     }
     const heading = /^(#{1,4})\s+(.*)$/.exec(line)
     const bullet = /^[-*]\s+(.*)$/.exec(line)
-    if (bullet) {
-      if (!inList) { out.push('<ul>'); inList = true }
-      out.push(`<li>${inline(bullet[1])}</li>`)
-      continue
-    }
-    if (inList) { out.push('</ul>'); inList = false }
+    const ordered = /^\d{1,3}[.)]\s+(.*)$/.exec(line)
+    if (bullet) { pushItem('ul', bullet[1]); continue }
+    if (ordered) { pushItem('ol', ordered[1]); continue }
+    closeList()
     if (heading) out.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`)
     else if (line.trim()) out.push(`<p>${inline(line)}</p>`)
   }
-  if (inList) out.push('</ul>')
+  closeList()
   return out.join('\n')
 })
 </script>
@@ -82,7 +87,7 @@ const html = computed(() => {
 .markdown-view :deep(h2) { font-size: 1.05rem; margin: 1rem 0 0.4rem; }
 .markdown-view :deep(h3), .markdown-view :deep(h4) { font-size: 0.92rem; margin: 0.8rem 0 0.3rem; }
 .markdown-view :deep(p) { margin: 0.35rem 0; }
-.markdown-view :deep(ul) { margin: 0.35rem 0; padding-left: 1.25rem; }
+.markdown-view :deep(ul), .markdown-view :deep(ol) { margin: 0.35rem 0; padding-left: 1.25rem; }
 .markdown-view :deep(code) { background: var(--p-surface-100); border-radius: 4px; padding: 0 0.25rem; }
 .markdown-view :deep(a) { color: var(--aw-teal, var(--p-primary-color)); text-decoration: underline; text-underline-offset: 2px; }
 .markdown-view :deep(table) { width: 100%; margin: 0.75rem 0; border-collapse: collapse; font-size: 0.82rem; }

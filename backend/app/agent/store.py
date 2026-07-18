@@ -52,7 +52,9 @@ _run_locks_guard = threading.Lock()
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Millisecond precision matches the assistant-chat store so interleaved
+    # transcript items sort stably by timestamp string.
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _event_lock(run_dir: Path) -> threading.Lock:
