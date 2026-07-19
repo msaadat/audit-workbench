@@ -15,6 +15,7 @@ from .. import (
     rcm_execution, sandbox, validation,
 )
 from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError, slugify
+from ..workspace_transactions import mutate, parent_hashes
 from . import actions, artifact_index, ledger, prompts, store
 from .base import BaseRunner, Cancelled, LimitExceeded
 
@@ -517,6 +518,7 @@ class CommandRunner(BaseRunner):
         if missing:
             raise WorkspaceError(f"Planning source document not found: {sorted(missing)[0]}.")
         context = self.ws.planning.get("context") or {}
+        expected_context = parent_hashes(self.ws, ["planning:context"])
         if not requested_document_ids:
             self.task_detail(task, "Selecting relevant documents for audit planning…")
             requested_document_ids = self._select_planning_documents(task, context)
@@ -718,7 +720,17 @@ class CommandRunner(BaseRunner):
                         and str(value or "").strip()
                     }
                     if accepted_context:
-                        self.ws.update_planning({"context": accepted_context}, agent=True)
+                        committed = mutate(
+                            self.ws,
+                            lambda fresh: fresh.update_planning(
+                                {"context": accepted_context}, agent=True
+                            ),
+                            expected_parents=expected_context,
+                        )
+                        self.ws = committed.workspace
+                        expected_context = parent_hashes(
+                            self.ws, ["planning:context"]
+                        )
                         self.record_artifact("planning", "context", "planning:context", "updated", task)
         # Store an immutable provenance snapshot that includes any context just
         # persisted above. Later planning mutations must not rewrite this basis.
@@ -981,20 +993,27 @@ class CommandRunner(BaseRunner):
         overlap = len(left_words & right_words) / max(1, len(left_words | right_words))
         return max(overlap, SequenceMatcher(None, left_text, right_text).ratio())
 
-    def _match_rcm_revision(self, spec: dict, semantic: str) -> tuple[dict | None, bool]:
+    def _match_rcm_revision(
+        self,
+        spec: dict,
+        semantic: str,
+        *,
+        workspace: Workspace | None = None,
+    ) -> tuple[dict | None, bool]:
+        current = workspace or self.ws
         explicit = artifact_index.canonical_id(
             spec.get("rcm_id") or spec.get("id"), "rcm"
         )
         if explicit:
-            return next((row for row in self.ws.rcm if row.get("id") == explicit), None), False
-        exact = self.ws.find_semantic("rcm", semantic)
+            return next((row for row in current.rcm if row.get("id") == explicit), None), False
+        exact = current.find_semantic("rcm", semantic)
         if exact:
             return exact, False
         narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
         ranked = sorted(
             (
                 (self._similarity(narrative, f"{row.get('process', '')} {row.get('risk', '')}"), row)
-                for row in self.ws.rcm
+                for row in current.rcm
             ),
             key=lambda item: (-item[0], str(item[1].get("id"))),
         )
@@ -2379,7 +2398,7 @@ class CommandRunner(BaseRunner):
     def _wait_interaction(self, action: dict, interaction: dict) -> None:
         self.set_status("awaiting_input" if interaction["type"] in {"clarification", "target_choice", "conflict_resolution"} else "awaiting_approval")
         waited_from = time.monotonic()
-        response = None
+        response = interaction.pop("submitted_response", None)
         while response is None:
             if self.handle.cancel.is_set():
                 raise Cancelled()

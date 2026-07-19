@@ -195,6 +195,10 @@ def new_command_run(
             "chat_id": str(command.get("chat_id") or "").strip() or None,
             "source_message_id": str(command.get("source_message_id") or "").strip() or None,
             "context_refs": list(command.get("context_refs") or []),
+            "requested_outcomes": [str(value) for value in command.get("requested_outcomes") or []],
+            "target_refs": [str(value) for value in command.get("target_refs") or []],
+            "refresh_policy": str(command.get("refresh_policy") or "missing_or_stale"),
+            "constraints": [str(value) for value in command.get("constraints") or []],
         },
         "goal": {"objective": text, "constraints": [], "completion_criteria": []},
         "graph_revision": 0,
@@ -288,10 +292,26 @@ def _hydrate_run(run: dict) -> None:
         command.setdefault("chat_id", run.get("chat_id"))
         command.setdefault("source_message_id", run.get("source_message_id"))
         command.setdefault("context_refs", [])
+        command.setdefault("requested_outcomes", [])
+        command.setdefault("target_refs", [])
+        command.setdefault("refresh_policy", "missing_or_stale")
+        command.setdefault("constraints", [])
         for pending in run.get("pending_commands") or []:
             pending.setdefault("chat_id", None)
             pending.setdefault("source_message_id", None)
             pending.setdefault("context_refs", [])
+    if run["schema_version"] >= 3:
+        workflow = run.setdefault("workflow", {})
+        workflow.setdefault("definition", "audit_workflow_v2")
+        workflow.setdefault("requested_outcomes", [])
+        workflow.setdefault("target_refs", ["workspace:current"])
+        workflow.setdefault("refresh_policy", "missing_or_stale")
+        workflow.setdefault("workflow_explanation", "")
+        workflow.setdefault("next_outcomes", [])
+        workflow.setdefault("pending_checkpoint", None)
+        workflow.setdefault("resolved_capabilities", [])
+        workflow.setdefault("reused_capabilities", [])
+        workflow.setdefault("stages", [])
 
 
 def list_runs(workspace: Workspace) -> list[dict]:
@@ -316,7 +336,19 @@ def list_runs(workspace: Workspace) -> list[dict]:
 def run_summary(run: dict) -> dict:
     tasks = [t for s in (run.get("plan") or {}).get("stages", []) for t in s.get("tasks", [])]
     actions = run.get("actions") or []
-    if actions:
+    workflow_units = [
+        unit
+        for stage in (run.get("workflow") or {}).get("stages") or []
+        for unit in stage.get("units") or []
+    ]
+    if workflow_units:
+        counts = {
+            "total": len(workflow_units),
+            "completed": sum(1 for unit in workflow_units if unit.get("status") in {"succeeded", "skipped"}),
+            "failed": sum(1 for unit in workflow_units if unit.get("status") in {"failed", "conflict"}),
+            "blocked": sum(1 for unit in workflow_units if unit.get("status") in {"blocked", "awaiting_input", "awaiting_confirmation"}),
+        }
+    elif actions:
         counts = {
             "total": len(actions),
             "completed": sum(1 for action in actions if action["status"] == "succeeded"),
@@ -354,6 +386,9 @@ def run_summary(run: dict) -> dict:
         "error": run.get("error"),
         "cancellation": run.get("cancellation"),
         "has_summary": bool(run.get("summary_markdown")),
+        "requested_outcomes": list((run.get("workflow") or {}).get("requested_outcomes") or []),
+        "next_outcomes": list((run.get("workflow") or {}).get("next_outcomes") or []),
+        "workflow_explanation": (run.get("workflow") or {}).get("workflow_explanation"),
     }
 
 

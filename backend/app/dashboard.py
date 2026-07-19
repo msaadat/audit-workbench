@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from . import analytics, data_tests, debug_store, doc_tests, explore, llm, rcm_execution, report, sandbox, validation
 from .agent.prompts import parse_json_object, validate_json_shape
-from .workspaces import Workspace
+from .workspaces import Workspace, sync_workspace
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
 PHASE_TABS = {"planning": "planning", "fieldwork": "doc-tests", "report": "report"}
@@ -522,6 +522,8 @@ def curate_rcm_tiles(workspace: Workspace, *, run_id: str | None = None) -> dict
             "No semantically valid, non-duplicate RCM-linked result scored above the curation threshold."
             if not actionable else "Relevant results are already pinned or the dashboard is at its six-tile curation cap."
         )
+    from .workspace_transactions import canonical_sha1, material_projection
+
     curation = {
         "completed_at": _now(),
         "run_id": run_id,
@@ -532,6 +534,9 @@ def curate_rcm_tiles(workspace: Workspace, *, run_id: str | None = None) -> dict
         "coverage_ok": bool(created or reason or not actionable),
         "below_recommended_minimum": bool(actionable >= CURATED_TILE_MIN and len(workspace.tiles) < CURATED_TILE_MIN),
         "rejected": rejected[:20],
+        "workflow_parent_sha1": canonical_sha1(
+            {"rcm": material_projection(workspace.rcm)}
+        ),
     }
     workspace.planning["dashboard_curation"] = curation
     workspace.save()
@@ -595,7 +600,7 @@ Prefer specific, non-duplicative advice that adds judgment beyond the determinis
     stale = _snapshot_hash(_advice_snapshot(latest_snapshot)) != advice["input_hash"]
     latest.dashboard_advice = advice
     latest.save()
-    workspace.dashboard_advice = advice
+    sync_workspace(workspace, latest)
     return {**advice, "stale": stale}
 
 

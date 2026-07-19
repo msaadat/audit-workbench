@@ -1,5 +1,6 @@
 export interface WorkspaceListItem {
   id: string
+  revision: number
   name: string
   description: string
   created: string
@@ -27,6 +28,7 @@ export interface TableInfo {
 
 export interface WorkspaceSummary {
   id: string
+  revision: number
   name: string
   description: string
   created: string
@@ -1233,6 +1235,58 @@ export interface AgentStage {
   tasks: AgentTask[]
 }
 
+export type WorkflowReadinessState =
+  | 'satisfied' | 'missing' | 'stale' | 'blocked' | 'review_required'
+
+export type WorkflowUnitStatus =
+  | 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked'
+  | 'awaiting_input' | 'awaiting_confirmation' | 'conflict'
+  | 'skipped' | 'cancelled'
+
+export interface WorkflowUnit {
+  id: string
+  kind: string
+  title: string
+  capability: string
+  parent_refs: string[]
+  status: WorkflowUnitStatus
+  attempts: number
+  input_sha1: string
+  proposal_sidecar: { sha1: string; path: string } | null
+  result_refs: string[]
+  error: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface WorkflowStage {
+  id: string
+  capability: string
+  title: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'review_required' | 'blocked' | 'skipped' | 'cancelled'
+  barrier: string
+  units: WorkflowUnit[]
+  readiness_before?: { state: WorkflowReadinessState; reasons?: string[]; blocking_on?: string[] }
+  started_at?: string | null
+  finished_at?: string | null
+}
+
+export interface AgentWorkflow {
+  definition: 'audit_workflow_v2' | string
+  revision: number
+  route: 'workflow'
+  requested_outcomes: string[]
+  target_refs: string[]
+  refresh_policy: 'missing_or_stale' | 'force'
+  workflow_explanation: string
+  next_outcomes: string[]
+  pending_checkpoint: string | null
+  resolved_capabilities: string[]
+  reused_capabilities: string[]
+  workspace_revision: number
+  stages: WorkflowStage[]
+}
+
 export interface AgentApprovalItem {
   id: string
   title: string
@@ -1317,6 +1371,7 @@ export interface AgentAuditOutcome {
   draft_findings: number
   report_quality_ok: boolean | null
   report_quality_errors: number
+  output_readiness?: Record<string, { state: WorkflowReadinessState; reasons?: string[] }>
   open_gate_count: number
 }
 
@@ -1344,6 +1399,31 @@ export interface AgentRun {
     custom_analyses?: number
     planner_waves?: number
     actions_started?: number
+    prompt_tokens?: number
+    completion_tokens?: number
+    estimated_prompt_tokens?: number
+    request_characters?: number
+    retries?: number
+    max_concurrent_model_calls?: number
+    model_calls_by_worker?: Record<string, number>
+    model_usage_by_worker?: Record<string, {
+      calls: number
+      prompt_tokens: number
+      completion_tokens: number
+      request_characters: number
+      latency_ms: number
+      retries: number
+    }>
+    model_call_metrics?: Array<{
+      worker: string
+      request_characters: number
+      estimated_input_tokens: number
+      prompt_tokens: number
+      completion_tokens: number
+      latency_ms: number
+      retry_number: number
+      context_metrics?: Record<string, unknown> | null
+    }>
   }
   discovery: AgentDiscovery
   plan: { stages: AgentStage[] }
@@ -1372,6 +1452,8 @@ export interface AgentRun {
   rejected_proposals?: AgentRejectedProposal[]
   lifecycle_adjustments?: Record<string, unknown>[]
   interactions?: AgentInteraction[]
+  workflow?: AgentWorkflow
+  workflow_explanation?: string
   pending_commands?: AgentCommand[]
   interview?: {
     captured: Record<string, unknown>
@@ -1401,6 +1483,9 @@ export interface AgentRunSummary {
   error: string | null
   cancellation?: AgentRun['cancellation']
   has_summary: boolean
+  requested_outcomes?: string[]
+  next_outcomes?: string[]
+  workflow_explanation?: string | null
 }
 
 export interface AgentEvent {
@@ -1472,7 +1557,7 @@ export interface AgentAction {
 
 export type AgentInteractionType =
   | 'clarification' | 'target_choice' | 'confirmation'
-  | 'proposal_approval' | 'conflict_resolution'
+  | 'proposal_approval' | 'conflict_resolution' | 'observation_disposition'
 
 export interface AgentInteractionOption {
   value?: string

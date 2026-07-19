@@ -68,8 +68,7 @@ function fail(summary: string, error: unknown) {
 function initializeSteps(row: RcmRow) {
   stepDrafts.value = Object.fromEntries(row.planned_tests.map(item => [item.id, item.steps.join('\n')]))
 }
-async function reload(rollup = false) {
-  if (rollup) await api.post(`/api/workspaces/${props.workspace.id}/rcm/rollup`)
+async function reload() {
   data.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
   const requestedView = String(route.query.view || '')
   if (requestedView === 'rcm') view.value = 'rcm'
@@ -90,9 +89,9 @@ async function reload(rollup = false) {
     if (row) initializeSteps(row)
   }
 }
-onMounted(() => void reload(true).catch(error => fail('Could not load planning', error)))
+onMounted(() => void reload().catch(error => fail('Could not load planning', error)))
 const unsubscribe = agent.onWorkspaceChanged(change => {
-  if (['planning', 'rcm', 'planned_test', 'datatest', 'doctest', 'observation', 'evidence_request'].includes(change.kind)) void reload(true)
+  if (['planning', 'rcm', 'planned_test', 'datatest', 'doctest', 'observation', 'evidence_request'].includes(change.kind)) void reload()
 })
 onUnmounted(unsubscribe)
 
@@ -149,7 +148,7 @@ async function saveRcmDetail() {
       control_owner: selectedRcm.value.control_owner, criteria: selectedRcm.value.criteria,
       review_status: selectedRcm.value.review_status,
     })
-    await reload(true)
+    await reload()
     toast.add({ severity: 'success', summary: 'RCM row saved', life: 1800 })
   } catch (error) { fail('Could not save the RCM row', error) }
 }
@@ -185,7 +184,7 @@ async function addPlannedTest() {
     await api.post(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests`, {
       title: 'New planned test', objective: 'Describe the test objective.', method: 'data_analytics', steps: [],
     })
-    await reload(true)
+    await reload()
   } catch (error) { fail('Could not add the planned test', error) }
 }
 async function savePlannedTest(item: PlannedTest) {
@@ -199,7 +198,7 @@ async function savePlannedTest(item: PlannedTest) {
       scope_limitations: item.scope_limitations,
       next_action: item.next_action,
     })
-    await reload(true)
+    await reload()
     emit('changed')
     toast.add({ severity: 'success', summary: 'Planned test saved', life: 1800 })
   } catch (error) { fail('Could not save the planned test', error) }
@@ -210,7 +209,7 @@ async function saveObservation(item: AuditObservation) {
     await api.patch(`/api/workspaces/${props.workspace.id}/observations/${item.id}`, {
       disposition: item.disposition, auditor_note: item.auditor_note,
     })
-    await reload(true)
+    await reload()
     emit('changed')
   } catch (error) { fail('Could not disposition the observation', error) }
 }
@@ -228,7 +227,7 @@ async function promoteObservation(item: AuditObservation) {
 }
 async function removePlannedTest(item: PlannedTest) {
   if (!selectedRcm.value) return
-  try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests/${item.id}`); await reload(true); emit('changed') }
+  try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests/${item.id}`); await reload(); emit('changed') }
   catch (error) { fail('Could not remove the planned test', error) }
 }
 function openExecution(ref: string) {
@@ -240,7 +239,12 @@ function createExecution(item: PlannedTest, kind: 'data' | 'document') {
   void router.replace({ query: { tab: kind === 'data' ? 'data-tests' : 'doc-tests', create: '1', rcm: selectedRcm.value.id, planned_test: item.id } })
 }
 async function refreshRollup() {
-  try { await reload(true); emit('changed'); toast.add({ severity: 'success', summary: 'Execution roll-up refreshed', life: 1800 }) }
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/rcm/rollup`)
+    await reload()
+    emit('changed')
+    toast.add({ severity: 'success', summary: 'Execution roll-up refreshed', life: 1800 })
+  }
   catch (error) { fail('Could not refresh the roll-up', error) }
 }
 async function openWorkingPaper() {

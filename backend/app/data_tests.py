@@ -208,6 +208,7 @@ def create(workspace: Workspace, payload: dict) -> dict:
         "evidence_refs": [],
         "created_by": "agent" if payload.get("agent_run_id") else "user",
         "agent_run_id": payload.get("agent_run_id"),
+        "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
         "created": now,
         "updated": now,
     }
@@ -217,13 +218,21 @@ def create(workspace: Workspace, payload: dict) -> dict:
     return item
 
 
-def update(workspace: Workspace, data_test_id: str, changes: dict) -> dict:
+def update(
+    workspace: Workspace,
+    data_test_id: str,
+    changes: dict,
+    *,
+    agent: bool = False,
+) -> dict:
     item = _record(workspace, data_test_id)
     allowed = {
         "title", "objective", "engine", "table_refs", "spec", "rcm_id",
-        "planned_test_id", "auditor_disposition",
+        "planned_test_id", "auditor_disposition", "workflow_parent_sha1",
     }
     unknown = set(changes) - allowed
+    if "workflow_parent_sha1" in changes and not agent:
+        unknown.add("workflow_parent_sha1")
     if unknown:
         raise WorkspaceError(f"Unknown Data Test field: {sorted(unknown)[0]}.")
     title = str(changes.get("title", item["title"]) or "").strip()
@@ -257,9 +266,12 @@ def update(workspace: Workspace, data_test_id: str, changes: dict) -> dict:
         spec=spec,
         semantic_warnings=warnings,
         auditor_disposition=disposition,
+        workflow_parent_sha1=str(
+            changes.get("workflow_parent_sha1", item.get("workflow_parent_sha1")) or ""
+        ) or None,
         updated=utcnow(),
     )
-    if item.get("created_by") == "agent":
+    if not agent and item.get("created_by") == "agent":
         item["created_by"] = "user"
     # A changed definition must be executed again; history remains immutable.
     item["status"] = "ready"
@@ -377,7 +389,8 @@ def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | 
     return output, summary, exceptions, exception_count, list(dict.fromkeys(issues))
 
 
-def run(workspace: Workspace, data_test_id: str) -> dict:
+def compute(workspace: Workspace, data_test_id: str) -> dict:
+    """Compute an immutable result candidate without mutating the workspace."""
     item = _record(workspace, data_test_id)
     run_id = f"DTR-{uuid.uuid4().hex[:12].upper()}"
     run_at = utcnow()
@@ -437,21 +450,97 @@ def run(workspace: Workspace, data_test_id: str) -> dict:
         "error": error,
     }
     result["result_sha1"] = _sha1(result)
-    write_json_atomic(_result_path(workspace, data_test_id, run_id), result)
-    history = {
-        key: result[key]
-        for key in (
-            "id", "run_at", "status", "verdict", "exception_count", "semantic_valid",
-            "dataset_fingerprints", "source_sha1", "result_sha1",
-        )
-    }
-    item.setdefault("runs", []).append(history)
-    del item["runs"][:-RUN_HISTORY_MAX]
-    item["last_run"] = history
-    item["status"] = status
-    item["updated"] = run_at
-    workspace.save()
     return result
+
+
+def commit_result(
+    workspace: Workspace,
+    data_test_id: str,
+    result: dict,
+    *,
+    expected_definition_sha1: str | None = None,
+) -> dict:
+    """Commit one computed candidate under parent-hash/revision coordination."""
+    from .workspace_transactions import (
+        canonical_sha1,
+        complete_linked_write,
+        material_projection,
+        mutate,
+        parent_hashes,
+        prepare_linked_write,
+        rollback_linked_write,
+    )
+
+    expected = expected_definition_sha1 or parent_hashes(
+        workspace, [f"datatest:{data_test_id}"]
+    )[f"datatest:{data_test_id}"]
+
+    linked_writes = []
+
+    def commit(fresh: Workspace) -> dict:
+        item = _record(fresh, data_test_id)
+        candidate = dict(result)
+        supplied_sha1 = candidate.get("result_sha1")
+        actual_sha1 = _sha1({key: value for key, value in candidate.items() if key != "result_sha1"})
+        if supplied_sha1 != actual_sha1:
+            raise WorkspaceError("The Data Test result candidate failed its integrity check.")
+        if canonical_sha1(material_projection(item)) != expected:
+            # ``mutate`` normally catches this first. Keep the check next to
+            # the file write so future direct callers cannot bypass it.
+            raise WorkspaceError("The Data Test definition changed before its result could be committed.")
+        result_path = _result_path(fresh, data_test_id, str(candidate["id"]))
+        linked_write = prepare_linked_write(fresh, result_path, candidate)
+        linked_writes.append(linked_write)
+        write_json_atomic(result_path, candidate)
+        history = {
+            key: candidate[key]
+            for key in (
+                "id", "run_at", "status", "verdict", "exception_count", "semantic_valid",
+                "dataset_fingerprints", "source_sha1", "result_sha1",
+            )
+        }
+        item.setdefault("runs", []).append(history)
+        del item["runs"][:-RUN_HISTORY_MAX]
+        item["last_run"] = history
+        item["status"] = candidate["status"]
+        item["updated"] = candidate["run_at"]
+        return candidate
+
+    try:
+        committed = mutate(
+            workspace,
+            commit,
+            expected_parents={f"datatest:{data_test_id}": expected},
+        )
+    except Exception:
+        for linked_write in reversed(linked_writes):
+            rollback_linked_write(linked_write)
+        raise
+    else:
+        for linked_write in linked_writes:
+            complete_linked_write(linked_write)
+    from .workspaces import sync_workspace
+
+    # Preserve the long-standing service contract for callers that retain row,
+    # planned-test, or Data Test references after ``run``.
+    sync_workspace(workspace, committed.workspace)
+    return committed.value
+
+
+def run(workspace: Workspace, data_test_id: str) -> dict:
+    expected = None
+    from .workspace_transactions import parent_hashes
+
+    expected = parent_hashes(workspace, [f"datatest:{data_test_id}"])[
+        f"datatest:{data_test_id}"
+    ]
+    result = compute(workspace, data_test_id)
+    return commit_result(
+        workspace,
+        data_test_id,
+        result,
+        expected_definition_sha1=expected,
+    )
 
 
 def load_result(workspace: Workspace, data_test_id: str, run_id: str) -> dict:

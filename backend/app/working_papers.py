@@ -282,7 +282,19 @@ def render_rcm(workspace: Workspace, rcm_id: str) -> dict:
 
 
 def generate_rcm(workspace: Workspace, rcm_id: str) -> dict:
+    from .workspace_transactions import mutate, parent_hashes
+
     paper = render_rcm(workspace, rcm_id)
-    path = workspace.root / "WorkingPapers" / f"{rcm_id}.json"
-    write_json_atomic(path, paper)
-    return paper
+    expected = parent_hashes(workspace, [f"rcm:{rcm_id}"])
+    paper["workflow_parent_sha1"] = expected[f"rcm:{rcm_id}"]
+
+    def commit(fresh: Workspace) -> dict:
+        path = fresh.root / "WorkingPapers" / f"{rcm_id}.json"
+        write_json_atomic(path, paper)
+        return paper
+
+    result = mutate(workspace, commit, expected_parents=expected)
+    from .workspaces import sync_workspace
+
+    sync_workspace(workspace, result.workspace)
+    return result.value

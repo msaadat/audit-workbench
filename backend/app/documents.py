@@ -514,7 +514,7 @@ def activities(workspace: Workspace, cursor: int = 0, limit: int = 100, document
 
 
 def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[int] | None,
-                  *, run_id: str | None = None) -> dict:
+                  *, run_id: str | None = None, model_adapter=None) -> dict:
     question = str(question or "").strip()
     if not question:
         raise WorkspaceError("A document question is required.")
@@ -539,6 +539,10 @@ def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[
     system = """[agent:document_qa]\nAnswer only from the included pages. Return one JSON object only, with `answer` as a string and `citations` as an array of objects. Each citation object has `page` as an integer and `excerpt` as a short verbatim string. If the answer is absent, say so. Do not invent facts. Do not return prose outside the JSON object or a Markdown fence."""
     page_text = "\n\n".join(f"--- Page {page['page']} ---\n{page['text']}" for page in included["pages"])
     user = f"Question: {question}\n\nIncluded document pages:\n{page_text}"
+    if model_adapter is not None and len(system) + len(user) > 30_000:
+        raise WorkspaceError(
+            "The document Q&A context exceeds the 30,000-character workflow budget."
+        )
     profile = llm.agent_status()
     response_text = ""
     try:
@@ -551,9 +555,28 @@ def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[
                 purpose="document_qa", document_ids=[doc_id],
                 artifact_refs=[f"document_qa:{doc_id}"],
             ):
-                message = llm.chat(
-                    [{"role": "system", "content": system}, {"role": "user", "content": attempt_user}],
-                    profile="agent",
+                messages = [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": attempt_user},
+                ]
+                message = (
+                    model_adapter(messages, {
+                        "document_ids": [doc_id],
+                        "artifact_refs": [f"document_qa:{doc_id}"],
+                        "context_metrics": {
+                            "worker_kind": "document_qa_execution",
+                            "character_budget": 30_000,
+                            "total_characters": len(system) + len(attempt_user),
+                            "section_characters": {
+                                "system": len(system), "question_and_pages": len(attempt_user),
+                            },
+                            "estimated_tokens": max(1, (len(system) + len(attempt_user)) // 4),
+                            "context_reducer_ran": False,
+                        },
+                        "retry_number": attempt,
+                    })
+                    if model_adapter is not None
+                    else llm.chat(messages, profile="agent")
                 )
             response_text = message.get("content") or ""
             try:

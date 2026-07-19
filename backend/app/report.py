@@ -32,6 +32,7 @@ def hydrate(workspace: Workspace) -> dict:
         "edited": False,
         "updated": None,
         "generation_warnings": [],
+        "workflow_parent_sha1": None,
     }
     stored = workspace.report or {}
     return {**defaults, **{key: stored[key] for key in defaults if key in stored}}
@@ -438,6 +439,9 @@ def generate(workspace: Workspace, *, use_model: bool = True, run_id: str | None
         "generated_at": timestamp,
         "generated_by_run": run_id,
         "generation_warnings": warnings,
+        "workflow_parent_sha1": hashlib.sha1(
+            json.dumps(context, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest(),
         "updated": timestamp,
     }
     if not had_edits:

@@ -67,6 +67,11 @@ async def upload_documents(
     indexing_job = document_search.enqueue_indexing(
         ws, [document["id"] for document in changed], reason="upload",
     )
+    runner.notify_evidence_available(
+        ws,
+        document_ids=[document["id"] for document in changed],
+        reason="document_uploaded",
+    )
     return {
         "added": added,
         "replaced": replaced,
@@ -183,7 +188,10 @@ async def reindex_document(workspace_id: str, doc_id: str):
 
 @router.patch("/documents/{doc_id}")
 async def patch_document(workspace_id: str, doc_id: str, payload: dict = Body(...)):
-    return documents.update_document(_ws(workspace_id), doc_id, payload)
+    ws = _ws(workspace_id)
+    result = documents.update_document(ws, doc_id, payload)
+    runner.notify_evidence_available(ws, document_ids=[doc_id], reason="document_classified")
+    return result
 
 
 @router.delete("/documents/{doc_id}")

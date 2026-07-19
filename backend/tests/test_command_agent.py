@@ -5,7 +5,7 @@ import polars as pl
 import pytest
 
 from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, workspaces
-from app.agent import actions, artifact_index, command_runner, ledger, runner, store
+from app.agent import actions, artifact_index, audit_capabilities, command_runner, ledger, runner, store
 from conftest import FakeAgentLLM, wait_run
 
 
@@ -1439,52 +1439,6 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         assert policy["id"] in user
         return {"selected": [{"id": policy["id"], "reason": "Governs procurement approval."}]}
 
-    def interpret(user):
-        payload = json.loads(user)
-        assert payload["prepared_planning"]["document_content_included"] is True
-        manifest = payload["prepared_planning"]["execution_manifest"]
-        assert manifest[0]["method"] == "document_inspection"
-        assert manifest[0]["required_execution"] == ["doctest"]
-        kinds = {item["kind"] for item in payload["workspace_index"]["artifacts"]}
-        assert {"planning", "rcm", "planned_test"} <= kinds
-        planned = next(
-            item for item in payload["workspace_index"]["artifacts"]
-            if item["kind"] == "planned_test"
-        )
-        rcm_id = next(
-            ref.split(":", 1)[1]
-            for ref in planned["linked_refs"] if ref.startswith("rcm:")
-        )
-        return {
-            "objective": "Complete the full audit through reporting",
-            "constraints": [], "completion_criteria": [],
-            "actions": [
-                {
-                    "id": "redundant-apm", "type": "generate_apm",
-                    "args": {"apm_markdown": "one line"},
-                },
-                {
-                    "id": "test-approvals", "type": "create_document_test",
-                    "args": {
-                        "kind": "review", "title": "Procurement approval review",
-                        "items": [{
-                            "label": "Review approval evidence",
-                            "document_ids": [policy["id"]], "page": 1,
-                            "excerpt": "requisitions require approval",
-                        }],
-                        "rcm_id": rcm_id,
-                        "planned_test_id": planned["ref"].split(":", 1)[1],
-                    },
-                    "depends_on": ["redundant-apm"],
-                },
-                {
-                    "id": "run-approvals", "type": "run_document_test",
-                    "target": {"kind": "doctest", "resolved_id": "test-approvals"},
-                    "depends_on": ["test-approvals"],
-                },
-            ],
-        }
-
     complete_apm = (
         "# Audit Planning Memorandum\n\n## Engagement\n\nEntity and scope.\n\n"
         "## Introduction and background\n\nProcurement background.\n\n"
@@ -1521,7 +1475,15 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
             "steps": ["Select purchases and inspect approval evidence."],
             "method": "document_inspection", "expected_evidence": "Approved requisitions",
         }]},
-        "agent:command_interpreter": interpret,
+        "agent:document_test_spec": {"document_test": {
+            "kind": "review", "title": "Procurement approval review",
+            "spec": {},
+            "items": [{
+                "label": "Review approval evidence",
+                "document_ids": [policy["id"]], "page": 1,
+                "excerpt": "requisitions require approval",
+            }],
+        }},
     })
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "backend": "fake", "model": "fake"})
@@ -1533,29 +1495,22 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     reloaded = workspaces.load_workspace(workspace_with_data.id)
 
     assert completed["status"] == "completed_with_open_items"
-    action_types = {item["type"] for item in completed["actions"]}
-    assert {
-        "create_document_test", "rollup_rcm_results", "generate_all_rcm_working_papers",
-        "curate_dashboard", "generate_report", "run_report_quality",
-        "verify_audit_completion",
-    } <= action_types
+    call_tags = [call["tag"] for call in fake.calls]
+    assert "agent:command_interpreter" not in call_tags
+    assert "agent:document_test_spec" in call_tags
+    assert completed["workflow"]["requested_outcomes"] == audit_capabilities.FULL_AUDIT_OUTCOMES
+    assert completed["actions"] == []
     assert "## Key risks and planned response" in reloaded.planning["apm_markdown"]
     assert reloaded.rcm[-1]["control"] == "Approval before commitment"
     assert reloaded.work_program == []
     assert reloaded.rcm[-1]["planned_tests"][-1]["steps"] == ["Select purchases and inspect approval evidence."]
-    assert completed["prepared_planning"]["document_content_included"] is True
+    assert doc_tests.list_tests(reloaded)[0]["kind"] == "review"
     assert completed["audit_outcome"]["planned_tests_completed"] == 0
     assert completed["audit_outcome"]["document_tests_required"] == 1
     assert completed["audit_outcome"]["document_tests_executed"] == 0
     assert completed["audit_outcome"]["planned_tests_review_required"] == 1
-    assert "Planned tests completed: 0 of 1" in completed["summary_markdown"]
-    assert completed.get("planning_expansion_disabled") is True
-    assert all(
-        item["status"] == "succeeded"
-        for item in completed["actions"]
-        if item["id"].startswith("mandatory_")
-    )
-    assert [call["tag"] for call in fake.calls].count("agent:apm") == 2
+    assert "Open workflow units: 2" in completed["summary_markdown"]
+    assert call_tags.count("agent:apm") == 2
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(item["stage"] == "agent:apm" and policy["id"] in item["document_ids"] for item in activity)
     assert any(item["stage"] == "agent:apm" and item["template_versions"] for item in activity)

@@ -150,7 +150,7 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     ws = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
-    assert completed["schema_version"] == 2
+    assert completed["schema_version"] == 3
     assert completed["kind"] == "audit"
     assert completed["actions"] == []
     assert ws.planning["apm_markdown"].startswith("# Audit Planning Memorandum")
@@ -223,15 +223,17 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
     assert completed["planning_changes"]["planned_test_updated"] == 1
 
 
-def test_planning_failure_rolls_back_all_staged_planning_changes(monkeypatch):
+def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
     ws = workspaces.create_workspace("Atomic planning")
     ws.update_planning(
-        {"context": {"scope": "Original scope"}, "apm_markdown": "# Original APM", "agent_run_id": "prior"},
-        agent=True,
+        {
+            "context": {"objective": "Assess purchasing", "scope": "Original scope"},
+            "apm_markdown": "# Original APM",
+        },
     )
     ws.add_rcm({
         "process": "Purchasing", "risk": "Original risk", "risk_rating": "medium",
-        "agent_run_id": "prior",
+        "control": "Purchases require approval",
     })
     before = {
         "planning": dict(ws.planning),
@@ -244,38 +246,33 @@ def test_planning_failure_rolls_back_all_staged_planning_changes(monkeypatch):
     configure_planning_llm(monkeypatch, {
         "agent:work_program": disconnect,
     })
-    completed = wait_run(ws, start_planning(ws)["id"])
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Complete the missing planned tests.",
+            "requested_outcomes": ["planning.planned_tests_ready"],
+            "refresh_policy": "missing_or_stale",
+        },
+    )
+    completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "failed"
-    assert completed["planning_transaction"]["status"] == "rolled_back"
-    assert reloaded.planning == before["planning"]
-    assert reloaded.rcm == before["rcm"]
-    assert completed["artifacts"] == []
-    assert not any(completed["planning_changes"].values())
-    assert completed["planning_transaction"]["rolled_back_artifacts"]
-    assert any(completed["planning_transaction"]["rolled_back_changes"].values())
-    tasks = {
-        task["id"]: task
-        for stage in completed["plan"]["stages"]
-        for task in stage["tasks"]
-    }
-    assert {
-        tasks[task_id]["status"]
-        for task_id in (
-            "planning:context", "planning:apm", "planning:rcm",
-            "planning:work_program",
-        )
-    } == {"failed"}
-    assert all(not task["result_refs"] for task in tasks.values())
-    activity = documents.activities(reloaded, limit=100)["items"]
-    assert any(item.get("disposition") == "rolled_back" for item in activity)
-    events = store.read_events(reloaded, completed["id"])
-    assert any(
-        item["type"] == "workspace_changed"
-        and item["data"].get("action") == "rolled_back"
-        for item in events
+    assert reloaded.planning != before["planning"]
+    assert reloaded.rcm != before["rcm"]
+    units = [
+        unit
+        for stage in completed["workflow"]["stages"]
+        for unit in stage["units"]
+    ]
+    assert reloaded.planning["apm_markdown"] == "# Original APM"
+    assert reloaded.rcm[0]["control"] == "Purchases require approval"
+    assert {"planning.apm_ready", "planning.rcm_ready"} <= set(
+        completed["workflow"]["reused_capabilities"]
     )
+    assert any(unit["kind"] == "planned_test_generation" and unit["status"] == "failed" for unit in units)
 
 
 def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
@@ -295,9 +292,13 @@ def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
     assert completed["status"] == "failed"
     assert completed["command"]["status"] == "failed"
     assert completed["error"] == "LLM request failed: Remote end closed connection without response"
-    assert not completed["summary_markdown"]
-    assert tasks["planning:context"]["status"] == "failed"
-    assert tasks["planning:apm"]["status"] == "failed"
+    assert "Failed/conflict units: 1" in completed["summary_markdown"]
+    assert tasks["planning:context"]["status"] == "completed"
+    assert any(
+        unit["kind"] == "apm" and unit["status"] == "failed"
+        for stage in completed["workflow"]["stages"]
+        for unit in stage["units"]
+    )
     assert "planning:rcm" not in tasks
 
 
@@ -578,7 +579,7 @@ def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
         time.sleep(0.02)
     completed = wait_run(ws, started["id"])
     assert completed["status"] == "completed"
-    assert [approval["kind"] for approval in completed["approvals"]] == ["apm", "rcm", "work_program"]
+    assert [approval["kind"] for approval in completed["approvals"]] == ["apm", "rcm", "planned_tests"]
 
 
 def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):

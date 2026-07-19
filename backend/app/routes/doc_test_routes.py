@@ -73,7 +73,13 @@ async def delete_document_test(workspace_id: str, test_id: str):
 
 @router.post("/doc-tests/{test_id}/items/{item_id}/documents")
 async def attach_document(workspace_id: str, test_id: str, item_id: str, payload: dict = Body(...)):
-    return doc_tests.attach_document(_ws(workspace_id), test_id, item_id, str(payload.get("document_id") or ""))
+    ws = _ws(workspace_id)
+    document_id = str(payload.get("document_id") or "")
+    result = doc_tests.attach_document(ws, test_id, item_id, document_id)
+    runner.notify_evidence_available(
+        ws, document_ids=[document_id], test_ids=[test_id], reason="document_attached"
+    )
+    return result
 
 
 @router.delete("/doc-tests/{test_id}/items/{item_id}/documents/{document_id}")
@@ -134,9 +140,15 @@ async def list_evidence_requests(workspace_id: str):
 async def patch_evidence_request(
     workspace_id: str, request_id: str, payload: dict = Body(...)
 ):
-    return doc_tests.update_evidence_request(
-        _ws(workspace_id),
+    ws = _ws(workspace_id)
+    result = doc_tests.update_evidence_request(
+        ws,
         request_id,
         status=str(payload.get("status") or ""),
         note=str(payload.get("auditor_note") or ""),
     )
+    if result.get("status") == "received":
+        runner.notify_evidence_available(
+            ws, request_ids=[request_id], reason="evidence_request_received"
+        )
+    return result

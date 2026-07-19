@@ -25,6 +25,8 @@ import shutil
 import time
 import tokenize
 import uuid
+import threading
+from contextvars import ContextVar, Token
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -133,7 +135,7 @@ def _debug_artifact_meta(path: Path, payload: object, raw: bytes | None = None) 
 def _record_atomic_artifact_transition(path: Path, before: dict | None, payload: dict) -> None:
     # Primary workspace/run writes have richer hooks. Debug writes are the
     # telemetry itself and must never recursively trace themselves.
-    if "Debug" in path.parts or path.name == "workspace.json" or (
+    if "Debug" in path.parts or ".Transactions" in path.parts or path.name == "workspace.json" or (
         path.name == "run.json" and "AgentRuns" in path.parts
     ):
         return
@@ -178,6 +180,88 @@ def _user_touch(item: dict) -> None:
 
 class WorkspaceError(ValueError):
     """A user-facing workspace problem (bad name, missing table, bad join)."""
+
+
+class WorkspaceConflict(WorkspaceError):
+    """A compare-and-swap write failed because the workspace changed."""
+
+    def __init__(self, expected_revision: int, current_revision: int):
+        self.expected_revision = int(expected_revision)
+        self.current_revision = int(current_revision)
+        super().__init__(
+            "The workspace changed while this operation was in progress "
+            f"(expected revision {self.expected_revision}, current revision "
+            f"{self.current_revision}). Reload and retry."
+        )
+
+
+_workspace_write_locks: dict[str, threading.RLock] = {}
+_workspace_write_locks_guard = threading.Lock()
+_request_revision: ContextVar[dict[str, int] | None] = ContextVar(
+    "workspace_request_revision", default=None
+)
+
+
+def workspace_write_lock(root: Path) -> threading.RLock:
+    """Return the process-wide lock shared by every writer for one workspace."""
+    key = str(Path(root).resolve())
+    with _workspace_write_locks_guard:
+        return _workspace_write_locks.setdefault(key, threading.RLock())
+
+
+def sync_workspace(target: "Workspace", source: "Workspace") -> "Workspace":
+    """Refresh an instance while preserving object references held by callers."""
+
+    def merge_list(current: list[dict], incoming: list[dict], key: str) -> list[dict]:
+        existing = {str(item.get(key)): item for item in current if item.get(key) is not None}
+        merged = []
+        for value in incoming:
+            old = existing.get(str(value.get(key)))
+            if old is None:
+                merged.append(value)
+                continue
+            if "planned_tests" in value and isinstance(value.get("planned_tests"), list):
+                planned = merge_list(
+                    list(old.get("planned_tests") or []),
+                    list(value.get("planned_tests") or []),
+                    "id",
+                )
+                old.clear()
+                old.update(value)
+                old["planned_tests"] = planned
+            else:
+                old.clear()
+                old.update(value)
+            merged.append(old)
+        current[:] = merged
+        return current
+
+    list_keys = {
+        "tables": "name", "joins": "name", "tiles": "id", "analyses": "id",
+        "rulesets": "id", "documents": "id", "rcm": "id", "work_program": "id",
+        "data_tests": "id", "observations": "id", "evidence_requests": "id",
+        "findings": "id",
+    }
+    for attribute, key in list_keys.items():
+        merge_list(getattr(target, attribute), getattr(source, attribute), key)
+    for attribute in ("planning", "report", "dashboard_advice", "rcm_migration"):
+        current = getattr(target, attribute)
+        current.clear()
+        current.update(getattr(source, attribute))
+    for attribute, value in source.__dict__.items():
+        if attribute not in list_keys and attribute not in {
+            "planning", "report", "dashboard_advice", "rcm_migration",
+        }:
+            setattr(target, attribute, value)
+    return target
+
+
+def set_request_revision(revision: int) -> Token:
+    return _request_revision.set({"revision": int(revision)})
+
+
+def reset_request_revision(token: Token) -> None:
+    _request_revision.reset(token)
 
 
 def _legacy_method(value: object, test_refs: object = None) -> str:
@@ -304,6 +388,7 @@ def _normalize_planned_test(
         "evidence_refs": normalize_many(evidence),
         "methodology_refs": list(payload.get("methodology_refs") or []),
         "finding_refs": [str(ref) for ref in (payload.get("finding_refs") or [])],
+        "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
         "created_by": str(payload.get("created_by") or ("agent" if payload.get("agent_run_id") else "user")),
         "agent_run_id": payload.get("agent_run_id"),
         "updated": str(payload.get("updated") or now),
@@ -624,6 +709,7 @@ class Workspace:
         self.definition_path = self.root / "workspace.json"
         definition = json.loads(self.definition_path.read_text(encoding="utf-8"))
         self.schema_version = int(definition.get("schema_version") or 1)
+        self.revision = int(definition.get("revision") or 0)
         self.id: str = definition.get("id") or self.root.name
         self.name: str = definition.get("name") or self.id
         self.description: str = definition.get("description") or ""
@@ -734,9 +820,42 @@ class Workspace:
     def data_dir(self) -> Path:
         return self.root / "Data"
 
-    def save(self) -> None:
+    def save(self, *, expected_revision: int | None = None) -> None:
+        """Persist with compare-and-swap revision protection.
+
+        Existing callers do not need to pass ``expected_revision``: the
+        revision loaded with this instance is used.  This turns stale whole-file
+        writes into explicit conflicts instead of silently losing another API
+        or workflow mutation.
+        """
+        with workspace_write_lock(self.root):
+            self._save_locked(expected_revision=expected_revision)
+
+    def _save_locked(self, *, expected_revision: int | None = None) -> None:
+        request_state = _request_revision.get()
+        if request_state is not None:
+            expected = int(request_state["revision"])
+        elif expected_revision is not None:
+            expected = int(expected_revision)
+        else:
+            expected = self.revision
+        current = 0
+        if self.definition_path.exists():
+            try:
+                current = int(
+                    json.loads(self.definition_path.read_text(encoding="utf-8")).get("revision")
+                    or 0
+                )
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                current = 0
+        if current != expected:
+            raise WorkspaceConflict(expected, current)
+        self.revision = current + 1
+        if request_state is not None:
+            request_state["revision"] = self.revision
         definition = {
             "schema_version": SCHEMA_VERSION,
+            "revision": self.revision,
             "id": self.id,
             "name": self.name,
             "description": self.description,
@@ -1377,11 +1496,14 @@ class Workspace:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def update_planning(self, changes: dict, *, agent: bool = False) -> dict:
-        allowed = {"context", "apm_markdown", "agent_run_id", "created_by"}
+        allowed = {
+            "context", "apm_markdown", "agent_run_id", "created_by",
+            "workflow_basis_sha1",
+        }
         unknown = set(changes) - allowed
         if unknown:
             raise WorkspaceError(f"Unknown planning field: {sorted(unknown)[0]}.")
-        if not agent and ({"agent_run_id", "created_by"} & set(changes)):
+        if not agent and ({"agent_run_id", "created_by", "workflow_basis_sha1"} & set(changes)):
             raise WorkspaceError("Planning provenance is managed by the workbench.")
         apm_changed = (
             "apm_markdown" in changes
@@ -1392,7 +1514,7 @@ class Workspace:
             if not isinstance(context, dict):
                 raise WorkspaceError("Planning context must be an object.")
             self.planning["context"].update(context)
-        for key in ("apm_markdown", "agent_run_id", "created_by"):
+        for key in ("apm_markdown", "agent_run_id", "created_by", "workflow_basis_sha1"):
             if key in changes:
                 self.planning[key] = changes[key]
         if not agent and apm_changed and self.planning.get("created_by") == "agent":
@@ -1436,6 +1558,7 @@ class Workspace:
             "prepared_by": payload.get("prepared_by"),
             "reviewed_by": payload.get("reviewed_by"),
             "review_status": str(payload.get("review_status") or "draft"),
+            "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
             "updated": now,
         }
         if item["risk_rating"] not in ("low", "medium", "high", "critical"):
@@ -1455,8 +1578,9 @@ class Workspace:
             "process", "risk", "risk_rating", "assertion", "control", "control_type",
             "control_owner", "criteria", "criteria_refs", "test_procedure", "test_refs",
             "evidence_refs", "prepared_by", "reviewed_by", "review_status",
+            "workflow_parent_sha1",
         }
-        if set(changes) - allowed:
+        if set(changes) - allowed or ("workflow_parent_sha1" in changes and not agent):
             raise WorkspaceError("Unknown RCM field.")
         if "risk_rating" in changes and changes["risk_rating"] not in ("low", "medium", "high", "critical"):
             raise WorkspaceError("Risk rating must be low, medium, high, or critical.")
@@ -1810,6 +1934,7 @@ class Workspace:
             tables.append(info)
         return {
             "id": self.id,
+            "revision": self.revision,
             "name": self.name,
             "description": self.description,
             "created": self.created,
@@ -1838,6 +1963,7 @@ def list_workspaces() -> list[dict]:
                 "name": ws.name,
                 "description": ws.description,
                 "created": ws.created,
+                "revision": ws.revision,
                 "table_count": len(ws.tables) + len(ws.joins),
             }
         )
@@ -1848,6 +1974,9 @@ def load_workspace(workspace_id: str) -> Workspace:
     root = WORKSPACES_DIR / workspace_id
     if not (root / "workspace.json").exists():
         raise WorkspaceError(f"Workspace '{workspace_id}' not found.")
+    from .workspace_transactions import recover_linked_writes
+
+    recover_linked_writes(root)
     return Workspace(root)
 
 
@@ -1864,6 +1993,7 @@ def create_workspace(name: str, description: str = "") -> Workspace:
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
+                "revision": 0,
                 "id": workspace_id,
                 "name": name,
                 "description": str(description).strip(),

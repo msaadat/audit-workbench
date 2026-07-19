@@ -19,7 +19,15 @@ from pathlib import Path
 
 from . import analytics, documents, explore
 from .evidence import document_anchor, normalize_many
-from .workspaces import Workspace, WorkspaceError, slugify, write_json_atomic
+from .workspaces import (
+    Workspace,
+    WorkspaceConflict,
+    WorkspaceError,
+    slugify,
+    sync_workspace,
+    workspace_write_lock,
+    write_json_atomic,
+)
 
 KINDS = {"vouching", "attribute", "review", "qa"}
 DIRECTIONS = {"vouching", "tracing"}
@@ -74,6 +82,9 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     test.setdefault("rcm_id", None)
     test.setdefault("planned_test_id", None)
     test.setdefault("scope_limitations", "")
+    test.setdefault("created_by", "user")
+    test.setdefault("agent_run_id", None)
+    test.setdefault("workflow_parent_sha1", None)
     if workspace is not None and not test.get("planned_test_id"):
         targets = [
             workspace.rcm_migration.get("migrated_procedures", {}).get(str(ref))
@@ -107,9 +118,33 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
 
 
 def save_test(workspace: Workspace, test: dict) -> dict:
-    test["updated"] = utcnow()
-    test["sha1"] = test_sha1(test)
-    write_json_atomic(_test_path(workspace, test["id"]), test)
+    from .workspace_transactions import (
+        complete_linked_write,
+        prepare_linked_write,
+        rollback_linked_write,
+    )
+
+    with workspace_write_lock(workspace.root):
+        current_revision = Workspace(workspace.root).revision
+        if current_revision != workspace.revision:
+            raise WorkspaceConflict(workspace.revision, current_revision)
+        test["updated"] = utcnow()
+        test["sha1"] = test_sha1(test)
+        path = _test_path(workspace, test["id"])
+        linked_write = prepare_linked_write(workspace, path, test)
+        try:
+            write_json_atomic(path, test)
+            _link_test(workspace, test)
+            # Document Test files are linked workspace artifacts. Even
+            # item-only edits advance the shared revision so API/workflow
+            # races cannot be invisible to the transaction coordinator.
+            workspace.save(expected_revision=current_revision)
+        except Exception:
+            rollback_linked_write(linked_write)
+            sync_workspace(workspace, Workspace(workspace.root))
+            raise
+        else:
+            complete_linked_write(linked_write)
     return test
 
 
@@ -141,7 +176,9 @@ def list_tests(workspace: Workspace) -> list[dict]:
         items.append({
             **{key: test.get(key) for key in (
                 "id", "kind", "title", "status", "semantic_id", "rcm_refs",
-                "procedure_refs", "rcm_id", "planned_test_id", "spec", "created", "updated", "sha1"
+                "procedure_refs", "rcm_id", "planned_test_id", "spec", "created",
+                "updated", "sha1", "created_by", "agent_run_id",
+                "workflow_parent_sha1",
             )},
             "item_count": len(states),
             "state_counts": {state: states.count(state) for state in sorted(STATES)},
@@ -194,7 +231,6 @@ def _link_test(workspace: Workspace, test: dict) -> None:
                 refs.append(ref)
             elif planned.get("id") != test.get("planned_test_id"):
                 planned["execution_refs"] = [value for value in refs if value != ref]
-    workspace.save()
 
 
 def _base_test(workspace: Workspace, payload: dict, kind: str) -> dict:
@@ -228,6 +264,9 @@ def _base_test(workspace: Workspace, payload: dict, kind: str) -> dict:
         "planned_test_id": planned_test_id,
         "spec": dict(payload.get("spec") or {}),
         "items": [],
+        "created_by": "agent" if payload.get("agent_run_id") else "user",
+        "agent_run_id": payload.get("agent_run_id"),
+        "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
         "created": now,
         "updated": now,
     }
@@ -254,6 +293,7 @@ def _new_item(payload: dict | None = None) -> dict:
 def create_test(workspace: Workspace, payload: dict) -> dict:
     kind = str(payload.get("kind") or "vouching").lower()
     test = _base_test(workspace, payload, kind)
+    known_documents = {str(item.get("id")) for item in workspace.documents}
     if kind == "vouching":
         direction = str((payload.get("spec") or {}).get("direction") or payload.get("direction") or "vouching")
         if direction not in DIRECTIONS:
@@ -261,6 +301,15 @@ def create_test(workspace: Workspace, payload: dict) -> dict:
         test["spec"]["direction"] = direction
     for raw in payload.get("items") or []:
         item = _new_item(raw)
+        missing_documents = [
+            document_id
+            for document_id in item.get("document_ids") or []
+            if document_id not in known_documents
+        ]
+        if missing_documents:
+            raise WorkspaceError(
+                f"Document '{missing_documents[0]}' not found for Document Test item."
+            )
         if kind == "vouching":
             item["frozen"] = {str(key): _json_value(value) for key, value in dict(raw.get("frozen") or {}).items()}
             item["checks"] = [_normalize_check(check) for check in (raw.get("checks") or [])]
@@ -272,7 +321,6 @@ def create_test(workspace: Workspace, payload: dict) -> dict:
             item.update(question=str(raw.get("question") or ""), response=str(raw.get("response") or ""), citations=normalize_many(raw.get("citations") or []))
         test["items"].append(item)
     save_test(workspace, test)
-    _link_test(workspace, test)
     return test
 
 
@@ -351,7 +399,6 @@ def build_vouching(workspace: Workspace, payload: dict) -> dict:
         )
         test["items"].append(item)
     save_test(workspace, test)
-    _link_test(workspace, test)
     return test
 
 
@@ -606,8 +653,6 @@ def prepare_evidence_aware_vouching(workspace: Workspace, payload: dict) -> dict
         else ""
     )
     save_test(workspace, test)
-    _link_test(workspace, test)
-    workspace.save()
     return {**test, "evidence_requests": requests}
 
 
@@ -705,7 +750,6 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
     if "spec" in changes:
         test["spec"] = {**test["spec"], **dict(changes["spec"] or {})}
     save_test(workspace, test)
-    _link_test(workspace, test)
     return test
 
 
@@ -740,7 +784,16 @@ def attach_document(workspace: Workspace, test_id: str, item_id: str, document_i
         item["document_ids"].append(document_id)
     item["state"] = "pending"
     item["auditor_disposition"] = "pending"
-    return save_test(workspace, test)
+    request_ids = {str(value) for value in item.get("evidence_request_ids") or []}
+    for request in workspace.evidence_requests:
+        if str(request.get("id")) in request_ids and request.get("status") == "open":
+            request["status"] = "received"
+            request["updated"] = utcnow()
+    if all(test_item.get("document_ids") for test_item in test.get("items") or []):
+        test["status"] = "in_progress"
+        test["scope_limitations"] = ""
+    result = save_test(workspace, test)
+    return result
 
 
 def detach_document(workspace: Workspace, test_id: str, item_id: str, document_id: str) -> dict:
@@ -907,7 +960,10 @@ def _document_conflicts(workspace: Workspace, document_ids: list[str]) -> dict:
     return {"duplicate_documents": duplicates}
 
 
-def run_item(workspace: Workspace, test_id: str, item_id: str, *, run_id: str | None = None) -> dict:
+def run_item(
+    workspace: Workspace, test_id: str, item_id: str, *,
+    run_id: str | None = None, model_adapter=None,
+) -> dict:
     test = load_test(workspace, test_id)
     item = _item(test, item_id)
     if test["kind"] == "qa":
@@ -920,6 +976,7 @@ def run_item(workspace: Workspace, test_id: str, item_id: str, *, run_id: str | 
             for doc_id in item["document_ids"]:
                 answer = documents.document_chat(
                     workspace, doc_id, item["question"], item.get("pages"), run_id=run_id,
+                    model_adapter=model_adapter,
                 )
                 answers.append(str(answer.get("answer") or ""))
                 citations.extend(answer.get("citations") or [])
@@ -996,6 +1053,49 @@ def run_item(workspace: Workspace, test_id: str, item_id: str, *, run_id: str | 
         item["state"] = "agent_checked"
         item["auditor_disposition"] = "pending"
         item["runner_note"] = "Deterministic local comparison completed; auditor disposition is still required."
+    save_test(workspace, test)
+    return item
+
+
+def commit_qa_answer(
+    workspace: Workspace,
+    test_id: str,
+    item_id: str,
+    document_id: str,
+    answer: dict,
+) -> dict:
+    """Merge one immutable item/document Q&A candidate in document order."""
+    test = load_test(workspace, test_id)
+    if test.get("kind") != "qa":
+        raise WorkspaceError("Q&A answers can only be committed to a Q&A Document Test.")
+    item = _item(test, item_id)
+    if document_id not in item.get("document_ids", []):
+        raise WorkspaceError(
+            f"Document '{document_id}' is not attached to Document Test item '{item_id}'."
+        )
+    candidate = {
+        "answer": str(answer.get("answer") or ""),
+        "citations": normalize_many(answer.get("citations") or []),
+    }
+    answers = item.setdefault("qa_answers", {})
+    answers[document_id] = candidate
+    ordered = [
+        answers[value]
+        for value in item.get("document_ids") or []
+        if value in answers
+    ]
+    item.update(
+        response="\n\n".join(value["answer"] for value in ordered if value["answer"]),
+        citations=[citation for value in ordered for citation in value["citations"]],
+        evidence_refs=[citation for value in ordered for citation in value["citations"]],
+        state="agent_checked",
+        auditor_disposition="pending",
+        runner_note=(
+            "Cited answers were generated from the attached pages in stable document order; "
+            "auditor disposition is still required."
+        ),
+    )
+    test["status"] = "review_required"
     save_test(workspace, test)
     return item
 

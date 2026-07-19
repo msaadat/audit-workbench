@@ -50,10 +50,19 @@ async def suggest_rules(workspace_id: str, table: str):
 async def create_run(workspace_id: str, payload: dict = Body(default={})):
     ws = workspaces.load_workspace(workspace_id)
     try:
-        if isinstance(payload.get("command"), dict):
+        if isinstance(payload.get("command"), dict) or payload.get("requested_outcomes"):
+            command = dict(payload.get("command") or {})
+            if payload.get("requested_outcomes"):
+                command.update(
+                    source=command.get("source") or "tab_button",
+                    text=command.get("text") or "Run the selected audit outcomes.",
+                    requested_outcomes=payload.get("requested_outcomes"),
+                    target_refs=payload.get("target_refs") or ["workspace:current"],
+                    refresh_policy=payload.get("refresh_policy") or "missing_or_stale",
+                )
             run = await asyncio.to_thread(
                 runner.start_command_run, ws, payload.get("mode") or "auto",
-                payload["command"], payload.get("parent_run_id"),
+                command, payload.get("parent_run_id"),
                 payload.get("context") or {},
             )
         else:
@@ -118,6 +127,15 @@ async def retry_run(workspace_id: str, run_id: str):
     ws = workspaces.load_workspace(workspace_id)
     try:
         return await asyncio.to_thread(runner.retry_run, ws, run_id)
+    except runner.AgentBusyError as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
+@router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/continue")
+async def continue_audit(workspace_id: str, run_id: str):
+    ws = workspaces.load_workspace(workspace_id)
+    try:
+        return await asyncio.to_thread(runner.continue_audit, ws, run_id)
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error
 

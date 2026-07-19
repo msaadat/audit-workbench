@@ -28,6 +28,8 @@ async def put_template(workspace_id: str, name: str, payload: dict = Body(...)):
 @router.get("/planning")
 async def get_planning(workspace_id: str):
     ws = _ws(workspace_id)
+    # Present current derived statuses without mutating workspace.json.
+    rcm_execution.rollup(ws, persist=False)
     return {
         "planning": ws.planning, "rcm": ws.rcm, "procedures": ws.work_program,
         "data_tests": ws.data_tests, "observations": ws.observations,

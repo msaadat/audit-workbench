@@ -1,0 +1,231 @@
+"""Revision-safe, narrow workspace transactions shared by routes and runs.
+
+The desktop server normally has one process, but correctness does not depend on
+one long-lived ``Workspace`` instance.  A transaction locks the workspace,
+reloads the authoritative definition, checks the caller's revision and material
+parent hashes, applies a narrow callback, and returns the fresh committed view.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, TypeVar
+
+from .workspaces import (
+    Workspace,
+    WorkspaceConflict,
+    WorkspaceError,
+    load_workspace,
+    workspace_write_lock,
+    write_json_atomic,
+)
+
+T = TypeVar("T")
+JOURNAL_DIRNAME = ".Transactions"
+
+
+def canonical_sha1(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class TransactionResult:
+    value: Any
+    workspace: Workspace
+    revision: int
+
+
+@dataclass(frozen=True)
+class LinkedWrite:
+    journal_path: Path
+    target_path: Path
+
+
+def prepare_linked_write(workspace: Workspace, target: Path, payload: dict) -> LinkedWrite:
+    """Journal a JSON sidecar write that must share a workspace revision."""
+    target = target.resolve()
+    root = workspace.root.resolve()
+    if root not in target.parents:
+        raise WorkspaceError("Linked transaction target must be inside the workspace.")
+    before = None
+    before_exists = target.is_file()
+    if before_exists:
+        try:
+            before = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise WorkspaceError(f"Linked artifact '{target.name}' is unreadable.") from error
+    journal_dir = root / JOURNAL_DIRNAME
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    journal_path = journal_dir / f"txn-{uuid.uuid4().hex}.json"
+    write_json_atomic(
+        journal_path,
+        {
+            "state": "prepared",
+            "expected_revision": workspace.revision,
+            "target": str(target.relative_to(root)),
+            "before_exists": before_exists,
+            "before": before,
+            "after_sha1": canonical_sha1(payload),
+        },
+    )
+    return LinkedWrite(journal_path, target)
+
+
+def complete_linked_write(write: LinkedWrite) -> None:
+    write.journal_path.unlink(missing_ok=True)
+
+
+def rollback_linked_write(write: LinkedWrite) -> None:
+    try:
+        journal = json.loads(write.journal_path.read_text(encoding="utf-8"))
+        if journal.get("before_exists"):
+            write_json_atomic(write.target_path, journal.get("before") or {})
+        else:
+            write.target_path.unlink(missing_ok=True)
+    finally:
+        write.journal_path.unlink(missing_ok=True)
+
+
+def recover_linked_writes(root: Path) -> None:
+    """Resolve prepared linked writes left by an interrupted desktop process."""
+    root = root.resolve()
+    with workspace_write_lock(root):
+        journal_dir = root / JOURNAL_DIRNAME
+        if not journal_dir.is_dir():
+            return
+        try:
+            current_revision = int(
+                json.loads((root / "workspace.json").read_text(encoding="utf-8")).get("revision")
+                or 0
+            )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return
+        for journal_path in sorted(journal_dir.glob("txn-*.json")):
+            try:
+                journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                target = (root / str(journal.get("target") or "")).resolve()
+                if root not in target.parents:
+                    journal_path.unlink(missing_ok=True)
+                    continue
+                if current_revision <= int(journal.get("expected_revision") or 0):
+                    rollback_linked_write(LinkedWrite(journal_path, target))
+                else:
+                    # The workspace revision advanced after the prepared write;
+                    # the linked mutation committed before the process stopped.
+                    journal_path.unlink(missing_ok=True)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                journal_path.unlink(missing_ok=True)
+
+
+class ParentConflict(WorkspaceConflict):
+    """The workspace revision may be current but a material parent changed."""
+
+    def __init__(self, parent_ref: str, expected_sha1: str, current_sha1: str, revision: int):
+        self.parent_ref = parent_ref
+        self.expected_sha1 = expected_sha1
+        self.current_sha1 = current_sha1
+        super().__init__(revision, revision)
+        self.args = (
+            f"The parent artifact '{parent_ref}' changed while this operation was in "
+            "progress. Reload and reconcile the affected workflow unit.",
+        )
+
+
+def material_projection(value: object) -> object:
+    """Remove volatile timestamps before artifact-parent hashing."""
+    if isinstance(value, dict):
+        return {
+            key: material_projection(item)
+            for key, item in value.items()
+            if key not in {"updated", "updated_at", "generated_at", "completed_at"}
+        }
+    if isinstance(value, list):
+        return [material_projection(item) for item in value]
+    return value
+
+
+def artifact_projection(workspace: Workspace, ref: str) -> object:
+    kind, separator, item_id = str(ref).partition(":")
+    if not separator:
+        raise WorkspaceError(f"Invalid parent reference '{ref}'.")
+    if kind == "planning":
+        if item_id == "context":
+            return workspace.planning.get("context") or {}
+        if item_id == "apm":
+            return {
+                "markdown": workspace.planning.get("apm_markdown") or "",
+                "created_by": workspace.planning.get("created_by"),
+                "updated": workspace.planning.get("updated"),
+            }
+    if kind == "rcm":
+        return material_projection(
+            next((item for item in workspace.rcm if item.get("id") == item_id), None)
+        )
+    if kind == "planned_test":
+        try:
+            row, planned = workspace.planned_test(item_id)
+            return material_projection(
+                {"rcm_id": row.get("id"), "planned_test": planned}
+            )
+        except WorkspaceError:
+            return None
+    if kind == "datatest":
+        return next((item for item in workspace.data_tests if item.get("id") == item_id), None)
+    if kind == "observation":
+        return next((item for item in workspace.observations if item.get("id") == item_id), None)
+    if kind == "finding":
+        return next((item for item in workspace.findings if item.get("id") == item_id), None)
+    if kind == "report":
+        return workspace.report
+    raise WorkspaceError(f"Unsupported parent reference '{ref}'.")
+
+
+def parent_hashes(workspace: Workspace, refs: list[str] | tuple[str, ...]) -> dict[str, str]:
+    return {
+        ref: canonical_sha1(material_projection(artifact_projection(workspace, ref)))
+        for ref in refs
+    }
+
+
+def mutate(
+    workspace_or_id: Workspace | str,
+    callback: Callable[[Workspace], T],
+    *,
+    expected_revision: int | None = None,
+    expected_parents: Mapping[str, str] | None = None,
+) -> TransactionResult:
+    """Apply ``callback`` to a freshly loaded workspace under its write lock.
+
+    Workspace methods currently persist their own narrow changes.  The lock is
+    re-entrant, so those saves remain safe.  If a callback only mutates memory,
+    this helper performs the final save.  Callers therefore can migrate to the
+    coordinator incrementally without two storage paths.
+    """
+    seed = workspace_or_id if isinstance(workspace_or_id, Workspace) else load_workspace(workspace_or_id)
+    with workspace_write_lock(seed.root):
+        fresh = Workspace(seed.root)
+        if (
+            expected_revision is not None
+            and fresh.revision != int(expected_revision)
+            and not expected_parents
+        ):
+            raise WorkspaceConflict(int(expected_revision), fresh.revision)
+        for ref, expected in (expected_parents or {}).items():
+            current = canonical_sha1(material_projection(artifact_projection(fresh, ref)))
+            if current != expected:
+                raise ParentConflict(ref, expected, current, fresh.revision)
+        before = fresh.revision
+        value = callback(fresh)
+        if fresh.revision == before:
+            fresh.save(expected_revision=before)
+        return TransactionResult(value=value, workspace=fresh, revision=fresh.revision)
+
+
+def revision_payload(workspace: Workspace) -> dict[str, int]:
+    return {"workspace_revision": int(workspace.revision)}

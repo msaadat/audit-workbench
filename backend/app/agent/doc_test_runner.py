@@ -43,7 +43,10 @@ class DocTestRunner(BaseRunner):
                     current=item_index, total=total_items, task_id=task["id"],
                 )
                 try:
-                    result = doc_tests.run_item(self.ws, test_id, item["id"], run_id=self.run["id"])
+                    result = doc_tests.run_item(
+                        self.ws, test_id, item["id"], run_id=self.run["id"],
+                        model_adapter=self.model_adapter,
+                    )
                     task["result_refs"] = [f"doctest:{test_id}:{item['id']}"]
                     self.task_status(task, "completed")
                     self.emit("workspace_changed", {"kind": "doctest", "id": test_id, "item_id": item["id"]})

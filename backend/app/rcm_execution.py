@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from . import data_tests, doc_tests
+from .workspace_transactions import canonical_sha1, material_projection
 from .workspaces import OBSERVATION_DISPOSITIONS, Workspace, WorkspaceError
 
 
@@ -45,14 +46,34 @@ def execution_manifest(workspace: Workspace) -> list[dict]:
                 item = artifact["item"]
                 if artifact["kind"] == "datatest":
                     has_result = bool(item.get("last_run"))
+                    current_source_sha1 = data_tests._sha1(
+                        {
+                            "engine": item.get("engine"),
+                            "table_refs": item.get("table_refs") or [],
+                            "spec": item.get("spec") or {},
+                        }
+                    )
+                    current_fingerprints = data_tests._dataset_fingerprints(
+                        workspace, item.get("table_refs") or []
+                    )
+                    result_stale = bool(
+                        item.get("last_run")
+                        and (
+                            item["last_run"].get("source_sha1") != current_source_sha1
+                            or item["last_run"].get("dataset_fingerprints") != current_fingerprints
+                        )
+                    )
                 else:
                     has_result = item.get("status") == "completed"
+                    result_stale = False
                 existing.append({
                     "kind": artifact["kind"],
                     "id": artifact["id"],
                     "status": str(item.get("status") or ""),
                     "has_durable_result": has_result,
                     "executable": _artifact_executable(artifact),
+                    "workflow_parent_sha1": item.get("workflow_parent_sha1"),
+                    "result_stale": result_stale,
                     **(
                         {"execution_issues": doc_tests.execution_issues(item)}
                         if artifact["kind"] == "doctest" else {}
@@ -401,7 +422,18 @@ def _rollup_planned(workspace: Workspace, row: dict, planned: dict) -> dict:
     }
 
 
-def rollup(workspace: Workspace) -> dict:
+def rollup(workspace: Workspace, *, persist: bool = True) -> dict:
+    """Recompute RCM outcomes, persisting only material changes.
+
+    Status surfaces call this with ``persist=False`` so GET requests remain
+    read-only.  Explicit roll-up commands still persist, but repeated calls do
+    not advance the workspace revision when only volatile timestamps changed.
+    """
+    before_sha1 = canonical_sha1(
+        material_projection(
+            {"rcm": workspace.rcm, "observations": workspace.observations}
+        )
+    )
     rows = []
     for row in workspace.rcm:
         planned_rollups = [
@@ -437,7 +469,13 @@ def rollup(workspace: Workspace) -> dict:
         row["execution_rollup"] = row_rollup
         row["updated"] = workspace._updated_now()
         rows.append({"rcm_id": row["id"], **row_rollup})
-    workspace.save()
+    after_sha1 = canonical_sha1(
+        material_projection(
+            {"rcm": workspace.rcm, "observations": workspace.observations}
+        )
+    )
+    if persist and after_sha1 != before_sha1:
+        workspace.save()
     return {"rows": rows, "coverage": coverage(workspace)}
 
 
@@ -461,7 +499,9 @@ def disposition(
 
 
 def completion(workspace: Workspace) -> dict:
-    rolled = rollup(workspace)
+    # Completion is used by dashboard/report GET paths. It must derive current
+    # outcomes without turning a read into an optimistic-concurrency write.
+    rolled = rollup(workspace, persist=False)
     cov = rolled["coverage"]
     open_observations = [
         item["id"] for item in workspace.observations if item.get("status") != "disposed"

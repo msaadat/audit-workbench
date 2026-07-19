@@ -187,6 +187,18 @@ function connect(workspaceId: string, runId: string) {
     'interaction_resolved',
     'action_conflict',
     'activity_update',
+    'workflow_resolved',
+    'workflow_explanation',
+    'stage_update',
+    'unit_update',
+    'unit_retry',
+    'stage_summary',
+    'checkpoint_request',
+    'checkpoint_resolved',
+    'interaction_response_stored',
+    'approval_response_stored',
+    'workspace_revision',
+    'evidence_available',
   ]) {
     source.addEventListener(type, refetch)
   }

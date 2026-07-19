@@ -7,6 +7,7 @@ import hashlib
 from fastapi import APIRouter, Body, File, Form, UploadFile
 
 from .. import intake, workspaces
+from ..agent import runner
 
 router = APIRouter(prefix="/api/workspaces", tags=["folder-intake"])
 
@@ -97,7 +98,13 @@ async def apply_folder_import(workspace_id: str, batch_id: str, payload: dict = 
     This is the assistant-free path: no agent run or model call is involved.
     """
     ws = workspaces.load_workspace(workspace_id)
-    return intake.apply_batch(ws, batch_id, (payload or {}).get("decisions") or [])
+    before = {str(item.get("id")) for item in ws.documents}
+    result = intake.apply_batch(ws, batch_id, (payload or {}).get("decisions") or [])
+    current = workspaces.load_workspace(workspace_id)
+    added = [str(item.get("id")) for item in current.documents if str(item.get("id")) not in before]
+    if added:
+        runner.notify_evidence_available(current, document_ids=added, reason="folder_import_applied")
+    return result
 
 
 @router.get("/{workspace_id}/folder-imports/{batch_id}")

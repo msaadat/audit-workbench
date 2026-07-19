@@ -220,6 +220,7 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         "semantic_id": str(payload.get("semantic_id") or f"finding:{slugify(title)}"),
         "created_by": "agent" if source == "agent" else "user",
         "agent_run_id": str(payload.get("agent_run_id") or "") or None,
+        "source_observation_id": str(payload.get("source_observation_id") or "") or None,
         "title": title,
         "severity": _severity(payload.get("severity")),
         "condition": str(payload.get("condition") or ""),

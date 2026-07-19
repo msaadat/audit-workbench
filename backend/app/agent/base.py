@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import threading
 import time
 import uuid
@@ -17,6 +18,19 @@ MAX_LLM_TURNS = 40
 MAX_TASKS = 60
 MAX_RUNTIME_SECONDS = 1800
 LLM_JSON_ATTEMPTS = 2
+
+_provider_semaphores: dict[str, threading.BoundedSemaphore] = {}
+_provider_semaphores_guard = threading.Lock()
+
+
+def _provider_semaphore(profile: dict, maximum: int) -> threading.BoundedSemaphore:
+    key = f"{profile.get('provider') or profile.get('backend')}:{profile.get('model')}"
+    try:
+        capacity = max(1, int(os.environ.get("AGENT_PROVIDER_MAX_CONCURRENCY") or 4))
+    except ValueError:
+        capacity = 4
+    with _provider_semaphores_guard:
+        return _provider_semaphores.setdefault(key, threading.BoundedSemaphore(capacity))
 
 
 class Cancelled(Exception):
@@ -45,6 +59,7 @@ class BaseRunner:
         # Independent planning-document requests may run concurrently. Keep
         # provider waits parallel while serializing the shared durable ledger.
         self._state_lock = threading.RLock()
+        self._model_context = threading.local()
 
     def save(self) -> None:
         with self._state_lock:
@@ -107,6 +122,10 @@ class BaseRunner:
             "agent:apm": "Drafting the audit planning memorandum",
             "agent:rcm": "Drafting the risk and control matrix",
             "agent:work_program": "Drafting RCM planned tests",
+            "agent:data_test_spec": "Defining a Data Test",
+            "agent:document_test_spec": "Defining a Document Test",
+            "agent:document_qa": "Answering from document evidence",
+            "agent:finding": "Drafting an evidence-linked finding",
             "agent:file_classification": "Classifying staged files",
             "agent:document_analysis_map": "Analyzing document content",
             "agent:document_analysis_reduce": "Consolidating document analysis",
@@ -139,6 +158,10 @@ class BaseRunner:
             activity["model_calls_active"] = active
             activity["updated_at"] = now
             self.run["activity"] = activity
+            usage = self.run.setdefault("usage", {})
+            usage["max_concurrent_model_calls"] = max(
+                int(usage.get("max_concurrent_model_calls") or 0), active
+            )
             self.run["activity_revision"] = int(self.run.get("activity_revision") or 0) + 1
             self.save()
             self.emit("activity_update", {
@@ -253,14 +276,38 @@ class BaseRunner:
         self.checkpoint()
         with self._state_lock:
             usage = self.run.setdefault("usage", {})
-            if usage.get("llm_turns", 0) >= MAX_LLM_TURNS:
+            maximum_turns = int(
+                (self.run.get("limits") or {}).get("max_model_turns") or MAX_LLM_TURNS
+            )
+            if usage.get("llm_turns", 0) >= maximum_turns:
                 raise LimitExceeded("model turn limit reached")
+            request_characters = len(system) + len(user)
+            estimated_input_tokens = max(1, request_characters // 4)
+            maximum_prompt_tokens = int(
+                (self.run.get("limits") or {}).get("max_estimated_prompt_tokens")
+                or maximum_turns * 10_000
+            )
+            projected_tokens = int(usage.get("estimated_prompt_tokens") or 0) + estimated_input_tokens
+            if projected_tokens > maximum_prompt_tokens:
+                raise LimitExceeded("estimated prompt-token limit reached")
             usage["llm_turns"] = usage.get("llm_turns", 0) + 1
+            usage["estimated_prompt_tokens"] = projected_tokens
+            usage["request_characters"] = int(usage.get("request_characters") or 0) + request_characters
+            if attempt > 1:
+                usage["retries"] = int(usage.get("retries") or 0) + 1
             self.save()
         tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
         self._model_wait(tag, started=True, attempt=attempt)
         activity_fields = dict(activity or {})
+        unit_id = getattr(self._model_context, "unit_id", None)
+        parent_refs = getattr(self._model_context, "parent_refs", None)
+        if unit_id:
+            activity_fields.setdefault("unit_id", unit_id)
+        if parent_refs:
+            activity_fields.setdefault("parent_refs", list(parent_refs))
+        activity_fields.setdefault("retry_number", attempt)
         current_activity = dict(self.run.get("activity") or {})
+        call_started = time.monotonic()
         try:
             with debug_store.trace_context(
                 workspace_id=self.ws.id, workspace_root=str(self.ws.root), run_id=self.run["id"],
@@ -269,11 +316,19 @@ class BaseRunner:
                 chat_id=self.run.get("chat_id"), stage=tag, purpose=tag,
                 document_ids=activity_fields.get("document_ids"),
                 artifact_refs=activity_fields.get("artifact_refs"),
+                unit_id=unit_id,
+                parent_refs=parent_refs,
             ):
-                message = llm.chat(
-                    [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                    profile="agent",
+                profile_state = llm.agent_status()
+                concurrency = max(
+                    1,
+                    int((self.run.get("limits") or {}).get("max_llm_concurrency") or 4),
                 )
+                with _provider_semaphore(profile_state, concurrency):
+                    message = llm.chat(
+                        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                        profile="agent",
+                    )
         finally:
             self._model_wait(tag, started=False, attempt=attempt)
         # The ledger stores provenance and hashes, never full prompt or
@@ -295,6 +350,61 @@ class BaseRunner:
                 "sha1": hashlib.sha1(active["markdown"].encode("utf-8")).hexdigest(),
             })
         content = str(message.get("content") or "")
+        latency_ms = round((time.monotonic() - call_started) * 1000, 3)
+        provider_usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+        with self._state_lock:
+            usage = self.run.setdefault("usage", {})
+            prompt_tokens = int(
+                provider_usage.get("prompt_tokens")
+                or provider_usage.get("input_tokens")
+                or estimated_input_tokens
+            )
+            completion_tokens = int(
+                provider_usage.get("completion_tokens") or provider_usage.get("output_tokens") or 0
+            )
+            usage["prompt_tokens"] = int(usage.get("prompt_tokens") or 0) + prompt_tokens
+            usage["completion_tokens"] = int(usage.get("completion_tokens") or 0) + completion_tokens
+            maximum_completion_tokens = int(
+                (self.run.get("limits") or {}).get("max_completion_tokens")
+                or maximum_turns * 4_000
+            )
+            token_budget_exceeded = (
+                usage["prompt_tokens"] > maximum_prompt_tokens
+                or usage["completion_tokens"] > maximum_completion_tokens
+            )
+            usage["model_calls_by_worker"] = dict(usage.get("model_calls_by_worker") or {})
+            usage["model_calls_by_worker"][tag] = int(
+                usage["model_calls_by_worker"].get(tag) or 0
+            ) + 1
+            worker_totals = usage.setdefault("model_usage_by_worker", {}).setdefault(
+                tag,
+                {
+                    "calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                    "request_characters": 0, "latency_ms": 0.0, "retries": 0,
+                },
+            )
+            worker_totals["calls"] += 1
+            worker_totals["prompt_tokens"] += prompt_tokens
+            worker_totals["completion_tokens"] += completion_tokens
+            worker_totals["request_characters"] += request_characters
+            worker_totals["latency_ms"] = round(
+                float(worker_totals["latency_ms"]) + latency_ms, 3
+            )
+            worker_totals["retries"] += int(attempt > 1)
+            metrics = usage.setdefault("model_call_metrics", [])
+            metrics.append(
+                {
+                    "worker": tag,
+                    "request_characters": request_characters,
+                    "estimated_input_tokens": estimated_input_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "latency_ms": latency_ms,
+                    "retry_number": attempt,
+                    "context_metrics": (activity or {}).get("context_metrics"),
+                }
+            )
+            self.save()
         append_activity(
             self.ws, run_id=self.run["id"], stage=tag, task=None, purpose=tag,
             provider=profile.get("provider"), model=profile.get("model"), vision_used=False,
@@ -306,8 +416,11 @@ class BaseRunner:
             source_hashes=activity_fields.pop("source_hashes", sorted({item["source_sha1"] for item in sources if item.get("source_sha1")})),
             response_at=store.utcnow(), response_hash=hashlib.sha1(content.encode("utf-8")).hexdigest(),
             artifact_ref=None, disposition="generated",
+            latency_ms=latency_ms,
             **activity_fields,
         )
+        if token_budget_exceeded:
+            raise LimitExceeded("workflow token budget reached")
         return content
 
     def llm_json(
@@ -337,6 +450,18 @@ class BaseRunner:
         """Return Markdown without requiring a large JSON string envelope."""
         content = self._llm_content(system, user, activity)
         return prompts.parse_markdown_response(content, legacy_field=legacy_field)
+
+    def model_adapter(self, messages: list[dict], activity: dict | None = None) -> dict:
+        """Route a nested model-assisted service call through run budgets."""
+        activity = dict(activity or {})
+        attempt = int(activity.pop("retry_number", 1) or 1)
+        content = self._llm_content(
+            str(messages[0].get("content") or ""),
+            str(messages[1].get("content") or ""),
+            activity,
+            attempt=attempt,
+        )
+        return {"content": content}
 
     def _stage(self, stage_id: str) -> dict:
         for stage in self.run["plan"]["stages"]:
@@ -480,13 +605,32 @@ class BaseRunner:
         self.emit("approval_request", {"approval": approval})
         self.set_status("awaiting_approval")
         waited_from = time.monotonic()
-        decisions = None
+        decisions = approval.pop("submitted_decisions", None)
         while decisions is None:
             if self.handle.cancel.is_set():
                 raise Cancelled()
+            if self.handle.pause_requested.is_set():
+                self.set_status("paused")
+                while not self.handle.resume.wait(0.2):
+                    if self.handle.cancel.is_set():
+                        raise Cancelled()
+                self.handle.resume.clear()
+                self.handle.pause_requested.clear()
+                self.set_status("awaiting_approval")
             if self.handle.approval_resolved.wait(0.2):
                 self.handle.approval_resolved.clear()
                 decisions = self.handle.decisions.pop(approval["id"], None)
+            if decisions is None:
+                durable = store.load_run(self.ws, self.run["id"])
+                current = next(
+                    (
+                        item for item in durable.get("approvals") or []
+                        if item.get("id") == approval["id"]
+                    ),
+                    None,
+                )
+                if current and current.get("submitted_decisions") is not None:
+                    decisions = current["submitted_decisions"]
         self.deadline += time.monotonic() - waited_from
         by_id = {item["id"]: item for item in approval["items"]}
         for decision in decisions:
@@ -513,6 +657,7 @@ class BaseRunner:
                 response_hash=None, artifact_ref=f"proposal:{kind}:{item['id']}", disposition=item["decision"],
             )
         approval.update(status="resolved", resolved=store.utcnow())
+        approval.pop("response_submitted_at", None)
         # Persist the resolved approval and resumed run status atomically. A
         # save in between exposed an impossible state to pollers: the run said
         # awaiting_approval while no pending approval existed.

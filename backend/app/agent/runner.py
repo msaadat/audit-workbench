@@ -19,6 +19,7 @@ bounded workspace views supplied by the orchestrator.
 from __future__ import annotations
 
 import os
+import re
 import threading
 
 from .. import analytics, assistant, dashboard, debug_store, explore, llm, sandbox, validation
@@ -252,6 +253,8 @@ def start_command_run(
     run = store.new_command_run(
         workspace, mode, command, parent_run_id=parent_run_id, context=context
     )
+    from .workflow_runner import initialize_known_workflow
+    initialize_known_workflow(workspace, run)
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
     _launch(workspace.id, run["id"])
     return run
@@ -280,6 +283,7 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
     if previous.get("schema_version", 1) < 2 or previous.get("kind") != "audit":
         raise WorkspaceError("This run type cannot be retried as a command.")
     original = previous.get("command") or {}
+    previous_workflow = previous.get("workflow") or {}
     command = {
         "source": original.get("source") or "chat",
         "text": original.get("text") or "",
@@ -289,6 +293,11 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
         "source_message_id": previous.get("source_message_id") or original.get("source_message_id"),
         "context_refs": list(original.get("context_refs") or []),
         "planning_basis_run_id": previous.get("planning_basis_run_id"),
+        "requested_outcomes": list(previous_workflow.get("requested_outcomes") or []),
+        "target_refs": list(previous_workflow.get("target_refs") or []),
+        # Semantic readiness keeps successful siblings; carrying a prior
+        # ``force`` policy into retry would unnecessarily repeat them.
+        "refresh_policy": "missing_or_stale",
     }
     return start_command_run(
         workspace,
@@ -297,6 +306,151 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
         parent_run_id=previous["id"],
         context=dict(previous.get("context") or {}),
     )
+
+
+def continue_audit(workspace: Workspace, run_id: str) -> dict:
+    """Start a linked workflow from a terminal run's deterministic open items."""
+    previous = store.load_run(workspace, run_id)
+    if previous.get("status") != "completed_with_open_items":
+        raise WorkspaceError("Only a run completed with open items can be continued.")
+    workflow_state = previous.get("workflow") or {}
+    outcomes = list(workflow_state.get("next_outcomes") or [])
+    if not outcomes:
+        raise WorkspaceError("This run has no remaining workflow outcomes to continue.")
+    return start_command_run(
+        workspace,
+        previous["mode"],
+        {
+            "source": "follow_up",
+            "text": "Continue the open audit work from the linked run.",
+            "requested_outcomes": outcomes,
+            "target_refs": list(workflow_state.get("target_refs") or ["workspace:current"]),
+            "refresh_policy": "missing_or_stale",
+            "parent_command_id": (previous.get("command") or {}).get("id"),
+            "chat_id": previous.get("chat_id"),
+            "source_message_id": previous.get("source_message_id"),
+        },
+        parent_run_id=run_id,
+        context={"continued_from_run_id": run_id},
+    )
+
+
+def notify_evidence_available(
+    workspace: Workspace,
+    *,
+    document_ids: list[str] | None = None,
+    request_ids: list[str] | None = None,
+    test_ids: list[str] | None = None,
+    reason: str = "evidence_updated",
+) -> dict:
+    """Publish targeted evidence invalidation to affected workflow runs."""
+    document_ids = list(dict.fromkeys(str(value) for value in document_ids or []))
+    explicit_requests = {str(value) for value in request_ids or []}
+    explicit_tests = {str(value) for value in test_ids or []}
+    documents_by_id = {str(item.get("id")): item for item in workspace.documents}
+
+    def normalized(value: object) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+    document_texts = [
+        (
+            document_id,
+            normalized(
+                f"{documents_by_id[document_id].get('source') or ''} "
+                f"{documents_by_id[document_id].get('title') or ''} "
+                f"{documents_by_id[document_id].get('category') or ''}"
+            ),
+        )
+        for document_id in document_ids
+        if document_id in documents_by_id
+    ]
+    affected = []
+    for request in workspace.evidence_requests:
+        request_id = str(request.get("id") or "")
+        test_id = str(request.get("document_test_id") or "")
+        identifier = normalized(request.get("transaction_identifier"))
+        kinds = [normalized(value) for value in request.get("missing_document_types") or []]
+        exact_matching_document_ids = [
+            document_id
+            for document_id, text in document_texts
+            if identifier and identifier in text
+        ]
+        type_matching_document_ids = [
+            document_id
+            for document_id, text in document_texts
+            if kinds and any(kind and kind in text for kind in kinds)
+        ]
+        matching_document_ids = list(
+            dict.fromkeys([*exact_matching_document_ids, *type_matching_document_ids])
+        )
+        matches_document = bool(matching_document_ids)
+        if request_id in explicit_requests or test_id in explicit_tests or matches_document:
+            request["_matching_document_ids"] = matching_document_ids
+            request["_exact_matching_document_ids"] = exact_matching_document_ids
+            affected.append(request)
+    # Exact transaction-identifier matches are safe to attach automatically;
+    # category-only or multiple matches remain an auditor selection.
+    from .. import doc_tests
+    from .workflow import canonical_sha1
+
+    availability_sha1 = canonical_sha1(
+        [
+            {
+                key: item.get(key)
+                for key in ("id", "sha1", "category", "title", "text_state")
+            }
+            for item in workspace.documents
+        ]
+    )
+    availability_changed = False
+    for request in affected:
+        if request.get("evidence_availability_sha1") != availability_sha1:
+            request["evidence_availability_sha1"] = availability_sha1
+            request["updated"] = workspace._updated_now()
+            availability_changed = True
+    if availability_changed:
+        workspace.save()
+
+    for request in affected:
+        identifier = normalized(request.get("transaction_identifier"))
+        request.pop("_matching_document_ids", None)
+        matches = list(request.pop("_exact_matching_document_ids", []))
+        if not identifier or len(matches) != 1:
+            continue
+        test_id = str(request.get("document_test_id") or "")
+        item_id = str(request.get("item_id") or "")
+        if test_id and item_id and doc_tests.exists(workspace, test_id):
+            doc_tests.attach_document(workspace, test_id, item_id, matches[0])
+    blocked_units = sorted(
+        {
+            str(item.get("blocked_unit_id"))
+            for item in affected
+            if item.get("blocked_unit_id")
+        }
+    )
+    payload = {
+        "reason": reason,
+        "document_ids": document_ids,
+        "request_ids": sorted({str(item.get("id")) for item in affected}),
+        "document_test_ids": sorted({str(item.get("document_test_id")) for item in affected if item.get("document_test_id")}),
+        "blocked_unit_ids": blocked_units,
+        "workspace_revision": workspace.revision,
+    }
+    live_ids = {handle.run_id for handle in live_handles() if handle.workspace_id == workspace.id}
+    for summary in store.list_runs(workspace)[:50]:
+        run_id = str(summary.get("id") or "")
+        try:
+            run = store.load_run(workspace, run_id)
+        except WorkspaceError:
+            continue
+        known_units = {
+            unit.get("id")
+            for stage in (run.get("workflow") or {}).get("stages") or []
+            for unit in stage.get("units") or []
+        }
+        if run_id in live_ids or known_units.intersection(blocked_units):
+            store.append_event(workspace, run_id, "evidence_available", payload)
+    return payload
 
 
 def pause_run(workspace: Workspace, run_id: str) -> dict:
@@ -359,13 +513,20 @@ def resolve_approval(
         raise WorkspaceError("Approval not found on this run.")
     if approval["status"] != "pending":
         raise WorkspaceError("This approval batch was already resolved.")
+    approval["submitted_decisions"] = list(decisions or [])
+    approval["response_submitted_at"] = store.utcnow()
+    store.save_run(workspace, run)
+    store.append_event(
+        workspace, run_id, "approval_response_stored",
+        {"approval_id": approval_id},
+    )
     handle = get_handle(run_id)
-    if handle is None:
-        raise WorkspaceError(
-            "The run is not executing — resume it first, then decide."
-        )
-    handle.decisions[approval_id] = list(decisions or [])
-    handle.approval_resolved.set()
+    if handle is not None:
+        handle.decisions[approval_id] = list(decisions or [])
+        handle.approval_resolved.set()
+    elif run["status"] not in store.TERMINAL_STATUSES:
+        run["status"] = "interrupted"
+        store.save_run(workspace, run)
     return run
 
 
@@ -378,12 +539,25 @@ def resolve_interaction(
         raise WorkspaceError("Interaction not found on this run.")
     if interaction["status"] != "pending":
         raise WorkspaceError("This interaction was already resolved.")
+    # Persist first so a restart between the HTTP response and worker wakeup
+    # cannot lose an auditor clarification or disposition batch.  A live
+    # handle consumes the same value immediately; an interrupted handle
+    # consumes it on resume.
+    interaction["submitted_response"] = dict(response or {})
+    interaction["response_submitted_at"] = store.utcnow()
+    store.save_run(workspace, run)
+    store.append_event(
+        workspace, run_id, "interaction_response_stored",
+        {"interaction_id": interaction_id},
+    )
     handle = get_handle(run_id)
-    if handle is None:
-        raise WorkspaceError("The run is not executing — resume it before responding.")
-    with handle.lock:
-        handle.interaction_responses[interaction_id] = dict(response or {})
-    handle.interaction_resolved.set()
+    if handle is not None:
+        with handle.lock:
+            handle.interaction_responses[interaction_id] = dict(response or {})
+        handle.interaction_resolved.set()
+    elif run["status"] not in store.TERMINAL_STATUSES:
+        run["status"] = "interrupted"
+        store.save_run(workspace, run)
     return run
 
 
@@ -525,9 +699,9 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
 
                     DocumentAnalysisRunner(workspace, run, handle).execute()
                 elif run.get("kind") == "audit":
-                    from .command_runner import CommandRunner
+                    from .workflow_runner import WorkflowRunner
 
-                    CommandRunner(workspace, run, handle).execute()
+                    WorkflowRunner(workspace, run, handle).execute()
                 elif run.get("kind", "analysis") == "analysis":
                     _Runner(workspace, run, handle).execute()
                 else:

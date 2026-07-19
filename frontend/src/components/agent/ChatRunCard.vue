@@ -11,6 +11,7 @@ import AgentApprovalCard from './AgentApprovalCard.vue'
 import AgentInteractionCard from './AgentInteractionCard.vue'
 import AgentSummary from './AgentSummary.vue'
 import AgentTaskList from './AgentTaskList.vue'
+import AgentWorkflowList from './AgentWorkflowList.vue'
 
 // showAttention: pending interactions/approvals normally render as their own
 // transcript items; only a foreign run card (another chat's active run, not
@@ -85,6 +86,14 @@ async function retryRun() {
     emit('changed')
   } finally { busy.value = false }
 }
+async function continueAudit() {
+  busy.value = true
+  try {
+    const next = await api.post<AgentRun>(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/continue`)
+    await agent.openRun(next.id)
+    emit('changed')
+  } finally { busy.value = false }
+}
 async function decide(approvalId: string, decisions: AgentDecision[]) {
   busy.value = true
   try { await api.post(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}/approvals/${approvalId}`, { decisions }); await load(); emit('changed') }
@@ -113,6 +122,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
         <Button v-if="['paused','interrupted'].includes(run.status)" icon="pi pi-play" text size="small" :disabled="busy" @click="control('resume')" />
         <Button v-if="active" icon="pi pi-stop-circle" text size="small" severity="danger" :disabled="busy" @click="control('cancel')" />
         <Button v-if="run.status === 'failed'" label="Retry run" icon="pi pi-refresh" size="small" :loading="busy" @click="retryRun" />
+        <Button v-if="run.status === 'completed_with_open_items' && run.workflow?.next_outcomes.length" label="Continue audit" icon="pi pi-arrow-right" size="small" :loading="busy" @click="continueAudit" />
         <span class="grow" /><Button icon="pi pi-refresh" text size="small" :loading="busy" @click="load" />
       </div>
       <template v-if="run">
@@ -120,7 +130,9 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
           <AgentApprovalCard v-for="approval in run.approvals.filter(item => item.status === 'pending')" :key="approval.id" :approval="approval" :busy="busy" @decide="decide(approval.id, $event)" />
           <AgentInteractionCard v-for="interaction in (run.interactions ?? []).filter(item => item.status === 'pending')" :key="interaction.id" :interaction="interaction" :busy="busy" :workspaceId="workspaceId" :runId="run.id" @respond="respond(interaction, $event)" />
         </template>
-        <AgentActionList v-if="run.actions?.length" :actions="run.actions" :runStatus="run.status" />
+        <p v-if="run.workflow?.workflow_explanation" class="workflow-explanation">{{ run.workflow.workflow_explanation }}</p>
+        <AgentWorkflowList v-if="run.workflow?.definition === 'audit_workflow_v2'" :stages="run.workflow.stages" :runStatus="run.status" :runError="run.error" />
+        <AgentActionList v-else-if="run.actions?.length" :actions="run.actions" :runStatus="run.status" />
         <AgentTaskList v-else :stages="run.plan.stages" :runStatus="run.status" :runError="run.error" />
         <details v-if="run.warnings.length"><summary>{{ run.warnings.length }} warning(s)</summary><ul><li v-for="warning in run.warnings" :key="warning">{{ warning }}</li></ul></details>
         <AgentSummary v-if="run.summary_markdown" :markdown="run.summary_markdown" :findings="run.findings" :auditOutcome="run.audit_outcome" :workspaceId="workspaceId" :runId="run.id" />
@@ -131,4 +143,5 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
 
 <style scoped>
 .run-card{border:1px solid var(--aw-border);border-radius:10px;background:var(--aw-canvas);overflow:hidden}.run-card.attention{border-color:var(--p-amber-400);box-shadow:0 0 0 2px rgb(245 158 11/8%)}.run-head{display:flex;align-items:center;gap:.55rem;width:100%;padding:.65rem;border:0;background:transparent;text-align:left;cursor:pointer;color:inherit}.icon{display:grid;place-items:center;width:1.9rem;height:1.9rem;border-radius:7px;background:var(--aw-teal-soft);color:var(--aw-teal)}.identity{display:grid;gap:.12rem;min-width:0;flex:1}.identity strong,.identity small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.identity strong{font-size:.78rem}.identity small,.progress,.summary-line{font-size:.68rem;color:var(--aw-muted)}.progress{display:flex;gap:.65rem;padding:0 .65rem .55rem}.progress strong{color:var(--p-amber-700)}.summary-line{margin:0;padding:0 .65rem .55rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.run-detail{padding:.65rem;border-top:1px solid var(--aw-border);background:var(--p-surface-0)}.controls{display:flex;align-items:center}.grow{flex:1}.run-detail details{font-size:.72rem;color:var(--aw-muted)}.run-detail summary{cursor:pointer}
+.workflow-explanation{margin:.35rem 0 .7rem;padding:.55rem;border-radius:6px;background:var(--p-surface-50);font-size:.72rem;line-height:1.4;color:var(--p-surface-600)}
 </style>
