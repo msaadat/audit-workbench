@@ -123,6 +123,9 @@ class IntakeRunner(BaseRunner):
             response = self.llm_json(
                 prompts.FILE_CLASSIFICATION_SYSTEM,
                 prompts.file_classification_user(payload),
+                validator=lambda value: prompts.validate_json_shape(
+                    value, object_arrays=("items",)
+                ),
             )
             intake.merge_model_classifications(batch, response.get("items") or [])
         except llm.LLMError as error:

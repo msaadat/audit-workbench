@@ -591,9 +591,11 @@ def editorial_review(workspace: Workspace) -> dict:
         result["editorial"] = [_issue("editorial_unavailable", "info", "Optional editorial review is unavailable because the report model is not configured.", source="editorial")]
         return result
     prompt = (
-        "[agent:report_editorial]\nReview wording only. Return JSON with an issues array. Each issue has "
-        "code, severity (warning|info), message, and refs. Flag unclear wording, duplicate findings, "
-        "severity inconsistency, or tone. Do not clear deterministic issues."
+        "[agent:report_editorial]\nReview wording only. Return one JSON object only with an `issues` "
+        "array of objects. Each issue object has string `code`, severity (`warning` or `info`), "
+        "string `message`, and `refs` as an array of strings. Do not return prose outside the JSON "
+        "object or a Markdown fence. Flag unclear wording, duplicate findings, severity "
+        "inconsistency, or tone. Do not clear deterministic issues."
     )
     try:
         with debug_store.trace_context(
@@ -606,9 +608,17 @@ def editorial_review(workspace: Workspace) -> dict:
             )
         parsed = json.loads(str(message.get("content") or "{}"))
         editorial = []
-        for item in parsed.get("issues") or []:
+        if not isinstance(parsed, dict):
+            raise TypeError("editorial response must be an object")
+        issues = parsed.get("issues")
+        if not isinstance(issues, list) or any(not isinstance(item, dict) for item in issues):
+            raise TypeError("issues must be an array of objects")
+        for item in issues:
             severity = item.get("severity") if item.get("severity") in ("warning", "info") else "info"
-            editorial.append(_issue(str(item.get("code") or "editorial_note"), severity, str(item.get("message") or ""), [str(ref) for ref in item.get("refs") or []], source="editorial"))
+            refs = item.get("refs")
+            if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
+                raise TypeError("issue refs must be an array of strings")
+            editorial.append(_issue(str(item.get("code") or "editorial_note"), severity, str(item.get("message") or ""), refs, source="editorial"))
         result["editorial"] = editorial
     except (llm.LLMError, json.JSONDecodeError, TypeError) as error:
         result["editorial"] = [_issue("editorial_unavailable", "info", f"Optional editorial review could not be completed: {error}", source="editorial")]

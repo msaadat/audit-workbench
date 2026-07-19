@@ -278,6 +278,50 @@ def test_invalid_llm_json_retried_then_degraded(workspace_with_data, fake_agent_
     assert done["discovery"]["domain"] == "sales"
 
 
+def test_structurally_invalid_rule_params_are_repaired_before_use(
+    workspace_with_data, fake_agent_llm
+):
+    attempts = {"n": 0}
+
+    def malformed_then_valid(_user):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return {
+                "rules": [{
+                    "column": "amount", "check": "range",
+                    "params": "minimum 0 and maximum 100000",
+                    "severity": "warn", "rationale": "Plausibility range.",
+                }]
+            }
+        return fake_agent_llm.DEFAULTS["agent:rules"]
+
+    fake_agent_llm.overrides["agent:rules"] = malformed_then_valid
+    done = wait_run(workspace_with_data, _start(workspace_with_data)["id"])
+
+    assert done["status"] == "completed"
+    assert attempts["n"] >= 3  # first table repaired; second table also receives advice
+    assert all(
+        isinstance(rule["params"], dict)
+        for ruleset in workspaces.load_workspace(workspace_with_data.id).rulesets
+        for rule in ruleset["rules"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("validator", "payload", "message"),
+    [
+        (runner._validate_analyses_payload, {"library": [{"table": "transactions", "test": "duplicates", "title": "Duplicates", "rationale": "Audit risk", "params": "all rows"}], "custom": []}, "params must be an object"),
+        (runner._validate_dashboard_payload, {"queries": [{"table": "transactions", "title": "Chart", "rationale": "Trend", "spec": "group it", "viz": {}}]}, "spec must be an object"),
+        (runner._validate_summary_payload, {"findings": [{"evidence_refs": "analysis:x"}], "summary_markdown": "# Summary"}, "array of strings"),
+    ],
+)
+def test_stage_structured_output_validators_reject_nested_shape_errors(
+    validator, payload, message
+):
+    with pytest.raises(ValueError, match=message):
+        validator(payload)
+
+
 def test_preflight_drops_broken_rules(workspace_with_data, fake_agent_llm):
     fake_agent_llm.overrides["agent:rules"] = {
         "rules": [
@@ -307,6 +351,7 @@ def test_broken_custom_code_gets_one_repair(workspace_with_data, fake_agent_llm)
                 "table": "transactions",
                 "title": "Broken then fixed",
                 "code": "result = transactions.group_by('nope').agg(pl.len())",
+                "rationale": "Exercise the custom-code repair path.",
             }
         ],
     }

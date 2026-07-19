@@ -457,6 +457,8 @@ def _classifier(workspace: Workspace, record: dict, content: str, active: bool) 
         value = json.loads(str(message.get("content") or ""))
     except (json.JSONDecodeError, TypeError):
         value = {}
+    if not isinstance(value, dict):
+        value = {}
     if value.get("intent") not in {"ask", "act", "clarify"} or value.get("confidence") not in {"high", "medium", "low"}:
         return {"intent": "clarify", "confidence": "low", "clarification": "I could not safely tell whether you want an answer or a workspace change. Choose Ask or Act."}
     # Actions run through the command runner's own approval policy, so only a

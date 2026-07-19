@@ -1,9 +1,10 @@
 import threading
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app.agent import runner, store
+from app.agent import command_runner, runner, store
 from app.main import create_app
 from app import document_analysis, documents, llm, methodology, templates_store, workspaces
 
@@ -30,6 +31,7 @@ PLANNING_RESPONSES = {
     "agent:rcm": {
         "rows": [
             {
+                "operation": "create",
                 "process": "Accounts payable",
                 "risk": "Duplicate payments are processed",
                 "risk_rating": "high",
@@ -37,6 +39,7 @@ PLANNING_RESPONSES = {
                 "control": "Duplicate invoice validation",
                 "control_type": "Automated preventive",
                 "test_procedure": "Test invoice number and amount duplicates.",
+                "new_risk_reason": "No existing RCM row covers duplicate payments.",
                 "test_refs": [],
             }
         ]
@@ -44,14 +47,16 @@ PLANNING_RESPONSES = {
     "agent:work_program": {
         "procedures": [
             {
+                "operation": "create",
                 "stable_slug": "duplicate-payments",
                 "rcm_refs": [
                     "rcm:accounts-payable:duplicate-payments-are-processed"
                 ],
+                "title": "Test duplicate payments",
                 "objective": "Determine whether duplicate payments occurred",
                 "criteria": "Each valid invoice is paid once.",
                 "steps": ["Identify repeated invoice numbers and amounts.", "Inspect exceptions."],
-                "method": "Data analysis and inspection",
+                "method": "hybrid",
                 "expected_evidence": "Exception listing and inspected invoices",
                 "test_refs": [],
             }
@@ -246,6 +251,31 @@ def test_planning_failure_rolls_back_all_staged_planning_changes(monkeypatch):
     assert completed["planning_transaction"]["status"] == "rolled_back"
     assert reloaded.planning == before["planning"]
     assert reloaded.rcm == before["rcm"]
+    assert completed["artifacts"] == []
+    assert not any(completed["planning_changes"].values())
+    assert completed["planning_transaction"]["rolled_back_artifacts"]
+    assert any(completed["planning_transaction"]["rolled_back_changes"].values())
+    tasks = {
+        task["id"]: task
+        for stage in completed["plan"]["stages"]
+        for task in stage["tasks"]
+    }
+    assert {
+        tasks[task_id]["status"]
+        for task_id in (
+            "planning:context", "planning:apm", "planning:rcm",
+            "planning:work_program",
+        )
+    } == {"failed"}
+    assert all(not task["result_refs"] for task in tasks.values())
+    activity = documents.activities(reloaded, limit=100)["items"]
+    assert any(item.get("disposition") == "rolled_back" for item in activity)
+    events = store.read_events(reloaded, completed["id"])
+    assert any(
+        item["type"] == "workspace_changed"
+        and item["data"].get("action") == "rolled_back"
+        for item in events
+    )
 
 
 def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
@@ -266,9 +296,84 @@ def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
     assert completed["command"]["status"] == "failed"
     assert completed["error"] == "LLM request failed: Remote end closed connection without response"
     assert not completed["summary_markdown"]
-    assert tasks["planning:context"]["status"] == "completed"
+    assert tasks["planning:context"]["status"] == "failed"
     assert tasks["planning:apm"]["status"] == "failed"
     assert "planning:rcm" not in tasks
+
+
+def test_planning_repairs_non_object_sampling_and_thresholds(monkeypatch):
+    attempts = 0
+
+    def planned_tests(_user):
+        nonlocal attempts
+        attempts += 1
+        base = {
+            "operation": "create",
+            "stable_slug": "duplicate-payments",
+            "rcm_refs": ["rcm:accounts-payable:duplicate-payments-are-processed"],
+            "title": "Test duplicate payments",
+            "objective": "Determine whether duplicate payments occurred",
+            "criteria": "Each valid invoice is paid once.",
+            "steps": ["Identify repeated invoice numbers and amounts."],
+            "method": "data_analytics",
+            "expected_evidence": "Exception listing",
+        }
+        if attempts == 1:
+            return {
+                "planned_tests": [{
+                    **base,
+                    "sampling": "Full population",
+                    "thresholds": "Zero duplicate payments",
+                }]
+            }
+        return {
+            "planned_tests": [{
+                **base,
+                "sampling": {
+                    "strategy": "full_population", "size": None,
+                    "seed": 42, "stratify_by": None,
+                },
+                "thresholds": {"maximum_duplicates": 0},
+            }]
+        }
+
+    fake = configure_planning_llm(
+        monkeypatch, {"agent:work_program": planned_tests}
+    )
+    ws = workspaces.create_workspace("Repair planned test objects")
+    completed = wait_run(ws, start_planning(ws)["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert attempts == 2
+    assert [call["tag"] for call in fake.calls].count("agent:work_program") == 2
+    planned = reloaded.rcm[0]["planned_tests"][0]
+    assert planned["sampling"]["strategy"] == "full_population"
+    assert planned["thresholds"] == {"maximum_duplicates": 0}
+
+
+@pytest.mark.parametrize("field", ["sampling", "thresholds"])
+def test_planned_test_crud_rejects_non_object_structured_fields(field):
+    ws = workspaces.create_workspace(f"Invalid planned test {field}")
+    row = ws.add_rcm({"process": "Purchasing", "risk": "Duplicate payment"})
+    payload = {
+        "objective": "Test duplicate payments",
+        "steps": ["Identify duplicates."],
+        field: "free-form prose",
+    }
+
+    with pytest.raises(
+        workspaces.WorkspaceError,
+        match=rf"Planned-test {field} must be an object",
+    ):
+        ws.add_planned_test(row["id"], payload)
+
+
+def test_planning_context_requires_string_field_values():
+    with pytest.raises(ValueError, match="context.key_contacts must be a string"):
+        command_runner._validate_context_payload({
+            "context": {"key_contacts": ["CFO", "Head of Procurement"]}
+        })
 
 
 def test_auto_planning_selects_relevant_documents(monkeypatch):

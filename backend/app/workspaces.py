@@ -215,7 +215,9 @@ def _planned_test_id(rcm_id: str, procedure_id: str) -> str:
 
 
 def _normalize_sampling(value: object) -> dict:
-    raw = dict(value or {}) if isinstance(value, dict) else {}
+    if value not in (None, "") and not isinstance(value, dict):
+        raise WorkspaceError("Planned-test sampling must be an object.")
+    raw = dict(value or {})
     size = raw.get("size")
     if size not in (None, ""):
         try:
@@ -236,6 +238,12 @@ def _normalize_sampling(value: object) -> dict:
         "seed": seed,
         "stratify_by": str(raw.get("stratify_by") or "").strip() or None,
     }
+
+
+def _normalize_thresholds(value: object) -> dict:
+    if value not in (None, "") and not isinstance(value, dict):
+        raise WorkspaceError("Planned-test thresholds must be an object.")
+    return dict(value or {})
 
 
 def _normalize_planned_test(
@@ -277,7 +285,7 @@ def _normalize_planned_test(
         "steps": [str(step).strip() for step in (payload.get("steps") or []) if str(step).strip()],
         "expected_evidence": str(payload.get("expected_evidence") or ""),
         "sampling": _normalize_sampling(payload.get("sampling")),
-        "thresholds": dict(payload.get("thresholds") or {}),
+        "thresholds": _normalize_thresholds(payload.get("thresholds")),
         "execution_refs": list(
             dict.fromkeys(
                 str(ref).strip()

@@ -520,7 +520,12 @@ def ask(
             tool_step=step + 1,
         ):
             message = llm.chat(messages, tools=TOOLS)
-        tool_calls = message.get("tool_calls") or []
+        raw_tool_calls = message.get("tool_calls") or []
+        tool_calls = (
+            [call for call in raw_tool_calls if isinstance(call, dict)]
+            if isinstance(raw_tool_calls, list)
+            else []
+        )
         # Persist the assistant turn (tool_calls must round-trip verbatim).
         messages.append(
             {
@@ -534,11 +539,15 @@ def ask(
             break
 
         for call in tool_calls:
-            name = call.get("function", {}).get("name", "")
-            raw_args = call.get("function", {}).get("arguments") or "{}"
+            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+            name = function.get("name", "")
+            raw_args = function.get("arguments") or "{}"
             try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-            except json.JSONDecodeError:
+                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                if not isinstance(parsed_args, dict):
+                    raise ValueError("Tool arguments must be an object.")
+                args = dict(parsed_args)
+            except (json.JSONDecodeError, TypeError, ValueError):
                 args = {}
             try:
                 content, _artifact = session.dispatch(name, args)

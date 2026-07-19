@@ -15,7 +15,7 @@ import json
 from datetime import datetime, timezone
 
 from . import analytics, data_tests, debug_store, doc_tests, explore, llm, rcm_execution, report, sandbox, validation
-from .agent.prompts import parse_json_object
+from .agent.prompts import parse_json_object, validate_json_shape
 from .workspaces import Workspace
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
@@ -566,6 +566,7 @@ Prefer specific, non-duplicative advice that adds judgment beyond the determinis
             temperature=0.0, profile="agent",
         )
     parsed = parse_json_object(message.get("content") or "")
+    validate_json_shape(parsed, object_arrays=("suggestions",))
     suggestions = []
     for index, item in enumerate(parsed.get("suggestions") or []):
         if not isinstance(item, dict) or len(suggestions) >= AI_ADVICE_MAX:

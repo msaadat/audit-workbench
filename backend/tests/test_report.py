@@ -220,6 +220,27 @@ def test_report_html_escapes_content_and_only_allows_safe_links():
     assert 'href="?tab=findings&amp;finding=F-1"' in value
 
 
+def test_editorial_review_degrades_safely_on_wrong_issue_shape(
+    monkeypatch, workspace_with_data
+):
+    ws = workspace_with_data
+    ws.report = {"markdown": "# Preliminary internal audit report"}
+    ws.save()
+    monkeypatch.setattr(
+        llm, "chat", lambda *args, **kwargs: {
+            "content": json.dumps({"issues": ["unclear wording"]})
+        },
+    )
+    monkeypatch.setattr(
+        llm, "agent_status",
+        lambda: {"configured": True, "provider": "fake", "model": "fake"},
+    )
+
+    reviewed = report.editorial_review(ws)
+
+    assert reviewed["editorial"][0]["code"] == "editorial_unavailable"
+
+
 def test_finding_and_report_routes(monkeypatch, workspace_with_data):
     ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": False})

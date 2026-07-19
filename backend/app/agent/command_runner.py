@@ -14,7 +14,7 @@ from .. import (
     analytics, assistant, debug_store, document_analysis, documents, llm, methodology, templates_store,
     sandbox, validation,
 )
-from ..workspaces import Workspace, WorkspaceError, slugify
+from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError, slugify
 from . import actions, artifact_index, ledger, prompts, store
 from .base import BaseRunner, Cancelled, LimitExceeded
 
@@ -63,6 +63,18 @@ SEMANTIC_PROPOSAL_ATTEMPTS = 2
 def _text_list(value: object) -> list[str]:
     values = [value] if isinstance(value, str) else list(value or [])
     return [str(item) for item in values]
+
+
+def _validate_context_payload(payload: dict) -> dict:
+    if "context" not in payload:
+        return payload
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        raise ValueError("context must be an object")
+    for key, value in context.items():
+        if key in _CONTEXT_FIELDS and not isinstance(value, str):
+            raise ValueError(f"context.{key} must be a string")
+    return payload
 
 
 class CommandRunner(BaseRunner):
@@ -340,6 +352,11 @@ class CommandRunner(BaseRunner):
             "planned_test_created": 0, "planned_test_updated": 0,
             "planned_test_preserved": 0,
         })
+        run_snapshot = {
+            "artifact_count": len(self.run.get("artifacts") or []),
+            "planning_changes": copy.deepcopy(self.run["planning_changes"]),
+            "planning_revision_count": len(self.run.get("planning_revisions") or []),
+        }
         self.save()
         try:
             basis = self.stage_context()
@@ -353,10 +370,77 @@ class CommandRunner(BaseRunner):
             self.ws.rcm = snapshot["rcm"]
             self.ws.rcm_migration = snapshot["rcm_migration"]
             self.ws.save()
-            self.run["planning_transaction"].update(
-                status="rolled_back", finished_at=store.utcnow(), error=str(error)
+            artifacts = self.run.setdefault("artifacts", [])
+            rolled_back_artifacts = copy.deepcopy(
+                artifacts[run_snapshot["artifact_count"]:]
             )
+            del artifacts[run_snapshot["artifact_count"]:]
+            rolled_back_refs = {
+                f"{item['kind']}:{item['id']}" for item in rolled_back_artifacts
+            }
+            rolled_back_changes = copy.deepcopy(self.run.get("planning_changes") or {})
+            self.run["planning_changes"] = run_snapshot["planning_changes"]
+            revisions = self.run.get("planning_revisions") or []
+            del revisions[run_snapshot["planning_revision_count"]:]
+            rollback_error = f"Rolled back because a later planning stage failed: {error}"
+            changed_tasks = []
+            planning_task_ids = {
+                "planning:context", "planning:apm", "planning:rcm",
+                "planning:work_program",
+            }
+            for stage in self.run.get("plan", {}).get("stages", []):
+                for task in stage.get("tasks", []):
+                    if task.get("id") not in planning_task_ids:
+                        continue
+                    task["result_refs"] = [
+                        ref for ref in task.get("result_refs") or []
+                        if ref not in rolled_back_refs
+                    ]
+                    if task.get("status") in {
+                        "queued", "running", "awaiting_approval", "completed"
+                    }:
+                        task["status"] = "failed"
+                        task["error"] = (
+                            str(error)
+                            if task.get("id") == "planning:work_program"
+                            else rollback_error
+                        )
+                        task["finished_at"] = store.utcnow()
+                        changed_tasks.append(copy.deepcopy(task))
+            self.run["planning_transaction"].update(
+                status="rolled_back", finished_at=store.utcnow(), error=str(error),
+                rolled_back_artifacts=rolled_back_artifacts,
+                rolled_back_changes=rolled_back_changes,
+            )
+            self.run.pop("prepared_planning", None)
             self.save()
+            for task in changed_tasks:
+                self.emit("task_update", {"task": task})
+            profile = llm.agent_status()
+            for item in rolled_back_artifacts:
+                ref = f"{item['kind']}:{item['id']}"
+                documents.append_activity(
+                    self.ws, run_id=self.run["id"], stage="planning:rollback",
+                    task="planning:rollback", purpose="artifact_disposition",
+                    provider=profile.get("provider") or profile.get("backend"),
+                    model=profile.get("model"), vision_used=False,
+                    prompt_version=None, template_versions=[], knowledge_packs=[],
+                    document_ids=[], page_ranges=[], source_hashes=[],
+                    response_at=store.utcnow(), response_hash=None,
+                    artifact_ref=ref, disposition="rolled_back",
+                )
+                self.emit(
+                    "workspace_changed",
+                    {"kind": item["kind"], "id": item["id"], "action": "rolled_back"},
+                )
+            self.emit(
+                "workspace_changed",
+                {"kind": "planning", "id": "transaction", "action": "rolled_back"},
+            )
+            self.set_activity(
+                "planning.rollback", "Engagement planning rolled back",
+                detail=str(error), task_id="planning:work_program",
+            )
             raise
         self.run["planning_transaction"].update(
             status="committed", finished_at=store.utcnow(),
@@ -559,6 +643,7 @@ class CommandRunner(BaseRunner):
                  "document_ids": requested_document_ids,
                  "page_ranges": sorted({citation["page"] for item in included_documents for citation in item.get("citations") or []}),
                  "source_hashes": [item["source_sha1"] for item in included_documents if item.get("source_sha1")]},
+                validator=_validate_context_payload,
             )
             proposed_context = self._planning_context(payload)
             fallback_context = self._context_fallback(included_documents)
@@ -568,7 +653,10 @@ class CommandRunner(BaseRunner):
                     "fact even though the labelled document summaries contain them. Return a "
                     "corrected object with a non-empty `context` grounded only in those summaries."
                 )
-                repaired = self.llm_json(prompts.DOCUMENT_CONTEXT_SYSTEM, repair_user)
+                repaired = self.llm_json(
+                    prompts.DOCUMENT_CONTEXT_SYSTEM, repair_user,
+                    validator=_validate_context_payload,
+                )
                 proposed_context = self._planning_context(repaired)
             if not proposed_context and fallback_context:
                 proposed_context = fallback_context
@@ -727,6 +815,9 @@ class CommandRunner(BaseRunner):
         payload = self.llm_json(
             prompts.DOCUMENT_SELECTION_SYSTEM,
             prompts.document_selection_user(context, eligible_meta),
+            validator=lambda value: prompts.validate_json_shape(
+                value, object_arrays=("selected",)
+            ),
         )
         proposals = []
         seen: set[str] = set()
@@ -826,10 +917,13 @@ class CommandRunner(BaseRunner):
             missing = [key for key in required if not str(row.get(key) or "").strip()]
             if missing:
                 return f"RCM row {index} is missing {missing[0]}"
+            non_string = [key for key in required if not isinstance(row.get(key), str)]
+            if non_string:
+                return f"RCM row {index} field {non_string[0]} must be a string"
             if str(row.get("risk_rating")).casefold() not in {"low", "medium", "high", "critical"}:
                 return f"RCM row {index} has an unsupported risk rating"
             operation = str(row.get("operation") or "").strip().lower()
-            if operation and operation not in {"update", "create"}:
+            if operation not in {"update", "create"}:
                 return f"RCM row {index} has an unsupported operation"
             if operation == "update":
                 try:
@@ -840,6 +934,8 @@ class CommandRunner(BaseRunner):
                     return f"RCM row {index} does not identify an existing RCM row"
             if operation == "create" and not str(row.get("new_risk_reason") or "").strip():
                 return f"RCM row {index} does not explain why the risk is new"
+            if operation == "create" and not isinstance(row.get("new_risk_reason"), str):
+                return f"RCM row {index} new_risk_reason must be a string"
         return None
 
     @staticmethod
@@ -917,19 +1013,69 @@ class CommandRunner(BaseRunner):
         procedures = payload.get("planned_tests") or payload.get("procedures") or []
         if not isinstance(procedures, list) or not procedures:
             return "no RCM planned tests were proposed"
-        required = ("objective", "criteria", "method", "expected_evidence")
+        required = (
+            "operation", "stable_slug", "title", "objective", "criteria",
+            "method", "expected_evidence",
+        )
         for index, procedure in enumerate(procedures, start=1):
             if not isinstance(procedure, dict):
                 return f"planned test {index} is not an object"
             missing = [key for key in required if not str(procedure.get(key) or "").strip()]
             if missing:
                 return f"planned test {index} is missing {missing[0]}"
+            non_string = [key for key in required if not isinstance(procedure.get(key), str)]
+            if non_string:
+                return f"planned test {index} field {non_string[0]} must be a string"
             if not isinstance(procedure.get("steps"), list) or not any(
                 str(value or "").strip() for value in procedure["steps"]
             ):
                 return f"planned test {index} has no executable steps"
-            if not isinstance(procedure.get("rcm_refs"), list) or not procedure["rcm_refs"]:
-                return f"planned test {index} is not linked to an RCM row"
+            if not all(isinstance(value, str) and value.strip() for value in procedure["steps"]):
+                return f"planned test {index} steps must be non-empty strings"
+            refs = procedure.get("rcm_refs")
+            if (
+                not isinstance(refs, list) or len(refs) != 1
+                or not isinstance(refs[0], str) or not refs[0].strip()
+            ):
+                return f"planned test {index} must link to exactly one RCM row"
+            operation = str(procedure.get("operation") or "").strip().lower()
+            if operation not in {"update", "create"}:
+                return f"planned test {index} has an unsupported operation"
+            if operation == "update" and not isinstance(
+                procedure.get("planned_test_id"), str
+            ):
+                return f"planned test {index} planned_test_id must be a string for updates"
+            method = str(procedure.get("method") or "").strip().lower()
+            if method not in PLANNED_TEST_METHODS:
+                return f"planned test {index} has an unsupported method"
+            sampling = procedure.get("sampling")
+            if sampling is not None and not isinstance(sampling, dict):
+                return f"planned test {index} sampling must be an object"
+            if isinstance(sampling, dict):
+                unknown = set(sampling) - {"strategy", "size", "seed", "stratify_by"}
+                if unknown:
+                    return f"planned test {index} sampling has an unknown field"
+                size = sampling.get("size")
+                if size is not None and (
+                    not isinstance(size, int) or isinstance(size, bool) or size < 1
+                ):
+                    return f"planned test {index} sampling size must be a positive integer or null"
+                seed = sampling.get("seed")
+                if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+                    return f"planned test {index} sampling seed must be an integer"
+                if "strategy" in sampling and not isinstance(sampling["strategy"], str):
+                    return f"planned test {index} sampling strategy must be a string"
+                if sampling.get("stratify_by") is not None and not isinstance(
+                    sampling["stratify_by"], str
+                ):
+                    return f"planned test {index} sampling stratify_by must be a string or null"
+            thresholds = procedure.get("thresholds")
+            if thresholds is not None and not isinstance(thresholds, dict):
+                return f"planned test {index} thresholds must be an object"
+            if isinstance(thresholds, dict) and any(
+                isinstance(value, (dict, list)) for value in thresholds.values()
+            ):
+                return f"planned test {index} threshold values must be JSON scalars"
         return None
 
     def stage_apm(self, basis: dict) -> str:

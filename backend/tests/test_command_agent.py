@@ -1326,17 +1326,21 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         },
         "agent:apm": draft_apm,
         "agent:rcm": {"rows": [{
+            "operation": "create",
             "process": "Procurement", "risk": risk, "risk_rating": "high",
             "assertion": "Authorization", "control": "Approval before commitment",
             "control_type": "Manual preventive",
             "test_procedure": "Inspect requisitions and approval evidence.",
+            "new_risk_reason": "No existing RCM row covers procurement approvals.",
         }]},
         "agent:work_program": {"procedures": [{
+            "operation": "create",
             "stable_slug": "approval-compliance", "rcm_refs": [semantic_risk],
+            "title": "Test procurement approval compliance",
             "objective": "Determine whether purchases were approved",
             "criteria": "Approval is documented before commitment.",
             "steps": ["Select purchases and inspect approval evidence."],
-            "method": "Inspection", "expected_evidence": "Approved requisitions",
+            "method": "document_inspection", "expected_evidence": "Approved requisitions",
         }]},
         "agent:command_interpreter": interpret,
     })

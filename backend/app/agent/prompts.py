@@ -137,6 +137,41 @@ def parse_json_object(text: str) -> dict:
     return payload
 
 
+def validate_json_shape(
+    payload: dict,
+    *,
+    object_fields: tuple[str, ...] = (),
+    object_arrays: tuple[str, ...] = (),
+    string_arrays: tuple[str, ...] = (),
+    string_fields: tuple[str, ...] = (),
+) -> dict:
+    """Validate common structured-response shapes before consumers mutate state.
+
+    ``llm_json`` feeds these ``ValueError`` messages back to the model for its
+    bounded repair attempt. Stage-specific semantic validation still happens
+    after this structural boundary.
+    """
+    for field in object_fields:
+        if not isinstance(payload.get(field), dict):
+            raise ValueError(f"{field} must be an object")
+    for field in object_arrays:
+        value = payload.get(field)
+        if not isinstance(value, list):
+            raise ValueError(f"{field} must be an array")
+        if any(not isinstance(item, dict) for item in value):
+            raise ValueError(f"every {field} item must be an object")
+    for field in string_arrays:
+        value = payload.get(field)
+        if not isinstance(value, list):
+            raise ValueError(f"{field} must be an array")
+        if any(not isinstance(item, str) for item in value):
+            raise ValueError(f"every {field} item must be a string")
+    for field in string_fields:
+        if not isinstance(payload.get(field), str):
+            raise ValueError(f"{field} must be a string")
+    return payload
+
+
 def parse_markdown_response(text: str, *, legacy_field: str | None = None) -> str:
     """Extract direct Markdown or tolerate an older JSON string wrapper.
 
@@ -245,7 +280,8 @@ DOCUMENT_CONTEXT_SYSTEM = f"""[agent:document_context]
 Extract planning facts only from the included engagement documents.
 Return an object with `context`, containing only supported fields that are
 grounded in the documents: objective, entity, period, scope, materiality,
-key_contacts, and background_notes. Omit fields that the documents do not
+key_contacts, and background_notes. Every supplied context value must be a
+string; format multiple key contacts as one newline-separated string. Omit fields that the documents do not
 support; do not turn policy requirements into claims about actual control
 operation. {JSON_RULES}"""
 
@@ -395,7 +431,8 @@ RCM_SYSTEM = f"""[agent:rcm]
 Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
 row containing operation (update|create), rcm_id for updates, process, risk,
 risk_rating (low|medium|high|critical), assertion, control, control_type, and
-test_procedure. New rows also include new_risk_reason. Do not invent control
+test_procedure. All ids and narrative fields are strings. New rows also include
+new_risk_reason as a string. Do not invent control
 operation as fact when evidence is absent. {JSON_RULES}"""
 
 
@@ -423,6 +460,13 @@ exactly one rcm_refs entry (an RCM semantic ID or ID), title,
 objective, criteria, executable steps (strings), method
 (data_analytics|validation|document_inspection|inquiry|hybrid|evidence_unavailable),
 expected_evidence, and optional sampling/thresholds.
+All ids, slugs, titles, narrative fields, and RCM references are strings.
+When supplied, `sampling` must be an object with only `strategy` (string),
+`size` (positive integer or null), `seed` (integer), and `stratify_by` (string
+or null). When supplied, `thresholds` must be a JSON object whose keys are
+short threshold names and whose values are JSON scalars; never return prose
+directly as the sampling or thresholds value. Put explanatory prose in the
+objective, steps, criteria, or expected_evidence fields instead.
 Steps must be specific enough for another auditor to perform and must not
 misstate a methodology excerpt as engagement evidence. {JSON_RULES}"""
 

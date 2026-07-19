@@ -31,6 +31,75 @@ from .base import BaseRunner, Cancelled, LimitExceeded
 MAX_CUSTOM_ANALYSES = 6
 MAX_QUERY_TILES = 5
 
+
+def _validate_planning_payload(payload: dict) -> dict:
+    prompts.validate_json_shape(
+        payload,
+        object_fields=("table_roles",),
+        object_arrays=("analysis_tasks",),
+        string_arrays=("assumptions", "warnings"),
+        string_fields=("domain", "confidence"),
+    )
+    for index, item in enumerate(payload["analysis_tasks"], start=1):
+        for field in ("table", "title", "detail"):
+            if not isinstance(item.get(field), str):
+                raise ValueError(f"analysis_tasks item {index} {field} must be a string")
+    return payload
+
+
+def _validate_rules_payload(payload: dict) -> dict:
+    prompts.validate_json_shape(payload, object_arrays=("rules",))
+    for index, rule in enumerate(payload["rules"], start=1):
+        if not isinstance(rule.get("check"), str):
+            raise ValueError(f"rules item {index} check must be a string")
+        if rule.get("column") is not None and not isinstance(rule.get("column"), str):
+            raise ValueError(f"rules item {index} column must be a string or null")
+        if not isinstance(rule.get("params"), dict):
+            raise ValueError(f"rules item {index} params must be an object")
+    return payload
+
+
+def _validate_analyses_payload(payload: dict) -> dict:
+    prompts.validate_json_shape(payload, object_arrays=("library", "custom"))
+    for index, item in enumerate(payload["library"], start=1):
+        for field in ("table", "test", "title", "rationale"):
+            if not isinstance(item.get(field), str):
+                raise ValueError(f"library item {index} {field} must be a string")
+        if not isinstance(item.get("params"), dict):
+            raise ValueError(f"library item {index} params must be an object")
+    for index, item in enumerate(payload["custom"], start=1):
+        if item.get("table") is not None and not isinstance(item.get("table"), str):
+            raise ValueError(f"custom item {index} table must be a string or null")
+        for field in ("title", "code", "rationale"):
+            if not isinstance(item.get(field), str):
+                raise ValueError(f"custom item {index} {field} must be a string")
+    return payload
+
+
+def _validate_dashboard_payload(payload: dict) -> dict:
+    prompts.validate_json_shape(payload, object_arrays=("queries",))
+    for index, item in enumerate(payload["queries"], start=1):
+        for field in ("table", "title", "rationale"):
+            if not isinstance(item.get(field), str):
+                raise ValueError(f"queries item {index} {field} must be a string")
+        if not isinstance(item.get("spec"), dict):
+            raise ValueError(f"queries item {index} spec must be an object")
+        if not isinstance(item.get("viz"), dict):
+            raise ValueError(f"queries item {index} viz must be an object")
+    return payload
+
+
+def _validate_summary_payload(payload: dict) -> dict:
+    prompts.validate_json_shape(
+        payload, object_arrays=("findings",), string_fields=("summary_markdown",)
+    )
+    for index, item in enumerate(payload["findings"], start=1):
+        if not isinstance(item.get("evidence_refs"), list) or any(
+            not isinstance(ref, str) for ref in item.get("evidence_refs") or []
+        ):
+            raise ValueError(f"findings item {index} evidence_refs must be an array of strings")
+    return payload
+
 STAGES = (
     ("joins", "Relationships"),
     ("validation", "Validation rules"),
@@ -596,6 +665,7 @@ class _Runner(BaseRunner):
             payload = self.llm_json(
                 prompts.PLANNING_SYSTEM,
                 prompts.planning_user(self.tables_meta, self.context, self.guidance),
+                validator=_validate_planning_payload,
             )
             discovery = self.run["discovery"]
             discovery["domain"] = str(payload.get("domain") or "unknown")
@@ -774,6 +844,7 @@ class _Runner(BaseRunner):
                     self.context,
                     self.guidance,
                 ),
+                validator=_validate_rules_payload,
             )
             seen = {(r["column"], r["check"]) for r in baseline}
             for rule in payload.get("rules") or []:
@@ -893,6 +964,7 @@ class _Runner(BaseRunner):
                     self.context,
                     self.guidance,
                 ),
+                validator=_validate_analyses_payload,
             )
             known = set(self.ws.table_names())
             for item in payload.get("library") or []:
@@ -1121,6 +1193,7 @@ class _Runner(BaseRunner):
             payload = self.llm_json(
                 prompts.DASHBOARD_SYSTEM,
                 prompts.dashboard_user(self.tables_meta, self.context, self.guidance),
+                validator=_validate_dashboard_payload,
             )
             proposals = [
                 p
@@ -1259,6 +1332,7 @@ class _Runner(BaseRunner):
                 payload = self.llm_json(
                     prompts.SUMMARY_SYSTEM,
                     prompts.summary_user(evidence, self.context, self.guidance),
+                    validator=_validate_summary_payload,
                 )
                 findings = summary_mod.clean_findings(payload.get("findings"), refs)
                 markdown = str(payload.get("summary_markdown") or "").strip()

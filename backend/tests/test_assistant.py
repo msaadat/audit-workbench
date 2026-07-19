@@ -610,6 +610,29 @@ def test_ask_reports_tool_error_to_model(monkeypatch, workspace_with_data):
     assert result["answer"] == "That table does not exist."
 
 
+def test_ask_handles_non_object_tool_arguments(monkeypatch, workspace_with_data):
+    def fake_chat(messages, tools=None, temperature=0.0):
+        if not any(message.get("role") == "tool" for message in messages):
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "bad-args",
+                    "function": {
+                        "name": "query_table",
+                        "arguments": ["transactions"],
+                    },
+                }],
+            }
+        return {"content": "The tool arguments were invalid."}
+
+    monkeypatch.setattr(assistant.llm, "chat", fake_chat)
+    result = assistant.ask(workspace_with_data, "Run the malformed query")
+
+    assert result["steps"][0]["args"] == {}
+    assert result["steps"][0]["ok"] is False
+    assert result["answer"] == "The tool arguments were invalid."
+
+
 def test_ask_with_documents_includes_context_and_returns_validated_citation(
     monkeypatch, workspace_with_data,
 ):

@@ -536,24 +536,50 @@ def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[
     included = {"pages": included_pages}
     if not included["pages"]:
         raise WorkspaceError("The selected document pages contain no extractable text.")
-    system = """[agent:document_qa]\nAnswer only from the included pages. Return JSON with answer and citations. Each citation has page and a short verbatim excerpt. If the answer is absent, say so. Do not invent facts."""
+    system = """[agent:document_qa]\nAnswer only from the included pages. Return one JSON object only, with `answer` as a string and `citations` as an array of objects. Each citation object has `page` as an integer and `excerpt` as a short verbatim string. If the answer is absent, say so. Do not invent facts. Do not return prose outside the JSON object or a Markdown fence."""
     page_text = "\n\n".join(f"--- Page {page['page']} ---\n{page['text']}" for page in included["pages"])
     user = f"Question: {question}\n\nIncluded document pages:\n{page_text}"
     profile = llm.agent_status()
     response_text = ""
     try:
-        with debug_store.trace_context(
-            workspace_id=workspace.id, workspace_root=str(workspace.root), run_id=run_id, stage="document_qa",
-            purpose="document_qa", document_ids=[doc_id],
-            artifact_refs=[f"document_qa:{doc_id}"],
-        ):
-            message = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], profile="agent")
-        response_text = message.get("content") or ""
-        parsed = prompts.parse_json_object(response_text)
+        parsed = None
+        attempt_user = user
+        last_error = ""
+        for attempt in range(1, 3):
+            with debug_store.trace_context(
+                workspace_id=workspace.id, workspace_root=str(workspace.root), run_id=run_id, stage="document_qa",
+                purpose="document_qa", document_ids=[doc_id],
+                artifact_refs=[f"document_qa:{doc_id}"],
+            ):
+                message = llm.chat(
+                    [{"role": "system", "content": system}, {"role": "user", "content": attempt_user}],
+                    profile="agent",
+                )
+            response_text = message.get("content") or ""
+            try:
+                candidate = prompts.parse_json_object(response_text)
+                prompts.validate_json_shape(
+                    candidate, object_arrays=("citations",), string_fields=("answer",)
+                )
+                parsed = candidate
+                break
+            except (ValueError, json.JSONDecodeError) as error:
+                last_error = str(error)
+                attempt_user = (
+                    f"{user}\n\nYour previous response could not be used: {last_error}. "
+                    "Return exactly one JSON object with a string `answer` and an array of "
+                    "citation objects containing integer `page` and string `excerpt`."
+                )
+        if parsed is None:
+            raise WorkspaceError(
+                f"The document answer did not satisfy the structured response contract: {last_error}"
+            )
         answer = str(parsed.get("answer") or "")
         allowed_pages = {page["page"]: page for page in included["pages"]}
         anchors = []
         for citation in parsed.get("citations") or []:
+            if not isinstance(citation.get("excerpt"), str):
+                continue
             try: page = int(citation.get("page"))
             except (TypeError, ValueError): continue
             if page not in allowed_pages: continue

@@ -135,6 +135,39 @@ def test_doc_chat_creates_citations_and_content_free_activity(monkeypatch):
     assert "finance director" not in serialized
 
 
+def test_doc_chat_repairs_malformed_citation_array(monkeypatch):
+    ws = workspaces.create_workspace("Document Q&A repair")
+    doc = documents.add_document(
+        ws, "policy.txt", b"Invoices require approval by the finance director before payment."
+    )
+    calls = []
+
+    def fake_chat(messages, **kwargs):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {"content": json.dumps({"answer": "Finance director.", "citations": "page one"})}
+        return {"content": json.dumps({
+            "answer": "Finance director approval is required.",
+            "citations": [{
+                "page": 1,
+                "excerpt": "Invoices require approval by the finance director before payment.",
+            }],
+        })}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm, "agent_status",
+        lambda: {"provider": "fake", "model": "fake", "configured": True},
+    )
+    result = documents.document_chat(
+        ws, doc["id"], "Who approves invoices?", [1]
+    )
+
+    assert len(calls) == 2
+    assert result["citations"][0]["source_sha1"] == doc["sha1"]
+    assert "previous response could not be used" in calls[1][1]["content"]
+
+
 def test_legacy_evidence_hydrates_and_new_writes_are_typed():
     ws = workspaces.create_workspace("Legacy anchors")
     procedure = ws.add_procedure({"objective": "Inspect evidence"})
