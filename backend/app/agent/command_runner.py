@@ -6,6 +6,8 @@ import copy
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from .. import (
@@ -18,10 +20,10 @@ from .base import BaseRunner, Cancelled, LimitExceeded
 
 GOAL_TEMPLATES = {
     "full_audit_working_draft": {
-        "objective": "Prepare complete audit working content through an evidence-linked report draft.",
+        "objective": "Execute RCM-linked planned tests through an evidence-linked report working draft.",
         "constraints": ["Do not assert a formal audit opinion.", "Preserve auditor edits."],
     },
-    "planning": {"objective": "Prepare or improve engagement planning, RCM, and audit procedures."},
+    "planning": {"objective": "Prepare or improve engagement planning and structured RCM planned tests."},
     "apm_only": {"objective": "Prepare or revise only the audit planning memorandum."},
     "data_analysis": {"objective": "Analyze available structured data and preserve useful validated work."},
     "document_testing": {"objective": "Prepare and execute relevant document tests and working papers."},
@@ -30,6 +32,7 @@ GOAL_TEMPLATES = {
 
 MAX_SOURCE_DOCUMENTS = 8
 MAX_PLANNING_DOSSIER_CHARACTERS = 60_000
+MAX_PARALLEL_PLANNING_DOCUMENTS = 4
 ELIGIBLE_TEXT_STATES = ("extracted", "partial")
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 _CONTEXT_FIELDS = {
@@ -67,13 +70,16 @@ class CommandRunner(BaseRunner):
         "context": "Planning context",
         "apm": "Audit planning memorandum",
         "rcm": "Risk and control matrix",
-        "work_program": "Audit program",
+        # Persisted stage key kept for replay compatibility; the active
+        # artifact is now the RCM's structured planned-test collection.
+        "work_program": "RCM planned tests",
         "verify": "Traceability",
         "summary": "Planning summary",
     }
     PLANNING_ACTION_TYPES = {
         "update_planning_context", "generate_apm", "edit_apm",
-        "create_rcm_row", "edit_rcm_row", "create_procedure", "edit_procedure",
+        "create_rcm_row", "edit_rcm_row", "create_rcm_planned_test",
+        "edit_rcm_planned_test", "create_procedure", "edit_procedure",
     }
 
     @staticmethod
@@ -136,14 +142,27 @@ class CommandRunner(BaseRunner):
                         self._finish_planning()
                         return
                 self._interpret()
+            if self._is_full_audit_goal():
+                self._ensure_full_audit_stages()
             self._drive_graph()
             self._finish()
         except Cancelled:
             for action in self.run.get("actions") or []:
-                if action["status"] in {"proposed", "ready", "awaiting_input", "awaiting_confirmation"}:
+                if action["status"] in {
+                    "proposed", "ready", "awaiting_input", "awaiting_confirmation", "blocked",
+                }:
                     ledger.transition(action, "cancelled")
             ledger.project_legacy_plan(self.run)
             self.run["finished"] = store.utcnow()
+            self.run["command"]["status"] = "cancelled"
+            context = dict(self.handle.cancel_context or {})
+            self.run["cancellation"] = {
+                "actor": context.get("actor") or "orchestrator",
+                "source": context.get("source") or "checkpoint",
+                "reason": context.get("reason"),
+                "requested_at": context.get("requested_at"),
+                "cancelled_at": self.run["finished"],
+            }
             self.set_status("cancelled")
         except (LimitExceeded, llm.LLMError) as error:
             if self._is_planning_command() or (
@@ -167,7 +186,7 @@ class CommandRunner(BaseRunner):
     def _fail_running_plan_tasks(self, error: str) -> None:
         """Close embedded planning tasks when a command run ends abruptly.
 
-        Full-audit commands prepare their APM, RCM, and audit program before
+        Full-audit commands prepare their APM, RCM, and planned tests before
         the action graph is interpreted.  Those tasks live in the legacy plan
         projection, so a transport error would otherwise leave the current
         planning task permanently displayed as running after the run failed.
@@ -186,6 +205,10 @@ class CommandRunner(BaseRunner):
                 "model_usage": value.model_usage,
             }
             for value in actions.REGISTRY.all()
+            if value.type not in {
+                "create_procedure", "edit_procedure", "delete_procedure",
+                "generate_working_paper",
+            }
         ]
 
     def _table_profiles(self) -> list[dict]:
@@ -272,16 +295,57 @@ class CommandRunner(BaseRunner):
             return
         self.set_status("executing")
         self.run.setdefault("context", {})["require_planning_quality"] = True
-        basis = self.stage_context()
-        apm = self.stage_apm(basis)
-        rcm = self.stage_rcm(basis, apm)
-        self.stage_work_program(basis, rcm)
+        snapshot = {
+            "planning": copy.deepcopy(self.ws.planning),
+            "rcm": copy.deepcopy(self.ws.rcm),
+            "rcm_migration": copy.deepcopy(self.ws.rcm_migration),
+        }
+        self.run["planning_transaction"] = {
+            "status": "staging",
+            "before": store.write_sidecar(self.ws, self.run["id"], snapshot),
+            "started_at": store.utcnow(),
+        }
+        self.run.setdefault("planning_changes", {
+            "apm_updated": 0, "apm_proposed": 0,
+            "rcm_created": 0, "rcm_updated": 0, "rcm_preserved": 0,
+            "planned_test_created": 0, "planned_test_updated": 0,
+            "planned_test_preserved": 0,
+        })
+        self.save()
+        try:
+            basis = self.stage_context()
+            apm = self.stage_apm(basis)
+            rcm = self.stage_rcm(basis, apm)
+            self.stage_work_program(basis, rcm)
+        except Exception as error:
+            # Document analyses created while assembling the basis remain
+            # reusable; only active planning mutations are rolled back.
+            self.ws.planning = snapshot["planning"]
+            self.ws.rcm = snapshot["rcm"]
+            self.ws.rcm_migration = snapshot["rcm_migration"]
+            self.ws.save()
+            self.run["planning_transaction"].update(
+                status="rolled_back", finished_at=store.utcnow(), error=str(error)
+            )
+            self.save()
+            raise
+        self.run["planning_transaction"].update(
+            status="committed", finished_at=store.utcnow(),
+            committed_sha1=artifact_index.canonical_sha1({
+                "planning": self.ws.planning, "rcm": self.ws.rcm,
+            }),
+        )
         self.run["prepared_planning"] = {
             "apm": bool(str(self.ws.planning.get("apm_markdown") or "").strip()),
             "rcm_refs": [item["id"] for item in self.ws.rcm],
-            "procedure_refs": [item["id"] for item in self.ws.work_program],
+            "planned_test_refs": [
+                planned["id"]
+                for row in self.ws.rcm
+                for planned in row.get("planned_tests") or []
+            ],
             "document_content_included": bool(basis.get("document_content_included")),
         }
+        self.run["planning_basis_run_id"] = self.run["id"]
         self.save()
 
     def stage_context(self) -> dict:
@@ -335,6 +399,8 @@ class CommandRunner(BaseRunner):
         included_names: list[str] = []
         included_packs: dict[str, dict] = {}
         document_count = len(requested_document_ids)
+        analyses_by_id: dict[str, dict | None] = {}
+        pending_analyses: list[tuple[int, dict, str]] = []
         for document_index, document_id in enumerate(requested_document_ids, start=1):
             doc = next(item for item in self.ws.documents if item.get("id") == document_id)
             document_name = Path(
@@ -343,16 +409,48 @@ class CommandRunner(BaseRunner):
             included_names.append(document_name)
             analysis = document_analysis.compact_artifact(self.ws, document_id)
             if analysis is None:
-                self.task_detail(
-                    task,
-                    f"Analyzing document {document_index} of {document_count}: {document_name}",
-                )
-                analysis = self._ensure_planning_analysis(doc)
+                pending_analyses.append((document_index, doc, document_name))
             else:
                 self.task_detail(
                     task,
                     f"Loading document analysis {document_index} of {document_count}: {document_name}",
                 )
+                analyses_by_id[document_id] = analysis
+        if len(pending_analyses) == 1:
+            document_index, doc, document_name = pending_analyses[0]
+            self.task_detail(
+                task,
+                f"Analyzing document {document_index} of {document_count}: {document_name}",
+            )
+            analyses_by_id[doc["id"]] = self._ensure_planning_analysis(doc)
+        elif pending_analyses:
+            self.task_detail(
+                task,
+                f"Analyzing {len(pending_analyses)} documents concurrently…",
+            )
+            workers = min(MAX_PARALLEL_PLANNING_DOCUMENTS, len(pending_analyses))
+            with ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix=f"planning-doc-{self.run['id']}",
+            ) as executor:
+                futures = {
+                    executor.submit(self._ensure_planning_analysis, doc): doc
+                    for _document_index, doc, _document_name in pending_analyses
+                }
+                completed_analyses = 0
+                for future in as_completed(futures):
+                    doc = futures[future]
+                    analyses_by_id[doc["id"]] = future.result()
+                    completed_analyses += 1
+                    self.task_detail(
+                        task,
+                        f"Analyzed {completed_analyses} of {len(pending_analyses)} documents…",
+                    )
+        # Parallel completion order is nondeterministic; build the bounded
+        # dossier in the auditor's original selection order.
+        for document_id in requested_document_ids:
+            doc = next(item for item in self.ws.documents if item.get("id") == document_id)
+            analysis = analyses_by_id.get(document_id)
             if analysis is None:
                 self.warn(f"Could not obtain a current analysis for '{doc.get('title') or document_id}'; planning will use metadata only.")
                 continue
@@ -638,7 +736,7 @@ class CommandRunner(BaseRunner):
         return None
 
     @staticmethod
-    def _rcm_quality(payload: dict) -> str | None:
+    def _rcm_quality(payload: dict, existing_ids: set[str] | None = None) -> str | None:
         rows = payload.get("rows") or []
         if not isinstance(rows, list) or not rows:
             return "no RCM rows were proposed"
@@ -654,43 +752,147 @@ class CommandRunner(BaseRunner):
                 return f"RCM row {index} is missing {missing[0]}"
             if str(row.get("risk_rating")).casefold() not in {"low", "medium", "high", "critical"}:
                 return f"RCM row {index} has an unsupported risk rating"
+            operation = str(row.get("operation") or "").strip().lower()
+            if operation and operation not in {"update", "create"}:
+                return f"RCM row {index} has an unsupported operation"
+            if operation == "update":
+                try:
+                    row_id = artifact_index.canonical_id(row.get("rcm_id"), "rcm")
+                except ValueError:
+                    return f"RCM row {index} has an invalid rcm_id"
+                if not row_id or existing_ids is not None and row_id not in existing_ids:
+                    return f"RCM row {index} does not identify an existing RCM row"
+            if operation == "create" and not str(row.get("new_risk_reason") or "").strip():
+                return f"RCM row {index} does not explain why the risk is new"
         return None
 
     @staticmethod
+    def _words(value: object) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+    @classmethod
+    def _similarity(cls, left: object, right: object) -> float:
+        left_text = " ".join(sorted(cls._words(left)))
+        right_text = " ".join(sorted(cls._words(right)))
+        left_words, right_words = cls._words(left), cls._words(right)
+        overlap = len(left_words & right_words) / max(1, len(left_words | right_words))
+        return max(overlap, SequenceMatcher(None, left_text, right_text).ratio())
+
+    def _match_rcm_revision(self, spec: dict, semantic: str) -> tuple[dict | None, bool]:
+        explicit = artifact_index.canonical_id(
+            spec.get("rcm_id") or spec.get("id"), "rcm"
+        )
+        if explicit:
+            return next((row for row in self.ws.rcm if row.get("id") == explicit), None), False
+        exact = self.ws.find_semantic("rcm", semantic)
+        if exact:
+            return exact, False
+        narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
+        ranked = sorted(
+            (
+                (self._similarity(narrative, f"{row.get('process', '')} {row.get('risk', '')}"), row)
+                for row in self.ws.rcm
+            ),
+            key=lambda item: (-item[0], str(item[1].get("id"))),
+        )
+        if not ranked or ranked[0][0] < 0.72:
+            return None, False
+        ambiguous = len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08
+        return (None, True) if ambiguous else (ranked[0][1], False)
+
+    def _match_planned_test_revision(
+        self, rcm_id: str, spec: dict, semantic: str,
+    ) -> tuple[dict | None, bool]:
+        row = next((item for item in self.ws.rcm if item.get("id") == rcm_id), None)
+        if row is None:
+            return None, False
+        explicit = artifact_index.canonical_id(
+            spec.get("planned_test_id") or spec.get("id"), "planned_test"
+        )
+        if explicit:
+            return next(
+                (item for item in row.get("planned_tests") or [] if item.get("id") == explicit),
+                None,
+            ), False
+        exact = next(
+            (
+                item for item in row.get("planned_tests") or []
+                if item.get("semantic_id") == semantic
+            ),
+            None,
+        )
+        if exact:
+            return exact, False
+        narrative = f"{spec.get('title', '')} {spec.get('objective', '')}"
+        ranked = sorted(
+            (
+                (self._similarity(narrative, f"{item.get('title', '')} {item.get('objective', '')}"), item)
+                for item in row.get("planned_tests") or []
+            ),
+            key=lambda item: (-item[0], str(item[1].get("id"))),
+        )
+        if not ranked or ranked[0][0] < 0.78:
+            return None, False
+        ambiguous = len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08
+        return (None, True) if ambiguous else (ranked[0][1], False)
+
+    @staticmethod
     def _program_quality(payload: dict) -> str | None:
-        procedures = payload.get("procedures") or []
+        procedures = payload.get("planned_tests") or payload.get("procedures") or []
         if not isinstance(procedures, list) or not procedures:
-            return "no audit procedures were proposed"
+            return "no RCM planned tests were proposed"
         required = ("objective", "criteria", "method", "expected_evidence")
         for index, procedure in enumerate(procedures, start=1):
             if not isinstance(procedure, dict):
-                return f"procedure {index} is not an object"
+                return f"planned test {index} is not an object"
             missing = [key for key in required if not str(procedure.get(key) or "").strip()]
             if missing:
-                return f"procedure {index} is missing {missing[0]}"
+                return f"planned test {index} is missing {missing[0]}"
             if not isinstance(procedure.get("steps"), list) or not any(
                 str(value or "").strip() for value in procedure["steps"]
             ):
-                return f"procedure {index} has no executable steps"
+                return f"planned test {index} has no executable steps"
             if not isinstance(procedure.get("rcm_refs"), list) or not procedure["rcm_refs"]:
-                return f"procedure {index} is not linked to an RCM row"
+                return f"planned test {index} is not linked to an RCM row"
         return None
 
     def stage_apm(self, basis: dict) -> str:
+        self.run.setdefault("planning_changes", {
+            "apm_updated": 0, "apm_proposed": 0,
+            "rcm_created": 0, "rcm_updated": 0, "rcm_preserved": 0,
+            "planned_test_created": 0, "planned_test_updated": 0,
+            "planned_test_preserved": 0,
+        })
         task = self.add_task("apm", "planning:apm", "Draft the audit planning memorandum")
         if task["status"] == "completed":
             return str(self.ws.planning.get("apm_markdown") or "")
         self.task_status(task, "running")
         template = templates_store.get_template(self.ws, "apm")["markdown"]
-        payload = self._quality_draft(
-            prompts.APM_SYSTEM,
-            prompts.apm_user(template, basis),
-            lambda value: self._apm_quality(
-                value, template, (basis.get("planning") or {}).get("context") or {}
-            ),
-            "APM",
+        user = prompts.apm_user(template, basis)
+        markdown = self.llm_markdown(
+            prompts.APM_SYSTEM, user, legacy_field="apm_markdown"
         )
-        markdown = str(payload.get("apm_markdown") or "").strip()
+        if self.context.get("require_planning_quality"):
+            planning_context = (basis.get("planning") or {}).get("context") or {}
+            error = self._apm_quality(
+                {"apm_markdown": markdown}, template, planning_context
+            )
+            if error:
+                repair = (
+                    f"{user}\n\nThe previous APM draft failed the engagement quality gate: "
+                    f"{error}. Return a complete corrected memorandum as Markdown only, without "
+                    "a JSON wrapper or Markdown code fence."
+                )
+                markdown = self.llm_markdown(
+                    prompts.APM_SYSTEM, repair, legacy_field="apm_markdown"
+                )
+                error = self._apm_quality(
+                    {"apm_markdown": markdown}, template, planning_context
+                )
+                if error:
+                    raise WorkspaceError(
+                        f"The APM draft failed the engagement quality gate: {error}"
+                    )
         if not markdown:
             raise WorkspaceError("The model returned an empty APM draft.")
         markdown = fill_unavailable_placeholders(markdown)
@@ -712,8 +914,18 @@ class CommandRunner(BaseRunner):
                 and self.ws.planning.get("created_by") == "user"
                 and self.ws.planning.get("agent_run_id") != self.run["id"]
             )
-            if auditor_owned:
-                self.warn("Preserved the auditor-edited APM; the rerun draft was not applied.")
+            if auditor_owned and self.run["mode"] != "permission":
+                self.run.setdefault("planning_revisions", []).append({
+                    "kind": "apm", "status": "proposed",
+                    "current_sha1": artifact_index.canonical_sha1(existing),
+                    "proposed_markdown": accepted_markdown,
+                    "created_at": store.utcnow(),
+                })
+                self.run["planning_changes"]["apm_proposed"] += 1
+                self.save()
+                self.warn(
+                    "Preserved the auditor-edited APM; the revised draft is stored for review."
+                )
             else:
                 self.ws.update_planning(
                     {
@@ -723,11 +935,18 @@ class CommandRunner(BaseRunner):
                     },
                     agent=True,
                 )
+                self.run["planning_changes"]["apm_updated"] += 1
                 self.record_artifact("planning", "apm", "planning:apm", "updated", task)
         self.task_status(task, "completed")
         return str(self.ws.planning.get("apm_markdown") or markdown)
 
     def stage_rcm(self, basis: dict, apm: str) -> list[dict]:
+        self.run.setdefault("planning_changes", {
+            "apm_updated": 0, "apm_proposed": 0,
+            "rcm_created": 0, "rcm_updated": 0, "rcm_preserved": 0,
+            "planned_test_created": 0, "planned_test_updated": 0,
+            "planned_test_preserved": 0,
+        })
         task = self.add_task("rcm", "planning:rcm", "Draft the risk and control matrix")
         if task["status"] == "completed":
             return self.ws.rcm
@@ -735,8 +954,13 @@ class CommandRunner(BaseRunner):
         template = templates_store.get_template(self.ws, "rcm")["markdown"]
         payload = self._quality_draft(
             prompts.RCM_SYSTEM,
-            prompts.rcm_user(template, self._downstream_planning_basis(basis, "rcm"), apm),
-            self._rcm_quality,
+            prompts.rcm_user(
+                template, self._downstream_planning_basis(basis, "rcm"), apm,
+                self.ws.rcm,
+            ),
+            lambda value: self._rcm_quality(
+                value, {str(row.get("id")) for row in self.ws.rcm}
+            ),
             "RCM",
         )
         proposals = []
@@ -758,9 +982,20 @@ class CommandRunner(BaseRunner):
                 or f"rcm:{slugify(spec.get('process', ''))}:{slugify(spec['risk'])}"
             )
             spec["semantic_id"] = semantic
-            existing = self.ws.find_semantic("rcm", semantic)
-            if existing and existing.get("created_by") != "agent":
+            existing, ambiguous = self._match_rcm_revision(spec, semantic)
+            operation = str(spec.get("operation") or "").strip().lower()
+            if operation == "update" and existing is None and not ambiguous:
+                raise WorkspaceError(
+                    f"RCM revision target '{spec.get('rcm_id')}' was not found."
+                )
+            if ambiguous:
+                self.warn(
+                    f"Skipped ambiguous RCM revision '{spec['risk']}'; choose the durable RCM id."
+                )
+                continue
+            if existing and existing.get("created_by") != "agent" and self.run["mode"] != "permission":
                 self.warn(f"Preserved auditor-edited RCM row '{existing['id']}'.")
+                self.run["planning_changes"]["rcm_preserved"] += 1
                 continue
             if existing:
                 changes = {
@@ -772,15 +1007,23 @@ class CommandRunner(BaseRunner):
                 }
                 item = self.ws.update_rcm(existing["id"], changes, agent=True)
                 action = "updated"
+                self.run["planning_changes"]["rcm_updated"] += 1
             else:
                 item = self.ws.add_rcm({**spec, "agent_run_id": self.run["id"]})
                 action = "created"
+                self.run["planning_changes"]["rcm_created"] += 1
             self.record_artifact("rcm", item["id"], semantic, action, task)
         self.task_status(task, "completed")
         return self.ws.rcm
 
     def stage_work_program(self, basis: dict, rcm_rows: list[dict]) -> None:
-        task = self.add_task("work_program", "planning:work_program", "Draft the audit program")
+        self.run.setdefault("planning_changes", {
+            "apm_updated": 0, "apm_proposed": 0,
+            "rcm_created": 0, "rcm_updated": 0, "rcm_preserved": 0,
+            "planned_test_created": 0, "planned_test_updated": 0,
+            "planned_test_preserved": 0,
+        })
+        task = self.add_task("work_program", "planning:work_program", "Draft RCM planned tests")
         if task["status"] == "completed":
             return
         self.task_status(task, "running")
@@ -789,15 +1032,26 @@ class CommandRunner(BaseRunner):
             prompts.WORK_PROGRAM_SYSTEM,
             prompts.work_program_user(template, self._downstream_planning_basis(basis, "work_program"), rcm_rows),
             self._program_quality,
-            "audit program",
+            "RCM planned tests",
         )
         proposals = []
-        for procedure in payload.get("procedures") or []:
+        for procedure in payload.get("planned_tests") or payload.get("procedures") or []:
             if not isinstance(procedure, dict) or not str(procedure.get("objective") or "").strip():
                 continue
             spec = dict(procedure)
-            spec["semantic_id"] = f"procedure:{slugify(spec.get('stable_slug') or spec['objective'])}"
-            spec["rcm_refs"] = self._resolve_rcm_refs(spec.get("rcm_refs") or [])
+            spec["rcm_refs"] = self._resolve_rcm_refs(
+                spec.get("rcm_refs") or [spec.get("rcm_id")]
+            )
+            if len(spec["rcm_refs"]) != 1:
+                self.warn(
+                    f"Skipped ambiguous planned test '{spec['objective']}': exactly one RCM parent is required."
+                )
+                continue
+            spec["rcm_id"] = spec["rcm_refs"][0]
+            spec["title"] = str(spec.get("title") or spec["objective"])
+            spec["semantic_id"] = (
+                f"planned-test:{spec['rcm_id']}:{slugify(spec.get('stable_slug') or spec['objective'])}"
+            )
             spec["methodology_refs"] = [
                 {
                     key: item[key]
@@ -807,38 +1061,61 @@ class CommandRunner(BaseRunner):
             ]
             proposals.append(
                 self.proposal_item(
-                    str(spec["objective"]), "Procedure linked to the draft RCM.", spec
+                    str(spec["objective"]), "Structured test linked to one draft RCM row.", spec
                 )
             )
         for spec in self._accepted_specs("work_program", task, proposals):
             if not str(spec.get("objective") or "").strip():
-                raise WorkspaceError("An approved procedure is missing its objective.")
+                raise WorkspaceError("An approved RCM planned test is missing its objective.")
+            refs = self._resolve_rcm_refs(spec.get("rcm_refs") or [spec.get("rcm_id")])
+            if len(refs) != 1:
+                raise WorkspaceError("An approved RCM planned test must have exactly one RCM parent.")
+            rcm_id = refs[0]
             semantic = str(
                 spec.get("semantic_id")
-                or f"procedure:{slugify(spec.get('stable_slug') or spec['objective'])}"
+                or f"planned-test:{rcm_id}:{slugify(spec.get('stable_slug') or spec['objective'])}"
             )
             spec["semantic_id"] = semantic
-            spec["rcm_refs"] = self._resolve_rcm_refs(spec.get("rcm_refs") or [])
-            existing = self.ws.find_semantic("procedures", semantic)
-            if existing and existing.get("created_by") != "agent":
-                self.warn(f"Preserved auditor-edited procedure '{existing['id']}'.")
+            spec["rcm_id"] = rcm_id
+            spec["title"] = str(spec.get("title") or spec["objective"])
+            existing, ambiguous = self._match_planned_test_revision(rcm_id, spec, semantic)
+            operation = str(spec.get("operation") or "").strip().lower()
+            if operation == "update" and existing is None and not ambiguous:
+                raise WorkspaceError(
+                    f"Planned-test revision target '{spec.get('planned_test_id')}' was not found."
+                )
+            if ambiguous:
+                self.warn(
+                    f"Skipped ambiguous planned-test revision '{spec['objective']}'; "
+                    "choose the durable planned-test id."
+                )
+                continue
+            if existing and existing.get("created_by") != "agent" and self.run["mode"] != "permission":
+                self.warn(f"Preserved auditor-edited planned test '{existing['id']}'.")
+                self.run["planning_changes"]["planned_test_preserved"] += 1
                 continue
             fields = (
-                "rcm_refs", "objective", "criteria", "steps", "method", "expected_evidence",
+                "title", "objective", "criteria", "steps", "method", "expected_evidence",
+                "sampling", "thresholds",
                 "evidence_refs", "methodology_refs", "result_summary", "conclusion",
                 "scope_limitations",
             )
             if existing:
-                item = self.ws.update_procedure(
-                    existing["id"],
+                row, _planned = self.ws.planned_test(existing["id"])
+                item = self.ws.update_planned_test(
+                    row["id"], existing["id"],
                     {key: spec.get(key) for key in fields if key in spec},
                     agent=True,
                 )
                 action = "updated"
+                self.run["planning_changes"]["planned_test_updated"] += 1
             else:
-                item = self.ws.add_procedure({**spec, "agent_run_id": self.run["id"]})
+                item = self.ws.add_planned_test(
+                    rcm_id, {**spec, "agent_run_id": self.run["id"]}
+                )
                 action = "created"
-            self.record_artifact("procedure", item["id"], semantic, action, task)
+                self.run["planning_changes"]["planned_test_created"] += 1
+            self.record_artifact("planned_test", item["id"], semantic, action, task)
         self.task_status(task, "completed")
 
     @staticmethod
@@ -866,7 +1143,9 @@ class CommandRunner(BaseRunner):
             row = next(
                 (
                     item for item in self.ws.rcm
-                    if item.get("id") == value or item.get("semantic_id") == value
+                    if item.get("id") == value
+                    or f"rcm:{item.get('id')}" == value
+                    or item.get("semantic_id") == value
                 ),
                 None,
             )
@@ -880,12 +1159,10 @@ class CommandRunner(BaseRunner):
             return
         self.set_status("verifying")
         self.task_status(task, "running")
-        rcm_ids = {row["id"] for row in self.ws.rcm}
         issues = []
-        for procedure in self.ws.work_program:
-            missing = [ref for ref in procedure.get("rcm_refs", []) if ref not in rcm_ids]
-            if missing:
-                issues.append(f"{procedure['id']} has missing RCM links: {', '.join(missing)}")
+        for row in self.ws.rcm:
+            if not row.get("planned_tests"):
+                issues.append(f"{row['id']} has no structured planned test.")
         if (self.run.get("planning_basis") or {}).get("document_analyses"):
             recovered = self._context_fallback(self.run["planning_basis"]["document_analyses"])
             if recovered and not any(
@@ -905,10 +1182,18 @@ class CommandRunner(BaseRunner):
             return
         self.set_status("summarizing")
         self.task_status(task, "running")
+        changes = self.run.get("planning_changes") or {}
         self.run["summary_markdown"] = (
             "# Planning draft summary\n\n"
-            f"Prepared an audit planning memorandum, **{len(self.ws.rcm)}** RCM row(s), "
-            f"and **{len(self.ws.work_program)}** audit procedure(s). "
+            f"Revised the audit planning memorandum; RCM changes: "
+            f"**{int(changes.get('rcm_created') or 0)} created**, "
+            f"**{int(changes.get('rcm_updated') or 0)} updated**, and "
+            f"**{int(changes.get('rcm_preserved') or 0)} auditor-owned preserved**. "
+            f"The active RCM contains **{len(self.ws.rcm)}** row(s). Planned-test changes: "
+            f"**{int(changes.get('planned_test_created') or 0)} created**, "
+            f"**{int(changes.get('planned_test_updated') or 0)} updated**, and "
+            f"**{int(changes.get('planned_test_preserved') or 0)} auditor-owned preserved**; "
+            f"**{sum(len(row.get('planned_tests') or []) for row in self.ws.rcm)}** active structured planned test(s)."
         )
         self.save()
         self.task_status(task, "completed")
@@ -952,6 +1237,71 @@ class CommandRunner(BaseRunner):
             "complete the audit", "full audit", "all steps", "all procedures", "all_procedures",
         ))
         return wants_report and wants_full_cycle
+
+    def _ensure_full_audit_stages(self) -> None:
+        """Inject mandatory local output/gate phases independently of LLM expansion.
+
+        The model may propose execution and judgment work, but it cannot omit
+        roll-up, RCM papers, dashboard curation, report generation, or terminal
+        verification from a full-audit graph. Existing matching actions are
+        retained so restart/replay remains idempotent.
+        """
+        existing = self.run.get("actions") or []
+        existing_types = {item.get("type") for item in existing}
+        existing_papers = {
+            str((item.get("target") or {}).get("resolved_id") or "")
+            for item in existing
+            if item.get("type") == "generate_rcm_working_paper"
+        }
+        proposals = []
+        if "rollup_rcm_results" not in existing_types:
+            proposals.append({"id": "mandatory_rcm_rollup", "type": "rollup_rcm_results"})
+        for row in self.ws.rcm:
+            if row["id"] not in existing_papers:
+                proposals.append({
+                    "id": f"mandatory_rcm_paper_{slugify(row['id'])}",
+                    "type": "generate_rcm_working_paper",
+                    "target": {"kind": "rcm", "resolved_id": row["id"]},
+                })
+        if "curate_dashboard" not in existing_types:
+            proposals.append({"id": "mandatory_dashboard", "type": "curate_dashboard"})
+        if "generate_report" not in existing_types:
+            proposals.append({"id": "mandatory_report", "type": "generate_report", "args": {"use_model": True}})
+        if "run_report_quality" not in existing_types:
+            proposals.append({"id": "mandatory_report_quality", "type": "run_report_quality"})
+        if "verify_audit_completion" not in existing_types:
+            proposals.append({"id": "mandatory_completion", "type": "verify_audit_completion"})
+        if not proposals:
+            return
+        available = int(self.run["limits"].get("max_actions", 60)) - len(existing)
+        if available <= 0:
+            self.run.setdefault("mandatory_stage_issues", []).append(
+                "The action limit prevented deterministic full-audit stages from being added."
+            )
+            self.warn(self.run["mandatory_stage_issues"][-1])
+            return
+        if len(proposals) > available:
+            # Preserve the terminal gates and output phases ahead of per-RCM
+            # paper generation when a model has already consumed the budget.
+            priority = {
+                "rollup_rcm_results": 0, "curate_dashboard": 1,
+                "generate_report": 2, "run_report_quality": 3,
+                "verify_audit_completion": 4, "generate_rcm_working_paper": 5,
+            }
+            proposals.sort(key=lambda item: priority[item["type"]])
+            proposals = proposals[:available]
+            self.run.setdefault("mandatory_stage_issues", []).append(
+                "The action limit prevented some RCM working papers from being scheduled."
+            )
+            self.warn(self.run["mandatory_stage_issues"][-1])
+        created = ledger.append_actions(
+            self.run, proposals, audit_lifecycle=True
+        )
+        self.save()
+        self.emit(
+            "graph_update",
+            {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]},
+        )
 
     @staticmethod
     def _proposal_repair_user(base_user: str, payload: dict, error: Exception) -> str:
@@ -1278,6 +1628,7 @@ class CommandRunner(BaseRunner):
             previous = action.get("resolution") or {}
             resolution_changed = bool(
                 previous.get("sha1") and previous.get("sha1") != resolution.get("sha1")
+                and definition.risk not in {"read", "compute"}
             )
             dependency_source = (
                 self._dependency_post_state_source(action, resolution)
@@ -1323,14 +1674,29 @@ class CommandRunner(BaseRunner):
             action["error"] = str(error); action["finished_at"] = store.utcnow()
             ledger.transition(action, "failed")
             attempts = int(self.run["limits"].get("max_execution_attempts", 2))
-            retry = action["attempts"] < attempts and definition.failure_policy != "stop_run"
-            if retry and action["type"] in {"create_custom_analysis", "edit_custom_analysis"}:
+            custom_repair = action["type"] in {"create_custom_analysis", "edit_custom_analysis"}
+            deterministic = isinstance(error, (WorkspaceError, ValueError)) and not custom_repair
+            retry = (
+                not deterministic
+                and action["attempts"] < attempts
+                and definition.failure_policy != "stop_run"
+            )
+            if action["attempts"] < attempts and custom_repair:
                 retry = self._repair_custom_analysis(action, error)
             if retry:
                 ledger.transition(action, "ready")
             self._save_action(action)
-            if action.get("planning_significant") and action["status"] == "failed":
+            if (
+                action.get("planning_significant")
+                and action["status"] == "failed"
+                and not deterministic
+            ):
                 self._expand_after(action, {"error": str(error)})
+            elif deterministic:
+                self.warn(
+                    f"Skipped adaptive replanning after deterministic failure in "
+                    f"{action['id']}: {error}"
+                )
             if definition.failure_policy == "stop_run":
                 raise
             return
@@ -1389,6 +1755,15 @@ class CommandRunner(BaseRunner):
         if usage["planner_waves"] >= int(self.run["limits"].get("max_waves", 8)):
             self.warn("Planning-wave limit reached; the current graph will finish without further expansion.")
             return
+        remaining_actions = max(
+            0,
+            int(self.run["limits"].get("max_actions", 60))
+            - len(self.run.get("actions") or []),
+        )
+        if remaining_actions == 0:
+            self.run["planning_expansion_disabled"] = True
+            self.warn("Action limit reached; adaptive planning is disabled for this run.")
+            return
         safe_result = safe_result if safe_result is not None else ((action.get("receipt") or {}).get("result") or {})
         usage["planner_waves"] += 1; self.save()
         index = artifact_index.build(self.ws)
@@ -1396,7 +1771,8 @@ class CommandRunner(BaseRunner):
             self.run["goal"],
             [{"id": item["id"], "type": item["type"], "status": item["status"], "result_refs": item["result_refs"]} for item in self.run["actions"]],
             [{"action_id": action["id"], "result": safe_result}],
-            artifact_index.compact(index), self._catalog(), self.run["limits"],
+            artifact_index.compact(index), self._catalog(),
+            {**self.run["limits"], "remaining_actions": remaining_actions},
             assistant.schema_brief(self.ws),
             self._table_profiles(),
         )
@@ -1425,6 +1801,11 @@ class CommandRunner(BaseRunner):
             except WorkspaceError as error:
                 self._record_rejected_proposals("command_planner", proposals, error)
                 if attempt + 1 >= SEMANTIC_PROPOSAL_ATTEMPTS:
+                    signature = str(error)
+                    failures = self.run.setdefault("planning_failure_signatures", {})
+                    failures[signature] = int(failures.get(signature) or 0) + 1
+                    if failures[signature] >= 2:
+                        self.run["planning_expansion_disabled"] = True
                     self.warn(f"Discarded an invalid planning proposal: {error}")
                     return
                 attempt_user = self._proposal_repair_user(base_user, payload, error)
@@ -1549,4 +1930,18 @@ class CommandRunner(BaseRunner):
         self.run["summary_markdown"] = "\n".join(lines)
         self.run["finished"] = store.utcnow(); self.run["command"]["status"] = "completed"
         status = "completed_with_issues" if force_issue or failed else "completed"
+        if self._is_full_audit_goal() and status == "completed":
+            verification = next(
+                (
+                    (item.get("receipt") or {}).get("result") or {}
+                    for item in reversed(self.run.get("actions") or [])
+                    if item.get("type") == "verify_audit_completion"
+                    and item.get("status") == "succeeded"
+                ),
+                None,
+            )
+            if verification is None or self.run.get("mandatory_stage_issues"):
+                status = "completed_with_issues"
+            else:
+                status = str(verification.get("status") or "completed_with_issues")
         self.set_status(status); self.emit("summary_ready", {"run_id": self.run["id"]})

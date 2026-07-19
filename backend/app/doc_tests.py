@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import unicodedata
 import uuid
@@ -64,12 +65,26 @@ def test_sha1(test: dict) -> str:
     return _sha1({key: value for key, value in test.items() if key != "sha1"})
 
 
-def _hydrate(test: dict) -> dict:
+def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     kind = str(test.get("kind") or "vouching")
     test.setdefault("status", "draft")
     test.setdefault("semantic_id", f"doctest:{slugify(test.get('title') or kind)}")
     test.setdefault("rcm_refs", [])
     test.setdefault("procedure_refs", [])
+    test.setdefault("rcm_id", None)
+    test.setdefault("planned_test_id", None)
+    test.setdefault("scope_limitations", "")
+    if workspace is not None and not test.get("planned_test_id"):
+        targets = [
+            workspace.rcm_migration.get("migrated_procedures", {}).get(str(ref))
+            for ref in test.get("procedure_refs") or []
+        ]
+        targets = [target for target in targets if target]
+        if len(targets) == 1:
+            test["rcm_id"] = targets[0]["rcm_id"]
+            test["planned_test_id"] = targets[0]["planned_test_id"]
+    if test.get("rcm_id") and test["rcm_id"] not in test["rcm_refs"]:
+        test["rcm_refs"].append(test["rcm_id"])
     test.setdefault("spec", {})
     test.setdefault("items", [])
     test.setdefault("created", utcnow())
@@ -103,7 +118,7 @@ def load_test(workspace: Workspace, test_id: str) -> dict:
     if not path.exists():
         raise WorkspaceError(f"Document test '{test_id}' not found.")
     try:
-        return _hydrate(json.loads(path.read_text(encoding="utf-8")))
+        return _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
     except json.JSONDecodeError as error:
         raise WorkspaceError(f"Document test '{test_id}' is unreadable.") from error
 
@@ -119,14 +134,14 @@ def list_tests(workspace: Workspace) -> list[dict]:
     items = []
     for path in tests_dir(workspace).glob("*.json"):
         try:
-            test = _hydrate(json.loads(path.read_text(encoding="utf-8")))
+            test = _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
         except (OSError, json.JSONDecodeError, WorkspaceError):
             continue
         states = [item.get("state", "pending") for item in test["items"]]
         items.append({
             **{key: test.get(key) for key in (
                 "id", "kind", "title", "status", "semantic_id", "rcm_refs",
-                "procedure_refs", "spec", "created", "updated", "sha1"
+                "procedure_refs", "rcm_id", "planned_test_id", "spec", "created", "updated", "sha1"
             )},
             "item_count": len(states),
             "state_counts": {state: states.count(state) for state in sorted(STATES)},
@@ -145,6 +160,19 @@ def _validate_links(workspace: Workspace, rcm_refs: list[str], procedure_refs: l
         raise WorkspaceError(f"Procedure '{missing[0]}' not found.")
 
 
+def _validate_parent(workspace: Workspace, rcm_id: object, planned_test_id: object) -> tuple[str | None, str | None]:
+    rcm_value = str(rcm_id or "").strip() or None
+    planned_value = str(planned_test_id or "").strip() or None
+    if bool(rcm_value) != bool(planned_value):
+        raise WorkspaceError("RCM row and planned test must be assigned together.")
+    if not rcm_value:
+        return None, None
+    row, planned = workspace.planned_test(planned_value)
+    if row.get("id") != rcm_value:
+        raise WorkspaceError(f"Planned test '{planned_value}' does not belong to RCM row '{rcm_value}'.")
+    return rcm_value, str(planned["id"])
+
+
 def _link_test(workspace: Workspace, test: dict) -> None:
     ref = f"doctest:{test['id']}"
     for row in workspace.rcm:
@@ -159,6 +187,13 @@ def _link_test(workspace: Workspace, test: dict) -> None:
             refs.append(ref)
         elif procedure["id"] not in test["procedure_refs"]:
             procedure["test_refs"] = [value for value in refs if value != ref]
+    for row in workspace.rcm:
+        for planned in row.get("planned_tests") or []:
+            refs = planned.setdefault("execution_refs", [])
+            if planned.get("id") == test.get("planned_test_id") and ref not in refs:
+                refs.append(ref)
+            elif planned.get("id") != test.get("planned_test_id"):
+                planned["execution_refs"] = [value for value in refs if value != ref]
     workspace.save()
 
 
@@ -171,6 +206,15 @@ def _base_test(workspace: Workspace, payload: dict, kind: str) -> dict:
     rcm_refs = [str(ref) for ref in (payload.get("rcm_refs") or [])]
     procedure_refs = [str(ref) for ref in (payload.get("procedure_refs") or [])]
     _validate_links(workspace, rcm_refs, procedure_refs)
+    rcm_id, planned_test_id = _validate_parent(
+        workspace, payload.get("rcm_id"), payload.get("planned_test_id")
+    )
+    if not planned_test_id and len(procedure_refs) == 1:
+        target = workspace.rcm_migration.get("migrated_procedures", {}).get(procedure_refs[0])
+        if target:
+            rcm_id, planned_test_id = target["rcm_id"], target["planned_test_id"]
+            if rcm_id not in rcm_refs:
+                rcm_refs.append(rcm_id)
     now = utcnow()
     return {
         "id": str(payload.get("id") or f"DT-{uuid.uuid4().hex[:8].upper()}"),
@@ -180,6 +224,8 @@ def _base_test(workspace: Workspace, payload: dict, kind: str) -> dict:
         "semantic_id": str(payload.get("semantic_id") or f"doctest:{slugify(title)}"),
         "rcm_refs": rcm_refs,
         "procedure_refs": procedure_refs,
+        "rcm_id": rcm_id,
+        "planned_test_id": planned_test_id,
         "spec": dict(payload.get("spec") or {}),
         "items": [],
         "created": now,
@@ -309,6 +355,280 @@ def build_vouching(workspace: Workspace, payload: dict) -> dict:
     return test
 
 
+_DOCUMENT_TYPE_ALIASES = {
+    "requisition": ("requisition", "purchase request", "req"),
+    "purchase_order": ("purchase order", "po"),
+    "goods_receipt": ("goods receipt", "receiving report", "grn"),
+    "invoice": ("invoice", "inv"),
+    "approval": ("approval", "approved", "authorization"),
+    "contract": ("contract", "agreement"),
+}
+
+
+def _normalized_identifier(value: object) -> str:
+    text = re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+    return text if len(text) >= 4 and any(char.isdigit() for char in text) else ""
+
+
+def _document_index(workspace: Workspace) -> list[dict]:
+    index = []
+    for document in workspace.documents:
+        source_text = f"{document.get('source') or ''} {document.get('title') or ''}"
+        extracted = ""
+        image_only = document.get("text_state") == "image_only"
+        try:
+            preview = documents.preview(workspace, document["id"])
+            pages = preview.get("pages") or []
+            extracted = "\n".join(str(page.get("text") or "") for page in pages)
+            image_only = image_only or any(page.get("image_only") for page in pages)
+        except Exception:
+            pass
+        raw = f"{source_text}\n{extracted}".casefold()
+        normalized = re.sub(r"[^a-z0-9]+", "", raw)
+        types = {
+            kind
+            for kind, aliases in _DOCUMENT_TYPE_ALIASES.items()
+            if any(re.search(rf"(?:^|[^a-z0-9]){re.escape(alias)}(?:[^a-z0-9]|$)", raw) for alias in aliases)
+        }
+        index.append(
+            {
+                "document": document,
+                "raw": raw,
+                "normalized": normalized,
+                "types": types,
+                "image_only": image_only,
+            }
+        )
+    return index
+
+
+def _required_document_types(workspace: Workspace, payload: dict) -> list[str]:
+    explicit = [
+        str(value).strip().lower()
+        for value in (payload.get("required_document_types") or [])
+        if str(value).strip()
+    ]
+    if explicit:
+        return list(dict.fromkeys(explicit))
+    planned_id = str(payload.get("planned_test_id") or "")
+    if not planned_id:
+        return []
+    _, planned = workspace.planned_test(planned_id)
+    source = " ".join(
+        [
+            str(planned.get("expected_evidence") or ""),
+            str(planned.get("criteria") or ""),
+            *[str(step) for step in planned.get("steps") or []],
+        ]
+    ).casefold()
+    return [
+        kind
+        for kind, aliases in _DOCUMENT_TYPE_ALIASES.items()
+        if any(alias in source for alias in aliases)
+    ]
+
+
+def _evidence_request(
+    workspace: Workspace,
+    *,
+    test: dict,
+    item: dict,
+    transaction_identifier: str,
+    missing_types: list[str],
+) -> dict:
+    existing = next(
+        (
+            request
+            for request in workspace.evidence_requests
+            if request.get("document_test_id") == test["id"]
+            and request.get("item_id") == item["id"]
+            and request.get("status") == "open"
+        ),
+        None,
+    )
+    if existing is None:
+        existing = {
+            "id": f"ER-{uuid.uuid4().hex[:10].upper()}",
+            "rcm_id": test.get("rcm_id"),
+            "planned_test_id": test.get("planned_test_id"),
+            "document_test_id": test["id"],
+            "item_id": item["id"],
+            "transaction_identifier": transaction_identifier,
+            "missing_document_types": missing_types,
+            "status": "open",
+            "reason": "Required evidence was not available in the imported document set.",
+            "next_action": "Request the listed evidence and attach it to this test item.",
+            "created": utcnow(),
+            "updated": utcnow(),
+        }
+        workspace.evidence_requests.append(existing)
+    else:
+        existing["missing_document_types"] = missing_types
+        existing["updated"] = utcnow()
+    return existing
+
+
+def prepare_evidence_aware_vouching(workspace: Workspace, payload: dict) -> dict:
+    """Build a vouching worklist that prioritizes transactions with evidence."""
+    table = str(payload.get("table") or "")
+    if table not in workspace.table_names():
+        raise WorkspaceError(f"No table named '{table}'.")
+    frame = workspace.get_frame(table).with_row_index("source_row", offset=2)
+    identifier_fields = [str(value) for value in (payload.get("identifier_fields") or [])]
+    if not identifier_fields:
+        identifier_fields = [
+            name
+            for name in frame.columns
+            if re.search(r"(?i)(id|no|num|number|ref|req|po|grn|inv)", name)
+        ][:8]
+    missing = [name for name in identifier_fields if name not in frame.columns]
+    if missing:
+        raise WorkspaceError(f"Identifier field '{missing[0]}' does not exist in '{table}'.")
+    frozen_fields = [
+        str(value) for value in (payload.get("frozen_fields") or identifier_fields or frame.columns[:6])
+    ]
+    missing = [name for name in frozen_fields if name not in frame.columns]
+    if missing:
+        raise WorkspaceError(f"Frozen field '{missing[0]}' does not exist in '{table}'.")
+    size = int(payload.get("size") or 25)
+    if size < 1:
+        raise WorkspaceError("Evidence-aware sample size must be positive.")
+    index = _document_index(workspace)
+    candidates = []
+    for row in frame.iter_rows(named=True):
+        identifier_pairs = [
+            (str(row.get(field)).strip(), normalized)
+            for field in identifier_fields
+            if (normalized := _normalized_identifier(row.get(field)))
+        ]
+        identifiers = list(dict.fromkeys(display for display, _ in identifier_pairs))
+        normalized_identifiers = list(dict.fromkeys(value for _, value in identifier_pairs))
+        matched = [
+            entry
+            for entry in index
+            if normalized_identifiers
+            and any(identifier in entry["normalized"] for identifier in normalized_identifiers)
+        ]
+        candidates.append({"row": row, "identifiers": identifiers, "documents": matched})
+    covered = sorted(
+        (item for item in candidates if item["documents"]),
+        key=lambda item: (-len(item["documents"]), int(item["row"]["source_row"])),
+    )
+    uncovered = [item for item in candidates if not item["documents"]]
+    random.Random(int(payload.get("seed") or 42)).shuffle(uncovered)
+    selected = [*covered, *uncovered][: min(size, len(candidates))]
+    required_types = _required_document_types(workspace, payload)
+    source_hash = _sha1(workspace._table_signature(table))
+    test = _base_test(workspace, payload, "vouching")
+    test["spec"].update(
+        {
+            "direction": str(payload.get("direction") or "vouching"),
+            "table": table,
+            "table_sha1": source_hash,
+            "sampling": {
+                "method": "evidence_covered_first",
+                "size": size,
+                "seed": int(payload.get("seed") or 42),
+            },
+            "identifier_fields": identifier_fields,
+            "frozen_fields": frozen_fields,
+            "required_document_types": required_types,
+            "population_rows": frame.height,
+            "require_all_documents": bool(payload.get("require_all_documents", True)),
+        }
+    )
+    requests = []
+    image_only_count = 0
+    for selected_item in selected:
+        row = selected_item["row"]
+        document_entries = selected_item["documents"]
+        doc_ids = [entry["document"]["id"] for entry in document_entries]
+        available_types = {kind for entry in document_entries for kind in entry["types"]}
+        missing_types = [kind for kind in required_types if kind not in available_types]
+        if not doc_ids and not missing_types:
+            missing_types = ["supporting_evidence"]
+        image_only = any(entry["image_only"] for entry in document_entries)
+        image_only_count += int(image_only)
+        identifiers = selected_item["identifiers"]
+        label = " / ".join(identifiers) or f"{table} row {row['source_row']}"
+        frozen = {field: _json_value(row.get(field)) for field in frozen_fields}
+        item = _new_item({"label": label, "document_ids": doc_ids})
+        item.update(
+            source={"table": table, "source_row": row["source_row"], "source_sha1": source_hash},
+            transaction_identifiers=identifiers,
+            frozen=frozen,
+            checks=[
+                _normalize_check({"field": field, "expected": value, "method": "normalized"})
+                for field, value in frozen.items()
+            ],
+            evidence_coverage={
+                "document_ids": doc_ids,
+                "available_document_types": sorted(available_types),
+                "missing_document_types": missing_types,
+                "image_only": image_only,
+            },
+            evidence_request_ids=[],
+        )
+        test["items"].append(item)
+        if missing_types:
+            request = _evidence_request(
+                workspace,
+                test=test,
+                item=item,
+                transaction_identifier=label,
+                missing_types=missing_types,
+            )
+            item["evidence_request_ids"].append(request["id"])
+            requests.append(request)
+        if image_only:
+            item.update(
+                state="manual_review",
+                auditor_disposition="needs_manual_check",
+                runner_note="Image-only evidence requires OCR or auditor review.",
+            )
+    covered_count = sum(bool(item.get("document_ids")) for item in test["items"])
+    test["spec"]["evidence_coverage"] = {
+        "selected": len(test["items"]),
+        "evidence_covered": covered_count,
+        "evidence_requested": len(requests),
+        "image_only": image_only_count,
+    }
+    test["status"] = (
+        "blocked"
+        if test["items"] and covered_count == 0
+        else "review_required"
+        if requests or image_only_count
+        else "in_progress"
+    )
+    test["scope_limitations"] = (
+        f"{len(requests)} selected item(s) require additional evidence."
+        if requests
+        else ""
+    )
+    save_test(workspace, test)
+    _link_test(workspace, test)
+    workspace.save()
+    return {**test, "evidence_requests": requests}
+
+
+def update_evidence_request(
+    workspace: Workspace, request_id: str, *, status: str, note: str = ""
+) -> dict:
+    request = next(
+        (item for item in workspace.evidence_requests if item.get("id") == request_id),
+        None,
+    )
+    if request is None:
+        raise WorkspaceError(f"Evidence request '{request_id}' not found.")
+    if status not in {"open", "received", "cancelled"}:
+        raise WorkspaceError("Unknown evidence-request status.")
+    request["status"] = status
+    request["auditor_note"] = str(note or "")
+    request["updated"] = utcnow()
+    workspace.save()
+    return request
+
+
 def build_attribute(workspace: Workspace, payload: dict) -> dict:
     built = {**payload, "kind": "attribute"}
     attributes = [
@@ -358,22 +678,30 @@ def build_qa(workspace: Workspace, payload: dict) -> dict:
 
 def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
     test = load_test(workspace, test_id)
-    allowed = {"title", "status", "rcm_refs", "procedure_refs", "spec"}
+    allowed = {
+        "title", "status", "rcm_refs", "procedure_refs", "rcm_id", "planned_test_id", "spec"
+    }
     if set(changes) - allowed:
         raise WorkspaceError("Unknown document-test field.")
     rcm_refs = [str(ref) for ref in changes.get("rcm_refs", test["rcm_refs"])]
     procedure_refs = [str(ref) for ref in changes.get("procedure_refs", test["procedure_refs"])]
     _validate_links(workspace, rcm_refs, procedure_refs)
+    rcm_id, planned_test_id = _validate_parent(
+        workspace,
+        changes.get("rcm_id", test.get("rcm_id")),
+        changes.get("planned_test_id", test.get("planned_test_id")),
+    )
     if "title" in changes:
         test["title"] = str(changes["title"] or "").strip()
         if not test["title"]:
             raise WorkspaceError("Document-test title is required.")
     if "status" in changes:
         status = str(changes["status"])
-        if status not in {"draft", "in_progress", "completed"}:
+        if status not in {"draft", "in_progress", "review_required", "blocked", "completed"}:
             raise WorkspaceError("Unknown document-test status.")
         test["status"] = status
     test["rcm_refs"], test["procedure_refs"] = rcm_refs, procedure_refs
+    test["rcm_id"], test["planned_test_id"] = rcm_id, planned_test_id
     if "spec" in changes:
         test["spec"] = {**test["spec"], **dict(changes["spec"] or {})}
     save_test(workspace, test)
@@ -387,6 +715,11 @@ def remove_test(workspace: Workspace, test_id: str) -> None:
     ref = f"doctest:{test_id}"
     for item in [*workspace.rcm, *workspace.work_program]:
         item["test_refs"] = [value for value in item.get("test_refs", []) if value != ref]
+    for row in workspace.rcm:
+        for planned in row.get("planned_tests") or []:
+            planned["execution_refs"] = [
+                value for value in planned.get("execution_refs", []) if value != ref
+            ]
     workspace.save()
 
 

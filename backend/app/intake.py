@@ -734,7 +734,7 @@ def planning_actions_for_documents(imported_documents: list[dict]) -> list[dict]
             "title": "Update planning from imported guidance",
             "reason": (
                 f"{len(planning_documents)} newly imported policy, procedure, or planning document(s) "
-                "may affect the engagement context, APM, RCM, and audit program."
+                "may affect the engagement context, APM, RCM, and its planned tests."
             ),
             "document_ids": [item["id"] for item in selected],
             "documents": selected,

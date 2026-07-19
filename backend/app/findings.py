@@ -43,6 +43,12 @@ def artifact(workspace: Workspace, source_kind: str, source_id: str) -> dict | N
         item = next((row for row in workspace.rulesets if row.get("id") == source_id), None)
     elif source_kind == "procedure":
         item = next((row for row in workspace.work_program if row.get("id") == source_id), None)
+    elif source_kind == "rcm":
+        item = next((row for row in workspace.rcm if row.get("id") == source_id), None)
+    elif source_kind == "datatest":
+        from . import data_tests
+
+        return data_tests.result_artifact(workspace, source_id)
     elif source_kind == "doctest":
         if not doc_tests.exists(workspace, source_id):
             return None
@@ -75,18 +81,36 @@ def validate_evidence(workspace: Workspace, values: object, *, require_hash: boo
     return anchors
 
 
-def _validate_links(workspace: Workspace, rcm_refs: object, procedure_refs: object) -> tuple[list[str], list[str]]:
+def _validate_links(
+    workspace: Workspace,
+    rcm_refs: object,
+    procedure_refs: object,
+    planned_test_refs: object = None,
+) -> tuple[list[str], list[str], list[str]]:
     rcm = [str(value) for value in (rcm_refs or [])]
     procedures = [str(value) for value in (procedure_refs or [])]
+    planned_tests = [str(value) for value in (planned_test_refs or [])]
     known_rcm = {row.get("id") for row in workspace.rcm}
     known_procedures = {row.get("id") for row in workspace.work_program}
+    known_planned = {
+        planned.get("id")
+        for row in workspace.rcm
+        for planned in row.get("planned_tests") or []
+    }
     missing_rcm = next((value for value in rcm if value not in known_rcm), None)
     missing_procedure = next((value for value in procedures if value not in known_procedures), None)
+    missing_planned = next((value for value in planned_tests if value not in known_planned), None)
     if missing_rcm:
         raise WorkspaceError(f"RCM reference '{missing_rcm}' does not exist.")
     if missing_procedure:
         raise WorkspaceError(f"Procedure reference '{missing_procedure}' does not exist.")
-    return list(dict.fromkeys(rcm)), list(dict.fromkeys(procedures))
+    if missing_planned:
+        raise WorkspaceError(f"Planned-test reference '{missing_planned}' does not exist.")
+    return (
+        list(dict.fromkeys(rcm)),
+        list(dict.fromkeys(procedures)),
+        list(dict.fromkeys(planned_tests)),
+    )
 
 
 def _severity(value: object) -> str:
@@ -94,6 +118,67 @@ def _severity(value: object) -> str:
     if result not in SEVERITIES:
         raise WorkspaceError(f"Finding severity must be one of: {', '.join(SEVERITIES)}.")
     return result
+
+
+def support_issues(workspace: Workspace, item: dict) -> list[str]:
+    """Return deterministic blockers to treating a draft as a formal finding."""
+    issues = []
+    required = ("condition", "criteria", "effect", "recommendation", "severity_rationale")
+    missing = [field for field in required if not str(item.get(field) or "").strip()]
+    if not str(item.get("cause") or "").strip() and not item.get("cause_pending"):
+        missing.append("cause or cause_pending")
+    if missing:
+        issues.append("missing " + ", ".join(missing))
+    rcm_refs = {str(value) for value in item.get("rcm_refs") or []}
+    planned_refs = {str(value) for value in item.get("planned_test_refs") or []}
+    if not rcm_refs:
+        issues.append("no RCM reference")
+    if not planned_refs:
+        issues.append("no planned-test reference")
+    if not item.get("execution_refs"):
+        issues.append("no execution-result reference")
+    if not item.get("evidence_refs"):
+        issues.append("no immutable evidence anchor")
+    for planned_id in planned_refs:
+        try:
+            row, _planned = workspace.planned_test(planned_id)
+        except WorkspaceError:
+            issues.append(f"missing planned test {planned_id}")
+            continue
+        if row["id"] not in rcm_refs:
+            issues.append(f"planned test {planned_id} is not covered by the finding's RCM links")
+    for value in item.get("execution_refs") or []:
+        kind, separator, source_id = str(value).partition(":")
+        if not separator or kind not in {"datatest", "doctest"}:
+            issues.append(f"invalid execution reference {value}")
+            continue
+        if kind == "datatest":
+            from . import data_tests
+
+            data_test_id, run_sep, run_id = source_id.partition(":")
+            execution = next(
+                (test for test in workspace.data_tests if test.get("id") == data_test_id), None
+            )
+            if execution is None or execution.get("planned_test_id") not in planned_refs:
+                issues.append(f"unlinked Data Test result {value}")
+                continue
+            if run_sep:
+                try:
+                    data_tests.load_result(workspace, data_test_id, run_id)
+                except WorkspaceError:
+                    issues.append(f"missing immutable Data Test result {value}")
+            elif not execution.get("last_run"):
+                issues.append(f"Data Test {data_test_id} has no durable result")
+        else:
+            if not doc_tests.exists(workspace, source_id):
+                issues.append(f"missing Document Test {source_id}")
+                continue
+            execution = doc_tests.load_test(workspace, source_id)
+            if execution.get("planned_test_id") not in planned_refs:
+                issues.append(f"unlinked Document Test {source_id}")
+            if execution.get("status") != "completed":
+                issues.append(f"Document Test {source_id} is not complete")
+    return list(dict.fromkeys(issues))
 
 
 def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
@@ -104,9 +189,16 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         raise WorkspaceError("Finding title is required.")
     if source not in SOURCES:
         raise WorkspaceError("Finding source is not supported.")
-    rcm_refs, procedure_refs = _validate_links(
-        workspace, payload.get("rcm_refs"), payload.get("procedure_refs")
+    rcm_refs, procedure_refs, planned_test_refs = _validate_links(
+        workspace,
+        payload.get("rcm_refs"),
+        payload.get("procedure_refs"),
+        payload.get("planned_test_refs"),
     )
+    for procedure_id in procedure_refs:
+        target = workspace.rcm_migration.get("migrated_procedures", {}).get(procedure_id)
+        if target and target["planned_test_id"] not in planned_test_refs:
+            planned_test_refs.append(target["planned_test_id"])
     evidence_refs = validate_evidence(workspace, payload.get("evidence_refs") or [])
     created = _now(workspace)
     item = {
@@ -124,13 +216,24 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         "management_response": str(payload.get("management_response") or ""),
         "rcm_refs": rcm_refs,
         "procedure_refs": procedure_refs,
+        "planned_test_refs": planned_test_refs,
+        "execution_refs": [str(value) for value in (payload.get("execution_refs") or [])],
         "evidence_refs": evidence_refs,
+        "cause_pending": bool(payload.get("cause_pending", False)),
+        "severity_rationale": str(payload.get("severity_rationale") or ""),
+        "auditor_confirmed": bool(payload.get("auditor_confirmed", False)) if source == "manual" else False,
         "source": source,
         "created": created,
         "updated": created,
     }
     if any(row.get("id") == item["id"] for row in workspace.findings):
         raise WorkspaceError(f"Finding '{item['id']}' already exists.")
+    if item["auditor_confirmed"]:
+        issues = support_issues(workspace, item)
+        if issues:
+            raise WorkspaceError(
+                "A finding cannot be auditor-confirmed: " + "; ".join(issues) + "."
+            )
     workspace.findings.append(item)
     workspace.save()
     return item
@@ -141,7 +244,8 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
     allowed = {
         "title", "severity", "condition", "criteria", "cause", "effect",
         "recommendation", "management_response", "rcm_refs",
-        "procedure_refs", "evidence_refs",
+        "procedure_refs", "planned_test_refs", "execution_refs", "evidence_refs",
+        "cause_pending", "severity_rationale", "auditor_confirmed",
     }
     unknown = set(changes) - allowed
     if unknown:
@@ -150,18 +254,35 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
         raise WorkspaceError("Finding title is required.")
     if "severity" in changes:
         changes = {**changes, "severity": _severity(changes["severity"])}
-    if "rcm_refs" in changes or "procedure_refs" in changes:
-        rcm_refs, procedure_refs = _validate_links(
+    if "rcm_refs" in changes or "procedure_refs" in changes or "planned_test_refs" in changes:
+        rcm_refs, procedure_refs, planned_test_refs = _validate_links(
             workspace,
             changes.get("rcm_refs", item.get("rcm_refs")),
             changes.get("procedure_refs", item.get("procedure_refs")),
+            changes.get("planned_test_refs", item.get("planned_test_refs")),
         )
-        changes = {**changes, "rcm_refs": rcm_refs, "procedure_refs": procedure_refs}
+        changes = {
+            **changes,
+            "rcm_refs": rcm_refs,
+            "procedure_refs": procedure_refs,
+            "planned_test_refs": planned_test_refs,
+        }
     if "evidence_refs" in changes:
         changes = {**changes, "evidence_refs": validate_evidence(workspace, changes["evidence_refs"])}
+    candidate = {**item, **changes}
+    candidate["auditor_confirmed"] = bool(candidate.get("auditor_confirmed"))
+    candidate["cause_pending"] = bool(candidate.get("cause_pending"))
+    if candidate["auditor_confirmed"]:
+        issues = support_issues(workspace, candidate)
+        if issues:
+            raise WorkspaceError(
+                "A finding cannot be auditor-confirmed: " + "; ".join(issues) + "."
+            )
     for key, value in changes.items():
-        if key in ("rcm_refs", "procedure_refs", "evidence_refs"):
+        if key in ("rcm_refs", "procedure_refs", "planned_test_refs", "execution_refs", "evidence_refs"):
             item[key] = value
+        elif key in ("cause_pending", "auditor_confirmed"):
+            item[key] = bool(value)
         else:
             item[key] = str(value or "")
     if item.get("created_by") == "agent":
@@ -232,10 +353,17 @@ def promote(workspace: Workspace, run_id: str, agent_finding_id: str) -> dict:
 def rollups(workspace: Workspace) -> dict:
     by_rcm: dict[str, list[dict]] = {}
     by_procedure: dict[str, list[dict]] = {}
+    by_planned_test: dict[str, list[dict]] = {}
     for item in workspace.findings:
         summary = {key: item.get(key) for key in ("id", "title", "severity")}
         for ref in item.get("rcm_refs") or []:
             by_rcm.setdefault(ref, []).append(summary)
         for ref in item.get("procedure_refs") or []:
             by_procedure.setdefault(ref, []).append(summary)
-    return {"by_rcm": by_rcm, "by_procedure": by_procedure}
+        for ref in item.get("planned_test_refs") or []:
+            by_planned_test.setdefault(ref, []).append(summary)
+    return {
+        "by_rcm": by_rcm,
+        "by_planned_test": by_planned_test,
+        "by_procedure": by_procedure,
+    }

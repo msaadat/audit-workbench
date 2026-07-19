@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body
 
 from .. import doc_tests, findings, report, workspaces
+from ..evidence import normalize_anchor
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["findings", "report"])
 
@@ -32,10 +33,27 @@ async def list_findings(workspace_id: str):
                 if key not in seen:
                     evidence_options.append({"anchor": anchor, "label": f"{test['id']} · {item.get('label') or item['id']} · {anchor.get('source_kind')}:{anchor.get('source_id')}"})
                     seen.add(key)
+    for data_test in ws.data_tests:
+        last_run = data_test.get("last_run")
+        if not last_run:
+            continue
+        anchor = normalize_anchor(
+            {
+                "source_kind": "datatest",
+                "source_id": f"{data_test['id']}:{last_run['id']}",
+                "source_sha1": last_run["result_sha1"],
+            },
+            require_hash=True,
+        )
+        evidence_options.append(
+            {"anchor": anchor, "label": f"{data_test['id']} · durable result {last_run['id']}"}
+        )
     return {
         "items": ws.findings,
         "rcm": ws.rcm,
         "procedures": ws.work_program,
+        "data_tests": ws.data_tests,
+        "document_tests": doc_tests.list_tests(ws),
         "rollups": findings.rollups(ws),
         "evidence_options": evidence_options,
     }

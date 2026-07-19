@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import threading
 import time
 import uuid
 
@@ -40,12 +41,17 @@ class BaseRunner:
         self.run = run
         self.handle = handle
         self.deadline = time.monotonic() + MAX_RUNTIME_SECONDS
+        # Independent planning-document requests may run concurrently. Keep
+        # provider waits parallel while serializing the shared durable ledger.
+        self._state_lock = threading.RLock()
 
     def save(self) -> None:
-        store.save_run(self.ws, self.run)
+        with self._state_lock:
+            store.save_run(self.ws, self.run)
 
     def emit(self, type_: str, data: dict) -> None:
-        store.append_event(self.ws, self.run["id"], type_, data)
+        with self._state_lock:
+            store.append_event(self.ws, self.run["id"], type_, data)
 
     def set_status(self, status: str) -> None:
         if self.run["status"] == status:
@@ -143,58 +149,78 @@ class BaseRunner:
     def context(self) -> dict:
         return self.run.get("context") or {}
 
-    def llm_json(self, system: str, user: str, activity: dict | None = None) -> dict:
-        last_error = ""
-        attempt_user = user
-        for _ in range(LLM_JSON_ATTEMPTS):
-            self.checkpoint()
+    def _llm_content(self, system: str, user: str, activity: dict | None = None) -> str:
+        """Execute and provenance-log one model turn.
+
+        Only accounting and snapshot mutations are locked. The provider call
+        stays outside the lock so independent document analyses can overlap.
+        """
+        self.checkpoint()
+        with self._state_lock:
             usage = self.run.setdefault("usage", {})
             if usage.get("llm_turns", 0) >= MAX_LLM_TURNS:
                 raise LimitExceeded("model turn limit reached")
             usage["llm_turns"] = usage.get("llm_turns", 0) + 1
             self.save()
-            message = llm.chat(
-                [{"role": "system", "content": system}, {"role": "user", "content": attempt_user}],
-                profile="agent",
-            )
-            # The ledger stores provenance and hashes, never full prompt or
-            # document content.
-            from ..documents import append_activity
-            tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
-            profile = llm.agent_status()
+        message = llm.chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            profile="agent",
+        )
+        # The ledger stores provenance and hashes, never full prompt or
+        # document content.
+        from ..documents import append_activity
+        tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
+        profile = llm.agent_status()
+        with self._state_lock:
             sources = list(self.run.get("model_sources") or [])
-            activity_fields = dict(activity or {})
-            template_name = {
-                "agent:apm": "apm", "agent:rcm": "rcm",
-                "agent:work_program": "workpaper",
-            }.get(tag)
-            template_versions = []
-            if template_name:
-                from .. import templates_store
-                active = templates_store.get_template(self.ws, template_name)
-                template_versions.append({
-                    "name": template_name, "source": active["source"],
-                    "sha1": hashlib.sha1(active["markdown"].encode("utf-8")).hexdigest(),
-                })
-            append_activity(
-                self.ws, run_id=self.run["id"], stage=tag, task=None, purpose=tag,
-                provider=profile.get("provider"), model=profile.get("model"), vision_used=False,
-                prompt_version=hashlib.sha1(f"{system}\n{user}".encode("utf-8")).hexdigest(),
-                template_versions=template_versions,
-                knowledge_packs=[{"source_ref": item["source_ref"], "sha1": item.get("source_sha1")} for item in sources if str(item.get("source_ref", "")).startswith("pack:")],
-                document_ids=activity_fields.pop("document_ids", [item["document_id"] for item in sources if not str(item.get("source_ref", "")).startswith("pack:")]),
-                page_ranges=activity_fields.pop("page_ranges", sorted({page for item in sources for page in item.get("pages", [])})),
-                source_hashes=activity_fields.pop("source_hashes", sorted({item["source_sha1"] for item in sources if item.get("source_sha1")})),
-                response_at=store.utcnow(), response_hash=hashlib.sha1(str(message.get("content") or "").encode("utf-8")).hexdigest(),
-                artifact_ref=None, disposition="generated",
-                **activity_fields,
-            )
+        activity_fields = dict(activity or {})
+        template_name = {
+            "agent:apm": "apm", "agent:rcm": "rcm",
+            "agent:work_program": "workpaper",
+        }.get(tag)
+        template_versions = []
+        if template_name:
+            from .. import templates_store
+            active = templates_store.get_template(self.ws, template_name)
+            template_versions.append({
+                "name": template_name, "source": active["source"],
+                "sha1": hashlib.sha1(active["markdown"].encode("utf-8")).hexdigest(),
+            })
+        content = str(message.get("content") or "")
+        append_activity(
+            self.ws, run_id=self.run["id"], stage=tag, task=None, purpose=tag,
+            provider=profile.get("provider"), model=profile.get("model"), vision_used=False,
+            prompt_version=hashlib.sha1(f"{system}\n{user}".encode("utf-8")).hexdigest(),
+            template_versions=template_versions,
+            knowledge_packs=[{"source_ref": item["source_ref"], "sha1": item.get("source_sha1")} for item in sources if str(item.get("source_ref", "")).startswith("pack:")],
+            document_ids=activity_fields.pop("document_ids", [item["document_id"] for item in sources if not str(item.get("source_ref", "")).startswith("pack:")]),
+            page_ranges=activity_fields.pop("page_ranges", sorted({page for item in sources for page in item.get("pages", [])})),
+            source_hashes=activity_fields.pop("source_hashes", sorted({item["source_sha1"] for item in sources if item.get("source_sha1")})),
+            response_at=store.utcnow(), response_hash=hashlib.sha1(content.encode("utf-8")).hexdigest(),
+            artifact_ref=None, disposition="generated",
+            **activity_fields,
+        )
+        return content
+
+    def llm_json(self, system: str, user: str, activity: dict | None = None) -> dict:
+        last_error = ""
+        attempt_user = user
+        for _ in range(LLM_JSON_ATTEMPTS):
+            content = self._llm_content(system, attempt_user, activity)
             try:
-                return prompts.parse_json_object(message.get("content") or "")
+                return prompts.parse_json_object(content)
             except (ValueError, json.JSONDecodeError) as error:
                 last_error = str(error)
                 attempt_user = f"{user}\n\nYour previous response could not be used: {last_error}. {prompts.JSON_RULES}"
         raise llm.LLMError(f"The model did not return usable JSON: {last_error}")
+
+    def llm_markdown(
+        self, system: str, user: str, *, legacy_field: str | None = None,
+        activity: dict | None = None,
+    ) -> str:
+        """Return Markdown without requiring a large JSON string envelope."""
+        content = self._llm_content(system, user, activity)
+        return prompts.parse_markdown_response(content, legacy_field=legacy_field)
 
     def _stage(self, stage_id: str) -> dict:
         for stage in self.run["plan"]["stages"]:
@@ -260,10 +286,11 @@ class BaseRunner:
             "source_sha1": source.get("source_sha1"),
             "pages": [int(page["page"]) for page in source.get("pages") or []],
         }
-        sources = self.run.setdefault("model_sources", [])
-        if entry not in sources:
-            sources.append(entry)
-            self.save()
+        with self._state_lock:
+            sources = self.run.setdefault("model_sources", [])
+            if entry not in sources:
+                sources.append(entry)
+                self.save()
 
     def record_artifact(self, kind: str, item_id: str, semantic_id: str, action: str, task: dict | None) -> str:
         ref = f"{kind}:{item_id}"

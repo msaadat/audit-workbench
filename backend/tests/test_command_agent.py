@@ -4,7 +4,7 @@ import time
 import polars as pl
 import pytest
 
-from app import assistant, doc_tests, documents, findings, llm, model_context, workspaces
+from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, workspaces
 from app.agent import actions, artifact_index, command_runner, ledger, runner, store
 from conftest import FakeAgentLLM, wait_run
 
@@ -415,6 +415,52 @@ def test_full_audit_lifecycle_dependencies_and_document_test_binding(workspace_w
     assert by_id["quality"]["depends_on"] == ["report"]
 
 
+def test_rcm_central_lifecycle_resolves_parent_action_references(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto",
+        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
+    )
+    created = ledger.append_actions(run, [
+        {"id": "rcm", "type": "create_rcm_row", "args": {"risk": "Purchases bypass approval"}},
+        {
+            "id": "planned", "type": "create_rcm_planned_test",
+            "args": {
+                "rcm_id": "rcm", "title": "Test approvals", "objective": "Test approvals",
+                "method": "data_analytics",
+            },
+        },
+        {
+            "id": "data", "type": "create_data_test",
+            "args": {
+                "rcm_id": "rcm", "planned_test_id": "planned",
+                "title": "Approval population", "objective": "Find missing approvals",
+                "engine": "analytics", "table_refs": ["transactions"],
+                "spec": {"test_id": "completeness", "params": {"columns": ["invoice_no"]}},
+            },
+        },
+        {"id": "run", "type": "run_data_test", "target": {"resolved_id": "data"}},
+        {"id": "rollup", "type": "rollup_rcm_results"},
+        {"id": "paper", "type": "generate_rcm_working_paper", "target": {"resolved_id": "rcm"}},
+        {"id": "dashboard", "type": "curate_dashboard"},
+        {"id": "report", "type": "generate_report", "args": {"use_model": False}},
+        {"id": "quality", "type": "run_report_quality"},
+        {"id": "completion", "type": "verify_audit_completion"},
+    ], audit_lifecycle=True)
+    by_id = {item["id"]: item for item in created}
+
+    assert by_id["planned"]["args"]["rcm_id"] == by_id["rcm"]["args"]["id"]
+    assert by_id["data"]["args"]["rcm_id"] == by_id["rcm"]["args"]["id"]
+    assert by_id["data"]["args"]["planned_test_id"] == by_id["planned"]["args"]["id"]
+    assert by_id["run"]["target"]["resolved_id"] == by_id["data"]["args"]["id"]
+    assert by_id["paper"]["target"]["resolved_id"] == by_id["rcm"]["args"]["id"]
+    assert by_id["run"]["depends_on"] == ["data"]
+    assert by_id["rollup"]["depends_on"] == ["run"]
+    assert by_id["dashboard"]["depends_on"] == ["paper"]
+    assert by_id["report"]["depends_on"] == ["dashboard"]
+    assert set(by_id["completion"]["depends_on"]) == {"report"}
+    ledger.validate_graph(run)
+
+
 def test_full_audit_normalizes_report_reconcile_quality_cycle(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto",
@@ -630,6 +676,53 @@ def test_artifact_resolution_exact_ambiguous_and_no_match(workspace_with_data):
     assert duplicate_titles["resolved_id"] is None and len(duplicate_titles["candidates"]) == 2
 
 
+def test_compact_artifact_index_exposes_bare_ids_and_canonicalizes_typed_refs(
+    workspace_with_data,
+):
+    row = workspace_with_data.add_rcm({"risk": "Duplicate invoices may be paid"})
+    planned = workspace_with_data.add_planned_test(
+        row["id"],
+        {
+            "title": "Test duplicates", "objective": "Test duplicate invoices",
+            "method": "data_analytics", "steps": ["Identify duplicate invoice numbers."],
+        },
+    )
+    compact = artifact_index.compact(artifact_index.build(workspace_with_data))
+    by_ref = {item["ref"]: item for item in compact["artifacts"]}
+
+    assert by_ref[f"rcm:{row['id']}"]["id"] == row["id"]
+    assert by_ref[f"planned_test:{planned['id']}"]["id"] == planned["id"]
+    assert artifact_index.canonical_id(f"rcm:{row['id']}", "rcm") == row["id"]
+    with pytest.raises(ValueError, match="Expected artifact kind 'rcm'"):
+        artifact_index.canonical_id(f"planned_test:{planned['id']}", "rcm")
+
+
+def test_data_test_action_preflight_rejects_wrong_engine_spec(workspace_with_data):
+    action = {
+        "type": "create_data_test",
+        "args": {
+            "title": "Malformed duplicate test", "objective": "Find duplicates",
+            "engine": "analytics", "table_refs": ["transactions"],
+            "spec": {"checks": [{"column": "invoice_no"}]},
+        },
+    }
+
+    with pytest.raises(workspaces.WorkspaceError, match="Unknown analytics test"):
+        actions.canonicalize_action_fields(workspace_with_data, action)
+
+    existing = data_tests.create(workspace_with_data, {
+        "title": "Duplicates", "objective": "Find duplicates", "engine": "analytics",
+        "table_refs": ["transactions"],
+        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+    })
+    edit = {
+        "type": "edit_data_test", "target": {"resolved_id": existing["id"]},
+        "args": {"changes": {"spec": {"checks": []}}},
+    }
+    with pytest.raises(workspaces.WorkspaceError, match="Unknown analytics test"):
+        actions.canonicalize_action_fields(workspace_with_data, edit)
+
+
 def test_model_context_includes_unmasked_identifier_values():
     frame = pl.DataFrame({"acct_no": [123456789, 987654321], "branch": ["North", "South"], "amount": [10.0, 20.0]})
     projected = model_context.project_frame(frame)
@@ -665,6 +758,7 @@ def test_failed_command_retry_preserves_context_and_links_fresh_run(
             "goal_template": "data_analysis", "chat_id": "chat-1",
             "source_message_id": "msg-1",
             "context_refs": [{"kind": "document", "id": "doc-1"}],
+            "planning_basis_run_id": "planning-run-123",
         },
         context={"document_ids": ["doc-1"]},
     )
@@ -683,11 +777,36 @@ def test_failed_command_retry_preserves_context_and_links_fresh_run(
     assert completed["status"] == "completed"
     assert completed["id"] != failed["id"]
     assert completed["parent_run_id"] == failed["id"]
+    assert completed["planning_basis_run_id"] == "planning-run-123"
     assert completed["mode"] == "permission"
     assert completed["command"]["goal_template"] == "data_analysis"
     assert completed["command"]["source_message_id"] == "msg-1"
     assert completed["command"]["context_refs"] == [{"kind": "document", "id": "doc-1"}]
     assert completed["context"] == {"document_ids": ["doc-1"]}
+
+
+def test_cancelled_command_records_actor_reason_and_terminal_task_status(
+    workspace_with_data,
+):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "Create a finding"}
+    )
+    ledger.append_actions(run, [
+        {"id": "finding", "type": "create_finding", "args": {"title": "Draft finding"}}
+    ])
+    store.save_run(workspace_with_data, run)
+
+    cancelled = runner.cancel_run(
+        workspace_with_data, run["id"], reason="Auditor stopped duplicate work",
+        actor="auditor@example.com",
+    )
+    reloaded = store.load_run(workspace_with_data, run["id"])
+
+    assert cancelled["status"] == "cancelled"
+    assert reloaded["command"]["status"] == "cancelled"
+    assert reloaded["cancellation"]["actor"] == "auditor@example.com"
+    assert reloaded["cancellation"]["reason"] == "Auditor stopped duplicate work"
+    assert reloaded["plan"]["stages"][0]["tasks"][0]["status"] == "cancelled"
 
 
 def test_dependent_mutations_rebase_to_succeeded_dependency(workspace_with_data):
@@ -1157,7 +1276,15 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         payload = json.loads(user)
         assert payload["prepared_planning"]["document_content_included"] is True
         kinds = {item["kind"] for item in payload["workspace_index"]["artifacts"]}
-        assert {"planning", "rcm", "procedure"} <= kinds
+        assert {"planning", "rcm", "planned_test"} <= kinds
+        planned = next(
+            item for item in payload["workspace_index"]["artifacts"]
+            if item["kind"] == "planned_test"
+        )
+        rcm_id = next(
+            ref.split(":", 1)[1]
+            for ref in planned["linked_refs"] if ref.startswith("rcm:")
+        )
         return {
             "objective": "Complete the full audit through reporting",
             "constraints": [], "completion_criteria": [],
@@ -1171,6 +1298,8 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
                     "args": {
                         "kind": "review", "title": "Procurement approval review",
                         "items": [{"label": "Review approval evidence"}],
+                        "rcm_id": rcm_id,
+                        "planned_test_id": planned["ref"].split(":", 1)[1],
                     },
                     "depends_on": ["redundant-apm"],
                 },
@@ -1220,12 +1349,24 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     completed = wait_run(workspace_with_data, started["id"])
     reloaded = workspaces.load_workspace(workspace_with_data.id)
 
-    assert completed["status"] == "completed"
-    assert [item["type"] for item in completed["actions"]] == ["create_document_test"]
+    assert completed["status"] == "completed_with_open_items"
+    action_types = {item["type"] for item in completed["actions"]}
+    assert {
+        "create_document_test", "rollup_rcm_results", "generate_rcm_working_paper",
+        "curate_dashboard", "generate_report", "run_report_quality",
+        "verify_audit_completion",
+    } <= action_types
     assert "## Key risks and planned response" in reloaded.planning["apm_markdown"]
     assert reloaded.rcm[-1]["control"] == "Approval before commitment"
-    assert reloaded.work_program[-1]["steps"] == ["Select purchases and inspect approval evidence."]
+    assert reloaded.work_program == []
+    assert reloaded.rcm[-1]["planned_tests"][-1]["steps"] == ["Select purchases and inspect approval evidence."]
     assert completed["prepared_planning"]["document_content_included"] is True
+    assert completed.get("planning_expansion_disabled") is True
+    assert all(
+        item["status"] == "succeeded"
+        for item in completed["actions"]
+        if item["id"].startswith("mandatory_")
+    )
     assert [call["tag"] for call in fake.calls].count("agent:apm") == 2
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(item["stage"] == "agent:apm" and policy["id"] in item["document_ids"] for item in activity)

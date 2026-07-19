@@ -22,7 +22,7 @@ const expanded = ref(false)
 const run = ref<AgentRun | null>(null)
 const busy = ref(false)
 const active = computed(() => ['queued','interpreting','discovering','planning','executing','awaiting_approval','awaiting_input','verifying','summarizing','paused','interrupted'].includes(props.projection.status))
-const severity: Record<string, 'success'|'warn'|'danger'|'secondary'|'info'> = { completed:'success',completed_with_issues:'warn',failed:'danger',cancelled:'secondary',paused:'secondary',interrupted:'warn',awaiting_approval:'warn',awaiting_input:'warn' }
+const severity: Record<string, 'success'|'warn'|'danger'|'secondary'|'info'> = { completed:'success',completed_with_open_items:'warn',completed_with_issues:'warn',failed:'danger',cancelled:'secondary',paused:'secondary',interrupted:'warn',awaiting_approval:'warn',awaiting_input:'warn' }
 
 async function load() {
   run.value = await api.get<AgentRun>(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}`)

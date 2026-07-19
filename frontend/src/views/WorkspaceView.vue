@@ -16,10 +16,10 @@ import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
 import QueryTab from '../components/QueryTab.vue'
-import AnalysisTab from '../components/AnalysisTab.vue'
-import ValidationTab from '../components/validation/ValidationTab.vue'
+import DataTestsTab from '../components/DataTestsTab.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
+import { cleanWorkspaceQuery, workspaceQuery } from '../composables/useWorkspaceNavigation'
 import PlanningTab from '../components/PlanningTab.vue'
 import DocumentsTab from '../components/DocumentsTab.vue'
 import DocTestsTab from '../components/DocTestsTab.vue'
@@ -32,7 +32,8 @@ const route = useRoute()
 const router = useRouter()
 
 const workspace = ref<WorkspaceSummary | null>(null)
-const activeTab = ref(String(route.query.tab || 'dashboard'))
+const requestedTab = String(route.query.tab || 'dashboard')
+const activeTab = ref(['analysis', 'validation'].includes(requestedTab) ? 'data-tests' : requestedTab)
 const initialized = ref(false)
 const folderImportOpen = ref(false)
 const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
@@ -134,17 +135,22 @@ onMounted(async () => {
     delete query.import
     await router.replace({ query })
   }
+  // Normalize old/bookmarked URLs that accumulated state from several tabs.
+  if (route.query.tab) await router.replace({ query: cleanWorkspaceQuery(activeTab.value, route.query) })
 })
 watch(activeTab, tab => {
-  if (route.query.tab !== tab) void router.replace({ query: { ...route.query, tab } })
+  if (route.query.tab !== tab) void router.replace({ query: workspaceQuery(tab) })
   void loadEngagementStatus()
 })
-watch(() => route.query.tab, tab => { if (tab && tab !== activeTab.value) activeTab.value = String(tab) })
+watch(() => route.query.tab, tab => {
+  const value = ['analysis', 'validation'].includes(String(tab)) ? 'data-tests' : String(tab || '')
+  if (value && value !== activeTab.value) activeTab.value = value
+})
 
 // Agent mutations can change both workspace counts and engagement status.
 const unsubscribe = agent.onWorkspaceChanged((change) => {
   if (change.kind === 'join' || change.kind === 'table') void reload()
-  if (['table', 'join', 'planning', 'rcm', 'procedure', 'doctest', 'ruleset', 'analysis', 'tile', 'finding', 'report'].includes(change.kind)) {
+  if (['table', 'join', 'planning', 'rcm', 'planned_test', 'datatest', 'doctest', 'observation', 'evidence_request', 'ruleset', 'analysis', 'tile', 'finding', 'report'].includes(change.kind)) {
     void loadEngagementStatus()
   }
 })
@@ -188,8 +194,7 @@ onUnmounted(() => {
             <Tab value="doc-tests" :aria-label="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'" v-tooltip.right="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'"><i class="pi pi-verified" /><span>Document tests</span><i v-if="phaseStatus.fieldwork" class="phase-status" :class="phaseStateIcon[phaseStatus.fieldwork.state]" :data-state="phaseStatus.fieldwork.state" aria-hidden="true" /></Tab>
             <Tab value="data"><i class="pi pi-database" /><span>Data</span></Tab>
             <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
-            <Tab value="validation"><i class="pi pi-check-square" /><span>Validation</span></Tab>
-            <Tab value="analysis"><i class="pi pi-shield" /><span>Analysis</span></Tab>
+            <Tab value="data-tests"><i class="pi pi-shield" /><span>Data tests</span></Tab>
             <p class="nav-label nav-group output-label">Output</p>
             <Tab value="findings"><i class="pi pi-flag" /><span>Findings</span><small v-if="workspace.finding_count">{{ workspace.finding_count }}</small></Tab>
             <Tab value="report" :aria-label="phaseStatus.report ? statusLabel(phaseStatus.report) : 'Report'" v-tooltip.right="phaseStatus.report ? statusLabel(phaseStatus.report) : 'Report'"><i class="pi pi-file-edit" /><span>Report</span><i v-if="phaseStatus.report" class="phase-status" :class="phaseStateIcon[phaseStatus.report.state]" :data-state="phaseStatus.report.state" aria-hidden="true" /></Tab>
@@ -213,16 +218,8 @@ onUnmounted(() => {
           <TabPanel value="query">
             <QueryTab :workspace="workspace" />
           </TabPanel>
-          <TabPanel value="validation">
-            <!-- KeepAlive so an unsaved rule-set draft survives visiting other tabs. -->
-            <KeepAlive>
-              <ValidationTab v-if="activeTab === 'validation'" :workspace="workspace" />
-            </KeepAlive>
-          </TabPanel>
-          <TabPanel value="analysis">
-            <KeepAlive>
-              <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
-            </KeepAlive>
+          <TabPanel value="data-tests">
+            <DataTestsTab v-if="activeTab === 'data-tests'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" />
           </TabPanel>
           <TabPanel value="findings">
             <FindingsTab v-if="activeTab === 'findings'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" />

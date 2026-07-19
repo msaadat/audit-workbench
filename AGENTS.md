@@ -32,12 +32,15 @@ the choke point that withholds row-level detail. A portable-zip distribution
 planned because target users are on locked-down corporate PCs — this is why
 the LLM transport uses only the standard library (no SDK dependency).
 
-**Audit-cycle extension (implemented 2026-07-14):** M1-M5 of
-`docs/full-audit-cycle-plan.md` are shipped. The audit assistant now spans
-incremental folder intake, APM/RCM/audit-program planning, document context
-and typed evidence, resumable document tests, working papers, findings, and
-edit-aware report generation. M6 is optional polish rather than required core
-scope.
+**RCM-central audit workflow (implemented 2026-07-19):** The audit assistant
+now uses the RCM as the only active planning-and-fieldwork spine. Structured
+planned tests live under each RCM row; durable Data Tests may be exploratory or
+link to exactly one RCM/planned test, while Document Tests require that link;
+only linked execution participates in audit roll-ups, findings, and reporting. Execution roll-ups create dispositioned
+observations and drive RCM working papers, dashboard curation, preliminary/final
+reporting, and deterministic completion gates. Legacy `work_program` content
+is retained for rollback and read-only compatibility during migration, but is
+not an active UI or report concept.
 
 ## 2. Architecture
 
@@ -61,6 +64,13 @@ backend/app/
 │                                Add a test by registering a func + param meta
 │                                (kinds: column/columns/number/select) — no
 │                                frontend change needed
+├─ data_tests.py              ── durable exploratory/RCM-linked analytics,
+│                                validation, and Polars
+│                                definitions, immutable bounded results,
+│                                histories, fingerprints, and semantic gates
+├─ rcm_execution.py           ── planned-test coverage, execution roll-ups,
+│                                observations/dispositions, RCM working papers,
+│                                and full-audit completion checks
 ├─ dashboard.py               ── tile computation: re-runs each tile's stored
 │                                spec (query / analytics / python) against
 │                                current frames; broken tiles degrade to cards
@@ -106,7 +116,10 @@ backend/app/
    │                              Last-Event-ID), pause/resume/cancel,
    │                              approvals, messages, GET suggest-rules
    ├─ intake_routes.py        ── source manifests, staging, classification/apply
-   ├─ planning_routes.py      ── planning, templates, RCM, and procedure CRUD
+   ├─ planning_routes.py      ── planning, templates, RCM/planned-test CRUD,
+   │                              observations, roll-ups, and working papers;
+   │                              legacy procedure reads only
+   ├─ data_test_routes.py     ── Data Test CRUD, execution, and result history
    ├─ document_routes.py      ── documents, extraction, Q&A, activity, packs
    ├─ doc_test_routes.py      ── document tests, matching, and working papers
    └─ report_routes.py        ── findings, report drafts, reconciliation, quality
@@ -137,8 +150,13 @@ frontend/src/
    │                             by field switches it to a cross-tab grid (grouped
    │                             headers + totals). Chart controls (bar/line/pie)
    │                             + Pin-to-dashboard ('query' tile, cross-tab too)
-   ├─ AnalysisTab.vue         ── saved-analyses rail + Library / Code editors
-   ├─ PlanningTab.vue         ── context/APM/RCM/audit-program views
+   ├─ AnalysisTab.vue         ── legacy analysis editor retained outside the
+   │                             active audit-cycle navigation
+   ├─ PlanningTab.vue         ── context/APM/RCM planned-test and observation
+   │                             workflow; no separate Audit Program surface
+   ├─ DataTestsTab.vue        ── exploratory/RCM-linked Data Test authoring,
+   │                             run history,
+   │                             bounded results, and exception navigation
    ├─ DocumentsTab.vue        ── document inventory, preview, Q&A, versions/logs
    ├─ DocTestsTab.vue         ── test worklists, dispositions, working papers
    ├─ FindingsTab.vue         ── evidence-linked IIA finding editor
@@ -170,7 +188,9 @@ frontend/src/
   unified command graph, and resumable per-item document testing.
 - `doc_tests.py` provides vouching/tracing, attribute, review, and Q&A tests
   with explainable exact/normalized/fuzzy/tolerance comparisons.
-- `working_papers.py` assembles procedure-linked Markdown/HTML workpapers.
+- `rcm_execution.py` assembles RCM-linked Markdown/HTML working papers across
+  planned tests and immutable Data/Document Test results. `working_papers.py`
+  remains only for legacy read/replay compatibility.
 - `findings.py` provides provenance-aware findings CRUD and explicit promotion
   from agent observations; `report.py` builds privacy-safe report context,
   drafts, reconciliation candidates, safe HTML, and deterministic quality
@@ -208,8 +228,8 @@ auditor-edited reports.
 uv venv .venv
 uv pip install -r backend/requirements-dev.txt
 
-# Tests (232 tests as of 2026-07-14, including intake, planning, documents,
-#        evidence, document tests, working papers, findings, and reports)
+# Tests (including intake, migration, RCM planning/execution, Data Tests,
+#        evidence-aware Document Tests, working papers, findings, and reports)
 cd backend && uv run --no-project pytest
 
 # Enable the assistant (optional; unset == graceful "not configured" banner)
@@ -249,12 +269,21 @@ cd frontend && npm run build
   Verified end-to-end against Mistral (auto + permission on live data).
 - Audit-cycle M1-M5 complete (2026-07-14, per
   `docs/full-audit-cycle-plan.md`): incremental audit-folder intake; planning
-  interviews and editable APM/RCM/audit programs; versioned documents,
+  interviews and the former editable APM/RCM/audit-program workflow; versioned documents,
   automatic bounded document context, typed evidence anchors, and methodology
   packs; resumable vouching/tracing/attribute/review/Q&A tests; evidence-linked
   working papers; findings CRUD/promotion; and editable report drafting with
   deterministic quality checks and explicit side-by-side regeneration.
   Acceptance: 232 backend tests plus the frontend TypeScript/Vite build.
+- RCM-central workflow complete (2026-07-19, per
+  `docs/rcm-central-workflow-plan.md`): schema-v2 compatibility migration;
+  RCM-contained planned tests and outcome roll-ups; first-class durable Data
+  Tests; evidence-aware Document Tests and requests; observation triage;
+  RCM working papers; RCM-central full-run orchestration; deterministic
+  dashboard curation; supported-finding gates; preliminary/final report quality
+  and completion gates; and the RCM/Data Tests frontend workflow. Legacy Audit
+  Program data remains retained and read-only during the migration window.
+  Acceptance: 372 backend tests plus the frontend TypeScript/Vite build.
 - Agent testing pattern: `FakeAgentLLM` in conftest scripts one JSON response
   per `[agent:<stage>]` prompt tag; `wait_run` polls the store and joins the
   worker thread.

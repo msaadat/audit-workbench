@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
+import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
@@ -12,57 +14,85 @@ import Textarea from 'primevue/textarea'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import type { AuditProcedure, MarkdownTemplate, PlanningPayload, RcmRow, WorkspaceSummary, WorkingPaper } from '../types'
+import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import type { AuditObservation, MarkdownTemplate, PlannedTest, PlannedTestMethod, PlanningPayload, RcmRow, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
-import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
+const confirm = useConfirm()
 const route = useRoute()
+const router = useRouter()
 const agent = useAgentRun(props.workspace.id)
 const assistantChat = useAssistantChat(props.workspace.id)
 const { isActive, launchMode } = agent
 
 const data = ref<PlanningPayload | null>(null)
-const view = ref<'apm' | 'rcm' | 'program'>('apm')
+const view = ref<'apm' | 'rcm'>('apm')
 const saving = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
-const selectedProcedureId = ref<string | null>(null)
-const stepDraft = ref('')
+const selectedRcmId = ref<string | null>(null)
+const detailOpen = ref(false)
 const paperOpen = ref(false)
 const workingPaper = ref<WorkingPaper | null>(null)
+const stepDrafts = ref<Record<string, string>>({})
 
+const methods: Array<{ label: string; value: PlannedTestMethod }> = [
+  { label: 'Data analytics', value: 'data_analytics' },
+  { label: 'Validation / data quality', value: 'validation' },
+  { label: 'Document inspection / vouching', value: 'document_inspection' },
+  { label: 'Inquiry / walkthrough', value: 'inquiry' },
+  { label: 'Hybrid', value: 'hybrid' },
+  { label: 'Evidence unavailable', value: 'evidence_unavailable' },
+]
+const conclusions = ['effective', 'partially_effective', 'ineffective', 'no_conclusion', 'not_applicable']
+const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
+const observationDispositions = [
+  'confirmed_control_exception', 'data_quality_issue', 'expected_or_benign',
+  'screening_follow_up', 'invalid_test_or_result', 'duplicate', 'draft_finding_candidate',
+]
 const viewOptions = computed(() => [
   { label: 'APM', value: 'apm', complete: Boolean(data.value?.planning.apm_markdown.trim()) },
   { label: 'Risk & Control Matrix', value: 'rcm', count: data.value?.rcm.length ?? 0 },
-  { label: 'Audit program', value: 'program', count: data.value?.procedures.length ?? 0 },
 ])
-const selectedProcedure = computed(() => data.value?.procedures.find((item) => item.id === selectedProcedureId.value) ?? null)
-function testLabel(ref: string) {
-  const item = data.value?.document_tests.find(test => `doctest:${test.id}` === ref)
-  if (!item) return ref
-  const exceptions = item.state_counts?.exception ?? 0
-  return `${item.title} · ${exceptions ? `${exceptions} exception(s)` : item.status.replace('_', ' ')}`
-}
+const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
+const selectedObservations = computed(() => (data.value?.observations ?? []).filter(item => item.rcm_id === selectedRcmId.value))
 
-async function reload() {
+function fail(summary: string, error: unknown) {
+  toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
+}
+function initializeSteps(row: RcmRow) {
+  stepDrafts.value = Object.fromEntries(row.planned_tests.map(item => [item.id, item.steps.join('\n')]))
+}
+async function reload(rollup = false) {
+  if (rollup) await api.post(`/api/workspaces/${props.workspace.id}/rcm/rollup`)
   data.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
-  const requested = String(route.query.procedure || '')
-  if (requested && data.value.procedures.some(item => item.id === requested)) {
-    selectedProcedureId.value = requested
-    view.value = 'program'
-  } else if (!selectedProcedureId.value && data.value.procedures.length) selectedProcedureId.value = data.value.procedures[0].id
-  if (['apm', 'rcm', 'program'].includes(String(route.query.view || ''))) view.value = String(route.query.view) as typeof view.value
-  if (selectedProcedure.value) stepDraft.value = selectedProcedure.value.steps.join('\n')
+  const requestedView = String(route.query.view || '')
+  if (requestedView === 'rcm') view.value = 'rcm'
+  const requestedRcm = String(route.query.rcm || '')
+  const requestedPlanned = String(route.query.planned_test || '')
+  const requestedObservation = String(route.query.observation || '')
+  const plannedParent = requestedPlanned
+    ? data.value.rcm.find(row => row.planned_tests.some(item => item.id === requestedPlanned))
+    : undefined
+  const observationParent = requestedObservation
+    ? data.value.rcm.find(row => data.value?.observations.some(item => item.id === requestedObservation && item.rcm_id === row.id))
+    : undefined
+  if (requestedRcm && data.value.rcm.some(item => item.id === requestedRcm)) openRcm(data.value.rcm.find(item => item.id === requestedRcm)!)
+  else if (plannedParent) openRcm(plannedParent)
+  else if (observationParent) openRcm(observationParent)
+  else if (selectedRcmId.value) {
+    const row = data.value.rcm.find(item => item.id === selectedRcmId.value)
+    if (row) initializeSteps(row)
+  }
 }
-
-onMounted(() => void reload().catch((error) => fail('Could not load planning', error)))
-const unsubscribe = agent.onWorkspaceChanged((change) => {
-  if (['planning', 'rcm', 'procedure'].includes(change.kind)) void reload()
+onMounted(() => void reload(true).catch(error => fail('Could not load planning', error)))
+const unsubscribe = agent.onWorkspaceChanged(change => {
+  if (['planning', 'rcm', 'planned_test', 'datatest', 'doctest', 'observation', 'evidence_request'].includes(change.kind)) void reload(true)
 })
 onUnmounted(unsubscribe)
 
@@ -70,7 +100,7 @@ async function savePlanning() {
   if (!data.value) return
   saving.value = true
   try {
-    data.value.planning = await api.patch<PlanningPayload['planning']>(`/api/workspaces/${props.workspace.id}/planning`, {
+    data.value.planning = await api.patch(`/api/workspaces/${props.workspace.id}/planning`, {
       context: data.value.planning.context,
       apm_markdown: data.value.planning.apm_markdown,
     })
@@ -82,17 +112,16 @@ async function savePlanning() {
 async function generate() {
   try {
     await savePlanning()
-    await assistantChat.send('Update the planning context, APM, RCM, and audit procedures using the current engagement evidence.', 'act', launchMode.value, { goalTemplate: 'planning', source: 'tab_button' })
+    await assistantChat.send(
+      'Update the planning context and APM, then create or reconcile the RCM and its structured planned tests. Do not create a separate audit program.',
+      'act', launchMode.value, { goalTemplate: 'planning', source: 'tab_button' },
+    )
   } catch (error) { fail('Could not start planning', error) }
 }
-
 async function openTemplate() {
-  try {
-    template.value = await api.get(`/api/workspaces/${props.workspace.id}/templates/apm`)
-    templateOpen.value = true
-  } catch (error) { fail('Could not load the template', error) }
+  try { template.value = await api.get(`/api/workspaces/${props.workspace.id}/templates/apm`); templateOpen.value = true }
+  catch (error) { fail('Could not load the template', error) }
 }
-
 async function saveTemplate(reset = false) {
   if (!template.value) return
   try {
@@ -100,155 +129,166 @@ async function saveTemplate(reset = false) {
     toast.add({ severity: 'success', summary: reset ? 'Default template restored' : 'Template saved', life: 1800 })
   } catch (error) { fail('Could not save the template', error) }
 }
-
 async function addRcm() {
   try {
-    await api.post(`/api/workspaces/${props.workspace.id}/rcm`, { process: 'New process', risk: 'Describe the audit risk', risk_rating: 'medium' })
-    await reload()
-    emit('changed')
+    const row = await api.post<RcmRow>(`/api/workspaces/${props.workspace.id}/rcm`, { process: 'New process', risk: 'Describe the audit risk', risk_rating: 'medium' })
+    await reload(); openRcm(row); emit('changed')
   } catch (error) { fail('Could not add the risk', error) }
 }
 async function updateRcm(id: string, changes: Partial<RcmRow>) {
   try { await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${id}`, changes); emit('changed') }
   catch (error) { fail('Could not update the risk', error) }
 }
-async function removeRcm(id: string) {
-  try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${id}`); await reload(); emit('changed') }
-  catch (error) { fail('Could not remove the risk', error) }
-}
-
-async function addProcedure() {
+async function saveRcmDetail() {
+  if (!selectedRcm.value) return
   try {
-    const item = await api.post<AuditProcedure>(`/api/workspaces/${props.workspace.id}/procedures`, { objective: 'New audit procedure', steps: [] })
-    await reload(); selectedProcedureId.value = item.id; stepDraft.value = ''
+    await updateRcm(selectedRcm.value.id, {
+      process: selectedRcm.value.process, risk: selectedRcm.value.risk,
+      risk_rating: selectedRcm.value.risk_rating, assertion: selectedRcm.value.assertion,
+      control: selectedRcm.value.control, control_type: selectedRcm.value.control_type,
+      control_owner: selectedRcm.value.control_owner, criteria: selectedRcm.value.criteria,
+      review_status: selectedRcm.value.review_status,
+    })
+    await reload(true)
+    toast.add({ severity: 'success', summary: 'RCM row saved', life: 1800 })
+  } catch (error) { fail('Could not save the RCM row', error) }
+}
+function removeRcm(id: string) {
+  const row = data.value?.rcm.find(item => item.id === id)
+  const label = row?.process?.trim() || id
+  const plannedCount = row?.planned_tests?.length ?? 0
+  const plannedNote = plannedCount
+    ? ` Its ${plannedCount} planned test${plannedCount === 1 ? '' : 's'} will also be deleted, and any linked Data/Document Tests and findings will be unlinked.`
+    : ' Any linked Data/Document Tests and findings will be unlinked.'
+  confirm.require({
+    header: 'Remove RCM row',
+    message: `Remove "${label}"?${plannedNote}`,
+    icon: 'pi pi-exclamation-triangle',
+    acceptProps: { label: 'Remove', severity: 'danger' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${id}`); detailOpen.value = false; await reload(); emit('changed') }
+      catch (error) { fail('Could not remove the risk', error) }
+    },
+  })
+}
+function openRcm(row: RcmRow) {
+  const current = data.value?.rcm.find(item => item.id === row.id) ?? row
+  selectedRcmId.value = current.id
+  initializeSteps(current)
+  detailOpen.value = true
+  void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: current.id }) })
+}
+async function addPlannedTest() {
+  if (!selectedRcm.value) return
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests`, {
+      title: 'New planned test', objective: 'Describe the test objective.', method: 'data_analytics', steps: [],
+    })
+    await reload(true)
+  } catch (error) { fail('Could not add the planned test', error) }
+}
+async function savePlannedTest(item: PlannedTest) {
+  if (!selectedRcm.value) return
+  try {
+    item.steps = (stepDrafts.value[item.id] ?? '').split('\n').map(value => value.trim()).filter(Boolean)
+    await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests/${item.id}`, {
+      title: item.title, objective: item.objective, criteria: item.criteria, method: item.method,
+      steps: item.steps, expected_evidence: item.expected_evidence,
+      conclusion: item.conclusion, control_conclusion: item.control_conclusion,
+      scope_limitations: item.scope_limitations,
+      next_action: item.next_action,
+    })
+    await reload(true)
     emit('changed')
-  } catch (error) { fail('Could not add the procedure', error) }
+    toast.add({ severity: 'success', summary: 'Planned test saved', life: 1800 })
+  } catch (error) { fail('Could not save the planned test', error) }
 }
-async function saveProcedure() {
-  const item = selectedProcedure.value
-  if (!item) return
+async function saveObservation(item: AuditObservation) {
+  if (!item.disposition) return
   try {
-    item.steps = stepDraft.value.split('\n').map((step) => step.trim()).filter(Boolean)
-    await api.patch(`/api/workspaces/${props.workspace.id}/procedures/${item.id}`, {
-      rcm_refs: item.rcm_refs, objective: item.objective, criteria: item.criteria,
-      steps: item.steps, method: item.method, expected_evidence: item.expected_evidence,
-      result_summary: item.result_summary, conclusion: item.conclusion, scope_limitations: item.scope_limitations,
+    await api.patch(`/api/workspaces/${props.workspace.id}/observations/${item.id}`, {
+      disposition: item.disposition, auditor_note: item.auditor_note,
+    })
+    await reload(true)
+    emit('changed')
+  } catch (error) { fail('Could not disposition the observation', error) }
+}
+async function promoteObservation(item: AuditObservation) {
+  try {
+    const finding = await api.post<{ id: string }>(`/api/workspaces/${props.workspace.id}/findings`, {
+      title: item.summary.slice(0, 120) || `Observation ${item.id}`,
+      condition: item.summary, rcm_refs: [item.rcm_id],
+      planned_test_refs: [item.planned_test_id], execution_refs: [item.execution_ref],
+      auditor_confirmed: false,
     })
     emit('changed')
-    toast.add({ severity: 'success', summary: 'Procedure saved', life: 1800 })
-  } catch (error) { fail('Could not save the procedure', error) }
+    void router.replace({ query: { tab: 'findings', finding: finding.id } })
+  } catch (error) { fail('Could not create a draft finding', error) }
 }
-async function removeProcedure() {
-  const item = selectedProcedure.value
-  if (!item) return
-  try { await api.del(`/api/workspaces/${props.workspace.id}/procedures/${item.id}`); selectedProcedureId.value = null; await reload(); emit('changed') }
-  catch (error) { fail('Could not remove the procedure', error) }
+async function removePlannedTest(item: PlannedTest) {
+  if (!selectedRcm.value) return
+  try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests/${item.id}`); await reload(true); emit('changed') }
+  catch (error) { fail('Could not remove the planned test', error) }
 }
-function selectProcedure(item: AuditProcedure) { selectedProcedureId.value = item.id; stepDraft.value = item.steps.join('\n') }
-function setRcmRefs(value: string | undefined) {
-  if (selectedProcedure.value) selectedProcedure.value.rcm_refs = String(value ?? '').split(',').map((entry) => entry.trim()).filter(Boolean)
+function openExecution(ref: string) {
+  const [kind, id] = ref.split(':', 2)
+  void router.replace({ query: workspaceQuery(kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: id }) })
+}
+function createExecution(item: PlannedTest, kind: 'data' | 'document') {
+  if (!selectedRcm.value) return
+  void router.replace({ query: { tab: kind === 'data' ? 'data-tests' : 'doc-tests', create: '1', rcm: selectedRcm.value.id, planned_test: item.id } })
+}
+async function refreshRollup() {
+  try { await reload(true); emit('changed'); toast.add({ severity: 'success', summary: 'Execution roll-up refreshed', life: 1800 }) }
+  catch (error) { fail('Could not refresh the roll-up', error) }
 }
 async function openWorkingPaper() {
-  if (!selectedProcedure.value) return
-  try {
-    workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/procedures/${selectedProcedure.value.id}/working-paper`)
-    paperOpen.value = true
-  } catch (error) { fail('Could not render the working paper', error) }
+  if (!selectedRcm.value) return
+  try { workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/working-paper`); paperOpen.value = true }
+  catch (error) { fail('Could not render the RCM working paper', error) }
 }
-async function draftProcedureResults() {
-  if (!selectedProcedure.value) return
-  try {
-    await api.post(`/api/workspaces/${props.workspace.id}/procedures/${selectedProcedure.value.id}/draft-results`)
-    await reload()
-    emit('changed')
-    await openWorkingPaper()
-  } catch (error) { fail('Could not draft procedure results', error) }
-}
-async function copyWorkingPaper(kind: 'markdown' | 'html') {
+async function copyPaper(kind: 'markdown' | 'html') {
   if (workingPaper.value) await navigator.clipboard.writeText(workingPaper.value[kind])
-}
-function fail(summary: string, error: unknown) {
-  toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
 }
 </script>
 
 <template>
   <div v-if="data" class="planning-tab">
-    <UiPageHeader title="Planning and audit program" description="Define scope, risks, controls, and fieldwork procedures">
-        <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate()" />
+    <UiPageHeader title="Planning" description="The APM defines engagement context; the RCM is the single planning and fieldwork spine">
+      <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate" />
     </UiPageHeader>
     <SelectButton class="planning-nav" v-model="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" dataKey="value">
-      <template #option="{ option }">
-        <span class="nav-option">
-          {{ option.label }}
-          <span v-if="option.count !== undefined" class="nav-count" :class="{ filled: option.count > 0 }">{{ option.count }}</span>
-          <i v-else-if="option.complete" class="pi pi-check nav-check" />
-        </span>
-      </template>
+      <template #option="{ option }"><span class="nav-option">{{ option.label }}<span v-if="option.count !== undefined" class="nav-count">{{ option.count }}</span><i v-else-if="option.complete" class="pi pi-check nav-check"/></span></template>
     </SelectButton>
-
     <section v-if="view === 'apm'" class="apm-view">
-      <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate" /><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning" /></div>
-      <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown" /></div>
+      <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
+      <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
+    </section>
+    <section v-else>
+      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
+      <RcmGrid :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm"/>
     </section>
 
-    <RcmGrid v-else-if="view === 'rcm'" :rows="data.rcm" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" @add="addRcm" @update="updateRcm" @remove="removeRcm" />
-
-    <section v-else class="program-layout">
-      <aside class="procedure-rail card"><div class="rail-head"><strong>Procedures</strong><Button icon="pi pi-plus" text size="small" @click="addProcedure" /></div><button v-for="item in data.procedures" :key="item.id" :class="{ active: item.id === selectedProcedureId }" @click="selectProcedure(item)"><strong>{{ item.id }}</strong><span>{{ item.objective }}</span><small>{{ item.rcm_refs.length }} RCM · {{ item.test_refs.length }} result link(s)</small></button><p v-if="!data.procedures.length" class="muted">No procedures yet.</p></aside>
-      <div v-if="selectedProcedure" class="procedure-detail card">
-        <div class="section-toolbar sticky-actions"><strong>{{ selectedProcedure.id }}</strong><span class="grow"/><Tag v-if="selectedProcedure.test_refs.length" :value="`${selectedProcedure.test_refs.length} linked test(s)`" severity="info"/><Button label="Working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Save procedure" icon="pi pi-save" size="small" @click="saveProcedure"/></div>
-        <h3 class="form-section-title">Setup</h3>
-        <label>Objective<Textarea v-model="selectedProcedure.objective" rows="2" autoResize /></label>
-        <label>Criteria<Textarea v-model="selectedProcedure.criteria" rows="2" autoResize /></label>
-        <label>Steps — one per line<Textarea v-model="stepDraft" rows="7" autoResize /></label>
-        <label>Expected evidence<Textarea v-model="selectedProcedure.expected_evidence" rows="2" autoResize /></label>
-        <UiAdvancedSection title="Advanced setup" description="Method and traceability references">
-          <div class="two"><label>Method<InputText v-model="selectedProcedure.method" /></label><label>RCM IDs (comma separated)<InputText :modelValue="selectedProcedure.rcm_refs.join(', ')" @update:modelValue="setRcmRefs" /></label></div>
-        </UiAdvancedSection>
-        <h3 class="form-section-title">Execution</h3>
-        <div v-if="selectedProcedure.test_refs.length || data.finding_rollups.by_procedure[selectedProcedure.id]?.length" class="test-links"><small>Results</small><a v-for="ref in selectedProcedure.test_refs" :key="ref" :href="`?tab=doc-tests&test=${ref.replace('doctest:','')}`">{{ testLabel(ref) }}</a><a v-for="finding in data.finding_rollups.by_procedure[selectedProcedure.id] ?? []" :key="finding.id" :href="`?tab=findings&finding=${finding.id}`">{{ finding.id }} · {{ finding.severity }}</a></div>
-        <p v-else class="muted">No execution results are linked yet.</p>
-        <UiAdvancedSection v-if="selectedProcedure.methodology_refs?.length" title="Methodology basis" description="Citations and immutable source identifiers">
-          <div class="methodology-citations"><span v-for="ref in selectedProcedure.methodology_refs" :key="`${ref.pack_id}:${ref.section}`"><i class="pi pi-book" /> {{ ref.citation }} · {{ ref.sha1.slice(0, 10) }}</span></div>
-        </UiAdvancedSection>
-        <h3 class="form-section-title">Outcome</h3>
-        <label>Result summary<Textarea v-model="selectedProcedure.result_summary" rows="2" autoResize /></label>
-        <label>Conclusion<Textarea v-model="selectedProcedure.conclusion" rows="2" autoResize /></label>
-        <label>Scope limitations<Textarea v-model="selectedProcedure.scope_limitations" rows="2" autoResize /></label>
-        <UiAdvancedSection title="Procedure administration"><Button label="Delete procedure" icon="pi pi-trash" severity="danger" outlined size="small" @click="removeProcedure"/></UiAdvancedSection>
+    <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">
+      <div v-if="selectedRcm" class="rcm-detail">
+        <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Assertion<InputText v-model="selectedRcm.assertion"/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/></label></div>
+        <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add planned test" icon="pi pi-plus" size="small" @click="addPlannedTest"/></div>
+        <section class="planned-list"><article v-for="item in selectedRcm.planned_tests" :key="item.id" class="planned-card">
+          <div class="planned-head"><div><strong>{{ item.id }}</strong><Tag :value="item.status.replaceAll('_',' ')" :severity="item.status.includes('exception') || item.status === 'blocked' ? 'danger' : item.status === 'completed_no_exception' ? 'success' : item.status === 'review_required' ? 'warn' : 'secondary'"/></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>
+          <div class="planned-fields"><label>Title<InputText v-model="item.title"/></label><label>Method<Select v-model="item.method" :options="methods" optionLabel="label" optionValue="value"/></label><label class="wide">Objective<Textarea v-model="item.objective" rows="2" autoResize/></label><label class="wide">Criteria<Textarea v-model="item.criteria" rows="2" autoResize/></label><label class="wide">Steps — one per line<Textarea v-model="stepDrafts[item.id]" rows="4" autoResize/></label><label class="wide">Expected evidence<Textarea v-model="item.expected_evidence" rows="2" autoResize/></label></div>
+          <div class="execution-cards"><strong>Linked execution</strong><button v-for="ref in item.execution_refs" :key="ref" @click="openExecution(ref)"><i :class="ref.startsWith('datatest:') ? 'pi pi-chart-bar' : 'pi pi-file-check'"/>{{ ref }}</button><span v-if="!item.execution_refs.length" class="muted">No execution artifact linked.</span><Button v-if="['data_analytics','validation','hybrid'].includes(item.method)" label="Create Data Test" icon="pi pi-plus" size="small" text @click="createExecution(item, 'data')"/><Button v-if="['document_inspection','inquiry','hybrid','evidence_unavailable'].includes(item.method)" label="Create Document Test" icon="pi pi-plus" size="small" text @click="createExecution(item, 'document')"/></div>
+          <div class="outcome"><label>Result summary<Textarea v-model="item.result_summary" rows="2" disabled/></label><label>Control conclusion<Select v-model="item.control_conclusion" :options="conclusions"/></label><label class="wide">Conclusion<Textarea v-model="item.conclusion" rows="2" autoResize/></label><label class="wide">Scope limitations<Textarea v-model="item.scope_limitations" rows="2" autoResize/></label><label class="wide">Next action<Textarea v-model="item.next_action" rows="2" autoResize/></label></div>
+          <div class="card-actions"><Button label="Save planned test" icon="pi pi-save" size="small" @click="savePlannedTest(item)"/><Button icon="pi pi-trash" severity="danger" text size="small" @click="removePlannedTest(item)"/></div>
+        </article><p v-if="!selectedRcm.planned_tests.length" class="empty">This RCM row has no planned tests and cannot pass coverage.</p></section>
+        <section v-if="selectedObservations.length" class="observations"><strong>Observation triage</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.status" :severity="item.status === 'open' ? 'warn' : 'success'"/><span>{{ item.summary }}</span><small>Suggested: {{ item.suggested_disposition }}</small><Select v-model="item.disposition" :options="observationDispositions" placeholder="Auditor disposition"/><Textarea v-model="item.auditor_note" rows="2" placeholder="Auditor note"/><span class="observation-actions"><Button label="Save disposition" size="small" :disabled="!item.disposition" @click="saveObservation(item)"/><Button label="Draft finding" icon="pi pi-arrow-right" size="small" severity="secondary" @click="promoteObservation(item)"/></span></div></section>
       </div>
-      <div v-else class="empty card">Select or add a procedure.</div>
-    </section>
-
+    </Dialog>
     <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>
-    <Dialog v-model:visible="paperOpen" modal header="Working-paper draft" :style="{ width: 'min(980px, 95vw)' }"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><Button label="Draft result & conclusion" icon="pi pi-sparkles" outlined @click="draftProcedureResults"/><Button label="Copy Markdown" icon="pi pi-copy" text @click="copyWorkingPaper('markdown')"/><Button label="Copy HTML" icon="pi pi-copy" @click="copyWorkingPaper('html')"/></template></Dialog>
+    <Dialog v-model:visible="paperOpen" modal header="RCM working paper" :style="{ width: 'min(980px, 95vw)' }"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><Button label="Copy Markdown" icon="pi pi-copy" text @click="copyPaper('markdown')"/><Button label="Copy HTML" icon="pi pi-copy" @click="copyPaper('html')"/></template></Dialog>
   </div>
 </template>
 
 <style scoped>
-.planning-tab { display: flex; flex-direction: column; gap: 1rem; min-height: 100%; }
-.planning-head { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; }
-.planning-head h2 { margin: 0.1rem 0; }
-.planning-head p { margin: 0; }
-.head-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
-.muted { color: var(--aw-muted); font-size: 0.78rem; }
-.planning-nav { align-self: flex-start; }
-.nav-option { display: inline-flex; align-items: center; gap: .4rem; }
-.nav-count { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem; padding: 0 .35rem; border-radius: 999px; border: 1px solid var(--aw-border); background: var(--aw-canvas); color: var(--aw-muted); font-size: .68rem; font-weight: 700; line-height: 1; }
-.nav-count.filled { border-color: #b7e3dc; color: var(--aw-ok); background: var(--aw-ok-soft); }
-.nav-check { color: var(--aw-ok); font-size: .72rem; }
-.card { background: #fff; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-md); padding: 1rem; }
-label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
-.wide { grid-column: 1 / -1; }
-.form-actions { display: flex; justify-content: flex-end; }
-.section-toolbar { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.7rem; }.section-toolbar > div { display: flex; flex-direction: column; }.grow { flex: 1; }
-.sticky-actions { position: sticky; top: -.05rem; z-index: 3; margin: -1rem -1rem .7rem; padding: .65rem 1rem; border-bottom: 1px solid var(--aw-border); background: #fff; }
-.form-section-title { margin: .3rem 0 -.25rem; color: var(--aw-muted); font-size: .72rem; letter-spacing: .07em; text-transform: uppercase; }
-.apm-editor { min-height: 34rem; }.apm-editor > :deep(.markdown-editor) { min-height: 34rem; }
-.program-layout { display: grid; grid-template-columns: 17rem minmax(0, 1fr); gap: 1rem; }.procedure-rail { padding: 0.55rem; }.rail-head { display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.4rem 0.55rem; }.procedure-rail button { width: 100%; display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.45rem; text-align: left; border: 0; border-radius: 6px; background: transparent; padding: 0.55rem; cursor: pointer; }.procedure-rail button:hover, .procedure-rail button.active { background: var(--p-primary-50); }.procedure-rail button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.procedure-rail button small { grid-column: 2; color: var(--aw-muted); }.procedure-detail { display: flex; flex-direction: column; gap: 0.75rem; }.two { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }.empty { color: var(--aw-muted); }
-.template-editor { width: 100%; font-family: var(--aw-font-mono); font-size: 0.8rem; }
-.methodology-citations { display: grid; gap: .35rem; padding: .7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }.methodology-citations small { color: var(--aw-muted); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }.methodology-citations span { color: var(--aw-ink); font-size: var(--aw-text-sm); }
-.test-links { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:var(--aw-canvas) }.test-links small { margin-right:.3rem; text-transform:uppercase; color:var(--aw-muted); font-weight:700 }.test-links a { color:var(--aw-teal); border:1px solid var(--aw-border); border-radius:999px; padding:.2rem .5rem; text-decoration:none; font-size:.75rem }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }
-@media (max-width: 1050px) { .planning-head { flex-direction: column; }.program-layout { grid-template-columns: 1fr; }.procedure-rail { max-height: 15rem; overflow-y: auto; } }
+.planning-tab { display:flex; flex-direction:column; gap:1rem; min-height:100% }.planning-nav { align-self:flex-start }.nav-option { display:inline-flex; align-items:center; gap:.4rem }.nav-count { display:inline-grid; place-items:center; min-width:1.25rem; height:1.25rem; border:1px solid var(--aw-border); border-radius:999px; font-size:.68rem }.nav-check { color:var(--aw-ok) }.muted { color:var(--aw-muted); font-size:.78rem }.section-toolbar,.rollup-bar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span,.rollup-bar>span { flex:1 }.rollup-bar { padding:.6rem .8rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas); color:var(--aw-muted); font-size:.78rem }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:.8rem }.rcm-detail { display:flex; flex-direction:column; gap:1rem }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:.75rem }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:#fff; border-radius:999px; padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:6px }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:6px }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
 </style>

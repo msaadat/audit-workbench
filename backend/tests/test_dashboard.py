@@ -3,8 +3,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import doc_tests, findings, llm, workspaces
+from app import data_tests, doc_tests, findings, llm, rcm_execution, workspaces
 from app.dashboard import (
+    curate_rcm_tiles,
     dashboard_payload,
     engagement_status_payload,
     generate_advice,
@@ -181,14 +182,26 @@ def test_engagement_status_endpoint_is_lightweight(workspace_with_data, monkeypa
 
 def test_derived_phases_can_reach_complete(workspace_with_data):
     ws = workspace_with_data
-    ws.update_planning({"apm_markdown": "# Planning"})
-    ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
-    procedure = ws.add_procedure({"objective": "Test recorded revenue"})
-    ws.update_procedure(procedure["id"], {
-        "result_summary": "Testing completed.",
-        "conclusion": "Recorded revenue is supported.",
+    ws.update_planning({
+        "apm_markdown": "# Planning",
+        "context": {"objective": "Test revenue controls.", "scope": "Recorded transactions."},
     })
-    ws.report = {"markdown": "# Audit report\n\nNo findings."}
+    row = ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    planned = ws.add_planned_test(row["id"], {
+        "title": "Validate transaction identifiers", "objective": "Test completeness.",
+        "method": "data_analytics", "steps": ["Scan transaction amounts."],
+    })
+    test = data_tests.create(ws, {
+        "title": "Required transaction identifiers", "objective": "Identify missing IDs.",
+        "engine": "analytics", "table_refs": ["transactions"],
+        "rcm_id": row["id"], "planned_test_id": planned["id"],
+        "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
+    })
+    data_tests.run(ws, test["id"])
+    rcm_execution.rollup(ws)
+    planned["conclusion"] = "No missing transaction identifiers were identified."
+    planned["control_conclusion"] = "effective"
+    ws.report = {"markdown": "# Audit report\n\nThere are 0 findings."}
     ws.save()
 
     board = dashboard_payload(ws)
@@ -199,6 +212,39 @@ def test_derived_phases_can_reach_complete(workspace_with_data):
 
     status = engagement_status_payload(ws)
     assert all(phase["complete"] for phase in status["phases"])
+
+
+def test_rcm_dashboard_curation_scores_and_pins_four_to_six_results(workspace_with_data):
+    ws = workspace_with_data
+    for index in range(6):
+        row = ws.add_rcm({
+            "process": "Procurement", "risk": f"Vendor or approval risk {index}",
+            "risk_rating": "high",
+        })
+        planned = ws.add_planned_test(row["id"], {
+            "title": f"Vendor integrity test {index}",
+            "objective": "Assess vendor and approval integrity.",
+            "method": "data_analytics", "steps": ["Scan the amount population."],
+        })
+        item = data_tests.create(ws, {
+            "title": f"Vendor integrity result {index}",
+            "objective": "Identify management-relevant vendor integrity signals.",
+            "engine": "analytics", "table_refs": ["transactions"],
+            "rcm_id": row["id"], "planned_test_id": planned["id"],
+            "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
+        })
+        data_tests.run(ws, item["id"])
+
+    curated = curate_rcm_tiles(ws, run_id="RUN-1")
+
+    assert 4 <= len(curated["tiles"]) <= 6
+    assert len(ws.tiles) == len(curated["tiles"])
+    assert all(tile.get("rcm_id") and tile.get("planned_test_id") for tile in ws.tiles)
+    assert all(str(tile.get("result_ref")).startswith("datatest:") for tile in ws.tiles)
+    repeated = curate_rcm_tiles(ws, run_id="RUN-2")
+    assert repeated["tiles"] == []
+    assert len(ws.tiles) == 6
+    assert ws.planning["dashboard_curation"]["completed_at"]
 
 
 def test_engagement_status_surfaces_attention_and_report_quality(workspace_with_data):

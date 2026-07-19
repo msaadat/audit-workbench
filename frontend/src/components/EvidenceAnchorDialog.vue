@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import type { EvidenceRef } from '../types'
+import { workspaceQuery } from '../composables/useWorkspaceNavigation'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 
 const props = defineProps<{ modelValue: boolean; anchor: EvidenceRef | null }>()
@@ -14,9 +15,9 @@ const visible = computed({ get: () => props.modelValue, set: value => emit('upda
 async function openSource() {
   if (!props.anchor) return
   if (props.anchor.source_kind === 'document') {
-    await router.replace({ query: { ...router.currentRoute.value.query, tab: 'documents', doc: props.anchor.source_id, page: String(props.anchor.page || 1) } })
+    await router.replace({ query: workspaceQuery('documents', { doc: props.anchor.source_id, page: props.anchor.page || 1 }) })
   } else if (props.anchor.source_kind === 'doctest') {
-    await router.replace({ query: { ...router.currentRoute.value.query, tab: 'doc-tests', test: props.anchor.source_id, item: props.anchor.item_id || undefined } })
+    await router.replace({ query: workspaceQuery('doc-tests', { test: props.anchor.source_id, item: props.anchor.item_id || undefined }) })
   } else return
   visible.value = false
 }

@@ -12,6 +12,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { workspaceQuery } from '../composables/useWorkspaceNavigation'
 import type {
   DashboardAction,
   DashboardAdvice,
@@ -77,7 +78,7 @@ async function load() {
 }
 
 function navigate(target: DashboardTarget) {
-  void router.replace({ query: { tab: target.tab, ...target.query } })
+  void router.replace({ query: workspaceQuery(target.tab, target.query) })
 }
 
 function runAction(action: DashboardAction) {
@@ -150,7 +151,7 @@ onMounted(async () => {
 defineExpose({ load })
 
 const unsubscribe = agent.onWorkspaceChanged(async (change) => {
-  const refreshKinds = new Set(['tile', 'table', 'join', 'planning', 'rcm', 'procedure', 'doctest', 'finding', 'report'])
+  const refreshKinds = new Set(['tile', 'table', 'join', 'planning', 'rcm', 'planned_test', 'datatest', 'doctest', 'finding', 'report'])
   if (!refreshKinds.has(change.kind)) return
   await load()
   if (change.kind === 'tile' && change.action !== 'removed') {

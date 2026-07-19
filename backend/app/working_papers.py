@@ -7,8 +7,8 @@ import html
 import re
 from datetime import datetime, timezone
 
-from . import doc_tests
-from .workspaces import Workspace, WorkspaceError
+from . import data_tests, doc_tests, rcm_execution
+from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 
 def _procedure(workspace: Workspace, procedure_id: str) -> dict:
@@ -159,3 +159,130 @@ def render(workspace: Workspace, procedure_id: str) -> dict:
         "markdown": markdown,
         "html": markdown_to_html(markdown),
     }
+
+
+def _rcm_row(workspace: Workspace, rcm_id: str) -> dict:
+    row = next((item for item in workspace.rcm if item.get("id") == rcm_id), None)
+    if row is None:
+        raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
+    return row
+
+
+def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
+    """Render one RCM row with every linked Data and Document Test result."""
+    rcm_execution.rollup(workspace)
+    row = _rcm_row(workspace, rcm_id)
+    lines = [
+        f"# RCM Working Paper — {row['id']}", "",
+        f"**Process:** {row.get('process') or 'Not stated'}", "",
+        f"**Risk:** {row.get('risk') or 'Not stated'}", "",
+        f"**Risk rating:** {row.get('risk_rating') or 'Not stated'}", "",
+        f"**Control:** {row.get('control') or 'Not stated'}", "",
+        f"**Control owner:** {row.get('control_owner') or 'Not stated'}", "",
+        f"**Criteria:** {row.get('criteria') or 'Not stated'}", "",
+        "## Planned tests and execution", "",
+    ]
+    if not row.get("planned_tests"):
+        lines.append("No planned tests recorded.")
+    source_hashes = []
+    for planned in row.get("planned_tests") or []:
+        lines.extend(
+            [
+                f"### {planned['title']} ({planned['id']})", "",
+                f"Objective: {planned.get('objective') or 'Not stated'}", "",
+                f"Method: {planned.get('method')}; status: {planned.get('status')}; "
+                f"control conclusion: {planned.get('control_conclusion') or 'no_conclusion'}.", "",
+                "Steps:", "",
+            ]
+        )
+        lines.extend(
+            [f"{index}. {step}" for index, step in enumerate(planned.get("steps") or ["No steps recorded."], 1)]
+        )
+        lines.extend(["", f"Expected evidence: {planned.get('expected_evidence') or 'Not stated'}", ""])
+        for ref in planned.get("execution_refs") or []:
+            kind, separator, execution_id = str(ref).partition(":")
+            if not separator:
+                continue
+            if kind == "datatest":
+                item = next(
+                    (test for test in workspace.data_tests if test.get("id") == execution_id),
+                    None,
+                )
+                if item is None:
+                    lines.append(f"- Missing Data Test reference: {ref}")
+                    continue
+                if not item.get("last_run"):
+                    lines.append(f"- Data Test {item['id']} — {item.get('status')}; not executed.")
+                    continue
+                result = data_tests.load_result(workspace, item["id"], item["last_run"]["id"])
+                source_hashes.append(result["result_sha1"])
+                lines.append(
+                    f"- Data Test {item['id']} — {result['status']}; verdict {result['verdict']}; "
+                    f"{result['exception_count']} exception(s); result hash {result['result_sha1']}."
+                )
+            elif kind == "doctest" and doc_tests.exists(workspace, execution_id):
+                test = doc_tests.load_test(workspace, execution_id)
+                rollup = doc_tests.result_rollup(test)
+                source_hashes.append(test["sha1"])
+                lines.append(
+                    f"- Document Test {test['id']} — {test.get('status')}; {rollup['items']} item(s); "
+                    f"{rollup['exceptions']} confirmed exception(s); {rollup['manual_review']} manual review; "
+                    f"source hash {test['sha1']}."
+                )
+        lines.extend(
+            [
+                "", "Result summary:", "",
+                planned.get("result_summary") or "No result summary recorded.", "",
+                "Conclusion:", "",
+                planned.get("conclusion") or "No conclusion recorded.", "",
+                "Scope limitations:", "",
+                planned.get("scope_limitations") or "No scope limitations recorded.", "",
+            ]
+        )
+    lines.extend(["## Observations and findings", ""])
+    observations = [
+        item for item in workspace.observations if item.get("rcm_id") == rcm_id
+    ]
+    lines.extend(
+        [
+            f"- {item['id']}: {item.get('summary')} — disposition: "
+            f"{item.get('disposition') or 'pending'}"
+            for item in observations
+        ]
+        or ["- No observations recorded."]
+    )
+    findings = [item for item in workspace.findings if rcm_id in (item.get("rcm_refs") or [])]
+    lines.extend(["", "## Linked findings", ""])
+    lines.extend(
+        [f"- {item['id']}: {item.get('title')} ({item.get('severity')})" for item in findings]
+        or ["- No linked findings."]
+    )
+    lines.extend(
+        [
+            "", "## Review", "",
+            f"Prepared by: {row.get('prepared_by') or 'Not assigned'}", "",
+            f"Reviewed by: {row.get('reviewed_by') or 'Not assigned'}", "",
+            f"Review status: {row.get('review_status') or 'draft'}", "",
+            "## Immutable execution hashes", "",
+        ]
+    )
+    lines.extend([f"- {value}" for value in source_hashes] or ["- No executed result hashes."])
+    return "\n".join(lines).strip() + "\n"
+
+
+def render_rcm(workspace: Workspace, rcm_id: str) -> dict:
+    markdown = render_rcm_markdown(workspace, rcm_id)
+    return {
+        "rcm_id": rcm_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source_sha1": hashlib.sha1(markdown.encode("utf-8")).hexdigest(),
+        "markdown": markdown,
+        "html": markdown_to_html(markdown),
+    }
+
+
+def generate_rcm(workspace: Workspace, rcm_id: str) -> dict:
+    paper = render_rcm(workspace, rcm_id)
+    path = workspace.root / "WorkingPapers" / f"{rcm_id}.json"
+    write_json_atomic(path, paper)
+    return paper

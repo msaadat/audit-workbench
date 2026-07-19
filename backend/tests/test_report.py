@@ -10,6 +10,7 @@ from app.main import create_app
 
 def linked_workspace(workspace_with_data):
     ws = workspace_with_data
+    ws.update_planning({"context": {"objective": "Test duplicate-payment controls.", "scope": "Supplied transactions."}})
     rcm = ws.add_rcm({"process": "Payables", "risk": "Duplicate payments", "risk_rating": "high"})
     procedure = ws.add_procedure(
         {
@@ -26,10 +27,20 @@ def linked_workspace(workspace_with_data):
         }
     )
     anchor = findings.anchor_from_ref(ws, f"analysis:{analysis['id']}")
-    return ws, rcm, procedure, analysis, anchor
+    planned = next(
+        item for item in rcm["planned_tests"]
+        if item.get("legacy_procedure_id") == procedure["id"]
+    )
+    execution = doc_tests.create_test(ws, {
+        "kind": "review", "title": "Duplicate-payment result review",
+        "rcm_id": rcm["id"], "planned_test_id": planned["id"],
+        "items": [{"label": "Review result", "state": "confirmed", "auditor_disposition": "accepted"}],
+    })
+    doc_tests.update_test(ws, execution["id"], {"status": "completed"})
+    return ws, rcm, procedure, planned, execution, analysis, anchor
 
 
-def complete_finding_payload(rcm, procedure, anchor):
+def complete_finding_payload(rcm, procedure, planned, execution, anchor):
     return {
         "title": "Duplicate invoices were processed",
         "severity": "high",
@@ -41,13 +52,17 @@ def complete_finding_payload(rcm, procedure, anchor):
         "management_response": "Management will update the control.",
         "rcm_refs": [rcm["id"]],
         "procedure_refs": [procedure["id"]],
+        "planned_test_refs": [planned["id"]],
+        "execution_refs": [f"doctest:{execution['id']}"],
         "evidence_refs": [anchor],
+        "severity_rationale": "A duplicate payment could cause a material financial loss.",
+        "auditor_confirmed": True,
     }
 
 
 def test_finding_crud_validates_typed_sources_and_rolls_up(workspace_with_data):
-    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
-    item = findings.add(ws, complete_finding_payload(rcm, procedure, anchor))
+    ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    item = findings.add(ws, complete_finding_payload(rcm, procedure, planned, execution, anchor))
     assert item["source"] == "manual"
     assert item["evidence_refs"][0]["source_sha1"]
     assert findings.rollups(ws)["by_rcm"][rcm["id"]][0]["id"] == item["id"]
@@ -66,7 +81,7 @@ def test_finding_crud_validates_typed_sources_and_rolls_up(workspace_with_data):
 
 
 def test_agent_finding_promotion_is_explicit_typed_and_idempotent(workspace_with_data):
-    ws, _rcm, _procedure, analysis, _anchor = linked_workspace(workspace_with_data)
+    ws, _rcm, _procedure, _planned, _execution, analysis, _anchor = linked_workspace(workspace_with_data)
     run = store.new_run(ws, "auto")
     run["findings"] = [
         {
@@ -86,8 +101,8 @@ def test_agent_finding_promotion_is_explicit_typed_and_idempotent(workspace_with
 
 
 def test_report_context_excludes_rows_and_document_excerpts(workspace_with_data):
-    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
-    findings.add(ws, complete_finding_payload(rcm, procedure, anchor))
+    ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    findings.add(ws, complete_finding_payload(rcm, procedure, planned, execution, anchor))
     context = report.build_context(ws)
     serialized = json.dumps(context)
     assert context["statistics"]["findings"] == 1
@@ -118,8 +133,8 @@ def test_report_context_falls_back_to_labelled_apm_fields(workspace_with_data):
 
 
 def test_deterministic_report_edit_aware_regeneration_and_reconcile(monkeypatch, workspace_with_data):
-    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
-    item = findings.add(ws, complete_finding_payload(rcm, procedure, anchor))
+    ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    item = findings.add(ws, complete_finding_payload(rcm, procedure, planned, execution, anchor))
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": False})
 
     first = report.generate(ws)
@@ -139,8 +154,8 @@ def test_deterministic_report_edit_aware_regeneration_and_reconcile(monkeypatch,
 
 
 def test_model_report_and_section_chunking_record_generation(monkeypatch, workspace_with_data):
-    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
-    findings.add(ws, complete_finding_payload(rcm, procedure, anchor))
+    ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    findings.add(ws, complete_finding_payload(rcm, procedure, planned, execution, anchor))
     calls = []
 
     def fake_chat(messages, tools=None, temperature=0.0, profile="assistant"):
@@ -158,7 +173,7 @@ def test_model_report_and_section_chunking_record_generation(monkeypatch, worksp
 
 
 def test_quality_checks_are_advisory_and_detect_traceability_arithmetic_and_exceptions(workspace_with_data):
-    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
+    ws, rcm, procedure, _planned, _execution, _analysis, anchor = linked_workspace(workspace_with_data)
     item = findings.add(ws, {"title": "Incomplete finding", "rcm_refs": [rcm["id"]]})
     test = doc_tests.create_test(
         ws,
@@ -172,7 +187,7 @@ def test_quality_checks_are_advisory_and_detect_traceability_arithmetic_and_exce
         f"# Report\n\nThere are 9 findings and 3 exceptions. [Broken](?tab=findings&finding=F-MISSING)",
     )
     codes = {issue["code"] for issue in checked["issues"]}
-    assert {"finding_incomplete", "finding_no_procedure", "unsupported_finding", "unresolved_exception", "report_arithmetic", "broken_report_citation", "missing_limitations"} <= codes
+    assert {"finding_draft", "unsupported_finding", "unresolved_exception", "report_arithmetic", "broken_report_citation", "missing_limitations", "preliminary_label_missing"} <= codes
     assert checked["ok"] is False
     assert ws.findings[0]["id"] == item["id"]
     assert doc_tests.exists(ws, test["id"])
@@ -181,8 +196,8 @@ def test_quality_checks_are_advisory_and_detect_traceability_arithmetic_and_exce
 def test_bare_markdown_finding_reference_is_a_citation_and_model_output_is_normalized(
     monkeypatch, workspace_with_data
 ):
-    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
-    item = findings.add(ws, complete_finding_payload(rcm, procedure, anchor))
+    ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    item = findings.add(ws, complete_finding_payload(rcm, procedure, planned, execution, anchor))
     checked = report.quality_checks(ws, f"# Report\n\n### Finding [{item['id']}]: Duplicate invoices")
     assert "finding_missing_from_report" not in {issue["code"] for issue in checked["issues"]}
 
@@ -206,11 +221,11 @@ def test_report_html_escapes_content_and_only_allows_safe_links():
 
 
 def test_finding_and_report_routes(monkeypatch, workspace_with_data):
-    ws, rcm, procedure, _analysis, anchor = linked_workspace(workspace_with_data)
+    ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": False})
     client = TestClient(create_app())
     base = f"/api/workspaces/{ws.id}"
-    created = client.post(f"{base}/findings", json=complete_finding_payload(rcm, procedure, anchor))
+    created = client.post(f"{base}/findings", json=complete_finding_payload(rcm, procedure, planned, execution, anchor))
     assert created.status_code == 200
     finding_id = created.json()["id"]
     assert client.get(f"{base}/findings").json()["items"][0]["id"] == finding_id

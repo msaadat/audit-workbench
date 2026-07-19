@@ -13,6 +13,9 @@ ACTION_STATUSES = {
     "proposed", "awaiting_input", "awaiting_confirmation", "ready", "blocked",
     "running", "succeeded", "failed", "skipped", "cancelled",
 }
+RESULT_ACTIONS = {
+    "run_data_test", "run_document_test", "rollup_rcm_results",
+}
 
 # Broad audit commands may be proposed in any array order by the model.  The
 # ledger turns that flat proposal into a conservative lifecycle: each populated
@@ -23,22 +26,30 @@ AUDIT_LIFECYCLE_STAGES = (
         "update_planning_context", "generate_apm", "edit_apm",
     },
     {
-        "create_rcm_row", "edit_rcm_row", "create_procedure", "edit_procedure",
+        "create_rcm_row", "edit_rcm_row", "create_rcm_planned_test",
+        "edit_rcm_planned_test", "create_procedure", "edit_procedure",
     },
     {
         "infer_relationships", "create_join", "create_validation_rules",
         "edit_validation_rules", "create_custom_analysis", "edit_custom_analysis",
+        "create_data_test", "edit_data_test", "link_execution_to_planned_test",
         "create_document_test", "edit_document_test", "attach_document_to_test",
         "detach_document_from_test",
     },
     {
         "run_validation_rules", "run_analytics", "run_custom_analysis",
-        "run_document_test", "update_test_comparisons", "update_test_disposition",
+        "run_data_test", "run_document_test", "update_test_comparisons",
+        "update_test_disposition",
     },
     {
-        "generate_working_paper", "create_finding", "edit_finding",
+        "rollup_rcm_results", "disposition_observation",
+    },
+    {
+        "generate_rcm_working_paper", "generate_working_paper",
+        "create_finding", "edit_finding",
         "promote_agent_finding",
     },
+    {"curate_dashboard"},
     {
         "generate_report", "edit_report",
     },
@@ -46,7 +57,7 @@ AUDIT_LIFECYCLE_STAGES = (
         "reconcile_report",
     },
     {
-        "run_report_quality",
+        "run_report_quality", "verify_audit_completion",
     },
 )
 AUDIT_LIFECYCLE_RANK = {
@@ -99,7 +110,9 @@ def new_action(run: dict, proposal: dict, *, depth: int = 0) -> dict:
         "depth": int(proposal.get("depth", depth)), "status": "proposed", "attempts": 0,
         "idempotency_key": f"{run['id']}:{action_id}",
         "failure_policy": str(proposal.get("failure_policy") or definition.failure_policy),
-        "planning_significant": bool(proposal.get("planning_significant")),
+        "planning_significant": bool(
+            proposal.get("planning_significant") or type_ in RESULT_ACTIONS
+        ),
         "precondition": None, "postcondition": None,
         "prepared_at": None, "started_at": None, "finished_at": None,
         "result_refs": [], "receipt": None, "error": None,
@@ -167,7 +180,9 @@ def validate_graph(run: dict) -> None:
 
 CREATE_TARGET_KINDS = {
     "create_rcm_row": "rcm",
+    "create_rcm_planned_test": "planned_test",
     "create_procedure": "procedure",
+    "create_data_test": "datatest",
     "create_validation_rules": "ruleset",
     "create_custom_analysis": "analysis",
     "create_document_test": "doctest",
@@ -196,6 +211,26 @@ def normalize_created_targets(run: dict, created: list[dict]) -> list[dict]:
             or (item["type"] in CREATE_TARGET_KINDS and item.get("args", {}).get("id"))
         )
     }
+    argument_refs = {
+        "rcm_id": "create_rcm_row",
+        "planned_test_id": "create_rcm_planned_test",
+    }
+    for action in created:
+        args = action.get("args") or {}
+        for field, creator_type in argument_refs.items():
+            reference = str(args.get(field) or "")
+            creator = creators.get(reference)
+            if creator is None or creator.get("type") != creator_type:
+                continue
+            durable_id = creator.get("args", {}).get("id")
+            if durable_id:
+                args[field] = durable_id
+                if creator["id"] not in action["depends_on"]:
+                    action["depends_on"].append(creator["id"])
+                adjustments.append({
+                    "action_id": action["id"], "kind": "argument_action_reference",
+                    "field": field, "from": reference, "to": durable_id,
+                })
     for action in created:
         target = action.get("target") or {}
         reference = str(target.get("resolved_id") or "")
@@ -373,7 +408,7 @@ def project_legacy_plan(run: dict) -> None:
         "proposed": "queued", "awaiting_input": "awaiting_approval",
         "awaiting_confirmation": "awaiting_approval", "ready": "queued",
         "blocked": "failed", "running": "running", "succeeded": "completed",
-        "failed": "failed", "skipped": "skipped", "cancelled": "skipped",
+        "failed": "failed", "skipped": "skipped", "cancelled": "cancelled",
     }
     tasks = []
     for action in run.get("actions") or []:

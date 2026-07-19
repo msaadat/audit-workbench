@@ -14,6 +14,7 @@ import { api } from '../api'
 import { documentStatus } from '../composables/documentStatus'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
+import { workspaceQuery } from '../composables/useWorkspaceNavigation'
 import type { AIActivityEvent, AgentRun, AuditDocument, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
 import MarkdownView from './MarkdownView.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -208,7 +209,7 @@ async function selectDocument(id: string, page?: number) {
   }
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
-  await router.replace({ query: { ...route.query, tab: 'documents', doc: id, page: String(currentPage.value) } })
+  await router.replace({ query: workspaceQuery('documents', { doc: id, page: currentPage.value }) })
   await loadDetail()
 }
 
@@ -235,7 +236,7 @@ async function loadAnalysis() {
 async function waitForAnalysis(runId: string) {
   for (let attempt = 0; attempt < 300; attempt++) {
     const run = await api.get<AgentRun>(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}`)
-    if (['completed', 'completed_with_issues', 'failed', 'cancelled', 'paused', 'interrupted'].includes(run.status)) return run
+    if (['completed', 'completed_with_open_items', 'completed_with_issues', 'failed', 'cancelled', 'paused', 'interrupted'].includes(run.status)) return run
     await new Promise(resolve => window.setTimeout(resolve, 500))
   }
   throw new Error('Analysis is still running. Its progress remains available in the assistant.')
@@ -324,7 +325,7 @@ async function openSearchResult(result: DocumentSearchResult) {
 async function openCitation(page: number) {
   if (!selected.value) return
   currentPage.value = page; view.value = 'preview'; sourceView.value = 'text'
-  await router.replace({ query: { ...route.query, tab: 'documents', doc: selected.value.id, page: String(page) } })
+  await router.replace({ query: workspaceQuery('documents', { doc: selected.value.id, page }) })
 }
 
 async function reindexAll() {
@@ -480,7 +481,7 @@ async function searchPacks() {
 }
 
 watch(() => route.query.doc, id => { if (id && id !== selectedId.value) void selectDocument(String(id), Number(route.query.page || 1)) })
-watch(currentPage, page => { if (selectedId.value) void router.replace({ query: { ...route.query, tab: 'documents', doc: selectedId.value, page: String(page) } }) })
+watch(currentPage, page => { if (selectedId.value) void router.replace({ query: workspaceQuery('documents', { doc: selectedId.value, page }) }) })
 watch(groupBy, saveRailPrefs)
 watch([selected, groupBy], () => {
   const doc = selected.value

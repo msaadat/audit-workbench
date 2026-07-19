@@ -15,23 +15,29 @@ engagement values.
   with prior imports, stage only new/changed files, review editable routing
   proposals, and import supported tables and documents idempotently. Changed
   tables and documents replace their prior content while retaining stable links.
-- **Planning** — capture engagement context through an assistant interview,
-  then generate and edit an Audit Planning Memorandum, Risk & Control Matrix,
-  and linked audit program. Markdown templates and local methodology packs are
+- **RCM-central planning and fieldwork** — capture engagement context through
+  an assistant interview, then generate and edit an Audit Planning Memorandum
+  and Risk & Control Matrix. Structured planned tests, execution status,
+  outcomes, limitations, observations, evidence requests, and working papers
+  stay under their RCM row. Markdown templates and local methodology packs are
   configurable per workspace.
 - **Data** — load multiple CSV/TSV/Excel files with inferred types and define
   named joins across them (left/inner/full/semi/anti).
 - **Profile and Query** — automatic typed profiling plus interactive filters,
   group-by aggregations, split-by cross-tabs, sorting, server pagination,
   group-row drill-down, charts, and Excel exports.
-- **Analytics** — 15 audit tests: Benford and last-two-digit analysis,
+- **Data Tests** — create durable exploratory or RCM-linked analytics,
+  validation, and visible Polars definitions. Exploratory tests can be run and
+  pinned but do not count as audit coverage or support formal findings. Runs preserve bounded result and exception artifacts,
+  histories, hashes, table fingerprints, and semantic-validity checks. The
+  analytics library includes 15 tests: Benford and last-two-digit analysis,
   duplicates, sequence gaps, reproducible sampling, period comparison, round
   numbers, outliers, threshold clustering, weekend postings, date-lag or
   backdating, stratification, completeness, negative/zero scan, and rare
   values. Results can be saved, exported, and pinned.
-- **Dashboard** — pin queries, analytics, validation results, or assistant
-  output as chart/table tiles. Tiles store reproducible specifications and
-  recompute against the current source files.
+- **Dashboard** — pin reproducible queries or let the audit run curate four to
+  six useful RCM-linked Data Test results using deterministic risk, exception,
+  visualization, and management-relevance scoring.
 - **Documents and evidence** — ingest PDF, TXT/Markdown, DOCX, and common image
   formats; preview extracted pages, explicitly confirm replacements, ask cited
   questions, and navigate immutable typed evidence anchors. AI-activity logs retain provider,
@@ -41,24 +47,29 @@ engagement values.
   testing, document/minutes review, and cited document Q&A. Comparisons remain
   explainable through exact, normalized, fuzzy-similarity, numeric-tolerance,
   and date-tolerance results. Seeded samples freeze key fields, per-item state
-  is resumable, and linked procedures render evidence-based Markdown/HTML
-  working papers.
-- **Findings and reports** — promote an assistant observation into an editable
-  draft or add a manual IIA-style finding with condition, criteria, cause,
+  is resumable, and linked RCM rows render evidence-based Markdown/HTML working
+  papers covering all planned tests and execution artifacts.
+- **Findings and reports** — disposition execution observations, promote a
+  supported observation into an editable draft, or add a manual IIA-style
+  finding with condition, criteria, cause,
   effect, recommendation, management response, and typed evidence. Generate an
   editable report from live planning-through-finding context, run advisory
-  traceability/quality checks, copy Markdown/HTML, and reconcile regeneration
-  side by side so auditor edits are never silently overwritten.
+  RCM-to-planned-test-to-execution-to-evidence traceability checks, copy
+  Markdown/HTML, and reconcile regeneration side by side so auditor edits are
+  never silently overwritten. Open material work produces a clearly labelled
+  preliminary report rather than an unsupported final conclusion.
 - **Natural-language assistant** — ask questions in plain English. A configured
   Groq, OpenRouter, Mistral, or local LM Studio model calls tools that discover
   schemas, run structured queries and analytics, or write visible, editable
   Polars. Tool results include compact, unmasked row previews with explicit
   truncation when a result exceeds the model-context limit.
-- **Durable audit-assistant runs** — auto or permission-mode runs can build
-  joins, validation rules, analyses, and dashboards; conduct planning
-  interviews; classify staged folder imports; and execute selected document
-  tests. Runs support SSE replay, pause/resume/cancel, steering, editable
-  approvals, restart recovery, and user-safe rerun reconciliation.
+- **Durable audit-assistant runs** — auto or permission-mode runs can build an
+  RCM-centric plan, create and execute linked Data/Document Tests, roll up
+  outcomes, pause for observation disposition, generate RCM working papers,
+  curate a dashboard, and draft and quality-check the report. Mandatory output
+  and completion stages remain deterministic even if model expansion fails.
+  Runs support SSE replay, pause/resume/cancel, steering, editable approvals,
+  restart recovery, and user-safe rerun reconciliation.
 
 ## Model context
 
@@ -77,10 +88,13 @@ The workbench is optimized for a locally hosted model:
 
 ## Current status and roadmap
 
-- V1-V4 and M1-M5 of the full audit-cycle extension are implemented. See
+- V1-V4, M1-M5, and the RCM-central workflow are implemented. See
   [`docs/agent-workflow-plan.md`](docs/agent-workflow-plan.md) and
-  [`docs/full-audit-cycle-plan.md`](docs/full-audit-cycle-plan.md) for the
-  architecture and acceptance detail.
+  [`docs/full-audit-cycle-plan.md`](docs/full-audit-cycle-plan.md) and
+  [`docs/rcm-central-workflow-plan.md`](docs/rcm-central-workflow-plan.md) for
+  the architecture and acceptance detail. Legacy Audit Program data is retained
+  for rollback and exposed through read-only compatibility APIs during the
+  migration window; it is no longer an active planning or UI concept.
 - The optional M6 stage covers a read-only traceability matrix, explainable
   risk/coverage heatmap, duplicate control/finding suggestions, reusable local
   procedure templates, and configured editorial/translation actions.

@@ -126,10 +126,11 @@ function openIssueRef(ref: string) {
   const [kind, id] = ref.split(':', 2)
   if (kind === 'finding') void router.replace({ query: { tab: 'findings', finding: id } })
   else if (kind === 'doctest') void router.replace({ query: { tab: 'doc-tests', test: id } })
-  else if (kind === 'procedure') void router.replace({ query: { tab: 'planning', view: 'program', procedure: id } })
-  else if (kind === 'rcm') void router.replace({ query: { tab: 'planning', view: 'rcm' } })
-  else if (kind === 'analysis') void router.replace({ query: { tab: 'analysis' } })
-  else if (kind === 'ruleset') void router.replace({ query: { tab: 'validation' } })
+  else if (kind === 'datatest') void router.replace({ query: { tab: 'data-tests', test: id } })
+  else if (kind === 'planned_test') void router.replace({ query: { tab: 'planning', view: 'rcm', planned_test: id } })
+  else if (kind === 'observation') void router.replace({ query: { tab: 'planning', view: 'rcm', observation: id } })
+  else if (kind === 'rcm') void router.replace({ query: { tab: 'planning', view: 'rcm', rcm: id } })
+  else if (kind === 'analysis' || kind === 'ruleset') void router.replace({ query: { tab: 'data-tests' } })
 }
 function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.issues ?? []), ...(report.value?.quality.editorial ?? [])] }
 const secondaryActions = computed(() => [
@@ -160,7 +161,7 @@ const secondaryActions = computed(() => [
         <div v-if="allIssues().length" class="issue-list"><article v-for="(issue,index) in allIssues()" :key="`${issue.source}:${issue.code}:${index}`"><Tag :value="issue.severity" :severity="issueTone[issue.severity]"/><div><strong>{{ issue.code.replaceAll('_',' ') }}</strong><p>{{ issue.message }}</p><span v-if="issue.source === 'editorial'" class="muted">Optional editorial suggestion</span><div v-if="issue.refs.length" class="refs"><button v-for="ref in issue.refs" :key="ref" @click="openIssueRef(ref)">{{ ref }}</button></div></div></article></div>
         <p v-else class="quality-ok"><i class="pi pi-check-circle"/> No quality issues were identified.</p>
       </div>
-      <aside class="sources-card card"><h3>Live report sources</h3><div v-if="context" class="stats"><span v-for="(value,key) in context.statistics" :key="key"><strong>{{ value }}</strong>{{ String(key).replaceAll('_',' ') }}</span></div><h4>Traceability</h4><a v-for="finding in context?.findings ?? []" :key="String(finding.id)" :href="`?tab=findings&finding=${finding.id}`">{{ finding.id }} · {{ finding.title }}</a><p v-if="!context?.findings.length" class="muted">No findings are available.</p><h4>Scope limitations</h4><p v-for="item in context?.scope_limitations ?? []" :key="item.procedure_id"><strong>{{ item.procedure_id }}</strong> · {{ item.text }}</p><p v-if="!context?.scope_limitations.length" class="muted">No limitations recorded.</p></aside>
+      <aside class="sources-card card"><h3>Live report sources</h3><div v-if="context" class="stats"><span v-for="(value,key) in context.statistics" :key="key"><strong>{{ value }}</strong>{{ String(key).replaceAll('_',' ') }}</span></div><h4>Traceability</h4><div v-for="finding in context?.findings ?? []" :key="String(finding.id)" class="trace-source"><a :href="`?tab=findings&finding=${finding.id}`">{{ finding.id }} · {{ finding.title }}</a><small>RCM {{ (finding.rcm_refs as string[] ?? []).join(', ') }} → planned {{ (finding.planned_test_refs as string[] ?? []).join(', ') }} → execution {{ (finding.execution_refs as string[] ?? []).join(', ') }}</small></div><p v-if="!context?.findings.length" class="muted">No auditor-confirmed findings are available.</p><h4>Scope limitations</h4><p v-for="item in context?.scope_limitations ?? []" :key="item.planned_test_id"><strong>{{ item.rcm_id }} / {{ item.planned_test_id }}</strong> · {{ item.text }}</p><p v-if="!context?.scope_limitations.length" class="muted">No limitations recorded.</p></aside>
     </section>
 
     <ReportReconcileDialog v-model="reconcileOpen" :current="reconcileCurrent" :generated="reconcileGenerated" :busy="busy" @choose="reconcile"/>

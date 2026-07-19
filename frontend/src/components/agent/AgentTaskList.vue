@@ -18,6 +18,7 @@ const statusIcon: Record<AgentTaskStatus, string> = {
   completed: 'pi pi-check-circle',
   skipped: 'pi pi-minus-circle',
   failed: 'pi pi-times-circle',
+  cancelled: 'pi pi-ban',
 }
 
 const visibleStages = computed(() => props.stages
@@ -32,7 +33,7 @@ const visibleStages = computed(() => props.stages
         return { ...task, status: 'failed' as const, error: task.error || props.runError || 'The run ended before this task completed.' }
       }
       if (props.runStatus === 'cancelled' && task.status === 'running') {
-        return { ...task, status: 'skipped' as const }
+        return { ...task, status: 'cancelled' as const }
       }
       return task
     }),
@@ -131,6 +132,8 @@ function summarizeRefs(refs: string[]): string[] {
 .task.awaiting_approval > i { color: var(--p-amber-500); }
 .task.completed > i { color: var(--aw-teal, #0b625c); }
 .task.failed > i { color: var(--p-red-500); }
+.task.cancelled > i { color: var(--p-surface-500); }
+.task.cancelled { opacity: 0.65; }
 .task.skipped { opacity: 0.65; }
 .task-body { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
 .task-title { font-size: 0.85rem; line-height: 1.3; }

@@ -142,7 +142,7 @@ function scheduleRefetch(workspaceId: string, runId: string) {
             store.drawerAutoOpened = true
           } else if (
             store.drawerAutoOpened &&
-            ['completed', 'completed_with_issues', 'cancelled'].includes(run.status)
+            ['completed', 'completed_with_open_items', 'completed_with_issues', 'cancelled'].includes(run.status)
           ) {
             store.drawerOpen = savedPanelState(workspaceId)
             store.drawerAutoOpened = false

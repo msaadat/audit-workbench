@@ -9,9 +9,9 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from . import doc_tests, llm, templates_store
+from . import data_tests, doc_tests, llm, rcm_execution, templates_store
 from .documents import append_activity
-from .findings import artifact
+from .findings import artifact, support_issues
 from .workspaces import Workspace, WorkspaceError
 
 REQUIRED_FINDING_FIELDS = ("condition", "criteria", "cause", "effect", "recommendation")
@@ -43,7 +43,8 @@ def _safe_finding(item: dict) -> dict:
         for key in (
             "id", "title", "severity", "condition", "criteria", "cause", "effect",
             "recommendation", "management_response", "rcm_refs",
-            "procedure_refs", "source",
+            "planned_test_refs", "execution_refs", "cause_pending",
+            "severity_rationale", "auditor_confirmed", "source",
         )
     } | {
         "evidence": [
@@ -93,6 +94,8 @@ def _planning_context(workspace: Workspace) -> dict:
 
 def build_context(workspace: Workspace) -> dict:
     """Build report context without structured rows or document excerpts."""
+    rolled = rcm_execution.rollup(workspace)
+    completion = rcm_execution.completion(workspace)
     tests = doc_tests.list_tests(workspace)
     test_summaries = []
     totals = {"items": 0, "exceptions": 0, "manual_review": 0, "pending": 0}
@@ -105,19 +108,34 @@ def build_context(workspace: Workspace) -> dict:
             {
                 "id": test["id"], "title": test.get("title"), "kind": test.get("kind"),
                 "status": test.get("status"), "rcm_refs": test.get("rcm_refs") or [],
-                "procedure_refs": test.get("procedure_refs") or [], "rollup": rollup,
+                "rcm_id": test.get("rcm_id"),
+                "planned_test_id": test.get("planned_test_id"), "rollup": rollup,
             }
         )
     context = _planning_context(workspace)
-    procedures = [
-        {
-            key: item.get(key)
-            for key in (
-                "id", "rcm_refs", "objective", "criteria", "steps", "method",
-                "test_refs", "result_summary", "conclusion", "scope_limitations",
-            )
-        }
-        for item in workspace.work_program
+    data_test_summaries = []
+    for item in workspace.data_tests:
+        if not item.get("rcm_id") or not item.get("planned_test_id"):
+            continue
+        latest = None
+        if item.get("last_run"):
+            result = data_tests.load_result(workspace, item["id"], item["last_run"]["id"])
+            latest = {
+                key: result.get(key)
+                for key in (
+                    "id", "status", "verdict", "verdict_text", "statistics",
+                    "exception_count", "semantic_valid", "semantic_issues", "result_sha1",
+                )
+            }
+        data_test_summaries.append({
+            "id": item["id"], "title": item.get("title"), "objective": item.get("objective"),
+            "engine": item.get("engine"), "status": item.get("status"),
+            "rcm_id": item.get("rcm_id"), "planned_test_id": item.get("planned_test_id"),
+            "latest_result": latest,
+        })
+    supported = [
+        item for item in workspace.findings
+        if item.get("auditor_confirmed") and not support_issues(workspace, item)
     ]
     return {
         "workspace": {"id": workspace.id, "name": workspace.name, "description": workspace.description},
@@ -128,21 +146,44 @@ def build_context(workspace: Workspace) -> dict:
         },
         "rcm": [
             {
-                key: item.get(key)
-                for key in ("id", "process", "risk", "risk_rating", "assertion", "control", "test_refs")
+                "id": item.get("id"), "process": item.get("process"),
+                "risk": item.get("risk"), "risk_rating": item.get("risk_rating"),
+                "assertion": item.get("assertion"), "control": item.get("control"),
+                "control_conclusion": (item.get("execution_rollup") or {}).get("control_conclusion"),
+                "review_status": item.get("review_status"),
+                "planned_tests": [
+                    {
+                        key: planned.get(key)
+                        for key in (
+                            "id", "title", "objective", "criteria", "method", "steps",
+                            "expected_evidence", "execution_refs", "status", "result_summary",
+                            "conclusion", "control_conclusion", "scope_limitations",
+                            "exception_count", "open_exception_count", "finding_refs",
+                        )
+                    }
+                    for planned in item.get("planned_tests") or []
+                ],
             }
             for item in workspace.rcm
         ],
-        "procedures": procedures,
+        "rcm_rollup": rolled["rows"],
+        "data_tests": data_test_summaries,
         "document_tests": test_summaries,
-        "findings": [_safe_finding(item) for item in workspace.findings],
+        "findings": [_safe_finding(item) for item in supported],
+        "draft_findings_excluded": [item["id"] for item in workspace.findings if item not in supported],
         "scope_limitations": [
-            {"procedure_id": item.get("id"), "text": item.get("scope_limitations")}
-            for item in workspace.work_program if str(item.get("scope_limitations") or "").strip()
+            {"rcm_id": row["id"], "planned_test_id": planned["id"], "text": planned.get("scope_limitations")}
+            for row in workspace.rcm
+            for planned in row.get("planned_tests") or []
+            if str(planned.get("scope_limitations") or "").strip()
         ],
+        "completion": completion,
+        "preliminary": completion["status"] != "completed",
         "statistics": {
-            "rcm_rows": len(workspace.rcm), "procedures": len(workspace.work_program),
-            "findings": len(workspace.findings),
+            "rcm_rows": len(workspace.rcm),
+            "planned_tests": sum(len(row.get("planned_tests") or []) for row in workspace.rcm),
+            "data_tests": len(data_test_summaries), "findings": len(supported),
+            "draft_findings": len(workspace.findings) - len(supported),
             "document_tests": len(tests), **totals,
         },
     }
@@ -171,6 +212,26 @@ def _normalize_finding_citations(workspace: Workspace, markdown: str) -> str:
         pattern = re.compile(rf"\[\s*(?:Finding\s+)?{re.escape(finding_id)}\s*\](?!\s*\()")
         normalized = pattern.sub(_finding_link(finding), normalized)
     return normalized
+
+
+def _ensure_preliminary_label(markdown: str, preliminary: bool) -> str:
+    if not preliminary:
+        return markdown
+    body = re.sub(
+        r"^#\s+.*$", "# Preliminary Internal Audit Working Draft",
+        str(markdown or "").strip(), count=1, flags=re.MULTILINE,
+    )
+    banner = (
+        "> **Preliminary working draft:** fieldwork, evidence, review, or auditor "
+        "judgment remains open. This document is not a final audit opinion."
+    )
+    if "preliminary working draft" not in body.casefold():
+        first_break = body.find("\n")
+        if first_break < 0:
+            body = body + "\n\n" + banner
+        else:
+            body = body[:first_break] + "\n\n" + banner + body[first_break:]
+    return body.strip() + "\n"
 
 
 def _template_order(workspace: Workspace, generated: str, context: dict) -> str:
@@ -218,20 +279,31 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
     context = context or build_context(workspace)
     planning = context["planning"]
     stats = context["statistics"]
+    findings = context.get("findings") or []
     lines = [
-        "# Internal Audit Report", "", "## Executive summary", "",
+        "# Preliminary Internal Audit Working Draft" if context.get("preliminary") else "# Internal Audit Report",
+        "",
+    ]
+    if context.get("preliminary"):
+        lines.extend([
+            "> **Preliminary working draft:** fieldwork, evidence, review, or auditor judgment remains open. This document is not a final audit opinion.",
+            "",
+        ])
+    lines.extend([
+        "## Executive summary", "",
         f"This draft reports the results of the {workspace.name} engagement. "
-        f"Fieldwork recorded {stats['findings']} finding(s) across {stats['procedures']} audit procedure(s).",
+        f"Fieldwork recorded {stats['findings']} supported finding(s) across "
+        f"{stats['planned_tests']} RCM planned test(s).",
         "", "## Background, objective, and scope", "",
         f"**Entity:** {planning.get('entity') or 'Not stated'}", "",
         f"**Period:** {planning.get('period') or 'Not stated'}", "",
         f"**Objective:** {planning.get('objective') or 'Not stated'}", "",
         f"**Scope:** {planning.get('scope') or 'Not stated'}", "",
         "## Findings and recommendations", "",
-    ]
-    if not workspace.findings:
-        lines.append("No findings have been recorded.")
-    for item in workspace.findings:
+    ])
+    if not findings:
+        lines.append("No auditor-confirmed, evidence-supported findings have been recorded.")
+    for item in findings:
         lines.extend(
             [
                 f"### {item.get('title') or item['id']}", "",
@@ -245,13 +317,13 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
             ]
         )
     lines.extend(["## Management responses", ""])
-    responses = [item for item in workspace.findings if str(item.get("management_response") or "").strip()]
+    responses = [item for item in findings if str(item.get("management_response") or "").strip()]
     lines.extend(
         [f"- {_finding_link(item)}: {item['management_response']}" for item in responses]
         or ["No management responses have been recorded."]
     )
     lines.extend(["", "## Conclusion", ""])
-    if workspace.findings:
+    if findings:
         lines.append(
             "The findings above require management consideration and auditor evaluation. "
             "This draft does not constitute an audit opinion."
@@ -261,10 +333,11 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
     lines.extend(["", "## Scope limitations", ""])
     limitations = context.get("scope_limitations") or []
     lines.extend(
-        [f"- Procedure {item['procedure_id']}: {item['text']}" for item in limitations]
+        [f"- RCM {item['rcm_id']} / planned test {item['planned_test_id']}: {item['text']}" for item in limitations]
         or ["No scope limitations were recorded."]
     )
-    return _template_order(workspace, "\n".join(lines).strip() + "\n", context)
+    rendered = _template_order(workspace, "\n".join(lines).strip() + "\n", context)
+    return _ensure_preliminary_label(rendered, bool(context.get("preliminary")))
 
 
 def _template_sections(markdown: str) -> list[str]:
@@ -337,6 +410,7 @@ def generate(workspace: Workspace, *, use_model: bool = True, run_id: str | None
             warnings.append(f"Model drafting was unavailable; deterministic draft used: {error}")
     elif use_model:
         warnings.append("The report model is not configured; deterministic draft used.")
+    candidate = _ensure_preliminary_label(candidate, bool(context.get("preliminary")))
 
     current = hydrate(workspace)
     had_edits = bool(current["markdown"] and current["edited"])
@@ -402,50 +476,71 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
     text = report["markdown"] if markdown is None else str(markdown)
     issues: list[dict] = []
     known_rcm = {item.get("id") for item in workspace.rcm}
-    known_procedures = {item.get("id"): item for item in workspace.work_program}
+    known_planned = {
+        planned.get("id"): row.get("id")
+        for row in workspace.rcm
+        for planned in row.get("planned_tests") or []
+    }
     cited_findings = _finding_citations(text)
+    supported_findings = []
     for finding in workspace.findings:
         ref = f"finding:{finding['id']}"
-        missing = [field for field in REQUIRED_FINDING_FIELDS if not str(finding.get(field) or "").strip()]
-        if missing:
-            issues.append(_issue("finding_incomplete", "warning", f"{finding['id']} is missing: {', '.join(missing)}.", [ref]))
-        if not finding.get("procedure_refs"):
-            issues.append(_issue("finding_no_procedure", "error", f"{finding['id']} is not linked to an audit procedure.", [ref]))
-        for procedure_id in finding.get("procedure_refs") or []:
-            if procedure_id not in known_procedures:
-                issues.append(_issue("broken_procedure_ref", "error", f"{finding['id']} references missing procedure {procedure_id}.", [ref]))
+        blockers = support_issues(workspace, finding)
+        if not finding.get("auditor_confirmed"):
+            issues.append(_issue(
+                "finding_draft", "error",
+                f"{finding['id']} remains a draft and cannot support report conclusions.", [ref],
+            ))
+        if blockers:
+            issues.append(_issue(
+                "unsupported_finding", "error",
+                f"{finding['id']} lacks formal support: {'; '.join(blockers)}.", [ref],
+            ))
+        if finding.get("auditor_confirmed") and not blockers:
+            supported_findings.append(finding)
         for rcm_id in finding.get("rcm_refs") or []:
             if rcm_id not in known_rcm:
                 issues.append(_issue("broken_rcm_ref", "error", f"{finding['id']} references missing RCM row {rcm_id}.", [ref]))
-        if not finding.get("evidence_refs"):
-            issues.append(_issue("unsupported_finding", "error", f"{finding['id']} has no evidence anchor.", [ref]))
+        for planned_id in finding.get("planned_test_refs") or []:
+            if planned_id not in known_planned:
+                issues.append(_issue("broken_planned_test_ref", "error", f"{finding['id']} references missing planned test {planned_id}.", [ref]))
         for anchor in finding.get("evidence_refs") or []:
             resolved = artifact(workspace, anchor.get("source_kind"), anchor.get("source_id"))
             if resolved is None:
                 issues.append(_issue("broken_evidence", "error", f"{finding['id']} has a broken evidence reference.", [ref, str(anchor.get('id'))]))
             elif anchor.get("source_sha1") != resolved["sha1"]:
                 issues.append(_issue("stale_evidence", "error", f"{finding['id']} evidence {anchor.get('id')} no longer matches its source hash.", [ref, str(anchor.get('id'))]))
-        if text and finding["id"] not in cited_findings:
+        if text and finding in supported_findings and finding["id"] not in cited_findings:
             issues.append(_issue("finding_missing_from_report", "warning", f"{finding['id']} is not cited in the report.", [ref]))
 
-    linked_tests: set[str] = set()
-    for finding in workspace.findings:
-        for procedure_id in finding.get("procedure_refs") or []:
-            procedure = known_procedures.get(procedure_id) or {}
-            linked_tests.update(
-                value.split(":", 1)[1] for value in procedure.get("test_refs") or []
-                if str(value).startswith("doctest:")
-            )
-    exception_count = 0
+    open_observations = [
+        item for item in workspace.observations if item.get("status") != "disposed"
+    ]
+    for observation in open_observations:
+        issues.append(_issue(
+            "unresolved_exception", "error",
+            f"Observation {observation['id']} has no auditor disposition.",
+            [f"observation:{observation['id']}", str(observation.get("execution_ref") or "")],
+        ))
+    observed_doc_tests = {
+        str(item.get("execution_ref") or "").split(":", 1)[1]
+        for item in workspace.observations
+        if str(item.get("execution_ref") or "").startswith("doctest:")
+    }
     for summary in doc_tests.list_tests(workspace):
         test = doc_tests.load_test(workspace, summary["id"])
         exceptions = [
             item for item in test.get("items") or []
-            if item.get("state") == "exception" or item.get("auditor_disposition") == "exception"
+            if item.get("state") == "exception"
+            or item.get("auditor_disposition") == "exception"
         ]
-        exception_count += len(exceptions)
-        if exceptions and test["id"] not in linked_tests:
-            issues.append(_issue("unresolved_exception", "warning", f"{len(exceptions)} exception(s) in {test['id']} are not linked through a finding procedure.", [f"doctest:{test['id']}"]))
+        if exceptions and test["id"] not in observed_doc_tests:
+            issues.append(_issue(
+                "unresolved_exception", "error",
+                f"{len(exceptions)} exception(s) in {test['id']} have no RCM observation disposition.",
+                [f"doctest:{test['id']}"],
+            ))
+    exception_count = sum(int(item.get("exception_count") or 0) for item in workspace.observations)
 
     if not text.strip():
         issues.append(_issue("report_empty", "warning", "The report has no Markdown content."))
@@ -455,14 +550,29 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
     finding_claim = re.search(r"\b(\d+)\s+(?:draft\s+)?finding\(s\)|\b(\d+)\s+findings?\b", text, re.IGNORECASE)
     if finding_claim:
         claimed = int(next(value for value in finding_claim.groups() if value is not None))
-        if claimed != len(workspace.findings):
-            issues.append(_issue("report_arithmetic", "error", f"The report states {claimed} findings but {len(workspace.findings)} are stored."))
+        if claimed != len(supported_findings):
+            issues.append(_issue("report_arithmetic", "error", f"The report states {claimed} findings but {len(supported_findings)} are auditor-confirmed and supported."))
     exception_claim = re.search(r"\b(\d+)\s+exceptions?\b", text, re.IGNORECASE)
     if exception_claim and int(exception_claim.group(1)) != exception_count:
         issues.append(_issue("report_arithmetic", "error", f"The report states {exception_claim.group(1)} exceptions but {exception_count} are stored."))
-    limitations = [item for item in workspace.work_program if str(item.get("scope_limitations") or "").strip()]
+    limitations = [
+        (row, planned)
+        for row in workspace.rcm
+        for planned in row.get("planned_tests") or []
+        if str(planned.get("scope_limitations") or "").strip()
+    ]
     if limitations and "limitation" not in text.lower():
-        issues.append(_issue("missing_limitations", "warning", "Recorded procedure scope limitations are not disclosed in the report.", [f"procedure:{item['id']}" for item in limitations]))
+        issues.append(_issue(
+            "missing_limitations", "warning",
+            "Recorded planned-test scope limitations are not disclosed in the report.",
+            [f"planned_test:{planned['id']}" for _row, planned in limitations],
+        ))
+    completion = rcm_execution.completion(workspace)
+    if completion["status"] != "completed" and text.strip() and "preliminary" not in text.casefold():
+        issues.append(_issue(
+            "preliminary_label_missing", "error",
+            "Open fieldwork remains, so the report must be clearly labelled as a preliminary working draft.",
+        ))
 
     counts = {level: sum(item["severity"] == level for item in issues) for level in ("error", "warning", "info")}
     return {"checked_at": _now(), "issues": issues, "counts": counts, "ok": counts["error"] == 0}

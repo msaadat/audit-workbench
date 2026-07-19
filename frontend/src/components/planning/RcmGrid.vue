@@ -3,36 +3,28 @@ import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
-import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
+import Tag from 'primevue/tag'
 
-import type { DocTest, FindingRollups, RcmRow } from '../../types'
+import type { DataTest, DocTest, FindingRollups, RcmRow } from '../../types'
+import { workspaceQuery } from '../../composables/useWorkspaceNavigation'
 
-const props = defineProps<{ rows: RcmRow[]; documentTests?: DocTest[]; findingRollups?: FindingRollups }>()
+defineProps<{ rows: RcmRow[]; dataTests?: DataTest[]; documentTests?: Array<Pick<DocTest, 'id' | 'title' | 'status'>>; findingRollups?: FindingRollups }>()
 const emit = defineEmits<{
   add: []
   remove: [string]
   update: [string, Partial<RcmRow>]
+  open: [RcmRow]
 }>()
 
 const ratings = ['low', 'medium', 'high', 'critical']
 const router = useRouter()
-function openRef(ref: string) {
-  if (ref.startsWith('doctest:')) void router.replace({ query: { ...router.currentRoute.value.query, tab: 'doc-tests', test: ref.slice(8) } })
-}
-function openFinding(id: string) { void router.replace({ query: { ...router.currentRoute.value.query, tab: 'findings', finding: id } }) }
-function test(ref: string) { return props.documentTests?.find(item => `doctest:${item.id}` === ref) }
-function refLabel(ref: string) {
-  const item = test(ref)
-  if (!item) return ref
-  const exceptions = item.state_counts?.exception ?? 0
-  return `${item.title} · ${exceptions ? `${exceptions} exception(s)` : item.status.replace('_', ' ')}`
-}
-function refClass(ref: string) {
-  const item = test(ref)
-  return item && (item.state_counts?.exception ?? 0) > 0 ? 'exception' : item?.status === 'completed' ? 'complete' : ''
-}
+function openFinding(id: string) { void router.replace({ query: workspaceQuery('findings', { finding: id }) }) }
+function methodSummary(row: RcmRow) { return [...new Set(row.planned_tests.map(item => item.method.replaceAll('_', ' ')))].join(', ') || 'Not planned' }
+function plannedTitles(row: RcmRow) { return row.planned_tests.map(item => item.title).join('; ') || 'Add a planned test' }
+function executedCount(row: RcmRow) { return row.execution_rollup.planned_test_rollups?.reduce((sum, item) => sum + item.executed_count, 0) ?? 0 }
+function statusSeverity(status?: string) { return status?.includes('exception') || status === 'blocked' ? 'danger' : status === 'completed_no_exception' ? 'success' : status === 'review_required' ? 'warn' : 'secondary' }
 </script>
 
 <template>
@@ -51,12 +43,16 @@ function refClass(ref: string) {
           <template #option="{ option }"><span class="rating"><span class="dot" :data-rating="option" />{{ option }}</span></template>
         </Select>
       </template></Column>
-      <Column header="Assertion" style="min-width: 9rem"><template #body="{ data }"><InputText v-model="data.assertion" @change="emit('update', data.id, { assertion: data.assertion })" /></template></Column>
       <Column header="Control" style="min-width: 20rem"><template #body="{ data }"><Textarea v-model="data.control" rows="2" autoResize @change="emit('update', data.id, { control: data.control })" /></template></Column>
-      <Column header="Type" style="min-width: 8.5rem"><template #body="{ data }"><InputText v-model="data.control_type" @change="emit('update', data.id, { control_type: data.control_type })" /></template></Column>
-      <Column header="Planned test" style="min-width: 20rem"><template #body="{ data }"><Textarea v-model="data.test_procedure" rows="2" autoResize @change="emit('update', data.id, { test_procedure: data.test_procedure })" /></template></Column>
-      <Column header="Results & findings" style="min-width: 15rem"><template #body="{ data }"><span class="refs"><button v-for="ref in data.test_refs" :key="ref" type="button" :class="refClass(ref)" @click="openRef(ref)">{{ refLabel(ref) }}</button><button v-for="finding in findingRollups?.by_rcm[data.id] ?? []" :key="finding.id" type="button" class="finding" @click="openFinding(finding.id)">{{ finding.id }} · {{ finding.severity }}</button><span v-if="!data.test_refs.length && !(findingRollups?.by_rcm[data.id]?.length)" class="muted">None yet</span></span></template></Column>
-      <Column frozen alignFrozen="right" style="width: 3.5rem"><template #body="{ data }"><Button icon="pi pi-trash" text severity="danger" size="small" @click="emit('remove', data.id)" /></template></Column>
+      <Column header="Planned test summary" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ data.planned_tests.length }} planned test(s)</strong><span>{{ plannedTitles(data) }}</span></button></template></Column>
+      <Column header="Method" style="min-width: 10rem"><template #body="{ data }">{{ methodSummary(data) }}</template></Column>
+      <Column header="Execution status" style="min-width: 12rem"><template #body="{ data }"><div class="rollup"><Tag :value="data.planned_tests.length ? `${data.execution_rollup.completed ?? 0}/${data.planned_tests.length} complete` : 'not ready'" :severity="data.execution_rollup.blocked ? 'danger' : data.execution_rollup.review_required ? 'warn' : data.execution_rollup.completed === data.planned_tests.length && data.planned_tests.length ? 'success' : 'secondary'"/><small>{{ data.execution_rollup.blocked ?? 0 }} blocked · {{ data.execution_rollup.review_required ?? 0 }} review</small></div></template></Column>
+      <Column header="Coverage" style="min-width: 8rem"><template #body="{ data }"><span>{{ executedCount(data) }} executed</span></template></Column>
+      <Column header="Exceptions" style="min-width: 7rem"><template #body="{ data }"><Tag :value="String(data.execution_rollup.exceptions ?? 0)" :severity="(data.execution_rollup.exceptions ?? 0) ? 'danger' : 'secondary'"/></template></Column>
+      <Column header="Conclusion" style="min-width: 10rem"><template #body="{ data }"><Tag :value="data.execution_rollup.control_conclusion ?? 'no conclusion'" :severity="statusSeverity(data.execution_rollup.control_conclusion)"/></template></Column>
+      <Column header="Findings" style="min-width: 9rem"><template #body="{ data }"><span class="refs"><button v-for="finding in findingRollups?.by_rcm[data.id] ?? []" :key="finding.id" type="button" class="finding" @click="openFinding(finding.id)">{{ finding.id }} · {{ finding.severity }}</button><span v-if="!(findingRollups?.by_rcm[data.id]?.length)" class="muted">None</span></span></template></Column>
+      <Column header="Review" style="min-width: 8rem"><template #body="{ data }"><Tag :value="data.review_status.replaceAll('_', ' ')" severity="secondary"/></template></Column>
+      <Column frozen alignFrozen="right" style="width: 6rem"><template #body="{ data }"><div class="row-actions"><Button icon="pi pi-eye" text size="small" @click="emit('open', data)"/><Button icon="pi pi-trash" text severity="danger" size="small" @click="emit('remove', data.id)" /></div></template></Column>
     </DataTable>
   </div>
 </template>
@@ -69,6 +65,7 @@ function refClass(ref: string) {
 .refs { display:flex; flex-wrap:wrap; gap:.25rem }.refs button { border:1px solid var(--aw-border); border-radius:999px; background:var(--p-primary-50); color:var(--aw-teal); font-family:var(--aw-font-sans); font-size:var(--aw-text-xs); padding:.2rem .45rem; cursor:pointer }
 .refs button.exception { background:var(--p-red-50); color:var(--p-red-700) }.refs button.complete { background:var(--p-green-50); color:var(--p-green-700) }
 .refs button.finding { background:var(--p-orange-50); color:var(--p-orange-800) }
+.summary-link { display:flex; flex-direction:column; gap:.2rem; width:100%; padding:.25rem; border:0; background:transparent; text-align:left; color:inherit; cursor:pointer }.summary-link span { color:var(--aw-muted); font-size:var(--aw-text-xs); line-height:1.35 }.summary-link:hover strong { color:var(--aw-teal) }.rollup { display:flex; flex-direction:column; align-items:flex-start; gap:.3rem }.rollup small { color:var(--aw-muted) }.row-actions { display:flex }
 
 /* Prose grid, not a ledger: sans face at one size everywhere except the ID. */
 .rcm-grid :deep(.p-datatable-tbody > tr > td) { font-family: var(--aw-font-sans); font-size: var(--aw-text-sm); vertical-align: top; padding: .45rem .55rem; }

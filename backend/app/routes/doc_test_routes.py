@@ -7,6 +7,7 @@ import asyncio
 from fastapi import APIRouter, Body, HTTPException
 
 from .. import doc_tests, working_papers, workspaces
+from ..workspaces import WorkspaceError
 from ..agent import runner
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["document tests"])
@@ -24,6 +25,13 @@ async def list_document_tests(workspace_id: str):
 @router.post("/doc-tests/build/vouching")
 async def build_vouching_test(workspace_id: str, payload: dict = Body(...)):
     return await asyncio.to_thread(doc_tests.build_vouching, _ws(workspace_id), payload)
+
+
+@router.post("/doc-tests/prepare-evidence-aware")
+async def prepare_evidence_aware_test(workspace_id: str, payload: dict = Body(...)):
+    return await asyncio.to_thread(
+        doc_tests.prepare_evidence_aware_vouching, _ws(workspace_id), payload
+    )
 
 
 @router.post("/doc-tests/build/attribute")
@@ -99,7 +107,9 @@ async def run_document_test(workspace_id: str, test_id: str, payload: dict = Bod
 
 @router.post("/procedures/{procedure_id}/draft-results")
 async def draft_procedure_results(workspace_id: str, procedure_id: str):
-    return working_papers.draft_results(_ws(workspace_id), procedure_id)
+    raise WorkspaceError(
+        "Legacy procedure working papers are read-only; generate the working paper from its RCM instead."
+    )
 
 
 @router.get("/procedures/{procedure_id}/working-paper")
@@ -112,4 +122,21 @@ async def compare_values(payload: dict = Body(...)):
     return doc_tests.compare_values(
         payload.get("expected"), payload.get("found"),
         str(payload.get("method") or "normalized"), payload.get("tolerance"),
+    )
+
+
+@router.get("/evidence-requests")
+async def list_evidence_requests(workspace_id: str):
+    return {"items": _ws(workspace_id).evidence_requests}
+
+
+@router.patch("/evidence-requests/{request_id}")
+async def patch_evidence_request(
+    workspace_id: str, request_id: str, payload: dict = Body(...)
+):
+    return doc_tests.update_evidence_request(
+        _ws(workspace_id),
+        request_id,
+        status=str(payload.get("status") or ""),
+        note=str(payload.get("auditor_note") or ""),
     )

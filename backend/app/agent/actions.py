@@ -12,11 +12,14 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .. import (
-    analytics, doc_tests, explore, findings, intake, model_context, report, sandbox, validation,
-    working_papers,
+    analytics, dashboard, data_tests, doc_tests, explore, findings, intake, model_context,
+    rcm_execution, report, sandbox, validation, working_papers,
 )
 from ..field_names import resolve_columns
-from ..workspaces import JOIN_TYPES, Workspace, WorkspaceError, slugify
+from ..workspaces import (
+    JOIN_TYPES, OBSERVATION_DISPOSITIONS, PLANNED_TEST_METHODS,
+    Workspace, WorkspaceError, slugify,
+)
 from . import artifact_index, joins
 
 RISKS = {"read", "compute", "create", "reversible_mutation", "broad_rewrite", "destructive"}
@@ -130,7 +133,8 @@ def allocate_create_id(action: dict) -> None:
     args = action.setdefault("args", {})
     prefixes = {
         "create_rcm_row": "RCM-", "create_procedure": "PROC-", "create_finding": "F-",
-        "create_document_test": "DT-",
+        "create_document_test": "DT-", "create_rcm_planned_test": "PT-",
+        "create_data_test": "DAT-",
     }
     if not args.get("id") and action["type"] in prefixes:
         args["id"] = prefixes[action["type"]] + uuid.uuid4().hex[:6].upper()
@@ -159,7 +163,8 @@ def artifact_snapshot(workspace: Workspace, kind: str, item_id: str) -> dict | N
         "rcm": workspace.rcm, "procedure": workspace.work_program,
         "finding": workspace.findings, "analysis": workspace.analyses,
         "ruleset": workspace.rulesets, "tile": workspace.tiles,
-        "document": workspace.documents,
+        "document": workspace.documents, "datatest": workspace.data_tests,
+        "observation": workspace.observations,
     }
     if kind in collections:
         return copy.deepcopy(next((item for item in collections[kind] if str(item.get("id")) == item_id), None))
@@ -171,6 +176,12 @@ def artifact_snapshot(workspace: Workspace, kind: str, item_id: str) -> dict | N
             return None
         test = doc_tests.load_test(workspace, test_id)
         return copy.deepcopy(next((item for item in test.get("items") or [] if item.get("id") == child_id), None))
+    if kind == "planned_test":
+        try:
+            _row, item = workspace.planned_test(item_id)
+        except WorkspaceError:
+            return None
+        return copy.deepcopy(item)
     if kind == "report" and item_id == "working":
         return copy.deepcopy(report.hydrate(workspace))
     if kind == "table":
@@ -187,6 +198,7 @@ def expected_postcondition(action: dict) -> dict:
         "create_rcm_row": "rcm", "create_procedure": "procedure", "create_finding": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
         "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile", "create_join": "table",
+        "create_rcm_planned_test": "planned_test", "create_data_test": "datatest",
     }
     if type_ in create_kinds:
         item_id = args.get("name") if type_ == "create_join" else args.get("id")
@@ -196,7 +208,7 @@ def expected_postcondition(action: dict) -> dict:
         return {"fields": {"context": args.get("changes") or {}}}
     if type_ in {"generate_apm", "edit_apm"}:
         return {"fields": {"apm_markdown": args.get("apm_markdown")}}
-    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "update_test_disposition"}:
+    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "update_test_disposition", "edit_rcm_planned_test", "edit_data_test"}:
         return {"fields": dict(args.get("changes") or {})}
     if type_ == "update_test_comparisons":
         return {"fields": {"checks": args.get("checks") or []}}
@@ -253,7 +265,106 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
     if not isinstance(args, dict):
         return
     try:
-        if type_ == "create_join":
+        parent_args = args.get("changes") if type_ in {"edit_data_test", "edit_document_test"} else args
+        if isinstance(parent_args, dict):
+            if "rcm_id" in parent_args:
+                parent_args["rcm_id"] = artifact_index.canonical_id(
+                    parent_args.get("rcm_id"), "rcm"
+                )
+            if "planned_test_id" in parent_args:
+                parent_args["planned_test_id"] = artifact_index.canonical_id(
+                    parent_args.get("planned_test_id"), "planned_test"
+                )
+
+        if type_ == "create_rcm_planned_test":
+            args["rcm_id"] = artifact_index.canonical_id(args.get("rcm_id"), "rcm")
+            if any(row.get("id") == args["rcm_id"] for row in workspace.rcm):
+                workspace._planning_record(workspace.rcm, args["rcm_id"], "RCM row")
+        elif type_ in {"create_data_test", "edit_data_test"}:
+            values = parent_args if isinstance(parent_args, dict) else args
+            current = None
+            if type_ == "edit_data_test":
+                target_id = artifact_index.canonical_id(
+                    (action.get("target") or {}).get("resolved_id"), "datatest"
+                )
+                if any(item.get("id") == target_id for item in workspace.data_tests):
+                    current = data_tests._record(workspace, target_id)
+                    values = {**current, **values}
+            rcm_id = str(values.get("rcm_id") or "")
+            planned_id = str(values.get("planned_test_id") or "")
+            if bool(rcm_id) != bool(planned_id):
+                raise WorkspaceError(
+                    "Provide both an RCM row and planned test, or leave both blank for exploration."
+                )
+            # Durable parents can be checked now. Producer-action ids are
+            # resolved by the ledger and checked again before execution.
+            known_planned_ids = {
+                str(planned.get("id"))
+                for row in workspace.rcm for planned in row.get("planned_tests") or []
+            }
+            if (
+                any(row.get("id") == rcm_id for row in workspace.rcm)
+                and planned_id in known_planned_ids
+            ):
+                data_tests._validate_parent(workspace, rcm_id, planned_id)
+            if type_ == "create_data_test":
+                refs = data_tests._table_refs(workspace, args.get("table_refs"))
+                spec, _warnings = data_tests._validate_spec(
+                    workspace, str(args.get("engine") or "").strip().lower(), refs,
+                    args.get("spec"),
+                )
+                args["table_refs"] = refs
+                args["spec"] = spec
+            elif current is not None and any(
+                key in parent_args for key in ("engine", "table_refs", "spec")
+            ):
+                refs = data_tests._table_refs(workspace, values.get("table_refs"))
+                spec, _warnings = data_tests._validate_spec(
+                    workspace, str(values.get("engine") or "").strip().lower(), refs,
+                    values.get("spec"),
+                )
+                if "table_refs" in parent_args:
+                    parent_args["table_refs"] = refs
+                if "spec" in parent_args or "engine" in parent_args or "table_refs" in parent_args:
+                    parent_args["spec"] = spec
+        elif type_ in {"create_document_test", "edit_document_test"}:
+            values = parent_args if isinstance(parent_args, dict) else args
+            if type_ == "edit_document_test":
+                target_id = artifact_index.canonical_id(
+                    (action.get("target") or {}).get("resolved_id"), "doctest"
+                )
+                try:
+                    current = doc_tests.load_test(workspace, target_id)
+                except WorkspaceError:
+                    current = None
+                if current is not None:
+                    values = {**current, **values}
+            rcm_id = str(values.get("rcm_id") or "")
+            planned_id = str(values.get("planned_test_id") or "")
+            if bool(rcm_id) != bool(planned_id):
+                raise WorkspaceError("RCM row and planned test must be assigned together.")
+            known_planned_ids = {
+                str(planned.get("id"))
+                for row in workspace.rcm for planned in row.get("planned_tests") or []
+            }
+            if (
+                any(row.get("id") == rcm_id for row in workspace.rcm)
+                and planned_id in known_planned_ids
+            ):
+                doc_tests._validate_parent(workspace, rcm_id, planned_id)
+        elif type_ == "link_execution_to_planned_test":
+            rcm_id = str(args.get("rcm_id") or "")
+            planned_id = str(args.get("planned_test_id") or "")
+            if any(
+                planned.get("id") == planned_id
+                for row in workspace.rcm for planned in row.get("planned_tests") or []
+            ):
+                row, _planned = workspace.planned_test(planned_id)
+                if row.get("id") != rcm_id:
+                    raise WorkspaceError(
+                        f"Planned test '{planned_id}' does not belong to RCM row '{rcm_id}'."
+                    )
+        elif type_ == "create_join":
             left, right = args.get("left"), args.get("right")
             if left in workspace.table_names() and right in workspace.table_names():
                 args["left_on"] = resolve_columns(
@@ -331,6 +442,22 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         return _receipt(action, item, refs=[f"rcm:{target_id}"])
     if type_ == "delete_rcm_row":
         workspace.remove_rcm(target_id); return _receipt(action, refs=[f"rcm:{target_id}"])
+    if type_ == "create_rcm_planned_test":
+        item = workspace.add_planned_test(
+            args["rcm_id"], {**args, "agent_run_id": run["id"]}
+        )
+        return _receipt(
+            action, item,
+            refs=[f"rcm:{args['rcm_id']}", f"planned_test:{item['id']}"],
+        )
+    if type_ == "edit_rcm_planned_test":
+        row, _planned = workspace.planned_test(target_id)
+        item = workspace.update_planned_test(
+            row["id"], target_id, args["changes"], agent=True
+        )
+        return _receipt(
+            action, item, refs=[f"rcm:{row['id']}", f"planned_test:{target_id}"]
+        )
     if type_ == "create_procedure":
         item = workspace.add_procedure({**args, "agent_run_id": run["id"]})
         return _receipt(action, item, refs=[f"procedure:{item['id']}"])
@@ -374,6 +501,44 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         if result.summary is not None:
             model_result["summary"] = model_context.project_frame(result.summary)
         return _receipt(action, result=model_result)
+    if type_ == "create_data_test":
+        item = data_tests.create(workspace, {**args, "agent_run_id": run["id"]})
+        return _receipt(action, item, refs=[f"datatest:{item['id']}"])
+    if type_ == "edit_data_test":
+        item = data_tests.update(workspace, target_id, args["changes"])
+        return _receipt(action, item, refs=[f"datatest:{target_id}"])
+    if type_ == "run_data_test":
+        item = data_tests._record(workspace, target_id)
+        result = data_tests.run(workspace, target_id)
+        safe = {
+            key: result.get(key)
+            for key in (
+                "id", "data_test_id", "rcm_id", "planned_test_id", "status",
+                "verdict", "verdict_text", "statistics", "exception_count",
+                "semantic_valid", "semantic_issues", "result_sha1",
+            )
+        }
+        return _receipt(
+            action, item,
+            refs=[f"datatest:{target_id}", f"datatest:{target_id}:{result['id']}"],
+            result=safe,
+        )
+    if type_ == "link_execution_to_planned_test":
+        if (action.get("target") or {}).get("kind") == "datatest":
+            item = data_tests.update(
+                workspace, target_id,
+                {"rcm_id": args["rcm_id"], "planned_test_id": args["planned_test_id"]},
+            )
+            ref = f"datatest:{target_id}"
+        else:
+            item = doc_tests.update_test(
+                workspace, target_id,
+                {"rcm_id": args["rcm_id"], "planned_test_id": args["planned_test_id"]},
+            )
+            ref = f"doctest:{target_id}"
+        return _receipt(
+            action, item, refs=[ref, f"planned_test:{args['planned_test_id']}"]
+        )
     if type_ == "create_custom_analysis":
         sandbox.run(str((args.get("spec") or {}).get("code") or ""), {name: workspace.get_frame(name) for name in workspace.table_names()})
         item = workspace.add_analysis({**args, "kind": "python", "agent_run_id": run["id"], "source": "ai"})
@@ -428,6 +593,24 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         refreshed = doc_tests.load_test(workspace, target_id)
         test_result = {"rollup": doc_tests.result_rollup(refreshed), "items_run": len(results)}
         return _receipt(action, refreshed, refs=[f"doctest:{target_id}"], result=test_result)
+    if type_ == "rollup_rcm_results":
+        return _receipt(action, result=rcm_execution.rollup(workspace))
+    if type_ == "disposition_observation":
+        item = rcm_execution.disposition(
+            workspace, target_id, args["disposition"], args.get("auditor_note") or ""
+        )
+        return _receipt(action, item, refs=[f"observation:{target_id}"])
+    if type_ == "generate_rcm_working_paper":
+        item = working_papers.generate_rcm(workspace, target_id)
+        return _receipt(
+            action, item, refs=[f"rcm:{target_id}"],
+            result={key: item[key] for key in ("rcm_id", "generated_at", "source_sha1")},
+        )
+    if type_ == "curate_dashboard":
+        result = dashboard.curate_rcm_tiles(workspace, run_id=run["id"])
+        return _receipt(
+            action, refs=[f"tile:{item['id']}" for item in result["tiles"]], result=result
+        )
     if type_ == "generate_working_paper":
         item = working_papers.draft_results(workspace, target_id)
         rendered = working_papers.render(workspace, target_id)
@@ -444,6 +627,28 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "run_report_quality":
         result = report.quality_checks(workspace)
         return _receipt(action, result={"ok": result["ok"], "issues": result["issues"]})
+    if type_ == "verify_audit_completion":
+        result = rcm_execution.completion(workspace)
+        quality = report.quality_checks(workspace)
+        mandatory = result.setdefault("mandatory_stage_issues", [])
+        if not (workspace.planning.get("dashboard_curation") or {}).get("completed_at"):
+            mandatory.append("Dashboard curation has not completed.")
+        if not report.hydrate(workspace).get("markdown"):
+            mandatory.append("Report generation has not completed.")
+        missing_papers = [
+            row["id"] for row in workspace.rcm
+            if not (workspace.root / "WorkingPapers" / f"{row['id']}.json").exists()
+        ]
+        if missing_papers:
+            mandatory.append(
+                f"{len(missing_papers)} RCM working paper(s) have not been generated."
+            )
+        if not quality["ok"]:
+            mandatory.append("Report traceability or quality checks failed.")
+        if mandatory and result["status"] == "completed":
+            result["status"] = "completed_with_open_items"
+        result["report_quality"] = {"ok": quality["ok"], "counts": quality["counts"]}
+        return _receipt(action, result=result)
     if type_ == "classify_import_batch":
         batch = intake.load_batch(workspace, args["batch_id"])
         missing = [item for item in batch.get("items") or [] if not item.get("classification")]
@@ -489,6 +694,7 @@ def _reconcile(workspace: Workspace, action: dict) -> str:
         "create_rcm_row": "rcm", "create_procedure": "procedure", "create_finding": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
         "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile",
+        "create_rcm_planned_test": "planned_test", "create_data_test": "datatest",
     }
     if action["type"] == "create_join":
         create_kinds[action["type"]] = "table"
@@ -518,6 +724,7 @@ def _restore_snapshot(workspace: Workspace, kind: str, item_id: str, before: dic
     collections = {
         "rcm": workspace.rcm, "procedure": workspace.work_program, "finding": workspace.findings,
         "analysis": workspace.analyses, "ruleset": workspace.rulesets, "tile": workspace.tiles,
+        "datatest": workspace.data_tests, "observation": workspace.observations,
     }
     if kind in collections:
         collection = collections[kind]
@@ -527,6 +734,12 @@ def _restore_snapshot(workspace: Workspace, kind: str, item_id: str, before: dic
         collection[index] = copy.deepcopy(before); workspace.save(); return collection[index]
     if kind == "doctest":
         return doc_tests.save_test(workspace, copy.deepcopy(before))
+    if kind == "planned_test":
+        row, _item = workspace.planned_test(item_id)
+        restored = copy.deepcopy(before)
+        restored.pop("id", None)
+        restored.pop("legacy_procedure_id", None)
+        return workspace.update_planned_test(row["id"], item_id, restored, agent=True)
     if kind == "doctest_item":
         test_id, _, child_id = item_id.partition(":")
         test = doc_tests.load_test(workspace, test_id)
@@ -590,14 +803,25 @@ _register(
 _register("edit_rcm_row", "Edit one RCM row", "reversible_mutation", ("rcm",), ("changes",), {"changes": OBJ})
 _register("delete_rcm_row", "Delete one RCM row", "destructive", ("rcm",))
 _register(
-    "create_procedure", "Create one executable audit procedure", "create", required=("objective",),
+    "create_rcm_planned_test", "Create a structured planned test under one RCM row", "create",
+    required=("rcm_id", "title", "objective", "method"),
+    properties={
+        "rcm_id": STR, "title": STR, "objective": STR, "criteria": STR,
+        "steps": ARR_STR,
+        "method": {"type": "string", "enum": sorted(PLANNED_TEST_METHODS)},
+        "population_scope": STR, "sampling": OBJ, "expected_evidence": STR,
+    },
+)
+_register("edit_rcm_planned_test", "Edit one RCM planned test", "reversible_mutation", ("planned_test",), ("changes",), {"changes": OBJ})
+_register(
+    "create_procedure", "Legacy compatibility: create an audit procedure", "create", required=("objective",),
     properties={
         "rcm_refs": ARR, "objective": STR, "criteria": STR, "steps": ARR,
         "method": STR, "expected_evidence": STR,
     },
 )
-_register("edit_procedure", "Edit one audit procedure", "reversible_mutation", ("procedure",), ("changes",), {"changes": OBJ})
-_register("delete_procedure", "Delete one audit procedure", "destructive", ("procedure",))
+_register("edit_procedure", "Legacy compatibility: edit an audit procedure", "reversible_mutation", ("procedure",), ("changes",), {"changes": OBJ})
+_register("delete_procedure", "Legacy compatibility: delete an audit procedure", "destructive", ("procedure",))
 _register("infer_relationships", "Infer table relationships locally", "compute")
 _register(
     "create_join", "Create a validated table join", "create",
@@ -624,6 +848,22 @@ _register(
         "params": OBJ,
     },
 )
+_register(
+    "create_data_test", "Create an exploratory or RCM-linked durable Data Test definition", "create",
+    required=("title", "objective", "engine", "table_refs", "spec"),
+    properties={
+        "rcm_id": STR, "planned_test_id": STR, "title": STR, "objective": STR,
+        "engine": {"type": "string", "enum": sorted(data_tests.ENGINES)},
+        "table_refs": ARR_STR, "spec": OBJ,
+    },
+)
+_register("edit_data_test", "Edit a durable Data Test definition", "reversible_mutation", ("datatest",), ("changes",), {"changes": OBJ})
+_register("run_data_test", "Execute a Data Test and preserve its immutable bounded result", "compute", ("datatest",), model="interpret_result")
+_register(
+    "link_execution_to_planned_test", "Link a legacy/manual execution artifact to an RCM planned test",
+    "reversible_mutation", ("datatest", "doctest"), ("rcm_id", "planned_test_id"),
+    {"rcm_id": STR, "planned_test_id": STR},
+)
 _register("create_custom_analysis", "Create an in-memory sandboxed Polars analysis (no imports or file I/O; assign result)", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
 _register("edit_custom_analysis", "Edit a custom analysis", "reversible_mutation", ("analysis",), ("changes",), {"changes": OBJ}, model="draft")
 _register("run_custom_analysis", "Run a saved custom analysis", "compute", ("analysis",))
@@ -635,7 +875,7 @@ _register(
     required=("kind", "title"),
     properties={
         "kind": {"type": "string", "enum": ["vouching", "attribute", "review", "qa"]},
-        "title": STR, "items": ARR,
+        "title": STR, "items": ARR, "rcm_id": STR, "planned_test_id": STR,
     },
 )
 _register("edit_document_test", "Edit a document test", "reversible_mutation", ("doctest",), ("changes",), {"changes": OBJ})
@@ -645,7 +885,14 @@ _register("detach_document_from_test", "Detach a document from a test item", "re
 _register("run_document_test", "Run all items in a document test", "compute", ("doctest",), model="interpret_result")
 _register("update_test_comparisons", "Update document-test comparisons", "reversible_mutation", ("doctest_item",), ("checks",), {"checks": ARR})
 _register("update_test_disposition", "Update a test-item disposition", "reversible_mutation", ("doctest_item",), ("changes",), {"changes": OBJ})
-_register("generate_working_paper", "Draft procedure results and working-paper metadata", "reversible_mutation", ("procedure",))
+_register("rollup_rcm_results", "Roll execution results and observations into RCM outcomes", "broad_rewrite", model="interpret_result")
+_register(
+    "disposition_observation", "Record the auditor disposition for an execution observation",
+    "reversible_mutation", ("observation",), ("disposition",),
+    {"disposition": {"type": "string", "enum": sorted(OBSERVATION_DISPOSITIONS)}, "auditor_note": STR},
+)
+_register("generate_rcm_working_paper", "Generate an RCM-linked working paper", "compute", ("rcm",))
+_register("generate_working_paper", "Legacy compatibility: generate a procedure working paper", "reversible_mutation", ("procedure",))
 _register("create_finding", "Create an evidence-linked finding", "create", required=("title",), properties={"title": STR}, model="draft")
 _register("edit_finding", "Edit one finding", "reversible_mutation", ("finding",), ("changes",), {"changes": OBJ}, model="draft")
 _register("delete_finding", "Delete one finding", "destructive", ("finding",))
@@ -654,6 +901,8 @@ _register("generate_report", "Generate report working content", "broad_rewrite",
 _register("edit_report", "Edit report working content", "reversible_mutation", ("report",), ("changes",), {"changes": OBJ}, model="draft")
 _register("reconcile_report", "Reconcile generated and edited report content", "broad_rewrite", ("report",), ("action",), {"action": {"type": "string", "enum": ["keep", "replace"]}})
 _register("run_report_quality", "Run deterministic report quality checks", "compute")
+_register("curate_dashboard", "Score and pin useful RCM-linked result tiles", "broad_rewrite")
+_register("verify_audit_completion", "Verify deterministic audit coverage and terminal-state gates", "compute")
 _register("classify_import_batch", "Classify a staged import batch", "compute", required=("batch_id",), properties={"batch_id": STR}, model="plan")
 _register("apply_import_batch", "Apply a classified import batch", "create", required=("batch_id",), properties={"batch_id": STR})
 _register("undo_action", "Undo an eligible reversible action", "reversible_mutation", required=("action_id",), properties={"action_id": STR, "run_id": STR})

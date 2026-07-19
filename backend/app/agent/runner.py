@@ -52,6 +52,7 @@ class RunHandle:
         self.run_id = run_id
         self.thread: threading.Thread | None = None
         self.cancel = threading.Event()
+        self.cancel_context: dict = {}
         self.pause_requested = threading.Event()
         self.resume = threading.Event()
         self.approval_resolved = threading.Event()
@@ -173,6 +174,12 @@ def start_command_run(
         )
     if len(live) >= _max_concurrent():
         raise AgentBusyError("The agent is busy with another workspace right now; try again when it finishes.")
+    command = dict(command)
+    context = dict(context or {})
+    if not command.get("planning_basis_run_id") and not context.get("planning_basis_run_id"):
+        basis_run_id = str((workspace.planning or {}).get("agent_run_id") or "").strip()
+        if basis_run_id:
+            context["planning_basis_run_id"] = basis_run_id
     run = store.new_command_run(
         workspace, mode, command, parent_run_id=parent_run_id, context=context
     )
@@ -212,6 +219,7 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
         "chat_id": previous.get("chat_id") or original.get("chat_id"),
         "source_message_id": previous.get("source_message_id") or original.get("source_message_id"),
         "context_refs": list(original.get("context_refs") or []),
+        "planning_basis_run_id": previous.get("planning_basis_run_id"),
     }
     return start_command_run(
         workspace,
@@ -231,10 +239,19 @@ def pause_run(workspace: Workspace, run_id: str) -> dict:
     return run
 
 
-def cancel_run(workspace: Workspace, run_id: str) -> dict:
+def cancel_run(
+    workspace: Workspace, run_id: str, *, reason: str = "",
+    actor: str = "auditor", source: str = "api",
+) -> dict:
     run = store.load_run(workspace, run_id)
     handle = get_handle(run_id)
+    cancellation = {
+        "actor": str(actor or "auditor"), "source": str(source or "api"),
+        "reason": str(reason or "").strip() or None,
+        "requested_at": store.utcnow(),
+    }
     if handle is not None:
+        handle.cancel_context = cancellation
         handle.cancel.set()
         handle.resume.set()  # unblock a paused/approval wait so it can die
         return run
@@ -242,8 +259,23 @@ def cancel_run(workspace: Workspace, run_id: str) -> dict:
         return run
     run["status"] = "cancelled"
     run["finished"] = store.utcnow()
+    run["cancellation"] = {**cancellation, "cancelled_at": run["finished"]}
+    if isinstance(run.get("command"), dict):
+        from . import ledger
+
+        for action in run.get("actions") or []:
+            if action.get("status") in {
+                "proposed", "ready", "awaiting_input", "awaiting_confirmation",
+                "blocked",
+            }:
+                ledger.transition(action, "cancelled")
+        ledger.project_legacy_plan(run)
+        run["command"]["status"] = "cancelled"
     store.save_run(workspace, run)
-    store.append_event(workspace, run_id, "run_status", {"status": "cancelled"})
+    store.append_event(
+        workspace, run_id, "run_status",
+        {"status": "cancelled", "cancellation": run["cancellation"]},
+    )
     return run
 
 

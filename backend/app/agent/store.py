@@ -43,7 +43,9 @@ ACTIVE_STATUSES = (
 )
 # Statuses a run can rest in with no thread attached.
 RESUMABLE_STATUSES = ("paused", "interrupted")
-TERMINAL_STATUSES = ("completed", "completed_with_issues", "failed", "cancelled")
+TERMINAL_STATUSES = (
+    "completed", "completed_with_open_items", "completed_with_issues", "failed", "cancelled"
+)
 
 _event_locks: dict[str, threading.Lock] = {}
 _event_locks_guard = threading.Lock()
@@ -162,6 +164,11 @@ def new_command_run(
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
+        "planning_basis_run_id": str(
+            command.get("planning_basis_run_id")
+            or (context or {}).get("planning_basis_run_id")
+            or ""
+        ).strip() or None,
         "chat_id": str(command.get("chat_id") or "").strip() or None,
         "source_message_id": str(command.get("source_message_id") or "").strip() or None,
         "kind": "audit",
@@ -194,6 +201,7 @@ def new_command_run(
         "discovery": {}, "plan": {"stages": []}, "approvals": [],
         "messages": [], "artifacts": [], "findings": [],
         "warnings": [], "summary_markdown": None, "error": None,
+        "cancellation": None,
     }
     save_run(workspace, run)
     return run
@@ -232,6 +240,8 @@ def _hydrate_run(run: dict) -> None:
         for task in stage.get("tasks") or []:
             task.setdefault("context_notes", list(task.get("disclosure") or []))
     if run["schema_version"] >= 2:
+        run.setdefault("planning_basis_run_id", None)
+        run.setdefault("cancellation", None)
         run.setdefault("actions", [])
         run.setdefault("interactions", [])
         run.setdefault("pending_commands", [])
@@ -293,6 +303,7 @@ def run_summary(run: dict) -> dict:
         "id": run["id"],
         "workspace_id": run["workspace_id"],
         "parent_run_id": run.get("parent_run_id"),
+        "planning_basis_run_id": run.get("planning_basis_run_id"),
         "chat_id": run.get("chat_id"),
         "source_message_id": run.get("source_message_id"),
         "kind": run.get("kind", "analysis"),
@@ -304,6 +315,7 @@ def run_summary(run: dict) -> dict:
         "domain": (run.get("discovery") or {}).get("domain"),
         "task_counts": counts,
         "error": run.get("error"),
+        "cancellation": run.get("cancellation"),
         "has_summary": bool(run.get("summary_markdown")),
     }
 

@@ -1,3 +1,4 @@
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -149,8 +150,8 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     assert completed["actions"] == []
     assert ws.planning["apm_markdown"].startswith("# Audit Planning Memorandum")
     assert len(ws.rcm) == 1
-    assert len(ws.work_program) == 1
-    assert ws.work_program[0]["rcm_refs"] == [ws.rcm[0]["id"]]
+    assert ws.work_program == []
+    assert len(ws.rcm[0]["planned_tests"]) == 1
     assert {call["tag"] for call in fake.calls} >= {"agent:apm", "agent:rcm", "agent:work_program"}
 
     row_id = ws.rcm[0]["id"]
@@ -160,6 +161,91 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     ws = workspaces.load_workspace(ws.id)
     assert len(ws.rcm) == 1
     assert ws.rcm[0]["control"] == "Auditor-confirmed manual review"
+
+
+def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
+    configure_planning_llm(monkeypatch)
+    ws = workspaces.create_workspace("Planning revisions")
+    first = wait_run(ws, start_planning(ws)["id"])
+    assert first["status"] == "completed"
+    ws = workspaces.load_workspace(ws.id)
+    row_id = ws.rcm[0]["id"]
+    planned_id = ws.rcm[0]["planned_tests"][0]["id"]
+
+    def revised_apm(user):
+        assert "CURRENT APM TO REVISE" in user
+        assert "# Audit Planning Memorandum" in user
+        return {"apm_markdown": PLANNING_RESPONSES["agent:apm"]["apm_markdown"] + "\n\nRevised."}
+
+    def revised_rcm(user):
+        assert "CURRENT RCM TO REVISE" in user and row_id in user
+        return {
+            "rows": [{
+                "operation": "update", "rcm_id": row_id,
+                "process": "Accounts payable", "risk": "Duplicate payments are processed",
+                "risk_rating": "critical", "assertion": "Occurrence",
+                "control": "Duplicate invoice validation", "control_type": "Automated preventive",
+                "test_procedure": "Test invoice number and amount duplicates.",
+            }]
+        }
+
+    def revised_tests(user):
+        assert planned_id in user
+        return {
+            "planned_tests": [{
+                "operation": "update", "planned_test_id": planned_id,
+                "stable_slug": "duplicate-payments", "rcm_refs": [f"rcm:{row_id}"],
+                "title": "Test duplicate payments", "objective": "Determine whether duplicate payments occurred",
+                "criteria": "Each valid invoice is paid once.",
+                "steps": ["Identify repeated invoice numbers and amounts.", "Inspect exceptions."],
+                "method": "data_analytics", "expected_evidence": "Exception listing",
+            }]
+        }
+
+    configure_planning_llm(monkeypatch, {
+        "agent:apm": revised_apm, "agent:rcm": revised_rcm,
+        "agent:work_program": revised_tests,
+    })
+    completed = wait_run(ws, start_planning(ws)["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert len(reloaded.rcm) == 1 and reloaded.rcm[0]["id"] == row_id
+    assert reloaded.rcm[0]["risk_rating"] == "critical"
+    assert len(reloaded.rcm[0]["planned_tests"]) == 1
+    assert reloaded.rcm[0]["planned_tests"][0]["id"] == planned_id
+    assert completed["planning_changes"]["rcm_updated"] == 1
+    assert completed["planning_changes"]["planned_test_updated"] == 1
+
+
+def test_planning_failure_rolls_back_all_staged_planning_changes(monkeypatch):
+    ws = workspaces.create_workspace("Atomic planning")
+    ws.update_planning(
+        {"context": {"scope": "Original scope"}, "apm_markdown": "# Original APM", "agent_run_id": "prior"},
+        agent=True,
+    )
+    ws.add_rcm({
+        "process": "Purchasing", "risk": "Original risk", "risk_rating": "medium",
+        "agent_run_id": "prior",
+    })
+    before = {
+        "planning": dict(ws.planning),
+        "rcm": [dict(item) for item in ws.rcm],
+    }
+
+    def disconnect(_user):
+        raise llm.LLMError("planned-test generation disconnected")
+
+    configure_planning_llm(monkeypatch, {
+        "agent:work_program": disconnect,
+    })
+    completed = wait_run(ws, start_planning(ws)["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "failed"
+    assert completed["planning_transaction"]["status"] == "rolled_back"
+    assert reloaded.planning == before["planning"]
+    assert reloaded.rcm == before["rcm"]
 
 
 def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
@@ -255,6 +341,90 @@ def test_planning_recovers_labelled_context_when_synthesis_returns_empty(monkeyp
     assert completed["planning_basis"]["planning"]["context"]["objective"] == "Review procurement approvals"
     assert [call["tag"] for call in fake.calls].count("agent:document_context") == 2
     assert any("recovered labelled facts" in warning for warning in completed["warnings"])
+
+
+def test_planning_analyzes_independent_documents_concurrently(monkeypatch):
+    ws = workspaces.create_workspace("Parallel planning documents")
+    selected = [
+        documents.add_document(
+            ws,
+            f"Policy {index}.txt",
+            f"Policy {index}: documented approval is required before procurement commitment."
+            .encode(),
+            category="policy",
+        )
+        for index in range(1, 4)
+    ]
+    barrier = threading.Barrier(len(selected))
+    state = {"active": 0, "max_active": 0}
+    state_lock = threading.Lock()
+
+    def document_context(user):
+        if "RAW SOURCE CHUNK:" not in user:
+            return PLANNING_RESPONSES["agent:document_context"]
+        with state_lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        try:
+            barrier.wait(timeout=3)
+            time.sleep(0.03)
+            return {
+                "summary_markdown": "- Procurement requires documented approval.",
+                "audit_notes_markdown": "",
+                "citations": [],
+            }
+        finally:
+            with state_lock:
+                state["active"] -= 1
+
+    configure_planning_llm(
+        monkeypatch, {"agent:document_context": document_context}
+    )
+    completed = wait_run(
+        ws,
+        start_planning(
+            ws, context={"document_ids": [item["id"] for item in selected]}
+        )["id"],
+    )
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert state["max_active"] == len(selected)
+    assert all(
+        document_analysis.compact_artifact(reloaded, item["id"]) is not None
+        for item in selected
+    )
+    assert any(
+        "documents concurrently" in event["data"]["task"].get("detail", "")
+        for event in store.read_events(ws, completed["id"])
+        if event["type"] == "task_update"
+    )
+
+
+def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
+    fake = configure_planning_llm(monkeypatch)
+    valid_apm = PLANNING_RESPONSES["agent:apm"]["apm_markdown"]
+    apm_calls = []
+
+    def chat(messages, tools=None, temperature=0.0, profile="assistant"):
+        system = messages[0]["content"]
+        tag = system[1 : system.index("]")] if system.startswith("[") else ""
+        if tag == "agent:apm":
+            apm_calls.append(messages)
+            # Literal newlines make this invalid JSON, but the Markdown itself
+            # is complete and should not cost another provider turn.
+            return {"content": '{"apm_markdown":"' + valid_apm + '"}'}
+        return fake(messages, tools=tools, temperature=temperature, profile=profile)
+
+    monkeypatch.setattr(llm, "chat", chat)
+    ws = workspaces.create_workspace("Direct Markdown APM")
+    completed = wait_run(ws, start_planning(ws)["id"])
+    reloaded = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert reloaded.planning["apm_markdown"] == valid_apm
+    assert len(apm_calls) == 1
+    assert "markdown\nonly" in apm_calls[0][0]["content"].casefold()
 
 
 def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
@@ -356,10 +526,16 @@ def test_planning_routes():
     assert client.patch(f"{base}/planning", json={"status": "final"}).status_code == 400
     row = client.post(f"{base}/rcm", json={"process": "Cash", "risk": "Cash is misstated"}).json()
     assert client.patch(f"{base}/rcm/{row['id']}", json={"risk_rating": "high"}).json()["risk_rating"] == "high"
-    procedure = client.post(f"{base}/procedures", json={"objective": "Test cash", "rcm_refs": [row["id"]]}).json()
+    legacy = client.post(f"{base}/procedures", json={"objective": "Test cash", "rcm_refs": [row["id"]]})
+    assert legacy.status_code == 400
+    planned = client.post(
+        f"{base}/rcm/{row['id']}/planned-tests",
+        json={"title": "Test cash", "objective": "Test cash", "method": "data_analytics"},
+    ).json()
     payload = client.get(f"{base}/planning").json()
     assert payload["rcm"][0]["id"] == row["id"]
-    assert payload["procedures"][0]["id"] == procedure["id"]
+    assert payload["rcm"][0]["planned_tests"][0]["id"] == planned["id"]
+    assert payload["procedures"] == []
     template = client.put(f"{base}/templates/apm", json={"markdown": "# Custom"})
     assert template.json()["source"] == "workspace"
 
@@ -376,7 +552,7 @@ def test_planning_cites_methodology_pack(monkeypatch):
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
     assert completed["status"] == "completed"
-    refs = reloaded.work_program[0]["methodology_refs"]
+    refs = reloaded.rcm[0]["planned_tests"][0]["methodology_refs"]
     assert refs[0]["pack_name"] == "Firm AP Guide"
     assert refs[0]["section"] == "Duplicate payments"
     activity = documents.activities(reloaded)["items"]

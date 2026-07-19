@@ -123,9 +123,12 @@ async def retry_run(workspace_id: str, run_id: str):
 
 
 @router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/cancel")
-async def cancel_run(workspace_id: str, run_id: str):
+async def cancel_run(workspace_id: str, run_id: str, payload: dict = Body(default={})):
     ws = workspaces.load_workspace(workspace_id)
-    return runner.cancel_run(ws, run_id)
+    return runner.cancel_run(
+        ws, run_id, reason=payload.get("reason") or "",
+        actor=payload.get("actor") or "auditor", source="api",
+    )
 
 
 @router.post("/workspaces/{workspace_id}/agent/runs/{run_id}/messages")

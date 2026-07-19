@@ -7,7 +7,9 @@ import uuid
 
 from .workspaces import WorkspaceError
 
-SOURCE_KINDS = {"document", "table", "analysis", "ruleset", "doctest", "procedure"}
+SOURCE_KINDS = {
+    "document", "table", "analysis", "ruleset", "doctest", "procedure", "rcm", "datatest"
+}
 
 
 def text_hash(value: str) -> str:

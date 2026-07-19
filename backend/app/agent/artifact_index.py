@@ -46,6 +46,12 @@ def build(workspace: Workspace) -> dict:
     for item in workspace.rcm:
         entries.append(_entry("rcm", item["id"], item.get("risk") or item.get("process") or item["id"], item,
                               body=" ".join(str(item.get(k) or "") for k in ("process", "control", "test_procedure"))))
+        for planned in item.get("planned_tests") or []:
+            entries.append(_entry(
+                "planned_test", planned["id"], planned.get("title") or planned["id"], planned,
+                body=" ".join(str(planned.get(k) or "") for k in ("objective", "criteria", "method", "expected_evidence")),
+                linked=[f"rcm:{item['id']}"],
+            ))
     for item in workspace.work_program:
         entries.append(_entry("procedure", item["id"], item.get("objective") or item["id"], item,
                               body=" ".join(str(item.get(k) or "") for k in ("criteria", "method", "expected_evidence")),
@@ -53,7 +59,11 @@ def build(workspace: Workspace) -> dict:
     for summary in doc_tests.list_tests(workspace):
         test = doc_tests.load_test(workspace, summary["id"])
         entries.append(_entry("doctest", test["id"], test.get("title") or test["id"], test,
-                              body=str(test.get("kind") or ""), linked=[f"procedure:{v}" for v in test.get("procedure_refs") or []]))
+                              body=str(test.get("kind") or ""), linked=[
+                                  *[f"procedure:{v}" for v in test.get("procedure_refs") or []],
+                                  *([f"rcm:{test['rcm_id']}"] if test.get("rcm_id") else []),
+                                  *([f"planned_test:{test['planned_test_id']}"] if test.get("planned_test_id") else []),
+                              ]))
         for item in test.get("items") or []:
             item_id = f"{test['id']}:{item['id']}"
             entries.append(_entry("doctest_item", item_id, item.get("label") or item["id"], item,
@@ -62,7 +72,12 @@ def build(workspace: Workspace) -> dict:
     for item in workspace.findings:
         entries.append(_entry("finding", item["id"], item.get("title") or item["id"], item,
                               body=" ".join(str(item.get(k) or "") for k in ("condition", "criteria", "cause", "effect", "recommendation")),
-                              linked=[*[f"rcm:{v}" for v in item.get("rcm_refs") or []], *[f"procedure:{v}" for v in item.get("procedure_refs") or []]]))
+                              linked=[
+                                  *[f"rcm:{v}" for v in item.get("rcm_refs") or []],
+                                  *[f"planned_test:{v}" for v in item.get("planned_test_refs") or []],
+                                  *[f"procedure:{v}" for v in item.get("procedure_refs") or []],
+                                  *[str(v) for v in item.get("execution_refs") or []],
+                              ]))
     if workspace.report:
         hydrated = report.hydrate(workspace)
         entries.append(_entry("report", "working", "Audit report working content", hydrated))
@@ -74,6 +89,18 @@ def build(workspace: Workspace) -> dict:
         entries.append(_entry("tile", item["id"], item.get("title") or item["id"], item, body=str(item.get("note") or ""), linked=[f"table:{item['table']}"] if item.get("table") else []))
     for item in workspace.documents:
         entries.append(_entry("document", item["id"], item.get("title") or item.get("filename") or item["id"], item, body=str(item.get("category") or "")))
+    for item in workspace.data_tests:
+        entries.append(_entry(
+            "datatest", item["id"], item.get("title") or item["id"], item,
+            body=" ".join(str(item.get(k) or "") for k in ("objective", "engine", "status")),
+            linked=[f"rcm:{item['rcm_id']}", f"planned_test:{item['planned_test_id']}"],
+        ))
+    for item in workspace.observations:
+        entries.append(_entry(
+            "observation", item["id"], item.get("summary") or item["id"], item,
+            body=" ".join(str(item.get(k) or "") for k in ("suggested_disposition", "disposition", "auditor_note")),
+            linked=[f"rcm:{item['rcm_id']}", f"planned_test:{item['planned_test_id']}", str(item.get("execution_ref") or "")],
+        ))
     for name in workspace.table_names():
         source = next((v for v in [*workspace.tables, *workspace.joins] if v.get("name") == name), {"name": name})
         entries.append(_entry("table", name, name, source))
@@ -85,10 +112,32 @@ def compact(index: dict) -> dict:
     return {
         "revision": index["revision"],
         "artifacts": [
-            {k: item.get(k) for k in ("ref", "kind", "title", "status", "created_by", "semantic_id", "updated", "linked_refs")}
+            {k: item.get(k) for k in ("id", "ref", "kind", "title", "status", "created_by", "semantic_id", "updated", "linked_refs")}
             for item in index["entries"]
         ],
     }
+
+
+def canonical_id(value: object, kind: str) -> str:
+    """Return the durable id from either a bare id or a typed artifact ref.
+
+    Model-facing indexes expose both forms, but action arguments persist bare
+    ids.  Reject a typed ref for the wrong artifact kind instead of silently
+    accepting a cross-kind relationship.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    prefix, separator, item_id = text.partition(":")
+    if not separator:
+        return text
+    if prefix != kind:
+        raise ValueError(
+            f"Expected artifact kind '{kind}', not reference '{text}'."
+        )
+    if not item_id:
+        raise ValueError(f"Artifact reference '{text}' has no durable id.")
+    return item_id
 
 
 def resolve(index: dict, kind: str, selector: str | None, resolved_id: str | None = None) -> dict:

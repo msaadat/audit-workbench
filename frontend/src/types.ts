@@ -143,7 +143,7 @@ export interface DocumentPage {
 
 export interface EvidenceRef {
   id: string
-  source_kind: 'document' | 'table' | 'analysis' | 'ruleset' | 'doctest' | 'procedure'
+  source_kind: 'document' | 'table' | 'analysis' | 'ruleset' | 'doctest' | 'procedure' | 'rcm' | 'datatest'
   source_id: string
   source_sha1: string | null
   page: number | null
@@ -239,6 +239,14 @@ export interface DocTestItem {
   citations?: EvidenceRef[]
   runner_note?: string
   document_conflicts?: { duplicate_documents: string[][] }
+  transaction_identifiers?: string[]
+  evidence_coverage?: {
+    document_ids: string[]
+    available_document_types: string[]
+    missing_document_types: string[]
+    image_only: boolean
+  }
+  evidence_request_ids?: string[]
 }
 
 export interface DocTestRollup {
@@ -255,10 +263,13 @@ export interface DocTest {
   id: string
   kind: DocTestKind
   title: string
-  status: 'draft' | 'in_progress' | 'completed'
+  status: 'draft' | 'in_progress' | 'review_required' | 'blocked' | 'completed'
   semantic_id: string
   rcm_refs: string[]
   procedure_refs: string[]
+  rcm_id: string | null
+  planned_test_id: string | null
+  scope_limitations?: string
   spec: Record<string, unknown>
   items: DocTestItem[]
   item_count?: number
@@ -270,7 +281,8 @@ export interface DocTest {
 }
 
 export interface WorkingPaper {
-  procedure_id: string
+  procedure_id?: string
+  rcm_id?: string
   generated_at: string
   source_sha1: string
   markdown: string
@@ -307,8 +319,130 @@ export interface RcmRow {
   assertion: string
   control: string
   control_type: string
+  control_owner: string
+  criteria: string
+  criteria_refs: unknown[]
   test_procedure: string
   test_refs: string[]
+  planned_tests: PlannedTest[]
+  execution_rollup: RcmExecutionRollup
+  finding_refs: string[]
+  evidence_refs: EvidenceRef[]
+  prepared_by: string | null
+  reviewed_by: string | null
+  review_status: 'draft' | 'prepared' | 'review_required' | 'reviewed'
+  updated: string
+}
+
+export type PlannedTestMethod = 'data_analytics' | 'validation' | 'document_inspection' | 'inquiry' | 'hybrid' | 'evidence_unavailable'
+export type PlannedTestStatus = 'not_ready' | 'ready' | 'in_progress' | 'review_required' | 'blocked' | 'completed_no_exception' | 'completed_with_exception' | 'not_applicable'
+
+export interface PlannedTest {
+  id: string
+  semantic_id: string
+  title: string
+  objective: string
+  criteria: string
+  method: PlannedTestMethod
+  steps: string[]
+  expected_evidence: string
+  sampling: { strategy: string; size: number | null; seed: number; stratify_by: string | null }
+  thresholds: Record<string, unknown>
+  execution_refs: string[]
+  status: PlannedTestStatus
+  result_summary: string
+  conclusion: string
+  control_conclusion: 'effective' | 'partially_effective' | 'ineffective' | 'no_conclusion' | 'not_applicable'
+  scope_limitations: string
+  next_action: string
+  exception_count: number
+  open_exception_count: number
+  evidence_refs: EvidenceRef[]
+  methodology_refs: Array<Record<string, unknown>>
+  finding_refs: string[]
+  created_by: 'agent' | 'user'
+  agent_run_id: string | null
+  updated: string
+}
+
+export interface PlannedTestRollup {
+  planned_test_id: string
+  required_execution: string[]
+  linked_execution: Array<{ kind: 'datatest' | 'doctest'; id: string; status: string; exception_count: number }>
+  missing_execution: string[]
+  executed_count: number
+  exception_count: number
+  open_exception_count: number
+  evidence_count: number
+  status: PlannedTestStatus
+  result_summary: string
+  conclusion: string
+  scope_limitations: string
+  finding_refs: string[]
+}
+
+export interface RcmExecutionRollup {
+  planned_tests?: number
+  completed?: number
+  blocked?: number
+  review_required?: number
+  exceptions?: number
+  open_exceptions?: number
+  control_conclusion?: string
+  finding_count?: number
+  review_status?: string
+  planned_test_rollups?: PlannedTestRollup[]
+}
+
+export type DataTestEngine = 'analytics' | 'validation' | 'polars'
+
+export interface DataTestRunSummary {
+  id: string
+  run_at: string
+  status: PlannedTestStatus
+  verdict: 'ok' | 'warn' | 'fail' | 'info' | 'error'
+  exception_count: number
+  semantic_valid: boolean
+  dataset_fingerprints: Record<string, string>
+  source_sha1: string
+  result_sha1: string
+}
+
+export interface DataTest {
+  id: string
+  semantic_id: string
+  rcm_id: string | null
+  planned_test_id: string | null
+  title: string
+  objective: string
+  engine: DataTestEngine
+  table_refs: string[]
+  spec: Record<string, unknown>
+  status: PlannedTestStatus
+  semantic_warnings: string[]
+  last_run: DataTestRunSummary | null
+  runs: DataTestRunSummary[]
+  auditor_disposition: string
+  evidence_refs: EvidenceRef[]
+  created_by: 'agent' | 'user'
+  agent_run_id: string | null
+  created: string
+  updated: string
+}
+
+export interface DataTestResult extends DataTestRunSummary {
+  data_test_id: string
+  rcm_id: string | null
+  planned_test_id: string | null
+  verdict_text: string
+  statistics: Array<{ label: string; value: string }>
+  viz: Record<string, unknown> | null
+  stdout: string
+  summary_frame: FramePayload | null
+  exception_frame: FramePayload | null
+  semantic_issues: string[]
+  join_diagnostics: Array<Record<string, unknown>>
+  error: string | null
 }
 
 export interface AuditProcedure {
@@ -335,9 +469,27 @@ export interface PlanningPayload {
   planning: PlanningRecord
   rcm: RcmRow[]
   procedures: AuditProcedure[]
-  document_tests: DocTest[]
+  data_tests: DataTest[]
+  observations: AuditObservation[]
+  rcm_migration: Record<string, unknown>
+  document_tests: Array<Pick<DocTest, 'id' | 'title' | 'status'>>
   findings: AuditFinding[]
   finding_rollups: FindingRollups
+}
+
+export interface AuditObservation {
+  id: string
+  rcm_id: string
+  planned_test_id: string
+  execution_ref: string
+  exception_count: number
+  summary: string
+  suggested_disposition: string
+  disposition: string | null
+  auditor_note: string
+  status: 'open' | 'disposed'
+  created: string
+  updated: string
 }
 
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
@@ -357,7 +509,12 @@ export interface AuditFinding {
   management_response: string
   rcm_refs: string[]
   procedure_refs: string[]
+  planned_test_refs: string[]
+  execution_refs: string[]
   evidence_refs: EvidenceRef[]
+  cause_pending: boolean
+  severity_rationale: string
+  auditor_confirmed: boolean
   source: 'agent' | 'manual' | 'promoted'
   created: string
   updated: string
@@ -371,6 +528,7 @@ export interface FindingSummary {
 
 export interface FindingRollups {
   by_rcm: Record<string, FindingSummary[]>
+  by_planned_test: Record<string, FindingSummary[]>
   by_procedure: Record<string, FindingSummary[]>
 }
 
@@ -378,6 +536,8 @@ export interface FindingsPayload {
   items: AuditFinding[]
   rcm: RcmRow[]
   procedures: AuditProcedure[]
+  data_tests: DataTest[]
+  document_tests: Array<Pick<DocTest, 'id' | 'title' | 'status'>>
   rollups: FindingRollups
   evidence_options: Array<{ anchor: EvidenceRef; label: string }>
 }
@@ -419,10 +579,14 @@ export interface ReportContext {
   workspace: { id: string; name: string; description: string }
   planning: Record<string, unknown>
   rcm: Array<Record<string, unknown>>
-  procedures: Array<Record<string, unknown>>
+  rcm_rollup: Array<Record<string, unknown>>
+  data_tests: Array<Record<string, unknown>>
   document_tests: Array<Record<string, unknown>>
   findings: Array<Record<string, unknown>>
-  scope_limitations: Array<{ procedure_id: string; text: string }>
+  draft_findings_excluded: string[]
+  scope_limitations: Array<{ rcm_id: string; planned_test_id: string; text: string }>
+  completion: Record<string, unknown>
+  preliminary: boolean
   statistics: Record<string, number>
 }
 
@@ -685,10 +849,9 @@ export interface DashboardOverview {
   rows: number
   documents: number
   rcm_rows: number
-  procedures: number
+  planned_tests: number
+  data_tests: number
   document_tests: number
-  analyses: number
-  rulesets: number
   findings: number
   pinned_tiles: number
   report_errors: number
@@ -1021,6 +1184,7 @@ export type AgentRunStatus =
   | 'paused'
   | 'interrupted'
   | 'completed'
+  | 'completed_with_open_items'
   | 'completed_with_issues'
   | 'failed'
   | 'cancelled'
@@ -1032,6 +1196,7 @@ export type AgentTaskStatus =
   | 'completed'
   | 'skipped'
   | 'failed'
+  | 'cancelled'
 
 export interface AgentTask {
   id: string
@@ -1123,6 +1288,7 @@ export interface AgentRun {
   id: string
   workspace_id: string
   parent_run_id: string | null
+  planning_basis_run_id?: string | null
   chat_id?: string | null
   source_message_id?: string | null
   kind: 'audit' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
@@ -1148,6 +1314,13 @@ export interface AgentRun {
   summary_markdown: string | null
   warnings: string[]
   error: string | null
+  cancellation?: {
+    actor: string
+    source: string
+    reason: string | null
+    requested_at: string | null
+    cancelled_at: string
+  } | null
   command?: AgentCommand
   goal?: AgentGoal
   graph_revision?: number
@@ -1167,6 +1340,7 @@ export interface AgentRunSummary {
   id: string
   workspace_id: string
   parent_run_id: string | null
+  planning_basis_run_id?: string | null
   chat_id?: string | null
   source_message_id?: string | null
   kind: 'audit' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
@@ -1178,6 +1352,7 @@ export interface AgentRunSummary {
   domain?: string | null
   task_counts: { total: number; completed: number; failed: number; blocked?: number }
   error: string | null
+  cancellation?: AgentRun['cancellation']
   has_summary: boolean
 }
 

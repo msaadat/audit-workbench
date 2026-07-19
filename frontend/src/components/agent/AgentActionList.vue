@@ -19,7 +19,7 @@ const severity: Partial<Record<AgentActionStatus, string>> = {
 const emptyMessage = computed(() => {
   if (props.runStatus === 'failed') return 'The run ended before an action plan was created.'
   if (props.runStatus === 'cancelled') return 'The run was cancelled before an action plan was created.'
-  if (props.runStatus === 'completed' || props.runStatus === 'completed_with_issues') {
+  if (props.runStatus === 'completed' || props.runStatus === 'completed_with_open_items' || props.runStatus === 'completed_with_issues') {
     return 'No command actions were needed.'
   }
   return 'The command is being interpreted.'
