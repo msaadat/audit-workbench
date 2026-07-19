@@ -384,6 +384,11 @@ def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | 
             "stdout": stdout,
         }
     null_columns = _all_null_columns(summary)
+    if engine == "validation":
+        # ``validation.summary_frame`` always includes the optional diagnostic
+        # error column. A null value means the rule evaluated normally, so it
+        # must not invalidate an otherwise substantive result frame.
+        null_columns = [name for name in null_columns if name != "error"]
     if null_columns:
         issues.append(f"Result columns are entirely null: {', '.join(null_columns)}.")
     return output, summary, exceptions, exception_count, list(dict.fromkeys(issues))

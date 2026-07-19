@@ -93,7 +93,70 @@ def _planning_context(workspace: Workspace) -> dict:
     }
 
 
-def build_context(workspace: Workspace) -> dict:
+def _incomplete_coverage(workspace: Workspace, workflow: dict | None = None) -> dict:
+    """Summarize coverage lost before deterministic report generation.
+
+    Workspace gaps remain authoritative after a partial workflow commits its
+    successful branches.  Workflow unit failures add the otherwise-transient
+    reason that those gaps remain, without turning report generation itself
+    into a completion gate.
+    """
+    stages = (workflow or {}).get("stages") or []
+    failed_statuses = {"failed", "conflict"}
+    failed_planning = sum(
+        unit.get("status") in failed_statuses
+        for stage in stages
+        if str(stage.get("capability") or "").startswith("planning.")
+        for unit in stage.get("units") or []
+    )
+    failed_definitions = sum(
+        unit.get("status") in failed_statuses
+        for stage in stages
+        if stage.get("capability") == "fieldwork.definitions_ready"
+        for unit in stage.get("units") or []
+    )
+    completion = rcm_execution.completion(workspace)
+    coverage = completion.get("coverage") or {}
+    missing_planning = (
+        len(completion.get("missing_planning_context") or [])
+        + int(not str(workspace.planning.get("apm_markdown") or "").strip())
+        + int(not workspace.rcm)
+        + len(coverage.get("rows_without_planned_tests") or [])
+    )
+    missing_definitions = sum(
+        len(item.get("missing") or [])
+        for item in coverage.get("planned_tests_without_execution") or []
+    )
+    return {
+        "failed_planning_units": failed_planning,
+        "missing_planning_items": missing_planning,
+        "failed_execution_definition_units": failed_definitions,
+        "missing_execution_definitions": missing_definitions,
+    }
+
+
+def _coverage_warnings(coverage: dict) -> list[str]:
+    warnings = []
+    failed_planning = int(coverage.get("failed_planning_units") or 0)
+    missing_planning = int(coverage.get("missing_planning_items") or 0)
+    if failed_planning or missing_planning:
+        warnings.append(
+            "Incomplete planning coverage: "
+            f"{failed_planning} planning workflow unit(s) failed and "
+            f"{missing_planning} required planning item(s) are missing."
+        )
+    failed_definitions = int(coverage.get("failed_execution_definition_units") or 0)
+    missing_definitions = int(coverage.get("missing_execution_definitions") or 0)
+    if failed_definitions or missing_definitions:
+        warnings.append(
+            "Incomplete execution-definition coverage: "
+            f"{failed_definitions} execution-definition workflow unit(s) failed and "
+            f"{missing_definitions} required execution definition(s) are missing."
+        )
+    return warnings
+
+
+def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict:
     """Build report context without structured rows or document excerpts."""
     rolled = rcm_execution.rollup(workspace)
     completion = rcm_execution.completion(workspace)
@@ -145,6 +208,7 @@ def build_context(workspace: Workspace) -> dict:
         )
         for rating in ("critical", "high", "medium", "low")
     }
+    incomplete_coverage = _incomplete_coverage(workspace, workflow)
     return {
         "workspace": {"id": workspace.id, "name": workspace.name, "description": workspace.description},
         "planning": {
@@ -187,6 +251,7 @@ def build_context(workspace: Workspace) -> dict:
         ],
         "completion": completion,
         "preliminary": completion["status"] != "completed",
+        "incomplete_coverage": incomplete_coverage,
         "statistics": {
             "rcm_rows": len(workspace.rcm),
             "risk_distribution": risk_distribution,
@@ -341,10 +406,17 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
         lines.append("No conclusion is drawn because no findings have been recorded.")
     lines.extend(["", "## Scope limitations", ""])
     limitations = context.get("scope_limitations") or []
-    lines.extend(
-        [f"- RCM {item['rcm_id']} / planned test {item['planned_test_id']}: {item['text']}" for item in limitations]
-        or ["No scope limitations were recorded."]
-    )
+    limitation_lines = [
+        f"- RCM {item['rcm_id']} / planned test {item['planned_test_id']}: {item['text']}"
+        for item in limitations
+    ]
+    if context.get("preliminary"):
+        limitation_lines.extend(
+            f"- {warning}" for warning in _coverage_warnings(
+                context.get("incomplete_coverage") or {}
+            )
+        )
+    lines.extend(limitation_lines or ["No scope limitations were recorded."])
     rendered = _template_order(workspace, "\n".join(lines).strip() + "\n", context)
     return _ensure_preliminary_label(rendered, bool(context.get("preliminary")))
 
@@ -411,10 +483,13 @@ def _record_activity(workspace: Workspace, markdown: str, *, run_id: str | None,
     )
 
 
-def generate(workspace: Workspace, *, use_model: bool = True, run_id: str | None = None) -> dict:
-    context = build_context(workspace)
+def generate(
+    workspace: Workspace, *, use_model: bool = True, run_id: str | None = None,
+    workflow: dict | None = None,
+) -> dict:
+    context = build_context(workspace, workflow=workflow)
     candidate = deterministic_markdown(workspace, context)
-    warnings: list[str] = []
+    warnings = _coverage_warnings(context["incomplete_coverage"])
     used_model = False
     chunked = False
     if use_model and llm.agent_status().get("configured"):

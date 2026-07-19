@@ -173,6 +173,55 @@ def test_deterministic_report_edit_aware_regeneration_and_reconcile(monkeypatch,
     assert replaced["markdown"] == replaced["generated_markdown"]
 
 
+def test_deterministic_preliminary_report_discloses_incomplete_workflow_coverage():
+    ws = workspaces.create_workspace("Incomplete report coverage")
+    ws.update_planning({
+        "context": {"objective": "Assess procurement", "scope": "Procure to pay"},
+        "apm_markdown": "# Audit Planning Memorandum\n\nProcurement scope.",
+    })
+    ws.add_rcm({
+        "process": "Purchasing", "risk": "Purchases bypass approval",
+        "control": "Approval workflow",
+    })
+    row = ws.add_rcm({
+        "process": "Payments", "risk": "Duplicate invoices are paid",
+        "control": "Duplicate invoice check",
+    })
+    ws.add_planned_test(row["id"], {
+        "title": "Test duplicate invoices",
+        "objective": "Identify duplicate invoices",
+        "criteria": "Each invoice is paid once.",
+        "steps": ["Inspect duplicate invoice identifiers."],
+        "method": "data_analytics",
+        "expected_evidence": "Exception listing",
+    })
+    workflow_state = {
+        "stages": [
+            {
+                "capability": "planning.planned_tests_ready",
+                "units": [{"status": "failed"}],
+            },
+            {
+                "capability": "fieldwork.definitions_ready",
+                "units": [{"status": "failed"}],
+            },
+        ]
+    }
+
+    generated = report.generate(ws, use_model=False, workflow=workflow_state)
+
+    assert generated["generation_warnings"] == [
+        "Incomplete planning coverage: 1 planning workflow unit(s) failed and "
+        "1 required planning item(s) are missing.",
+        "Incomplete execution-definition coverage: 1 execution-definition workflow "
+        "unit(s) failed and 1 required execution definition(s) are missing.",
+    ]
+    assert "# Preliminary Internal Audit Working Draft" in generated["markdown"]
+    assert "## Scope limitations" in generated["markdown"]
+    assert "Incomplete planning coverage: 1 planning workflow unit(s) failed" in generated["markdown"]
+    assert "Incomplete execution-definition coverage: 1 execution-definition workflow unit(s) failed" in generated["markdown"]
+
+
 def test_model_report_and_section_chunking_record_generation(monkeypatch, workspace_with_data):
     ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
     findings.add(ws, complete_finding_payload(rcm, procedure, planned, execution, anchor))

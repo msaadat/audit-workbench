@@ -458,8 +458,6 @@ class WorkflowRunner(CommandRunner):
         self.emit("stage_update", {"stage": copy.deepcopy(stage)})
 
     def _ensure_stage_units(self, stage: dict) -> list[dict]:
-        if stage.get("units"):
-            return stage["units"]
         capability = audit_capabilities.REGISTRY.get(stage["capability"])
         scope = {
             "target_refs": self.run["workflow"].get("target_refs") or [],
@@ -471,9 +469,28 @@ class WorkflowRunner(CommandRunner):
             raise LimitExceeded(
                 f"Stage '{stage['title']}' requires {len(specs)} units, above its {maximum}-unit limit."
             )
-        stage["units"] = [workflow.new_unit(spec, capability.id) for spec in specs]
-        self.save()
-        self.emit("stage_update", {"stage": copy.deepcopy(stage)})
+        units = stage.setdefault("units", [])
+        existing = {unit["id"]: unit for unit in units}
+        changed = False
+        for spec in specs:
+            current = existing.get(spec.id)
+            if current is None:
+                units.append(workflow.new_unit(spec, capability.id))
+                changed = True
+                continue
+            if current.get("status") == "queued":
+                refreshed = {
+                    "kind": spec.kind,
+                    "title": spec.title,
+                    "parent_refs": list(spec.parent_refs),
+                    "input_sha1": spec.input_sha1,
+                }
+                if any(current.get(key) != value for key, value in refreshed.items()):
+                    current.update(refreshed)
+                    changed = True
+        if changed:
+            self.save()
+            self.emit("stage_update", {"stage": copy.deepcopy(stage)})
         return stage["units"]
 
     # ------------------------------------------------------------- stages
@@ -1266,7 +1283,12 @@ class WorkflowRunner(CommandRunner):
         unit = units[0]
         self._set_unit(stage, unit, "running")
         try:
-            result = report.generate(self.ws, use_model=False, run_id=self.run["id"])
+            result = report.generate(
+                self.ws,
+                use_model=False,
+                run_id=self.run["id"],
+                workflow=self.run.get("workflow"),
+            )
             if result.get("requires_reconcile"):
                 self._set_unit(stage, unit, "awaiting_confirmation", error="Auditor-edited report preserved; reconcile the generated candidate.", result_refs=["report:draft"])
             else:

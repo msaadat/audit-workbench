@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, rcm_execution, report, working_papers, workspaces
-from app.agent import audit_capabilities, context_bundles, runner, store, workflow
+from app.agent import audit_capabilities, audit_workers, context_bundles, runner, store, workflow
 from app.agent.workflow_runner import initialize_known_workflow
 from app.main import create_app
 from app.workspace_transactions import (
@@ -79,6 +79,106 @@ def test_partial_goal_prunes_current_prerequisites():
     assert reused == resolved[:-1]
     assert [stage["capability"] for stage in stages] == ["planning.planned_tests_ready"]
     assert len(stages[0]["units"]) == 1
+
+
+def test_workflow_planned_test_repair_reports_all_contract_errors(monkeypatch):
+    ws = _planning_workspace("Planned test contract repair")
+    attempts = 0
+
+    def planned_tests(user):
+        nonlocal attempts
+        attempts += 1
+        base = {
+            "operation": "create",
+            "stable_slug": "duplicate-payments",
+            "title": "Test duplicate payments",
+            "objective": "Determine whether duplicate payments occurred",
+            "criteria": "Each invoice is paid once.",
+            "method": "data_analytics",
+            "expected_evidence": "Duplicate listing",
+        }
+        if attempts == 1:
+            return {
+                "planned_tests": [{
+                    **base,
+                    "steps": "Identify repeated invoice identifiers.",
+                    "sampling": "Full population",
+                    "thresholds": "Zero duplicates",
+                }]
+            }
+        assert "planned_tests[0].steps" in user
+        assert "planned_tests[0].sampling must be an object" in user
+        assert "planned_tests[0].thresholds must be an object" in user
+        return {
+            "planned_tests": [{
+                **base,
+                "steps": ["Identify repeated invoice identifiers."],
+                "sampling": {"strategy": "full_population", "size": None, "seed": 42},
+                "thresholds": {"maximum_duplicates": 0},
+            }]
+        }
+
+    fake = FakeAgentLLM({"agent:work_program": planned_tests})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": "Draft planned tests",
+            "requested_outcomes": ["planning.planned_tests_ready"],
+        },
+    )
+    completed = wait_run(ws, started["id"])
+    current = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert attempts == 2
+    assert current.rcm[0]["planned_tests"][0]["sampling"] == {
+        "strategy": "full_population", "size": None, "seed": 42, "stratify_by": None,
+    }
+
+
+def test_planned_test_validator_rejects_noncanonical_sampling_fields():
+    with pytest.raises(ValueError, match=r"planned_tests\[0\]\.sampling\.sample_size is not supported"):
+        audit_workers.validate_planned_tests(
+            {
+                "planned_tests": [{
+                    "operation": "create",
+                    "stable_slug": "duplicates",
+                    "title": "Test duplicates",
+                    "objective": "Identify duplicates",
+                    "criteria": "Identifiers are unique.",
+                    "steps": ["Identify repeated identifiers."],
+                    "method": "data_analytics",
+                    "expected_evidence": "Duplicate listing",
+                    "sampling": {"sample_size": 10},
+                }]
+            },
+            "RCM-TEST",
+        )
+
+
+def test_document_test_validator_rejects_non_object_spec():
+    ws = _planning_workspace("Document spec validation")
+    with pytest.raises(ValueError, match="document_test spec must be an object"):
+        audit_workers.validate_document_test(
+            {
+                "document_test": {
+                    "title": "Review policy",
+                    "kind": "review",
+                    "spec": "Review the policy",
+                    "items": [{"label": "Policy", "summary": "Review"}],
+                }
+            },
+            ws,
+        )
 
 
 def test_router_bundle_is_small_and_excludes_domain_catalogs():
@@ -482,6 +582,352 @@ def test_output_readiness_detects_changed_parents():
     assert audit_capabilities.REGISTRY.get("report.working_draft").readiness(
         ws, {}
     ).state == "stale"
+
+
+def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypatch):
+    ws = _planning_workspace("Partial workflow report coverage")
+    defined_row = ws.add_rcm({
+        "process": "Payments",
+        "risk": "Duplicate invoices are paid",
+        "control": "Duplicate invoice check",
+        "risk_rating": "high",
+    })
+    ws.add_planned_test(defined_row["id"], {
+        "title": "Test duplicate invoices",
+        "objective": "Determine whether duplicate invoices were paid",
+        "criteria": "Each invoice is paid once.",
+        "steps": ["Identify duplicate invoice identifiers."],
+        "method": "data_analytics",
+        "expected_evidence": "Exception listing",
+    })
+    fake = FakeAgentLLM({
+        "agent:work_program": {
+            "planned_tests": [{
+                "operation": "create",
+                "stable_slug": "approval-workflow",
+                "title": "Test approval workflow",
+                "objective": "Determine whether invoices were approved",
+                "criteria": "Invoices require approval.",
+                "steps": ["Inspect invoice approval status."],
+                "method": "data_analytics",
+                "expected_evidence": "Approval exception listing",
+                "sampling": "Full population",
+                "thresholds": {},
+            }]
+        },
+        "agent:data_test_spec": {"data_test": "not an object"},
+    })
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Continue through a preliminary report.",
+            "requested_outcomes": ["report.working_draft"],
+            "refresh_policy": "missing_or_stale",
+        },
+    )
+    completed = wait_run(ws, started["id"])
+    current = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "failed"
+    assert current.report["markdown"]
+    assert current.report["generation_warnings"] == [
+        "Incomplete planning coverage: 1 planning workflow unit(s) failed and "
+        "1 required planning item(s) are missing.",
+        "Incomplete execution-definition coverage: 1 execution-definition workflow "
+        "unit(s) failed and 1 required execution definition(s) are missing.",
+    ]
+    assert "# Preliminary Internal Audit Working Draft" in current.report["markdown"]
+    assert "Incomplete planning coverage" in current.report["markdown"]
+    assert "Incomplete execution-definition coverage" in current.report["markdown"]
+
+
+def test_stage_units_expand_after_upstream_planned_tests_are_created(monkeypatch):
+    ws = _planning_workspace("Dynamic definition expansion")
+    ws.add_table(
+        "transactions.csv",
+        pl.DataFrame({"invoice": [1, 1, 2]}).write_csv().encode(),
+    )
+    existing_row = ws.add_rcm({
+        "process": "Payments",
+        "risk": "Duplicate invoices",
+        "control": "Duplicate invoice check",
+        "risk_rating": "high",
+    })
+    ws.add_planned_test(
+        existing_row["id"],
+        {
+            "title": "Existing duplicate test",
+            "objective": "Identify duplicate invoices",
+            "criteria": "Invoice identifiers are unique.",
+            "steps": ["Run duplicate analysis."],
+            "method": "data_analytics",
+            "expected_evidence": "Duplicate listing",
+        },
+    )
+    fake = FakeAgentLLM({
+        "agent:work_program": {
+            "planned_tests": [{
+                "operation": "create",
+                "stable_slug": "new-duplicate-test",
+                "title": "New duplicate test",
+                "objective": "Identify duplicate payments",
+                "criteria": "Payment identifiers are unique.",
+                "steps": ["Run duplicate analysis."],
+                "method": "data_analytics",
+                "expected_evidence": "Duplicate listing",
+                "sampling": {"strategy": "full_population", "seed": 42},
+                "thresholds": {"maximum_duplicates": 0},
+            }]
+        },
+        "agent:data_test_spec": {
+            "data_test": {
+                "title": "Duplicate identifiers",
+                "objective": "Identify duplicate identifiers",
+                "engine": "analytics",
+                "table_refs": ["transactions"],
+                "spec": {"test_id": "duplicates", "params": {"columns": ["invoice"]}},
+            }
+        },
+    })
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": "Complete execution definitions",
+            "requested_outcomes": ["fieldwork.definitions_ready"],
+        },
+    )
+    completed = wait_run(ws, started["id"])
+    current = workspaces.load_workspace(ws.id)
+    definitions = next(
+        stage for stage in completed["workflow"]["stages"]
+        if stage["capability"] == "fieldwork.definitions_ready"
+    )
+
+    assert completed["status"] == "completed"
+    assert len(definitions["units"]) == 2
+    assert {unit["status"] for unit in definitions["units"]} == {"succeeded"}
+    assert len(current.data_tests) == 2
+
+
+def test_data_test_definition_repairs_unknown_analytics_id(monkeypatch):
+    ws = _planning_workspace("Analytics definition repair")
+    ws.add_table(
+        "transactions.csv",
+        pl.DataFrame({"invoice": [1, 1, 2], "amount": [10.0, 10.0, 20.0]}).write_csv().encode(),
+    )
+    row = ws.rcm[0]
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Test duplicate invoices",
+            "objective": "Identify duplicate invoices",
+            "criteria": "Invoice identifiers are unique.",
+            "steps": ["Run duplicate analysis."],
+            "method": "data_analytics",
+            "expected_evidence": "Duplicate listing",
+        },
+    )
+    attempts = 0
+
+    def definition(user):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            test_id = planned["id"]
+        elif attempts == 2:
+            assert "Unknown analytics test" in user
+            test_id = "still-not-a-test"
+        else:
+            assert "Unknown analytics test" in user
+            test_id = "duplicates"
+        return {
+            "data_test": {
+                "title": "Duplicate invoices",
+                "objective": "Identify duplicate invoice identifiers",
+                "engine": "analytics",
+                "table_refs": ["transactions"],
+                "spec": {"test_id": test_id, "params": {"columns": ["invoice"]}},
+            }
+        }
+
+    fake = FakeAgentLLM({"agent:data_test_spec": definition})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": "Create execution definitions",
+            "requested_outcomes": ["fieldwork.definitions_ready"],
+        },
+    )
+    completed = wait_run(ws, started["id"])
+    current = workspaces.load_workspace(ws.id)
+    stage = next(
+        value for value in completed["workflow"]["stages"]
+        if value["capability"] == "fieldwork.definitions_ready"
+    )
+    proposal = store.read_sidecar(current, completed["id"], stage["units"][0]["proposal_sidecar"])
+
+    assert completed["status"] == "completed"
+    assert attempts == 3
+    assert current.data_tests[0]["spec"]["test_id"] == "duplicates"
+    assert proposal["spec"]["test_id"] == "duplicates"
+
+
+def test_data_test_definition_repairs_sql_like_validation_rule(monkeypatch):
+    ws = _planning_workspace("Validation definition repair")
+    ws.add_table(
+        "transactions.csv",
+        pl.DataFrame({"invoice": [1, None, 2]}).write_csv().encode(),
+    )
+    row = ws.rcm[0]
+    ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Validate invoice identifiers",
+            "objective": "Identify missing invoice identifiers",
+            "criteria": "Invoice identifiers are present.",
+            "steps": ["Validate invoice identifiers."],
+            "method": "validation",
+            "expected_evidence": "Validation exceptions",
+        },
+    )
+    attempts = 0
+
+    def definition(user):
+        nonlocal attempts
+        attempts += 1
+        rules = (
+            [{"name": "invoice_required", "code": "SELECT * FROM transactions"}]
+            if attempts == 1
+            else [{"check": "required", "column": "invoice", "params": {}}]
+        )
+        if attempts == 2:
+            assert "Unknown check" in user
+        return {
+            "data_test": {
+                "title": "Required invoice identifiers",
+                "objective": "Identify missing invoice identifiers",
+                "engine": "validation",
+                "table_refs": ["transactions"],
+                "spec": {"rules": rules},
+            }
+        }
+
+    fake = FakeAgentLLM({"agent:data_test_spec": definition})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": "Create validation definition",
+            "requested_outcomes": ["fieldwork.definitions_ready"],
+        },
+    )
+    completed = wait_run(ws, started["id"])
+    current = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert attempts == 2
+    assert current.data_tests[0]["spec"]["rules"][0]["check"] == "required"
+
+
+def test_document_test_definition_repairs_comparison_method(monkeypatch):
+    ws = _planning_workspace("Document definition repair")
+    document = documents.add_document(ws, "Approval.txt", b"Management approved the request.")
+    row = ws.rcm[0]
+    ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Inspect approval evidence",
+            "objective": "Determine whether approval was documented",
+            "criteria": "Management approval is present.",
+            "steps": ["Inspect the approval evidence."],
+            "method": "document_inspection",
+            "expected_evidence": "Approval document",
+        },
+    )
+    attempts = 0
+
+    def definition(user):
+        nonlocal attempts
+        attempts += 1
+        method = "Document Content Analysis" if attempts == 1 else "normalized"
+        if attempts == 2:
+            assert "Unknown comparison method" in user
+        return {
+            "document_test": {
+                "title": "Approval evidence",
+                "kind": "vouching",
+                "spec": {},
+                "items": [{
+                    "label": "Management approval",
+                    "document_ids": [document["id"]],
+                    "checks": [{
+                        "field": "approval",
+                        "expected": "Management approved",
+                        "method": method,
+                    }],
+                }],
+            }
+        }
+
+    fake = FakeAgentLLM({"agent:document_test_spec": definition})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": "Create document definition",
+            "requested_outcomes": ["fieldwork.definitions_ready"],
+        },
+    )
+    completed = wait_run(ws, started["id"])
+    current = workspaces.load_workspace(ws.id)
+    test = doc_tests.load_test(current, doc_tests.list_tests(current)[0]["id"])
+
+    assert completed["status"] == "completed"
+    assert attempts == 2
+    assert test["items"][0]["checks"][0]["method"] == "normalized"
 
 
 def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):

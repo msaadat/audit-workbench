@@ -236,6 +236,21 @@ def data_test_spec(workspace: Workspace, row: dict, planned: dict) -> ContextBun
         "data_test_schema": {
             "required": ["title", "objective", "engine", "table_refs", "spec"],
             "engines": ["analytics", "validation", "polars"],
+            "analytics_spec": {
+                "test_id": "exact id from analytics_registry",
+                "params": "object matching that registry entry",
+            },
+            "validation_spec": {
+                "rules": [
+                    {
+                        "check": "exact id from validation_registry",
+                        "column": "exact column name when the check is column-scoped",
+                        "params": "object matching that registry entry",
+                    }
+                ],
+                "sql_supported": False,
+            },
+            "polars_spec": {"code": "safe Polars assigning a DataFrame to result"},
         },
         "current_matching_tests": [
             item for item in workspace.data_tests if item.get("planned_test_id") == planned.get("id")
@@ -291,9 +306,15 @@ def document_test_spec(workspace: Workspace, row: dict, planned: dict) -> Contex
             "available_but_not_included": {"documents": omitted_documents},
             "document_analysis_manifest": analyses,
             "supported_builders": ["vouching", "attribute", "review", "qa"],
+            "comparison_methods": sorted(doc_tests.METHODS),
             "required_item_contracts": {
-                "vouching": "items need document_ids and comparison checks",
-                "attribute": "items need document_ids and attributes",
+                "vouching": {
+                    "required": ["label", "document_ids", "checks"],
+                    "check": ["field", "expected", "method"],
+                },
+                "attribute": {
+                    "required": ["label", "document_ids", "attributes"],
+                },
                 "review": "items need a document page/excerpt/summary",
                 "qa": "items need document_ids and a question",
             },

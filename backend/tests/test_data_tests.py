@@ -103,6 +103,8 @@ def test_validation_and_polars_engines_persist_bounded_exception_results(workspa
     validation_run = data_tests.run(ws, validation_test["id"])
     assert validation_run["verdict"] == "warn"
     assert validation_run["exception_count"] == 1
+    assert validation_run["semantic_valid"] is True
+    assert not any("entirely null" in issue for issue in validation_run["semantic_issues"])
     assert validation_run["exception_frame"]["rows"][0][-1] == "RULE-1"
 
     polars_test = data_tests.create(

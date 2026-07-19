@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..workspaces import PLANNED_TEST_METHODS, WorkspaceError
+from .. import data_tests, doc_tests
+from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError
 from . import context_bundles, prompts
 
 ROUTER_SYSTEM = f"""[agent:workflow_router]
@@ -20,18 +21,25 @@ Draft executable planned tests for exactly one supplied RCM row. Return an
 object with planned_tests. Each item must contain operation (create|update),
 planned_test_id for updates, stable_slug, title, objective, criteria, steps as
 non-empty strings, method (data_analytics|validation|document_inspection|inquiry|hybrid|evidence_unavailable),
-expected_evidence, sampling, and thresholds. Link only to the supplied RCM row
-using rcm_id. Choose the method based on the available evidence and data. Do
-not define Data Tests or Document Tests here. {prompts.JSON_RULES}"""
+and expected_evidence. Optional sampling must be an object containing only
+strategy (string), size (positive integer or null), seed (integer), and
+stratify_by (string or null). Optional thresholds must be an object with short
+names and JSON scalar values; never put explanatory prose directly in sampling
+or thresholds. Link only to the supplied RCM row using rcm_id. Choose the
+method based on the available evidence and data. Do not define Data Tests or
+Document Tests here. {prompts.JSON_RULES}"""
 
 DATA_TEST_SPEC_SYSTEM = f"""[agent:data_test_spec]
 Translate one planned test into exactly one executable durable Data Test.
 Return an object with data_test containing title, objective, engine
 (analytics|validation|polars), table_refs, and spec. Use exact table and column
 names and only supplied registry IDs. For analytics, spec contains test_id and
-params. For validation, spec contains non-empty rules. For polars, spec contains
-safe Polars code assigning a DataFrame to result; imports and filesystem or
-network access are forbidden. Do not return document work. {prompts.JSON_RULES}"""
+params; test_id is an analytics_registry id, never the planned-test id. For
+validation, spec contains non-empty rules shaped as objects with check (a
+validation_registry id), optional column, and params; SQL is not supported.
+For polars, spec contains safe Polars code assigning a DataFrame to result;
+imports and filesystem or network access are forbidden. Do not return document
+work. {prompts.JSON_RULES}"""
 
 DOCUMENT_TEST_SPEC_SYSTEM = f"""[agent:document_test_spec]
 Translate one planned test into exactly one substantive durable Document Test.
@@ -39,6 +47,7 @@ Return an object with document_test containing title, kind
 (vouching|attribute|review|qa), spec, and non-empty items. Every item must have
 a label and its exact attached document_ids when evidence is available.
 Vouching items need checks with field, expected, method, and optional tolerance;
+method must be exact, normalized, fuzzy, numeric_tolerance, or date_tolerance.
 attribute items need attributes; review items need page, excerpt, or summary;
 Q&A items need a concrete question. If evidence is unavailable, still return a
 concrete question/attribute/check plus missing_evidence containing required
@@ -58,9 +67,14 @@ def _strings(value: object) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("expected an array")
     result = [str(item).strip() for item in value]
-    if any(not item for item in result):
-        raise ValueError("array values must be non-empty strings")
+    if not result or any(not item for item in result):
+        raise ValueError("array must contain non-empty strings")
     return result
+
+
+def _contract_error(errors: list[str]) -> None:
+    if errors:
+        raise ValueError("; ".join(errors))
 
 
 def validate_route(payload: dict, supported: set[str]) -> dict:
@@ -103,28 +117,68 @@ def validate_planned_tests(payload: dict, rcm_id: str) -> dict:
     if not isinstance(values, list) or not values:
         raise ValueError("planned_tests must be a non-empty array")
     normalized = []
+    errors: list[str] = []
     for index, raw in enumerate(values, 1):
+        path = f"planned_tests[{index - 1}]"
         if not isinstance(raw, dict):
-            raise ValueError(f"planned test {index} must be an object")
+            errors.append(f"{path} must be an object")
+            continue
         value = dict(raw)
         required = ("operation", "stable_slug", "title", "objective", "criteria", "method", "expected_evidence")
         missing = [key for key in required if not isinstance(value.get(key), str) or not value[key].strip()]
-        if missing:
-            raise ValueError(f"planned test {index} is missing {missing[0]}")
-        if value["operation"] not in {"create", "update"}:
-            raise ValueError(f"planned test {index} operation is unsupported")
-        if value["operation"] == "update" and not str(value.get("planned_test_id") or "").strip():
-            raise ValueError(f"planned test {index} needs planned_test_id for update")
-        if value["method"] not in PLANNED_TEST_METHODS:
-            raise ValueError(f"planned test {index} method is unsupported")
-        value["steps"] = _strings(value.get("steps"))
-        if value.get("sampling") is not None and not isinstance(value.get("sampling"), dict):
-            raise ValueError(f"planned test {index} sampling must be an object")
-        if value.get("thresholds") is not None and not isinstance(value.get("thresholds"), dict):
-            raise ValueError(f"planned test {index} thresholds must be an object")
+        errors.extend(f"{path}.{key} must be a non-empty string" for key in missing)
+        operation = value.get("operation")
+        if operation not in {"create", "update"}:
+            errors.append(f"{path}.operation is unsupported")
+        if operation == "update" and not str(value.get("planned_test_id") or "").strip():
+            errors.append(f"{path}.planned_test_id is required for update")
+        if value.get("method") not in PLANNED_TEST_METHODS:
+            errors.append(f"{path}.method is unsupported")
+        try:
+            value["steps"] = _strings(value.get("steps"))
+        except ValueError as error:
+            errors.append(f"{path}.steps {error}")
+        sampling = value.get("sampling")
+        if sampling is not None:
+            if not isinstance(sampling, dict):
+                errors.append(f"{path}.sampling must be an object")
+            else:
+                unknown = sorted(set(sampling) - {"strategy", "size", "seed", "stratify_by"})
+                if unknown:
+                    errors.append(f"{path}.sampling.{unknown[0]} is not supported")
+                if "strategy" in sampling and not isinstance(sampling["strategy"], str):
+                    errors.append(f"{path}.sampling.strategy must be a string")
+                size = sampling.get("size")
+                if size is not None and (
+                    not isinstance(size, int) or isinstance(size, bool) or size < 1
+                ):
+                    errors.append(f"{path}.sampling.size must be a positive integer or null")
+                seed = sampling.get("seed")
+                if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+                    errors.append(f"{path}.sampling.seed must be an integer")
+                if sampling.get("stratify_by") is not None and not isinstance(
+                    sampling.get("stratify_by"), str
+                ):
+                    errors.append(f"{path}.sampling.stratify_by must be a string or null")
+        thresholds = value.get("thresholds")
+        if thresholds is not None:
+            if not isinstance(thresholds, dict):
+                errors.append(f"{path}.thresholds must be an object")
+            else:
+                invalid = next(
+                    (
+                        key
+                        for key, threshold in thresholds.items()
+                        if not isinstance(threshold, (str, int, float, bool, type(None)))
+                    ),
+                    None,
+                )
+                if invalid is not None:
+                    errors.append(f"{path}.thresholds.{invalid} must be a JSON scalar")
         value["rcm_id"] = rcm_id
         value["rcm_refs"] = [rcm_id]
         normalized.append(value)
+    _contract_error(errors)
     return {"planned_tests": normalized}
 
 
@@ -134,11 +188,12 @@ def planned_tests(runner, bundle: context_bundles.ContextBundle, rcm_id: str) ->
         bundle.serialized(),
         activity={"artifact_refs": [f"rcm:{rcm_id}"], "context_metrics": bundle.metrics()},
         validator=lambda value: validate_planned_tests(value, rcm_id),
+        attempts=3,
     )
     return payload["planned_tests"]
 
 
-def validate_data_test(payload: dict) -> dict:
+def validate_data_test(payload: dict, workspace: Workspace) -> dict:
     value = payload.get("data_test")
     if not isinstance(value, dict):
         raise ValueError("data_test must be an object")
@@ -151,7 +206,15 @@ def validate_data_test(payload: dict) -> dict:
         raise ValueError("data_test table_refs must be non-empty")
     if not isinstance(value.get("spec"), dict):
         raise ValueError("data_test spec must be an object")
-    return {"data_test": value}
+    normalized = dict(value)
+    try:
+        normalized["table_refs"] = data_tests._table_refs(workspace, value["table_refs"])
+        normalized["spec"], _warnings = data_tests._validate_spec(
+            workspace, str(value["engine"]), normalized["table_refs"], value["spec"]
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"data_test definition is invalid: {error}") from error
+    return {"data_test": normalized}
 
 
 def data_test_spec(runner, bundle: context_bundles.ContextBundle, parent_refs: list[str]) -> dict:
@@ -159,12 +222,13 @@ def data_test_spec(runner, bundle: context_bundles.ContextBundle, parent_refs: l
         DATA_TEST_SPEC_SYSTEM,
         bundle.serialized(),
         activity={"artifact_refs": parent_refs, "context_metrics": bundle.metrics()},
-        validator=validate_data_test,
+        validator=lambda value: validate_data_test(value, runner.ws),
+        attempts=3,
     )
     return dict(payload["data_test"])
 
 
-def validate_document_test(payload: dict) -> dict:
+def validate_document_test(payload: dict, workspace: Workspace) -> dict:
     value = payload.get("document_test")
     if not isinstance(value, dict):
         raise ValueError("document_test must be an object")
@@ -172,15 +236,37 @@ def validate_document_test(payload: dict) -> dict:
         raise ValueError("document_test kind is unsupported")
     if not str(value.get("title") or "").strip():
         raise ValueError("document_test title is required")
+    if not isinstance(value.get("spec"), dict):
+        raise ValueError("document_test spec must be an object")
     items = value.get("items")
     if not isinstance(items, list) or not items:
         raise ValueError("document_test items must be non-empty")
     kind = value["kind"]
+    known_documents = {str(item.get("id")) for item in workspace.documents}
     for index, item in enumerate(items, 1):
         if not isinstance(item, dict) or not str(item.get("label") or "").strip():
             raise ValueError(f"document_test item {index} needs a label")
+        missing_document = next(
+            (
+                document_id
+                for document_id in item.get("document_ids") or []
+                if str(document_id) not in known_documents
+            ),
+            None,
+        )
+        if missing_document is not None:
+            raise ValueError(f"document_test item {index} references unknown document '{missing_document}'")
         if kind == "vouching" and not item.get("checks"):
             raise ValueError(f"document_test item {index} needs comparison checks")
+        if kind == "vouching":
+            for check_index, check in enumerate(item.get("checks") or [], 1):
+                if not isinstance(check, dict):
+                    raise ValueError(
+                        f"document_test item {index} check {check_index} must be an object"
+                    )
+                method = str(check.get("method") or "normalized")
+                if method not in doc_tests.METHODS:
+                    raise ValueError(f"Unknown comparison method '{method}'.")
         if kind == "attribute" and not item.get("attributes"):
             raise ValueError(f"document_test item {index} needs attributes")
         if kind == "review" and not any(item.get(key) not in (None, "") for key in ("page", "excerpt", "summary")):
@@ -195,7 +281,8 @@ def document_test_spec(runner, bundle: context_bundles.ContextBundle, parent_ref
         DOCUMENT_TEST_SPEC_SYSTEM,
         bundle.serialized(),
         activity={"artifact_refs": parent_refs, "context_metrics": bundle.metrics()},
-        validator=validate_document_test,
+        validator=lambda value: validate_document_test(value, runner.ws),
+        attempts=3,
     )
     return dict(payload["document_test"])
 

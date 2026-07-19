@@ -430,10 +430,12 @@ class BaseRunner:
         activity: dict | None = None,
         *,
         validator: Callable[[dict], dict] | None = None,
+        attempts: int = LLM_JSON_ATTEMPTS,
     ) -> dict:
         last_error = ""
         attempt_user = user
-        for attempt in range(1, LLM_JSON_ATTEMPTS + 1):
+        maximum_attempts = max(1, min(int(attempts), 4))
+        for attempt in range(1, maximum_attempts + 1):
             content = self._llm_content(system, attempt_user, activity, attempt=attempt)
             try:
                 payload = prompts.parse_json_object(content)
