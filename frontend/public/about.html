@@ -311,24 +311,17 @@
     .source-card small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
     .converge { display: flex; align-items: center; gap: 13px; margin: 13px 0; color: var(--teal-deep); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
     .converge::before, .converge::after { content: ""; height: 1px; flex: 1; background: var(--line); }
-    .flow-track { display: grid; grid-template-columns: repeat(6, 1fr); gap: 9px; }
-    .flow-step {
-      position: relative;
-      min-height: 142px;
-      padding: 17px 16px;
-      border: 1px solid #cfdce8;
-      border-radius: 12px;
-      background: #fff;
-    }
-    .flow-step::after {
+    .film-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; }
+    .film-item { position: relative; margin: 0; }
+    .film-item::after {
       content: "→";
       position: absolute;
       z-index: 2;
-      right: -15px;
-      top: 54px;
+      right: -18px;
+      top: 34%;
       display: grid;
-      width: 21px;
-      height: 21px;
+      width: 22px;
+      height: 22px;
       place-items: center;
       border: 1px solid var(--line);
       border-radius: 50%;
@@ -337,13 +330,22 @@
       font-size: 11px;
       font-weight: 900;
     }
-    .flow-step:last-child::after { display: none; }
-    .step-no { color: var(--teal-deep); font-size: 10px; font-weight: 850; letter-spacing: .1em; }
-    .flow-step h3 { margin: 12px 0 6px; font-size: 16px; line-height: 1.15; letter-spacing: -.025em; }
-    .flow-step p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
-    .flow-step.key { color: #fff; border-color: var(--teal-deep); background: linear-gradient(145deg, #0d4e50, #0f766e); }
-    .flow-step.key .step-no { color: var(--mint); }
-    .flow-step.key p { color: #cbe9e5; }
+    .film-item:last-child::after { display: none; }
+    .film-shot {
+      border: 1px solid #c6d3e0;
+      border-radius: 9px;
+      background: #fff;
+      box-shadow: 0 12px 30px rgba(11,31,54,.12);
+      overflow: hidden;
+      transition: transform .25s, box-shadow .25s;
+    }
+    .film-item:hover .film-shot { transform: translateY(-5px); box-shadow: 0 20px 42px rgba(11,31,54,.18); }
+    .film-item.key .film-shot { border-color: var(--teal); box-shadow: 0 0 0 2px rgba(20,184,166,.35), 0 12px 30px rgba(11,31,54,.12); }
+    .film-shot img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; }
+    .film-cap { margin-top: 10px; }
+    .film-cap small { display: block; color: var(--teal-deep); font-size: 9.5px; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .film-cap b { display: block; margin-top: 3px; font-size: 13.5px; letter-spacing: -.02em; }
+    .film-cap span { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.35; }
     .governance-rail {
       display: flex;
       align-items: center;
@@ -447,9 +449,8 @@
       .scroll-hint { margin-top: 24px; }
       .source-row { margin-top: 17px; }
       .source-card { padding: 11px 15px; }
-      .flow-step { min-height: 120px; padding: 13px; }
-      .flow-step h3 { margin-top: 8px; font-size: 14px; }
-      .flow-step p { font-size: 10.5px; }
+      .film-cap span { display: none; }
+      .film-cap b { font-size: 12.5px; }
       .trace-layout { margin-top: 19px; }
       .trace-node { min-height: 175px; padding: 14px; }
       .trace-node p { font-size: 10.5px; }
@@ -483,9 +484,9 @@
       .outcome-strip { grid-template-columns: 1fr 1fr; }
       .outcome:nth-child(2) { border-right: 0; }
       .outcome:nth-child(-n+2) { border-bottom: 1px solid rgba(255,255,255,.12); }
-      .source-row, .flow-track, .trace-chain { grid-template-columns: 1fr; }
-      .flow-step, .trace-node { min-height: auto; }
-      .flow-step::after, .trace-node::after { display: none; }
+      .source-row, .film-strip, .trace-chain { grid-template-columns: 1fr; }
+      .trace-node { min-height: auto; }
+      .film-item::after, .trace-node::after { display: none; }
       .governance-rail { flex-direction: column; align-items: flex-start; gap: 6px; }
       .shot img { max-height: none; }
       .scroll-hint { display: none; }
@@ -549,13 +550,27 @@
 
           <div class="converge" data-anim="3">Engagement understanding</div>
 
-          <div class="flow-track" data-anim="3" aria-label="Audit transformation flow">
-            <article class="flow-step"><span class="step-no">01 · UNDERSTAND</span><h3>Context &amp; scope</h3><p>Objectives, stakeholders, processes and materiality are established.</p></article>
-            <article class="flow-step"><span class="step-no">02 · PLAN</span><h3>APM</h3><p>The engagement approach, scope and priorities become an editable plan.</p></article>
-            <article class="flow-step key"><span class="step-no">03 · STRUCTURE</span><h3>RCM</h3><p>Risks, controls and planned procedures form the fieldwork spine.</p></article>
-            <article class="flow-step"><span class="step-no">04 · EXECUTE</span><h3>Testing</h3><p>Data and document procedures assess each planned control or risk.</p></article>
-            <article class="flow-step"><span class="step-no">05 · EVALUATE</span><h3>Results</h3><p>Exceptions become reviewed observations with clear dispositions.</p></article>
-            <article class="flow-step"><span class="step-no">06 · COMMUNICATE</span><h3>Report</h3><p>Supported findings and working papers inform the audit report.</p></article>
+          <div class="film-strip" data-anim="3" aria-label="Audit transformation flow, shown in the product">
+            <figure class="film-item">
+              <div class="film-shot"><img src="/showcase/sop-context.png" alt="Procurement SOP extract previewed in the document library" loading="lazy" /></div>
+              <figcaption class="film-cap"><small>01 · Context</small><b>Policies &amp; SOPs</b><span>Criteria and evidence are ingested and previewed.</span></figcaption>
+            </figure>
+            <figure class="film-item">
+              <div class="film-shot"><img src="/showcase/planning-apm.png" alt="Generated Audit Planning Memorandum in the editor" loading="lazy" /></div>
+              <figcaption class="film-cap"><small>02 · Plan</small><b>Generated APM</b><span>Context becomes an editable planning memorandum.</span></figcaption>
+            </figure>
+            <figure class="film-item key">
+              <div class="film-shot"><img src="/showcase/rcm-matrix.png" alt="Generated Risk and Control Matrix with planned tests" loading="lazy" /></div>
+              <figcaption class="film-cap"><small>03 · Structure</small><b>Generated RCM</b><span>Risks, controls and planned procedures form the spine.</span></figcaption>
+            </figure>
+            <figure class="film-item">
+              <div class="film-shot"><img src="/showcase/doc-tests.png" alt="Document test worklist with matched and manual-review items" loading="lazy" /></div>
+              <figcaption class="film-cap"><small>04 · Execute</small><b>Data &amp; document tests</b><span>RCM-linked procedures run with durable results.</span></figcaption>
+            </figure>
+            <figure class="film-item">
+              <div class="film-shot"><img src="/showcase/report-draft.png" alt="Preliminary internal audit working draft in the report editor" loading="lazy" /></div>
+              <figcaption class="film-cap"><small>05 · Communicate</small><b>Findings &amp; report</b><span>Supported findings inform the drafted report.</span></figcaption>
+            </figure>
           </div>
 
           <div class="governance-rail" data-anim="4">
@@ -565,7 +580,29 @@
       </div>
     </section>
 
-    <!-- 03 · Leadership value -->
+    <!-- 03 · Agent -->
+    <section class="slide" id="agent" data-title="Agent">
+      <div class="slide-inner">
+        <div class="shell split">
+          <div class="split-copy" data-anim>
+            <p class="eyebrow">Agentic execution</p>
+            <h2>One instruction. The engagement gets built.</h2>
+            <p>From the assistant panel, a single request — <em>“Prepare a full audit working draft”</em> — planned and executed a 60-task run in this engagement: reading the SOP and minutes, drafting the APM and RCM, preparing tests, creating findings and generating working papers and the report draft.</p>
+            <div class="value-list">
+              <div class="value-item"><span class="value-no">01</span><div><strong>Two working modes</strong><p>Auto applies validated changes; Ask pauses at editable approval batches.</p></div></div>
+              <div class="value-item"><span class="value-no">02</span><div><strong>Steerable, durable runs</strong><p>Pause, resume, redirect or cancel — progress and history survive restarts.</p></div></div>
+              <div class="value-item"><span class="value-no">03</span><div><strong>Honest status</strong><p>Issues are reported, not hidden — completed work stays clearly separated from open items.</p></div></div>
+            </div>
+          </div>
+          <div class="split-media" data-anim="2">
+            <div class="shot"><img src="/showcase/agent-chat.png" alt="Audit assistant chat panel beside the generated planning memorandum, showing a completed 60-task agent run" loading="lazy" /></div>
+            <p class="media-caption">The assistant panel keeps the run, its tasks and its results beside the work itself.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 · Leadership value -->
     <section class="slide" id="leadership-value" data-title="Leadership value">
       <div class="slide-inner">
         <div class="shell split">
