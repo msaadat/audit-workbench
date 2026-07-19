@@ -122,12 +122,14 @@ class DocumentAnalysisRunner(BaseRunner):
                  "context_outcome": "supplied", "cache_hit": False,
                  "document_ids": [document_id], "page_ranges": chunk["pages"],
                  "source_hashes": [document["sha1"]]},
+                validator=lambda value, source_chunk=chunk: document_analysis.validate_analysis_map(
+                    value, [source_chunk], document["sha1"]
+                ),
             )
-            validated = document_analysis.validate_citations(payload.get("citations") or [], [chunk], document["sha1"])
             mapped = {"chunk_id": chunk["id"], "pages": chunk["pages"],
-                      "summary_markdown": str(payload.get("summary_markdown") or ""),
-                      "audit_notes_markdown": str(payload.get("audit_notes_markdown") or ""),
-                      "citations": validated}
+                      "summary_markdown": payload["summary_markdown"],
+                      "audit_notes_markdown": payload["audit_notes_markdown"],
+                      "citations": payload["citations"]}
             progress["completed_chunks"][chunk["id"]] = mapped
             orientation = (orientation + "\n\n" + mapped["summary_markdown"])[-4000:]
             self.save()
@@ -147,6 +149,7 @@ class DocumentAnalysisRunner(BaseRunner):
             ), "context_outcome": "supplied", "cache_hit": False,
              "document_ids": [document_id], "page_ranges": sorted({page for mapped in maps for page in mapped["pages"]}),
              "source_hashes": [document["sha1"]]},
+            validator=document_analysis.validate_analysis_text,
         ) if len(maps) > 1 else maps[0]
         citations = [citation for mapped in maps for citation in mapped["citations"]]
         finished_ids = set(progress["completed_chunks"])

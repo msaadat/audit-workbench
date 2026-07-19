@@ -13,6 +13,20 @@ from app.agent import runner as agent_runner  # noqa: E402
 from app.agent import store as agent_store  # noqa: E402
 
 
+def _document_analysis_response(user: str) -> dict:
+    source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].strip()
+    page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
+    excerpt = source[:240].strip()
+    return {
+        "summary_markdown": "## Document summary\n\nThe document describes requirements and responsibilities. [C1]",
+        "audit_notes_markdown": (
+            "## Audit notes\n\nThe requirements need operating evidence before implementation "
+            "can be concluded. [C1]"
+        ),
+        "citations": [{"id": "C1", "page": page, "excerpt": excerpt}],
+    }
+
+
 @pytest.fixture(autouse=True)
 def isolated_workspaces(tmp_path, monkeypatch):
     """Point workspace storage at a temp folder and clear the frame cache."""
@@ -138,6 +152,7 @@ class FakeAgentLLM:
             ],
             "summary_markdown": "# Analyst Summary\n\nScripted test summary.",
         },
+        "agent:document_analysis_map": _document_analysis_response,
     }
 
     def __init__(self, overrides: dict | None = None):

@@ -288,8 +288,14 @@ def test_auto_planning_selects_relevant_documents(monkeypatch):
 
     assert completed["status"] == "completed"
     assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
+    analysis_call = next(call for call in fake.calls if call["tag"] == "agent:document_analysis_map")
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
-    assert policy_text.decode() in context_call["messages"][-1]["content"]
+    assert policy_text.decode() in analysis_call["messages"][-1]["content"]
+    assert "RAW SOURCE CHUNK:" not in context_call["messages"][-1]["content"]
+    assert "The document describes requirements and responsibilities" in context_call["messages"][-1]["content"]
+    persisted = document_analysis.compact_artifact(reloaded, policy["id"])
+    assert persisted["audit_notes_markdown"]
+    assert persisted["citations"]
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(policy["id"] in item.get("document_ids", []) for item in activity)
     assert completed["planning_basis"]["document_content_included"] is True
@@ -359,9 +365,9 @@ def test_planning_analyzes_independent_documents_concurrently(monkeypatch):
     state = {"active": 0, "max_active": 0}
     state_lock = threading.Lock()
 
-    def document_context(user):
-        if "RAW SOURCE CHUNK:" not in user:
-            return PLANNING_RESPONSES["agent:document_context"]
+    def document_analysis_map(user):
+        source = user.split("RAW SOURCE CHUNK:\n", 1)[1].strip()
+        page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
         with state_lock:
             state["active"] += 1
             state["max_active"] = max(state["max_active"], state["active"])
@@ -370,15 +376,15 @@ def test_planning_analyzes_independent_documents_concurrently(monkeypatch):
             time.sleep(0.03)
             return {
                 "summary_markdown": "- Procurement requires documented approval.",
-                "audit_notes_markdown": "",
-                "citations": [],
+                "audit_notes_markdown": "Obtain evidence that approval operated.",
+                "citations": [{"id": "C1", "page": page, "excerpt": source}],
             }
         finally:
             with state_lock:
                 state["active"] -= 1
 
     configure_planning_llm(
-        monkeypatch, {"agent:document_context": document_context}
+        monkeypatch, {"agent:document_analysis_map": document_analysis_map}
     )
     completed = wait_run(
         ws,

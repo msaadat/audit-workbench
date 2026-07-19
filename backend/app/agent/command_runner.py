@@ -659,34 +659,42 @@ class CommandRunner(BaseRunner):
                 "source_sha1": document.get("sha1"),
                 "pages": [{"page": page} for page in chunk["pages"]],
             })
-            # The planning runner uses its existing bounded document-context
-            # prompt tag for compatibility with providers that do not support
-            # a nested tool loop. This is still the one raw-source map pass.
             payload = self.llm_json(
-                prompts.DOCUMENT_CONTEXT_SYSTEM,
+                prompts.DOCUMENT_ANALYSIS_MAP_SYSTEM,
                 prompts.document_analysis_map_user(document, chunk, orientation),
                 {"representation": "raw_pages", "characters_supplied": len(chunk["text"]),
                  "context_outcome": "supplied", "cache_hit": False,
                  "document_ids": [document["id"]], "page_ranges": chunk["pages"],
                  "source_hashes": [document["sha1"]]},
+                validator=lambda value, source_chunk=chunk: document_analysis.validate_analysis_map(
+                    value, [source_chunk], document["sha1"]
+                ),
             )
-            context_payload = payload.get("context") if isinstance(payload.get("context"), dict) else None
-            summary = str(payload.get("summary_markdown") or "").strip()
-            if not summary and context_payload:
-                summary = "\n".join(f"- **{key.replace('_', ' ').title()}:** {value}" for key, value in context_payload.items())
             mapped = {
-                "summary_markdown": summary,
-                "audit_notes_markdown": str(payload.get("audit_notes_markdown") or "").strip(),
-                "citations": document_analysis.validate_citations(payload.get("citations") or [], [chunk], document["sha1"]),
+                "chunk_id": chunk["id"], "pages": chunk["pages"],
+                "summary_markdown": payload["summary_markdown"],
+                "audit_notes_markdown": payload["audit_notes_markdown"],
+                "citations": payload["citations"],
             }
-            maps.append(mapped); orientation = (orientation + "\n\n" + summary)[-4000:]
+            maps.append(mapped)
+            orientation = (orientation + "\n\n" + mapped["summary_markdown"])[-4000:]
         if not maps:
             return None
-        # Deterministic consolidation keeps workflow-required analysis bounded
-        # and avoids rereading source. Explicit analysis runs use the reducer.
+        reduced = self.llm_json(
+            prompts.DOCUMENT_ANALYSIS_REDUCE_SYSTEM,
+            prompts.document_analysis_reduce_user(document, maps),
+            {"representation": "summary", "characters_supplied": sum(
+                len(value["summary_markdown"]) + len(value["audit_notes_markdown"])
+                for value in maps
+            ), "context_outcome": "supplied", "cache_hit": False,
+             "document_ids": [document["id"]],
+             "page_ranges": sorted({page for value in maps for page in value["pages"]}),
+             "source_hashes": [document["sha1"]]},
+            validator=document_analysis.validate_analysis_text,
+        ) if len(maps) > 1 else maps[0]
         output = {
-            "summary_markdown": "\n\n".join(value["summary_markdown"] for value in maps if value["summary_markdown"]),
-            "audit_notes_markdown": "\n\n".join(value["audit_notes_markdown"] for value in maps if value["audit_notes_markdown"]),
+            "summary_markdown": reduced["summary_markdown"],
+            "audit_notes_markdown": reduced["audit_notes_markdown"],
             "citations": [citation for value in maps for citation in value["citations"]],
         }
         profile = llm.agent_status()

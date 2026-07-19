@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import document_analysis, document_context, document_search, documents, embedding, llm, workspaces
-from app.agent import runner, store
+from app.agent import prompts, runner, store
 from app.main import create_app
 
 
@@ -60,6 +60,28 @@ def test_analysis_chunks_are_complete_and_non_overlapping():
         (chunks[0]["start_character"], chunks[0]["end_character"]),
         *[(chunks[index - 1]["end_character"], chunks[index]["end_character"]) for index in range(1, len(chunks))],
     ]
+
+
+def test_document_analysis_prompt_includes_classification_metadata_without_storage_path():
+    document = {
+        "id": "doc-1", "file": "doc-1.docx", "source": "Procurement SOP.docx",
+        "relative_path": "Planning/Policies/Procurement SOP.docx",
+        "title": "procurement_sop", "category": "policy", "note": "Current extract",
+        "sha1": "abc123",
+    }
+    chunk = {
+        "page": 1, "pages": [1], "start_character": 0, "end_character": 12,
+        "text": "Policy text.",
+    }
+
+    prompt = prompts.document_analysis_map_user(document, chunk)
+
+    assert '"original_filename": "Procurement SOP.docx"' in prompt
+    assert '"category": "policy"' in prompt
+    assert '"folder_context": "Planning/Policies"' in prompt
+    assert '"user_note": "Current extract"' in prompt
+    assert "doc-1.docx" not in prompt
+    assert "DOCUMENT OPENING CHUNK: yes" in prompt
 
 
 def test_analysis_overrides_candidate_and_replacement_staleness():
@@ -139,6 +161,52 @@ def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
     analysis = document_analysis.load_analysis(ws, doc["id"])
     assert analysis["effective"]["citations"][0]["excerpt_hash"]
     assert analysis["status"]["analysis_coverage_state"] == "complete"
+
+
+def test_document_analysis_retries_blank_notes_and_persists_complete_output(monkeypatch):
+    ws = workspaces.create_workspace("Document analysis retry")
+    source = "Invoices require finance director approval before payment."
+    doc = documents.add_document(ws, "policy.txt", source.encode(), category="policy")
+    calls = 0
+
+    def fake_chat(messages, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            payload = {
+                "summary_markdown": "Invoices require approval.",
+                "audit_notes_markdown": "",
+                "citations": [{"id": "C1", "page": 1, "excerpt": source}],
+            }
+        else:
+            assert "audit_notes_markdown" in messages[-1]["content"]
+            payload = {
+                "summary_markdown": "Invoices require approval. [C1]",
+                "audit_notes_markdown": "Obtain evidence that the approval operated. [C1]",
+                "citations": [{"id": "C1", "page": 1, "excerpt": source}],
+            }
+        return {"content": json.dumps(payload)}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm, "agent_status",
+        lambda: {"configured": True, "provider": "local", "model": "test"},
+    )
+    run = runner.start_run(
+        ws, "auto", {"document_ids": [doc["id"]], "action": "analyze"},
+        kind="document_analysis",
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        finished = store.load_run(ws, run["id"])
+        if finished["status"] in store.TERMINAL_STATUSES:
+            break
+        time.sleep(.01)
+
+    assert finished["status"] == "completed"
+    assert calls == 2
+    analysis = document_analysis.load_analysis(ws, doc["id"])
+    assert analysis["effective"]["audit_notes_markdown"].startswith("Obtain evidence")
 
 
 def test_document_inventory_and_search_api():

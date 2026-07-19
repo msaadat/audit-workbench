@@ -13,7 +13,7 @@ from . import embedding
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 ANALYSIS_SCHEMA_VERSION = "1"
-ANALYSIS_PROMPT_VERSION = "document-analysis-v1"
+ANALYSIS_PROMPT_VERSION = "document-analysis-v2"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
 
@@ -157,7 +157,8 @@ def rebuild_status_catalog(workspace: Workspace) -> dict:
     with _catalog_lock:
         entries = {doc["id"]: _authoritative_status(workspace, doc) for doc in workspace.documents}
         payload = {"schema_version": STATUS_SCHEMA_VERSION,
-                   "search_runtime_identity": embedding.runtime_identity(), "entries": entries}
+                   "search_runtime_identity": embedding.runtime_identity(),
+                   "analysis_prompt_version": ANALYSIS_PROMPT_VERSION, "entries": entries}
         write_json_atomic(status_path(workspace), payload)
         return payload
 
@@ -166,6 +167,7 @@ def status_catalog(workspace: Workspace) -> dict:
     payload = _read_json(status_path(workspace), {})
     if (payload.get("schema_version") != STATUS_SCHEMA_VERSION
             or payload.get("search_runtime_identity") != embedding.runtime_identity()
+            or payload.get("analysis_prompt_version") != ANALYSIS_PROMPT_VERSION
             or not isinstance(payload.get("entries"), dict)):
         return rebuild_status_catalog(workspace)
     return payload
@@ -243,6 +245,32 @@ def validate_citations(citations: list[dict], chunks: list[dict], source_sha1: s
         output.append({"id": str(value.get("id") or len(output) + 1), "page": page,
                        "excerpt": excerpt, "excerpt_hash": hashlib.sha1(excerpt.encode()).hexdigest(),
                        "source_sha1": source_sha1})
+    return output
+
+
+def validate_analysis_text(payload: dict) -> dict:
+    """Normalize the required human-facing fields or reject an incomplete model response."""
+    summary = str(payload.get("summary_markdown") or "").strip()
+    audit_notes = str(payload.get("audit_notes_markdown") or "").strip()
+    missing = []
+    if not summary:
+        missing.append("summary_markdown")
+    if not audit_notes:
+        missing.append("audit_notes_markdown")
+    if missing:
+        raise ValueError(f"Required analysis field(s) were blank: {', '.join(missing)}")
+    return {"summary_markdown": summary, "audit_notes_markdown": audit_notes}
+
+
+def validate_analysis_map(payload: dict, chunks: list[dict], source_sha1: str) -> dict:
+    """Validate map text and require at least one exact citation from supplied source."""
+    output = validate_analysis_text(payload)
+    citations = validate_citations(payload.get("citations") or [], chunks, source_sha1)
+    if not citations:
+        raise ValueError(
+            "citations contained no exact excerpt from the supplied source chunk"
+        )
+    output["citations"] = citations
     return output
 
 

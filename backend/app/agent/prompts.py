@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import PurePosixPath
 
 from .. import analytics, validation
 
@@ -259,34 +260,102 @@ def document_context_user(current: dict, documents: list[dict]) -> str:
 
 
 DOCUMENT_ANALYSIS_MAP_SYSTEM = f"""[agent:document_analysis_map]
-Analyze only the supplied source chunk. Return one JSON object with
-summary_markdown, audit_notes_markdown, and citations. Each citation must have
-id, page, and a short exact excerpt copied from this chunk. Distinguish a
-documented requirement from evidence that a control operated. Omit unsupported
-claims. Generated orientation is context only and cannot support a citation.
-{JSON_RULES}"""
+Analyze the supplied source chunk as part of the document itself. Do not turn
+its content into an audit objective, audit scope, audit plan, engagement
+background, risk assessment, or claim that a control operated.
+
+Infer the document type primarily from source text; metadata is a fallible
+classification hint. Use a document-appropriate summary:
+- policy/procedure/regulation: identity and governance status; purpose and
+  applicability; process sequence; roles and approvals; requirements,
+  thresholds, records, exceptions, escalation, monitoring, and review;
+- contract: parties, status and dates, term, scope, deliverables, commercial
+  terms, obligations, service levels, changes, renewal, and termination;
+- minutes/correspondence: date, participants or sender/recipient, matters
+  discussed, decisions, actions, owners, deadlines, and open items;
+- voucher/evidence: record type, date, parties, amounts or references,
+  approvals, and recorded status;
+- prior report: subject and period, conclusion, findings, recommendations,
+  management actions, owners, deadlines, and status;
+- other/background: identity, purpose, principal facts, responsibilities,
+  decisions, obligations, dates, and dependencies that the text supports.
+
+For policy-like documents, use `Purpose` and `Applicability`; do not recast
+them as audit `Objective` and `Scope`. In an opening chunk, report important
+governance metadata such as issuer, version, owner, approval/effective/review
+dates, and draft/final status. If an important field is absent, say `Not stated
+in the supplied document` or `Not stated in the supplied extract`; never infer
+status or currency from a filename or category. Continuation chunks should
+omit claims that front-matter metadata is missing.
+
+Return exactly summary_markdown, audit_notes_markdown, and citations.
+The summary must be a neutral, concise representation of the document.
+Audit notes must identify supported review observations such as missing or
+unclear governance metadata, unresolved template placeholders, ambiguous
+thresholds/criteria/timeframes/responsibilities, incomplete exception or
+escalation rules, referenced documents to obtain, or operating evidence to
+verify. Each useful note should state the observation, why it matters, and a
+follow-up. Describe omissions as not specified in the supplied document or
+extract, not as proof that the underlying process lacks them. Do not fill notes
+with a generic restatement of every documented control.
+
+summary_markdown and audit_notes_markdown are required and cannot be blank. If
+there is genuinely no specific review observation, use: `No specific drafting
+or control-design observations were identified from the supplied text.
+Operating effectiveness was not assessed.`
+
+Every substantive point must use citation markers such as [C1]. Citations is
+an array of objects with id, page, and a short exact excerpt copied verbatim
+from this chunk. Metadata and generated orientation are context only and cannot
+support citations. Distinguish documented requirements from evidence that a
+control operated, and omit unsupported claims. {JSON_RULES}"""
+
+
+def document_analysis_metadata(document: dict) -> dict:
+    """Return useful classification context without internal storage paths."""
+    relative_path = str(document.get("relative_path") or "").replace("\\", "/")
+    folder = str(PurePosixPath(relative_path).parent) if relative_path else ""
+    if folder == ".":
+        folder = ""
+    values = {
+        "document_id": document.get("id"),
+        "title": document.get("title"),
+        "original_filename": document.get("source"),
+        "category": document.get("category"),
+        "folder_context": folder,
+        "user_note": document.get("note"),
+    }
+    return {key: value for key, value in values.items() if value not in (None, "")}
 
 
 def document_analysis_map_user(document: dict, chunk: dict, orientation: str = "") -> str:
     return (
-        f"DOCUMENT: {document.get('title') or document.get('source') or document['id']}\n"
+        "DOCUMENT METADATA (context only; not citation evidence):\n"
+        f"{json.dumps(document_analysis_metadata(document), indent=1, default=str)}\n"
         f"SOURCE SHA: {document.get('sha1')}\nPAGE: {chunk['page']}\n"
         f"CHARACTER RANGE: {chunk['start_character']}..{chunk['end_character']}\n"
+        f"DOCUMENT OPENING CHUNK: {'yes' if int(chunk['start_character']) == 0 else 'no'}\n"
         f"GENERATED ORIENTATION (not evidence):\n{orientation[:4000]}\n\n"
         f"RAW SOURCE CHUNK:\n{chunk['text']}"
     )
 
 
 DOCUMENT_ANALYSIS_REDUCE_SYSTEM = f"""[agent:document_analysis_reduce]
-Consolidate generated chunk analyses into a concise document summary and
-freeform audit notes. You receive no raw source. Preserve citation markers,
-remove duplication, and do not introduce new document facts. Return one JSON
-object with summary_markdown and audit_notes_markdown. {JSON_RULES}"""
+Consolidate generated chunk analyses into one document-centric summary and one
+set of useful audit notes. You receive no raw source. Preserve citation markers,
+document type, governance metadata, process order, responsibilities, approvals,
+key requirements, and explicit `not stated` qualifications. Remove duplication
+and do not introduce new document facts. Do not convert the result into audit
+objective/scope, engagement background, an audit plan, or a control-operation
+claim. Audit notes must retain concrete observations, why they matter, and
+follow-up evidence; they cannot be blank. Return exactly summary_markdown and
+audit_notes_markdown. {JSON_RULES}"""
 
 
 def document_analysis_reduce_user(document: dict, map_outputs: list[dict]) -> str:
     return (
-        f"DOCUMENT: {document.get('title') or document.get('source') or document['id']}\n"
+        "DOCUMENT METADATA (context only; not citation evidence):\n"
+        f"{json.dumps(document_analysis_metadata(document), indent=1, default=str)}\n"
         f"GENERATED CHUNK ANALYSES:\n{json.dumps(map_outputs, default=str)}"
     )
 

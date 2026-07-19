@@ -7,6 +7,7 @@ import hashlib
 import threading
 import time
 import uuid
+from collections.abc import Callable
 
 from .. import debug_store, llm
 from ..workspaces import Workspace
@@ -309,13 +310,21 @@ class BaseRunner:
         )
         return content
 
-    def llm_json(self, system: str, user: str, activity: dict | None = None) -> dict:
+    def llm_json(
+        self,
+        system: str,
+        user: str,
+        activity: dict | None = None,
+        *,
+        validator: Callable[[dict], dict] | None = None,
+    ) -> dict:
         last_error = ""
         attempt_user = user
         for attempt in range(1, LLM_JSON_ATTEMPTS + 1):
             content = self._llm_content(system, attempt_user, activity, attempt=attempt)
             try:
-                return prompts.parse_json_object(content)
+                payload = prompts.parse_json_object(content)
+                return validator(payload) if validator is not None else payload
             except (ValueError, json.JSONDecodeError) as error:
                 last_error = str(error)
                 attempt_user = f"{user}\n\nYour previous response could not be used: {last_error}. {prompts.JSON_RULES}"
