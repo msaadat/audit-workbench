@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import assistant, llm
+from . import assistant, debug_store, llm
 from .agent import command_runner, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
@@ -432,7 +432,7 @@ def _deterministic_intent(content: str) -> str | None:
     return None
 
 
-def _classifier(record: dict, content: str, active: bool) -> dict:
+def _classifier(workspace: Workspace, record: dict, content: str, active: bool) -> dict:
     if not llm.status().get("configured"):
         return {"intent": "clarify", "confidence": "low", "clarification": "Choose Ask or Act so I can route this safely."}
     prior = []
@@ -445,10 +445,14 @@ def _classifier(record: dict, content: str, active: bool) -> dict:
         "text": content, "prior_text_turns": list(reversed(prior)),
         "active_schema_v2_run": active,
     }
-    message = llm.chat([
-        {"role": "system", "content": "Classify the request. Return JSON only: {\"intent\":\"ask|act|clarify\",\"confidence\":\"high|medium|low\",\"clarification\":null}. Actions change or persist workspace state. Questions are read-only. Ambiguous pronouns require clarify."},
-        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-    ], profile="assistant")
+    with debug_store.trace_context(
+        workspace_id=workspace.id, workspace_root=str(workspace.root), chat_id=record.get("id"),
+        stage="assistant.classification", purpose="classify_intent",
+    ):
+        message = llm.chat([
+            {"role": "system", "content": "Classify the request. Return JSON only: {\"intent\":\"ask|act|clarify\",\"confidence\":\"high|medium|low\",\"clarification\":null}. Actions change or persist workspace state. Questions are read-only. Ambiguous pronouns require clarify."},
+            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+        ], profile="assistant")
     try:
         value = json.loads(str(message.get("content") or ""))
     except (json.JSONDecodeError, TypeError):
@@ -592,7 +596,7 @@ def _process_message(
     if requested == "auto":
         resolved = _deterministic_intent(user["content"])
         if resolved is None:
-            classified = _classifier(record, user["content"], bool(active and active.get("schema_version", 1) >= 2))
+            classified = _classifier(workspace, record, user["content"], bool(active and active.get("schema_version", 1) >= 2))
             resolved = classified["intent"]
             clarification = classified.get("clarification")
         else:
@@ -615,10 +619,14 @@ def _process_message(
         doc_ids = list(record.get("composer_context", {}).get("document_ids") or [])
         current = _document_snapshot(workspace, doc_ids)
         history = _eligible_history(record, current)
-        result = assistant.ask(
-            workspace, user["content"], doc_ids,
-            prior_turns=history,
-        )
+        with debug_store.trace_context(
+            workspace_id=workspace.id, workspace_root=str(workspace.root), chat_id=chat_id,
+            stage="assistant.answer", purpose="assistant_answer",
+        ):
+            result = assistant.ask(
+                workspace, user["content"], doc_ids,
+                prior_turns=history,
+            )
         final_snapshot = _document_snapshot(
             workspace, doc_ids, manifest=(result.get("document_context") or {}).get("manifest") or []
         )

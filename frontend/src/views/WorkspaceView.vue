@@ -177,6 +177,7 @@ onUnmounted(() => {
       </div>
       <span class="header-spacer" />
       <Button label="Import" icon="pi pi-upload" size="small" severity="secondary" @click="folderImportOpen = true" />
+      <router-link :to="`/workspace/${props.id}/debug`" class="header-link" aria-label="Debug console" title="Debug console"><i class="pi pi-bug" /></router-link>
       <a href="/about.html" class="header-link" aria-label="About" title="About"><i class="pi pi-info-circle" /></a>
       <router-link to="/" class="header-link" aria-label="All workspaces" title="All workspaces"><i class="pi pi-th-large" /></router-link>
     </header>

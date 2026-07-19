@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import threading
 
-from .. import analytics, assistant, dashboard, explore, llm, sandbox, validation
+from .. import analytics, assistant, dashboard, debug_store, explore, llm, sandbox, validation
 from ..workspaces import Workspace, WorkspaceError, load_workspace, slugify
 from . import joins as joins_mod
 from . import prompts, store, suggest, summary as summary_mod
@@ -437,28 +437,36 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
     try:
         workspace = load_workspace(workspace_id)
         run = store.load_run(workspace, run_id)
-        if run.get("kind", "analysis") == "intake":
-            from .intake_runner import IntakeRunner
+        with debug_store.trace_context(
+            workspace_id=workspace_id, workspace_root=str(workspace.root), run_id=run_id, chat_id=run.get("chat_id"),
+            purpose="agent_run", trigger="agent.run.worker",
+        ):
+            debug_store.capture_structural_state(workspace, trigger="run_start", run_id=run_id)
+            try:
+                if run.get("kind", "analysis") == "intake":
+                    from .intake_runner import IntakeRunner
 
-            IntakeRunner(workspace, run, handle).execute()
-        elif run.get("kind") == "doc_test":
-            from .doc_test_runner import DocTestRunner
+                    IntakeRunner(workspace, run, handle).execute()
+                elif run.get("kind") == "doc_test":
+                    from .doc_test_runner import DocTestRunner
 
-            DocTestRunner(workspace, run, handle).execute()
-        elif run.get("kind") == "document_analysis":
-            from .document_analysis_runner import DocumentAnalysisRunner
+                    DocTestRunner(workspace, run, handle).execute()
+                elif run.get("kind") == "document_analysis":
+                    from .document_analysis_runner import DocumentAnalysisRunner
 
-            DocumentAnalysisRunner(workspace, run, handle).execute()
-        elif run.get("kind") == "audit":
-            from .command_runner import CommandRunner
+                    DocumentAnalysisRunner(workspace, run, handle).execute()
+                elif run.get("kind") == "audit":
+                    from .command_runner import CommandRunner
 
-            CommandRunner(workspace, run, handle).execute()
-        elif run.get("kind", "analysis") == "analysis":
-            _Runner(workspace, run, handle).execute()
-        else:
-            raise WorkspaceError(
-                f"Run kind '{run.get('kind')}' is not implemented yet."
-            )
+                    CommandRunner(workspace, run, handle).execute()
+                elif run.get("kind", "analysis") == "analysis":
+                    _Runner(workspace, run, handle).execute()
+                else:
+                    raise WorkspaceError(
+                        f"Run kind '{run.get('kind')}' is not implemented yet."
+                    )
+            finally:
+                debug_store.capture_structural_state(workspace, trigger="run_completion", run_id=run_id)
     except Exception as error:  # last-resort: never leave a run stuck 'active'
         try:
             workspace = load_workspace(workspace_id)

@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 
-from .. import llm
+from .. import debug_store, llm
 from ..workspaces import Workspace
 from . import prompts, store
 
@@ -258,11 +258,21 @@ class BaseRunner:
             self.save()
         tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
         self._model_wait(tag, started=True, attempt=attempt)
+        activity_fields = dict(activity or {})
+        current_activity = dict(self.run.get("activity") or {})
         try:
-            message = llm.chat(
-                [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                profile="agent",
-            )
+            with debug_store.trace_context(
+                workspace_id=self.ws.id, workspace_root=str(self.ws.root), run_id=self.run["id"],
+                action_id=activity_fields.get("action_id") or current_activity.get("action_id"),
+                task_id=activity_fields.get("task_id") or current_activity.get("task_id"),
+                chat_id=self.run.get("chat_id"), stage=tag, purpose=tag,
+                document_ids=activity_fields.get("document_ids"),
+                artifact_refs=activity_fields.get("artifact_refs"),
+            ):
+                message = llm.chat(
+                    [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    profile="agent",
+                )
         finally:
             self._model_wait(tag, started=False, attempt=attempt)
         # The ledger stores provenance and hashes, never full prompt or
@@ -271,7 +281,6 @@ class BaseRunner:
         profile = llm.agent_status()
         with self._state_lock:
             sources = list(self.run.get("model_sources") or [])
-        activity_fields = dict(activity or {})
         template_name = {
             "agent:apm": "apm", "agent:rcm": "rcm",
             "agent:work_program": "workpaper",

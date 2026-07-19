@@ -15,7 +15,7 @@ from xml.etree import ElementTree
 
 from pypdf import PdfReader
 
-from . import llm
+from . import debug_store, llm
 from .agent import prompts
 from .evidence import document_anchor
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
@@ -542,7 +542,12 @@ def document_chat(workspace: Workspace, doc_id: str, question: str, pages: list[
     profile = llm.agent_status()
     response_text = ""
     try:
-        message = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], profile="agent")
+        with debug_store.trace_context(
+            workspace_id=workspace.id, workspace_root=str(workspace.root), run_id=run_id, stage="document_qa",
+            purpose="document_qa", document_ids=[doc_id],
+            artifact_refs=[f"document_qa:{doc_id}"],
+        ):
+            message = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], profile="agent")
         response_text = message.get("content") or ""
         parsed = prompts.parse_json_object(response_text)
         answer = str(parsed.get("answer") or "")

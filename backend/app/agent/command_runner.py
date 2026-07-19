@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from .. import (
-    analytics, assistant, document_analysis, documents, llm, methodology, templates_store,
+    analytics, assistant, debug_store, document_analysis, documents, llm, methodology, templates_store,
     sandbox, validation,
 )
 from ..workspaces import Workspace, WorkspaceError, slugify
@@ -1781,8 +1781,26 @@ class CommandRunner(BaseRunner):
         # action commits as succeeded, post-success bookkeeping and planning
         # waves must never flip its outcome — succeeded is terminal.
         try:
-            receipt = definition.executor(self.ws, action, self.run)
+            debug_store.capture_structural_state(
+                self.ws, trigger=f"pre_action:{action['id']}", run_id=self.run["id"]
+            )
+        except Exception as snapshot_error:
+            self.warn(f"Debug pre-action snapshot was unavailable: {snapshot_error}")
+        try:
+            with debug_store.trace_context(
+                workspace_id=self.ws.id, workspace_root=str(self.ws.root), run_id=self.run["id"],
+                action_id=action["id"], stage="actions.execute",
+                purpose=action["type"], trigger=f"action:{action['id']}",
+                artifact_refs=list(action.get("result_refs") or []),
+            ):
+                receipt = definition.executor(self.ws, action, self.run)
         except Exception as error:
+            try:
+                debug_store.capture_structural_state(
+                    self.ws, trigger=f"post_action_failed:{action['id']}", run_id=self.run["id"]
+                )
+            except Exception:
+                pass
             action["error"] = str(error); action["finished_at"] = store.utcnow()
             ledger.transition(action, "failed")
             attempts = int(self.run["limits"].get("max_execution_attempts", 2))
@@ -1820,6 +1838,12 @@ class CommandRunner(BaseRunner):
             if definition.failure_policy == "stop_run":
                 raise
             return
+        try:
+            debug_store.capture_structural_state(
+                self.ws, trigger=f"post_action:{action['id']}", run_id=self.run["id"]
+            )
+        except Exception as snapshot_error:
+            self.warn(f"Debug post-action snapshot was unavailable: {snapshot_error}")
         action["receipt"] = receipt
         action["result_refs"] = list(receipt.get("result_refs") or [])
         action["finished_at"] = store.utcnow()

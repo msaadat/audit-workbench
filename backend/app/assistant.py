@@ -19,7 +19,7 @@ import uuid
 
 import polars as pl
 
-from . import analytics, document_context as document_context_module, document_search, documents, explore, llm, model_context, profiler, sandbox
+from . import analytics, debug_store, document_context as document_context_module, document_search, documents, explore, llm, model_context, profiler, sandbox
 from .workspaces import Workspace, WorkspaceError
 
 MAX_STEPS = 8
@@ -485,6 +485,7 @@ def ask(
     document_ids: list[str] | None = None,
     *,
     prior_turns: list[dict] | None = None,
+    chat_id: str | None = None,
 ) -> dict:
     """Run the tool-calling loop for one question. Returns answer + trace +
     artifacts. Raises :class:`llm.LLMError` if the backend isn't configured."""
@@ -512,8 +513,13 @@ def ask(
     messages.append({"role": "user", "content": question})
 
     answer = ""
-    for _ in range(MAX_STEPS):
-        message = llm.chat(messages, tools=TOOLS)
+    for step in range(MAX_STEPS):
+        with debug_store.trace_context(
+            workspace_id=workspace.id, workspace_root=str(workspace.root), chat_id=chat_id, stage="assistant.tool_loop",
+            purpose="assistant_answer", document_ids=attached_ids,
+            tool_step=step + 1,
+        ):
+            message = llm.chat(messages, tools=TOOLS)
         tool_calls = message.get("tool_calls") or []
         # Persist the assistant turn (tool_calls must round-trip verbatim).
         messages.append(

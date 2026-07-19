@@ -25,6 +25,7 @@ a workspace or a frame; callers assemble bounded model context one layer up.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 import base64
@@ -34,6 +35,7 @@ import urllib.request
 
 from . import assistant_settings
 from . import config  # noqa: F401  # load .env before reading os.environ
+from . import debug_store
 
 DEFAULT_LMSTUDIO_API_KEY = "lm-studio"
 USER_AGENT = "audit-workbench/0.1"
@@ -208,17 +210,25 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     backend/model pair: 'assistant' (saved settings), 'agent' (agent overrides),
     or 'vision' (vision-capable profile overrides).
     """
-    settings = _settings(profile)
-    if not settings.api_key:
-        provider = assistant_settings.PROVIDERS[settings.backend]
-        if settings.backend == "lmstudio":
-            hint = "Start LM Studio's local server"
-        else:
-            hint = f"Set {provider['api_key_env']}"
-        raise LLMError(
-            f"The assistant is not configured for {settings.backend}. {hint} "
-            "in .env or the environment; choose provider/model in Assistant settings."
+    call_started = time.monotonic()
+    try:
+        settings = _settings(profile)
+    except Exception as error:
+        # Invalid non-secret configuration is itself useful telemetry. Use a
+        # minimal settings-shaped object so the failed call is still durable.
+        from types import SimpleNamespace
+        fallback = SimpleNamespace(backend=None, model=None, base_url="", timeout=None)
+        call_id, _ = debug_store.start_call(
+            {"messages": messages, "tools": tools, "temperature": temperature},
+            fallback, extra={"profile": profile},
         )
+        context = debug_store.current_context()
+        if call_id:
+            debug_store.finish_call(
+                str(context["workspace_id"]), call_id, error=str(error),
+                started_monotonic=call_started,
+            )
+        raise
 
     body: dict = {
         "model": settings.model,
@@ -228,10 +238,30 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
+    call_id, _ = debug_store.start_call(body, settings, extra={"profile": profile})
+    trace = debug_store.current_context()
+    trace_workspace_id = str(trace.get("workspace_id") or "")
 
+    if not settings.api_key:
+        provider = assistant_settings.PROVIDERS[settings.backend]
+        if settings.backend == "lmstudio":
+            hint = "Start LM Studio's local server"
+        else:
+            hint = f"Set {provider['api_key_env']}"
+        error = LLMError(
+            f"The assistant is not configured for {settings.backend}. {hint} "
+            "in .env or the environment; choose provider/model in Assistant settings."
+        )
+        if call_id:
+            debug_store.finish_call(
+                trace_workspace_id, call_id, error=str(error), started_monotonic=call_started,
+            )
+        raise error
+
+    request_bytes = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         f"{settings.base_url}/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
+        data=request_bytes,
         headers={
             "Authorization": f"Bearer {settings.api_key}",
             "Content-Type": "application/json",
@@ -240,47 +270,137 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
         },
         method="POST",
     )
+    if call_id:
+        def actual_request_metrics(record: dict) -> None:
+            record["request_size_bytes"] = len(request_bytes)
+            record["request_sha256"] = hashlib.sha256(request_bytes).hexdigest()
+        debug_store.update_call(trace_workspace_id, call_id, actual_request_metrics)
 
     for attempt in range(MAX_REQUEST_ATTEMPTS):
+        attempt_started_wall = debug_store.utcnow()
+        attempt_started = time.monotonic()
+        attempt_record: dict = {"number": attempt + 1, "started_at": attempt_started_wall}
+        payload = None
+        response_headers = None
+        raw_body = b""
         try:
             with urllib.request.urlopen(request, timeout=settings.timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                headers_at = time.monotonic()
+                response_headers = getattr(response, "headers", {})
+                raw_body = response.read()
+                body_at = time.monotonic()
+                attempt_record.update({
+                    "http_status": getattr(response, "status", 200),
+                    "response_headers": debug_store.safe_headers(response_headers),
+                    "time_to_headers_ms": round((headers_at - attempt_started) * 1000, 3),
+                    "body_read_ms": round((body_at - headers_at) * 1000, 3),
+                    "response_size_bytes": len(raw_body),
+                    "response_sha256": hashlib.sha256(raw_body).hexdigest(),
+                })
+                try:
+                    payload = json.loads(raw_body.decode("utf-8"))
+                finally:
+                    parsed_at = time.monotonic()
+                    attempt_record["parse_ms"] = round((parsed_at - body_at) * 1000, 3)
         except urllib.error.HTTPError as error:
-            detail = _error_detail(error)
+            raw_error, error_payload, detail = _read_http_error(error)
             hint = _http_error_hint(settings, error)
             if hint:
                 detail = f"{detail} {hint}"
+            attempt_record.update({
+                "http_status": error.code,
+                "response_headers": debug_store.safe_headers(error.headers),
+                "error": detail,
+                "error_response": debug_store.sanitize(error_payload),
+                "response_size_bytes": len(raw_error),
+                "response_sha256": hashlib.sha256(raw_error).hexdigest(),
+            })
             if error.code in RETRYABLE_HTTP_CODES and attempt + 1 < MAX_REQUEST_ATTEMPTS:
-                _wait_before_retry(
+                delay = _wait_before_retry(
                     attempt, error.headers.get("Retry-After") if error.headers else None
                 )
+                attempt_record["retry_delay_ms"] = round(delay * 1000, 3)
+                _finish_attempt(attempt_record, attempt_started)
+                if call_id: debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
                 continue
-            raise LLMError(f"LLM request failed ({error.code}): {detail}") from error
+            terminal = LLMError(f"LLM request failed ({error.code}): {detail}")
+            _finish_attempt(attempt_record, attempt_started)
+            if call_id:
+                debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                debug_store.finish_call(trace_workspace_id, call_id, payload=error_payload,
+                                        error=str(terminal), headers=error.headers,
+                                        started_monotonic=call_started)
+            raise terminal from error
         except urllib.error.URLError as error:
+            attempt_record["error"] = f"{error.reason}"
             if attempt + 1 < MAX_REQUEST_ATTEMPTS:
-                _wait_before_retry(attempt)
+                delay = _wait_before_retry(attempt)
+                attempt_record["retry_delay_ms"] = round(delay * 1000, 3)
+                _finish_attempt(attempt_record, attempt_started)
+                if call_id: debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
                 continue
-            raise LLMError(f"Could not reach the LLM endpoint: {error.reason}") from error
+            terminal = LLMError(f"Could not reach the LLM endpoint: {error.reason}")
+            _finish_attempt(attempt_record, attempt_started)
+            if call_id:
+                debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                debug_store.finish_call(trace_workspace_id, call_id, error=str(terminal), started_monotonic=call_started)
+            raise terminal from error
         # ``urllib`` normally wraps socket failures in URLError, but
         # http.client.RemoteDisconnected and related connection failures can
         # escape directly when an upstream closes before sending a response.
         except (TimeoutError, ConnectionError, json.JSONDecodeError) as error:
+            attempt_record["error"] = str(error)
+            if isinstance(error, json.JSONDecodeError) and raw_body:
+                attempt_record["error_response"] = debug_store.sanitize(
+                    {"unparseable_body": raw_body.decode("utf-8", errors="replace")}
+                )
             if attempt + 1 < MAX_REQUEST_ATTEMPTS:
-                _wait_before_retry(attempt)
+                delay = _wait_before_retry(attempt)
+                attempt_record["retry_delay_ms"] = round(delay * 1000, 3)
+                _finish_attempt(attempt_record, attempt_started)
+                if call_id: debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
                 continue
-            raise LLMError(f"LLM request failed: {error}") from error
+            terminal = LLMError(f"LLM request failed: {error}")
+            _finish_attempt(attempt_record, attempt_started)
+            if call_id:
+                debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                debug_store.finish_call(trace_workspace_id, call_id, payload=payload or attempt_record.get("error_response"),
+                                        error=str(terminal), headers=response_headers,
+                                        started_monotonic=call_started)
+            raise terminal from error
 
+        _finish_attempt(attempt_record, attempt_started)
+        if call_id: debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
         choices = payload.get("choices") or []
         if choices:
-            return choices[0].get("message") or {}
+            message = choices[0].get("message") or {}
+            if call_id:
+                debug_store.finish_call(trace_workspace_id, call_id, payload=payload,
+                                        message=message, headers=response_headers,
+                                        started_monotonic=call_started)
+            return message
         if attempt + 1 < MAX_REQUEST_ATTEMPTS:
-            _wait_before_retry(attempt)
+            delay = _wait_before_retry(attempt)
+            if call_id:
+                def add_delay(record: dict) -> None:
+                    record["attempts"][-1]["retry_delay_ms"] = round(delay * 1000, 3)
+                debug_store.update_call(trace_workspace_id, call_id, add_delay)
             continue
-        raise LLMError(f"LLM returned no choices after {MAX_REQUEST_ATTEMPTS} attempts.")
+        terminal = LLMError(f"LLM returned no choices after {MAX_REQUEST_ATTEMPTS} attempts.")
+        if call_id:
+            debug_store.finish_call(trace_workspace_id, call_id, payload=payload,
+                                    error=str(terminal), headers=response_headers,
+                                    started_monotonic=call_started)
+        raise terminal
     raise LLMError("LLM request failed after retrying.")
 
 
-def _wait_before_retry(attempt: int, retry_after: str | None = None) -> None:
+def _finish_attempt(attempt: dict, started: float) -> None:
+    attempt["finished_at"] = debug_store.utcnow()
+    attempt["duration_ms"] = max(0, round((time.monotonic() - started) * 1000, 3))
+
+
+def _wait_before_retry(attempt: int, retry_after: str | None = None) -> float:
     delay = min(0.25 * (2 ** attempt), MAX_RETRY_DELAY)
     if retry_after:
         try:
@@ -288,6 +408,25 @@ def _wait_before_retry(attempt: int, retry_after: str | None = None) -> None:
         except ValueError:
             pass
     time.sleep(delay)
+    return delay
+
+
+def _read_http_error(error: urllib.error.HTTPError) -> tuple[bytes, object, str]:
+    try:
+        raw = error.read()
+    except Exception:
+        raw = b""
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        body: object = json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        body = {"text": text}
+    error_body = body.get("error", {}) if isinstance(body, dict) else {}
+    message = error_body.get("message") if isinstance(error_body, dict) else None
+    error_type = ((error_body.get("metadata") or {}).get("error_type")
+                  if isinstance(error_body, dict) else None)
+    detail = f"{message} ({error_type})" if message and error_type else str(message or text.strip() or error.reason or "unknown error")
+    return raw, body, detail
 
 
 def _error_detail(error: urllib.error.HTTPError) -> str:

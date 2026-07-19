@@ -87,6 +87,14 @@ def slugify(text: str) -> str:
 def write_json_atomic(path: Path, payload: dict) -> None:
     """Write JSON via a temp file + rename so a crash mid-write can never
     leave a truncated definition behind."""
+    before_meta = None
+    if path.exists():
+        try:
+            raw_before = path.read_bytes()
+            parsed_before = json.loads(raw_before)
+            before_meta = _debug_artifact_meta(path, parsed_before, raw_before)
+        except (OSError, json.JSONDecodeError):
+            before_meta = None
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:6]}.tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -96,12 +104,57 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     for attempt in range(6):
         try:
             os.replace(tmp, path)
+            _record_atomic_artifact_transition(path, before_meta, payload)
             return
         except PermissionError:
             if attempt == 5:
                 tmp.unlink(missing_ok=True)
                 raise
             time.sleep(0.02 * (attempt + 1))
+
+
+def _debug_artifact_meta(path: Path, payload: object, raw: bytes | None = None) -> dict:
+    """Metadata-only projection: never duplicate document text or binaries."""
+    encoded = raw if raw is not None else json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    selected = {}
+    if isinstance(payload, dict):
+        for key in (
+            "schema_version", "id", "document_id", "test_id", "run_id", "revision",
+            "status", "state", "run_state", "analysis_state", "review_state",
+            "updated", "updated_at", "created_at", "finished_at",
+        ):
+            if key in payload: selected[key] = payload[key]
+    return {
+        "artifact_path": str(path), "size_bytes": len(encoded),
+        "sha1": hashlib.sha1(encoded).hexdigest(), "structural_fields": selected,
+    }
+
+
+def _record_atomic_artifact_transition(path: Path, before: dict | None, payload: dict) -> None:
+    # Primary workspace/run writes have richer hooks. Debug writes are the
+    # telemetry itself and must never recursively trace themselves.
+    if "Debug" in path.parts or path.name == "workspace.json" or (
+        path.name == "run.json" and "AgentRuns" in path.parts
+    ):
+        return
+    root = path.parent
+    while root != root.parent and not (root / "workspace.json").exists():
+        root = root.parent
+    if not (root / "workspace.json").exists():
+        return
+    try:
+        workspace_id = str(json.loads((root / "workspace.json").read_text(encoding="utf-8")).get("id") or root.name)
+        from . import debug_store
+        after = _debug_artifact_meta(path, payload)
+        relative = str(path.relative_to(root))
+        with debug_store.trace_context(workspace_id=workspace_id, workspace_root=str(root)):
+            debug_store.record_transition(
+                workspace_id, before, after,
+                trigger=str(debug_store.current_context().get("trigger") or f"artifact.write:{relative}"),
+                kind="artifact_state",
+            )
+    except Exception:
+        pass
 
 
 # Provenance keys accepted on saved items (tiles/analyses/rulesets/joins).
@@ -697,7 +750,21 @@ class Workspace:
             "report": self.report,
             "dashboard_advice": self.dashboard_advice,
         }
+        before = None
+        if self.definition_path.exists():
+            try:
+                before = json.loads(self.definition_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                before = None
         write_json_atomic(self.definition_path, definition)
+        # Debug telemetry is best-effort and must never make the auditor's
+        # primary workspace write fail. Import lazily to avoid a storage cycle.
+        try:
+            from . import debug_store
+            with debug_store.trace_context(workspace_root=str(self.root)):
+                debug_store.record_workspace_save(self.id, before, definition)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ tables
     def table_names(self) -> list[str]:

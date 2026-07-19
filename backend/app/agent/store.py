@@ -225,7 +225,19 @@ def new_command_run(
 def save_run(workspace: Workspace, run: dict) -> None:
     path = run_dir(workspace, run["id"]) / "run.json"
     with _run_lock(path):
+        before = None
+        if path.exists():
+            try:
+                before = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                before = None
         write_json_atomic(path, run)
+        try:
+            from .. import debug_store
+            with debug_store.trace_context(workspace_root=str(workspace.root)):
+                debug_store.record_run_save(workspace.id, run["id"], before, run)
+        except Exception:
+            pass
 
 
 def load_run(workspace: Workspace, run_id: str) -> dict:
@@ -334,6 +346,9 @@ def run_summary(run: dict) -> dict:
         "duration_ms": elapsed_ms(run.get("started"), run.get("finished")),
         "activity": run.get("activity"),
         "activity_revision": int(run.get("activity_revision") or 0),
+        # Aggregate counters explain historical runs without fabricating the
+        # raw calls that predate workspace Debug tracing.
+        "usage": dict(run.get("usage") or {}),
         "domain": (run.get("discovery") or {}).get("domain"),
         "task_counts": counts,
         "error": run.get("error"),

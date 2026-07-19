@@ -14,7 +14,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from . import analytics, data_tests, doc_tests, explore, llm, rcm_execution, report, sandbox, validation
+from . import analytics, data_tests, debug_store, doc_tests, explore, llm, rcm_execution, report, sandbox, validation
 from .agent.prompts import parse_json_object
 from .workspaces import Workspace
 
@@ -556,11 +556,15 @@ results. Return one JSON object with a `suggestions` array of at most three item
 Each item must contain: title, reason, priority (high|medium|low), and tab. Allowed tabs:
 planning, documents, data-tests, doc-tests, data, query, findings, report.
 Prefer specific, non-duplicative advice that adds judgment beyond the deterministic actions."""
-    message = llm.chat(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": json.dumps(model_view, ensure_ascii=False)}],
-        temperature=0.0, profile="agent",
-    )
+    with debug_store.trace_context(
+        workspace_id=workspace.id, workspace_root=str(workspace.root), stage="dashboard.advice",
+        purpose="dashboard_advice", artifact_refs=["dashboard:advice"],
+    ):
+        message = llm.chat(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": json.dumps(model_view, ensure_ascii=False)}],
+            temperature=0.0, profile="agent",
+        )
     parsed = parse_json_object(message.get("content") or "")
     suggestions = []
     for index, item in enumerate(parsed.get("suggestions") or []):

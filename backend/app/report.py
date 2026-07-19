@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from . import data_tests, doc_tests, llm, rcm_execution, templates_store
+from . import data_tests, debug_store, doc_tests, llm, rcm_execution, templates_store
 from .documents import append_activity
 from .findings import artifact, support_issues
 from .workspaces import Workspace, WorkspaceError
@@ -345,11 +345,16 @@ def _template_sections(markdown: str) -> list[str]:
     return headings or ["Complete report"]
 
 
-def _model_turn(system: str, user: str) -> str:
-    message = llm.chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        profile="agent",
-    )
+def _model_turn(workspace: Workspace, system: str, user: str, *, run_id: str | None = None) -> str:
+    stage = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent:report"
+    with debug_store.trace_context(
+        workspace_id=workspace.id, workspace_root=str(workspace.root), run_id=run_id, stage=stage,
+        purpose="report_generation", artifact_refs=["report:draft"],
+    ):
+        message = llm.chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            profile="agent",
+        )
     content = str(message.get("content") or "").strip()
     if not content:
         raise llm.LLMError("The report model returned an empty response.")
@@ -358,7 +363,7 @@ def _model_turn(system: str, user: str) -> str:
     return content.strip()
 
 
-def _generate_with_model(template: str, context: dict) -> tuple[str, bool]:
+def _generate_with_model(workspace: Workspace, template: str, context: dict, *, run_id: str | None = None) -> tuple[str, bool]:
     serialized = json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
     base = (
         "[agent:report]\nYou draft an internal-audit report for auditor review. "
@@ -366,13 +371,15 @@ def _generate_with_model(template: str, context: dict) -> tuple[str, bool]:
         "state limitations, do not invent evidence or issue an audit opinion, and return Markdown only."
     )
     if len(serialized) <= MODEL_CONTEXT_LIMIT:
-        return _model_turn(base, f"Template:\n{template}\n\nReport context:\n{serialized}"), False
+        return _model_turn(workspace, base, f"Template:\n{template}\n\nReport context:\n{serialized}", run_id=run_id), False
     sections = []
     for heading in _template_sections(template):
         system = base.replace("[agent:report]", "[agent:report_section]")
         body = _model_turn(
+            workspace,
             system,
             f"Draft only the section headed '## {heading}'.\nReport context:\n{serialized}",
+            run_id=run_id,
         )
         sections.append(body if body.startswith("## ") else f"## {heading}\n\n{body}")
     return "# Internal Audit Report\n\n" + "\n\n".join(sections).strip() + "\n", True
@@ -402,7 +409,7 @@ def generate(workspace: Workspace, *, use_model: bool = True, run_id: str | None
     if use_model and llm.agent_status().get("configured"):
         try:
             template = templates_store.get_template(workspace, "report")["markdown"]
-            candidate, chunked = _generate_with_model(template, context)
+            candidate, chunked = _generate_with_model(workspace, template, context, run_id=run_id)
             candidate = _normalize_finding_citations(workspace, candidate)
             used_model = True
             _record_activity(workspace, candidate, run_id=run_id, chunked=chunked)
@@ -589,10 +596,14 @@ def editorial_review(workspace: Workspace) -> dict:
         "severity inconsistency, or tone. Do not clear deterministic issues."
     )
     try:
-        message = llm.chat(
-            [{"role": "system", "content": prompt}, {"role": "user", "content": json.dumps({"report": hydrate(workspace)["markdown"], "findings": [_safe_finding(item) for item in workspace.findings]}, ensure_ascii=False)}],
-            profile="agent",
-        )
+        with debug_store.trace_context(
+            workspace_id=workspace.id, workspace_root=str(workspace.root), stage="agent:report_editorial",
+            purpose="report_editorial_review", artifact_refs=["report:draft"],
+        ):
+            message = llm.chat(
+                [{"role": "system", "content": prompt}, {"role": "user", "content": json.dumps({"report": hydrate(workspace)["markdown"], "findings": [_safe_finding(item) for item in workspace.findings]}, ensure_ascii=False)}],
+                profile="agent",
+            )
         parsed = json.loads(str(message.get("content") or "{}"))
         editorial = []
         for item in parsed.get("issues") or []:
