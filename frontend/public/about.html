@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Audit Workbench — local-first, end-to-end agentic auditing from planning to report." />
-  <title>Audit Workbench — Product Overview</title>
+  <meta name="description" content="Audit Workbench connects audit evidence, planning, testing, findings and reporting in one governed workflow." />
+  <title>Audit Workbench — Executive Overview</title>
   <style>
     :root {
       --navy: #07162b;
-      --navy-2: #0d2340;
+      --navy-2: #0d2645;
       --ink: #10233f;
       --muted: #5f7088;
       --teal: #14b8a6;
@@ -18,7 +18,8 @@
       --line: #dce5ee;
       --paper: #f7f9fb;
       --amber: #f59e0b;
-      --red: #ef4444;
+      --red: #dc2626;
+      --green: #059669;
       --max: 1180px;
       --header-h: 64px;
       --ease-deck: cubic-bezier(.77, 0, .18, 1);
@@ -31,7 +32,7 @@
       color: var(--ink);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 16px;
-      line-height: 1.55;
+      line-height: 1.5;
       overflow: hidden;
     }
     a { color: inherit; }
@@ -48,14 +49,14 @@
     }
     .eyebrow.light { color: var(--mint); }
 
-    /* ── Header: brand + numbered section tabs + progress ─────────────── */
+    /* Header */
     .topbar {
       position: fixed;
       z-index: 60;
       inset: 0 0 auto;
       height: var(--header-h);
       color: #fff;
-      background: rgba(7, 22, 43, .96);
+      background: rgba(7, 22, 43, .97);
       border-bottom: 1px solid rgba(255,255,255,.09);
       backdrop-filter: blur(18px);
     }
@@ -87,7 +88,7 @@
       display: flex;
       flex: 1;
       justify-content: center;
-      gap: 4px;
+      gap: 5px;
       min-width: 0;
       overflow-x: auto;
       scrollbar-width: none;
@@ -98,7 +99,7 @@
       align-items: center;
       gap: 7px;
       flex-shrink: 0;
-      padding: 7px 10px;
+      padding: 7px 11px;
       border: 0;
       border-radius: 7px;
       color: #93a8c0;
@@ -110,15 +111,13 @@
       transition: color .2s, background .2s;
     }
     .tab:hover { color: #fff; background: rgba(255,255,255,.06); }
-    .tab .tab-no { font-size: 10px; font-weight: 850; letter-spacing: .08em; color: #5f7a99; transition: color .2s; }
+    .tab-no { color: #5f7a99; font-size: 10px; font-weight: 850; letter-spacing: .08em; }
     .tab.active { color: #fff; background: rgba(94,234,212,.12); }
     .tab.active .tab-no { color: var(--mint); }
-
     .open-app {
       display: inline-flex;
       flex-shrink: 0;
       align-items: center;
-      gap: 8px;
       padding: 8px 13px;
       border: 1px solid rgba(255,255,255,.16);
       border-radius: 8px;
@@ -128,10 +127,8 @@
       font-weight: 700;
       text-decoration: none;
       white-space: nowrap;
-      transition: border-color .2s;
     }
     .open-app:hover { border-color: rgba(94,234,212,.45); }
-
     .progress {
       position: absolute;
       left: 0;
@@ -142,7 +139,7 @@
       transition: width .75s var(--ease-deck);
     }
 
-    /* ── Deck ─────────────────────────────────────────────────────────── */
+    /* Deck */
     .deck { position: fixed; inset: var(--header-h) 0 0; }
     .slide {
       position: absolute;
@@ -158,13 +155,11 @@
     .slide.above { transform: translateY(-102%); }
     .slide.active { transform: none; visibility: visible; transition-delay: 0s, 0s; }
     .slide-inner { width: 100%; max-height: 100%; padding: 34px 0; }
-
-    [data-anim] { opacity: 0; transform: translateY(26px); transition: opacity .65s ease, transform .65s ease; }
-    .slide.active [data-anim] { opacity: 1; transform: none; transition-delay: .25s; }
-    .slide.active [data-anim="2"] { transition-delay: .4s; }
-    .slide.active [data-anim="3"] { transition-delay: .55s; }
-    .slide.active [data-anim="4"] { transition-delay: .7s; }
-
+    [data-anim] { opacity: 0; transform: translateY(24px); transition: opacity .65s ease, transform .65s ease; }
+    .slide.active [data-anim] { opacity: 1; transform: none; transition-delay: .22s; }
+    .slide.active [data-anim="2"] { transition-delay: .36s; }
+    .slide.active [data-anim="3"] { transition-delay: .5s; }
+    .slide.active [data-anim="4"] { transition-delay: .64s; }
     .counter {
       position: fixed;
       z-index: 55;
@@ -179,33 +174,21 @@
     .counter.on-dark { color: #93a8c0; }
     .counter.on-dark b { color: #fff; }
 
-    /* ── Shared slide furniture ───────────────────────────────────────── */
+    .slide.dark { color: #fff; background: linear-gradient(135deg, #061326 0%, #0c2441 56%, #0d3048 100%); }
+    .slide.dark .eyebrow { color: var(--mint); }
     .slide h2 {
       margin: 0;
-      font-size: clamp(32px, 4.2vw, 54px);
-      line-height: 1.02;
+      font-size: clamp(32px, 4vw, 52px);
+      line-height: 1.04;
       letter-spacing: -.05em;
       text-wrap: balance;
     }
-    .slide.dark { color: #fff; background: linear-gradient(135deg, #061326 0%, #0c2441 56%, #0d3048 100%); }
-    .slide.dark .eyebrow { color: var(--mint); }
-    .lede { color: var(--muted); font-size: 17px; }
-    .slide.dark .lede { color: #c2d1e2; }
-
-    .split { display: grid; grid-template-columns: .78fr 1.22fr; gap: 54px; align-items: center; }
-    .split.flip { grid-template-columns: 1.22fr .78fr; }
-    .split.flip .split-copy { order: 2; }
-    .split.flip .split-media { order: 1; }
-    .split-copy h2 { margin-bottom: 16px; }
+    .section-lede { max-width: 780px; margin: 14px 0 0; color: var(--muted); font-size: 17px; }
+    .slide.dark .section-lede { color: #c2d1e2; }
+    .split { display: grid; grid-template-columns: .86fr 1.14fr; gap: 52px; align-items: center; }
+    .split-copy h2 { margin-bottom: 17px; }
     .split-copy > p { margin: 0 0 14px; color: var(--muted); font-size: 15.5px; }
     .slide.dark .split-copy > p { color: #b9c9db; }
-    .split-copy strong { color: var(--ink); }
-    .slide.dark .split-copy strong { color: #fff; }
-    .point { margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--line); color: #314761; font-size: 13px; }
-    .point b { color: var(--teal-deep); }
-    .slide.dark .point { border-color: rgba(255,255,255,.14); color: #aec0d4; }
-    .slide.dark .point b { color: var(--mint); }
-
     .shot {
       border: 1px solid #cbd6e2;
       border-radius: 12px;
@@ -213,33 +196,20 @@
       box-shadow: 0 30px 70px rgba(11,31,54,.18), 0 4px 14px rgba(11,31,54,.08);
       overflow: hidden;
     }
-    .slide.dark .shot { border-color: rgba(255,255,255,.18); box-shadow: 0 30px 70px rgba(2,10,22,.5); }
     .shot::before {
       content: "";
       display: block;
-      height: 26px;
+      height: 25px;
       border-bottom: 1px solid #dce4ed;
       background:
-        radial-gradient(circle at 13px 13px, #fb7185 0 3px, transparent 4px),
-        radial-gradient(circle at 25px 13px, #fbbf24 0 3px, transparent 4px),
-        radial-gradient(circle at 37px 13px, #34d399 0 3px, transparent 4px),
+        radial-gradient(circle at 13px 12px, #fb7185 0 3px, transparent 4px),
+        radial-gradient(circle at 25px 12px, #fbbf24 0 3px, transparent 4px),
+        radial-gradient(circle at 37px 12px, #34d399 0 3px, transparent 4px),
         #eef2f6;
     }
-    .shot img { display: block; width: 100%; height: auto; max-height: calc(100vh - var(--header-h) - 200px); object-fit: cover; object-position: top; }
+    .shot img { display: block; width: 100%; max-height: calc(100vh - var(--header-h) - 180px); object-fit: cover; object-position: top; }
 
-    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
-    .chip {
-      padding: 6px 11px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: #fff;
-      color: #3e536d;
-      font-size: 12px;
-      font-weight: 650;
-    }
-    .slide.dark .chip { border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.05); color: #d2dfec; }
-
-    /* ── S1 · Overview ────────────────────────────────────────────────── */
+    /* 01 · Overview */
     #overview { isolation: isolate; }
     #overview::before {
       content: "";
@@ -251,63 +221,55 @@
         linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
         linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
       background-size: 56px 56px;
-      mask-image: linear-gradient(to bottom, #000, transparent 85%);
+      mask-image: linear-gradient(to bottom, #000, transparent 88%);
     }
     #overview::after {
       content: "";
       position: absolute;
       z-index: -1;
-      width: 480px;
-      height: 480px;
+      width: 520px;
+      height: 520px;
       right: -170px;
-      top: 40px;
+      top: 20px;
       border: 1px solid rgba(94,234,212,.15);
       border-radius: 50%;
       box-shadow: 0 0 0 80px rgba(94,234,212,.025), 0 0 0 160px rgba(94,234,212,.018);
     }
     #overview h1 {
-      max-width: 980px;
+      max-width: 1030px;
       margin: 0;
-      font-size: clamp(44px, 6.4vw, 88px);
+      font-size: clamp(46px, 6.6vw, 88px);
       line-height: .98;
       letter-spacing: -.06em;
       text-wrap: balance;
     }
     #overview h1 span {
       color: transparent;
-      background: linear-gradient(90deg, #fff 0%, var(--mint) 46%, #7dd3fc 100%);
+      background: linear-gradient(90deg, #fff 0%, var(--mint) 48%, #7dd3fc 100%);
       -webkit-background-clip: text;
       background-clip: text;
     }
     .hero-lede {
-      max-width: 720px;
+      max-width: 790px;
       margin: 24px 0 0;
       color: #c2d1e2;
       font-size: clamp(17px, 1.8vw, 21px);
       line-height: 1.5;
       letter-spacing: -.01em;
     }
-    .hero-proof {
+    .outcome-strip {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      margin-top: 52px;
+      margin-top: 48px;
       border-top: 1px solid rgba(255,255,255,.12);
       border-bottom: 1px solid rgba(255,255,255,.12);
     }
-    .proof-item { padding: 20px 24px; border-right: 1px solid rgba(255,255,255,.12); }
-    .proof-item:first-child { padding-left: 0; }
-    .proof-item:last-child { border-right: 0; }
-    .proof-item strong { display: block; color: #fff; font-size: 24px; letter-spacing: -.04em; }
-    .proof-item small { display: block; margin-top: 4px; color: #93a8c0; font-size: 12px; }
-    .scroll-hint {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 40px;
-      color: #93a8c0;
-      font-size: 12px;
-      letter-spacing: .05em;
-    }
+    .outcome { padding: 20px 23px; border-right: 1px solid rgba(255,255,255,.12); }
+    .outcome:first-child { padding-left: 0; }
+    .outcome:last-child { border-right: 0; }
+    .outcome strong { display: block; color: #fff; font-size: 17px; letter-spacing: -.025em; }
+    .outcome small { display: block; margin-top: 5px; color: #93a8c0; font-size: 12px; }
+    .scroll-hint { display: inline-flex; align-items: center; gap: 10px; margin-top: 35px; color: #93a8c0; font-size: 12px; }
     .scroll-hint i {
       display: grid;
       width: 30px;
@@ -320,196 +282,186 @@
       animation: bob 2.2s ease-in-out infinite;
     }
     @keyframes bob { 50% { transform: translateY(5px); } }
-    kbd {
-      padding: 1px 6px;
-      border: 1px solid rgba(255,255,255,.22);
-      border-radius: 4px;
-      background: rgba(255,255,255,.06);
-      font: inherit;
-      font-size: 11px;
-    }
 
-    /* ── S2 · Lifecycle ───────────────────────────────────────────────── */
-    .flow-line { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 44px; }
+    /* 02 · Audit flow */
+    .source-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 26px; }
+    .source-card {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 15px 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(16,35,63,.04);
+    }
+    .source-icon {
+      display: grid;
+      flex: 0 0 37px;
+      width: 37px;
+      height: 37px;
+      place-items: center;
+      border-radius: 10px;
+      color: var(--teal-deep);
+      background: var(--ice);
+      font-size: 17px;
+      font-weight: 800;
+    }
+    .source-card strong { display: block; font-size: 14px; }
+    .source-card small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .converge { display: flex; align-items: center; gap: 13px; margin: 13px 0; color: var(--teal-deep); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .converge::before, .converge::after { content: ""; height: 1px; flex: 1; background: var(--line); }
+    .flow-track { display: grid; grid-template-columns: repeat(6, 1fr); gap: 9px; }
     .flow-step {
       position: relative;
-      min-height: 190px;
-      padding: 22px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
+      min-height: 142px;
+      padding: 17px 16px;
+      border: 1px solid #cfdce8;
+      border-radius: 12px;
       background: #fff;
-      box-shadow: 0 8px 30px rgba(16,35,63,.04);
-      transition: transform .25s, border-color .25s, box-shadow .25s;
     }
-    .flow-step:hover { transform: translateY(-7px); border-color: #8ad8cf; box-shadow: 0 20px 45px rgba(16,35,63,.1); }
-    .step-no { color: var(--teal-deep); font-size: 11px; font-weight: 850; letter-spacing: .12em; }
-    .flow-step h3 { margin: 26px 0 8px; font-size: 18px; line-height: 1.15; letter-spacing: -.03em; }
-    .flow-step p { margin: 0; color: var(--muted); font-size: 12.5px; }
     .flow-step::after {
       content: "→";
       position: absolute;
       z-index: 2;
-      right: -21px;
-      top: 50%;
+      right: -15px;
+      top: 54px;
       display: grid;
-      width: 30px;
-      height: 30px;
+      width: 21px;
+      height: 21px;
       place-items: center;
       border: 1px solid var(--line);
       border-radius: 50%;
       color: var(--teal-deep);
       background: var(--paper);
-      font-weight: 800;
+      font-size: 11px;
+      font-weight: 900;
     }
     .flow-step:last-child::after { display: none; }
-    .workflow-callout { margin-top: 24px; padding: 16px 20px; border-left: 3px solid var(--teal); color: #3e536d; background: var(--ice); font-size: 13.5px; }
-
-    /* ── S3 · Architecture ────────────────────────────────────────────── */
-    .boundary {
-      position: relative;
-      padding: 34px;
-      color: #fff;
-      border-radius: 22px;
-      background: linear-gradient(145deg, var(--navy), #102f4d);
-      box-shadow: 0 35px 80px rgba(16,35,63,.18);
-      overflow: hidden;
-    }
-    .boundary::before {
-      content: "";
-      position: absolute;
-      width: 300px;
-      height: 300px;
-      inset: -90px -80px auto auto;
-      border-radius: 50%;
-      background: rgba(20,184,166,.14);
-      filter: blur(1px);
-    }
-    .boundary-label { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
-    .secure { display: inline-flex; align-items: center; gap: 7px; color: var(--mint); }
-    .secure i { width: 8px; height: 8px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 5px rgba(94,234,212,.12); }
-    .local-core {
-      position: relative;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: 24px;
-      padding: 18px;
-      border: 1px solid rgba(94,234,212,.38);
-      border-radius: 15px;
-      background: rgba(94,234,212,.07);
-    }
-    .core-title { grid-column: 1 / -1; margin-bottom: 3px; color: var(--mint); font-size: 14px; font-weight: 800; }
-    .local-node { padding: 13px 15px; border-radius: 10px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.08); }
-    .local-node b { display: block; font-size: 13px; }
-    .local-node small { display: block; margin-top: 4px; color: #9db1c8; font-size: 10.5px; }
-    .gate { display: flex; align-items: center; gap: 13px; margin: 16px 0; color: #aec0d4; font-size: 11.5px; }
-    .gate::before, .gate::after { content: ""; height: 1px; flex: 1; background: rgba(255,255,255,.14); }
-    .cloud {
+    .step-no { color: var(--teal-deep); font-size: 10px; font-weight: 850; letter-spacing: .1em; }
+    .flow-step h3 { margin: 12px 0 6px; font-size: 16px; line-height: 1.15; letter-spacing: -.025em; }
+    .flow-step p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+    .flow-step.key { color: #fff; border-color: var(--teal-deep); background: linear-gradient(145deg, #0d4e50, #0f766e); }
+    .flow-step.key .step-no { color: var(--mint); }
+    .flow-step.key p { color: #cbe9e5; }
+    .governance-rail {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      padding: 15px 18px;
-      border: 1px dashed rgba(255,255,255,.22);
-      border-radius: 12px;
-      color: #d7e4f1;
-      background: rgba(255,255,255,.03);
+      justify-content: center;
+      gap: 18px;
+      margin-top: 16px;
+      padding: 11px 18px;
+      border-radius: 10px;
+      color: #315168;
+      background: var(--ice);
+      font-size: 12px;
+      font-weight: 700;
     }
-    .cloud strong { display: block; font-size: 13px; }
-    .cloud small { color: #8fa5bd; font-size: 11px; }
-    .zero { color: var(--mint); font-size: 30px; font-weight: 900; letter-spacing: -.05em; }
-    .boundary-note { margin: 14px 0 0; color: #91a8c1; font-size: 10.5px; text-align: center; }
+    .governance-rail span::before { content: "✓"; margin-right: 7px; color: var(--teal-deep); font-weight: 900; }
 
-    /* ── S7 · Findings & report mockup ────────────────────────────────── */
-    .finding-stack { display: grid; gap: 14px; }
-    .finding-card {
-      padding: 22px 24px;
-      border: 1px solid var(--line);
-      border-left: 4px solid var(--red);
-      border-radius: 13px;
-      background: #fff;
-      box-shadow: 0 18px 46px rgba(16,35,63,.1);
-    }
-    .finding-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-    .finding-head b { font-size: 15px; letter-spacing: -.02em; }
-    .sev { padding: 4px 10px; border-radius: 999px; background: #fee2e2; color: #b91c1c; font-size: 10.5px; font-weight: 850; letter-spacing: .09em; }
-    .finding-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 15px; border: 1px solid var(--line); border-radius: 9px; background: var(--line); overflow: hidden; }
-    .finding-grid div { padding: 10px 13px; background: #fbfdfe; }
-    .finding-grid small { display: block; color: var(--muted); font-size: 9.5px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-    .finding-grid span { display: block; margin-top: 3px; font-size: 12px; color: #314761; }
-    .quality-card {
-      padding: 18px 22px;
-      border: 1px solid var(--line);
-      border-radius: 13px;
-      background: #fff;
-      box-shadow: 0 18px 46px rgba(16,35,63,.08);
-    }
-    .quality-card b { display: block; margin-bottom: 10px; font-size: 13px; }
-    .quality-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid #edf2f7; color: #3e536d; font-size: 12.5px; }
-    .quality-row i { flex-shrink: 0; display: grid; width: 18px; height: 18px; place-items: center; border-radius: 50%; font-size: 11px; font-style: normal; font-weight: 900; }
-    .quality-row .ok { background: #d1fae5; color: #047857; }
-    .quality-row .warn { background: #fef3c7; color: #b45309; }
-
-    /* ── S9 · Why + closing ───────────────────────────────────────────── */
-    .principle-card {
+    /* 03 · Leadership value */
+    .value-list { display: grid; gap: 10px; margin-top: 23px; }
+    .value-item {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      margin-top: 34px;
-      border: 1px solid rgba(255,255,255,.14);
-      border-radius: 18px;
-      overflow: hidden;
-      box-shadow: 0 24px 70px rgba(2,10,22,.4);
+      grid-template-columns: 38px 1fr;
+      gap: 13px;
+      padding: 13px 0;
+      border-top: 1px solid var(--line);
     }
-    .not-this, .this { padding: 30px 34px; }
-    .not-this { background: rgba(255,255,255,.05); }
-    .this { background: rgba(94,234,212,.09); }
-    .compare-label { font-size: 10.5px; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; }
-    .not-this .compare-label { color: #fca5a5; }
-    .this .compare-label { color: var(--mint); }
-    .check-list { list-style: none; margin: 14px 0 0; padding: 0; }
-    .check-list li { display: flex; gap: 11px; padding: 9px 0; border-top: 1px solid rgba(255,255,255,.1); color: #d2dfec; font-size: 13px; }
-    .check-list li::before { content: "×"; color: #f87171; font-weight: 900; }
-    .this .check-list li::before { content: "✓"; color: var(--mint); }
-    .closing-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px; margin-top: 34px; }
-    .closing-row p { margin: 0; color: #93a8c0; font-size: 13px; }
+    .value-no { color: var(--teal-deep); font-size: 12px; font-weight: 850; }
+    .value-item strong { display: block; font-size: 14px; }
+    .value-item p { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; }
+    .media-caption { margin: 12px 4px 0; color: var(--muted); font-size: 11.5px; text-align: center; }
+
+    /* 04 · Traceability */
+    .trace-layout { display: grid; grid-template-columns: 1fr .76fr; gap: 34px; align-items: stretch; margin-top: 28px; }
+    .trace-chain { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .trace-node {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 206px;
+      padding: 18px 16px;
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 12px;
+      background: rgba(255,255,255,.055);
+    }
+    .trace-node::after { content: "→"; position: absolute; right: -14px; top: 48%; z-index: 2; color: var(--mint); font-weight: 900; }
+    .trace-node:last-child::after { display: none; }
+    .trace-node small { color: var(--mint); font-size: 9.5px; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .trace-node strong { display: block; margin-top: 10px; color: #fff; font-size: 15px; line-height: 1.25; }
+    .trace-node p { margin: 12px 0 0; color: #9eb3ca; font-size: 11.5px; }
+    .finding-card {
+      padding: 23px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-left: 4px solid #f87171;
+      border-radius: 13px;
+      color: var(--ink);
+      background: #fff;
+      box-shadow: 0 24px 60px rgba(2,10,22,.35);
+    }
+    .finding-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+    .finding-head b { font-size: 16px; line-height: 1.25; letter-spacing: -.02em; }
+    .severity { flex-shrink: 0; padding: 4px 9px; border-radius: 999px; color: #b91c1c; background: #fee2e2; font-size: 9.5px; font-weight: 850; letter-spacing: .08em; }
+    .finding-body { display: grid; gap: 1px; margin-top: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--line); overflow: hidden; }
+    .finding-row { display: grid; grid-template-columns: 92px 1fr; padding: 10px 12px; background: #fbfdfe; }
+    .finding-row small { color: var(--muted); font-size: 9.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .finding-row span { color: #314761; font-size: 11.5px; }
+    .preliminary { margin-top: 13px; padding: 9px 11px; border-radius: 8px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 700; }
+
+    /* 05 · Governance */
+    .assurance-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 22px; }
+    .assurance {
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 11px;
+      background: rgba(255,255,255,.05);
+    }
+    .assurance strong { display: block; color: #fff; font-size: 13px; }
+    .assurance p { margin: 4px 0 0; color: #9eb3ca; font-size: 11.5px; }
+    .technical-note { margin-top: 17px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.13); color: #91a8c1; font-size: 11.5px; }
+    .technical-note b { color: var(--mint); }
+    .slide.dark .shot { border-color: rgba(255,255,255,.18); box-shadow: 0 30px 70px rgba(2,10,22,.5); }
+    .closing-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 20px; }
+    .closing-row p { margin: 0; color: #91a8c1; font-size: 11.5px; }
     .button {
       display: inline-flex;
       align-items: center;
-      gap: 9px;
-      min-height: 46px;
-      padding: 0 20px;
+      min-height: 43px;
+      padding: 0 18px;
+      border: 1px solid var(--mint);
       border-radius: 8px;
       color: #06221f;
       background: var(--mint);
-      border: 1px solid var(--mint);
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 750;
       text-decoration: none;
-      transition: transform .2s, background .2s;
     }
-    .button:hover { transform: translateY(-2px); background: #7af3df; }
+    .button:hover { background: #7af3df; }
 
-    /* ── Responsive: compress for short viewports ─────────────────────── */
     @media (max-height: 800px) {
-      .slide h2 { font-size: clamp(28px, 3.6vw, 42px); }
-      #overview h1 { font-size: clamp(38px, 5.4vw, 68px); }
-      .hero-proof { margin-top: 34px; }
-      .scroll-hint { margin-top: 26px; }
-      .flow-step { min-height: 165px; }
-      .flow-step h3 { margin-top: 16px; font-size: 16px; }
+      .slide h2 { font-size: clamp(28px, 3.5vw, 42px); }
+      #overview h1 { font-size: clamp(40px, 5.5vw, 68px); }
+      .outcome-strip { margin-top: 32px; }
+      .scroll-hint { margin-top: 24px; }
+      .source-row { margin-top: 17px; }
+      .source-card { padding: 11px 15px; }
+      .flow-step { min-height: 120px; padding: 13px; }
+      .flow-step h3 { margin-top: 8px; font-size: 14px; }
+      .flow-step p { font-size: 10.5px; }
+      .trace-layout { margin-top: 19px; }
+      .trace-node { min-height: 175px; padding: 14px; }
+      .trace-node p { font-size: 10.5px; }
+      .finding-row:nth-child(4) { display: none; }
       .split { gap: 38px; }
-      .split-copy > p { font-size: 14px; }
-      .local-node small { display: none; }
-      .finding-grid div:nth-child(n+4) { display: none; }
     }
-    @media (max-width: 1240px) {
-      .tab .tab-label { display: none; }
-      .tab { padding: 7px 8px; }
-      .tab .tab-no { font-size: 11px; }
+    @media (max-width: 1060px) {
+      .tab-label { display: none; }
       .brand-copy small { display: none; }
     }
 
-    /* ── Scroll mode (small screens): plain vertical document ─────────── */
+    /* Small screens become a conventional scrolling document. */
     body.scroll-mode { overflow: auto; }
     body.scroll-mode .deck { position: static; inset: auto; }
     body.scroll-mode .slide {
@@ -522,28 +474,28 @@
       padding-top: var(--header-h);
     }
     body.scroll-mode .slide:first-child { padding-top: calc(var(--header-h) + 10px); }
-    body.scroll-mode .slide-inner { padding: 48px 0; max-height: none; }
+    body.scroll-mode .slide-inner { max-height: none; padding: 48px 0; }
     body.scroll-mode [data-anim] { opacity: 1; transform: none; }
     body.scroll-mode .counter { display: none; }
     @media (max-width: 860px) {
       .shell { width: min(100% - 30px, var(--max)); }
-      .split, .split.flip { grid-template-columns: 1fr; gap: 26px; }
-      .split.flip .split-copy, .split.flip .split-media { order: initial; }
-      .hero-proof { grid-template-columns: 1fr 1fr; }
-      .proof-item { padding-left: 16px; }
-      .proof-item:nth-child(2) { border-right: 0; }
-      .proof-item:nth-child(-n+2) { border-bottom: 1px solid rgba(255,255,255,.12); }
-      .flow-line { grid-template-columns: 1fr; gap: 10px; }
-      .flow-step { min-height: auto; }
-      .flow-step h3 { margin-top: 10px; }
-      .flow-step::after { display: none; }
-      .principle-card { grid-template-columns: 1fr; }
-      .local-core { grid-template-columns: 1fr; }
-      .scroll-hint { display: none; }
+      .split, .trace-layout { grid-template-columns: 1fr; gap: 28px; }
+      .outcome-strip { grid-template-columns: 1fr 1fr; }
+      .outcome:nth-child(2) { border-right: 0; }
+      .outcome:nth-child(-n+2) { border-bottom: 1px solid rgba(255,255,255,.12); }
+      .source-row, .flow-track, .trace-chain { grid-template-columns: 1fr; }
+      .flow-step, .trace-node { min-height: auto; }
+      .flow-step::after, .trace-node::after { display: none; }
+      .governance-rail { flex-direction: column; align-items: flex-start; gap: 6px; }
       .shot img { max-height: none; }
-      .finding-grid { grid-template-columns: 1fr 1fr; }
+      .scroll-hint { display: none; }
     }
-
+    @media (max-width: 520px) {
+      .open-app { display: none; }
+      .outcome-strip, .assurance-list { grid-template-columns: 1fr; }
+      .outcome { padding-left: 0; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.12); }
+      .finding-row { grid-template-columns: 1fr; gap: 3px; }
+    }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation: none !important; transition: none !important; }
     }
@@ -554,7 +506,7 @@
     <div class="topbar-shell">
       <a class="brand" href="/" aria-label="Audit Workbench home">
         <span class="brand-mark">✓</span>
-        <span class="brand-copy"><strong>Audit Workbench</strong><small>End-to-end audit console</small></span>
+        <span class="brand-copy"><strong>Audit Workbench</strong><small>Connected audit lifecycle</small></span>
       </a>
       <nav class="section-tabs" id="sectionTabs" aria-label="Sections"></nav>
       <a class="open-app" href="/">Open workbench →</a>
@@ -563,207 +515,130 @@
   </header>
 
   <main class="deck" id="deck">
-    <!-- 01 · Overview -->
+    <!-- 01 · Executive proposition -->
     <section class="slide dark" id="overview" data-title="Overview">
       <div class="slide-inner">
         <div class="shell">
-          <p class="eyebrow light" data-anim>Internal product overview · 2026</p>
-          <h1 data-anim>The full audit cycle.<br><span>Agentic, evidence-linked, local.</span></h1>
-          <p class="hero-lede" data-anim="2">Audit Workbench takes an engagement from raw files to a draft audit report: an agent plans against a Risk &amp; Control Matrix, executes data and document fieldwork, dispositions observations and drafts the report — while every population, computation and working paper stays on the auditor's machine.</p>
-          <div class="hero-proof" data-anim="3" aria-label="Key product facts">
-            <div class="proof-item"><strong>Plan → Report</strong><small>one governed agent run</small></div>
-            <div class="proof-item"><strong>15</strong><small>built-in audit analytics</small></div>
-            <div class="proof-item"><strong>IIA-style</strong><small>findings with typed evidence</small></div>
-            <div class="proof-item"><strong>Local</strong><small>Polars execution on the auditor's device</small></div>
+          <p class="eyebrow light" data-anim>Executive overview</p>
+          <h1 data-anim>From audit evidence to <span>defensible conclusions.</span></h1>
+          <p class="hero-lede" data-anim="2">Audit Workbench turns policies, SOPs, data populations and documentary evidence into a risk-aligned audit plan, RCM-linked testing, supported findings and an editable audit report.</p>
+          <div class="outcome-strip" data-anim="3" aria-label="Leadership outcomes">
+            <div class="outcome"><strong>Risk-aligned planning</strong><small>Context becomes an actionable APM</small></div>
+            <div class="outcome"><strong>RCM-linked fieldwork</strong><small>Tests remain tied to risks and controls</small></div>
+            <div class="outcome"><strong>Evidence-backed findings</strong><small>Conclusions retain their support</small></div>
+            <div class="outcome"><strong>Completion-gated reporting</strong><small>Open work remains visible</small></div>
           </div>
-          <p class="scroll-hint" data-anim="4"><i>↓</i> Scroll or press <kbd>↓</kbd> to advance · click a tab above to jump</p>
+          <p class="scroll-hint" data-anim="4"><i>↓</i> Follow the audit flow</p>
         </div>
       </div>
     </section>
 
-    <!-- 02 · Lifecycle -->
-    <section class="slide" id="lifecycle" data-title="Lifecycle">
+    <!-- 02 · Evidence-to-report flow -->
+    <section class="slide" id="audit-flow" data-title="Audit flow">
       <div class="slide-inner">
         <div class="shell">
-          <p class="eyebrow" data-anim>The audit lifecycle</p>
-          <h2 data-anim>One agent run walks the whole engagement.</h2>
-          <div class="flow-line">
-            <article class="flow-step" data-anim="2"><span class="step-no">01 · INTAKE</span><h3>Import the audit folder</h3><p>Mixed local folders are compared with prior imports, staged, routed and loaded idempotently — tables and documents alike.</p></article>
-            <article class="flow-step" data-anim="2"><span class="step-no">02 · PLAN</span><h3>APM &amp; RCM</h3><p>An assistant interview captures context, then drafts the planning memorandum and the Risk &amp; Control Matrix with planned tests.</p></article>
-            <article class="flow-step" data-anim="3"><span class="step-no">03 · FIELDWORK</span><h3>Execute the tests</h3><p>RCM-linked Data Tests and Document Tests run locally, with durable results, exceptions and execution history.</p></article>
-            <article class="flow-step" data-anim="3"><span class="step-no">04 · FINDINGS</span><h3>Disposition observations</h3><p>Execution observations are dispositioned; supported ones become editable IIA-style findings tied to evidence.</p></article>
-            <article class="flow-step" data-anim="4"><span class="step-no">05 · REPORT</span><h3>Draft &amp; quality-check</h3><p>An editable report is generated from live context, traceability-checked, and reconciled against auditor edits.</p></article>
+          <p class="eyebrow" data-anim>One connected audit lifecycle</p>
+          <h2 data-anim>Evidence in. Risk-aligned audit out.</h2>
+          <p class="section-lede" data-anim="2">Source material is not merely stored—it shapes the plan, the RCM and the tests whose results support the final conclusion.</p>
+
+          <div class="source-row" data-anim="2" aria-label="Audit source materials">
+            <div class="source-card"><span class="source-icon">§</span><div><strong>Policies &amp; SOPs</strong><small>Criteria, requirements and expected controls</small></div></div>
+            <div class="source-card"><span class="source-icon">▦</span><div><strong>Data populations</strong><small>Transactions, master data and operational records</small></div></div>
+            <div class="source-card"><span class="source-icon">✓</span><div><strong>Documentary evidence</strong><small>Approvals, invoices, minutes and correspondence</small></div></div>
           </div>
-          <div class="workflow-callout" data-anim="4"><strong>Two operating modes:</strong> auto mode applies validated changes; permission mode pauses at editable approval batches. Runs can be paused, resumed, steered and replayed — and mandatory output stages stay deterministic even if model expansion fails.</div>
+
+          <div class="converge" data-anim="3">Engagement understanding</div>
+
+          <div class="flow-track" data-anim="3" aria-label="Audit transformation flow">
+            <article class="flow-step"><span class="step-no">01 · UNDERSTAND</span><h3>Context &amp; scope</h3><p>Objectives, stakeholders, processes and materiality are established.</p></article>
+            <article class="flow-step"><span class="step-no">02 · PLAN</span><h3>APM</h3><p>The engagement approach, scope and priorities become an editable plan.</p></article>
+            <article class="flow-step key"><span class="step-no">03 · STRUCTURE</span><h3>RCM</h3><p>Risks, controls and planned procedures form the fieldwork spine.</p></article>
+            <article class="flow-step"><span class="step-no">04 · EXECUTE</span><h3>Testing</h3><p>Data and document procedures assess each planned control or risk.</p></article>
+            <article class="flow-step"><span class="step-no">05 · EVALUATE</span><h3>Results</h3><p>Exceptions become reviewed observations with clear dispositions.</p></article>
+            <article class="flow-step"><span class="step-no">06 · COMMUNICATE</span><h3>Report</h3><p>Supported findings and working papers inform the audit report.</p></article>
+          </div>
+
+          <div class="governance-rail" data-anim="4">
+            <span>Auditor review and approval</span><span>Evidence traceability</span><span>Coverage and completion checks</span>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- 03 · Architecture -->
-    <section class="slide" id="architecture" data-title="Architecture">
+    <!-- 03 · Leadership value -->
+    <section class="slide" id="leadership-value" data-title="Leadership value">
       <div class="slide-inner">
         <div class="shell split">
           <div class="split-copy" data-anim>
-            <p class="eyebrow">The architectural moat</p>
-            <h2>Populations never leave the machine.</h2>
-            <p>The configured model sees <strong>schemas, aggregate statistics, bounded row previews and attached document context</strong> — never a wholesale data dump. Tools execute locally on Polars; the orchestrator, not the model, decides whether a mutation applies.</p>
-            <p>Works with Groq, OpenRouter, Mistral, OpenCode Zen, Cerebras — or fully offline against a local LM Studio model.</p>
-            <div class="point"><b>Why it matters:</b> useful agentic analysis with predictable context limits, and deterministic checks that model output can never overwrite.</div>
-          </div>
-          <div class="boundary" data-anim="2" aria-label="Local-first data boundary diagram">
-            <div class="boundary-label"><span>Auditor's machine</span><span class="secure"><i></i> protected boundary</span></div>
-            <div class="local-core">
-              <div class="core-title">Full engagement populations remain here</div>
-              <div class="local-node"><b>Source files &amp; documents</b><small>Typed tables, PDFs, DOCX, images, evidence anchors</small></div>
-              <div class="local-node"><b>Polars engine</b><small>Queries, joins, analytics, validation, custom code</small></div>
-              <div class="local-node"><b>Fieldwork &amp; working papers</b><small>Data / Document Tests with durable artifacts</small></div>
-              <div class="local-node"><b>Findings &amp; report</b><small>Dispositions, drafts and traceability stay local</small></div>
+            <p class="eyebrow">What leadership gains</p>
+            <h2>The RCM becomes a live view of audit coverage.</h2>
+            <p>Planning is no longer a static document that separates from fieldwork. Each risk and control carries its planned procedures, execution status, observations and supporting work.</p>
+            <div class="value-list">
+              <div class="value-item"><span class="value-no">01</span><div><strong>Coverage visibility</strong><p>See which material risks are planned, tested, complete or still open.</p></div></div>
+              <div class="value-item"><span class="value-no">02</span><div><strong>Consistent execution</strong><p>Data and document testing follow the same risk-and-control structure.</p></div></div>
+              <div class="value-item"><span class="value-no">03</span><div><strong>Focused review</strong><p>Attention moves to exceptions, unsupported conclusions and incomplete work.</p></div></div>
             </div>
-            <div class="gate"><span>bounded model context</span></div>
-            <div class="cloud">
-              <div><strong>Configurable LLM</strong><small>Schema · bounded rows · document excerpts</small></div>
-              <span class="zero">capped</span>
+          </div>
+          <div class="split-media" data-anim="2">
+            <div class="shot"><img src="/showcase/rcm-matrix.png" alt="Risk and Control Matrix showing risks, controls and linked planned tests" loading="lazy" /></div>
+            <p class="media-caption">The RCM connects planning decisions to fieldwork status and results.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 · Traceability -->
+    <section class="slide dark" id="traceability" data-title="Traceability">
+      <div class="slide-inner">
+        <div class="shell">
+          <p class="eyebrow light" data-anim>Defensible results</p>
+          <h2 data-anim>Every conclusion has a visible line of sight.</h2>
+          <p class="section-lede" data-anim="2">A finding can be followed backward—from the report to the observation, test execution, RCM entry and originating audit criterion.</p>
+          <div class="trace-layout" data-anim="3">
+            <div class="trace-chain" aria-label="Evidence traceability chain">
+              <article class="trace-node"><div><small>Criterion</small><strong>Procurement SOP §4.2</strong></div><p>Three-way match required before payment.</p></article>
+              <article class="trace-node"><div><small>RCM</small><strong>Invoice processing control</strong></div><p>Risk of duplicate or unsupported payment.</p></article>
+              <article class="trace-node"><div><small>Test</small><strong>Population analysis</strong></div><p>Duplicate and matching procedures executed.</p></article>
+              <article class="trace-node"><div><small>Result</small><strong>Exceptions reviewed</strong></div><p>Observations dispositioned by the auditor.</p></article>
+              <article class="trace-node"><div><small>Conclusion</small><strong>Supported finding</strong></div><p>Included in working papers and report.</p></article>
             </div>
-            <p class="boundary-note">The orchestrator — not the model — decides whether a mutation executes.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 04 · Planning -->
-    <section class="slide" id="planning" data-title="Planning">
-      <div class="slide-inner">
-        <div class="shell split">
-          <div class="split-copy" data-anim>
-            <p class="eyebrow">Plan</p>
-            <h2>The RCM is the spine of the engagement.</h2>
-            <p>An assistant interview turns engagement context into an editable <strong>Audit Planning Memorandum</strong> and a <strong>Risk &amp; Control Matrix</strong>: processes, risks, ratings, assertions, controls and planned tests.</p>
-            <p>Every downstream artifact — test executions, observations, evidence requests and working papers — hangs off its RCM row, so coverage is always visible.</p>
-            <div class="point"><b>Why it matters:</b> planning isn't a document that goes stale; it's the live structure fieldwork rolls up into.</div>
-          </div>
-          <div class="split-media" data-anim="2">
-            <div class="shot"><img src="/showcase/rcm-matrix.png" alt="Risk &amp; Control Matrix with processes, risks, ratings, controls and planned tests" loading="lazy" /></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 05 · Data fieldwork -->
-    <section class="slide dark" id="data-tests" data-title="Data tests">
-      <div class="slide-inner">
-        <div class="shell split flip">
-          <div class="split-copy" data-anim>
-            <p class="eyebrow">Fieldwork · data</p>
-            <h2>Durable Data Tests, not throwaway queries.</h2>
-            <p>Exploratory or RCM-linked tests run on three engines: a <strong>15-test analytics library</strong> (Benford, duplicates, gaps, outliers, sampling and more), <strong>editable validation rules</strong>, and <strong>visible, AST-guarded Polars</strong> when a standard procedure isn't enough.</p>
-            <p>Runs keep bounded result and exception artifacts, histories, hashes and table fingerprints — so a conclusion can always be traced to the execution that produced it.</p>
-            <div class="chips" data-anim="2"><span class="chip">Analytics</span><span class="chip">Validation</span><span class="chip">Visible Polars</span><span class="chip">Execution history</span><span class="chip">Semantic checks</span></div>
-          </div>
-          <div class="split-media" data-anim="2">
-            <div class="shot"><img src="/showcase/data-tests.png" alt="RCM-linked Data Test with exception status, JSON specification and execution history" loading="lazy" /></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 06 · Documents -->
-    <section class="slide" id="documents" data-title="Documents">
-      <div class="slide-inner">
-        <div class="shell split">
-          <div class="split-copy" data-anim>
-            <p class="eyebrow">Fieldwork · documents</p>
-            <h2>Documentary evidence, anchored and cited.</h2>
-            <p>PDFs, DOCX, text and images are ingested with extraction previews and <strong>immutable typed evidence anchors</strong>. Ask cited questions; answers stay tied to source hashes and the exact included text.</p>
-            <p>Document Tests cover <strong>vouching and tracing, attribute testing, document and minutes review</strong> — with explainable exact, normalized, fuzzy, numeric-tolerance and date-tolerance comparisons, seeded samples and resumable per-item state.</p>
-            <div class="point"><b>Why it matters:</b> model interpretation is presented separately and never replaces stored comparison evidence.</div>
-          </div>
-          <div class="split-media" data-anim="2">
-            <div class="shot"><img src="/showcase/documents-evidence.png" alt="Document library with typed grouping and a previewed correspondence document" loading="lazy" /></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 07 · Findings & report -->
-    <section class="slide" id="findings" data-title="Findings">
-      <div class="slide-inner">
-        <div class="shell split flip">
-          <div class="split-copy" data-anim>
-            <p class="eyebrow">Output</p>
-            <h2>From observation to defensible report.</h2>
-            <p>Supported observations become editable <strong>IIA-style findings</strong> — condition, criteria, cause, effect, recommendation, management response — each carrying typed evidence links.</p>
-            <p>The report is generated from live planning-through-finding context, checked by <strong>advisory RCM → test → execution → evidence traceability</strong>, and regenerations reconcile side by side so auditor edits are never silently overwritten. Open material work yields a clearly labelled preliminary report, not an unsupported conclusion.</p>
-          </div>
-          <div class="split-media finding-stack" data-anim="2">
             <div class="finding-card">
-              <div class="finding-head"><b>Duplicate vendor payments not prevented by three-way match</b><span class="sev">HIGH</span></div>
-              <div class="finding-grid">
-                <div><small>Condition</small><span>44 round-amount and 2 outlier invoices flagged</span></div>
-                <div><small>Criteria</small><span>Procurement SOP §4.2 three-way match</span></div>
-                <div><small>Cause</small><span>Match tolerance overrides unreviewed</span></div>
-                <div><small>Effect</small><span>Exposure to duplicate disbursement</span></div>
-                <div><small>Recommendation</small><span>Enforce PO–GRN–invoice matching</span></div>
-                <div><small>Evidence</small><span>DAT-9F0E · DAT-CA65 · inv2024004</span></div>
+              <div class="finding-head"><b>Duplicate vendor payments not prevented by three-way match</b><span class="severity">HIGH</span></div>
+              <div class="finding-body">
+                <div class="finding-row"><small>Condition</small><span>Duplicate payments identified in the tested population</span></div>
+                <div class="finding-row"><small>Criteria</small><span>Procurement SOP §4.2 three-way match</span></div>
+                <div class="finding-row"><small>Effect</small><span>Exposure to duplicate disbursement</span></div>
+                <div class="finding-row"><small>Evidence</small><span>Linked test results and supporting documents</span></div>
               </div>
-            </div>
-            <div class="quality-card" data-anim="3">
-              <b>Report quality &amp; traceability</b>
-              <div class="quality-row"><i class="ok">✓</i> Every finding cites computed evidence</div>
-              <div class="quality-row"><i class="ok">✓</i> RCM rows trace to executed tests</div>
-              <div class="quality-row"><i class="warn">!</i> 2 planned tests still open — report marked preliminary</div>
+              <div class="preliminary">Open material testing keeps the report clearly marked as preliminary.</div>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- 08 · Oversight -->
-    <section class="slide" id="oversight" data-title="Oversight">
+    <!-- 05 · Governance and oversight -->
+    <section class="slide dark" id="governance" data-title="Governance">
       <div class="slide-inner">
         <div class="shell split">
           <div class="split-copy" data-anim>
-            <p class="eyebrow">Command centre</p>
-            <h2>A dashboard that knows what's next.</h2>
-            <p>The dashboard surfaces the <strong>next best action</strong>, flags results that need attention, and curates four to six RCM-linked test results using deterministic risk, exception and relevance scoring. Tiles are live — they recompute when the data changes.</p>
-            <p>Agent runs are <strong>durable and steerable</strong>: pause, resume, cancel, steer mid-run, approve editable batches, replay the event history, and recover cleanly after a restart.</p>
-            <div class="point"><b>Why it matters:</b> the auditor reviews and directs the engagement instead of babysitting a chat window.</div>
+            <p class="eyebrow light">Governed assistance</p>
+            <h2>AI accelerates the work. Auditors retain control.</h2>
+            <p>The workbench helps structure planning, execute analysis and prepare drafts. Audit judgment remains with the auditor through reviewable evidence, approval points and deterministic completion checks.</p>
+            <div class="assurance-list">
+              <div class="assurance"><strong>Auditor approval</strong><p>Proposed changes can pause for review before they are applied.</p></div>
+              <div class="assurance"><strong>Evidence retained</strong><p>Tests, observations and findings preserve their supporting links.</p></div>
+              <div class="assurance"><strong>Completion gates</strong><p>Open material work prevents an unsupported final conclusion.</p></div>
+              <div class="assurance"><strong>Controlled environment</strong><p>Engagement information remains within the auditor-controlled workspace.</p></div>
+            </div>
+            <p class="technical-note"><b>Technical assurance:</b> full engagement populations are processed locally; model context is bounded and configurable. Detailed architecture is available for technology and information-security review.</p>
           </div>
           <div class="split-media" data-anim="2">
-            <div class="shot"><img src="/showcase/audit-dashboard.png" alt="Audit dashboard with next-action guidance, suggested actions and pinned analysis tiles" loading="lazy" /></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 09 · Why -->
-    <section class="slide dark" id="why" data-title="Why">
-      <div class="slide-inner">
-        <div class="shell">
-          <p class="eyebrow light" data-anim>The idea in one line</p>
-          <h2 data-anim>Let AI run the audit cycle — without asking the evidence to leave the room.</h2>
-          <div class="principle-card" data-anim="2">
-            <div class="not-this">
-              <span class="compare-label">Not another AI chat wrapper</span>
-              <ul class="check-list">
-                <li>Answers that vanish when the conversation ends</li>
-                <li>Unbounded datasets pasted into one prompt</li>
-                <li>Conclusions detached from evidence</li>
-                <li>Unreviewed model actions</li>
-              </ul>
+            <div class="shot"><img src="/showcase/audit-dashboard.png" alt="Audit dashboard showing next actions, items needing attention and analysis results" loading="lazy" /></div>
+            <div class="closing-row">
+              <p>One view of priorities, exceptions and progress.</p>
+              <a class="button" href="/">Open Audit Workbench →</a>
             </div>
-            <div class="this">
-              <span class="compare-label">A governed audit system</span>
-              <ul class="check-list">
-                <li>Persistent RCM, tests, findings, working papers and report</li>
-                <li>Bounded, inspectable model context</li>
-                <li>Findings linked to computed, hashed evidence</li>
-                <li>Orchestrator validation and auditor approvals</li>
-              </ul>
-            </div>
-          </div>
-          <div class="closing-row" data-anim="3">
-            <p>Audit Workbench · Internal project showcase · Local-first by architecture, not policy alone.</p>
-            <a class="button" href="/">Open Audit Workbench <span>→</span></a>
           </div>
         </div>
       </div>
