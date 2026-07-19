@@ -199,7 +199,21 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         target = workspace.rcm_migration.get("migrated_procedures", {}).get(procedure_id)
         if target and target["planned_test_id"] not in planned_test_refs:
             planned_test_refs.append(target["planned_test_id"])
-    evidence_refs = validate_evidence(workspace, payload.get("evidence_refs") or [])
+    execution_refs = [
+        str(value) for value in (payload.get("execution_refs") or []) if str(value).strip()
+    ]
+    evidence_values = list(payload.get("evidence_refs") or [])
+    if not evidence_values and execution_refs:
+        evidence_values = [
+            anchor
+            for value in execution_refs
+            if (
+                anchor := anchor_from_ref(
+                    workspace, value, run_id=str(payload.get("agent_run_id") or "") or None
+                )
+            ) is not None
+        ]
+    evidence_refs = validate_evidence(workspace, evidence_values)
     created = _now(workspace)
     item = {
         "id": str(payload.get("id") or f"F-{uuid.uuid4().hex[:6].upper()}"),
@@ -217,7 +231,7 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         "rcm_refs": rcm_refs,
         "procedure_refs": procedure_refs,
         "planned_test_refs": planned_test_refs,
-        "execution_refs": [str(value) for value in (payload.get("execution_refs") or [])],
+        "execution_refs": execution_refs,
         "evidence_refs": evidence_refs,
         "cause_pending": bool(payload.get("cause_pending", False)),
         "severity_rationale": str(payload.get("severity_rationale") or ""),

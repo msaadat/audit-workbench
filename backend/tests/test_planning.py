@@ -376,6 +376,23 @@ def test_planning_context_requires_string_field_values():
         })
 
 
+def test_planning_context_normalizes_flat_provider_payload():
+    normalized = command_runner._validate_context_payload({
+        "objective": "Review procurement controls",
+        "scope": "Requisitions through payment",
+        "entity": "Example Bank",
+    })
+
+    assert normalized["context"] == {
+        "objective": "Review procurement controls",
+        "scope": "Requisitions through payment",
+        "entity": "Example Bank",
+    }
+    assert command_runner.CommandRunner._planning_context(normalized)["scope"] == (
+        "Requisitions through payment"
+    )
+
+
 def test_auto_planning_selects_relevant_documents(monkeypatch):
     ws = workspaces.create_workspace("Auto document selection")
     policy_text = b"Procurement Policy: purchases require documented approval before commitment."

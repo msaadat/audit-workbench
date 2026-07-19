@@ -100,6 +100,26 @@ def test_agent_finding_promotion_is_explicit_typed_and_idempotent(workspace_with
     assert promoted["evidence_refs"][0]["source_kind"] == "analysis"
 
 
+def test_finding_derives_typed_evidence_from_execution_reference(workspace_with_data):
+    ws, rcm, procedure, planned, execution, _analysis, _anchor = linked_workspace(
+        workspace_with_data
+    )
+    payload = complete_finding_payload(
+        rcm, procedure, planned, execution,
+        {"source_kind": "doctest", "source_id": execution["id"], "source_sha1": execution["sha1"]},
+    )
+    payload.pop("evidence_refs")
+
+    item = findings.add(ws, payload)
+
+    assert item["evidence_refs"][0]["source_kind"] == "doctest"
+    assert item["evidence_refs"][0]["source_id"] == execution["id"]
+    assert item["evidence_refs"][0]["source_sha1"] == findings.artifact(
+        ws, "doctest", execution["id"]
+    )["sha1"]
+    assert findings.support_issues(ws, item) == []
+
+
 def test_report_context_excludes_rows_and_document_excerpts(workspace_with_data):
     ws, rcm, procedure, planned, execution, _analysis, anchor = linked_workspace(workspace_with_data)
     findings.add(ws, complete_finding_payload(rcm, procedure, planned, execution, anchor))
@@ -191,6 +211,27 @@ def test_quality_checks_are_advisory_and_detect_traceability_arithmetic_and_exce
     assert checked["ok"] is False
     assert ws.findings[0]["id"] == item["id"]
     assert doc_tests.exists(ws, test["id"])
+
+
+def test_quality_checks_detect_rcm_risk_distribution_drift(workspace_with_data):
+    ws = workspace_with_data
+    ws.update_planning({"context": {"objective": "Audit procurement", "scope": "Procurement"}})
+    ws.add_rcm({"risk": "Approval bypass", "risk_rating": "high"})
+    ws.add_rcm({"risk": "Duplicate payment", "risk_rating": "medium"})
+    ws.add_rcm({"risk": "Vendor concentration", "risk_rating": "medium"})
+
+    checked = report.quality_checks(
+        ws,
+        "# Preliminary report\n\nRisk distribution: high 2, medium 1, low 0.",
+    )
+
+    risk_issues = [
+        issue for issue in checked["issues"]
+        if issue["code"] == "report_risk_arithmetic"
+    ]
+    assert len(risk_issues) == 2
+    assert any("high-risk count" in issue["message"] for issue in risk_issues)
+    assert any("medium-risk count" in issue["message"] for issue in risk_issues)
 
 
 def test_bare_markdown_finding_reference_is_a_citation_and_model_output_is_normalized(

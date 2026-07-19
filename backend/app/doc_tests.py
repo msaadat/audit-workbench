@@ -1000,6 +1000,51 @@ def run_item(workspace: Workspace, test_id: str, item_id: str, *, run_id: str | 
     return item
 
 
+def execution_issues(test: dict) -> list[str]:
+    """Return deterministic blockers to attempting a document test.
+
+    A worklist may still require an auditor disposition after the local runner
+    has populated it.  These issues are narrower: they identify definitions
+    that cannot perform even that bounded local work (the failure mode that
+    previously turned description-only items into nominally successful runs).
+    """
+    kind = str(test.get("kind") or "")
+    items = list(test.get("items") or [])
+    if not items:
+        return ["the test has no items"]
+    issues = []
+    for index, item in enumerate(items, start=1):
+        prefix = f"item {index}"
+        if not item.get("document_ids"):
+            issues.append(f"{prefix} has no attached document")
+        if kind == "vouching" and not item.get("checks"):
+            issues.append(f"{prefix} has no comparison checks")
+        elif kind == "attribute" and not item.get("attributes"):
+            issues.append(f"{prefix} has no attributes")
+        elif kind == "review" and not (
+            item.get("page") not in (None, "")
+            or str(item.get("excerpt") or "").strip()
+            or str(item.get("summary") or "").strip()
+        ):
+            issues.append(f"{prefix} has no page, excerpt, or review summary")
+        elif kind == "qa" and not str(item.get("question") or "").strip():
+            issues.append(f"{prefix} has no question")
+    return issues
+
+
+def evidence_blocked(test: dict) -> bool:
+    """Whether a valid worklist is intentionally waiting on requested evidence."""
+    if test.get("status") not in {"blocked", "review_required"}:
+        return False
+    return bool(
+        str(test.get("scope_limitations") or "").strip()
+        or any(
+            item.get("evidence_request_ids")
+            for item in test.get("items") or []
+        )
+    )
+
+
 def result_rollup(test: dict) -> dict:
     items = test.get("items") or []
     checks = [check for item in items for check in (item.get("checks") or [])]

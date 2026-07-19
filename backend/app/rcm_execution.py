@@ -12,7 +12,13 @@ def _doc_tests(workspace: Workspace) -> list[dict]:
     return [doc_tests.load_test(workspace, item["id"]) for item in doc_tests.list_tests(workspace)]
 
 
-def _required_kinds(method: str) -> set[str]:
+def required_execution_kinds(method: str) -> set[str]:
+    """Return the durable execution kinds required by one planned-test method.
+
+    This mapping is orchestration policy, not model judgment.  Keeping it public
+    lets the command runner expose the same requirements used by coverage and
+    roll-up instead of asking the model to infer them from a title.
+    """
     if method in {"data_analytics", "validation"}:
         return {"datatest"}
     if method in {"document_inspection", "inquiry", "evidence_unavailable"}:
@@ -20,6 +26,71 @@ def _required_kinds(method: str) -> set[str]:
     if method == "hybrid":
         return {"datatest", "doctest"}
     return set()
+
+
+def execution_manifest(workspace: Workspace) -> list[dict]:
+    """Build a bounded, model-safe plan-to-execution contract for the RCM.
+
+    The manifest contains planning specifications and artifact metadata only;
+    it never includes table rows or document text.  It is also useful to local
+    semantic validators because it records whether an existing artifact has a
+    durable result rather than merely whether a definition exists.
+    """
+    manifest = []
+    for row in workspace.rcm:
+        for planned in row.get("planned_tests") or []:
+            artifacts = _artifacts(workspace, planned["id"])
+            existing = []
+            for artifact in artifacts:
+                item = artifact["item"]
+                if artifact["kind"] == "datatest":
+                    has_result = bool(item.get("last_run"))
+                else:
+                    has_result = item.get("status") == "completed"
+                existing.append({
+                    "kind": artifact["kind"],
+                    "id": artifact["id"],
+                    "status": str(item.get("status") or ""),
+                    "has_durable_result": has_result,
+                    "executable": _artifact_executable(artifact),
+                    **(
+                        {"execution_issues": doc_tests.execution_issues(item)}
+                        if artifact["kind"] == "doctest" else {}
+                    ),
+                    **(
+                        {"engine": str(item.get("engine") or "")}
+                        if artifact["kind"] == "datatest" else {}
+                    ),
+                })
+            required = sorted(required_execution_kinds(planned.get("method") or ""))
+            linked_kinds = {
+                item["kind"] for item in existing if item.get("executable")
+            }
+            missing = sorted(set(required) - linked_kinds)
+            if planned.get("method") == "validation" and not any(
+                item["kind"] == "datatest" and item.get("engine") == "validation"
+                for item in existing if item.get("executable")
+            ):
+                missing = ["validation_datatest"]
+            manifest.append({
+                "rcm_id": row["id"],
+                "rcm_risk": str(row.get("risk") or ""),
+                "risk_rating": str(row.get("risk_rating") or ""),
+                "planned_test_id": planned["id"],
+                "title": str(planned.get("title") or ""),
+                "objective": str(planned.get("objective") or ""),
+                "criteria": str(planned.get("criteria") or ""),
+                "method": str(planned.get("method") or ""),
+                "steps": [str(value) for value in planned.get("steps") or []],
+                "expected_evidence": str(planned.get("expected_evidence") or ""),
+                "sampling": dict(planned.get("sampling") or {}),
+                "thresholds": dict(planned.get("thresholds") or {}),
+                "required_execution": required,
+                "required_engine": "validation" if planned.get("method") == "validation" else None,
+                "existing_execution": existing,
+                "missing_execution": missing,
+            })
+    return manifest
 
 
 def _artifacts(workspace: Workspace, planned_test_id: str) -> list[dict]:
@@ -34,6 +105,19 @@ def _artifacts(workspace: Workspace, planned_test_id: str) -> list[dict]:
         if item.get("planned_test_id") == planned_test_id
     )
     return artifacts
+
+
+def _artifact_executable(artifact: dict) -> bool:
+    if artifact["kind"] != "doctest":
+        return True
+    item = artifact["item"]
+    # Preserve auditor-completed historical work even when its older
+    # definition predates the stronger runner preflight metadata.
+    return (
+        item.get("status") == "completed"
+        or doc_tests.evidence_blocked(item)
+        or not doc_tests.execution_issues(item)
+    )
 
 
 def coverage(workspace: Workspace) -> dict:
@@ -57,13 +141,16 @@ def coverage(workspace: Workspace) -> dict:
         usable = False
         for planned in planned_tests:
             artifacts = _artifacts(workspace, planned["id"])
-            linked_kinds = {artifact["kind"] for artifact in artifacts}
-            required = _required_kinds(planned.get("method") or "")
+            executable_artifacts = [
+                artifact for artifact in artifacts if _artifact_executable(artifact)
+            ]
+            linked_kinds = {artifact["kind"] for artifact in executable_artifacts}
+            required = required_execution_kinds(planned.get("method") or "")
             missing = sorted(required - linked_kinds)
             if planned.get("method") == "validation" and not any(
                 artifact["kind"] == "datatest"
                 and artifact["item"].get("engine") == "validation"
-                for artifact in artifacts
+                for artifact in executable_artifacts
             ):
                 missing = ["validation datatest"]
             if missing:
@@ -79,13 +166,13 @@ def coverage(workspace: Workspace) -> dict:
             if planned.get("status", "").startswith("completed"):
                 missing_result = any(
                     artifact["kind"] == "datatest" and not artifact["item"].get("last_run")
-                    for artifact in artifacts
+                    for artifact in executable_artifacts
                 ) or any(
                     artifact["kind"] == "doctest"
                     and artifact["item"].get("status") != "completed"
-                    for artifact in artifacts
+                    for artifact in executable_artifacts
                 )
-                if not artifacts or missing_result:
+                if not executable_artifacts or missing_result:
                     completed_without_durable_result.append(
                         {"rcm_id": row["id"], "planned_test_id": planned["id"]}
                     )
@@ -187,8 +274,12 @@ def _observation(
 
 
 def _rollup_planned(workspace: Workspace, row: dict, planned: dict) -> dict:
-    artifacts = _artifacts(workspace, planned["id"])
-    required = sorted(_required_kinds(planned.get("method") or ""))
+    artifacts = [
+        artifact
+        for artifact in _artifacts(workspace, planned["id"])
+        if _artifact_executable(artifact)
+    ]
+    required = sorted(required_execution_kinds(planned.get("method") or ""))
     states = []
     total_exceptions = 0
     open_exceptions = 0

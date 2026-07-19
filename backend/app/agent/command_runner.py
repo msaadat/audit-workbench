@@ -11,8 +11,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from .. import (
-    analytics, assistant, debug_store, document_analysis, documents, llm, methodology, templates_store,
-    sandbox, validation,
+    analytics, assistant, debug_store, document_analysis, documents, findings, llm, methodology, templates_store,
+    rcm_execution, sandbox, validation,
 )
 from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError, slugify
 from . import actions, artifact_index, ledger, prompts, store
@@ -67,7 +67,15 @@ def _text_list(value: object) -> list[str]:
 
 def _validate_context_payload(payload: dict) -> dict:
     if "context" not in payload:
-        return payload
+        # Some providers flatten the requested object wrapper while still
+        # returning correctly grounded fields.  Normalize that harmless shape
+        # drift instead of silently discarding useful planning context.
+        flat = {
+            key: value
+            for key, value in payload.items()
+            if key in _CONTEXT_FIELDS and isinstance(value, str)
+        }
+        return {**payload, "context": flat}
     context = payload.get("context")
     if not isinstance(context, dict):
         raise ValueError("context must be an object")
@@ -93,6 +101,19 @@ class CommandRunner(BaseRunner):
         "create_rcm_row", "edit_rcm_row", "create_rcm_planned_test",
         "edit_rcm_planned_test", "create_procedure", "edit_procedure",
     }
+    ORCHESTRATED_FULL_AUDIT_ACTION_TYPES = {
+        "rollup_rcm_results", "generate_rcm_working_paper",
+        "generate_all_rcm_working_papers", "curate_dashboard",
+        "generate_report", "run_report_quality", "verify_audit_completion",
+    }
+    RESULT_DRIVEN_FINDING_ACTION_TYPES = {
+        # Findings are derived only after local results have produced an
+        # auditor-dispositioned observation; they never belong in wave zero.
+        "create_finding", "edit_finding", "promote_agent_finding",
+        "draft_finding_from_observation",
+    }
+    FULL_AUDIT_TERMINAL_RESERVE = 6
+    FULL_AUDIT_ADAPTIVE_RESERVE = 4
 
     @staticmethod
     def _planning_context(payload: dict) -> dict:
@@ -243,8 +264,11 @@ class CommandRunner(BaseRunner):
         template = GOAL_TEMPLATES.get(command.get("goal_template"))
         if command.get("goal_template") and template is None:
             raise WorkspaceError("Unknown goal template.")
+        planning_limits = dict(self.run["limits"])
+        if self.run.get("prepared_planning") and self._requests_full_audit():
+            planning_limits["initial_action_limit"] = self._initial_full_audit_action_limit()
         base_user = prompts.command_interpreter_user(
-            command, template, artifact_index.compact(index), self._catalog(), self.run["limits"],
+            command, template, artifact_index.compact(index), self._catalog(), planning_limits,
             assistant.schema_brief(self.ws),
             self._table_profiles(),
             prepared_planning=self.run.get("prepared_planning"),
@@ -272,10 +296,16 @@ class CommandRunner(BaseRunner):
             proposals = payload.get("actions") or []
             if self.run.get("prepared_planning") and isinstance(proposals, list):
                 proposals = self._remove_redundant_planning_actions(proposals)
+                if self._requests_full_audit():
+                    proposals = self._remove_orchestrated_full_audit_actions(
+                        proposals, initial=True
+                    )
             try:
                 if not isinstance(proposals, list):
                     raise WorkspaceError("Command interpreter actions must be a list.")
                 self._canonicalize_proposals(proposals)
+                if self.run.get("prepared_planning") and self._requests_full_audit():
+                    self._validate_full_audit_action_graph(proposals, initial=True)
                 created = ledger.append_actions(
                     self.run, proposals, audit_lifecycle=self._is_full_audit_goal(goal)
                 )
@@ -456,6 +486,7 @@ class CommandRunner(BaseRunner):
                 for row in self.ws.rcm
                 for planned in row.get("planned_tests") or []
             ],
+            "execution_manifest": rcm_execution.execution_manifest(self.ws),
             "document_content_included": bool(basis.get("document_content_included")),
         }
         self.run["planning_basis_run_id"] = self.run["id"]
@@ -1475,6 +1506,199 @@ class CommandRunner(BaseRunner):
             cleaned.append(item)
         return cleaned
 
+    def _initial_full_audit_action_limit(self) -> int:
+        maximum = int(self.run["limits"].get("max_actions", 60))
+        return max(
+            1,
+            maximum - self.FULL_AUDIT_TERMINAL_RESERVE - self.FULL_AUDIT_ADAPTIVE_RESERVE,
+        )
+
+    def _remove_orchestrated_full_audit_actions(
+        self, proposals: list[dict], *, initial: bool
+    ) -> list[dict]:
+        """Keep wave zero focused on executable fieldwork.
+
+        Output/gate phases are injected locally after the graph passes semantic
+        coverage validation.  Removing them here prevents the model from
+        consuming the action budget or placing findings ahead of results.
+        """
+        orchestrated_types = set(self.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES)
+        if initial:
+            orchestrated_types.update(self.RESULT_DRIVEN_FINDING_ACTION_TYPES)
+        removed_ids = {
+            str(item.get("id") or "")
+            for item in proposals
+            if isinstance(item, dict)
+            and item.get("type") in orchestrated_types
+        }
+        cleaned = []
+        removed_types = []
+        for proposal in proposals:
+            if not isinstance(proposal, dict):
+                cleaned.append(proposal)
+                continue
+            if proposal.get("type") in orchestrated_types:
+                removed_types.append(str(proposal.get("type") or ""))
+                continue
+            item = dict(proposal)
+            dependencies = item.get("depends_on") or []
+            if isinstance(dependencies, list):
+                item["depends_on"] = [
+                    str(value) for value in dependencies if str(value) not in removed_ids
+                ]
+            cleaned.append(item)
+        if removed_types:
+            self.run.setdefault("orchestrator_removed_action_types", []).extend(
+                value
+                for value in removed_types
+                if value not in self.run.get("orchestrator_removed_action_types", [])
+            )
+        return cleaned
+
+    @staticmethod
+    def _proposal_target_tokens(action: dict) -> set[str]:
+        target = action.get("target") or {}
+        values = {
+            str(target.get("resolved_id") or "").strip(),
+            str(target.get("selector") or "").strip(),
+        }
+        output = {value for value in values if value}
+        for value in list(output):
+            prefix, separator, item_id = value.partition(":")
+            if separator and prefix in {"datatest", "doctest", "observation"} and item_id:
+                output.add(item_id)
+        return output
+
+    def _validate_full_audit_action_graph(
+        self, proposals: list[dict], *, initial: bool = False
+    ) -> None:
+        """Enforce plan-to-execution coverage before committing a graph batch."""
+        if initial and len(proposals) > self._initial_full_audit_action_limit():
+            raise WorkspaceError(
+                "Full-audit initial action graph exceeds the reserved fieldwork limit of "
+                f"{self._initial_full_audit_action_limit()} actions. Consolidate the test plan; "
+                "terminal stages and adaptive capacity are reserved locally."
+            )
+        manifest = rcm_execution.execution_manifest(self.ws)
+        actions_to_check = [
+            item for item in proposals if isinstance(item, dict)
+        ]
+        data_creates: dict[str, list[dict]] = {}
+        doc_creates: dict[str, list[dict]] = {}
+        for action in actions_to_check:
+            args = action.get("args") or {}
+            planned_id = str(args.get("planned_test_id") or "")
+            if action.get("type") == "create_data_test" and planned_id:
+                data_creates.setdefault(planned_id, []).append(action)
+            elif action.get("type") == "create_document_test" and planned_id:
+                doc_creates.setdefault(planned_id, []).append(action)
+        data_runs = [
+            action for action in actions_to_check if action.get("type") == "run_data_test"
+        ]
+        doc_runs = [
+            action for action in actions_to_check if action.get("type") == "run_document_test"
+        ]
+
+        def has_run(kind: str, candidates: set[str]) -> bool:
+            runs = data_runs if kind == "datatest" else doc_runs
+            return any(self._proposal_target_tokens(action) & candidates for action in runs)
+
+        issues = []
+        for requirement in manifest:
+            planned_id = requirement["planned_test_id"]
+            rcm_id = requirement["rcm_id"]
+            existing = requirement.get("existing_execution") or []
+            for kind in requirement.get("required_execution") or []:
+                existing_kind = [
+                    item for item in existing
+                    if item.get("kind") == kind and item.get("executable", True)
+                ]
+                creates = (
+                    data_creates.get(planned_id, [])
+                    if kind == "datatest" else doc_creates.get(planned_id, [])
+                )
+                valid_creates = [
+                    action for action in creates
+                    if str((action.get("args") or {}).get("rcm_id") or "") == rcm_id
+                ]
+                if requirement.get("required_engine") and kind == "datatest":
+                    valid_creates = [
+                        action for action in valid_creates
+                        if str((action.get("args") or {}).get("engine") or "")
+                        == requirement["required_engine"]
+                    ]
+                    existing_kind = [
+                        item for item in existing_kind
+                        if item.get("engine") == requirement["required_engine"]
+                    ]
+                if not existing_kind and not valid_creates:
+                    issues.append(f"{planned_id} requires a linked {kind} definition")
+                    continue
+                if any(item.get("has_durable_result") for item in existing_kind):
+                    continue
+                candidates = {str(item.get("id") or "") for item in existing_kind}
+                for create in valid_creates:
+                    candidates.add(str(create.get("id") or ""))
+                    candidates.add(str((create.get("args") or {}).get("id") or ""))
+                candidates.discard("")
+                if not has_run(kind, candidates):
+                    issues.append(f"{planned_id} requires a run action for its linked {kind}")
+        for action in actions_to_check:
+            if action.get("type") == "draft_finding_from_observation":
+                observation_ids = self._proposal_target_tokens(action)
+                observation = next(
+                    (
+                        item for item in self.ws.observations
+                        if str(item.get("id") or "") in observation_ids
+                    ),
+                    None,
+                )
+                if (
+                    observation is None
+                    or observation.get("status") != "disposed"
+                    or observation.get("disposition") not in {
+                        "confirmed_control_exception", "draft_finding_candidate",
+                    }
+                ):
+                    issues.append(
+                        f"{action.get('id') or 'draft_finding_from_observation'} requires an "
+                        "auditor-dispositioned finding-candidate observation"
+                    )
+                continue
+            if action.get("type") != "create_finding":
+                continue
+            args = action.get("args") or {}
+            required_fields = (
+                "condition", "criteria", "effect", "recommendation",
+                "severity_rationale", "rcm_refs", "planned_test_refs",
+                "execution_refs",
+            )
+            missing = [field for field in required_fields if not args.get(field)]
+            if not args.get("cause") and not args.get("cause_pending"):
+                missing.append("cause or cause_pending")
+            execution_refs = {str(value) for value in args.get("execution_refs") or []}
+            supported_observation = any(
+                item.get("status") == "disposed"
+                and item.get("disposition") in {
+                    "confirmed_control_exception", "draft_finding_candidate",
+                }
+                and str(item.get("execution_ref") or "") in execution_refs
+                for item in self.ws.observations
+            )
+            if not supported_observation:
+                missing.append("auditor-dispositioned supporting observation")
+            if missing:
+                issues.append(
+                    f"{action.get('id') or 'create_finding'} is not result-supported "
+                    f"({', '.join(missing)})"
+                )
+        if issues:
+            raise WorkspaceError(
+                "Full-audit action graph does not satisfy planned-test execution requirements: "
+                + "; ".join(issues)
+                + "."
+            )
+
     def _is_full_audit_goal(self, goal: dict | None = None) -> bool:
         command = self.run.get("command") or {}
         if self._requests_full_audit():
@@ -1501,21 +1725,27 @@ class CommandRunner(BaseRunner):
         """
         existing = self.run.get("actions") or []
         existing_types = {item.get("type") for item in existing}
-        existing_papers = {
-            str((item.get("target") or {}).get("resolved_id") or "")
-            for item in existing
-            if item.get("type") == "generate_rcm_working_paper"
-        }
         proposals = []
         if "rollup_rcm_results" not in existing_types:
             proposals.append({"id": "mandatory_rcm_rollup", "type": "rollup_rcm_results"})
-        for row in self.ws.rcm:
-            if row["id"] not in existing_papers:
-                proposals.append({
-                    "id": f"mandatory_rcm_paper_{slugify(row['id'])}",
-                    "type": "generate_rcm_working_paper",
-                    "target": {"kind": "rcm", "resolved_id": row["id"]},
-                })
+        paper_targets = set()
+        for item in existing:
+            if item.get("type") != "generate_rcm_working_paper":
+                continue
+            target = item.get("target") or {}
+            value = str(target.get("resolved_id") or target.get("selector") or "")
+            if value.startswith("rcm:"):
+                value = value.split(":", 1)[1]
+            if value:
+                paper_targets.add(value)
+        required_papers = {row["id"] for row in self.ws.rcm}
+        if (
+            "generate_all_rcm_working_papers" not in existing_types
+            and not required_papers.issubset(paper_targets)
+        ):
+            proposals.append({
+                "id": "mandatory_rcm_papers", "type": "generate_all_rcm_working_papers",
+            })
         if "curate_dashboard" not in existing_types:
             proposals.append({"id": "mandatory_dashboard", "type": "curate_dashboard"})
         if "generate_report" not in existing_types:
@@ -1539,12 +1769,12 @@ class CommandRunner(BaseRunner):
             priority = {
                 "rollup_rcm_results": 0, "curate_dashboard": 1,
                 "generate_report": 2, "run_report_quality": 3,
-                "verify_audit_completion": 4, "generate_rcm_working_paper": 5,
+                "verify_audit_completion": 4, "generate_all_rcm_working_papers": 5,
             }
             proposals.sort(key=lambda item: priority[item["type"]])
             proposals = proposals[:available]
             self.run.setdefault("mandatory_stage_issues", []).append(
-                "The action limit prevented some RCM working papers from being scheduled."
+                "The action limit prevented some deterministic full-audit stages from being scheduled."
             )
             self.warn(self.run["mandatory_stage_issues"][-1])
         created = ledger.append_actions(
@@ -2090,6 +2320,7 @@ class CommandRunner(BaseRunner):
             {**self.run["limits"], "remaining_actions": remaining_actions},
             assistant.schema_brief(self.ws),
             self._table_profiles(),
+            rcm_execution.execution_manifest(self.ws),
         )
         attempt_user = base_user
         for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
@@ -2114,7 +2345,17 @@ class CommandRunner(BaseRunner):
             # Expansion is opportunistic follow-up planning; even repeated
             # invalid proposals must not fail work that already committed.
             try:
+                if self._is_full_audit_goal():
+                    proposals = self._remove_orchestrated_full_audit_actions(
+                        proposals, initial=False
+                    )
+                    if not proposals:
+                        return
                 self._canonicalize_proposals(proposals)
+                if self._is_full_audit_goal():
+                    self._validate_full_audit_action_graph(
+                        [*(self.run.get("actions") or []), *proposals]
+                    )
                 created = ledger.append_actions(
                     self.run, proposals, depth=action["depth"] + 1,
                     audit_lifecycle=self._is_full_audit_goal(),
@@ -2252,6 +2493,90 @@ class CommandRunner(BaseRunner):
         skipped = [item for item in self.run.get("actions") or [] if item["status"] == "skipped"]
         lines = [f"## Command result", "", self.run["goal"].get("objective") or self.run["command"].get("text") or "Audit command", ""]
         lines.append(f"Completed {len(succeeded)} action(s); {len(failed)} failed or blocked; {len(skipped)} skipped.")
+        if self._is_full_audit_goal():
+            manifest = rcm_execution.execution_manifest(self.ws)
+            planned = [
+                item
+                for row in self.ws.rcm
+                for item in row.get("planned_tests") or []
+            ]
+            def requirement_satisfied(item: dict, kind: str) -> bool:
+                return any(
+                    execution.get("kind") == kind and execution.get("has_durable_result")
+                    for execution in item.get("existing_execution") or []
+                )
+
+            required_data = [item for item in manifest if "datatest" in item.get("required_execution", [])]
+            required_docs = [item for item in manifest if "doctest" in item.get("required_execution", [])]
+            completion = rcm_execution.completion(self.ws)
+            report_quality = next(
+                (
+                    (item.get("receipt") or {}).get("result") or {}
+                    for item in reversed(self.run.get("actions") or [])
+                    if item.get("type") == "run_report_quality" and item.get("status") == "succeeded"
+                ),
+                {},
+            )
+            run_findings = [
+                item for item in self.ws.findings
+                if item.get("agent_run_id") == self.run["id"]
+            ]
+            supported_run_findings = [
+                item for item in run_findings
+                if item.get("auditor_confirmed")
+                and not findings.support_issues(self.ws, item)
+            ]
+            self.run["finding_refs"] = [item["id"] for item in run_findings]
+            self.run["supported_finding_refs"] = [item["id"] for item in supported_run_findings]
+            self.run["draft_finding_refs"] = [
+                item["id"] for item in run_findings if item not in supported_run_findings
+            ]
+            open_gate_count = (
+                int((completion.get("coverage") or {}).get("issue_count") or 0)
+                + len(completion.get("open_observations") or [])
+                + len(completion.get("incomplete_outcomes") or [])
+                + len(completion.get("blank_conclusions") or [])
+                + len(completion.get("missing_planning_context") or [])
+                + len(completion.get("blocked_without_plan") or [])
+                + len(completion.get("rcm_without_conclusion") or [])
+            )
+            outcome = {
+                "audit_complete": completion.get("status") == "completed" and bool(report_quality.get("ok")),
+                "completion_status": completion.get("status"),
+                "planned_tests_total": len(planned),
+                "planned_tests_completed": sum(
+                    str(item.get("status") or "").startswith("completed") for item in planned
+                ),
+                "planned_tests_review_required": sum(
+                    item.get("status") == "review_required" for item in planned
+                ),
+                "planned_tests_blocked": sum(item.get("status") == "blocked" for item in planned),
+                "data_tests_required": len(required_data),
+                "data_tests_executed": sum(requirement_satisfied(item, "datatest") for item in required_data),
+                "document_tests_required": len(required_docs),
+                "document_tests_executed": sum(requirement_satisfied(item, "doctest") for item in required_docs),
+                "open_observations": len(completion.get("open_observations") or []),
+                "supported_findings": len(supported_run_findings),
+                "draft_findings": len(run_findings) - len(supported_run_findings),
+                "report_quality_ok": report_quality.get("ok"),
+                "report_quality_errors": sum(
+                    issue.get("severity") == "error" for issue in report_quality.get("issues") or []
+                ),
+                "open_gate_count": open_gate_count,
+            }
+            self.run["audit_outcome"] = outcome
+            lines.extend([
+                "", "### Audit coverage",
+                f"- Planned tests completed: {outcome['planned_tests_completed']} of {outcome['planned_tests_total']}",
+                f"- Required Data Tests executed: {outcome['data_tests_executed']} of {outcome['data_tests_required']}",
+                f"- Required Document Tests completed: {outcome['document_tests_executed']} of {outcome['document_tests_required']}",
+                f"- Review-required planned tests: {outcome['planned_tests_review_required']}",
+                f"- Open observations: {outcome['open_observations']}",
+                f"- Supported findings created by this run: {outcome['supported_findings']}",
+                f"- Draft findings awaiting auditor confirmation: {outcome['draft_findings']}",
+                f"- Report quality: {'passed' if outcome['report_quality_ok'] else 'failed or unavailable'}",
+                f"- Open completion gates: {outcome['open_gate_count']}",
+            ])
         if succeeded:
             lines.extend(["", "### Committed work", *[f"- {actions.REGISTRY.get(item['type'], item['definition_version']).description}" for item in succeeded]])
         if failed:

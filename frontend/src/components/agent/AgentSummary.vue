@@ -6,13 +6,19 @@ import { useToast } from 'primevue/usetoast'
 
 import { api, ApiError } from '../../api'
 import { workspaceQuery } from '../../composables/useWorkspaceNavigation'
-import type { AgentFinding, AuditFinding } from '../../types'
+import type { AgentAuditOutcome, AgentFinding, AuditFinding } from '../../types'
 import MarkdownView from '../MarkdownView.vue'
 
 // The final analyst summary: structured findings (evidence-linked) plus the
 // markdown narrative, rendered with a deliberately tiny formatter — headings,
 // bullets, bold, inline code — to keep the bundle dependency-free.
-const props = defineProps<{ markdown: string; findings: AgentFinding[]; workspaceId: string; runId: string }>()
+const props = defineProps<{
+  markdown: string
+  findings: AgentFinding[]
+  auditOutcome?: AgentAuditOutcome
+  workspaceId: string
+  runId: string
+}>()
 const router = useRouter()
 const toast = useToast()
 
@@ -37,8 +43,24 @@ async function promote(finding: AgentFinding) {
 
 <template>
   <div class="summary">
+    <div v-if="auditOutcome" class="audit-outcome">
+      <p class="section-title">Audit outcome</p>
+      <div class="outcome-grid">
+        <span>Planned tests<strong>{{ auditOutcome.planned_tests_completed }}/{{ auditOutcome.planned_tests_total }}</strong></span>
+        <span>Data Tests<strong>{{ auditOutcome.data_tests_executed }}/{{ auditOutcome.data_tests_required }}</strong></span>
+        <span>Document Tests<strong>{{ auditOutcome.document_tests_executed }}/{{ auditOutcome.document_tests_required }}</strong></span>
+        <span>Open gates<strong>{{ auditOutcome.open_gate_count }}</strong></span>
+        <span>Open observations<strong>{{ auditOutcome.open_observations }}</strong></span>
+        <span>Supported findings<strong>{{ auditOutcome.supported_findings }}</strong></span>
+        <span>Draft findings<strong>{{ auditOutcome.draft_findings }}</strong></span>
+      </div>
+      <Tag
+        :value="auditOutcome.audit_complete ? 'audit complete' : auditOutcome.completion_status.replaceAll('_', ' ')"
+        :severity="auditOutcome.audit_complete ? 'success' : 'warn'"
+      />
+    </div>
     <div v-if="findings.length" class="findings">
-      <p class="section-title">Findings</p>
+      <p class="section-title">Analyst observations</p>
       <div v-for="finding in findings" :key="finding.id" class="finding">
         <Tag :value="finding.severity" :severity="severitySeverity[finding.severity]" />
         <div class="finding-body">
@@ -60,6 +82,10 @@ async function promote(finding: AgentFinding) {
 
 <style scoped>
 .summary { font-size: 0.85rem; }
+.audit-outcome { margin-bottom: .6rem; }
+.outcome-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem; margin-bottom: .45rem; }
+.outcome-grid span { display: grid; gap: .12rem; padding: .4rem; border: 1px solid var(--p-surface-200); border-radius: 6px; color: var(--p-surface-500); font-size: .68rem; }
+.outcome-grid strong { color: var(--p-text-color); font-size: .82rem; }
 .section-title {
   margin: 0.6rem 0 0.35rem;
   font-size: 0.68rem;

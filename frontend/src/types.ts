@@ -1301,6 +1301,25 @@ export interface AgentRejectedProposal {
   }[]
 }
 
+export interface AgentAuditOutcome {
+  audit_complete: boolean
+  completion_status: string
+  planned_tests_total: number
+  planned_tests_completed: number
+  planned_tests_review_required: number
+  planned_tests_blocked: number
+  data_tests_required: number
+  data_tests_executed: number
+  document_tests_required: number
+  document_tests_executed: number
+  open_observations: number
+  supported_findings: number
+  draft_findings: number
+  report_quality_ok: boolean | null
+  report_quality_errors: number
+  open_gate_count: number
+}
+
 export interface AgentRun {
   schema_version?: number
   id: string
@@ -1332,6 +1351,10 @@ export interface AgentRun {
   messages: AgentMessage[]
   artifacts: { kind: string; id: string; semantic_id: string; action: string }[]
   findings: AgentFinding[]
+  finding_refs?: string[]
+  supported_finding_refs?: string[]
+  draft_finding_refs?: string[]
+  audit_outcome?: AgentAuditOutcome
   summary_markdown: string | null
   warnings: string[]
   error: string | null
@@ -1443,6 +1466,7 @@ export interface AgentAction {
   started_at?: string | null
   finished_at?: string | null
   result_refs: string[]
+  receipt?: { result?: Record<string, unknown> } | null
   error: string | null
 }
 

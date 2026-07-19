@@ -80,6 +80,41 @@ def test_coverage_reports_missing_plans_execution_and_invalid_parents(workspace_
     assert result["ok"] is False
 
 
+def test_execution_manifest_preserves_method_and_required_kinds(workspace_with_data):
+    row, planned = _setup(workspace_with_data, method="hybrid")
+
+    manifest = rcm_execution.execution_manifest(workspace_with_data)
+
+    item = next(value for value in manifest if value["planned_test_id"] == planned["id"])
+    assert item["rcm_id"] == row["id"]
+    assert item["method"] == "hybrid"
+    assert item["required_execution"] == ["datatest", "doctest"]
+    assert item["steps"] == ["Analyze approval fields.", "Inspect supporting documents."]
+    assert item["missing_execution"] == ["datatest", "doctest"]
+
+
+def test_description_only_linked_document_test_does_not_satisfy_execution_coverage(
+    workspace_with_data,
+):
+    row, planned = _setup(workspace_with_data, method="document_inspection")
+    shell = doc_tests.create_test(workspace_with_data, {
+        "kind": "review", "title": "Approval review shell",
+        "rcm_id": row["id"], "planned_test_id": planned["id"],
+        "items": [{"label": "Review approval evidence"}],
+    })
+
+    manifest = rcm_execution.execution_manifest(workspace_with_data)
+    item = next(value for value in manifest if value["planned_test_id"] == planned["id"])
+    covered = rcm_execution.coverage(workspace_with_data)
+
+    assert item["existing_execution"][0]["id"] == shell["id"]
+    assert item["existing_execution"][0]["executable"] is False
+    assert item["missing_execution"] == ["doctest"]
+    assert covered["planned_tests_without_execution"] == [{
+        "rcm_id": row["id"], "planned_test_id": planned["id"], "missing": ["doctest"],
+    }]
+
+
 def test_rollup_combines_both_execution_kinds_and_creates_observations(workspace_with_data):
     ws = workspace_with_data
     row, planned = _setup(ws)

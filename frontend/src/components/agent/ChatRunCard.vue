@@ -123,7 +123,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
         <AgentActionList v-if="run.actions?.length" :actions="run.actions" :runStatus="run.status" />
         <AgentTaskList v-else :stages="run.plan.stages" :runStatus="run.status" :runError="run.error" />
         <details v-if="run.warnings.length"><summary>{{ run.warnings.length }} warning(s)</summary><ul><li v-for="warning in run.warnings" :key="warning">{{ warning }}</li></ul></details>
-        <AgentSummary v-if="run.summary_markdown" :markdown="run.summary_markdown" :findings="run.findings" :workspaceId="workspaceId" :runId="run.id" />
+        <AgentSummary v-if="run.summary_markdown" :markdown="run.summary_markdown" :findings="run.findings" :auditOutcome="run.audit_outcome" :workspaceId="workspaceId" :runId="run.id" />
       </template>
     </div>
   </article>

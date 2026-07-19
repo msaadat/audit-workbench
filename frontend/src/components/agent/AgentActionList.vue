@@ -32,6 +32,16 @@ function actionDuration(action: AgentAction) {
   const minutes = Math.floor(seconds / 60)
   return `${minutes}m${seconds % 60 ? ` ${seconds % 60}s` : ''}`
 }
+function semanticStatus(action: AgentAction) {
+  const result = action.receipt?.result
+  if (!result) return ''
+  if (typeof result.semantic_status === 'string') return result.semantic_status.replaceAll('_', ' ')
+  if (action.type === 'run_report_quality' && result.ok === false) return 'quality failed'
+  if (action.type === 'verify_audit_completion' && typeof result.status === 'string') {
+    return result.status.replaceAll('_', ' ')
+  }
+  return ''
+}
 </script>
 
 <template>
@@ -55,6 +65,7 @@ function actionDuration(action: AgentAction) {
         <small v-if="action.resolution?.title">{{ action.resolution.title }}</small>
         <small v-if="action.result_refs.length">{{ action.result_refs.join(' · ') }}</small>
         <small v-if="actionDuration(action)">{{ actionDuration(action) }}</small>
+        <small v-if="semanticStatus(action)" class="semantic">Audit result: {{ semanticStatus(action) }}</small>
         <small v-if="action.error" class="error">{{ action.error }}</small>
       </div>
       <Tag :value="action.status.replaceAll('_', ' ')" :severity="severity[action.status] ?? 'secondary'" />
@@ -69,6 +80,7 @@ function actionDuration(action: AgentAction) {
 .action > i { margin-top: .15rem; color: var(--p-text-muted-color); }
 .action.succeeded > i { color: var(--p-green-600); }
 .action.failed > i, .action.blocked > i, .error { color: var(--p-red-600); }
+.semantic { color: var(--p-amber-700) !important; font-weight: 600; }
 .action.running { border-color: var(--aw-teal, #0b625c); }
 .body { min-width: 0; flex: 1; display: grid; gap: .15rem; }
 .body strong { font-size: .82rem; font-weight: 600; }

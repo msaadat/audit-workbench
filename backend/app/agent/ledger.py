@@ -45,8 +45,9 @@ AUDIT_LIFECYCLE_STAGES = (
         "rollup_rcm_results", "disposition_observation",
     },
     {
-        "generate_rcm_working_paper", "generate_working_paper",
+        "generate_rcm_working_paper", "generate_all_rcm_working_papers", "generate_working_paper",
         "create_finding", "edit_finding",
+        "draft_finding_from_observation",
         "promote_agent_finding",
     },
     {"curate_dashboard"},
@@ -56,9 +57,8 @@ AUDIT_LIFECYCLE_STAGES = (
     {
         "reconcile_report",
     },
-    {
-        "run_report_quality", "verify_audit_completion",
-    },
+    {"run_report_quality"},
+    {"verify_audit_completion"},
 )
 AUDIT_LIFECYCLE_RANK = {
     type_: rank
@@ -187,6 +187,7 @@ CREATE_TARGET_KINDS = {
     "create_custom_analysis": "analysis",
     "create_document_test": "doctest",
     "create_finding": "finding",
+    "draft_finding_from_observation": "finding",
     "pin_dashboard_tile": "tile",
 }
 
@@ -303,7 +304,13 @@ def _depends_on(by_id: dict[str, dict], start_id: str, target_id: str) -> bool:
 
 
 def enforce_audit_lifecycle(run: dict, created: list[dict]) -> list[dict]:
-    """Normalize backward edges and add deterministic stage dependencies."""
+    """Normalize the complete graph and add deterministic stage dependencies.
+
+    Mandatory stages and adaptive actions can be appended after the initial
+    proposal.  Reprocessing only the new slice leaves older report/verification
+    actions ahead of later-injected prerequisites, so lifecycle policy is
+    intentionally applied to every action on each append.
+    """
     all_actions = list(run.get("actions") or [])
     by_id = {action["id"]: action for action in all_actions}
     adjustments = []
@@ -316,7 +323,7 @@ def enforce_audit_lifecycle(run: dict, created: list[dict]) -> list[dict]:
     # The local lifecycle is authoritative. A model edge from an earlier
     # stage to a later stage reverses that lifecycle and can cause a cycle
     # once prerequisites are injected, so remove it deterministically.
-    for action in created:
+    for action in all_actions:
         rank = AUDIT_LIFECYCLE_RANK.get(action["type"])
         if rank is None:
             continue
@@ -333,7 +340,7 @@ def enforce_audit_lifecycle(run: dict, created: list[dict]) -> list[dict]:
             kept.append(dependency_id)
         action["depends_on"] = kept
 
-    for action in created:
+    for action in all_actions:
         rank = AUDIT_LIFECYCLE_RANK.get(action["type"])
         if rank is None:
             continue
@@ -354,7 +361,7 @@ def enforce_audit_lifecycle(run: dict, created: list[dict]) -> list[dict]:
     # action to the allocated durable id instead of asking the auditor to
     # resolve an artifact the graph itself is about to create.
     creators = [item for item in all_actions if item["type"] == "create_document_test"]
-    for action in created:
+    for action in all_actions:
         target = action.get("target") or {}
         if action["type"] != "run_document_test" or target.get("selector") or target.get("resolved_id"):
             continue
@@ -376,7 +383,15 @@ def append_actions(
     depth: int = 0,
     audit_lifecycle: bool = False,
 ) -> list[dict]:
-    existing_ids = {action["id"] for action in run.get("actions") or []}
+    existing_actions = list(run.get("actions") or [])
+    existing_ids = {action["id"] for action in existing_actions}
+    existing_state = {
+        action["id"]: {
+            "depends_on": list(action.get("depends_on") or []),
+            "target": dict(action.get("target") or {}),
+        }
+        for action in existing_actions
+    }
     created = []
     for proposal in proposals:
         item = new_action(run, proposal, depth=depth)
@@ -395,6 +410,11 @@ def append_actions(
         # partially-extended graph behind in the run.
         if created:
             del run["actions"][-len(created):]
+        for action in run.get("actions") or []:
+            before = existing_state.get(action["id"])
+            if before is not None:
+                action["depends_on"] = before["depends_on"]
+                action["target"] = before["target"]
         raise
     if adjustments:
         run.setdefault("lifecycle_adjustments", []).extend(adjustments)

@@ -123,16 +123,54 @@ def validate_action(action: dict) -> ActionDefinition:
                 sandbox.validate(str(spec.get("code") or ""))
             except sandbox.SandboxError as error:
                 raise WorkspaceError(f"Invalid custom analysis code: {error}") from error
+    elif definition.type == "create_document_test":
+        _validate_document_test_action(action.get("args") or {})
     target = action.get("target") or {}
     if definition.target_kinds and target.get("kind") not in definition.target_kinds:
         raise WorkspaceError(f"Action '{definition.type}' requires target kind: {', '.join(definition.target_kinds)}.")
     return definition
 
 
+def _validate_document_test_action(args: dict) -> None:
+    """Reject description-only document work before it enters the ledger."""
+    kind = str(args.get("kind") or "")
+    items = list(args.get("items") or [])
+    # Convenience builders are allowed when they have enough source detail to
+    # create substantive items themselves.
+    if not items:
+        if kind == "vouching" and str(args.get("table") or "").strip():
+            return
+        if kind == "review" and str(args.get("document_id") or "").strip():
+            return
+        if kind == "qa" and args.get("document_ids") and args.get("questions"):
+            return
+        raise WorkspaceError(
+            f"A {kind or 'document'} test needs executable items or complete builder arguments."
+        )
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise WorkspaceError(f"Document-test item {index} must be an object.")
+        if kind == "vouching" and not item.get("checks"):
+            raise WorkspaceError(f"Vouching item {index} needs comparison checks.")
+        if kind == "attribute" and not item.get("attributes"):
+            raise WorkspaceError(f"Attribute item {index} needs attributes.")
+        if kind == "review" and not (
+            item.get("page") not in (None, "")
+            or str(item.get("excerpt") or "").strip()
+            or str(item.get("summary") or "").strip()
+        ):
+            raise WorkspaceError(
+                f"Review item {index} needs a page, excerpt, or review summary."
+            )
+        if kind == "qa" and not str(item.get("question") or "").strip():
+            raise WorkspaceError(f"Q&A item {index} needs a question.")
+
+
 def allocate_create_id(action: dict) -> None:
     args = action.setdefault("args", {})
     prefixes = {
         "create_rcm_row": "RCM-", "create_procedure": "PROC-", "create_finding": "F-",
+        "draft_finding_from_observation": "F-",
         "create_document_test": "DT-", "create_rcm_planned_test": "PT-",
         "create_data_test": "DAT-",
     }
@@ -196,6 +234,7 @@ def expected_postcondition(action: dict) -> dict:
         return {"absent": True}
     create_kinds = {
         "create_rcm_row": "rcm", "create_procedure": "procedure", "create_finding": "finding",
+        "draft_finding_from_observation": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
         "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile", "create_join": "table",
         "create_rcm_planned_test": "planned_test", "create_data_test": "datatest",
@@ -468,7 +507,57 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         workspace.remove_procedure(target_id); return _receipt(action, refs=[f"procedure:{target_id}"])
     if type_ == "create_finding":
         item = findings.add(workspace, {**args, "agent_run_id": run["id"]}, source="agent")
-        return _receipt(action, item, refs=[f"finding:{item['id']}"])
+        support = findings.support_issues(workspace, item)
+        return _receipt(
+            action, item, refs=[f"finding:{item['id']}"],
+            result={
+                "support_complete": not support,
+                "report_eligible": bool(item.get("auditor_confirmed")) and not support,
+                "support_issues": support,
+            },
+        )
+    if type_ == "draft_finding_from_observation":
+        observation = next(
+            (item for item in workspace.observations if item.get("id") == target_id),
+            None,
+        )
+        if observation is None:
+            raise WorkspaceError(f"Observation '{target_id}' not found.")
+        if observation.get("status") != "disposed" or observation.get("disposition") not in {
+            "confirmed_control_exception", "draft_finding_candidate",
+        }:
+            raise WorkspaceError(
+                "A finding draft requires an auditor-dispositioned finding-candidate observation."
+            )
+        execution_ref = str(observation.get("execution_ref") or "")
+        anchor = findings.anchor_from_ref(workspace, execution_ref, run_id=run["id"])
+        if anchor is None:
+            raise WorkspaceError(
+                f"Observation '{target_id}' has no resolvable immutable execution evidence."
+            )
+        item = findings.add(
+            workspace,
+            {
+                **args,
+                "agent_run_id": run["id"],
+                "rcm_refs": [observation["rcm_id"]],
+                "planned_test_refs": [observation["planned_test_id"]],
+                "execution_refs": [execution_ref],
+                "evidence_refs": [anchor],
+                "auditor_confirmed": False,
+            },
+            source="agent",
+        )
+        support = findings.support_issues(workspace, item)
+        return _receipt(
+            action, item, refs=[f"finding:{item['id']}"],
+            result={
+                "support_complete": not support,
+                "report_eligible": False,
+                "support_issues": support,
+                "auditor_confirmation_required": True,
+            },
+        )
     if type_ == "edit_finding":
         item = findings.update(workspace, target_id, args["changes"])
         return _receipt(action, item, refs=[f"finding:{target_id}"])
@@ -589,9 +678,44 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         return _receipt(action, item, refs=[f"doctest:{test_id}", f"doctest_item:{target_id}"])
     if type_ == "run_document_test":
         test = doc_tests.load_test(workspace, target_id)
+        issues = doc_tests.execution_issues(test)
+        if issues:
+            if doc_tests.evidence_blocked(test):
+                semantic_status = (
+                    "review_required"
+                    if test.get("status") == "review_required" else "blocked"
+                )
+                return _receipt(
+                    action, test, refs=[f"doctest:{target_id}"],
+                    result={
+                        "rollup": doc_tests.result_rollup(test), "items_run": 0,
+                        "semantic_status": semantic_status, "satisfies_planned_test": False,
+                        "blocking_issues": issues,
+                    },
+                )
+            raise WorkspaceError(
+                "Document Test is not executable: " + "; ".join(issues) + "."
+            )
         results = [doc_tests.run_item(workspace, target_id, item["id"], run_id=run["id"]) for item in test.get("items") or []]
         refreshed = doc_tests.load_test(workspace, target_id)
-        test_result = {"rollup": doc_tests.result_rollup(refreshed), "items_run": len(results)}
+        rollup = doc_tests.result_rollup(refreshed)
+        if rollup["manual_review"] or rollup["pending"]:
+            refreshed["status"] = "review_required"
+        elif refreshed.get("items"):
+            refreshed["status"] = "completed"
+        else:
+            refreshed["status"] = "blocked"
+        doc_tests.save_test(workspace, refreshed)
+        semantic_status = (
+            "review_required" if refreshed["status"] == "review_required"
+            else "completed" if refreshed["status"] == "completed"
+            else "blocked"
+        )
+        test_result = {
+            "rollup": rollup, "items_run": len(results),
+            "semantic_status": semantic_status,
+            "satisfies_planned_test": semantic_status == "completed",
+        }
         return _receipt(action, refreshed, refs=[f"doctest:{target_id}"], result=test_result)
     if type_ == "rollup_rcm_results":
         return _receipt(action, result=rcm_execution.rollup(workspace))
@@ -605,6 +729,13 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         return _receipt(
             action, item, refs=[f"rcm:{target_id}"],
             result={key: item[key] for key in ("rcm_id", "generated_at", "source_sha1")},
+        )
+    if type_ == "generate_all_rcm_working_papers":
+        generated = [working_papers.generate_rcm(workspace, row["id"]) for row in workspace.rcm]
+        return _receipt(
+            action,
+            refs=[f"rcm:{item['rcm_id']}" for item in generated],
+            result={"generated": len(generated), "rcm_ids": [item["rcm_id"] for item in generated]},
         )
     if type_ == "curate_dashboard":
         result = dashboard.curate_rcm_tiles(workspace, run_id=run["id"])
@@ -692,6 +823,7 @@ def _reconcile(workspace: Workspace, action: dict) -> str:
     args = action.get("args") or {}
     create_kinds = {
         "create_rcm_row": "rcm", "create_procedure": "procedure", "create_finding": "finding",
+        "draft_finding_from_observation": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
         "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile",
         "create_rcm_planned_test": "planned_test", "create_data_test": "datatest",
@@ -876,6 +1008,11 @@ _register(
     properties={
         "kind": {"type": "string", "enum": ["vouching", "attribute", "review", "qa"]},
         "title": STR, "items": ARR, "rcm_id": STR, "planned_test_id": STR,
+        "table": STR, "frozen_fields": ARR_STR, "identifier_fields": ARR_STR,
+        "size": {"type": "integer"}, "seed": {"type": "integer"},
+        "direction": {"type": "string", "enum": ["vouching", "tracing"]},
+        "document_id": STR, "document_ids": ARR_STR, "pages": ARR,
+        "questions": ARR_STR, "review_kind": STR, "attributes": ARR,
     },
 )
 _register("edit_document_test", "Edit a document test", "reversible_mutation", ("doctest",), ("changes",), {"changes": OBJ})
@@ -892,8 +1029,28 @@ _register(
     {"disposition": {"type": "string", "enum": sorted(OBSERVATION_DISPOSITIONS)}, "auditor_note": STR},
 )
 _register("generate_rcm_working_paper", "Generate an RCM-linked working paper", "compute", ("rcm",))
+_register("generate_all_rcm_working_papers", "Generate all RCM-linked working papers", "compute")
 _register("generate_working_paper", "Legacy compatibility: generate a procedure working paper", "reversible_mutation", ("procedure",))
-_register("create_finding", "Create an evidence-linked finding", "create", required=("title",), properties={"title": STR}, model="draft")
+FINDING_PROPERTIES = {
+    "title": STR,
+    "severity": {"type": "string", "enum": list(findings.SEVERITIES)},
+    "condition": STR, "criteria": STR, "cause": STR, "cause_pending": {"type": "boolean"},
+    "effect": STR, "recommendation": STR, "severity_rationale": STR,
+    "management_response": STR, "rcm_refs": ARR_STR, "planned_test_refs": ARR_STR,
+    "procedure_refs": ARR_STR, "execution_refs": ARR_STR, "evidence_refs": ARR,
+}
+_register("create_finding", "Create an evidence-linked finding", "create", required=("title",), properties=FINDING_PROPERTIES, model="draft")
+_register(
+    "draft_finding_from_observation",
+    "Draft a fully supported finding from an auditor-dispositioned observation",
+    "create", ("observation",),
+    required=(
+        "title", "severity", "condition", "criteria", "effect",
+        "recommendation", "severity_rationale",
+    ),
+    properties=FINDING_PROPERTIES,
+    model="draft",
+)
 _register("edit_finding", "Edit one finding", "reversible_mutation", ("finding",), ("changes",), {"changes": OBJ}, model="draft")
 _register("delete_finding", "Delete one finding", "destructive", ("finding",))
 _register("promote_agent_finding", "Promote an agent observation", "create", required=("run_id", "finding_id"))

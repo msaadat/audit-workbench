@@ -137,6 +137,13 @@ def build_context(workspace: Workspace) -> dict:
         item for item in workspace.findings
         if item.get("auditor_confirmed") and not support_issues(workspace, item)
     ]
+    risk_distribution = {
+        rating: sum(
+            str(item.get("risk_rating") or "").casefold() == rating
+            for item in workspace.rcm
+        )
+        for rating in ("critical", "high", "medium", "low")
+    }
     return {
         "workspace": {"id": workspace.id, "name": workspace.name, "description": workspace.description},
         "planning": {
@@ -181,6 +188,7 @@ def build_context(workspace: Workspace) -> dict:
         "preliminary": completion["status"] != "completed",
         "statistics": {
             "rcm_rows": len(workspace.rcm),
+            "risk_distribution": risk_distribution,
             "planned_tests": sum(len(row.get("planned_tests") or []) for row in workspace.rcm),
             "data_tests": len(data_test_summaries), "findings": len(supported),
             "draft_findings": len(workspace.findings) - len(supported),
@@ -368,7 +376,9 @@ def _generate_with_model(workspace: Workspace, template: str, context: dict, *, 
     base = (
         "[agent:report]\nYou draft an internal-audit report for auditor review. "
         "Use only the supplied structured context, retain clickable finding references, "
-        "state limitations, do not invent evidence or issue an audit opinion, and return Markdown only."
+        "state limitations, do not invent evidence or issue an audit opinion, and return Markdown only. "
+        "Every numeric statement must copy the supplied statistics exactly; statistics.risk_distribution "
+        "is the authoritative RCM rating count."
     )
     if len(serialized) <= MODEL_CONTEXT_LIMIT:
         return _model_turn(workspace, base, f"Template:\n{template}\n\nReport context:\n{serialized}", run_id=run_id), False
@@ -562,6 +572,38 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
     exception_claim = re.search(r"\b(\d+)\s+exceptions?\b", text, re.IGNORECASE)
     if exception_claim and int(exception_claim.group(1)) != exception_count:
         issues.append(_issue("report_arithmetic", "error", f"The report states {exception_claim.group(1)} exceptions but {exception_count} are stored."))
+    number_words = {
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    }
+    risk_distribution = {
+        rating: sum(
+            str(item.get("risk_rating") or "").casefold() == rating
+            for item in workspace.rcm
+        )
+        for rating in ("critical", "high", "medium", "low")
+    }
+    risk_count_text = "\n".join(
+        line
+        for line in text.splitlines()
+        if "risk distribution" in line.casefold() or "rcm" in line.casefold()
+    )
+    for rating, actual in risk_distribution.items():
+        claims = []
+        for match in re.finditer(
+            rf"\b(\d+|{'|'.join(number_words)})\s+{rating}(?:[-\s]+risk)?\b"
+            rf"|\b{rating}(?:[-\s]+risk)?\s*[:=\-–—]?\s*(\d+)\b",
+            risk_count_text,
+            re.IGNORECASE,
+        ):
+            raw = next(value for value in match.groups() if value is not None).casefold()
+            claims.append(int(raw) if raw.isdigit() else number_words[raw])
+        if any(claim != actual for claim in claims):
+            issues.append(_issue(
+                "report_risk_arithmetic", "error",
+                f"The report's {rating}-risk count conflicts with the {actual} RCM row(s) stored.",
+                [f"rcm:{item['id']}" for item in workspace.rcm if str(item.get("risk_rating") or "").casefold() == rating],
+            ))
     limitations = [
         (row, planned)
         for row in workspace.rcm

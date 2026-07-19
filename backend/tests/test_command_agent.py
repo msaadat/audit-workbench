@@ -4,7 +4,7 @@ import time
 import polars as pl
 import pytest
 
-from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, workspaces
+from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, workspaces
 from app.agent import actions, artifact_index, command_runner, ledger, runner, store
 from conftest import FakeAgentLLM, wait_run
 
@@ -398,7 +398,13 @@ def test_full_audit_lifecycle_dependencies_and_document_test_binding(workspace_w
         {"id": "finding", "type": "create_finding", "args": {"title": "Exception"}},
         {"id": "paper", "type": "generate_working_paper", "args": {}},
         {"id": "run-test", "type": "run_document_test", "args": {}},
-        {"id": "create-test", "type": "create_document_test", "args": {"kind": "review", "title": "Review sample"}},
+        {
+            "id": "create-test", "type": "create_document_test",
+            "args": {
+                "kind": "review", "title": "Review sample",
+                "items": [{"label": "Review sample", "summary": "Review approval evidence"}],
+            },
+        },
         {"id": "procedure", "type": "create_procedure", "args": {"objective": "Review purchases"}},
         {"id": "apm", "type": "update_planning_context", "args": {"changes": {"objective": "Audit procurement"}}},
     ], audit_lifecycle=True)
@@ -457,7 +463,7 @@ def test_rcm_central_lifecycle_resolves_parent_action_references(workspace_with_
     assert by_id["rollup"]["depends_on"] == ["run"]
     assert by_id["dashboard"]["depends_on"] == ["paper"]
     assert by_id["report"]["depends_on"] == ["dashboard"]
-    assert set(by_id["completion"]["depends_on"]) == {"report"}
+    assert set(by_id["completion"]["depends_on"]) == {"quality"}
     ledger.validate_graph(run)
 
 
@@ -482,6 +488,155 @@ def test_full_audit_normalizes_report_reconcile_quality_cycle(workspace_with_dat
         "action_id": "reconcile", "kind": "removed_backward_dependency",
         "dependency_id": "quality",
     } in run["lifecycle_adjustments"]
+
+
+def test_late_full_audit_stages_reorder_existing_terminal_actions(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto",
+        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
+    )
+    ledger.append_actions(run, [
+        {"id": "report", "type": "generate_report", "args": {"use_model": False}},
+        {"id": "quality", "type": "run_report_quality"},
+        {"id": "completion", "type": "verify_audit_completion"},
+    ], audit_lifecycle=True)
+
+    ledger.append_actions(run, [
+        {
+            "id": "analytic", "type": "run_analytics",
+            "args": {
+                "table": "transactions", "test": "duplicates",
+                "params": {"columns": ["invoice_no"]},
+            },
+        },
+        {"id": "rollup", "type": "rollup_rcm_results"},
+        {"id": "papers", "type": "generate_all_rcm_working_papers"},
+        {"id": "dashboard", "type": "curate_dashboard"},
+    ], audit_lifecycle=True)
+
+    by_id = {item["id"]: item for item in run["actions"]}
+    assert by_id["rollup"]["depends_on"] == ["analytic"]
+    assert by_id["papers"]["depends_on"] == ["rollup"]
+    assert by_id["dashboard"]["depends_on"] == ["papers"]
+    assert by_id["report"]["depends_on"] == ["dashboard"]
+    assert by_id["quality"]["depends_on"] == ["report"]
+    assert by_id["completion"]["depends_on"] == ["quality"]
+    ledger.validate_graph(run)
+
+
+def test_full_audit_semantics_reject_document_substitution_for_analytics(
+    workspace_with_data,
+):
+    row = workspace_with_data.add_rcm({"risk": "Duplicate invoices may be paid"})
+    planned = workspace_with_data.add_planned_test(row["id"], {
+        "title": "Duplicate invoice test", "objective": "Identify duplicate invoices",
+        "method": "data_analytics", "steps": ["Analyze duplicate invoice numbers."],
+    })
+    run = store.new_command_run(
+        workspace_with_data, "auto",
+        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
+    )
+    command = command_runner.CommandRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+    substituted = [{
+        "id": "doc", "type": "create_document_test",
+        "args": {
+            "kind": "review", "title": "Review duplicates",
+            "rcm_id": row["id"], "planned_test_id": planned["id"],
+            "items": [{"label": "Review", "summary": "Review duplicate invoices"}],
+        },
+    }]
+
+    with pytest.raises(workspaces.WorkspaceError, match="requires a linked datatest"):
+        command._validate_full_audit_action_graph(substituted, initial=True)
+
+    valid = [
+        {
+            "id": "create-data", "type": "create_data_test",
+            "args": {
+                "rcm_id": row["id"], "planned_test_id": planned["id"],
+                "title": "Duplicate invoices", "objective": "Identify duplicates",
+                "engine": "analytics", "table_refs": ["transactions"],
+                "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+            },
+        },
+        {
+            "id": "run-data", "type": "run_data_test",
+            "target": {"kind": "datatest", "resolved_id": "create-data"},
+            "depends_on": ["create-data"],
+        },
+    ]
+    command._canonicalize_proposals(valid)
+    command._validate_full_audit_action_graph(valid, initial=True)
+
+
+def test_description_only_document_test_is_rejected(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "test documents"}
+    )
+    with pytest.raises(workspaces.WorkspaceError, match="needs comparison checks"):
+        ledger.append_actions(run, [{
+            "id": "empty-vouch", "type": "create_document_test",
+            "args": {
+                "kind": "vouching", "title": "Invoice vouching",
+                "items": [{"label": "Review the invoice"}],
+            },
+        }])
+
+
+def test_observation_finding_action_derives_immutable_evidence_locally(
+    workspace_with_data,
+):
+    row = workspace_with_data.add_rcm({"risk": "Duplicate invoices may be paid"})
+    planned = workspace_with_data.add_planned_test(row["id"], {
+        "title": "Duplicate invoices", "objective": "Identify duplicate invoices",
+        "method": "data_analytics",
+    })
+    data_test = data_tests.create(workspace_with_data, {
+        "title": "Duplicate invoices", "objective": "Identify duplicate invoices",
+        "rcm_id": row["id"], "planned_test_id": planned["id"],
+        "engine": "analytics", "table_refs": ["transactions"],
+        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+    })
+    data_tests.run(workspace_with_data, data_test["id"])
+    rcm_execution.rollup(workspace_with_data)
+    observation = workspace_with_data.observations[0]
+    rcm_execution.disposition(
+        workspace_with_data, observation["id"], "confirmed_control_exception",
+        "Auditor confirmed the duplicate requires reporting.",
+    )
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "draft the finding"}
+    )
+    action = ledger.append_actions(run, [{
+        "id": "draft-finding", "type": "draft_finding_from_observation",
+        "target": {"kind": "observation", "resolved_id": observation["id"]},
+        "args": {
+            "title": "Duplicate invoice identifiers were processed",
+            "severity": "medium",
+            "condition": "A duplicate invoice identifier exists in the population.",
+            "criteria": "Invoice identifiers must be unique before payment.",
+            "cause_pending": True,
+            "effect": "A duplicate payment may be processed.",
+            "recommendation": "Investigate and prevent duplicate invoice identifiers.",
+            "severity_rationale": "The exception could result in duplicate disbursement.",
+        },
+    }])[0]
+
+    receipt = actions.REGISTRY.get(action["type"]).executor(
+        workspace_with_data, action, run
+    )
+    finding = workspace_with_data.findings[-1]
+
+    assert receipt["result"]["support_complete"] is True
+    assert receipt["result"]["auditor_confirmation_required"] is True
+    assert finding["auditor_confirmed"] is False
+    assert finding["rcm_refs"] == [row["id"]]
+    assert finding["planned_test_refs"] == [planned["id"]]
+    assert finding["execution_refs"] == [observation["execution_ref"]]
+    assert finding["evidence_refs"][0]["source_kind"] == "datatest"
+    assert finding["evidence_refs"][0]["source_sha1"]
 
 
 def test_create_action_references_resolve_to_allocated_artifact_ids(workspace_with_data):
@@ -545,7 +700,10 @@ def test_created_document_test_resolved_id_binds_sole_item(workspace_with_data, 
             "id": "create-test", "type": "create_document_test",
             "args": {
                 "kind": "vouching", "title": "Invoice, PO, and GRN match",
-                "items": [{"label": "Three-way match sample"}],
+                    "items": [{
+                        "label": "Three-way match sample",
+                        "checks": [{"field": "invoice_no", "expected": "INV-001"}],
+                    }],
             },
         },
         {
@@ -577,7 +735,10 @@ def test_create_document_test_executor_preserves_planned_item_id(workspace_with_
         "id": "create-test", "type": "create_document_test",
         "args": {
             "kind": "vouching", "title": "Three-way match",
-            "items": [{"label": "Invoice, PO, and GRN"}],
+                "items": [{
+                    "label": "Invoice, PO, and GRN",
+                    "checks": [{"field": "invoice_no", "expected": "INV-001"}],
+                }],
         },
     }])[0]
     planned_item_id = action["args"]["items"][0]["id"]
@@ -953,7 +1114,10 @@ def test_auto_mode_waits_for_graph_created_document_test_item(monkeypatch, works
                 "id": "create-test", "type": "create_document_test",
                 "args": {
                     "kind": "vouching", "title": "Invoice match",
-                    "items": [{"label": "Invoice INV-001"}],
+                    "items": [{
+                        "label": "Invoice INV-001",
+                        "checks": [{"field": "invoice_no", "expected": "INV-001"}],
+                    }],
                 },
             },
             {
@@ -985,7 +1149,10 @@ def test_stale_graph_target_clarification_is_dismissed(workspace_with_data):
             "id": "create-test", "type": "create_document_test",
             "args": {
                 "kind": "vouching", "title": "Invoice match",
-                "items": [{"label": "Invoice INV-001"}],
+                    "items": [{
+                        "label": "Invoice INV-001",
+                        "checks": [{"field": "invoice_no", "expected": "INV-001"}],
+                    }],
             },
         },
         {
@@ -1275,6 +1442,9 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     def interpret(user):
         payload = json.loads(user)
         assert payload["prepared_planning"]["document_content_included"] is True
+        manifest = payload["prepared_planning"]["execution_manifest"]
+        assert manifest[0]["method"] == "document_inspection"
+        assert manifest[0]["required_execution"] == ["doctest"]
         kinds = {item["kind"] for item in payload["workspace_index"]["artifacts"]}
         assert {"planning", "rcm", "planned_test"} <= kinds
         planned = next(
@@ -1297,11 +1467,20 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
                     "id": "test-approvals", "type": "create_document_test",
                     "args": {
                         "kind": "review", "title": "Procurement approval review",
-                        "items": [{"label": "Review approval evidence"}],
+                        "items": [{
+                            "label": "Review approval evidence",
+                            "document_ids": [policy["id"]], "page": 1,
+                            "excerpt": "requisitions require approval",
+                        }],
                         "rcm_id": rcm_id,
                         "planned_test_id": planned["ref"].split(":", 1)[1],
                     },
                     "depends_on": ["redundant-apm"],
+                },
+                {
+                    "id": "run-approvals", "type": "run_document_test",
+                    "target": {"kind": "doctest", "resolved_id": "test-approvals"},
+                    "depends_on": ["test-approvals"],
                 },
             ],
         }
@@ -1356,7 +1535,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     assert completed["status"] == "completed_with_open_items"
     action_types = {item["type"] for item in completed["actions"]}
     assert {
-        "create_document_test", "rollup_rcm_results", "generate_rcm_working_paper",
+        "create_document_test", "rollup_rcm_results", "generate_all_rcm_working_papers",
         "curate_dashboard", "generate_report", "run_report_quality",
         "verify_audit_completion",
     } <= action_types
@@ -1365,6 +1544,11 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     assert reloaded.work_program == []
     assert reloaded.rcm[-1]["planned_tests"][-1]["steps"] == ["Select purchases and inspect approval evidence."]
     assert completed["prepared_planning"]["document_content_included"] is True
+    assert completed["audit_outcome"]["planned_tests_completed"] == 0
+    assert completed["audit_outcome"]["document_tests_required"] == 1
+    assert completed["audit_outcome"]["document_tests_executed"] == 0
+    assert completed["audit_outcome"]["planned_tests_review_required"] == 1
+    assert "Planned tests completed: 0 of 1" in completed["summary_markdown"]
     assert completed.get("planning_expansion_disabled") is True
     assert all(
         item["status"] == "succeeded"
@@ -1375,6 +1559,127 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(item["stage"] == "agent:apm" and policy["id"] in item["document_ids"] for item in activity)
     assert any(item["stage"] == "agent:apm" and item["template_versions"] for item in activity)
+
+
+def test_full_audit_mixed_methods_create_required_execution_and_no_speculative_findings(
+    monkeypatch, workspace_with_data,
+):
+    workspace_with_data.update_planning({
+        "context": {"objective": "Audit invoice controls", "scope": "Supplied transactions"},
+        "apm_markdown": "# Audit Planning Memorandum\n\nInvoice controls.",
+    })
+    document = documents.add_document(
+        workspace_with_data, "Invoice policy.txt", b"Invoices require documented approval."
+    )
+    data_row = workspace_with_data.add_rcm({
+        "risk": "Duplicate invoices may be paid", "risk_rating": "high",
+    })
+    data_planned = workspace_with_data.add_planned_test(data_row["id"], {
+        "title": "Duplicate invoice analytics", "objective": "Identify duplicate invoices",
+        "method": "data_analytics", "steps": ["Analyze invoice number duplicates."],
+    })
+    doc_row = workspace_with_data.add_rcm({
+        "risk": "Approval evidence may be missing", "risk_rating": "medium",
+    })
+    doc_planned = workspace_with_data.add_planned_test(doc_row["id"], {
+        "title": "Approval evidence review", "objective": "Inspect approval evidence",
+        "method": "document_inspection", "steps": ["Review the approval policy."],
+    })
+
+    def interpret(user):
+        payload = json.loads(user)
+        requirements = {
+            item["planned_test_id"]: item["required_execution"]
+            for item in payload["prepared_planning"]["execution_manifest"]
+        }
+        assert requirements == {
+            data_planned["id"]: ["datatest"],
+            doc_planned["id"]: ["doctest"],
+        }
+        return {
+            "objective": "Execute mixed-method fieldwork",
+            "constraints": [], "completion_criteria": [],
+            "actions": [
+                {
+                    "id": "create-data", "type": "create_data_test",
+                    "args": {
+                        "rcm_id": data_row["id"], "planned_test_id": data_planned["id"],
+                        "title": "Duplicate invoices", "objective": "Identify duplicate invoices",
+                        "engine": "analytics", "table_refs": ["transactions"],
+                        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+                    },
+                },
+                {
+                    "id": "run-data", "type": "run_data_test",
+                    "target": {"kind": "datatest", "resolved_id": "create-data"},
+                    "depends_on": ["create-data"],
+                },
+                {
+                    "id": "create-doc", "type": "create_document_test",
+                    "args": {
+                        "kind": "review", "title": "Approval policy review",
+                        "rcm_id": doc_row["id"], "planned_test_id": doc_planned["id"],
+                        "items": [{
+                            "label": "Policy page 1", "document_ids": [document["id"]],
+                            "page": 1, "excerpt": "Invoices require documented approval.",
+                        }],
+                    },
+                },
+                {
+                    "id": "run-doc", "type": "run_document_test",
+                    "target": {"kind": "doctest", "resolved_id": "create-doc"},
+                    "depends_on": ["create-doc"],
+                },
+                {
+                    "id": "speculative", "type": "create_finding",
+                    "args": {"title": "Possible approval issue"},
+                },
+            ],
+        }
+
+    fake = FakeAgentLLM({"agent:command_interpreter": interpret})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm, "agent_status",
+        lambda: {"configured": False, "backend": "fake", "model": "fake"},
+    )
+    run = store.new_command_run(
+        workspace_with_data, "auto",
+        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
+    )
+    run["prepared_planning"] = {
+        "apm": True,
+        "rcm_refs": [data_row["id"], doc_row["id"]],
+        "planned_test_refs": [data_planned["id"], doc_planned["id"]],
+        "execution_manifest": rcm_execution.execution_manifest(workspace_with_data),
+        "document_content_included": True,
+    }
+    store.save_run(workspace_with_data, run)
+    command = command_runner.CommandRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+
+    command.execute()
+    completed = store.load_run(workspace_with_data, run["id"])
+    reloaded = workspaces.load_workspace(workspace_with_data.id)
+
+    action_types = [item["type"] for item in completed["actions"]]
+    assert "create_data_test" in action_types and "run_data_test" in action_types
+    assert "create_document_test" in action_types and "run_document_test" in action_types
+    assert "create_finding" not in action_types
+    assert completed["orchestrator_removed_action_types"] == ["create_finding"]
+    assert len(reloaded.data_tests) == 1
+    assert reloaded.findings == []
+    assert completed["audit_outcome"]["data_tests_executed"] == 1
+    assert completed["audit_outcome"]["document_tests_executed"] == 0
+    assert completed["audit_outcome"]["planned_tests_review_required"] == 1
+    completion_action = next(
+        item for item in completed["actions"] if item["type"] == "verify_audit_completion"
+    )
+    quality_action = next(
+        item for item in completed["actions"] if item["type"] == "run_report_quality"
+    )
+    assert completion_action["depends_on"] == [quality_action["id"]]
 
 
 def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, workspace_with_data):
