@@ -31,10 +31,14 @@ class DocumentAnalysisRunner(BaseRunner):
         current_document_id: str | None = None
         try:
             self.set_status("executing")
-            for document_id in state["document_ids"]:
+            total_documents = len(state["document_ids"])
+            for document_index, document_id in enumerate(state["document_ids"], start=1):
                 current_document_id = str(document_id)
                 self.current_document_id = current_document_id
-                self._analyze_one(current_document_id, state)
+                self._analyze_one(
+                    current_document_id, state,
+                    document_index=document_index, total_documents=total_documents,
+                )
                 if self.run["status"] == "paused":
                     return
                 current_document_id = None
@@ -64,7 +68,9 @@ class DocumentAnalysisRunner(BaseRunner):
                     pass
             self.run["error"] = str(error); self.run["finished"] = store.utcnow(); self.set_status("failed")
 
-    def _analyze_one(self, document_id: str, state: dict) -> None:
+    def _analyze_one(
+        self, document_id: str, state: dict, *, document_index: int, total_documents: int,
+    ) -> None:
         document = next((item for item in self.ws.documents if item.get("id") == document_id), None)
         if document is None:
             raise WorkspaceError(f"Document '{document_id}' not found.")
@@ -72,6 +78,11 @@ class DocumentAnalysisRunner(BaseRunner):
         if task["status"] == "completed":
             return
         self.task_status(task, "running")
+        self.set_activity(
+            "document_analysis.document", "Analyzing documents",
+            detail=str(document.get("title") or document_id),
+            current=document_index, total=total_documents, task_id=task["id"],
+        )
         extracted = documents.extract_document(self.ws, document_id)
         if extracted.get("state") in {"failed", "image_only"}:
             document_analysis.set_run_state(self.ws, document_id, "failed")
@@ -88,9 +99,19 @@ class DocumentAnalysisRunner(BaseRunner):
         orientation = "\n\n".join(
             str(value.get("summary_markdown") or "") for _, value in sorted(progress["completed_chunks"].items())
         )[-4000:]
-        for chunk in chunks:
+        for chunk_index, chunk in enumerate(chunks, start=1):
             if chunk["id"] in progress["completed_chunks"]:
                 continue
+            pages = chunk.get("pages") or []
+            page_label = (
+                f"pages {pages[0]}–{pages[-1]}" if len(pages) > 1
+                else f"page {pages[0]}" if pages else "document text"
+            )
+            self.task_detail(
+                task,
+                f"Analyzing document {document_index} of {total_documents}; "
+                f"section {chunk_index} of {len(chunks)} ({page_label})…",
+            )
             if allowed_pages is not None and chunk["page"] not in allowed_pages:
                 break
             self.checkpoint()
@@ -111,6 +132,11 @@ class DocumentAnalysisRunner(BaseRunner):
             orientation = (orientation + "\n\n" + mapped["summary_markdown"])[-4000:]
             self.save()
         maps = [progress["completed_chunks"][chunk["id"]] for chunk in chunks if chunk["id"] in progress["completed_chunks"]]
+        self.task_detail(
+            task,
+            f"Consolidating document {document_index} of {total_documents} from "
+            f"{len(maps)} analyzed section{'s' if len(maps) != 1 else ''}…",
+        )
         if not maps:
             raise WorkspaceError("No extractable source chunks were available for analysis.")
         reduced = self.llm_json(

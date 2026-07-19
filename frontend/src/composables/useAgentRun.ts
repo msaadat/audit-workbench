@@ -186,6 +186,7 @@ function connect(workspaceId: string, runId: string) {
     'interaction_request',
     'interaction_resolved',
     'action_conflict',
+    'activity_update',
   ]) {
     source.addEventListener(type, refetch)
   }

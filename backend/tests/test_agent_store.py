@@ -13,6 +13,8 @@ def test_new_run_persists_and_loads(workspace_with_data):
     assert loaded["mode"] == "auto"
     assert loaded["context"]["objective"] == "revenue audit"
     assert loaded["plan"] == {"stages": []}
+    assert loaded["activity"] is None
+    assert loaded["activity_revision"] == 0
 
 
 def test_new_run_rejects_bad_mode(workspace_with_data):
@@ -57,6 +59,7 @@ def test_list_runs_newest_first(workspace_with_data):
         [first["id"], second["id"]], reverse=True
     )
     assert {"id", "status", "mode", "task_counts"} <= set(runs[0])
+    assert {"activity", "activity_revision", "duration_ms"} <= set(runs[0])
 
 
 def test_recover_orphans_marks_interrupted(workspace_with_data):

@@ -22,7 +22,9 @@ class DocTestRunner(BaseRunner):
             self.run["doc_test"] = {"test_id": test_id}
             self._prepare(test)
             self.set_status("executing")
-            for item in test.get("items") or []:
+            items = test.get("items") or []
+            total_items = len(items)
+            for item_index, item in enumerate(items, start=1):
                 task = self._task(f"doctest:{test_id}:{item['id']}")
                 if task is None or task["status"] in {"completed", "skipped"}:
                     continue
@@ -35,6 +37,11 @@ class DocTestRunner(BaseRunner):
                     continue
                 self.checkpoint()
                 self.task_status(task, "running")
+                self.set_activity(
+                    "document_test.item", "Running document test",
+                    detail=str(item.get("label") or item["id"]),
+                    current=item_index, total=total_items, task_id=task["id"],
+                )
                 try:
                     result = doc_tests.run_item(self.ws, test_id, item["id"], run_id=self.run["id"])
                     task["result_refs"] = [f"doctest:{test_id}:{item['id']}"]

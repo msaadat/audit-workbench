@@ -53,6 +53,98 @@ class BaseRunner:
         with self._state_lock:
             store.append_event(self.ws, self.run["id"], type_, data)
 
+    def set_activity(
+        self,
+        phase: str,
+        label: str,
+        *,
+        detail: str | None = None,
+        current: int | None = None,
+        total: int | None = None,
+        attempt: int | None = None,
+        task_id: str | None = None,
+        action_id: str | None = None,
+    ) -> None:
+        """Persist one safe, user-facing description of the work in flight."""
+        now = store.utcnow()
+        with self._state_lock:
+            previous = self.run.get("activity") or {}
+            same_phase = previous.get("phase") == phase
+            activity = {
+                "phase": phase,
+                "label": label,
+                "detail": detail,
+                "current": current,
+                "total": total,
+                "attempt": attempt,
+                "task_id": task_id,
+                "action_id": action_id,
+                "started_at": previous.get("started_at") if same_phase else now,
+                "updated_at": now,
+                "waiting_on": previous.get("waiting_on") if same_phase else None,
+                "model_calls_active": int(previous.get("model_calls_active") or 0) if same_phase else 0,
+                "model_started_at": previous.get("model_started_at") if same_phase else None,
+            }
+            if activity["model_calls_active"] <= 0:
+                activity["waiting_on"] = None
+                activity["model_started_at"] = None
+            self.run["activity"] = activity
+            self.run["activity_revision"] = int(self.run.get("activity_revision") or 0) + 1
+            self.save()
+            self.emit("activity_update", {
+                "activity": activity,
+                "revision": self.run["activity_revision"],
+            })
+
+    def _model_wait(self, tag: str, *, started: bool, attempt: int = 1) -> None:
+        """Expose provider waits without logging prompts or source content."""
+        labels = {
+            "agent:command_interpreter": "Preparing the action plan",
+            "agent:command_planner": "Planning the next fieldwork steps",
+            "agent:document_selection": "Selecting planning documents",
+            "agent:document_context": "Analyzing planning documents",
+            "agent:apm": "Drafting the audit planning memorandum",
+            "agent:rcm": "Drafting the risk and control matrix",
+            "agent:work_program": "Drafting RCM planned tests",
+            "agent:file_classification": "Classifying staged files",
+            "agent:document_analysis_map": "Analyzing document content",
+            "agent:document_analysis_reduce": "Consolidating document analysis",
+        }
+        now = store.utcnow()
+        with self._state_lock:
+            activity = dict(self.run.get("activity") or {})
+            if not activity:
+                activity = {
+                    "phase": tag.replace("agent:", "model."),
+                    "label": labels.get(tag, "Waiting for the model"),
+                    "detail": None,
+                    "current": None,
+                    "total": None,
+                    "task_id": None,
+                    "action_id": None,
+                    "started_at": now,
+                }
+            active = int(activity.get("model_calls_active") or 0)
+            if started:
+                active += 1
+                activity["model_started_at"] = activity.get("model_started_at") or now
+                activity["waiting_on"] = "model"
+                activity["attempt"] = attempt
+            else:
+                active = max(0, active - 1)
+                if active == 0:
+                    activity["waiting_on"] = None
+                    activity["model_started_at"] = None
+            activity["model_calls_active"] = active
+            activity["updated_at"] = now
+            self.run["activity"] = activity
+            self.run["activity_revision"] = int(self.run.get("activity_revision") or 0) + 1
+            self.save()
+            self.emit("activity_update", {
+                "activity": activity,
+                "revision": self.run["activity_revision"],
+            })
+
     def set_status(self, status: str) -> None:
         if self.run["status"] == status:
             return
@@ -149,7 +241,9 @@ class BaseRunner:
     def context(self) -> dict:
         return self.run.get("context") or {}
 
-    def _llm_content(self, system: str, user: str, activity: dict | None = None) -> str:
+    def _llm_content(
+        self, system: str, user: str, activity: dict | None = None, *, attempt: int = 1,
+    ) -> str:
         """Execute and provenance-log one model turn.
 
         Only accounting and snapshot mutations are locked. The provider call
@@ -162,14 +256,18 @@ class BaseRunner:
                 raise LimitExceeded("model turn limit reached")
             usage["llm_turns"] = usage.get("llm_turns", 0) + 1
             self.save()
-        message = llm.chat(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            profile="agent",
-        )
+        tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
+        self._model_wait(tag, started=True, attempt=attempt)
+        try:
+            message = llm.chat(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                profile="agent",
+            )
+        finally:
+            self._model_wait(tag, started=False, attempt=attempt)
         # The ledger stores provenance and hashes, never full prompt or
         # document content.
         from ..documents import append_activity
-        tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
         profile = llm.agent_status()
         with self._state_lock:
             sources = list(self.run.get("model_sources") or [])
@@ -205,8 +303,8 @@ class BaseRunner:
     def llm_json(self, system: str, user: str, activity: dict | None = None) -> dict:
         last_error = ""
         attempt_user = user
-        for _ in range(LLM_JSON_ATTEMPTS):
-            content = self._llm_content(system, attempt_user, activity)
+        for attempt in range(1, LLM_JSON_ATTEMPTS + 1):
+            content = self._llm_content(system, attempt_user, activity, attempt=attempt)
             try:
                 return prompts.parse_json_object(content)
             except (ValueError, json.JSONDecodeError) as error:
@@ -253,6 +351,8 @@ class BaseRunner:
             "error": None,
             "result_refs": [],
             "context_notes": [],
+            "started_at": None,
+            "finished_at": None,
         }
         self._stage(stage_id)["tasks"].append(task)
         self.save()
@@ -262,8 +362,22 @@ class BaseRunner:
     def task_status(self, task: dict, status: str, error: str | None = None) -> None:
         task["status"] = status
         task["error"] = error
+        if status == "running" and not task.get("started_at"):
+            task["started_at"] = store.utcnow()
+        if status in {"completed", "failed", "skipped", "cancelled"}:
+            task["finished_at"] = store.utcnow()
         self.save()
         self.emit("task_update", {"task": task})
+        if status in {"running", "awaiting_approval"}:
+            self.set_activity(
+                f"task.{task['stage']}", task["title"], detail=task.get("detail") or None,
+                task_id=task["id"],
+            )
+        elif status == "failed":
+            self.set_activity(
+                f"task.{task['stage']}.failed", f"{task['title']} failed",
+                detail=error, task_id=task["id"],
+            )
 
     def task_detail(self, task: dict, detail: str) -> None:
         """Persist and broadcast a user-facing progress message for a task."""
@@ -272,6 +386,11 @@ class BaseRunner:
         task["detail"] = detail
         self.save()
         self.emit("task_update", {"task": task})
+        if task.get("status") in {"running", "awaiting_approval"}:
+            self.set_activity(
+                f"task.{task['stage']}", task["title"], detail=detail,
+                task_id=task["id"],
+            )
 
     def note_context(self, task: dict, note: str) -> None:
         notes = task.setdefault("context_notes", [])

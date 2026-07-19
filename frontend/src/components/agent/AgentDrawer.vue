@@ -53,7 +53,14 @@ onMounted(async () => {
 })
 onUnmounted(stopResize)
 
-watch(() => `${agent.state.run?.id}:${agent.state.run?.status}:${agent.state.run?.graph_revision ?? 0}:${agent.state.run?.pending_commands?.length ?? 0}`, () => {
+watch(() => [
+  agent.state.run?.id,
+  agent.state.run?.status,
+  agent.state.run?.activity_revision ?? 0,
+  agent.state.run?.graph_revision ?? 0,
+  agent.state.run?.warnings.length ?? 0,
+  agent.state.run?.pending_commands?.length ?? 0,
+].join(':'), () => {
   if (chats.state.activeChatId) void chats.refresh()
 })
 

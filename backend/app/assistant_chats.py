@@ -743,18 +743,45 @@ def _process_message(
     return outcome
 
 
+def _current_activity(run: dict) -> str:
+    status = str(run.get("status") or "")
+    if status in {*store.TERMINAL_STATUSES, *store.RESUMABLE_STATUSES}:
+        return status.replace("_", " ")
+    activity = run.get("activity") or {}
+    label = str(activity.get("label") or "").strip()
+    if label:
+        current, total = activity.get("current"), activity.get("total")
+        if isinstance(current, int) and isinstance(total, int) and total > 0:
+            label = f"{label} ({current}/{total})"
+        detail = str(activity.get("detail") or "").strip()
+        return f"{label} — {detail}" if detail else label
+    for action in run.get("actions") or []:
+        if action.get("status") == "running":
+            return str(action.get("type") or "executing action").replace("_", " ")
+    for stage in (run.get("plan") or {}).get("stages") or []:
+        for task in stage.get("tasks") or []:
+            if task.get("status") in {"running", "awaiting_approval"}:
+                return str(task.get("detail") or task.get("title") or "executing")
+    return str(run.get("status") or "").replace("_", " ")
+
+
 def _run_projection(run: dict) -> dict:
     summary = store.run_summary(run)
+    summary_line = (str(run.get("summary_markdown") or "").strip().splitlines() or [""])[0]
+    if not summary_line:
+        summary_line = str(run.get("error") or "")
+    if not summary_line and run.get("warnings"):
+        summary_line = str(run["warnings"][-1])
     summary.update({
         "type": "run", "derived": True, "run_id": run["id"],
         "id": f"run:{run['id']}", "created_at": run.get("created"),
         "title": (run.get("command") or {}).get("text") or (run.get("goal") or {}).get("objective") or run.get("kind", "Agent run"),
-        "current_activity": str(run.get("status") or "").replace("_", " "),
+        "current_activity": _current_activity(run),
         "pending_attention": bool(
             any(item.get("status") == "pending" for item in run.get("approvals") or [])
             or any(item.get("status") == "pending" for item in run.get("interactions") or [])
         ),
-        "summary_line": (str(run.get("summary_markdown") or "").strip().splitlines() or [run.get("error") or ""])[0],
+        "summary_line": summary_line,
     })
     return summary
 

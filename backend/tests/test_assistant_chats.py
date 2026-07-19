@@ -149,6 +149,33 @@ def test_planning_action_passes_structured_run_context(workspace_with_data, monk
     assert launched["context"] == {"document_ids": ["doc-1", "doc-2"]}
 
 
+def test_run_projection_uses_durable_activity_instead_of_coarse_status(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto",
+        {"source": "chat", "text": "prepare planning"},
+    )
+    run["status"] = "executing"
+    run["started"] = store.utcnow()
+    run["activity_revision"] = 4
+    run["activity"] = {
+        "phase": "planning.documents", "label": "Analyzing documents",
+        "detail": "Procurement policy.docx", "current": 2, "total": 7,
+        "attempt": 1, "task_id": "planning:context", "action_id": None,
+        "started_at": store.utcnow(), "updated_at": store.utcnow(),
+        "waiting_on": "model", "model_calls_active": 1,
+        "model_started_at": store.utcnow(),
+    }
+
+    projection = assistant_chats._run_projection(run)
+
+    assert projection["current_activity"] == (
+        "Analyzing documents (2/7) — Procurement policy.docx"
+    )
+    assert projection["activity_revision"] == 4
+    assert projection["activity"]["waiting_on"] == "model"
+    assert projection["duration_ms"] is not None
+
+
 def test_pending_turn_is_recovered_as_failed(workspace_with_data):
     ws = workspace_with_data
     chat = assistant_chats.create_chat(ws)

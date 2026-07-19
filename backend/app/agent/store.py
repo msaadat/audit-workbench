@@ -59,6 +59,18 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def elapsed_ms(started: str | None, finished: str | None = None) -> int | None:
+    """Return a bounded wall-clock duration for run/activity projections."""
+    if not started:
+        return None
+    try:
+        start = datetime.fromisoformat(started)
+        end = datetime.fromisoformat(finished) if finished else datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return max(0, int((end - start).total_seconds() * 1000))
+
+
 def _event_lock(run_dir: Path) -> threading.Lock:
     key = str(run_dir)
     with _event_locks_guard:
@@ -113,6 +125,8 @@ def new_run(
         "created": utcnow(),
         "started": None,
         "finished": None,
+        "activity": None,
+        "activity_revision": 0,
         "limits": dict(limits or {}),
         "usage": {"llm_turns": 0, "tool_calls": 0, "custom_analyses": 0},
         "discovery": {},
@@ -191,6 +205,7 @@ def new_command_run(
         "pending_commands": [],
         "status": "queued",
         "created": utcnow(), "started": None, "finished": None,
+        "activity": None, "activity_revision": 0,
         "usage": {"llm_turns": 0, "tool_calls": 0, "planner_waves": 0, "actions_started": 0},
         "limits": {
             "max_actions": 60, "max_waves": 8, "max_depth": 10,
@@ -236,9 +251,13 @@ def _hydrate_run(run: dict) -> None:
     run.setdefault("kind", "analysis")
     run.setdefault("chat_id", None)
     run.setdefault("source_message_id", None)
+    run.setdefault("activity", None)
+    run.setdefault("activity_revision", 0)
     for stage in (run.get("plan") or {}).get("stages") or []:
         for task in stage.get("tasks") or []:
             task.setdefault("context_notes", list(task.get("disclosure") or []))
+            task.setdefault("started_at", None)
+            task.setdefault("finished_at", None)
     if run["schema_version"] >= 2:
         run.setdefault("planning_basis_run_id", None)
         run.setdefault("cancellation", None)
@@ -312,6 +331,9 @@ def run_summary(run: dict) -> dict:
         "created": run["created"],
         "started": run.get("started"),
         "finished": run.get("finished"),
+        "duration_ms": elapsed_ms(run.get("started"), run.get("finished")),
+        "activity": run.get("activity"),
+        "activity_revision": int(run.get("activity_revision") or 0),
         "domain": (run.get("discovery") or {}).get("domain"),
         "task_counts": counts,
         "error": run.get("error"),

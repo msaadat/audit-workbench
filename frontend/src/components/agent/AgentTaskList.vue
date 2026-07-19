@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { AgentRunStatus, AgentStage, AgentTaskStatus } from '../../types'
+import type { AgentRunStatus, AgentStage, AgentTask, AgentTaskStatus } from '../../types'
 
 // The Codex-style live plan: stages with their tasks, statuses updating as
 // SSE events land. Result refs surface as small "what this produced" chips.
@@ -67,6 +67,15 @@ function summarizeRefs(refs: string[]): string[] {
     return `${count} ${count === 1 ? one : many}`
   })
 }
+
+function taskDuration(task: AgentTask): string {
+  if (!task.started_at || !task.finished_at) return ''
+  const seconds = Math.max(0, Math.floor((Date.parse(task.finished_at) - Date.parse(task.started_at)) / 1000))
+  if (seconds < 1) return ''
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m${seconds % 60 ? ` ${seconds % 60}s` : ''}`
+}
 </script>
 
 <template>
@@ -94,6 +103,7 @@ function summarizeRefs(refs: string[]): string[] {
           <small v-for="note in task.context_notes ?? []" :key="note" class="muted context-note">
             {{ note }}
           </small>
+          <small v-if="taskDuration(task)" class="muted">{{ taskDuration(task) }}</small>
           <div v-if="summarizeRefs(task.result_refs).length" class="refs">
             <span v-for="ref in summarizeRefs(task.result_refs)" :key="ref" class="ref">
               {{ ref }}

@@ -25,9 +25,13 @@ class IntakeRunner(BaseRunner):
             if not batch_id:
                 raise ValueError("An intake run requires context.batch_id.")
             batch = intake.load_batch(self.ws, batch_id)
+            file_count = len(batch.get("items") or [])
             if batch.get("source_id") != self.context.get("source_id", batch.get("source_id")):
                 raise ValueError("The intake source does not match the batch.")
-            validate = self.add_task("validate", "intake:validate", "Validate staged files")
+            validate = self.add_task(
+                "validate", "intake:validate", "Validate staged files",
+                f"Validating {file_count} staged file{'s' if file_count != 1 else ''}…",
+            )
             self.task_status(validate, "running")
             if batch["status"] == "uploading":
                 batch = intake.complete_upload(self.ws, batch_id)
@@ -35,14 +39,27 @@ class IntakeRunner(BaseRunner):
                 raise ValueError("The folder-import batch is not ready for classification.")
             self.task_status(validate, "completed")
 
-            classify = self.add_task("classify", "intake:classify", "Classify folder candidates")
+            classify = self.add_task(
+                "classify", "intake:classify", "Classify folder candidates",
+                f"Classifying {file_count} staged file{'s' if file_count != 1 else ''}…",
+            )
             if classify["status"] != "completed" and batch["status"] != "completed":
                 self.task_status(classify, "running")
+                if llm.agent_status().get("configured"):
+                    self.task_detail(
+                        classify,
+                        f"Classifying {file_count} staged file{'s' if file_count != 1 else ''} with the model…",
+                    )
+                else:
+                    self.task_detail(classify, "Applying deterministic local file routing…")
                 self._classify(batch)
                 intake.save_batch(self.ws, batch)
                 self.task_status(classify, "completed")
 
-            apply_task = self.add_task("apply", "intake:apply", "Confirm and apply file routing")
+            apply_task = self.add_task(
+                "apply", "intake:apply", "Confirm and apply file routing",
+                f"Applying routing decisions to {file_count} file{'s' if file_count != 1 else ''}…",
+            )
             if batch["status"] != "completed":
                 self.task_status(apply_task, "running")
                 decisions = self._decisions(batch, apply_task)
@@ -53,7 +70,13 @@ class IntakeRunner(BaseRunner):
                         self.record_artifact(kind, item_id, f"intake:{batch_id}:{item['id']}", item.get("action") or "created", apply_task)
                 self.task_status(apply_task, "completed")
 
-            verify = self.add_task("verify", "intake:verify", "Verify imported targets")
+            imported_count = sum(
+                item.get("action") == "imported" for item in batch.get("items") or []
+            )
+            verify = self.add_task(
+                "verify", "intake:verify", "Verify imported targets",
+                f"Verifying {imported_count} imported artifact{'s' if imported_count != 1 else ''}…",
+            )
             self.task_status(verify, "running")
             refreshed = intake.load_batch(self.ws, batch_id)
             missing = [item["relative_path"] for item in refreshed["items"] if item.get("action") == "imported" and not item.get("target_ref")]

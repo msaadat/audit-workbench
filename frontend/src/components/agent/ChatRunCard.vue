@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
@@ -21,8 +21,46 @@ const agent = useAgentRun(props.workspaceId)
 const expanded = ref(false)
 const run = ref<AgentRun | null>(null)
 const busy = ref(false)
+const clock = ref(Date.now())
+let clockTimer: number | undefined
 const active = computed(() => ['queued','interpreting','discovering','planning','executing','awaiting_approval','awaiting_input','verifying','summarizing','paused','interrupted'].includes(props.projection.status))
 const severity: Record<string, 'success'|'warn'|'danger'|'secondary'|'info'> = { completed:'success',completed_with_open_items:'warn',completed_with_issues:'warn',failed:'danger',cancelled:'secondary',paused:'secondary',interrupted:'warn',awaiting_approval:'warn',awaiting_input:'warn' }
+
+function duration(value: number | null | undefined) {
+  if (value == null) return ''
+  const seconds = Math.max(0, Math.floor(value / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`
+}
+const runElapsedMs = computed(() => {
+  if (props.projection.duration_ms != null && !active.value) return props.projection.duration_ms
+  const started = props.projection.started ? Date.parse(props.projection.started) : NaN
+  return Number.isFinite(started) ? clock.value - started : null
+})
+const modelElapsedMs = computed(() => {
+  const started = props.projection.activity?.model_started_at
+  return started ? Math.max(0, clock.value - Date.parse(started)) : null
+})
+const activityText = computed(() => {
+  const base = props.projection.current_activity
+  if (props.projection.activity?.waiting_on !== 'model') return base
+  const elapsed = duration(modelElapsedMs.value)
+  const waiting = (modelElapsedMs.value ?? 0) >= 60_000 ? 'still waiting for model' : 'waiting for model'
+  return `${base} · ${waiting}${elapsed ? ` ${elapsed}` : ''}`
+})
+function syncClock() {
+  if (active.value && !clockTimer) {
+    clockTimer = window.setInterval(() => { clock.value = Date.now() }, 1000)
+  } else if (!active.value && clockTimer) {
+    window.clearInterval(clockTimer)
+    clockTimer = undefined
+  }
+}
+onMounted(syncClock)
+watch(active, syncClock)
+onUnmounted(() => { if (clockTimer) window.clearInterval(clockTimer) })
 
 async function load() {
   run.value = await api.get<AgentRun>(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}`)
@@ -31,7 +69,7 @@ async function toggle() { expanded.value = !expanded.value; if (expanded.value) 
 // The projection updates with every chat refresh; keep the expanded detail in
 // step so the header tag and the task list never show contradictory states.
 watch(
-  () => [props.projection.status, props.projection.task_counts.completed, props.projection.task_counts.failed, props.projection.pending_attention].join(':'),
+  () => [props.projection.status, props.projection.activity_revision ?? 0, props.projection.task_counts.completed, props.projection.task_counts.failed, props.projection.pending_attention].join(':'),
   () => { if (expanded.value) void load().catch(() => undefined) },
 )
 async function control(action: 'pause'|'resume'|'cancel') {
@@ -63,11 +101,11 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
   <article class="run-card" :class="{ attention: projection.pending_attention }">
     <button class="run-head" @click="toggle">
       <span class="icon"><i class="pi pi-sparkles" /></span>
-      <span class="identity"><strong>{{ projection.title }}</strong><small>{{ projection.mode === 'permission' ? 'Ask first' : 'Auto' }} · {{ projection.current_activity }}</small></span>
+      <span class="identity"><strong>{{ projection.title }}</strong><small>{{ projection.mode === 'permission' ? 'Ask first' : 'Auto' }} · {{ activityText }}</small></span>
       <Tag :value="projection.status.replaceAll('_',' ')" :severity="severity[projection.status] ?? 'info'" />
       <i :class="expanded ? 'pi pi-chevron-up' : 'pi pi-chevron-down'" />
     </button>
-    <div class="progress"><span>{{ projection.task_counts.completed }}/{{ projection.task_counts.total }} complete</span><span v-if="projection.task_counts.failed">{{ projection.task_counts.failed }} failed</span><span v-if="projection.task_counts.blocked">{{ projection.task_counts.blocked }} blocked</span><strong v-if="projection.pending_attention">Needs attention</strong></div>
+    <div class="progress"><span>{{ projection.task_counts.completed }}/{{ projection.task_counts.total }} complete</span><span v-if="projection.task_counts.failed">{{ projection.task_counts.failed }} failed</span><span v-if="projection.task_counts.blocked">{{ projection.task_counts.blocked }} blocked</span><span v-if="runElapsedMs != null">{{ duration(runElapsedMs) }}</span><strong v-if="projection.pending_attention">Needs attention</strong></div>
     <p v-if="projection.summary_line" class="summary-line">{{ projection.summary_line }}</p>
     <div v-if="expanded" class="run-detail">
       <div v-if="run" class="controls">

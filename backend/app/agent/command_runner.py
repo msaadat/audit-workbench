@@ -222,6 +222,10 @@ class CommandRunner(BaseRunner):
 
     def _interpret(self) -> None:
         self.set_status("interpreting")
+        self.set_activity(
+            "command.interpret", "Preparing the action plan",
+            detail="Reviewing the command, available artifacts, and table schemas…",
+        )
         index = artifact_index.build(self.ws)
         command = self.run["command"]
         template = GOAL_TEMPLATES.get(command.get("goal_template"))
@@ -237,6 +241,12 @@ class CommandRunner(BaseRunner):
         created = []
         payload = {}
         for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
+            if attempt:
+                self.set_activity(
+                    "command.interpret.repair", "Repairing the action plan",
+                    detail="The first proposal did not satisfy the registered action contracts.",
+                    attempt=attempt + 1,
+                )
             payload = self.llm_json(prompts.COMMAND_INTERPRETER_SYSTEM, attempt_user)
             objective = str(payload.get("objective") or (template or {}).get("objective") or command.get("text") or "").strip()
             goal = {
@@ -272,6 +282,11 @@ class CommandRunner(BaseRunner):
         self.run["command"]["status"] = "planned"
         self.save()
         self.emit("graph_update", {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]})
+        self.set_activity(
+            "command.plan.ready", "Action plan ready",
+            detail=f"Prepared {len(created)} action{'s' if len(created) != 1 else ''} for execution.",
+            current=0, total=len(created),
+        )
 
     def _requests_full_audit(self) -> bool:
         command = self.run.get("command") or {}
@@ -294,6 +309,20 @@ class CommandRunner(BaseRunner):
         if self.run.get("prepared_planning"):
             return
         self.set_status("executing")
+        if self.run.get("parent_run_id"):
+            detail = "Reusing valid document analyses and rebuilding the planning transaction."
+            try:
+                parent = store.load_run(self.ws, self.run["parent_run_id"])
+                if parent.get("error"):
+                    detail = f"Retrying after: {parent['error']}"
+            except WorkspaceError:
+                pass
+            self.set_activity("planning.retry", "Retrying engagement planning", detail=detail)
+        else:
+            self.set_activity(
+                "planning.prepare", "Preparing engagement planning",
+                detail="Starting the document-grounded planning workflow.",
+            )
         self.run.setdefault("context", {})["require_planning_quality"] = True
         snapshot = {
             "planning": copy.deepcopy(self.ws.planning),
@@ -401,6 +430,7 @@ class CommandRunner(BaseRunner):
         document_count = len(requested_document_ids)
         analyses_by_id: dict[str, dict | None] = {}
         pending_analyses: list[tuple[int, dict, str]] = []
+        cached_analyses = 0
         for document_index, document_id in enumerate(requested_document_ids, start=1):
             doc = next(item for item in self.ws.documents if item.get("id") == document_id)
             document_name = Path(
@@ -411,22 +441,39 @@ class CommandRunner(BaseRunner):
             if analysis is None:
                 pending_analyses.append((document_index, doc, document_name))
             else:
+                cached_analyses += 1
                 self.task_detail(
                     task,
                     f"Loading document analysis {document_index} of {document_count}: {document_name}",
                 )
                 analyses_by_id[document_id] = analysis
+        if cached_analyses:
+            self.task_detail(
+                task,
+                f"Reusing {cached_analyses} cached "
+                f"{'analysis' if cached_analyses == 1 else 'analyses'}; "
+                f"{len(pending_analyses)} document{'s' if len(pending_analyses) != 1 else ''} need analysis…",
+            )
         if len(pending_analyses) == 1:
             document_index, doc, document_name = pending_analyses[0]
             self.task_detail(
                 task,
                 f"Analyzing document {document_index} of {document_count}: {document_name}",
             )
+            self.set_activity(
+                "planning.documents", "Analyzing documents", detail=document_name,
+                current=document_index, total=document_count, task_id=task["id"],
+            )
             analyses_by_id[doc["id"]] = self._ensure_planning_analysis(doc)
         elif pending_analyses:
             self.task_detail(
                 task,
                 f"Analyzing {len(pending_analyses)} documents concurrently…",
+            )
+            self.set_activity(
+                "planning.documents", "Analyzing documents",
+                detail=f"{len(pending_analyses)} new; {cached_analyses} cached",
+                current=cached_analyses, total=document_count, task_id=task["id"],
             )
             workers = min(MAX_PARALLEL_PLANNING_DOCUMENTS, len(pending_analyses))
             with ThreadPoolExecutor(
@@ -444,7 +491,16 @@ class CommandRunner(BaseRunner):
                     completed_analyses += 1
                     self.task_detail(
                         task,
-                        f"Analyzed {completed_analyses} of {len(pending_analyses)} documents…",
+                        f"Analyzed {completed_analyses} of {len(pending_analyses)} new "
+                        f"document{'s' if len(pending_analyses) != 1 else ''}; "
+                        f"reusing {cached_analyses} cached "
+                        f"{'analysis' if cached_analyses == 1 else 'analyses'}…",
+                    )
+                    self.set_activity(
+                        "planning.documents", "Analyzing documents",
+                        detail=str(doc.get("title") or doc.get("id") or "Document"),
+                        current=cached_analyses + completed_analyses,
+                        total=document_count, task_id=task["id"],
                     )
         # Parallel completion order is nondeterministic; build the bounded
         # dossier in the auditor's original selection order.
@@ -481,6 +537,11 @@ class CommandRunner(BaseRunner):
                 task,
                 f"Synthesizing planning context from {len(included_documents)} "
                 f"document{'s' if len(included_documents) != 1 else ''}…",
+            )
+            self.set_activity(
+                "planning.context.synthesis", "Synthesizing planning context",
+                detail=f"Using {len(included_documents)} current document analyses.",
+                task_id=task["id"],
             )
             self.note_context(
                 task,
@@ -692,13 +753,20 @@ class CommandRunner(BaseRunner):
             return [item["spec"] for item in self.request_approval(kind, task, proposals)]
         return [item["spec"] for item in proposals]
 
-    def _quality_draft(self, system: str, user: str, validator, label: str) -> dict:
+    def _quality_draft(
+        self, system: str, user: str, validator, label: str, *, task: dict | None = None,
+    ) -> dict:
         payload = self.llm_json(system, user)
         if not self.context.get("require_planning_quality"):
             return payload
         error = validator(payload)
         if not error:
             return payload
+        if task is not None:
+            self.task_detail(
+                task,
+                f"Revising the {label} after quality review: {error}…",
+            )
         repair = (
             f"{user}\n\nThe previous {label} draft failed the engagement quality gate: {error}. "
             "Return a complete corrected JSON object that satisfies every supplied template and field requirement."
@@ -867,6 +935,7 @@ class CommandRunner(BaseRunner):
         if task["status"] == "completed":
             return str(self.ws.planning.get("apm_markdown") or "")
         self.task_status(task, "running")
+        self.task_detail(task, "Drafting the APM from the current planning basis…")
         template = templates_store.get_template(self.ws, "apm")["markdown"]
         user = prompts.apm_user(template, basis)
         markdown = self.llm_markdown(
@@ -878,6 +947,9 @@ class CommandRunner(BaseRunner):
                 {"apm_markdown": markdown}, template, planning_context
             )
             if error:
+                self.task_detail(
+                    task, f"Revising the APM after quality review: {error}…"
+                )
                 repair = (
                     f"{user}\n\nThe previous APM draft failed the engagement quality gate: "
                     f"{error}. Return a complete corrected memorandum as Markdown only, without "
@@ -905,6 +977,7 @@ class CommandRunner(BaseRunner):
         ]
         accepted = self._accepted_specs("apm", task, proposals)
         if accepted:
+            self.task_detail(task, "Applying the APM revision…")
             accepted_markdown = str(accepted[0].get("apm_markdown") or "").strip()
             if not accepted_markdown:
                 raise WorkspaceError("The approved APM draft is empty.")
@@ -951,6 +1024,12 @@ class CommandRunner(BaseRunner):
         if task["status"] == "completed":
             return self.ws.rcm
         self.task_status(task, "running")
+        existing_count = len(self.ws.rcm)
+        self.task_detail(
+            task,
+            f"Drafting RCM revisions against {existing_count} existing risk"
+            f"{'s' if existing_count != 1 else ''}…",
+        )
         template = templates_store.get_template(self.ws, "rcm")["markdown"]
         payload = self._quality_draft(
             prompts.RCM_SYSTEM,
@@ -962,6 +1041,7 @@ class CommandRunner(BaseRunner):
                 value, {str(row.get("id")) for row in self.ws.rcm}
             ),
             "RCM",
+            task=task,
         )
         proposals = []
         for row in payload.get("rows") or []:
@@ -974,7 +1054,13 @@ class CommandRunner(BaseRunner):
                     str(spec["risk"]), "Proposed planning risk and response.", spec
                 )
             )
-        for spec in self._accepted_specs("rcm", task, proposals):
+        accepted_specs = self._accepted_specs("rcm", task, proposals)
+        for index, spec in enumerate(accepted_specs, start=1):
+            self.set_activity(
+                "planning.rcm.apply", "Applying RCM revisions",
+                detail=str(spec.get("risk") or "Risk revision"),
+                current=index, total=len(accepted_specs), task_id=task["id"],
+            )
             if not str(spec.get("risk") or "").strip():
                 raise WorkspaceError("An approved RCM row is missing its risk.")
             semantic = str(
@@ -1027,12 +1113,19 @@ class CommandRunner(BaseRunner):
         if task["status"] == "completed":
             return
         self.task_status(task, "running")
+        existing_tests = sum(len(row.get("planned_tests") or []) for row in rcm_rows)
+        self.task_detail(
+            task,
+            f"Drafting planned-test revisions against {existing_tests} existing test"
+            f"{'s' if existing_tests != 1 else ''}…",
+        )
         template = templates_store.get_template(self.ws, "workpaper")["markdown"]
         payload = self._quality_draft(
             prompts.WORK_PROGRAM_SYSTEM,
             prompts.work_program_user(template, self._downstream_planning_basis(basis, "work_program"), rcm_rows),
             self._program_quality,
             "RCM planned tests",
+            task=task,
         )
         proposals = []
         for procedure in payload.get("planned_tests") or payload.get("procedures") or []:
@@ -1064,7 +1157,13 @@ class CommandRunner(BaseRunner):
                     str(spec["objective"]), "Structured test linked to one draft RCM row.", spec
                 )
             )
-        for spec in self._accepted_specs("work_program", task, proposals):
+        accepted_specs = self._accepted_specs("work_program", task, proposals)
+        for index, spec in enumerate(accepted_specs, start=1):
+            self.set_activity(
+                "planning.planned_tests.apply", "Applying planned-test revisions",
+                detail=str(spec.get("objective") or "Planned-test revision"),
+                current=index, total=len(accepted_specs), task_id=task["id"],
+            )
             if not str(spec.get("objective") or "").strip():
                 raise WorkspaceError("An approved RCM planned test is missing its objective.")
             refs = self._resolve_rcm_refs(spec.get("rcm_refs") or [spec.get("rcm_id")])
@@ -1657,6 +1756,19 @@ class CommandRunner(BaseRunner):
                 }
         if definition.risk not in {"read", "compute"}:
             action["postcondition"] = actions.expected_postcondition(action)
+        terminal_statuses = {"succeeded", "failed", "blocked", "skipped", "cancelled"}
+        completed_before = sum(
+            item.get("status") in terminal_statuses for item in self.run.get("actions") or []
+        )
+        resolution = action.get("resolution") or {}
+        self.set_activity(
+            "actions.execute", definition.description,
+            detail=str(resolution.get("title") or action["type"]).replace("_", " "),
+            current=completed_before + 1,
+            total=len(self.run.get("actions") or []),
+            attempt=int(action.get("attempts") or 0) + 1,
+            action_id=action["id"],
+        )
         ledger.transition(action, "running")
         action["attempts"] += 1
         action["error"] = None
@@ -1686,6 +1798,14 @@ class CommandRunner(BaseRunner):
             if retry:
                 ledger.transition(action, "ready")
             self._save_action(action)
+            self.set_activity(
+                "actions.retry" if retry else "actions.failed",
+                "Retrying an action" if retry else "Action failed; continuing safely",
+                detail=str(error),
+                current=completed_before + (0 if retry else 1),
+                total=len(self.run.get("actions") or []),
+                attempt=action["attempts"], action_id=action["id"],
+            )
             if (
                 action.get("planning_significant")
                 and action["status"] == "failed"
@@ -1710,6 +1830,15 @@ class CommandRunner(BaseRunner):
             if not any(item.get("kind") == ref.partition(":")[0] and item.get("id") == ref.partition(":")[2] for item in self.run["artifacts"])
         )
         self._save_action(action)
+        completed_now = sum(
+            item.get("status") in terminal_statuses for item in self.run.get("actions") or []
+        )
+        self.set_activity(
+            "actions.progress", "Action completed",
+            detail=definition.description,
+            current=completed_now, total=len(self.run.get("actions") or []),
+            action_id=action["id"],
+        )
         warning = (receipt.get("result") or {}).get("warning")
         if warning:
             self.warn(str(warning))
@@ -1766,6 +1895,14 @@ class CommandRunner(BaseRunner):
             return
         safe_result = safe_result if safe_result is not None else ((action.get("receipt") or {}).get("result") or {})
         usage["planner_waves"] += 1; self.save()
+        failed_result = bool(safe_result.get("error"))
+        max_waves = int(self.run["limits"].get("max_waves", 8))
+        self.set_activity(
+            "command.replan" if failed_result else "command.expand",
+            "Replanning after an action failure" if failed_result else "Reviewing results for follow-up work",
+            detail=f"Planning wave {usage['planner_waves']} of {max_waves}…",
+            current=usage["planner_waves"], total=max_waves, action_id=action["id"],
+        )
         index = artifact_index.build(self.ws)
         base_user = prompts.command_planner_user(
             self.run["goal"],
@@ -1778,6 +1915,12 @@ class CommandRunner(BaseRunner):
         )
         attempt_user = base_user
         for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):
+            if attempt:
+                self.set_activity(
+                    "command.replan.repair", "Repairing the follow-up action plan",
+                    detail="The previous follow-up proposal did not satisfy the action contracts.",
+                    attempt=attempt + 1, action_id=action["id"],
+                )
             try:
                 payload = self.llm_json(prompts.COMMAND_PLANNER_SYSTEM, attempt_user)
             except (LimitExceeded, llm.LLMError) as error:
@@ -1868,6 +2011,11 @@ class CommandRunner(BaseRunner):
                 ledger.transition(action, "blocked"); action["error"] = "A required action did not succeed."; changed = True
         if changed:
             ledger.project_legacy_plan(self.run); self.save()
+            blocked = sum(item["status"] == "blocked" for item in self.run["actions"])
+            self.set_activity(
+                "actions.blocked", "Blocking dependent actions",
+                detail=f"{blocked} action{'s are' if blocked != 1 else ' is'} blocked by earlier failures.",
+            )
 
     def _dependencies_succeeded(self, action: dict) -> bool:
         by_id = {item["id"]: item for item in self.run["actions"]}
@@ -1917,6 +2065,10 @@ class CommandRunner(BaseRunner):
             return
         self._drain_inbox()
         self.set_status("verifying")
+        self.set_activity(
+            "command.verify", "Verifying fieldwork results",
+            detail="Checking committed, failed, blocked, and skipped actions before summary.",
+        )
         failed = [item for item in self.run.get("actions") or [] if item["status"] in {"failed", "blocked", "cancelled"}]
         succeeded = [item for item in self.run.get("actions") or [] if item["status"] == "succeeded"]
         skipped = [item for item in self.run.get("actions") or [] if item["status"] == "skipped"]

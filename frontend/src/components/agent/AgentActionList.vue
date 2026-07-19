@@ -24,6 +24,14 @@ const emptyMessage = computed(() => {
   }
   return 'The command is being interpreted.'
 })
+function actionDuration(action: AgentAction) {
+  if (!action.started_at || !action.finished_at) return ''
+  const seconds = Math.max(0, Math.floor((Date.parse(action.finished_at) - Date.parse(action.started_at)) / 1000))
+  if (seconds < 1) return ''
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m${seconds % 60 ? ` ${seconds % 60}s` : ''}`
+}
 </script>
 
 <template>
@@ -46,6 +54,7 @@ const emptyMessage = computed(() => {
         <strong>{{ action.type.replaceAll('_', ' ') }}</strong>
         <small v-if="action.resolution?.title">{{ action.resolution.title }}</small>
         <small v-if="action.result_refs.length">{{ action.result_refs.join(' · ') }}</small>
+        <small v-if="actionDuration(action)">{{ actionDuration(action) }}</small>
         <small v-if="action.error" class="error">{{ action.error }}</small>
       </div>
       <Tag :value="action.status.replaceAll('_', ' ')" :severity="severity[action.status] ?? 'secondary'" />

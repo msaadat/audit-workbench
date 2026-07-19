@@ -1207,6 +1207,24 @@ export interface AgentTask {
   error: string | null
   result_refs: string[]
   context_notes?: string[]
+  started_at?: string | null
+  finished_at?: string | null
+}
+
+export interface AgentActivity {
+  phase: string
+  label: string
+  detail: string | null
+  current: number | null
+  total: number | null
+  attempt: number | null
+  task_id: string | null
+  action_id: string | null
+  started_at: string
+  updated_at: string
+  waiting_on: 'model' | null
+  model_calls_active: number
+  model_started_at: string | null
 }
 
 export interface AgentStage {
@@ -1298,6 +1316,9 @@ export interface AgentRun {
   created: string
   started: string | null
   finished: string | null
+  duration_ms?: number | null
+  activity?: AgentActivity | null
+  activity_revision?: number
   usage: {
     llm_turns: number
     tool_calls: number
@@ -1349,6 +1370,9 @@ export interface AgentRunSummary {
   created: string
   started: string | null
   finished: string | null
+  duration_ms?: number | null
+  activity?: AgentActivity | null
+  activity_revision?: number
   domain?: string | null
   task_counts: { total: number; completed: number; failed: number; blocked?: number }
   error: string | null
@@ -1415,6 +1439,9 @@ export interface AgentAction {
   depth: number
   status: AgentActionStatus
   attempts: number
+  prepared_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
   result_refs: string[]
   error: string | null
 }

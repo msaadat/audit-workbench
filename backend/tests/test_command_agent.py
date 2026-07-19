@@ -1403,6 +1403,34 @@ def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, w
     assert tasks["planning:work_program"]["error"] == "remote connection closed"
 
 
+def test_task_progress_updates_run_activity_and_timing(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "prepare planning"}
+    )
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    command = command_runner.CommandRunner(workspace_with_data, run, handle)
+    task = command.add_task(
+        "context", "planning:context", "Assemble planning context",
+        "Reviewing documents…",
+    )
+
+    command.task_status(task, "running")
+    command.task_detail(task, "Analyzing document 1 of 7: Policy.docx")
+    command.task_status(task, "completed")
+
+    saved = store.load_run(workspace_with_data, run["id"])
+    saved_task = saved["plan"]["stages"][0]["tasks"][0]
+    assert saved["activity"]["label"] == "Assemble planning context"
+    assert saved["activity"]["detail"] == "Analyzing document 1 of 7: Policy.docx"
+    assert saved["activity_revision"] >= 2
+    assert saved_task["started_at"]
+    assert saved_task["finished_at"]
+    assert any(
+        event["type"] == "activity_update"
+        for event in store.read_events(workspace_with_data, run["id"])
+    )
+
+
 def test_document_test_kind_is_validated_before_execution(workspace_with_data):
     run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "test documents"})
     with pytest.raises(workspaces.WorkspaceError, match="unsupported value"):
