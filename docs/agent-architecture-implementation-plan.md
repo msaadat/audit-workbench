@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 3.
-- Current task: `P3.4`.
-- Last completed task: `P3.3`.
+- Current task: `P3.5`.
+- Last completed task: `P3.4`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -51,7 +51,7 @@ status notes below.
 | 0 | Complete | — |
 | 1 | Complete | — |
 | 2 | Complete | — |
-| 3 | In progress | `P3.4` |
+| 3 | In progress | `P3.5` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
@@ -310,6 +310,24 @@ status notes below.
   `test_command_agent.py`, and `test_workflow_v2.py` in `50.38s`. No frontend
   payload or API contract changed, so a frontend build was not required. The
   exact next task is `P3.4`.
+- `P3.4` completed on 2026-07-21. `DefaultRunRuntime` now owns the durable
+  model-budget ledger, provider-usage reconciliation, generic dynamic-limit
+  updates, the monotonic run deadline, checkpoint pause/resume and cancellation
+  checks, and durable draining of steering messages and queued follow-up
+  commands. `DefaultModelGateway` retains provider calls, concurrency,
+  telemetry, stage attribution, and hash-only provenance while delegating
+  budget reservation and reconciliation to the runtime. `BaseRunner` retains
+  thin compatibility methods, `WorkflowRunner` supplies only its domain count
+  calculation before delegating limit updates, and `ActionRunner` delegates
+  command-queue draining. Contract tests cover limit growth, pre-call charging,
+  actual-usage reconciliation, retry and per-worker accounting, pause/resume
+  deadline extension, cancellation, deadline exhaustion, both inbox modes,
+  and removal of the extracted behavior from `BaseRunner` and
+  `DefaultModelGateway`. Focused verification passed `162` tests across
+  `test_agent_runtime_contracts.py`, `test_agent_runner.py`,
+  `test_command_agent.py`, and `test_workflow_v2.py` in `54.37s`. No frontend
+  payload or API contract changed, so a frontend build was not required. The
+  exact next task is `P3.5`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -651,7 +669,7 @@ working papers, dashboard, reports, or audit completion.
 - [x] `P3.3` Extract run save, event emission, activity projection, status, and
   durable timing operations into `RunRuntime` with delegation from
   `BaseRunner`.
-- [ ] `P3.4` Extract budgets, dynamic limits, deadlines, checkpoints,
+- [x] `P3.4` Extract budgets, dynamic limits, deadlines, checkpoints,
   pause/resume, cancellation, and inbox draining into `RunRuntime`.
 - [ ] `P3.5` Extract approval and structured-interaction transitions, including
   blocked-time deadline extension and restart behavior.

@@ -3,11 +3,15 @@ import json
 import re
 import threading
 
+import pytest
+
 from app import documents, llm
 from app.agent import base, runner, store
 from app.agent.runtime import (
+    Cancelled,
     DefaultModelGateway,
     DefaultRunRuntime,
+    LimitExceeded,
     ModelGateway,
     RunRuntime,
 )
@@ -33,7 +37,12 @@ def test_run_runtime_contract_matches_active_base_runner(workspace_with_data):
         "set_activity",
         "set_model_wait",
         "warn",
+        "deadline",
+        "update_limits",
+        "reserve_model_turn",
+        "record_model_usage",
         "checkpoint",
+        "drain_inbox",
         "wait_for_input",
         "request_approval",
     }
@@ -123,6 +132,135 @@ def test_default_run_runtime_owns_durable_timing_and_activity(workspace_with_dat
     assert durable["activity"]["started_at"] == "2026-07-21T10:00:01.000+00:00"
     assert durable["activity"]["updated_at"] == "2026-07-21T10:00:02.000+00:00"
     assert durable["activity_revision"] == 2
+
+
+def test_default_run_runtime_owns_limits_and_model_budgets(workspace_with_data):
+    run = store.new_run(workspace_with_data, "auto")
+    runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=run,
+        state_lock=threading.RLock(),
+    )
+
+    runtime.update_limits(
+        {
+            "max_model_turns": 2,
+            "max_estimated_prompt_tokens": 50,
+            "max_completion_tokens": 10,
+        }
+    )
+    runtime.update_limits(
+        {
+            "max_model_turns": 1,
+            "max_estimated_prompt_tokens": 100,
+        },
+        grow_only=True,
+    )
+    budget = runtime.reserve_model_turn(
+        request_characters=80,
+        estimated_input_tokens=20,
+        attempt=2,
+    )
+    assert budget == {
+        "max_prompt_tokens": 100,
+        "max_completion_tokens": 10,
+    }
+    assert runtime.record_model_usage(
+        worker="agent:contract_test",
+        request_characters=80,
+        estimated_input_tokens=20,
+        prompt_tokens=25,
+        completion_tokens=11,
+        latency_ms=12.5,
+        attempt=2,
+        context_metrics={"selected": 1},
+        budget=budget,
+    ) is True
+
+    durable = store.load_run(workspace_with_data, run["id"])
+    assert durable["limits"]["max_model_turns"] == 2
+    assert durable["limits"]["max_estimated_prompt_tokens"] == 100
+    assert durable["usage"]["llm_turns"] == 1
+    assert durable["usage"]["estimated_prompt_tokens"] == 20
+    assert durable["usage"]["prompt_tokens"] == 25
+    assert durable["usage"]["completion_tokens"] == 11
+    assert durable["usage"]["retries"] == 1
+    assert durable["usage"]["model_calls_by_worker"] == {
+        "agent:contract_test": 1
+    }
+    assert durable["usage"]["model_call_metrics"][0]["context_metrics"] == {
+        "selected": 1
+    }
+
+
+def test_default_run_runtime_owns_checkpoint_controls_deadline_and_inbox(
+    workspace_with_data,
+):
+    run = store.new_run(workspace_with_data, "auto")
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    handle.pause_requested.set()
+    handle.resume.set()
+    handle.inbox.extend(["first", "second"])
+    monotonic_values = iter([100.0, 110.0, 120.0, 121.0])
+    timestamps = iter(
+        [
+            "2026-07-21T11:00:00.000+00:00",
+            "2026-07-21T11:00:01.000+00:00",
+        ]
+    )
+    runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=run,
+        state_lock=threading.RLock(),
+        handle=handle,
+        monotonic=lambda: next(monotonic_values),
+        max_runtime_seconds=30,
+        clock=lambda: next(timestamps),
+    )
+
+    runtime.checkpoint()
+
+    durable = store.load_run(workspace_with_data, run["id"])
+    assert durable["status"] == "executing"
+    assert [message["content"] for message in durable["messages"]] == [
+        "first",
+        "second",
+    ]
+    assert handle.inbox == []
+    assert runtime.deadline == 140.0
+    statuses = [
+        event["data"]["status"]
+        for event in store.read_events(workspace_with_data, run["id"])
+    ]
+    assert statuses == ["paused", "executing"]
+
+    handle.command_queue.append({"id": "command-1", "text": "follow up"})
+    handle.command_queued.set()
+    runtime.drain_inbox(queue_commands=True)
+    durable = store.load_run(workspace_with_data, run["id"])
+    assert durable["pending_commands"] == [
+        {"id": "command-1", "text": "follow up"}
+    ]
+    assert handle.command_queue == []
+    assert not handle.command_queued.is_set()
+
+    handle.cancel.set()
+    with pytest.raises(Cancelled):
+        runtime.checkpoint()
+
+    expired_run = store.new_run(workspace_with_data, "auto")
+    expired_handle = runner.RunHandle(workspace_with_data.id, expired_run["id"])
+    expired_times = iter([200.0, 202.0])
+    expired_runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=expired_run,
+        state_lock=threading.RLock(),
+        handle=expired_handle,
+        monotonic=lambda: next(expired_times),
+        max_runtime_seconds=1,
+    )
+    with pytest.raises(LimitExceeded, match="run time limit reached"):
+        expired_runtime.checkpoint()
 
 
 def test_run_runtime_active_status_activity_and_warning_contract(workspace_with_data):
@@ -306,3 +444,26 @@ def test_model_gateway_delegates_activity_projection_to_runtime():
     assert 'self.run["activity"]' not in source
     assert 'self.run["activity_revision"]' not in source
     assert 'self._emit("activity_update"' not in source
+
+
+def test_base_runner_no_longer_owns_budgets_or_checkpoint_controls():
+    source = inspect.getsource(base.BaseRunner)
+    checkpoint_source = inspect.getsource(base.BaseRunner.checkpoint)
+    init_source = inspect.getsource(base.BaseRunner.__init__)
+    inbox_source = inspect.getsource(base.BaseRunner._drain_inbox)
+
+    assert "MAX_RUNTIME_SECONDS" not in source
+    assert 'self.run.setdefault("usage"' not in source
+    assert "time.monotonic()" not in init_source
+    assert "self.handle.cancel.is_set()" not in checkpoint_source
+    assert "self.handle.pause_requested.is_set()" not in checkpoint_source
+    assert "self.handle.inbox[:]" not in inbox_source
+
+
+def test_model_gateway_delegates_budget_ledger_to_runtime():
+    source = inspect.getsource(DefaultModelGateway)
+
+    assert 'self.run.setdefault("usage"' not in source
+    assert 'self.run.get("limits")' not in source
+    assert "self._reserve_model_turn(" in source
+    assert "self._record_model_usage(" in source

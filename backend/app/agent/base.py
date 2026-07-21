@@ -11,19 +11,15 @@ from collections.abc import Callable
 from .. import llm
 from ..workspaces import Workspace
 from . import prompts, store
-from .runtime import DefaultModelGateway, DefaultRunRuntime
+from .runtime import (
+    Cancelled,
+    DefaultModelGateway,
+    DefaultRunRuntime,
+    LimitExceeded,
+)
 
 MAX_TASKS = 60
-MAX_RUNTIME_SECONDS = 1800
 LLM_JSON_ATTEMPTS = 2
-
-
-class Cancelled(Exception):
-    pass
-
-
-class LimitExceeded(Exception):
-    pass
 
 
 MODEL_WAIT_LABELS = {
@@ -58,7 +54,6 @@ class BaseRunner:
         self.ws = workspace
         self.run = run
         self.handle = handle
-        self.deadline = time.monotonic() + MAX_RUNTIME_SECONDS
         # Independent planning-document requests may run concurrently. Keep
         # provider waits parallel while serializing the shared durable ledger.
         self._state_lock = threading.RLock()
@@ -66,6 +61,9 @@ class BaseRunner:
             workspace=self.ws,
             run=self.run,
             state_lock=self._state_lock,
+            handle=self.handle,
+            limit_error=LimitExceeded,
+            cancelled_error=Cancelled,
         )
         self.model_gateway = DefaultModelGateway(
             workspace_id=self.ws.id,
@@ -73,7 +71,8 @@ class BaseRunner:
             run=self.run,
             state_lock=self._state_lock,
             checkpoint=self.checkpoint,
-            save=self.save,
+            reserve_model_turn=self.runtime.reserve_model_turn,
+            record_model_usage=self.runtime.record_model_usage,
             model_wait=self.runtime.set_model_wait,
             utcnow=self.runtime.utcnow,
             append_provenance=self._append_model_provenance,
@@ -144,32 +143,36 @@ class BaseRunner:
     def warn(self, text: str) -> None:
         self.runtime.warn(text)
 
+    @property
+    def deadline(self) -> float:
+        return self.runtime.deadline
+
+    @deadline.setter
+    def deadline(self, value: float) -> None:
+        self.runtime.deadline = value
+
+    def update_limits(
+        self,
+        updates: dict[str, int],
+        *,
+        grow_only: bool = False,
+    ) -> dict:
+        return self.runtime.update_limits(updates, grow_only=grow_only)
+
+    def reserve_model_turn(self, **fields) -> dict[str, int]:
+        return self.runtime.reserve_model_turn(**fields)
+
+    def record_model_usage(self, **fields) -> bool:
+        return self.runtime.record_model_usage(**fields)
+
     def checkpoint(self) -> None:
-        if self.handle.cancel.is_set():
-            raise Cancelled()
-        if self.handle.pause_requested.is_set():
-            self.set_status("paused")
-            waited_from = time.monotonic()
-            while not self.handle.resume.wait(0.2):
-                if self.handle.cancel.is_set():
-                    raise Cancelled()
-            self.handle.resume.clear()
-            self.handle.pause_requested.clear()
-            self.deadline += time.monotonic() - waited_from
-            self.set_status("executing")
-        self._drain_inbox()
-        if time.monotonic() > self.deadline:
-            raise LimitExceeded("run time limit reached")
+        self.runtime.checkpoint(drain_inbox=self._drain_inbox)
+
+    def drain_inbox(self, *, queue_commands: bool = False) -> None:
+        self.runtime.drain_inbox(queue_commands=queue_commands)
 
     def _drain_inbox(self) -> None:
-        with self.handle.lock:
-            pending, self.handle.inbox = self.handle.inbox[:], []
-        for content in pending:
-            self.run.setdefault("messages", []).append(
-                {"role": "user", "content": content, "at": self.utcnow(), "handled": True}
-            )
-        if pending:
-            self.save()
+        self.runtime.drain_inbox()
 
     def wait_for_input(self, question: str) -> str:
         """Persist one agent question and wait durably for an inbox answer."""

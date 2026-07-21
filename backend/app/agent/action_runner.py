@@ -184,12 +184,7 @@ class ActionRunner(BaseRunner):
 
     def _drain_inbox(self) -> None:
         """General chat is durable follow-up work, never active-graph steering."""
-        with self.handle.lock:
-            queued, self.handle.command_queue = self.handle.command_queue[:], []
-        self.handle.command_queued.clear()
-        if queued:
-            self.run.setdefault("pending_commands", []).extend(queued)
-            self.save()
+        self.runtime.drain_inbox(queue_commands=True)
 
     def execute(self) -> None:
         """Interpret the command into an action graph, then drive it to done.

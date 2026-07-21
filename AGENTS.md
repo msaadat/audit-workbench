@@ -236,21 +236,25 @@ BaseRunner
   `_install_resolution` from actual RCM, planned-test, and Q&A counts, then
   refreshed before every stage), `max_actions`, `max_waves`,
   `max_units_per_stage`, and a runtime deadline extended by time spent blocked
-  on the auditor.
+  on the auditor. `DefaultRunRuntime` owns the durable model-budget ledger,
+  dynamic limit updates, deadline, checkpoint controls, and live inbox
+  draining.
 
 ### Model call discipline
 
 - `agent.runtime.DefaultModelGateway.complete` is the only runner path to the
-  provider. It charges turn and token budgets before calling, derives the
-  `[agent:<stage>]` tag that drives UI labels and per-worker accounting, holds
-  a process-wide semaphore keyed on `provider:model`, records debug telemetry,
-  and appends hash-only provenance. `BaseRunner._llm_content` is a temporary
-  delegation facade for existing callers.
+  provider. It reserves turn and token budgets through `RunRuntime` before
+  calling, derives the `[agent:<stage>]` tag that drives UI labels and
+  per-worker accounting, holds a process-wide semaphore keyed on
+  `provider:model`, records debug telemetry, and appends hash-only provenance.
+  `BaseRunner._llm_content` is a temporary delegation facade for existing
+  callers.
 - `agent.runtime` defines the target `RunRuntime` and `ModelGateway` structural
   contracts. `DefaultRunRuntime` owns synchronized run saves, event emission,
-  durable run timing, status and warning transitions, and activity/model-wait
-  projections. `BaseRunner` delegates that surface while it still owns the
-  Phase 3 control, budget, approval, and interaction behavior.
+  durable run timing, status and warning transitions, activity/model-wait
+  projections, budgets, dynamic limits, deadlines, checkpoints, controls, and
+  inbox draining. `BaseRunner` delegates that surface while it still owns the
+  Phase 3 approval and interaction behavior.
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.

@@ -12,8 +12,6 @@ from typing import Any, Protocol, runtime_checkable
 from ... import debug_store, llm
 
 
-DEFAULT_MAX_MODEL_TURNS = 40
-
 _provider_semaphores: dict[str, threading.BoundedSemaphore] = {}
 _provider_semaphores_guard = threading.Lock()
 
@@ -40,8 +38,8 @@ class ModelGateway(Protocol):
     """Execute one budgeted, attributed model turn.
 
     Callers own prompt construction and response parsing. The implementation
-    owns provider selection, concurrency, retry accounting, token charging,
-    telemetry, and hash-only provenance.
+    owns provider selection, concurrency, telemetry, and hash-only provenance,
+    and coordinates budget charging and retry accounting through RunRuntime.
     """
 
     def complete(
@@ -57,9 +55,9 @@ class ModelGateway(Protocol):
 class DefaultModelGateway:
     """Active model gateway shared by the current runner facade.
 
-    Persistence and event callbacks remain injected until the durable runtime
-    extraction. This class owns the model-call behavior itself and has no
-    scheduler or domain dependencies.
+    Runtime callbacks own durable budgets and activity projection. This class
+    owns the provider call behavior itself and has no scheduler or domain
+    dependencies.
     """
 
     def __init__(
@@ -70,7 +68,8 @@ class DefaultModelGateway:
         run: dict[str, Any],
         state_lock: threading.RLock,
         checkpoint: Callable[[], None],
-        save: Callable[[], None],
+        reserve_model_turn: Callable[..., dict[str, int]],
+        record_model_usage: Callable[..., bool],
         model_wait: Callable[..., None],
         utcnow: Callable[[], str],
         append_provenance: Callable[[dict[str, Any]], None],
@@ -83,7 +82,8 @@ class DefaultModelGateway:
         self.run = run
         self._state_lock = state_lock
         self._checkpoint = checkpoint
-        self._save = save
+        self._reserve_model_turn = reserve_model_turn
+        self._record_model_usage = record_model_usage
         self._model_wait_projection = model_wait
         self._utcnow = utcnow
         self._append_provenance = append_provenance
@@ -107,32 +107,11 @@ class DefaultModelGateway:
 
         # Charge before the provider call. Actual counts are reconciled after
         # the response, but an estimated overage never spends provider tokens.
-        with self._state_lock:
-            usage = self.run.setdefault("usage", {})
-            maximum_turns = int(
-                (self.run.get("limits") or {}).get("max_model_turns")
-                or DEFAULT_MAX_MODEL_TURNS
-            )
-            if usage.get("llm_turns", 0) >= maximum_turns:
-                raise self._limit_error("model turn limit reached")
-            maximum_prompt_tokens = int(
-                (self.run.get("limits") or {}).get("max_estimated_prompt_tokens")
-                or maximum_turns * 10_000
-            )
-            projected_tokens = (
-                int(usage.get("estimated_prompt_tokens") or 0)
-                + estimated_input_tokens
-            )
-            if projected_tokens > maximum_prompt_tokens:
-                raise self._limit_error("estimated prompt-token limit reached")
-            usage["llm_turns"] = usage.get("llm_turns", 0) + 1
-            usage["estimated_prompt_tokens"] = projected_tokens
-            usage["request_characters"] = (
-                int(usage.get("request_characters") or 0) + request_characters
-            )
-            if attempt > 1:
-                usage["retries"] = int(usage.get("retries") or 0) + 1
-            self._save()
+        budget = self._reserve_model_turn(
+            request_characters=request_characters,
+            estimated_input_tokens=estimated_input_tokens,
+            attempt=attempt,
+        )
 
         tag = self._stage_tag(system)
         self._model_wait(tag, started=True, attempt=attempt)
@@ -190,71 +169,27 @@ class DefaultModelGateway:
             message.get("usage") if isinstance(message.get("usage"), dict) else {}
         )
 
-        with self._state_lock:
-            usage = self.run.setdefault("usage", {})
-            prompt_tokens = int(
-                provider_usage.get("prompt_tokens")
-                or provider_usage.get("input_tokens")
-                or estimated_input_tokens
-            )
-            completion_tokens = int(
-                provider_usage.get("completion_tokens")
-                or provider_usage.get("output_tokens")
-                or 0
-            )
-            usage["prompt_tokens"] = (
-                int(usage.get("prompt_tokens") or 0) + prompt_tokens
-            )
-            usage["completion_tokens"] = (
-                int(usage.get("completion_tokens") or 0) + completion_tokens
-            )
-            maximum_completion_tokens = int(
-                (self.run.get("limits") or {}).get("max_completion_tokens")
-                or maximum_turns * 4_000
-            )
-            token_budget_exceeded = (
-                usage["prompt_tokens"] > maximum_prompt_tokens
-                or usage["completion_tokens"] > maximum_completion_tokens
-            )
-            usage["model_calls_by_worker"] = dict(
-                usage.get("model_calls_by_worker") or {}
-            )
-            usage["model_calls_by_worker"][tag] = int(
-                usage["model_calls_by_worker"].get(tag) or 0
-            ) + 1
-            worker_totals = usage.setdefault("model_usage_by_worker", {}).setdefault(
-                tag,
-                {
-                    "calls": 0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "request_characters": 0,
-                    "latency_ms": 0.0,
-                    "retries": 0,
-                },
-            )
-            worker_totals["calls"] += 1
-            worker_totals["prompt_tokens"] += prompt_tokens
-            worker_totals["completion_tokens"] += completion_tokens
-            worker_totals["request_characters"] += request_characters
-            worker_totals["latency_ms"] = round(
-                float(worker_totals["latency_ms"]) + latency_ms,
-                3,
-            )
-            worker_totals["retries"] += int(attempt > 1)
-            usage.setdefault("model_call_metrics", []).append(
-                {
-                    "worker": tag,
-                    "request_characters": request_characters,
-                    "estimated_input_tokens": estimated_input_tokens,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "latency_ms": latency_ms,
-                    "retry_number": attempt,
-                    "context_metrics": (activity or {}).get("context_metrics"),
-                }
-            )
-            self._save()
+        prompt_tokens = int(
+            provider_usage.get("prompt_tokens")
+            or provider_usage.get("input_tokens")
+            or estimated_input_tokens
+        )
+        completion_tokens = int(
+            provider_usage.get("completion_tokens")
+            or provider_usage.get("output_tokens")
+            or 0
+        )
+        token_budget_exceeded = self._record_model_usage(
+            worker=tag,
+            request_characters=request_characters,
+            estimated_input_tokens=estimated_input_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=latency_ms,
+            attempt=attempt,
+            context_metrics=(activity or {}).get("context_metrics"),
+            budget=budget,
+        )
 
         self._append_provenance(
             {

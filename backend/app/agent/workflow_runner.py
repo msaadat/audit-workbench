@@ -457,15 +457,13 @@ class WorkflowRunner(ActionRunner):
             20 + 4 * len(self.ws.rcm) + 4 * planned_count
             + 2 * qa_pairs + 2 * eligible_findings
         )
-        limits = self.run.setdefault("limits", {})
-        limits["max_model_turns"] = max(
-            int(limits.get("max_model_turns") or 0), calculated
-        )
-        limits["max_estimated_prompt_tokens"] = max(
-            int(limits.get("max_estimated_prompt_tokens") or 0), calculated * 10_000
-        )
-        limits["max_completion_tokens"] = max(
-            int(limits.get("max_completion_tokens") or 0), calculated * 4_000
+        self.update_limits(
+            {
+                "max_model_turns": calculated,
+                "max_estimated_prompt_tokens": calculated * 10_000,
+                "max_completion_tokens": calculated * 4_000,
+            },
+            grow_only=True,
         )
 
     def _unit(self, stage: dict, unit_id: str) -> dict:

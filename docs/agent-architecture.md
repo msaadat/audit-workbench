@@ -398,13 +398,14 @@ control protocol. Otherwise migrate its work into capabilities and workers.
 The `RunRuntime` and `ModelGateway` structural contracts live under
 `agent/runtime/`. `DefaultRunRuntime` now owns synchronized run saves, event
 emission, UTC run timing, idempotent status events, warnings, activity
-revisions, and concurrent model-wait projection. Current runners reach those
-operations through the temporary `BaseRunner` facade. `DefaultModelGateway`
-owns provider concurrency, model profiles, token charging, retry accounting,
-stage tags, debug tracing, usage reconciliation, and hash-only provenance, and
-delegates model-wait activity back to the runtime. Budgets, deadlines,
-checkpoints, controls, approvals, and interactions remain on `BaseRunner` for
-the remaining Phase 3 extraction tasks.
+revisions, concurrent model-wait projection, durable budgets and usage
+accounting, generic limit updates, the monotonic deadline, checkpoint controls,
+and both inbox-draining modes. Current runners reach those operations through
+the temporary `BaseRunner` facade. `DefaultModelGateway` owns provider
+concurrency, model profiles, stage tags, debug tracing, and hash-only
+provenance, and delegates budget accounting and model-wait activity to the
+runtime. Approval and structured-interaction transitions remain on
+`BaseRunner` and the current schedulers for P3.5.
 
 ### Phase 1 Deletion Boundary
 
