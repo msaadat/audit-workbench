@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from .. import store
+from ..context import ContextManifest, load_manifest, persist_manifest
 from .interactions import InteractionTransitions
 
 DEFAULT_MAX_MODEL_TURNS = 40
@@ -61,6 +62,16 @@ class RunRuntime(Protocol):
     ) -> None: ...
 
     def warn(self, text: str) -> None: ...
+
+    def persist_context_manifest(
+        self,
+        manifest: ContextManifest,
+    ) -> dict[str, str]: ...
+
+    def load_context_manifest(
+        self,
+        reference: dict[str, str],
+    ) -> ContextManifest: ...
 
     @property
     def deadline(self) -> float: ...
@@ -188,6 +199,22 @@ class DefaultRunRuntime:
     def emit(self, type_: str, data: dict[str, Any]) -> None:
         with self._state_lock:
             store.append_event(self.workspace, self.run["id"], type_, data)
+
+    def persist_context_manifest(
+        self,
+        manifest: ContextManifest,
+    ) -> dict[str, str]:
+        """Persist one content-free manifest through the run's write lock."""
+        with self._state_lock:
+            return persist_manifest(self.workspace, self.run["id"], manifest)
+
+    def load_context_manifest(
+        self,
+        reference: dict[str, str],
+    ) -> ContextManifest:
+        """Load and integrity-check a manifest for this run."""
+        with self._state_lock:
+            return load_manifest(self.workspace, self.run["id"], reference)
 
     def utcnow(self) -> str:
         return self._clock() if self._clock is not None else store.utcnow()

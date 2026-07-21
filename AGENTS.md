@@ -91,8 +91,8 @@ backend/app/
    |                             implementation, restart-safe auditor response
    |                             transitions, and shared ModelGateway
    |- context/                 - normalized context declarations, content-free
-   |                             manifest records, local bundle models, and
-   |                             validated preset/selector registries
+   |                             manifest identity/persistence, local bundle
+   |                             models, and validated preset/selector registries
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners
@@ -273,10 +273,11 @@ BaseRunner
 - Phase 4 now has normalized context declarations and serialization contracts
   under `agent/context/`, plus hash-identified preset and selector registries
   that reject duplicate or unknown keys, unhashable definitions, unsupported
-  source types, and invalid privacy combinations. The current models separate
-  persistable, content-free manifests from local bundles that may contain
-  worker context. Manifest identity and persistence, context resolution, and
-  active-worker adoption are still pending.
+  source types, and invalid privacy combinations. Deterministic source and
+  manifest hashes, supplied-size metrics, omission/truncation record helpers,
+  and atomic per-unit manifest sidecars now keep durable context records
+  content-free while bundles remain local. Context resolution and active-worker
+  adoption are still pending.
 
 ### Known duplication
 

@@ -83,6 +83,8 @@ def test_run_runtime_contract_matches_active_base_runner(workspace_with_data):
         "set_activity",
         "set_model_wait",
         "warn",
+        "persist_context_manifest",
+        "load_context_manifest",
         "deadline",
         "update_limits",
         "reserve_model_turn",

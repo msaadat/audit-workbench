@@ -17,6 +17,16 @@ from .model import (
     ContextSpec,
     ContextTruncation,
 )
+from .manifest import (
+    load_manifest,
+    manifest_identity,
+    omission_record,
+    persist_manifest,
+    source_hash,
+    supplied_size,
+    total_supplied_size,
+    truncation_record,
+)
 from .presets import (
     ContextPreset,
     PRESETS,
@@ -48,4 +58,12 @@ __all__ = [
     "SELECTORS",
     "SelectorDefinition",
     "SelectorRegistry",
+    "load_manifest",
+    "manifest_identity",
+    "omission_record",
+    "persist_manifest",
+    "source_hash",
+    "supplied_size",
+    "total_supplied_size",
+    "truncation_record",
 ]

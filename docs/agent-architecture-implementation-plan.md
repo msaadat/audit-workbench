@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.3`.
-- Last completed task: `P4.2`.
+- Current task: `P4.4`.
+- Last completed task: `P4.3`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.3` |
+| 4 | In progress | `P4.4` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -417,6 +417,21 @@ status notes below.
   No active runtime path or frontend payload changed, so broader behavioral
   suites and a frontend build were not required. The exact next task is
   `P4.3`.
+- `P4.3` completed on 2026-07-21. Context manifests now have canonical SHA-256
+  identities, and source material has stable type-aware hashes. Deterministic
+  supplied-size helpers record item, Unicode-character, and estimated-token
+  counts; omission and truncation builders record source hashes and before/
+  after sizes without retaining source content. Per-unit manifests are written
+  atomically to `AgentRuns/<run_id>/contexts/<unit_id>.json`, references carry
+  the manifest hash and unit ID, and reads reject missing, malformed, replaced,
+  or hash-mismatched sidecars. `RunRuntime` owns the locked persistence/load
+  boundary, with `BaseRunner` retaining temporary delegation for active
+  callers. The writer accepts only `ContextManifest`, so local `ContextBundle`
+  content cannot cross the durable boundary. Focused verification passed `49`
+  tests across `test_agent_context_models.py` and
+  `test_agent_runtime_contracts.py` in `0.95s`. No active worker, API payload,
+  or frontend contract changed, so broader behavioral suites and a frontend
+  build were not required. The exact next task is `P4.4`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -823,7 +838,7 @@ and manually editable.
   privacy, selector, manifest, and bundle models with serialization tests.
 - [x] `P4.2` Add preset and selector registries with duplicate, unknown,
   unhashable, unsupported-source, and invalid-privacy validation.
-- [ ] `P4.3` Implement deterministic manifest identity, atomic persistence,
+- [x] `P4.3` Implement deterministic manifest identity, atomic persistence,
   source hashing, omission records, truncation records, and supplied-size
   metrics without persisting bundle content.
 - [ ] `P4.4` Implement resolver ordering, global and per-source limits,

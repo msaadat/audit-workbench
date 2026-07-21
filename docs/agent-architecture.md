@@ -428,8 +428,13 @@ explicitly local model that may hold worker content. These models have stable
 canonical JSON round trips. Hash-identified preset and selector registries now
 compile `documents.policies` to typed form and reject duplicate or unknown
 keys, unhashable definitions, unsupported source types, and invalid privacy
-combinations before resolution. Manifest identity and persistence and
-`ContextResolver` behavior remain pending after the P4.2 registry checkpoint.
+combinations before resolution. P4.3 subsequently added canonical SHA-256
+manifest and source identities,
+deterministic supplied-size metrics, omission and truncation record builders,
+and atomic `contexts/<unit_id>.json` persistence through `RunRuntime`.
+Persisted references are integrity-checked and the persistence boundary accepts
+only `ContextManifest`, so local `ContextBundle` content is never written.
+Resolver ordering, policy enforcement, and source selection remain pending.
 
 ### Phase 1 Deletion Boundary
 

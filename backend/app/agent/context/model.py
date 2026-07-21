@@ -10,6 +10,7 @@ in :class:`ContextBundle`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass, field
@@ -721,6 +722,11 @@ class ContextManifest(_JSONModel):
             "privacy_decisions": [item.to_dict() for item in self.privacy_decisions],
             "supplied_size": self.supplied_size.to_dict(),
         }
+
+    @property
+    def manifest_hash(self) -> str:
+        """Return the canonical content identity for this manifest."""
+        return f"sha256:{hashlib.sha256(self.to_json().encode('utf-8')).hexdigest()}"
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> Self:

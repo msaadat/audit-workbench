@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -24,7 +25,18 @@ from app.agent.context import (
     SELECTORS,
     SelectorDefinition,
     SelectorRegistry,
+    load_manifest,
+    manifest_identity,
+    omission_record,
+    persist_manifest,
+    source_hash,
+    supplied_size,
+    total_supplied_size,
+    truncation_record,
 )
+from app.agent import store
+from app.agent.runtime import DefaultRunRuntime
+from app.workspaces import WorkspaceError
 
 
 def _size(items=1, characters=120, estimated_tokens=30):
@@ -413,3 +425,146 @@ def test_selector_registry_rejects_invalid_privacy_combinations(
         selectors.validate_spec(
             _registered_spec(privacy=privacy, representation=representation)
         )
+
+
+def _content_free_manifest(*, omission_reason="Per-source item limit reached."):
+    selection_size = supplied_size("selected policy excerpt")
+    return ContextManifest(
+        capability_id="planning.apm_ready",
+        unit_id="planning.apm:workspace",
+        context_spec_hash="sha256:" + "1" * 64,
+        resolver_hash="sha256:" + "2" * 64,
+        selections=(
+            ContextSelection(
+                source_id="policy_documents",
+                source_type="documents",
+                source_ref="document:DOC-1",
+                source_hash=source_hash("complete policy source"),
+                selector_kind="deterministic",
+                selector_id="documents.by_category",
+                selector_definition_hash="sha256:" + "3" * 64,
+                reason="Policy category matched.",
+                representation=ContextRepresentation("excerpt"),
+                supplied_size=selection_size,
+            ),
+        ),
+        omissions=(
+            omission_record(
+                source_id="policy_documents",
+                source_ref="document:DOC-2",
+                source="second policy source",
+                reason=omission_reason,
+            ),
+        ),
+        truncations=(
+            truncation_record(
+                source_id="policy_documents",
+                source_ref="document:DOC-1",
+                reason="Per-source character limit reached.",
+                original_content="selected policy excerpt plus excluded suffix",
+                supplied_content="selected policy excerpt",
+            ),
+        ),
+        privacy_decisions=(
+            ContextPrivacyDecision(
+                source_id="policy_documents",
+                source_ref="document:DOC-1",
+                representation="excerpt",
+                allowed=True,
+                reason="Document text is permitted by the normalized spec.",
+            ),
+        ),
+        supplied_size=total_supplied_size((selection_size,)),
+    )
+
+
+def test_manifest_identity_source_hashes_records_and_sizes_are_deterministic():
+    manifest = _content_free_manifest()
+    reordered_source = {"b": [2, 3], "a": 1}
+
+    assert manifest_identity(manifest) == manifest.manifest_hash
+    assert (
+        manifest_identity(ContextManifest.from_json(manifest.to_json()))
+        == manifest.manifest_hash
+    )
+    assert source_hash(reordered_source) == source_hash({"a": 1, "b": [2, 3]})
+    assert source_hash({"a": 2, "b": [2, 3]}) != source_hash(reordered_source)
+    assert manifest.omissions[0].source_hash == source_hash("second policy source")
+    assert manifest.truncations[0].original_size.characters == 44
+    assert manifest.truncations[0].supplied_size.characters == 23
+    assert manifest.supplied_size == ContextSize(items=1, characters=23, estimated_tokens=6)
+
+
+def test_manifest_identity_changes_for_a_record_change_and_rejects_unhashable_sources():
+    first = _content_free_manifest()
+    second = _content_free_manifest(omission_reason="Global item limit reached.")
+
+    assert manifest_identity(first) != manifest_identity(second)
+    with pytest.raises(ValueError, match="deterministically hashable"):
+        source_hash({"unsupported": {"set"}})
+    with pytest.raises(ValueError, match="non-negative integer"):
+        supplied_size("text", items=-1)
+
+
+def test_manifest_persistence_is_atomic_hash_checked_and_excludes_bundle_content(
+    workspace_with_data,
+):
+    sentinel = "SENSITIVE POLICY BODY THAT MUST REMAIN LOCAL"
+    run = store.new_run(workspace_with_data, "auto")
+    manifest = _content_free_manifest()
+    bundle = ContextBundle(
+        capability_id=manifest.capability_id,
+        unit_id=manifest.unit_id,
+        items=(
+            ContextBundleItem(
+                source_id="policy_documents",
+                source_ref="document:DOC-1",
+                representation=ContextRepresentation("excerpt"),
+                content=sentinel,
+                supplied_size=supplied_size(sentinel),
+            ),
+        ),
+        supplied_size=supplied_size(sentinel),
+    )
+
+    reference = persist_manifest(workspace_with_data, run["id"], manifest)
+    path = store.run_dir(workspace_with_data, run["id"]) / reference["path"]
+
+    assert load_manifest(workspace_with_data, run["id"], reference) == manifest
+    assert reference["manifest_hash"] == manifest.manifest_hash
+    assert reference["unit_id"] == manifest.unit_id
+    assert sentinel not in path.read_text(encoding="utf-8")
+    assert not list(path.parent.glob("*.tmp"))
+    with pytest.raises(ValueError, match="bundle content is local-only"):
+        persist_manifest(workspace_with_data, run["id"], bundle)
+
+    replacement = _content_free_manifest(
+        omission_reason="Global item limit reached."
+    )
+    replacement_reference = persist_manifest(
+        workspace_with_data,
+        run["id"],
+        replacement,
+    )
+    assert replacement_reference["path"] == reference["path"]
+    assert replacement_reference["manifest_hash"] != reference["manifest_hash"]
+    assert load_manifest(workspace_with_data, run["id"], replacement_reference) == replacement
+    assert not list(path.parent.glob("*.tmp"))
+
+    bad_reference = {**reference, "manifest_hash": "sha256:" + "0" * 64}
+    with pytest.raises(WorkspaceError, match="identity does not match"):
+        load_manifest(workspace_with_data, run["id"], bad_reference)
+
+
+def test_run_runtime_owns_manifest_persistence_boundary(workspace_with_data):
+    run = store.new_run(workspace_with_data, "auto")
+    runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=run,
+        state_lock=threading.RLock(),
+    )
+    manifest = _content_free_manifest()
+
+    reference = runtime.persist_context_manifest(manifest)
+
+    assert runtime.load_context_manifest(reference) == manifest

@@ -10,6 +10,7 @@ from collections.abc import Callable
 from .. import llm
 from ..workspaces import Workspace
 from . import prompts, store
+from .context import ContextManifest
 from .runtime import (
     Cancelled,
     DefaultModelGateway,
@@ -151,6 +152,18 @@ class BaseRunner:
 
     def warn(self, text: str) -> None:
         self.runtime.warn(text)
+
+    def persist_context_manifest(
+        self,
+        manifest: ContextManifest,
+    ) -> dict[str, str]:
+        return self.runtime.persist_context_manifest(manifest)
+
+    def load_context_manifest(
+        self,
+        reference: dict[str, str],
+    ) -> ContextManifest:
+        return self.runtime.load_context_manifest(reference)
 
     @property
     def deadline(self) -> float:
