@@ -13,6 +13,22 @@ has two scheduling engines:
 Domain concepts such as APM generation, RCM generation, table analysis, and
 document analysis are capabilities and workers, not specialized runners.
 
+## Clean-Slate Cutover Assumption
+
+The migration assumes there are no workspaces or agent runs that must survive
+the cutover. Existing `Workspaces/` contents are disposable and must be removed
+or moved outside the application data root before the new architecture is used.
+The target reads and resumes only records created by the target schema; it does
+not infer, convert, display, or resume v1, v2, v3, or protocol-specific legacy
+run shapes.
+
+This is a persistence clean slate, not permission to weaken durability. Runs
+created by the target architecture still support crash recovery, proposal and
+receipt reconciliation, approvals, interactions, pause/resume, queued commands,
+and SSE replay. One explicit `engine` field selects the current scheduler. No
+engine-schema version, historical compatibility classifier, or legacy adapter
+package is required before the first release.
+
 ## System Flow
 
 ```text
@@ -34,7 +50,7 @@ Request
 | `RunRuntime` | Persistence, events, budgets, checkpoints, pause/cancel, deadlines, approvals, and provider accounting |
 | `WorkflowRunner` | Materialize and schedule declared capability dependency graphs |
 | `ActionRunner` | Execute small model-generated DAGs of registered isolated actions |
-| `Capability` | Specify an outcome: dependencies, readiness, units, context, worker, executor, approval, and invalidation |
+| `Capability` | Specify an outcome: dependencies, readiness, units, context, worker, executor, and approval |
 | `ContextResolver` | Build bounded context strictly from a capability's `ContextSpec` |
 | `Worker` | Build prompts from the supplied context bundle and validate model output |
 | `Executor` | Deterministically commit accepted proposals with CAS and receipts |
@@ -45,39 +61,30 @@ inherit from each other.
 
 ## Capability Contract
 
-A capability is a complete, versioned, auditable declaration of an outcome.
+A capability is a complete, hash-identified, auditable declaration of an
+outcome.
 
 ```python
 Capability(
     id="planning.apm_ready",
-    version=2,
     depends_on=("planning.context_ready",),
-    readiness="apm_current",
-    expand_units="single_workspace_unit",
-    context=ContextSpec(
-        sources=(
-            "planning.structured_context",
-            "documents.policies",
-            AutoSelect(
-                preset="documents.audit_relevant",
-                strategy="document_relevance_v1",
-                max_items=6,
-            ),
-            "methodology.relevant_sections",
-        ),
-        max_characters=60_000,
-        allow_document_text=True,
-        allow_table_rows=False,
-    ),
-    worker="apm_v2",
-    executor="commit_apm_v1",
-    approval="artifact_change",
-    invalidate_on=("planning:context", "documents", "methodology"),
+    readiness="planning.apm_usable",
+    expand_units="workflow.single_workspace",
+    context="planning.apm_context",
+    worker="planning.apm",
+    executor="planning.commit_apm",
+    approval="approval.artifact_change",
 )
 ```
 
 The capability declares what context is permitted. It does not gather context,
-call the model, or mutate the workspace.
+call the model, or mutate the workspace. All executable behaviors use stable
+registry keys. Runtime callables are resolved from those keys and are not
+serialized as identities. The capability identity is a hash of the normalized
+declaration and the content/implementation hashes of its registered components;
+manual `_v1` suffixes and component version counters are not required.
+The initial target uses one persisted shape selected by explicit engine and does
+not carry a schema-version field before release.
 
 ## Context Model
 
@@ -90,13 +97,20 @@ call the model, or mutate the workspace.
 
 String presets such as `documents.policies` may provide concise declarations,
 but they must compile into a normalized typed `ContextSpec`. Automatic
-selection must use a named, versioned strategy rather than an opaque `auto`
-flag.
+selection must use a named, registered strategy with a normalized configuration
+and implementation hash rather than an opaque `auto` flag.
+
+Automatic selectors are local, deterministic resolver components. They cannot
+call `ModelGateway`, a provider model, or a network service. A selector may use
+stable metadata, lexical scoring, or a hash-identified local embedding/index
+whose model and index hashes participate in its identity. It must use
+deterministic tie-breaking. Selection that requires provider-model judgment is
+a separate worker capability with a persisted proposal, not a resolver strategy.
 
 Each model call persists a local context manifest containing:
 
 - Capability and unit identifiers.
-- Context specification and resolver versions.
+- Context specification and resolver hashes.
 - Selected source references and source hashes.
 - Deterministic and automatically selected sources.
 - Selection reasons and strategies.
@@ -106,6 +120,36 @@ Each model call persists a local context manifest containing:
 
 The worker may only use the resulting `ContextBundle`; it cannot retrieve
 undeclared sources.
+
+## Explicit Regeneration And Integrity
+
+Generalized freshness assessment, invalidation watches, and automatic stale
+propagation are deferred. The framework determines whether an outcome exists and
+is structurally usable; it does not decide whether an existing audit artifact is
+substantively current. A satisfied outcome therefore reports
+`currency_status="not_assessed"` rather than claiming that it is current. The
+auditor decides when changed sources or methodology warrant regeneration.
+
+Workflow materialization has two generation modes:
+
+- `reuse_existing` is the default. Existing structurally usable outcomes are
+  reused, missing prerequisites are generated, and automatic context selectors
+  do not rerun merely because workspace inputs changed.
+- `force` is selected by an explicit improve, generate-again, regenerate, or
+  refresh instruction. It rematerializes the requested outcome closure using
+  context resolved at execution time.
+
+This deferral does not weaken execution integrity. Uncommitted proposal sidecars
+are reused only when their exact execution identity still matches the capability
+definition, context policy, selected-source hashes, prompt, worker, response
+schema, unit input, and proposal schema. Executors still enforce parent hashes,
+CAS, auditor-edit preservation, receipts, and interrupted-commit reconciliation.
+A changed target produces a conflict instead of a silent overwrite.
+
+Pre-cutover runs and artifacts containing `stale`, `workflow_parent_sha1`, or
+similar currency fields are unsupported and removed with the disposable
+workspace root. Target scheduling does not create a change-domain registry,
+propagate stale states, or automatically regenerate downstream artifacts.
 
 ## Worker Contract
 
@@ -138,7 +182,7 @@ An executor cannot call the model or schedule additional work.
 registry, it:
 
 1. Computes the transitive dependency closure.
-2. Evaluates readiness and staleness.
+2. Evaluates existence and structural readiness.
 3. Expands semantic work units.
 4. Schedules ready units in dependency order.
 5. Runs independent units under bounded concurrency.
@@ -153,23 +197,31 @@ reports.
 ### Audit Workflow
 
 ```text
-planning.sources_selected
--> documents.analysis_generated
--> planning.context_ready
--> planning.apm_ready
--> planning.rcm_ready
--> planning.planned_tests_ready
--> fieldwork.definitions_ready
--> fieldwork.executed
--> results.rolled_up
--> findings.drafted
--> working_papers.generated
--> dashboard.curated
--> report.working_draft
--> audit.verified
+planning.context_ready
+  -> planning.apm_ready
+     -> planning.rcm_ready
+        -> planning.planned_tests_ready
+           -> fieldwork.definitions_ready
+              -> fieldwork.executed
+                 -> results.rolled_up
+
+results.rolled_up -> findings.drafted
+results.rolled_up -> working_papers.generated
+results.rolled_up -> dashboard.curated
+planning.apm_ready -> report.working_draft
+results.rolled_up -> report.working_draft
+findings.drafted -> report.working_draft
+working_papers.generated -> audit.verified
+dashboard.curated -> audit.verified
+report.working_draft -> audit.verified
 ```
 
-The authoritative audit lifecycle exists only in `workflows/audit.py`.
+This is the baseline graph migrated from the current registry in Phase 7; its
+parallel branches are intentional. Phase 9 may change the graph definition hash
+to add scoped
+`documents.analysis_generated` dependencies where a capability declares them,
+but document analysis is not a global prerequisite for every audit. The
+authoritative executable audit lifecycle exists only in `workflows/audit.py`.
 
 ### Exploratory Analysis Workflow
 
@@ -232,10 +284,29 @@ The routing rule is:
 > Requests for durable outcomes use `WorkflowRunner`. Requests for specific
 > operations on artifacts use `ActionRunner`.
 
+Apply that rule using this precedence:
+
+1. An explicit registered outcome, goal template, or lifecycle-wide completion
+   request routes to `WorkflowRunner`.
+2. Improve, generate again, regenerate, or refresh a workflow-owned deliverable
+   routes to `WorkflowRunner` with the relevant outcome and `force` mode.
+3. Explicit CRUD, attachment, pinning, manual edits, or execution of one
+   identified existing test routes to `ActionRunner`.
+4. Scope-wide execution such as declared RCM fieldwork routes to
+   `WorkflowRunner`; target-specific reruns remain actions.
+5. A compound request that genuinely requires both engines is clarified or
+   split into separately persisted queued runs. Neither scheduler calls the
+   other.
+
+An artifact name alone does not decide the engine: "regenerate the APM" is a
+workflow request, while "replace this APM paragraph" is an action. The action
+catalog may contain bounded model-backed operations such as running one named
+document test, but it cannot generate or refresh an artifact family owned by a
+registered workflow outcome.
+
 ## Persistence And Recovery
 
-Runs continue to persist under `Workspaces/<id>/AgentRuns/<run_id>/`. A run
-records:
+Target runs persist under `Workspaces/<id>/AgentRuns/<run_id>/`. A run records:
 
 - Materialized capability stages and semantic units, or an action DAG.
 - Unit and action transitions.
@@ -243,58 +314,24 @@ records:
 - Proposal sidecars.
 - Approval and interaction records.
 - Executor receipts.
-- Definition, prompt, worker, context-policy, and source hashes.
+- Exact proposal execution identity.
+- Definition, prompt, worker, context-policy, selector, and source hashes.
+- `reuse_existing` or `force` generation mode.
 - Provider usage and hash-only provenance.
 
-Proposals are persisted before commit. On recovery, the runner reuses valid
-sidecars, re-evaluates readiness, reconciles interrupted commits, and resumes
-only incomplete units. Changing a dependency, context policy, prompt version,
-worker version, or source artifact makes affected output deterministically
-stale.
+Proposals are persisted before commit. On recovery, the runner reuses sidecars
+only when their exact execution identities remain valid, reconciles interrupted
+commits, and resumes only incomplete units. It does not assess committed-artifact
+currency as part of recovery.
 
-## Suggested Package Structure
+## Package Structure Authority
 
-```text
-agent/
-|- runtime/
-|  |- run_runtime.py
-|  |- workflow_runner.py
-|  |- action_runner.py
-|  |- model_gateway.py
-|  `- interactions.py
-|- routing.py
-|- workflows/
-|  |- audit.py
-|  |- analysis.py
-|  `- documents.py
-|- capabilities/
-|  |- model.py
-|  |- planning.py
-|  |- analysis.py
-|  |- documents.py
-|  `- reporting.py
-|- context/
-|  |- resolver.py
-|  |- presets.py
-|  `- manifest.py
-|- workers/
-|  |- planning.py
-|  |- analysis.py
-|  |- documents.py
-|  `- reporting.py
-|- executors/
-|  |- planning.py
-|  |- analysis.py
-|  |- documents.py
-|  `- reporting.py
-`- actions/
-   |- catalog.py
-   |- planner.py
-   `- executors.py
-```
-
-Modules are grouped by responsibility and then by domain. Avoid creating one
-file or runner per capability unless its size independently justifies it.
+The authoritative target package tree and its incremental creation order are in
+[Section 7 of the implementation plan](agent-architecture-implementation-plan.md#7-authoritative-package-migration).
+This architecture document defines responsibilities and import boundaries; it
+does not maintain a second file-by-file tree. Modules are grouped by
+responsibility and then by domain. Avoid creating one file or runner per
+capability unless its size independently justifies it.
 
 ## Architectural Invariants
 
@@ -309,8 +346,9 @@ file or runner per capability unless its size independently justifies it.
 - Every model call goes through `ModelGateway`.
 - Every proposal is persisted before commit.
 - Every commit uses parent hashes or CAS and produces a receipt.
-- Capability, context-policy, prompt, worker, and source hashes participate in
-  readiness.
+- Proposal sidecars are reused only when their exact execution identity matches.
+- Existing committed outcomes are reused unless the auditor explicitly selects
+  `force`; their currency is not assessed by the framework.
 - Provider provenance stores hashes and metrics, not row-level data or document
   text.
 
@@ -320,9 +358,9 @@ The final target has two scheduling engines: `WorkflowRunner` and
 `ActionRunner`. Existing domain runners such as the legacy analysis runner,
 `DocumentAnalysisRunner`, and `DocTestRunner` migrate into capabilities,
 workers, and executors unless they demonstrably require a different scheduling
-protocol. During migration, existing runners may remain as thin compatibility
-adapters over the shared implementations, but duplicate execution logic is not
-retained.
+protocol. Temporary delegation may keep active callers working between commits,
+but it does not read legacy persisted records and is deleted in the same phase
+that migrates the last live caller. Duplicate execution logic is not retained.
 
 ## Handoff Context
 
@@ -340,7 +378,7 @@ The repository currently contains three generations of general agent planning:
 | v2 | `CommandRunner` | Model-generated action DAG | Action | Priority loop over the action ledger |
 | v3 | `WorkflowRunner` | Capability registry closure and readiness | Semantic unit | Dependency-ordered stages with bounded parallelism |
 
-The production audit path is v3. `WorkflowRunner` inherits from
+The current audit path is v3. `WorkflowRunner` inherits from
 `CommandRunner` and currently reuses planning context, quality checks, proposal
 formatting, approvals, and RCM matching through that inheritance. This sharing
 is intentional, but the inheritance also exposes the entire v2 scheduler and
@@ -418,7 +456,8 @@ capabilities, workers, and executors.
   dependency closure.
 - Context policy is part of the capability definition. Workers cannot silently
   retrieve additional context.
-- Automatic context selection must be named, bounded, versioned, and recorded.
+- Automatic context selection must be named, bounded, hash-identified, and
+  recorded.
   A bare `auto` selector is insufficiently auditable.
 - Model generation and deterministic mutation are separate. Workers return
   validated proposals; executors commit them.
@@ -428,14 +467,13 @@ capabilities, workers, and executors.
 The capability declaration is intended to be the primary auditable and
 manually editable specification. It must identify:
 
-- Dependencies and invalidation sources.
-- Readiness and unit expansion functions.
+- Dependencies, existence/structural-readiness functions, and unit expansion.
 - Permitted context presets and representations.
 - Required versus optional context.
 - Deterministic selectors and bounded automatic selectors.
 - Context size and item budgets.
 - Privacy permissions, especially the prohibition on sending table rows.
-- Worker, prompt, response schema, and executor versions.
+- Worker, prompt, response-schema, and executor hashes.
 - Approval policy and output contract.
 
 The normalized `ContextSpec` and its hash must be persisted. Each execution
@@ -446,47 +484,46 @@ document text or row-level table data.
 
 ### Recommended Migration Sequence
 
-1. Add characterization tests for local routing, v3 outcome materialization,
-   isolated actions, and resumption of persisted v2 runs.
-2. Remove the v2 full-audit methods, branches, prompt clauses, and action-budget
-   reservations while retaining generic action behavior.
+1. Add characterization tests for active routing, outcome materialization,
+   isolated actions, and same-schema crash recovery.
+2. Rename `CommandRunner` to `ActionRunner`, update all live imports, and remove
+   the full-audit methods, branches, prompt clauses, and action-budget
+   reservations without a persisted-run alias.
 3. Remove `AUDIT_LIFECYCLE_STAGES`, lifecycle normalization, and the
    `audit_lifecycle` argument from the action ledger.
 4. Introduce `RunRuntime`, `ContextSpec`, `ContextResolver`, `ContextManifest`,
    worker, executor, and capability interfaces without moving all behavior at
    once.
-5. Extract planning context and quality behavior from `CommandRunner`; make
+5. Extract planning context and quality behavior from `ActionRunner`; make
    `WorkflowRunner` use the new interfaces directly instead of inheriting from
-   `CommandRunner`.
+   `ActionRunner`.
 6. Move the audit dependency declaration into `workflows/audit.py` and migrate
    v3 stage handlers into grouped capability, worker, and executor modules.
 7. Add the exploratory analysis workflow and route the existing `data_analysis`
    intent to `analysis.executed`.
 8. Replace both document-analysis implementations with map and reduce
    capabilities using shared workers and persistence executors.
-9. Migrate or wrap document-test and intake runs according to whether their
-   scheduling protocols fit `WorkflowRunner`.
-10. Move the v1 `_Runner` to an explicit compatibility module, migrate remaining
-    callers, and delete it in a separate change when no supported entry point
-    depends on it.
+9. Migrate or retain document-test and intake protocols according to whether
+   their scheduling protocols fit `WorkflowRunner`.
+10. Migrate every live v1 caller and delete `_Runner`, its fixed stages, and its
+    projections. No historical reader or resume path is retained.
 
 Do not combine v1 retirement with the initial v2/v3 cleanup. Removing duplicate
 full-audit orchestration is lower risk and should land first.
 
-### Compatibility And Recovery
+### Cutover And Recovery Boundary
 
-All `kind="audit"` runs currently dispatch through `WorkflowRunner`. A persisted
-v2 broad-audit command without workflow state can therefore be rematerialized
-as a v3 capability workflow on resume. Characterization tests must lock this
-behavior before deleting compatibility branches.
+The cutover begins with an empty application workspace root. Old `run.json`,
+action ledgers, workflow stages, chats, debug records, and UI history are outside
+the supported input contract and may be deleted with the disposable workspaces.
+The application does not contain engine inference, schema translation,
+historical run-card projection, or resume paths for those shapes.
 
-Persisted v2 generic action runs must continue through `ActionRunner` with their
-existing action ledger, preconditions, receipts, and interactions. Existing v3
-runs must retain semantic unit IDs, proposal-sidecar reuse, parent-hash checks,
-and deterministic readiness behavior.
-
-Compatibility adapters may translate old run projections for the UI, but new
-domain logic must not be added to those adapters.
+Recovery tests begin with a run created by the target schema and exercise every
+interruption boundary in that same schema. Source hashes, proposal sidecars,
+parent checks, receipts, approvals, and interactions remain durable because they
+protect current work from crashes and duplicate side effects, not because they
+support pre-cutover records.
 
 ### Verification Criteria
 
@@ -495,10 +532,14 @@ The migration is complete when:
 - The audit lifecycle has one declaration.
 - `WorkflowRunner` contains no APM-, RCM-, document-, analysis-, or report-
   specific handlers.
-- `WorkflowRunner` does not inherit from `ActionRunner` or `CommandRunner`.
+- `WorkflowRunner` does not inherit from `ActionRunner`.
 - The action ledger has no audit lifecycle normalization.
+- No legacy run reader, conversion path, compatibility classifier, or
+  compatibility package remains.
 - Workers cannot access undeclared context or write workspace state.
 - Executors cannot call the model.
+- New workflow scheduling reuses existing structurally usable outcomes, labels
+  their currency as not assessed, and regenerates them only on explicit force.
 - Document analysis has one map/reduce implementation.
 - Generic table analysis and full-audit requests route to different declared
   outcome sets while using the same workflow scheduler.
