@@ -288,7 +288,7 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
     previous = store.load_run(workspace, run_id)
     if previous.get("status") != "failed":
         raise WorkspaceError("Only a failed run can be retried.")
-    if previous.get("schema_version", 1) < 2 or previous.get("kind") != "audit":
+    if previous.get("engine") not in store.COMMAND_ENGINES:
         raise WorkspaceError("This run type cannot be retried as a command.")
     original = previous.get("command") or {}
     previous_workflow = previous.get("workflow") or {}
@@ -319,6 +319,8 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
 def continue_audit(workspace: Workspace, run_id: str) -> dict:
     """Start a linked workflow from a terminal run's deterministic open items."""
     previous = store.load_run(workspace, run_id)
+    if previous.get("engine") != store.WORKFLOW_ENGINE:
+        raise WorkspaceError("Only a workflow run can continue audit outcomes.")
     if previous.get("status") != "completed_with_open_items":
         raise WorkspaceError("Only a run completed with open items can be continued.")
     workflow_state = previous.get("workflow") or {}
@@ -587,7 +589,7 @@ def steer(
         raise WorkspaceError("Say what the agent should do.")
     run = store.load_run(workspace, run_id)
 
-    if run.get("schema_version", 1) >= 2 and run["status"] in store.TERMINAL_STATUSES:
+    if run.get("engine") in store.COMMAND_ENGINES and run["status"] in store.TERMINAL_STATUSES:
         follow_up = start_command_run(
             workspace, run["mode"],
             {"source": "follow_up", "text": content, "goal_template": goal_template,
@@ -599,7 +601,7 @@ def steer(
         )
         return {"handled": "follow_up_run", "run": follow_up}
 
-    if run.get("schema_version", 1) >= 2:
+    if run.get("engine") in store.COMMAND_ENGINES:
         command = {
             "id": f"cmd_{__import__('uuid').uuid4().hex[:12]}", "source": "follow_up",
             "text": content, "goal_template": goal_template, "submitted_at": store.utcnow(),
@@ -622,7 +624,7 @@ def steer(
     # Intake is an operational import run, not an engagement command. Once it
     # has finished, text entered in the shared assistant drawer must start the
     # unified command runner instead of replaying the same completed batch.
-    if run["status"] in store.TERMINAL_STATUSES and run.get("kind") == "intake":
+    if run["status"] in store.TERMINAL_STATUSES and run.get("engine") == store.INTAKE_ENGINE:
         follow_up = start_command_run(
             workspace,
             run["mode"],
@@ -694,28 +696,32 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
         ):
             debug_store.capture_structural_state(workspace, trigger="run_start", run_id=run_id)
             try:
-                if run.get("kind", "analysis") == "intake":
+                engine = run.get("engine")
+                if engine == store.INTAKE_ENGINE:
                     from .intake_runner import IntakeRunner
 
                     IntakeRunner(workspace, run, handle).execute()
-                elif run.get("kind") == "doc_test":
+                elif engine == store.DOC_TEST_ENGINE:
                     from .doc_test_runner import DocTestRunner
 
                     DocTestRunner(workspace, run, handle).execute()
-                elif run.get("kind") == "document_analysis":
+                elif engine == store.DOCUMENT_ANALYSIS_ENGINE:
                     from .document_analysis_runner import DocumentAnalysisRunner
 
                     DocumentAnalysisRunner(workspace, run, handle).execute()
-                elif run.get("kind") == "audit":
+                elif engine == store.WORKFLOW_ENGINE:
                     from .workflow_runner import WorkflowRunner
 
                     WorkflowRunner(workspace, run, handle).execute()
-                elif run.get("kind", "analysis") == "analysis":
+                elif engine == store.ACTION_ENGINE:
+                    from .command_runner import CommandRunner
+
+                    CommandRunner(workspace, run, handle).execute()
+                elif engine == store.LEGACY_ANALYSIS_ENGINE:
                     _Runner(workspace, run, handle).execute()
                 else:
-                    raise WorkspaceError(
-                        f"Run kind '{run.get('kind')}' is not implemented yet."
-                    )
+                    label = "missing" if engine is None else repr(engine)
+                    raise WorkspaceError(f"Agent run engine is {label} or unsupported.")
             finally:
                 debug_store.capture_structural_state(workspace, trigger="run_completion", run_id=run_id)
     except Exception as error:  # last-resort: never leave a run stuck 'active'
@@ -741,7 +747,7 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
         try:
             workspace = load_workspace(workspace_id)
             finished = store.load_run(workspace, run_id)
-            if finished.get("schema_version", 1) >= 2 and finished["status"] in store.TERMINAL_STATUSES:
+            if finished.get("engine") in store.COMMAND_ENGINES and finished["status"] in store.TERMINAL_STATUSES:
                 _launch_next_command(workspace, finished)
         except Exception:
             pass

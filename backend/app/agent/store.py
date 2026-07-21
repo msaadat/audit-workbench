@@ -29,6 +29,33 @@ from ..workspaces import Workspace, WorkspaceError, write_json_atomic
 RUNS_DIRNAME = "AgentRuns"
 
 MODES = ("auto", "permission")
+WORKFLOW_ENGINE = "workflow"
+ACTION_ENGINE = "action"
+
+# These protocol engines remain explicit while their live callers are migrated
+# in later phases. They are intentionally not inferred from ``kind`` when a run
+# is loaded or dispatched.
+LEGACY_ANALYSIS_ENGINE = "analysis"
+INTAKE_ENGINE = "intake"
+DOC_TEST_ENGINE = "doc_test"
+DOCUMENT_ANALYSIS_ENGINE = "document_analysis"
+
+COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE})
+RUN_ENGINES = frozenset(
+    {
+        *COMMAND_ENGINES,
+        LEGACY_ANALYSIS_ENGINE,
+        INTAKE_ENGINE,
+        DOC_TEST_ENGINE,
+        DOCUMENT_ANALYSIS_ENGINE,
+    }
+)
+ENGINE_BY_RUN_KIND = {
+    "analysis": LEGACY_ANALYSIS_ENGINE,
+    "intake": INTAKE_ENGINE,
+    "doc_test": DOC_TEST_ENGINE,
+    "document_analysis": DOCUMENT_ANALYSIS_ENGINE,
+}
 # Statuses that mean "a worker thread should be driving this run".
 ACTIVE_STATUSES = (
     "queued",
@@ -113,6 +140,7 @@ def new_run(
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     run = {
         "schema_version": 1,
+        "engine": ENGINE_BY_RUN_KIND[kind],
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
@@ -175,6 +203,9 @@ def new_command_run(
     command_id = f"cmd_{uuid.uuid4().hex[:12]}"
     run = {
         "schema_version": 2,
+        # Unresolved commands enter the workflow router. Deterministic local
+        # action routing changes this to ACTION_ENGINE before thread launch.
+        "engine": WORKFLOW_ENGINE,
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
@@ -369,6 +400,7 @@ def run_summary(run: dict) -> dict:
         "planning_basis_run_id": run.get("planning_basis_run_id"),
         "chat_id": run.get("chat_id"),
         "source_message_id": run.get("source_message_id"),
+        "engine": run.get("engine"),
         "kind": run.get("kind", "analysis"),
         "mode": run["mode"],
         "status": run["status"],

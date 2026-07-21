@@ -118,8 +118,16 @@ def _local_resolution(command: dict) -> dict | None:
 def initialize_known_workflow(workspace: Workspace, run: dict) -> bool:
     """Persist template/local routing before the worker starts (no LLM call)."""
     resolution = _local_resolution(run.get("command") or {})
-    if resolution is None or resolution.get("route") != "workflow":
+    if resolution is None:
         return False
+    if resolution.get("route") == "generic_action":
+        run["engine"] = store.ACTION_ENGINE
+        run["command_route"] = resolution
+        store.save_run(workspace, run)
+        return False
+    if resolution.get("route") != "workflow":
+        return False
+    run["engine"] = store.WORKFLOW_ENGINE
     _install_resolution(workspace, run, resolution)
     store.save_run(workspace, run)
     return True
@@ -263,6 +271,7 @@ class WorkflowRunner(CommandRunner):
             if not self.run.get("workflow"):
                 resolution = self._resolve()
                 if resolution.get("route") == "generic_action":
+                    self.run["engine"] = store.ACTION_ENGINE
                     self.run["command_route"] = resolution
                     self.run["schema_version"] = 2
                     self.save()

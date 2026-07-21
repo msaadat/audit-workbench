@@ -6,7 +6,16 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app import documents, llm, workspaces
-from app.agent import ledger, runner, store
+from app.agent import (
+    command_runner,
+    doc_test_runner,
+    document_analysis_runner,
+    intake_runner,
+    ledger,
+    runner,
+    store,
+    workflow_runner,
+)
 from conftest import wait_run
 
 
@@ -521,6 +530,98 @@ def test_rerun_leaves_user_edited_items_alone(workspace_with_data, fake_agent_ll
     assert edited["created_by"] == "user"
     assert len(edited["rules"]) == 1  # agent did not touch it
     assert any("user-edited" in w for w in done["warnings"])
+
+
+# ------------------------------------------------ explicit engine dispatch
+@pytest.mark.parametrize(
+    ("engine", "module", "class_name", "expected"),
+    [
+        (store.WORKFLOW_ENGINE, workflow_runner, "WorkflowRunner", "workflow"),
+        (store.ACTION_ENGINE, command_runner, "CommandRunner", "action"),
+        (store.INTAKE_ENGINE, intake_runner, "IntakeRunner", "intake"),
+        (store.DOC_TEST_ENGINE, doc_test_runner, "DocTestRunner", "doc_test"),
+        (
+            store.DOCUMENT_ANALYSIS_ENGINE,
+            document_analysis_runner,
+            "DocumentAnalysisRunner",
+            "document_analysis",
+        ),
+    ],
+)
+def test_execute_dispatches_by_explicit_engine_only(
+    workspace_with_data, monkeypatch, engine, module, class_name, expected
+):
+    called = []
+
+    class StubRunner:
+        def __init__(self, _workspace, _run, _handle):
+            pass
+
+        def execute(self):
+            called.append(expected)
+
+    run = store.new_run(workspace_with_data, "auto")
+    run["engine"] = engine
+    run["kind"] = "deliberately-not-a-dispatch-key"
+    store.save_run(workspace_with_data, run)
+    monkeypatch.setattr(module, class_name, StubRunner)
+
+    runner._execute(
+        workspace_with_data.id,
+        run["id"],
+        runner.RunHandle(workspace_with_data.id, run["id"]),
+    )
+
+    assert called == [expected]
+
+
+def test_execute_dispatches_legacy_analysis_by_explicit_engine_only(
+    workspace_with_data, monkeypatch
+):
+    called = []
+
+    class StubRunner:
+        def __init__(self, _workspace, _run, _handle):
+            pass
+
+        def execute(self):
+            called.append("analysis")
+
+    run = store.new_run(workspace_with_data, "auto")
+    run["kind"] = "deliberately-not-a-dispatch-key"
+    store.save_run(workspace_with_data, run)
+    monkeypatch.setattr(runner, "_Runner", StubRunner)
+
+    runner._execute(
+        workspace_with_data.id,
+        run["id"],
+        runner.RunHandle(workspace_with_data.id, run["id"]),
+    )
+
+    assert called == ["analysis"]
+
+
+@pytest.mark.parametrize(("engine", "label"), [(None, "missing"), ("v2", "unsupported")])
+def test_execute_fails_closed_without_a_supported_explicit_engine(
+    workspace_with_data, engine, label
+):
+    run = store.new_run(workspace_with_data, "auto", kind="intake")
+    if engine is None:
+        run.pop("engine")
+    else:
+        run["engine"] = engine
+    store.save_run(workspace_with_data, run)
+
+    runner._execute(
+        workspace_with_data.id,
+        run["id"],
+        runner.RunHandle(workspace_with_data.id, run["id"]),
+    )
+
+    failed = store.load_run(workspace_with_data, run["id"])
+    assert failed["status"] == "failed"
+    assert "engine" in failed["error"]
+    assert label in failed["error"]
 
 
 # -------------------------------------------------------- interruption

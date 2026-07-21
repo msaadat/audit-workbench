@@ -53,6 +53,7 @@ def test_full_template_materializes_locally_without_command_interpreter():
 
     assert initialize_known_workflow(ws, run) is True
     persisted = store.load_run(ws, run["id"])
+    assert persisted["engine"] == store.WORKFLOW_ENGINE
     assert persisted["schema_version"] == 3
     assert persisted["workflow"]["requested_outcomes"] == audit_capabilities.FULL_AUDIT_OUTCOMES
     assert persisted["workflow"]["resolved_capabilities"] == audit_capabilities.REGISTRY.closure(
@@ -99,6 +100,23 @@ def test_every_registered_goal_template_has_a_deterministic_local_route(
     assert resolution is not None
     assert resolution["route"] == route
     assert resolution["requested_outcomes"] == outcomes
+
+
+def test_known_isolated_action_is_persisted_as_action_before_launch(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {
+            "source": "goal_template",
+            "text": "Analyze the available data",
+            "goal_template": "data_analysis",
+        },
+    )
+
+    assert initialize_known_workflow(workspace_with_data, run) is False
+    persisted = store.load_run(workspace_with_data, run["id"])
+    assert persisted["engine"] == store.ACTION_ENGINE
+    assert persisted["command_route"]["route"] == "generic_action"
 
 
 @pytest.mark.parametrize(
@@ -168,6 +186,7 @@ def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
 
     assert completed["status"] in {"completed", "completed_with_issues"}
     assert completed["schema_version"] == 2
+    assert completed["engine"] == store.ACTION_ENGINE
     assert completed["command_route"]["route"] == "generic_action"
     assert [call["tag"] for call in fake.calls] == [
         "agent:workflow_router",

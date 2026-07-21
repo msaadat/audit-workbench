@@ -1377,6 +1377,7 @@ export interface AgentAuditOutcome {
 
 export interface AgentRun {
   schema_version?: number
+  engine: 'workflow' | 'action' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
   id: string
   workspace_id: string
   parent_run_id: string | null
@@ -1464,6 +1465,7 @@ export interface AgentRun {
 
 export interface AgentRunSummary {
   id: string
+  engine: AgentRun['engine']
   workspace_id: string
   parent_run_id: string | null
   planning_basis_run_id?: string | null

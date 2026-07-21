@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 1.
-- Current task: `P1.1`.
-- Last completed task: `P0.8`.
+- Current task: `P1.2`.
+- Last completed task: `P1.1`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -49,7 +49,7 @@ status notes below.
 | Phase | Status | Next task |
 |---|---|---|
 | 0 | Complete | — |
-| 1 | Ready | `P1.1` |
+| 1 | In progress | `P1.2` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
@@ -144,6 +144,19 @@ status notes below.
   remain outside the supported target contract and the documented cutover
   requires an empty application workspace root; no converter or fixture reader
   is introduced.
+- `P1.1` completed on 2026-07-21. Both durable run writers now persist an
+  explicit `engine`, summaries and frontend contracts expose it, deterministic
+  isolated actions are labeled `action` before launch, and bounded-router
+  action fallbacks persist the engine transition before delegating. Worker
+  dispatch and command control checks use only the explicit engine; missing and
+  unsupported values fail closed and no load-time inference was added. To keep
+  the application runnable during the incremental migration, the still-live
+  leaf schedulers have temporary explicit protocol values: `analysis`,
+  `intake`, `doc_test`, and `document_analysis`. Phase 9, Phase 10, and Phase 12
+  remove or finalize those values as their callers migrate. Focused verification
+  passed `171` tests across `test_agent_store.py`, `test_workflow_v2.py`,
+  `test_command_agent.py`, `test_agent_runner.py`, `test_agent_api.py`, and
+  `test_assistant_chats.py`; the frontend production build also passed.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -392,7 +405,7 @@ obsolete full-audit policy without preserving old run shapes.
 
 **Tasks:**
 
-- [ ] `P1.1` Add the required `engine` field to every new run writer and dispatch
+- [x] `P1.1` Add the required `engine` field to every new run writer and dispatch
   only current records by that field; add no inference or schema-version field.
 - [ ] `P1.2` Rename `CommandRunner` and its module to `ActionRunner`, update all
   live imports and tests in the same task, and retain no alias.

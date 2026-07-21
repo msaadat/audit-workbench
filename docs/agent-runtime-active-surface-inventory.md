@@ -18,8 +18,8 @@ All new durable agent runs are created under
 
 | Writer | Current record | Direct production caller |
 |---|---|---|
-| `store.new_run(...)` | Schema-v1 `analysis`, `intake`, `doc_test`, or `document_analysis` run | `runner.start_run(...)` |
-| `store.new_command_run(...)` | Schema-v2 `audit` command run, optionally promoted in place to schema v3 | `runner.start_command_run(...)` |
+| `store.new_run(...)` | Explicit-engine `analysis`, `intake`, `doc_test`, or `document_analysis` protocol run | `runner.start_run(...)` |
+| `store.new_command_run(...)` | Explicit-engine `workflow` command run, optionally routed to `action` before or during execution | `runner.start_command_run(...)` |
 
 No route, chat service, or frontend component calls these writers directly.
 They enter through the control surface in `backend/app/agent/runner.py`.
@@ -141,22 +141,27 @@ registered action interpreter when a generic action still needs a DAG.
 
 ### Worker-thread dispatch
 
-`runner._execute(...)` loads the durable run and selects the current runner:
+`runner._execute(...)` loads the durable run and selects the current runner only
+from its explicit `engine`:
 
 | Persisted discriminator | Runner |
 |---|---|
-| `kind="intake"` | `IntakeRunner` |
-| `kind="doc_test"` | `DocTestRunner` |
-| `kind="document_analysis"` | `DocumentAnalysisRunner` |
-| `kind="audit"` with schema version 2 or later | `WorkflowRunner` (which may delegate generic actions to `CommandRunner`) |
-| `kind="analysis"` | legacy `_Runner` analysis pipeline |
+| `engine="intake"` | `IntakeRunner` |
+| `engine="doc_test"` | `DocTestRunner` |
+| `engine="document_analysis"` | `DocumentAnalysisRunner` |
+| `engine="workflow"` | `WorkflowRunner` |
+| `engine="action"` | `CommandRunner` |
+| `engine="analysis"` | legacy `_Runner` analysis pipeline |
 
-Any other `kind` fails as unimplemented.
+Missing or unsupported engines fail closed. No engine is inferred from `kind` or
+`schema_version` while loading, resuming, or dispatching a run.
 
-The dispatch is currently inferred from `kind` and `schema_version`. Phase 1
-replaces that inference with the target run's explicit `engine` field. The
-current runners all inherit, directly or indirectly, from `BaseRunner`;
-composition through `RunRuntime` is introduced in later phases.
+The four protocol values are explicit migration scaffolding for live schedulers,
+not compatibility aliases. Document analysis migrates in Phase 9; Phase 10
+decides the retained intake and document-test protocols; Phase 12 removes the
+legacy analysis engine. The current runners all inherit, directly or indirectly,
+from `BaseRunner`; composition through `RunRuntime` is introduced in later
+phases.
 
 ## Active HTTP Run API
 

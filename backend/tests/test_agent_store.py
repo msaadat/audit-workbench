@@ -10,6 +10,7 @@ def test_new_run_persists_and_loads(workspace_with_data):
     run = store.new_run(workspace_with_data, "auto", {"objective": "revenue audit"})
     loaded = store.load_run(workspace_with_data, run["id"])
     assert loaded["status"] == "queued"
+    assert loaded["engine"] == store.LEGACY_ANALYSIS_ENGINE
     assert loaded["mode"] == "auto"
     assert loaded["context"]["objective"] == "revenue audit"
     assert loaded["plan"] == {"stages": []}
@@ -58,7 +59,7 @@ def test_list_runs_newest_first(workspace_with_data):
     assert [r["id"] for r in runs] == sorted(
         [first["id"], second["id"]], reverse=True
     )
-    assert {"id", "status", "mode", "task_counts"} <= set(runs[0])
+    assert {"id", "engine", "status", "mode", "task_counts"} <= set(runs[0])
     assert {"activity", "activity_revision", "duration_ms"} <= set(runs[0])
 
 
@@ -93,3 +94,35 @@ def test_run_json_is_valid_json_on_disk(workspace_with_data):
     path = store.run_dir(workspace_with_data, run["id"]) / "run.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["id"] == run["id"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "engine"),
+    [
+        ("analysis", store.LEGACY_ANALYSIS_ENGINE),
+        ("intake", store.INTAKE_ENGINE),
+        ("doc_test", store.DOC_TEST_ENGINE),
+        ("document_analysis", store.DOCUMENT_ANALYSIS_ENGINE),
+    ],
+)
+def test_new_run_persists_explicit_engine_for_each_live_protocol(
+    workspace_with_data, kind, engine
+):
+    context = {
+        "doc_test": {"test_id": "DT-1"},
+        "document_analysis": {"document_ids": ["DOC-1"]},
+    }.get(kind)
+
+    run = store.new_run(workspace_with_data, "auto", context, kind=kind)
+
+    assert run["engine"] == engine
+    assert store.load_run(workspace_with_data, run["id"])["engine"] == engine
+
+
+def test_new_command_run_starts_with_explicit_workflow_engine(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "route this command"}
+    )
+
+    assert run["engine"] == store.WORKFLOW_ENGINE
+    assert store.run_summary(run)["engine"] == store.WORKFLOW_ENGINE
