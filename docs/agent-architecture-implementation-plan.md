@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.2`.
-- Last completed task: `P4.1`.
+- Current task: `P4.3`.
+- Last completed task: `P4.2`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.2` |
+| 4 | In progress | `P4.3` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -401,6 +401,22 @@ status notes below.
   passed `7` tests in `test_agent_context_models.py` in `0.01s`. No active
   runtime path or frontend payload changed, so broader behavioral suites and a
   frontend build were not required. The exact next task is `P4.2`.
+- `P4.2` completed on 2026-07-21. The context package now provides typed,
+  hash-identified selector and preset registries. Registered selectors declare
+  their kind, supported source types, canonical configuration keys,
+  implementation hash, deterministic tie-breaker, and reason behavior; bounded
+  automatic declarations are checked against per-source item budgets. The
+  `documents.policies` preset compiles to a detached normalized `ContextSpec`
+  that declares the policy-category document selector used by the later
+  resolver.
+  Construction and lookup validation rejects duplicate or unknown preset and
+  selector keys, unknown selector configuration keys, unhashable
+  implementation identities, unsupported source types, and invalid provider,
+  sensitive-representation, or row-level privacy combinations. Focused
+  verification passed `14` tests in `test_agent_context_models.py` in `0.02s`.
+  No active runtime path or frontend payload changed, so broader behavioral
+  suites and a frontend build were not required. The exact next task is
+  `P4.3`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -805,7 +821,7 @@ and manually editable.
 
 - [x] `P4.1` Define normalized `ContextSpec`, source, representation, budget,
   privacy, selector, manifest, and bundle models with serialization tests.
-- [ ] `P4.2` Add preset and selector registries with duplicate, unknown,
+- [x] `P4.2` Add preset and selector registries with duplicate, unknown,
   unhashable, unsupported-source, and invalid-privacy validation.
 - [ ] `P4.3` Implement deterministic manifest identity, atomic persistence,
   source hashing, omission records, truncation records, and supplied-size

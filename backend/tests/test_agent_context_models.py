@@ -11,6 +11,7 @@ from app.agent.context import (
     ContextOmission,
     ContextPrivacy,
     ContextPrivacyDecision,
+    ContextPreset,
     ContextRepresentation,
     ContextSelection,
     ContextSelector,
@@ -18,6 +19,11 @@ from app.agent.context import (
     ContextSource,
     ContextSpec,
     ContextTruncation,
+    PRESETS,
+    PresetRegistry,
+    SELECTORS,
+    SelectorDefinition,
+    SelectorRegistry,
 )
 
 
@@ -255,3 +261,155 @@ def test_context_spec_deserialization_rejects_unknown_selector_discriminator():
         match="source.selector.kind must be 'deterministic' or 'auto'",
     ):
         ContextSpec.from_dict(payload)
+
+
+def _selector_definition(**overrides):
+    values = {
+        "selector_id": "documents.test",
+        "selector_kind": "deterministic",
+        "supported_source_types": ("documents",),
+        "implementation_hash": "sha256:" + "1" * 64,
+        "configuration_keys": ("category",),
+    }
+    values.update(overrides)
+    return SelectorDefinition(**values)
+
+
+def _registered_spec(
+    *,
+    source_type="documents",
+    selector_id="documents.test",
+    representation="excerpt",
+    privacy=None,
+    configuration=None,
+):
+    return ContextSpec(
+        sources=(
+            ContextSource(
+                id="source",
+                source_type=source_type,
+                required=False,
+                selector=ContextSelector(
+                    selector_id=selector_id,
+                    configuration=configuration or {},
+                ),
+                representations=(ContextRepresentation(representation),),
+                budget=ContextBudget(max_items=2, max_characters=1_000),
+            ),
+        ),
+        budget=ContextBudget(max_items=2, max_characters=1_000),
+        privacy=privacy or ContextPrivacy(allow_document_text=True),
+    )
+
+
+def test_documents_policies_preset_compiles_to_validated_normalized_spec():
+    preset = PRESETS.get("documents.policies")
+    compiled = PRESETS.compile("documents.policies")
+    source = compiled.sources[0]
+    selector_definition = SELECTORS.validate_source(source)
+
+    assert compiled == preset.spec
+    assert compiled is not preset.spec
+    assert source.source_type == "documents"
+    assert source.selector.selector_id == "documents.by_category"
+    assert source.selector.configuration == {"category": "policy"}
+    assert source.representations == (ContextRepresentation("excerpt"),)
+    assert compiled.privacy.allow_document_text is True
+    assert preset.definition_hash.startswith("sha256:")
+    assert selector_definition.definition_hash.startswith("sha256:")
+    assert selector_definition.tie_breaker == "source_ref_ascending"
+
+
+def test_registered_auto_selector_is_bounded_hash_identified_and_reasoned():
+    definition = SELECTORS.get("documents.lexical")
+    source = ContextSource(
+        id="policy_documents",
+        source_type="documents",
+        required=False,
+        selector=AutoSelect(
+            selector_id="documents.lexical",
+            item_limit=3,
+            configuration={"category": "policy", "query_fields": ["scope"]},
+        ),
+        representations=(ContextRepresentation("excerpt"),),
+        budget=ContextBudget(max_items=3, max_characters=5_000),
+    )
+
+    assert SELECTORS.validate_source(source) is definition
+    assert definition.selector_kind == "auto"
+    assert definition.supported_source_types == ("documents",)
+    assert definition.implementation_hash.startswith("sha256:")
+    assert definition.definition_hash.startswith("sha256:")
+    assert definition.tie_breaker == "source_ref_ascending"
+    assert definition.emits_reasons is True
+
+
+def test_context_registries_reject_duplicate_and_unknown_keys():
+    selectors = SelectorRegistry()
+    definition = _selector_definition()
+    selectors.register(definition)
+    with pytest.raises(ValueError, match="Selector 'documents.test' is already registered"):
+        selectors.register(definition)
+    with pytest.raises(ValueError, match="Unknown context selector 'missing'"):
+        selectors.validate_spec(_registered_spec(selector_id="missing"))
+    with pytest.raises(ValueError, match="Unknown configuration key 'other'"):
+        selectors.validate_spec(
+            _registered_spec(configuration={"other": "unsupported"})
+        )
+
+    presets = PresetRegistry(selectors)
+    preset = ContextPreset("documents.test", _registered_spec())
+    presets.register(preset)
+    with pytest.raises(ValueError, match="already registered"):
+        presets.register(preset)
+    with pytest.raises(ValueError, match="Unknown context preset 'missing'"):
+        presets.compile("missing")
+
+
+def test_selector_registry_rejects_unhashable_and_unsupported_definitions():
+    with pytest.raises(ValueError, match="is unhashable"):
+        _selector_definition(implementation_hash="manual-version-1")
+
+    selectors = SelectorRegistry()
+    selectors.register(_selector_definition())
+    with pytest.raises(
+        ValueError,
+        match="does not support source type 'methodology'",
+    ):
+        selectors.validate_spec(
+            _registered_spec(source_type="methodology", representation="summary")
+        )
+
+
+@pytest.mark.parametrize(
+    "privacy, representation, message",
+    [
+        (
+            ContextPrivacy(),
+            "excerpt",
+            "representation 'excerpt'.*requires privacy.allow_document_text",
+        ),
+        (
+            ContextPrivacy(allow_document_text=True, allow_table_rows=True),
+            "excerpt",
+            "row-level table data cannot be sent",
+        ),
+        (
+            ContextPrivacy(allow_provider=False, allow_document_text=True),
+            "excerpt",
+            "provider delivery is disabled",
+        ),
+    ],
+)
+def test_selector_registry_rejects_invalid_privacy_combinations(
+    privacy,
+    representation,
+    message,
+):
+    selectors = SelectorRegistry()
+    selectors.register(_selector_definition())
+
+    with pytest.raises(ValueError, match=message):
+        selectors.validate_spec(
+            _registered_spec(privacy=privacy, representation=representation)
+        )

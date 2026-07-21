@@ -425,9 +425,11 @@ declarations. `ContextManifest` and its records are content-free by shape and
 store only identifiers, source and definition hashes, reasons, metrics,
 omissions, truncations, and privacy decisions. `ContextBundle` is a separate
 explicitly local model that may hold worker content. These models have stable
-canonical JSON round trips, but selector and preset registries, manifest
-identity and persistence, and `ContextResolver` behavior remain pending after
-the P4.1 contract-only checkpoint.
+canonical JSON round trips. Hash-identified preset and selector registries now
+compile `documents.policies` to typed form and reject duplicate or unknown
+keys, unhashable definitions, unsupported source types, and invalid privacy
+combinations before resolution. Manifest identity and persistence and
+`ContextResolver` behavior remain pending after the P4.2 registry checkpoint.
 
 ### Phase 1 Deletion Boundary
 
