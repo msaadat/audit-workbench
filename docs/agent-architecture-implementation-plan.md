@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 0.
-- Current task: `P0.8`.
-- Last completed task: `P0.7`.
+- Current phase: Phase 1.
+- Current task: `P1.1`.
+- Last completed task: `P0.8`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -48,8 +48,8 @@ status notes below.
 
 | Phase | Status | Next task |
 |---|---|---|
-| 0 | In progress | `P0.8` |
-| 1 | Pending Phase 0 gate | `P1.1` |
+| 0 | Complete | — |
+| 1 | Ready | `P1.1` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
@@ -132,6 +132,18 @@ status notes below.
   prompt/response hashes rather than content. Focused verification: `5 passed`
   across `test_agent_runner.py`, `test_workflow_v2.py`, and
   `test_document_analysis_search.py`.
+- `P0.8` completed on 2026-07-21. The complete Phase 0 focused gate passed
+  `147` tests across `test_workflow_v2.py`, `test_command_agent.py`,
+  `test_agent_runner.py`, `test_agent_api.py`, and
+  `test_assistant_chats.py` in `62.32s`. Broad audit requests are locally
+  materialized as workflows before v2 interpretation; isolated mutations
+  retain the generic action graph; same-writer recovery, controls, projections,
+  scheduling, conflicts, provider accounting, and privacy boundaries are
+  characterized. Repository verification found no pre-cutover `Workspaces/`,
+  `AgentRuns/`, `run.json`, or legacy-run fixture tree. Pre-cutover records
+  remain outside the supported target contract and the documented cutover
+  requires an empty application workspace root; no converter or fixture reader
+  is introduced.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -337,7 +349,7 @@ or source changes.
 - [x] `P0.7` Add provider-accounting and privacy assertions covering budgets,
   concurrency, table-row exclusion, bounded document context, and hash-only
   provenance.
-- [ ] `P0.8` Run the Phase 0 focused suites, prove legacy records are outside
+- [x] `P0.8` Run the Phase 0 focused suites, prove legacy records are outside
   the supported contract, and update the phase gate and current status.
 
 **Work:**
