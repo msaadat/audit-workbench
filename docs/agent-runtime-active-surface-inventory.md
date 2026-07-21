@@ -164,10 +164,13 @@ from the temporary `BaseRunner` facade, which now delegates per-run
 persistence, events, budgets, controls, approvals, interactions, and model
 calls to `DefaultRunRuntime` and `DefaultModelGateway`. `DefaultRunRuntime` also
 owns atomic, integrity-checked persistence for content-free per-unit context
-manifests; no active worker uses that new boundary before the later Phase 4
-resolver slice. `ActionRunner` and `WorkflowRunner` accept an injected
-`RunRuntime`; intake, document-test, document-analysis, and legacy analysis
-remain active leaf callers of the facade until their scheduled migrations.
+manifests. The generic context resolver now enforces deterministic ordering,
+hard source/global limits, required/optional behavior, and deny-by-default
+representations over local candidate scopes, but no active worker uses that
+boundary until the later Phase 4 adapter and vertical-slice tasks.
+`ActionRunner` and `WorkflowRunner` accept an injected `RunRuntime`; intake,
+document-test, document-analysis, and legacy analysis remain active leaf
+callers of the facade until their scheduled migrations.
 
 ## Active HTTP Run API
 

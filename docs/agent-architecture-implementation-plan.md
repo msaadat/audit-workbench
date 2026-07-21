@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.4`.
-- Last completed task: `P4.3`.
+- Current task: `P4.4A`.
+- Last completed task: `P4.4`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.4` |
+| 4 | In progress | `P4.4A` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -432,6 +432,24 @@ status notes below.
   `test_agent_runtime_contracts.py` in `0.95s`. No active worker, API payload,
   or frontend contract changed, so broader behavioral suites and a frontend
   build were not required. The exact next task is `P4.4`.
+- `P4.4` completed on 2026-07-21. `ContextResolver` now resolves normalized
+  declarations in source-declaration order and orders candidate results by
+  selector rank with a stable source-reference tie-break. It rejects
+  undeclared sources, denies unknown or undeclared representations by default,
+  records allow/deny privacy decisions, and emits stable, content-free reasons
+  for every automatic selection. Per-source selector, item, character, and
+  estimated-token limits are applied before the global limits; bounded text is
+  truncated deterministically while over-budget non-text values and remaining
+  candidates are recorded as omissions. Required-source absence or failure to
+  supply a permitted item blocks resolution, while optional absence is
+  represented in the manifest. `ContextScope` and `ContextCandidate` provide
+  the local-only input boundary for later domain adapters and selector
+  implementations; no active worker or domain loader was moved in this slice.
+  Focused verification passed `54` tests across
+  `test_agent_context_models.py`, `test_agent_context_resolver.py`, and
+  `test_agent_runtime_contracts.py` in `0.98s`. No active runtime, API, or
+  frontend contract changed, so broader behavioral suites and a frontend build
+  were not required. The exact next task is `P4.4A`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -841,7 +859,7 @@ and manually editable.
 - [x] `P4.3` Implement deterministic manifest identity, atomic persistence,
   source hashing, omission records, truncation records, and supplied-size
   metrics without persisting bundle content.
-- [ ] `P4.4` Implement resolver ordering, global and per-source limits,
+- [x] `P4.4` Implement resolver ordering, global and per-source limits,
   required/optional source behavior, deny-by-default representations, and
   stable automatic-selection reasons.
 - [ ] `P4.4A` Enforce that automatic selectors cannot call `ModelGateway` or a

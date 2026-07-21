@@ -296,7 +296,13 @@ def _validate_privacy(spec: ContextSpec) -> None:
     for source in spec.sources:
         for representation in source.representations:
             permission = _REPRESENTATION_PRIVACY_FIELD.get(representation.kind)
-            if permission is not None and not getattr(privacy, permission):
+            if permission is None:
+                raise ValueError(
+                    "Invalid context privacy: representation "
+                    f"'{representation.kind}' for source '{source.id}' is not registered; "
+                    "representations are denied by default."
+                )
+            if not getattr(privacy, permission):
                 raise ValueError(
                     "Invalid context privacy: representation "
                     f"'{representation.kind}' for source '{source.id}' requires "

@@ -434,7 +434,15 @@ deterministic supplied-size metrics, omission and truncation record builders,
 and atomic `contexts/<unit_id>.json` persistence through `RunRuntime`.
 Persisted references are integrity-checked and the persistence boundary accepts
 only `ContextManifest`, so local `ContextBundle` content is never written.
-Resolver ordering, policy enforcement, and source selection remain pending.
+`ContextResolver` now consumes local `ContextScope` candidates in declaration
+order, applies stable rank/source-reference ordering, enforces per-source and
+global item/character/token-estimate limits, truncates bounded text
+deterministically, and records omissions and representation privacy decisions.
+Required sources block when no permitted item can be supplied; optional absence
+is manifested. Unknown and undeclared representations are denied by default,
+and automatic selections receive stable content-free reasons. Domain adapters,
+provider/network isolation for selector implementations, and active capability
+wiring remain pending in the subsequent Phase 4 slices.
 
 ### Phase 1 Deletion Boundary
 
