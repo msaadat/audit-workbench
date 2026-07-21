@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 1.
-- Current task: `P1.2`.
-- Last completed task: `P1.1`.
+- Current task: `P1.3`.
+- Last completed task: `P1.2`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -49,7 +49,7 @@ status notes below.
 | Phase | Status | Next task |
 |---|---|---|
 | 0 | Complete | — |
-| 1 | In progress | `P1.2` |
+| 1 | In progress | `P1.3` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
@@ -157,6 +157,17 @@ status notes below.
   passed `171` tests across `test_agent_store.py`, `test_workflow_v2.py`,
   `test_command_agent.py`, `test_agent_runner.py`, `test_agent_api.py`, and
   `test_assistant_chats.py`; the frontend production build also passed.
+- `P1.2` completed on 2026-07-21. The action-graph scheduler module and class
+  were renamed directly from `command_runner.py` / `CommandRunner` to
+  `action_runner.py` / `ActionRunner`. Every live production import and test
+  now uses the new names; `WorkflowRunner` temporarily inherits from the
+  renamed class until Phase 6, and there is no compatibility module, class
+  alias, or re-export. Current-state architecture and runtime inventory docs
+  were updated without changing scheduler behavior. Focused verification passed
+  `168` tests across `test_command_agent.py`, `test_workflow_v2.py`,
+  `test_agent_runner.py`, `test_planning.py`, and `test_assistant_chats.py`.
+  No frontend payload or API contract changed, so a frontend build was not
+  required for this task.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -407,7 +418,7 @@ obsolete full-audit policy without preserving old run shapes.
 
 - [x] `P1.1` Add the required `engine` field to every new run writer and dispatch
   only current records by that field; add no inference or schema-version field.
-- [ ] `P1.2` Rename `CommandRunner` and its module to `ActionRunner`, update all
+- [x] `P1.2` Rename `CommandRunner` and its module to `ActionRunner`, update all
   live imports and tests in the same task, and retain no alias.
 - [ ] `P1.3` Add a fail-closed guard so broad-audit and planning
   requests cannot enter the canonical action planner.

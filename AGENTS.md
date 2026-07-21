@@ -92,7 +92,7 @@ backend/app/
    |                             interactions, provider call accounting
    |- runner.py                - thread orchestration, active-handle registry,
    |                             recovery, pause/resume/cancel/retry/continue
-   |- command_runner.py        - v2 action-graph runner for isolated mutations
+   |- action_runner.py         - action-graph runner for isolated mutations
    |- workflow.py              - generic capability graph primitives
    |- workflow_runner.py       - v3 outcome-driven audit workflow scheduler
    |- audit_capabilities.py    - audit capability registry and readiness rules
@@ -181,11 +181,11 @@ BaseRunner
 |- IntakeRunner             one import batch
 |- DocTestRunner            one document test
 |- DocumentAnalysisRunner   document analysis map/reduce
-`- CommandRunner            v2 action graph
+`- ActionRunner             action graph
    `- WorkflowRunner        v3 capability graph for audit outcomes
 ```
 
-- `CommandRunner` is still used for isolated mutations and repairable action
+- `ActionRunner` is still used for isolated mutations and repairable action
   graphs.
 - `WorkflowRunner` is the main audit path. It resolves requested outcomes,
   materializes prerequisite capabilities, fans them out into units, persists
@@ -248,7 +248,7 @@ BaseRunner
 
 ### Known duplication
 
-- `CommandRunner`'s full-audit path (`_prepare_planning`,
+- `ActionRunner`'s full-audit path (`_prepare_planning`,
   `_ensure_full_audit_stages`, `_validate_full_audit_action_graph`,
   `ORCHESTRATED_FULL_AUDIT_ACTION_TYPES`, and the interpreter-prompt clauses
   forbidding planning/rollup/report actions) existed to force an LLM-planned
@@ -257,7 +257,7 @@ BaseRunner
   interpreter runs, so those branches are reachable only when routing misses.
 - The audit lifecycle is therefore encoded in three places:
   `ledger.AUDIT_LIFECYCLE_STAGES`,
-  `CommandRunner.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES`, and
+  `ActionRunner.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES`, and
   `audit_capabilities.build_registry`. `build_registry` is authoritative.
 
 ### Events and live UI

@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import threading
 import time
@@ -7,7 +8,7 @@ import pytest
 
 from app import documents, llm, workspaces
 from app.agent import (
-    command_runner,
+    action_runner,
     doc_test_runner,
     document_analysis_runner,
     intake_runner,
@@ -533,11 +534,16 @@ def test_rerun_leaves_user_edited_items_alone(workspace_with_data, fake_agent_ll
 
 
 # ------------------------------------------------ explicit engine dispatch
+def test_action_runner_has_no_legacy_module_or_class_alias():
+    assert importlib.util.find_spec("app.agent.command_runner") is None
+    assert not hasattr(action_runner, "CommandRunner")
+
+
 @pytest.mark.parametrize(
     ("engine", "module", "class_name", "expected"),
     [
         (store.WORKFLOW_ENGINE, workflow_runner, "WorkflowRunner", "workflow"),
-        (store.ACTION_ENGINE, command_runner, "CommandRunner", "action"),
+        (store.ACTION_ENGINE, action_runner, "ActionRunner", "action"),
         (store.INTAKE_ENGINE, intake_runner, "IntakeRunner", "intake"),
         (store.DOC_TEST_ENGINE, doc_test_runner, "DocTestRunner", "doc_test"),
         (

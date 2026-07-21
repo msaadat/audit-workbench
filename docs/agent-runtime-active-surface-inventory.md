@@ -135,8 +135,8 @@ run routing.
 A locally recognized workflow is promoted to the schema-v3 capability graph
 before the UI receives the new run. An unresolved command is handled after
 launch by the bounded workflow router. A `generic_action` result delegates to
-`CommandRunner`; workflow outcomes remain in `WorkflowRunner`; question or
-unsupported results complete without mutation. `CommandRunner` invokes its
+`ActionRunner`; workflow outcomes remain in `WorkflowRunner`; question or
+unsupported results complete without mutation. `ActionRunner` invokes its
 registered action interpreter when a generic action still needs a DAG.
 
 ### Worker-thread dispatch
@@ -150,7 +150,7 @@ from its explicit `engine`:
 | `engine="doc_test"` | `DocTestRunner` |
 | `engine="document_analysis"` | `DocumentAnalysisRunner` |
 | `engine="workflow"` | `WorkflowRunner` |
-| `engine="action"` | `CommandRunner` |
+| `engine="action"` | `ActionRunner` |
 | `engine="analysis"` | legacy `_Runner` analysis pipeline |
 
 Missing or unsupported engines fail closed. No engine is inferred from `kind` or

@@ -375,16 +375,16 @@ The repository currently contains three generations of general agent planning:
 | Generation | Implementation | Plan source | Work unit | Scheduler |
 |---|---|---|---|---|
 | v1 | `_Runner` in `agent/runner.py` | Hard-coded stages | Task | Straight-line stage calls |
-| v2 | `CommandRunner` | Model-generated action DAG | Action | Priority loop over the action ledger |
+| v2 | `ActionRunner` | Model-generated action DAG | Action | Priority loop over the action ledger |
 | v3 | `WorkflowRunner` | Capability registry closure and readiness | Semantic unit | Dependency-ordered stages with bounded parallelism |
 
 The current audit path is v3. `WorkflowRunner` inherits from
-`CommandRunner` and currently reuses planning context, quality checks, proposal
+`ActionRunner` and currently reuses planning context, quality checks, proposal
 formatting, approvals, and RCM matching through that inheritance. This sharing
 is intentional, but the inheritance also exposes the entire v2 scheduler and
 its obsolete full-audit logic to v3.
 
-`CommandRunner` remains useful for isolated mutations, including attaching a
+`ActionRunner` remains useful for isolated mutations, including attaching a
 document, pinning a dashboard tile, renaming an artifact, or composing a small
 bounded series of registered actions. It should not plan or enforce a complete
 audit lifecycle.
@@ -398,7 +398,7 @@ control protocol. Otherwise migrate its work into capabilities and workers.
 ### Confirmed Vestigial Areas
 
 The main dead path is the v2 full-audit orchestration in
-`agent/command_runner.py`, including:
+`agent/action_runner.py`, including:
 
 - `_prepare_planning`.
 - `_ensure_full_audit_stages`.
@@ -417,7 +417,7 @@ before the v2 command interpreter runs.
 The audit lifecycle is currently encoded in three places:
 
 - `ledger.AUDIT_LIFECYCLE_STAGES`.
-- `CommandRunner.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES` and associated methods.
+- `ActionRunner.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES` and associated methods.
 - `audit_capabilities.build_registry()`.
 
 `build_registry()` is the current authoritative implementation. The target
@@ -425,7 +425,7 @@ moves the authoritative declaration to `workflows/audit.py` and removes the
 other two lifecycle encodings.
 
 There is also concrete document-analysis duplication. Both
-`DocumentAnalysisRunner` and `CommandRunner._ensure_planning_analysis` implement
+`DocumentAnalysisRunner` and `ActionRunner._ensure_planning_analysis` implement
 document extraction, chunk map calls, reduction, validation, and persistence.
 The replacement must have one implementation expressed as document-analysis
 capabilities, workers, and executors.

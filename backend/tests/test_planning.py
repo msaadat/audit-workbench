@@ -4,7 +4,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent import command_runner, runner, store
+from app.agent import action_runner, runner, store
 from app.main import create_app
 from app import document_analysis, documents, llm, methodology, templates_store, workspaces
 
@@ -372,13 +372,13 @@ def test_planned_test_crud_rejects_non_object_structured_fields(field):
 
 def test_planning_context_requires_string_field_values():
     with pytest.raises(ValueError, match="context.key_contacts must be a string"):
-        command_runner._validate_context_payload({
+        action_runner._validate_context_payload({
             "context": {"key_contacts": ["CFO", "Head of Procurement"]}
         })
 
 
 def test_planning_context_normalizes_flat_provider_payload():
-    normalized = command_runner._validate_context_payload({
+    normalized = action_runner._validate_context_payload({
         "objective": "Review procurement controls",
         "scope": "Requisitions through payment",
         "entity": "Example Bank",
@@ -389,7 +389,7 @@ def test_planning_context_normalizes_flat_provider_payload():
         "scope": "Requisitions through payment",
         "entity": "Example Bank",
     }
-    assert command_runner.CommandRunner._planning_context(normalized)["scope"] == (
+    assert action_runner.ActionRunner._planning_context(normalized)["scope"] == (
         "Requisitions through payment"
     )
 

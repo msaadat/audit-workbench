@@ -714,9 +714,9 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
 
                     WorkflowRunner(workspace, run, handle).execute()
                 elif engine == store.ACTION_ENGINE:
-                    from .command_runner import CommandRunner
+                    from .action_runner import ActionRunner
 
-                    CommandRunner(workspace, run, handle).execute()
+                    ActionRunner(workspace, run, handle).execute()
                 elif engine == store.LEGACY_ANALYSIS_ENGINE:
                     _Runner(workspace, run, handle).execute()
                 else:

@@ -1,4 +1,4 @@
-"""Durable unified command/action-graph runner."""
+"""Durable unified action-graph runner."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _validate_context_payload(payload: dict) -> dict:
     return payload
 
 
-class CommandRunner(BaseRunner):
+class ActionRunner(BaseRunner):
     stage_titles = {
         "context": "Planning context",
         "apm": "Audit planning memorandum",

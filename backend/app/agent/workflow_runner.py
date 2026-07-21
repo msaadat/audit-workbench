@@ -30,7 +30,7 @@ from ..workspaces import (
 )
 from . import audit_capabilities, audit_workers, context_bundles, store, workflow
 from .base import Cancelled, LimitExceeded
-from .command_runner import CommandRunner, fill_unavailable_placeholders
+from .action_runner import ActionRunner, fill_unavailable_placeholders
 
 ELIGIBLE_DISPOSITIONS = {"confirmed_control_exception", "draft_finding_candidate"}
 
@@ -40,7 +40,7 @@ def _local_resolution(command: dict) -> dict | None:
 
     Tried in confidence order — explicit outcomes (follow-up/retry runs), then
     goal templates, then command phrasing, then markers that mean "this is an
-    isolated mutation, hand it to CommandRunner". Returning None is what sends
+    isolated mutation, hand it to ActionRunner". Returning None is what sends
     the command to the LLM router, so every phrase added here removes a model
     call from the common path.
     """
@@ -252,14 +252,14 @@ def _install_resolution(workspace: Workspace, run: dict, resolution: dict) -> No
     )
 
 
-class WorkflowRunner(CommandRunner):
+class WorkflowRunner(ActionRunner):
     """Generic scheduler backed by the audit capability registry."""
 
     def execute(self) -> None:
         """Resolve the command to outcomes, then run the capability graph.
 
         Three exits before any audit work happens: an isolated mutation is
-        handed down to CommandRunner (v2), an unanswerable request completes
+        handed down to ActionRunner, an unanswerable request completes
         with an explanation, and anything else installs a capability graph.
         Stages then run strictly in dependency order — parallelism lives
         inside a stage, never across them.
@@ -275,7 +275,7 @@ class WorkflowRunner(CommandRunner):
                     self.run["command_route"] = resolution
                     self.run["schema_version"] = 2
                     self.save()
-                    CommandRunner.execute(self)
+                    ActionRunner.execute(self)
                     return
                 if resolution.get("route") in {"question", "unsupported"}:
                     self.run["summary_markdown"] = resolution.get("clarification") or (

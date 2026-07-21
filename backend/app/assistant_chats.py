@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import assistant, debug_store, llm
-from .agent import command_runner, runner, store
+from .agent import action_runner, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 CHATS_DIRNAME = "AssistantChats"
@@ -508,7 +508,7 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
         raise WorkspaceError("Message mode must be auto or permission.")
     request_id = _validate(str(payload.get("request_id") or ""), REQUEST_ID_RE, "request id")
     goal_template = str(payload.get("goal_template") or "").strip() or None
-    if goal_template and (requested != "act" or goal_template not in command_runner.GOAL_TEMPLATES):
+    if goal_template and (requested != "act" or goal_template not in action_runner.GOAL_TEMPLATES):
         raise WorkspaceError("goal_template requires act intent and a registered template.")
 
     path = _chat_path(workspace, chat_id)

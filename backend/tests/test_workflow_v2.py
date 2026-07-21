@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, rcm_execution, report, working_papers, workspaces
-from app.agent import audit_capabilities, audit_workers, command_runner, context_bundles, runner, store, workflow
+from app.agent import action_runner, audit_capabilities, audit_workers, context_bundles, runner, store, workflow
 from app.agent.workflow_runner import WorkflowRunner, _local_resolution, initialize_known_workflow
 from app.main import create_app
 from app.workspace_transactions import (
@@ -80,7 +80,7 @@ def test_full_template_materializes_locally_without_command_interpreter():
 def test_every_registered_goal_template_has_a_deterministic_local_route(
     template, route, outcomes
 ):
-    assert set(command_runner.GOAL_TEMPLATES) == {
+    assert set(action_runner.GOAL_TEMPLATES) == {
         "full_audit_working_draft",
         "planning",
         "apm_only",

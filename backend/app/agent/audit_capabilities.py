@@ -30,7 +30,7 @@ TEMPLATE_OUTCOMES = {
     ],
     "apm_only": ["planning.apm_ready"],
     # The legacy data-analysis and single-document-test buttons are isolated
-    # operations, not RCM workflow goals; CommandRunner/DocTestRunner retain
+    # operations, not RCM workflow goals; ActionRunner/DocTestRunner retain
     # those paths during the compatibility window.
     "report": ["report.working_draft", "audit.verified"],
 }

@@ -5,7 +5,7 @@ import polars as pl
 import pytest
 
 from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, workspaces
-from app.agent import actions, artifact_index, audit_capabilities, command_runner, ledger, runner, store
+from app.agent import action_runner, actions, artifact_index, audit_capabilities, ledger, runner, store
 from conftest import FakeAgentLLM, wait_run
 
 
@@ -218,7 +218,7 @@ def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
 
 
 def test_command_interpreter_repair_lists_supported_validation_checks():
-    message = command_runner.CommandRunner._proposal_repair_user(
+    message = action_runner.ActionRunner._proposal_repair_user(
         "base", {"actions": []}, workspaces.WorkspaceError("Unknown check 'invented'.")
     )
 
@@ -556,7 +556,7 @@ def test_full_audit_semantics_reject_document_substitution_for_analytics(
         workspace_with_data, "auto",
         {"source": "goal_template", "goal_template": "full_audit_working_draft"},
     )
-    command = command_runner.CommandRunner(
+    command = action_runner.ActionRunner(
         workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
     )
     substituted = [{
@@ -1005,7 +1005,7 @@ def test_dependent_mutations_rebase_to_succeeded_dependency(workspace_with_data)
             "depends_on": ["context"],
         },
     ])
-    command = command_runner.CommandRunner(
+    command = action_runner.ActionRunner(
         workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
     )
 
@@ -1063,7 +1063,7 @@ def test_failed_action_blocks_transitive_dependents_without_execution(
     ledger.transition(failed, "ready")
     ledger.transition(failed, "running")
     ledger.transition(failed, "failed")
-    command = command_runner.CommandRunner(
+    command = action_runner.ActionRunner(
         workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
     )
 
@@ -1086,7 +1086,7 @@ def test_external_change_still_requires_conflict_resolution(workspace_with_data)
         "id": "apm", "type": "edit_apm",
         "args": {"apm_markdown": "# Proposed audit plan"},
     }])[0]
-    command = command_runner.CommandRunner(
+    command = action_runner.ActionRunner(
         workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
     )
     command._resolve_and_gate(action)
@@ -1114,7 +1114,7 @@ def test_persisted_self_conflict_is_dismissed_on_resume(workspace_with_data):
             "depends_on": ["context"],
         },
     ])
-    command = command_runner.CommandRunner(
+    command = action_runner.ActionRunner(
         workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
     )
     command._resolve_and_gate(context)
@@ -1243,7 +1243,7 @@ def test_stale_graph_target_clarification_is_dismissed(workspace_with_data):
     store.save_run(workspace_with_data, run)
 
     handle = runner.RunHandle(workspace_with_data.id, run["id"])
-    command_runner.CommandRunner(workspace_with_data, run, handle)._drive_graph()
+    action_runner.ActionRunner(workspace_with_data, run, handle)._drive_graph()
     test = doc_tests.load_test(workspace_with_data, by_id["create-test"]["args"]["id"])
 
     assert interaction["status"] == "resolved"
@@ -1276,7 +1276,7 @@ def test_stale_generated_report_clarification_is_dismissed(workspace_with_data):
     store.save_run(workspace_with_data, run)
 
     handle = runner.RunHandle(workspace_with_data.id, run["id"])
-    command_runner.CommandRunner(workspace_with_data, run, handle)._drive_graph()
+    action_runner.ActionRunner(workspace_with_data, run, handle)._drive_graph()
 
     assert interaction["status"] == "resolved"
     assert interaction["actor"] == "orchestrator"
@@ -1680,7 +1680,7 @@ def test_full_audit_mixed_methods_create_required_execution_and_no_speculative_f
         "document_content_included": True,
     }
     store.save_run(workspace_with_data, run)
-    command = command_runner.CommandRunner(
+    command = action_runner.ActionRunner(
         workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
     )
 
@@ -1713,7 +1713,7 @@ def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, w
         {"source": "follow_up", "text": "do the full audit"},
     )
     handle = runner.RunHandle(workspace_with_data.id, run["id"])
-    command = command_runner.CommandRunner(workspace_with_data, run, handle)
+    command = action_runner.ActionRunner(workspace_with_data, run, handle)
 
     def fail_during_planning():
         completed = command.add_task("apm", "planning:apm", "Draft the APM")
@@ -1742,7 +1742,7 @@ def test_task_progress_updates_run_activity_and_timing(workspace_with_data):
         workspace_with_data, "auto", {"source": "chat", "text": "prepare planning"}
     )
     handle = runner.RunHandle(workspace_with_data.id, run["id"])
-    command = command_runner.CommandRunner(workspace_with_data, run, handle)
+    command = action_runner.ActionRunner(workspace_with_data, run, handle)
     task = command.add_task(
         "context", "planning:context", "Assemble planning context",
         "Reviewing documents…",
