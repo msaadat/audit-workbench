@@ -1,8 +1,8 @@
 """Normalized context preset and selector registries.
 
-This module validates declarations only.  Selector execution and context
-materialization belong to later resolver tasks; registry entries therefore
-carry stable implementation identities without invoking their implementations.
+Selector implementations are a closed set of local strategies implemented by
+the resolver. Registry entries carry stable implementation identities without
+accepting executable callables or service dependencies.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from .model import (
 
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SELECTOR_KINDS = {ContextSelector.kind, AutoSelect.kind}
+_SELECTOR_STRATEGIES = {"metadata", "lexical", "local_embedding"}
+_STABLE_TIE_BREAKERS = {"source_ref_ascending", "declared_reference_order"}
 
 # Representation permissions are intentionally structural.  A declaration
 # cannot make sensitive content permissible merely by naming it differently.
@@ -73,10 +75,13 @@ class SelectorDefinition:
     selector_kind: str
     supported_source_types: tuple[str, ...]
     implementation_hash: str
+    strategy: str = "metadata"
     configuration_keys: tuple[str, ...] = ()
     required_configuration_keys: tuple[str, ...] = ()
     tie_breaker: str = "source_ref_ascending"
     emits_reasons: bool = True
+    local_embedding_model_hash: str | None = None
+    local_embedding_index_hash: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -87,6 +92,15 @@ class SelectorDefinition:
         if self.selector_kind not in _SELECTOR_KINDS:
             raise ValueError(
                 "selector_definition.selector_kind must be 'deterministic' or 'auto'."
+            )
+        if self.strategy not in _SELECTOR_STRATEGIES:
+            raise ValueError(
+                "selector_definition.strategy must be 'metadata', 'lexical', or "
+                "'local_embedding'."
+            )
+        if self.selector_kind == ContextSelector.kind and self.strategy != "metadata":
+            raise ValueError(
+                "Deterministic selectors support only the metadata strategy."
             )
         source_types = tuple(
             _normalized_id(value, "selector_definition.supported_source_types")
@@ -133,8 +147,52 @@ class SelectorDefinition:
             "tie_breaker",
             _normalized_id(self.tie_breaker, "selector_definition.tie_breaker"),
         )
+        if self.tie_breaker not in _STABLE_TIE_BREAKERS:
+            raise ValueError(
+                "selector_definition.tie_breaker must be a registered stable "
+                "tie-breaker."
+            )
+        if self.strategy in {"lexical", "local_embedding"} and (
+            self.tie_breaker != "source_ref_ascending"
+        ):
+            raise ValueError(
+                "Lexical and local-embedding selectors must use the stable "
+                "source_ref_ascending tie-breaker."
+            )
+        if self.tie_breaker == "declared_reference_order" and (
+            "refs" not in required_keys
+        ):
+            raise ValueError(
+                "declared_reference_order requires the selector's refs configuration."
+            )
+        if "refs" in configuration_keys and (
+            self.tie_breaker != "declared_reference_order"
+        ):
+            raise ValueError(
+                "Selectors configured with refs must use declared_reference_order."
+            )
         if not isinstance(self.emits_reasons, bool):
             raise ValueError("selector_definition.emits_reasons must be a boolean.")
+        embedding_hashes = (
+            self.local_embedding_model_hash,
+            self.local_embedding_index_hash,
+        )
+        if self.strategy == "local_embedding":
+            if self.selector_kind != AutoSelect.kind:
+                raise ValueError(
+                    "Local-embedding selectors must be bounded automatic selectors."
+                )
+            if any(
+                not isinstance(value, str) or not _HASH_PATTERN.fullmatch(value)
+                for value in embedding_hashes
+            ):
+                raise ValueError(
+                    "Local-embedding selectors require sha256 model and index hashes."
+                )
+        elif any(value is not None for value in embedding_hashes):
+            raise ValueError(
+                "Only local-embedding selectors may declare model or index hashes."
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -142,10 +200,13 @@ class SelectorDefinition:
             "selector_kind": self.selector_kind,
             "supported_source_types": list(self.supported_source_types),
             "implementation_hash": self.implementation_hash,
+            "strategy": self.strategy,
             "configuration_keys": list(self.configuration_keys),
             "required_configuration_keys": list(self.required_configuration_keys),
             "tie_breaker": self.tie_breaker,
             "emits_reasons": self.emits_reasons,
+            "local_embedding_model_hash": self.local_embedding_model_hash,
+            "local_embedding_index_hash": self.local_embedding_index_hash,
         }
 
     @property
@@ -329,6 +390,7 @@ _register_selectors(
             implementation_hash=_implementation_hash(
                 "documents.by_category:metadata-category-equality:source-ref-ascending"
             ),
+            strategy="metadata",
             configuration_keys=("category",),
             required_configuration_keys=("category",),
         ),
@@ -339,6 +401,7 @@ _register_selectors(
             implementation_hash=_implementation_hash(
                 "documents.lexical:stable-local-lexical-score:source-ref-ascending"
             ),
+            strategy="lexical",
             configuration_keys=("category", "query_fields"),
         ),
         SelectorDefinition(
@@ -348,6 +411,7 @@ _register_selectors(
             implementation_hash=_implementation_hash(
                 "methodology.explicit_refs:declared-reference-order"
             ),
+            strategy="metadata",
             configuration_keys=("refs",),
             required_configuration_keys=("refs",),
             tie_breaker="declared_reference_order",

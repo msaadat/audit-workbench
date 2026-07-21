@@ -14,6 +14,10 @@ from app.agent.context import (
     ContextSelector,
     ContextSource,
     ContextSpec,
+    LocalEmbeddingQuery,
+    PresetRegistry,
+    SelectorDefinition,
+    SelectorRegistry,
 )
 
 
@@ -80,37 +84,48 @@ def test_resolver_orders_sources_candidates_and_auto_reasons_stably():
     )
     candidates = {
         "deterministic": (
-            ContextCandidate("document:D", "source-d", {"excerpt": "D"}),
+            ContextCandidate(
+                "document:D",
+                "source-d",
+                {"excerpt": "D"},
+                metadata={"category": "policy"},
+            ),
         ),
         "automatic": (
             ContextCandidate(
                 "document:B",
                 "source-b",
                 {"excerpt": "B"},
-                rank=1,
-                reason="Lexical score 0.8 for the declared scope fields.",
+                metadata={"category": "policy"},
+                lexical_text="scope",
             ),
             ContextCandidate(
                 "document:C",
                 "source-c",
                 {"excerpt": "C"},
-                rank=0,
-                reason="Lexical score 0.9 for the declared scope fields.",
+                metadata={"category": "policy"},
+                lexical_text="scope scope",
             ),
             ContextCandidate(
                 "document:A",
                 "source-a",
                 {"excerpt": "A"},
-                rank=1,
-                reason="Lexical score 0.8 for the declared scope fields.",
+                metadata={"category": "policy"},
+                lexical_text="scope",
             ),
         ),
     }
 
-    first_manifest, first_bundle = _resolve(spec, ContextScope(candidates))
+    first_manifest, first_bundle = _resolve(
+        spec,
+        ContextScope(candidates, selector_context={"scope": "scope scope"}),
+    )
     second_manifest, second_bundle = _resolve(
         spec,
-        ContextScope({key: tuple(reversed(value)) for key, value in candidates.items()}),
+        ContextScope(
+            {key: tuple(reversed(value)) for key, value in candidates.items()},
+            selector_context={"scope": "scope scope"},
+        ),
     )
 
     assert [item.source_ref for item in first_manifest.selections] == [
@@ -147,11 +162,26 @@ def test_resolver_enforces_per_source_and_global_limits_with_stable_truncation()
     scope = ContextScope(
         {
             "policies": (
-                ContextCandidate("document:A", "source-a", {"excerpt": "abcd"}),
-                ContextCandidate("document:B", "source-b", {"excerpt": "efgh"}),
+                ContextCandidate(
+                    "document:A",
+                    "source-a",
+                    {"excerpt": "abcd"},
+                    metadata={"category": "policy"},
+                ),
+                ContextCandidate(
+                    "document:B",
+                    "source-b",
+                    {"excerpt": "efgh"},
+                    metadata={"category": "policy"},
+                ),
             ),
             "other": (
-                ContextCandidate("document:C", "source-c", {"excerpt": "zz"}),
+                ContextCandidate(
+                    "document:C",
+                    "source-c",
+                    {"excerpt": "zz"},
+                    metadata={"category": "policy"},
+                ),
             ),
         }
     )
@@ -184,8 +214,18 @@ def test_resolver_enforces_per_source_and_global_limits_with_stable_truncation()
         ContextScope(
             {
                 "policies": (
-                    ContextCandidate("document:A", "source-a", {"excerpt": "abcd"}),
-                    ContextCandidate("document:B", "source-b", {"excerpt": "efgh"}),
+                    ContextCandidate(
+                        "document:A",
+                        "source-a",
+                        {"excerpt": "abcd"},
+                        metadata={"category": "policy"},
+                    ),
+                    ContextCandidate(
+                        "document:B",
+                        "source-b",
+                        {"excerpt": "efgh"},
+                        metadata={"category": "policy"},
+                    ),
                 )
             }
         ),
@@ -247,6 +287,7 @@ def test_resolver_denies_unknown_and_undeclared_representations_by_default():
                         "document:A",
                         "source-a",
                         {"table_rows": sentinel},
+                        metadata={"category": "policy"},
                     ),
                 )
             }
@@ -276,5 +317,110 @@ def test_resolver_rejects_undeclared_sources_before_materializing_content():
                         ContextCandidate("document:A", "source-a", {"excerpt": "A"}),
                     )
                 }
+            ),
+        )
+
+
+def test_local_embedding_selector_is_hash_bound_and_stably_tie_broken():
+    model_hash = "sha256:" + "1" * 64
+    index_hash = "sha256:" + "2" * 64
+    selectors = SelectorRegistry()
+    definition = selectors.register(
+        SelectorDefinition(
+            selector_id="documents.embedding",
+            selector_kind="auto",
+            supported_source_types=("documents",),
+            implementation_hash="sha256:" + "3" * 64,
+            strategy="local_embedding",
+            local_embedding_model_hash=model_hash,
+            local_embedding_index_hash=index_hash,
+        )
+    )
+    spec = ContextSpec(
+        sources=(
+            ContextSource(
+                id="documents",
+                source_type="documents",
+                required=True,
+                selector=AutoSelect("documents.embedding", item_limit=2),
+                representations=(ContextRepresentation("excerpt"),),
+                budget=ContextBudget(max_items=2, max_characters=100),
+            ),
+        ),
+        budget=ContextBudget(max_items=2, max_characters=100),
+        privacy=ContextPrivacy(allow_document_text=True),
+    )
+    candidates = (
+        ContextCandidate(
+            "document:B",
+            "source-b",
+            {"excerpt": "B"},
+            embedding=(1.0, 0.0),
+        ),
+        ContextCandidate(
+            "document:C",
+            "source-c",
+            {"excerpt": "C"},
+            embedding=(0.0, 1.0),
+        ),
+        ContextCandidate(
+            "document:A",
+            "source-a",
+            {"excerpt": "A"},
+            embedding=(1.0, 0.0),
+        ),
+    )
+    query = LocalEmbeddingQuery(model_hash, index_hash, (1.0, 0.0))
+    resolver = ContextResolver(
+        selectors=selectors,
+        presets=PresetRegistry(selectors),
+    )
+
+    first_manifest, first_bundle = resolver.resolve(
+        object(),
+        _Capability("planning.apm_ready", spec),
+        _Unit("planning.apm:workspace"),
+        ContextScope(
+            {"documents": candidates},
+            local_embedding_queries={"documents": query},
+        ),
+    )
+    second_manifest, second_bundle = resolver.resolve(
+        object(),
+        _Capability("planning.apm_ready", spec),
+        _Unit("planning.apm:workspace"),
+        ContextScope(
+            {"documents": tuple(reversed(candidates))},
+            local_embedding_queries={"documents": query},
+        ),
+    )
+
+    assert [item.source_ref for item in first_bundle.items] == [
+        "document:A",
+        "document:B",
+    ]
+    assert first_manifest == second_manifest
+    assert first_bundle == second_bundle
+    assert (
+        first_manifest.selections[0].selector_definition_hash
+        == definition.definition_hash
+    )
+    assert "source_ref_ascending" in first_manifest.selections[0].reason
+    assert "registered model/index identity" in first_manifest.selections[0].reason
+    assert first_manifest.omissions[0].source_ref == "document:C"
+
+    mismatched = LocalEmbeddingQuery(
+        "sha256:" + "4" * 64,
+        index_hash,
+        (1.0, 0.0),
+    )
+    with pytest.raises(ContextResolutionError, match="identity does not match"):
+        resolver.resolve(
+            object(),
+            _Capability("planning.apm_ready", spec),
+            _Unit("planning.apm:workspace"),
+            ContextScope(
+                {"documents": candidates},
+                local_embedding_queries={"documents": mismatched},
             ),
         )

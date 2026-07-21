@@ -276,7 +276,10 @@ BaseRunner
   source types, and invalid privacy combinations. Deterministic source and
   manifest hashes, supplied-size metrics, omission/truncation record helpers,
   and atomic per-unit manifest sidecars now keep durable context records
-  content-free while bundles remain local. Context resolution and active-worker
+  content-free while bundles remain local. The resolver enforces declaration
+  order, privacy, hard budgets, stable tie-breaking, and a closed provider-free
+  selector set: deterministic metadata, local lexical scoring, or local
+  embeddings bound to model/index hashes. Domain adapters and active-worker
   adoption are still pending.
 
 ### Known duplication

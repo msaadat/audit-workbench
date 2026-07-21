@@ -166,8 +166,11 @@ calls to `DefaultRunRuntime` and `DefaultModelGateway`. `DefaultRunRuntime` also
 owns atomic, integrity-checked persistence for content-free per-unit context
 manifests. The generic context resolver now enforces deterministic ordering,
 hard source/global limits, required/optional behavior, and deny-by-default
-representations over local candidate scopes, but no active worker uses that
-boundary until the later Phase 4 adapter and vertical-slice tasks.
+representations over local candidate scopes. Its automatic selection boundary
+is closed to provider/network services and supports only deterministic
+metadata, local lexical scoring, or local embeddings bound to model/index
+hashes, all with stable tie-breaking. No active worker uses that boundary until
+the later Phase 4 adapter and vertical-slice tasks.
 `ActionRunner` and `WorkflowRunner` accept an injected `RunRuntime`; intake,
 document-test, document-analysis, and legacy analysis remain active leaf
 callers of the facade until their scheduled migrations.

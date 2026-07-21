@@ -1,15 +1,18 @@
 """Deterministic, bounded resolution of declared worker context.
 
-This module deliberately resolves local candidate material only.  Domain
-adapters populate :class:`ContextScope`; selector implementations and active
-workflow wiring are introduced by later Phase 4 slices.
+This module deliberately resolves local candidate material only. Domain
+adapters populate :class:`ContextScope`; the closed selector implementation
+set accepts data, never a gateway, provider client, or network service.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+import math
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from .manifest import (
@@ -32,14 +35,23 @@ from .model import (
     ContextSource,
     ContextSpec,
 )
-from .presets import PRESETS, SELECTORS, PresetRegistry, SelectorRegistry
+from .presets import (
+    PRESETS,
+    SELECTORS,
+    PresetRegistry,
+    SelectorDefinition,
+    SelectorRegistry,
+)
 
 
 _RESOLVER_IDENTITY = (
-    "context-resolver:source-declaration-order:candidate-rank-source-ref:"
+    "context-resolver:closed-local-selector-strategies:metadata-lexical-embedding:"
+    "source-declaration-order:strategy-rank-source-ref:"
     "per-source-before-global:truncate-text-only:deny-undeclared-representations"
 )
 RESOLVER_HASH = f"sha256:{hashlib.sha256(_RESOLVER_IDENTITY.encode('utf-8')).hexdigest()}"
+_HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_TOKEN_PATTERN = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*", re.IGNORECASE)
 
 
 class ContextResolutionError(ValueError):
@@ -52,29 +64,24 @@ class ContextResolutionError(ValueError):
 
 @dataclass(frozen=True)
 class ContextCandidate:
-    """One local candidate emitted by a domain adapter or selector.
+    """One local candidate emitted by a domain adapter.
 
-    ``rank`` is selector-owned.  The resolver always breaks equal ranks by
-    ``source_ref`` so caller iteration order cannot affect the manifest.
-    ``reason`` is required because every automatic selection must remain
-    explainable without persisting candidate content.
+    Selection inputs remain local and are deliberately data-only. The resolver
+    owns ranking and reasons so an adapter cannot smuggle in an opaque or
+    provider-produced selection decision.
     """
 
     source_ref: str
     source: object
     representations: Mapping[str, object]
-    rank: int = 0
-    reason: str = "Matched the declared deterministic selector."
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    lexical_text: str = ""
+    embedding: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         source_ref = str(self.source_ref or "").strip()
         if not source_ref:
             raise ValueError("context_candidate.source_ref must be a non-empty string.")
-        if isinstance(self.rank, bool) or not isinstance(self.rank, int) or self.rank < 0:
-            raise ValueError("context_candidate.rank must be a non-negative integer.")
-        reason = str(self.reason or "").strip()
-        if not reason:
-            raise ValueError("context_candidate.reason must be a non-empty string.")
         if not isinstance(self.representations, Mapping):
             raise ValueError("context_candidate.representations must be an object.")
         normalized: dict[str, object] = {}
@@ -89,9 +96,48 @@ class ContextCandidate:
                     f"context_candidate representation '{kind}' is duplicated."
                 )
             normalized[kind] = content
+        if not isinstance(self.metadata, Mapping):
+            raise ValueError("context_candidate.metadata must be an object.")
+        normalized_metadata: dict[str, object] = {}
+        for raw_key, value in self.metadata.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                raise ValueError("context_candidate metadata keys must be non-empty strings.")
+            normalized_metadata[key] = value
+        source_hash(normalized_metadata)
+        if not isinstance(self.lexical_text, str):
+            raise ValueError("context_candidate.lexical_text must be a string.")
+        lexical_text = self.lexical_text
+        embedding = None
+        if self.embedding is not None:
+            embedding = _normalized_vector(self.embedding, "context_candidate.embedding")
         object.__setattr__(self, "source_ref", source_ref)
         object.__setattr__(self, "representations", normalized)
-        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "metadata", normalized_metadata)
+        object.__setattr__(self, "lexical_text", lexical_text)
+        object.__setattr__(self, "embedding", embedding)
+
+
+@dataclass(frozen=True)
+class LocalEmbeddingQuery:
+    """Hash-identified local query vector for one selector source."""
+
+    model_hash: str
+    index_hash: str
+    vector: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        for field_name in ("model_hash", "index_hash"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not _HASH_PATTERN.fullmatch(value):
+                raise ValueError(
+                    f"local_embedding_query.{field_name} must be a sha256 hash."
+                )
+        object.__setattr__(
+            self,
+            "vector",
+            _normalized_vector(self.vector, "local_embedding_query.vector"),
+        )
 
 
 @dataclass(frozen=True)
@@ -99,6 +145,10 @@ class ContextScope:
     """Local candidate inventory keyed by declared context source ID."""
 
     candidates: Mapping[str, Iterable[ContextCandidate]]
+    selector_context: Mapping[str, object] = field(default_factory=dict)
+    local_embedding_queries: Mapping[str, LocalEmbeddingQuery] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidates, Mapping):
@@ -121,10 +171,54 @@ class ContextScope:
                     f"context_scope source '{source_id}' contains duplicate source refs."
                 )
             normalized[source_id] = items
+        if not isinstance(self.selector_context, Mapping):
+            raise ValueError("context_scope.selector_context must be an object.")
+        normalized_context: dict[str, object] = {}
+        for raw_key, value in self.selector_context.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                raise ValueError(
+                    "context_scope selector-context keys must be non-empty strings."
+                )
+            normalized_context[key] = value
+        source_hash(normalized_context)
+        if not isinstance(self.local_embedding_queries, Mapping):
+            raise ValueError("context_scope.local_embedding_queries must be an object.")
+        normalized_queries: dict[str, LocalEmbeddingQuery] = {}
+        for raw_source_id, query in self.local_embedding_queries.items():
+            source_id = str(raw_source_id or "").strip()
+            if not source_id:
+                raise ValueError(
+                    "context_scope local-embedding source IDs must be non-empty strings."
+                )
+            if not isinstance(query, LocalEmbeddingQuery):
+                raise ValueError(
+                    "context_scope local-embedding queries must contain only "
+                    "LocalEmbeddingQuery values."
+                )
+            normalized_queries[source_id] = query
         object.__setattr__(self, "candidates", normalized)
+        object.__setattr__(self, "selector_context", normalized_context)
+        object.__setattr__(self, "local_embedding_queries", normalized_queries)
 
     def for_source(self, source_id: str) -> tuple[ContextCandidate, ...]:
         return tuple(self.candidates.get(source_id, ()))
+
+
+@dataclass(frozen=True)
+class _SelectorMatch:
+    source_ref: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class _SelectorInput:
+    """Data-only view supplied to a closed local selector strategy."""
+
+    source_ref: str
+    metadata: Mapping[str, object]
+    lexical_text: str
+    embedding: tuple[float, ...] | None
 
 
 def _member(value: object, name: str) -> Any:
@@ -157,8 +251,205 @@ def _spec_hash(spec: ContextSpec) -> str:
     return f"sha256:{hashlib.sha256(spec.to_json().encode('utf-8')).hexdigest()}"
 
 
-def _ordered_candidates(candidates: Iterable[ContextCandidate]) -> tuple[ContextCandidate, ...]:
-    return tuple(sorted(candidates, key=lambda item: (item.rank, item.source_ref)))
+def _normalized_vector(values: Sequence[float], field_name: str) -> tuple[float, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{field_name} must be a numeric vector.")
+    vector: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field_name} must contain only finite numbers.")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"{field_name} must contain only finite numbers.")
+        vector.append(number)
+    if not vector:
+        raise ValueError(f"{field_name} must not be empty.")
+    return tuple(vector)
+
+
+def _tokens(value: object) -> tuple[str, ...]:
+    return tuple(_TOKEN_PATTERN.findall(str(value or "").casefold()))
+
+
+def _metadata_matches(
+    candidate: _SelectorInput,
+    configuration: Mapping[str, object],
+) -> bool:
+    for key, expected in configuration.items():
+        if key in {"query_fields", "refs"}:
+            continue
+        actual = candidate.metadata.get(key)
+        if isinstance(actual, str) and isinstance(expected, str):
+            if actual.strip().casefold() != expected.strip().casefold():
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+def _metadata_matches_for_source(
+    source: ContextSource,
+    candidates: Iterable[_SelectorInput],
+) -> tuple[_SelectorMatch, ...]:
+    configuration = source.selector.configuration
+    refs = configuration.get("refs")
+    if refs is not None:
+        if not isinstance(refs, list):
+            raise ContextResolutionError(
+                f"Selector '{source.selector.selector_id}' refs must be an array.",
+                source_id=source.id,
+            )
+        positions = {str(value): position for position, value in enumerate(refs)}
+        ordered = sorted(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.source_ref in positions
+                and _metadata_matches(candidate, configuration)
+            ),
+            key=lambda candidate: (positions[candidate.source_ref], candidate.source_ref),
+        )
+        return tuple(
+            _SelectorMatch(
+                candidate.source_ref,
+                "Matched a declared reference using declared-reference order.",
+            )
+            for candidate in ordered
+        )
+    ordered = sorted(
+        (
+            candidate
+            for candidate in candidates
+            if _metadata_matches(candidate, configuration)
+        ),
+        key=lambda candidate: candidate.source_ref,
+    )
+    return tuple(
+        _SelectorMatch(
+            candidate.source_ref,
+            "Matched the declared local metadata constraints.",
+        )
+        for candidate in ordered
+    )
+
+
+def _lexical_matches(
+    source: ContextSource,
+    candidates: Iterable[_SelectorInput],
+    selector_context: Mapping[str, object],
+) -> tuple[_SelectorMatch, ...]:
+    raw_fields = source.selector.configuration.get("query_fields", ())
+    if not isinstance(raw_fields, list):
+        raise ContextResolutionError(
+            f"Selector '{source.selector.selector_id}' query_fields must be an array.",
+            source_id=source.id,
+        )
+    query_terms = Counter(
+        token
+        for field_name in raw_fields
+        for token in _tokens(selector_context.get(str(field_name)))
+    )
+    if not query_terms:
+        return ()
+    ranked: list[tuple[int, str, _SelectorInput]] = []
+    for candidate in candidates:
+        if not _metadata_matches(candidate, source.selector.configuration):
+            continue
+        candidate_terms = Counter(_tokens(candidate.lexical_text))
+        score = sum(
+            min(count, candidate_terms.get(term, 0))
+            for term, count in query_terms.items()
+        )
+        if score > 0:
+            ranked.append((-score, candidate.source_ref, candidate))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return tuple(
+        _SelectorMatch(
+            candidate.source_ref,
+            f"Matched {abs(score)} normalized lexical term occurrence(s).",
+        )
+        for score, _source_ref, candidate in ranked
+    )
+
+
+def _cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
+    if len(left) != len(right):
+        raise ContextResolutionError(
+            "Local-embedding query and candidate dimensions do not match."
+        )
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
+
+
+def _local_embedding_matches(
+    source: ContextSource,
+    definition: SelectorDefinition,
+    candidates: Iterable[_SelectorInput],
+    query: LocalEmbeddingQuery | None,
+) -> tuple[_SelectorMatch, ...]:
+    if query is None:
+        return ()
+    if (
+        query.model_hash != definition.local_embedding_model_hash
+        or query.index_hash != definition.local_embedding_index_hash
+    ):
+        raise ContextResolutionError(
+            f"Selector '{definition.selector_id}' local embedding identity does not match "
+            "its registered model/index hashes.",
+            source_id=source.id,
+        )
+    ranked: list[tuple[float, str, _SelectorInput]] = []
+    for candidate in candidates:
+        if candidate.embedding is None or not _metadata_matches(
+            candidate, source.selector.configuration
+        ):
+            continue
+        score = round(_cosine(query.vector, candidate.embedding), 12)
+        ranked.append((-score, candidate.source_ref, candidate))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return tuple(
+        _SelectorMatch(
+            candidate.source_ref,
+            f"Local embedding cosine score {-score:.12f} using the registered "
+            "model/index identity.",
+        )
+        for score, _source_ref, candidate in ranked
+    )
+
+
+def _select_candidates(
+    source: ContextSource,
+    definition: SelectorDefinition,
+    candidates: Iterable[ContextCandidate],
+    scope: ContextScope,
+) -> tuple[_SelectorMatch, ...]:
+    selection_inputs = tuple(
+        _SelectorInput(
+            source_ref=candidate.source_ref,
+            metadata=candidate.metadata,
+            lexical_text=candidate.lexical_text,
+            embedding=candidate.embedding,
+        )
+        for candidate in candidates
+    )
+    if definition.strategy == "metadata":
+        return _metadata_matches_for_source(source, selection_inputs)
+    if definition.strategy == "lexical":
+        return _lexical_matches(source, selection_inputs, scope.selector_context)
+    if definition.strategy == "local_embedding":
+        return _local_embedding_matches(
+            source,
+            definition,
+            selection_inputs,
+            scope.local_embedding_queries.get(source.id),
+        )
+    raise ContextResolutionError(
+        f"Selector '{definition.selector_id}' uses an unsupported strategy.",
+        source_id=source.id,
+    )
 
 
 def _remaining(budget: ContextBudget, used: ContextSize) -> tuple[int, int, int | None]:
@@ -186,18 +477,18 @@ def _zero_size() -> ContextSize:
 def _selection_reason(
     source: ContextSource,
     definition_tie_breaker: str,
-    candidate: ContextCandidate,
+    selector_reason: str,
     selected_rank: int,
 ) -> str:
     if isinstance(source.selector, AutoSelect):
         return (
             f"Automatic selector '{source.selector.selector_id}' selected rank "
             f"{selected_rank} using tie-breaker '{definition_tie_breaker}': "
-            f"{candidate.reason}"
+            f"{selector_reason}"
         )
     return (
         f"Deterministic selector '{source.selector.selector_id}' selected the item: "
-        f"{candidate.reason}"
+        f"{selector_reason}"
     )
 
 
@@ -293,7 +584,9 @@ class ContextResolver:
         unit_id = _required_id(unit, "unit")
         spec = self._selectors.validate_spec(_context_spec(capability, self._presets))
         declared_ids = {source.id for source in spec.sources}
-        undeclared = sorted(set(scope.candidates) - declared_ids)
+        undeclared = sorted(
+            (set(scope.candidates) | set(scope.local_embedding_queries)) - declared_ids
+        )
         if undeclared:
             raise ContextResolutionError(
                 f"Context scope contains undeclared source '{undeclared[0]}'.",
@@ -309,16 +602,8 @@ class ContextResolver:
 
         for source in spec.sources:
             definition = self._selectors.validate_source(source)
-            candidates = _ordered_candidates(scope.for_source(source.id))
-            source_used = _zero_size()
-            selected_for_source = 0
-            selector_limit = (
-                source.selector.item_limit
-                if isinstance(source.selector, AutoSelect)
-                else source.budget.max_items
-            )
-
-            if not candidates:
+            source_candidates = scope.for_source(source.id)
+            if not source_candidates:
                 reason = (
                     "Required context source is unavailable."
                     if source.required
@@ -331,8 +616,59 @@ class ContextResolver:
                     )
                 omissions.append(omission_record(source_id=source.id, reason=reason))
                 continue
+            candidates = _select_candidates(
+                source,
+                definition,
+                source_candidates,
+                scope,
+            )
+            candidates_by_ref = {
+                candidate.source_ref: candidate for candidate in source_candidates
+            }
+            matched_refs = {match.source_ref for match in candidates}
+            for excluded in sorted(
+                (
+                    candidate
+                    for candidate in source_candidates
+                    if candidate.source_ref not in matched_refs
+                ),
+                key=lambda candidate: candidate.source_ref,
+            ):
+                omissions.append(
+                    omission_record(
+                        source_id=source.id,
+                        source_ref=excluded.source_ref,
+                        source=excluded.source,
+                        reason=(
+                            f"Local selector strategy '{definition.strategy}' did not "
+                            "match the candidate."
+                        ),
+                    )
+                )
+            source_used = _zero_size()
+            selected_for_source = 0
+            selector_limit = (
+                source.selector.item_limit
+                if isinstance(source.selector, AutoSelect)
+                else source.budget.max_items
+            )
 
-            for candidate in candidates:
+            if not candidates:
+                reason = (
+                    "Required context selector matched no local candidates."
+                    if source.required
+                    else "Optional context selector matched no local candidates."
+                )
+                if source.required:
+                    raise ContextResolutionError(
+                        f"Required context source '{source.id}' matched no candidates.",
+                        source_id=source.id,
+                    )
+                omissions.append(omission_record(source_id=source.id, reason=reason))
+                continue
+
+            for match in candidates:
+                candidate = candidates_by_ref[match.source_ref]
                 if selected_for_source >= selector_limit:
                     omissions.append(
                         omission_record(
@@ -394,7 +730,7 @@ class ContextResolver:
                 reason = _selection_reason(
                     source,
                     definition.tie_breaker,
-                    candidate,
+                    match.reason,
                     selected_for_source + 1,
                 )
                 selection = ContextSelection(
@@ -464,5 +800,6 @@ __all__ = [
     "ContextResolutionError",
     "ContextResolver",
     "ContextScope",
+    "LocalEmbeddingQuery",
     "RESOLVER_HASH",
 ]

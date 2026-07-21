@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.4A`.
-- Last completed task: `P4.4`.
+- Current task: `P4.5`.
+- Last completed task: `P4.4A`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.4A` |
+| 4 | In progress | `P4.5` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -450,6 +450,24 @@ status notes below.
   `test_agent_runtime_contracts.py` in `0.98s`. No active runtime, API, or
   frontend contract changed, so broader behavioral suites and a frontend build
   were not required. The exact next task is `P4.4A`.
+- `P4.4A` completed on 2026-07-21. Selector execution is now a closed,
+  data-only resolver boundary that accepts only deterministic metadata,
+  deterministic lexical, or hash-identified local-embedding strategies.
+  Adapters supply metadata, lexical text, or numeric vectors rather than ranks
+  or opaque reasons; the resolver computes stable scores and always applies a
+  registered source-reference or declared-reference tie-break. Selector
+  registrations accept definitions rather than executable callables, selector
+  inputs reject non-data service objects, and static tests prohibit
+  `ModelGateway`, provider-client, or network imports and injection points in
+  the selector implementation modules. Local-embedding definitions and query
+  inputs must agree on SHA-256 model and index identities, both hashes
+  participate in selector identity, and mismatches fail before selection.
+  Focused verification passed `59` tests across
+  `test_agent_context_models.py`, `test_agent_context_resolver.py`, and
+  `test_agent_runtime_contracts.py` in `0.90s`. No active worker, domain
+  adapter, API payload, or frontend contract changed, so broader behavioral
+  suites and a frontend build were not required. The exact next task is
+  `P4.5`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -862,7 +880,7 @@ and manually editable.
 - [x] `P4.4` Implement resolver ordering, global and per-source limits,
   required/optional source behavior, deny-by-default representations, and
   stable automatic-selection reasons.
-- [ ] `P4.4A` Enforce that automatic selectors cannot call `ModelGateway` or a
+- [x] `P4.4A` Enforce that automatic selectors cannot call `ModelGateway` or a
   provider/network service; support only deterministic metadata, lexical, or
   hash-identified local-embedding strategies with stable tie-breaking and
   identity tests.

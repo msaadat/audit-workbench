@@ -40,6 +40,7 @@ from .resolver import (
     ContextResolutionError,
     ContextResolver,
     ContextScope,
+    LocalEmbeddingQuery,
     RESOLVER_HASH,
 )
 
@@ -64,6 +65,7 @@ __all__ = [
     "ContextSpec",
     "ContextScope",
     "ContextTruncation",
+    "LocalEmbeddingQuery",
     "PRESETS",
     "RESOLVER_HASH",
     "PresetRegistry",

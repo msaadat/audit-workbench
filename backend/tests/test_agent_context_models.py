@@ -1,3 +1,5 @@
+import ast
+import inspect
 import json
 import threading
 
@@ -37,6 +39,8 @@ from app.agent.context import (
 from app.agent import store
 from app.agent.runtime import DefaultRunRuntime
 from app.workspaces import WorkspaceError
+import app.agent.context.presets as context_presets
+import app.agent.context.resolver as context_resolver
 
 
 def _size(items=1, characters=120, estimated_tokens=30):
@@ -354,6 +358,106 @@ def test_registered_auto_selector_is_bounded_hash_identified_and_reasoned():
     assert definition.definition_hash.startswith("sha256:")
     assert definition.tie_breaker == "source_ref_ascending"
     assert definition.emits_reasons is True
+    assert definition.strategy == "lexical"
+
+
+def test_selector_definitions_allow_only_closed_local_strategy_identities():
+    with pytest.raises(ValueError, match="strategy must be"):
+        _selector_definition(strategy="provider_model")
+    with pytest.raises(ValueError, match="Deterministic selectors support only"):
+        _selector_definition(strategy="lexical")
+    with pytest.raises(ValueError, match="require sha256 model and index hashes"):
+        _selector_definition(selector_kind="auto", strategy="local_embedding")
+    with pytest.raises(ValueError, match="Only local-embedding selectors"):
+        _selector_definition(local_embedding_model_hash="sha256:" + "2" * 64)
+    with pytest.raises(ValueError, match="must use the stable"):
+        _selector_definition(
+            selector_kind="auto",
+            strategy="lexical",
+            tie_breaker="declared_reference_order",
+            configuration_keys=("refs",),
+            required_configuration_keys=("refs",),
+        )
+
+
+def test_local_embedding_model_and_index_hashes_participate_in_selector_identity():
+    common = {
+        "selector_id": "documents.embedding",
+        "selector_kind": "auto",
+        "supported_source_types": ("documents",),
+        "implementation_hash": "sha256:" + "1" * 64,
+        "strategy": "local_embedding",
+        "local_embedding_model_hash": "sha256:" + "2" * 64,
+    }
+    first = SelectorDefinition(
+        **common,
+        local_embedding_index_hash="sha256:" + "3" * 64,
+    )
+    second = SelectorDefinition(
+        **common,
+        local_embedding_index_hash="sha256:" + "4" * 64,
+    )
+
+    assert first.definition_hash != second.definition_hash
+    assert first.to_dict()["local_embedding_model_hash"] == "sha256:" + "2" * 64
+    assert first.to_dict()["local_embedding_index_hash"] == "sha256:" + "3" * 64
+
+
+def test_selector_implementation_boundary_has_no_gateway_or_network_dependency():
+    forbidden_imports = {
+        "aiohttp",
+        "anthropic",
+        "httpx",
+        "openai",
+        "requests",
+        "socket",
+        "urllib",
+        "urllib3",
+    }
+    for module in (context_presets, context_resolver):
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+        imported_roots = {
+            alias.name.split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        imported_roots.update(
+            str(node.module or "").split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        )
+        assert not (imported_roots & forbidden_imports)
+        assert "ModelGateway" not in source
+        assert "app.llm" not in source
+
+    assert set(inspect.signature(SelectorRegistry.register).parameters) == {
+        "self",
+        "definition",
+    }
+    assert set(inspect.signature(context_resolver.ContextResolver).parameters) == {
+        "selectors",
+        "presets",
+    }
+
+
+def test_selector_inputs_reject_service_objects_before_strategy_execution():
+    class _ServiceObject:
+        pass
+
+    with pytest.raises(ValueError, match="deterministically hashable"):
+        context_resolver.ContextCandidate(
+            "document:A",
+            "source-a",
+            {"excerpt": "A"},
+            metadata={"provider_client": _ServiceObject()},
+        )
+    with pytest.raises(ValueError, match="deterministically hashable"):
+        context_resolver.ContextScope(
+            {},
+            selector_context={"provider_client": _ServiceObject()},
+        )
 
 
 def test_context_registries_reject_duplicate_and_unknown_keys():

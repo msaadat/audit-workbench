@@ -435,14 +435,20 @@ and atomic `contexts/<unit_id>.json` persistence through `RunRuntime`.
 Persisted references are integrity-checked and the persistence boundary accepts
 only `ContextManifest`, so local `ContextBundle` content is never written.
 `ContextResolver` now consumes local `ContextScope` candidates in declaration
-order, applies stable rank/source-reference ordering, enforces per-source and
-global item/character/token-estimate limits, truncates bounded text
-deterministically, and records omissions and representation privacy decisions.
-Required sources block when no permitted item can be supplied; optional absence
-is manifested. Unknown and undeclared representations are denied by default,
-and automatic selections receive stable content-free reasons. Domain adapters,
-provider/network isolation for selector implementations, and active capability
-wiring remain pending in the subsequent Phase 4 slices.
+order, executes only closed data-only metadata, lexical, or local-embedding
+strategies, and applies stable source-reference or declared-reference
+tie-breaking. Selector registrations cannot accept executable callables or
+service dependencies; selector inputs reject non-data service objects, and
+tests statically exclude `ModelGateway`, provider-client, and network imports
+from the implementation boundary. Local-embedding selection requires matching
+SHA-256 model and index identities, which participate in selector identity.
+The resolver also enforces per-source and global item/character/token-estimate
+limits, truncates bounded text deterministically, and records omissions and
+representation privacy decisions. Required sources block when no permitted
+item can be supplied; optional absence is manifested. Unknown and undeclared
+representations are denied by default, and automatic selections receive stable
+content-free reasons. Domain adapters and active capability wiring remain
+pending in the subsequent Phase 4 slices.
 
 ### Phase 1 Deletion Boundary
 
