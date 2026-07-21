@@ -15,6 +15,7 @@ from .runtime import (
     DefaultModelGateway,
     DefaultRunRuntime,
     LimitExceeded,
+    RunRuntime,
 )
 
 MAX_TASKS = 60
@@ -49,14 +50,21 @@ class BaseRunner:
 
     stage_titles: dict[str, str] = {}
 
-    def __init__(self, workspace: Workspace, run: dict, handle):
+    def __init__(
+        self,
+        workspace: Workspace,
+        run: dict,
+        handle,
+        *,
+        runtime: RunRuntime | None = None,
+    ):
         self.ws = workspace
         self.run = run
         self.handle = handle
         # Independent planning-document requests may run concurrently. Keep
         # provider waits parallel while serializing the shared durable ledger.
         self._state_lock = threading.RLock()
-        self.runtime = DefaultRunRuntime(
+        self.runtime = runtime if runtime is not None else DefaultRunRuntime(
             workspace=self.ws,
             run=self.run,
             state_lock=self._state_lock,

@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 3.
-- Current task: `P3.6`.
-- Last completed task: `P3.5`.
+- Current task: `P3.7`.
+- Last completed task: `P3.6`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -51,7 +51,7 @@ status notes below.
 | 0 | Complete | — |
 | 1 | Complete | — |
 | 2 | Complete | — |
-| 3 | In progress | `P3.6` |
+| 3 | In progress | `P3.7` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
@@ -346,6 +346,18 @@ status notes below.
   approval/interaction API and scheduler regression tests also passed in
   `7.02s`. No frontend payload or API contract changed, so a frontend build was
   not required. The exact next task is `P3.6`.
+- `P3.6` completed on 2026-07-21. `ActionRunner` now exposes an explicit,
+  optional `RunRuntime` constructor dependency and passes it through the
+  temporary `BaseRunner` delegation facade. When no runtime is supplied, the
+  existing three-argument constructor still creates the same
+  `DefaultRunRuntime`, preserving current production construction, action
+  scheduling, events, budgets, controls, approvals, interactions, and API
+  payloads. The focused contract test proves both the injected-runtime path
+  and the unchanged default path. Focused verification passed `166` tests
+  across `test_agent_runtime_contracts.py`, `test_agent_runner.py`,
+  `test_command_agent.py`, and `test_workflow_v2.py` in `55.23s`. No frontend
+  payload or API contract changed, so a frontend build was not required. The
+  exact next task is `P3.7`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -691,7 +703,7 @@ working papers, dashboard, reports, or audit completion.
   pause/resume, cancellation, and inbox draining into `RunRuntime`.
 - [x] `P3.5` Extract approval and structured-interaction transitions, including
   blocked-time deadline extension and restart behavior.
-- [ ] `P3.6` Inject the runtime into `ActionRunner` while retaining the
+- [x] `P3.6` Inject the runtime into `ActionRunner` while retaining the
   current API behavior.
 - [ ] `P3.7` Inject the runtime into the existing `WorkflowRunner` without yet
   making it domain-neutral or moving its stage handlers.

@@ -18,6 +18,7 @@ from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError, slugif
 from ..workspace_transactions import mutate, parent_hashes
 from . import actions, artifact_index, ledger, prompts, store
 from .base import BaseRunner, Cancelled, LimitExceeded
+from .runtime import RunRuntime
 
 GOAL_TEMPLATES = {
     "full_audit_working_draft": {
@@ -143,6 +144,22 @@ class ActionRunner(BaseRunner):
         # artifact is now the RCM's structured planned-test collection.
         "work_program": "RCM planned tests",
     }
+
+    def __init__(
+        self,
+        workspace: Workspace,
+        run: dict,
+        handle,
+        *,
+        runtime: RunRuntime | None = None,
+    ):
+        """Create an action scheduler with an injectable per-run runtime.
+
+        The optional dependency preserves the existing three-argument
+        construction API while allowing the scheduler to be composed with a
+        runtime supplied by its caller.
+        """
+        super().__init__(workspace, run, handle, runtime=runtime)
 
     @staticmethod
     def _planning_context(payload: dict) -> dict:
