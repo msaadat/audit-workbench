@@ -270,10 +270,15 @@ class BaseRunner:
     ) -> str:
         """Execute and provenance-log one model turn.
 
+        This is the single path from any runner to the provider; every budget,
+        every provenance row, and every concurrency limit is enforced here.
         Only accounting and snapshot mutations are locked. The provider call
         stays outside the lock so independent document analyses can overlap.
         """
         self.checkpoint()
+        # Charge the turn and a character-derived token estimate *before*
+        # calling out, so an over-budget run fails without spending money. The
+        # estimate is reconciled against real provider usage further down.
         with self._state_lock:
             usage = self.run.setdefault("usage", {})
             maximum_turns = int(
@@ -296,6 +301,10 @@ class BaseRunner:
             if attempt > 1:
                 usage["retries"] = int(usage.get("retries") or 0) + 1
             self.save()
+        # The leading [agent:<stage>] tag is the stage identity for the whole
+        # system: UI labels, per-worker usage totals, and the test fakes all
+        # key on it. Unit/parent correlation comes from thread-local state set
+        # by the parallel workers, so concurrent calls stay attributable.
         tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
         self._model_wait(tag, started=True, attempt=attempt)
         activity_fields = dict(activity or {})
@@ -308,6 +317,10 @@ class BaseRunner:
         activity_fields.setdefault("retry_number", attempt)
         current_activity = dict(self.run.get("activity") or {})
         call_started = time.monotonic()
+        # The provider call itself: outside the state lock, inside a trace
+        # context, and gated by a process-wide semaphore keyed on
+        # provider:model — that semaphore, not the thread pools, is what
+        # actually bounds in-flight requests across every concurrent run.
         try:
             with debug_store.trace_context(
                 workspace_id=self.ws.id, workspace_root=str(self.ws.root), run_id=self.run["id"],
@@ -352,6 +365,10 @@ class BaseRunner:
         content = str(message.get("content") or "")
         latency_ms = round((time.monotonic() - call_started) * 1000, 3)
         provider_usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+        # Replace the pre-call estimate with real provider counts, then fold
+        # this call into the per-worker totals and the metrics list the run
+        # summary reports. A blown budget is raised only after the response is
+        # returned to the caller's accounting — the work is already paid for.
         with self._state_lock:
             usage = self.run.setdefault("usage", {})
             prompt_tokens = int(
@@ -590,6 +607,11 @@ class BaseRunner:
         )
 
     def request_approval(self, kind: str, task: dict, items: list[dict]) -> list[dict]:
+        """Block on an editable approval batch and return the accepted specs.
+
+        Reuses any pending batch for this task so a resumed run re-presents the
+        same items instead of proposing them twice.
+        """
         approval = self._pending_approval(kind, task["id"])
         if approval is None:
             if not items:
@@ -607,6 +629,10 @@ class BaseRunner:
         self.emit("approval_request", {"approval": approval})
         self.set_status("awaiting_approval")
         waited_from = time.monotonic()
+        # Wait durably: the handle delivers decisions in-process, but a
+        # decision submitted while no handle was attached only exists on disk,
+        # so the run document is re-read each pass. Time spent blocked on the
+        # auditor is added back to the deadline rather than counted against it.
         decisions = approval.pop("submitted_decisions", None)
         while decisions is None:
             if self.handle.cancel.is_set():
@@ -634,6 +660,8 @@ class BaseRunner:
                 if current and current.get("submitted_decisions") is not None:
                     decisions = current["submitted_decisions"]
         self.deadline += time.monotonic() - waited_from
+        # Apply the decisions, then default anything the auditor did not answer
+        # to rejected — silence must never be read as consent for a mutation.
         by_id = {item["id"]: item for item in approval["items"]}
         for decision in decisions:
             item = by_id.get(str(decision.get("item_id")))

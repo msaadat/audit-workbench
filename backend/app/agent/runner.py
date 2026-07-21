@@ -229,13 +229,21 @@ def start_command_run(
     parent_run_id: str | None = None,
     context: dict | None = None,
 ) -> dict:
-    """Start the schema-v2 unified engagement command runner."""
+    """Start the unified engagement command runner.
+
+    Creates a schema-v2 run; `initialize_known_workflow` may immediately
+    promote it to v3 by installing a capability graph. Doing that routing here,
+    before the thread starts, means a recognized command reaches the UI with
+    its full stage list already visible and without spending a model turn.
+    """
     recover_workspace(workspace)
     if not llm.agent_status()["configured"]:
         raise llm.LLMError(
             "The agent's LLM is not configured. Set an API key for the "
             "assistant provider (or AGENT_PROVIDER/AGENT_MODEL) first."
         )
+    # One live run per workspace, and a process-wide cap. Callers turn the
+    # busy signal into a queued command on the active run rather than an error.
     live = live_handles()
     if any(handle.workspace_id == workspace.id for handle in live):
         raise AgentBusyError(

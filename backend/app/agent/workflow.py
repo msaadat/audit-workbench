@@ -162,7 +162,13 @@ def materialize(
     requested_outcomes: list[str],
     scope: dict | None = None,
 ) -> tuple[list[str], list[dict], list[str]]:
-    """Resolve closure and materialize only missing/stale/review units."""
+    """Resolve closure and materialize only missing/stale/review units.
+
+    This is where the "action plan" for an audit command comes from — a
+    dependency closure plus deterministic readiness, not a model. Walking the
+    closure in topological order lets each decision see what earlier
+    capabilities already scheduled.
+    """
     scope = dict(scope or {})
     resolved = registry.closure(requested_outcomes)
     stages: list[dict] = []
@@ -171,6 +177,8 @@ def materialize(
     for capability_id in resolved:
         capability = registry.get(capability_id)
         readiness = capability.readiness(workspace, scope)
+        # Satisfied output is reused unless something upstream is about to
+        # rewrite its inputs, or the auditor explicitly forced a refresh.
         dependency_will_change = any(dependency in scheduled for dependency in capability.depends_on)
         if (
             readiness.satisfied
@@ -179,6 +187,9 @@ def materialize(
         ):
             reused.append(capability_id)
             continue
+        # Fan the capability out into concrete units against the *current*
+        # workspace. Unit ids are semantic (semantic_unit_id), so re-expanding
+        # after a resume produces the same ids and the same work.
         specs = capability.expand_units(workspace, scope)
         stages.append(
             {
@@ -252,7 +263,13 @@ def stable_all_settled(
     max_workers: int = 4,
     on_settled: Callable[[dict, Any | None, Exception | None], None] | None = None,
 ) -> list[tuple[dict, Any | None, Exception | None]]:
-    """Execute independent compute/model work concurrently and return ID order."""
+    """Execute independent compute/model work concurrently and return ID order.
+
+    All-settled, never fail-fast: one bad RCM row must not cancel the other
+    twenty in flight. Results are collected as they complete (so `on_settled`
+    can persist each proposal immediately) but returned sorted by unit id, so
+    the caller's commit order stays deterministic regardless of timing.
+    """
     if not units:
         return []
     results: dict[str, tuple[Any | None, Exception | None]] = {}

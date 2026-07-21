@@ -36,6 +36,14 @@ ELIGIBLE_DISPOSITIONS = {"confirmed_control_exception", "draft_finding_candidate
 
 
 def _local_resolution(command: dict) -> dict | None:
+    """Route a command to capability outcomes without calling the model.
+
+    Tried in confidence order — explicit outcomes (follow-up/retry runs), then
+    goal templates, then command phrasing, then markers that mean "this is an
+    isolated mutation, hand it to CommandRunner". Returning None is what sends
+    the command to the LLM router, so every phrase added here removes a model
+    call from the common path.
+    """
     direct = command.get("requested_outcomes")
     if isinstance(direct, list) and direct:
         requested = [str(item) for item in direct]
@@ -70,7 +78,7 @@ def _local_resolution(command: dict) -> dict | None:
     text = str(command.get("text") or "").casefold()
     mappings = [
         (("full audit", "complete the audit", "end-to-end audit", "end to end audit"), audit_capabilities.FULL_AUDIT_OUTCOMES),
-        (("draft the apm", "update the apm", "generate apm", "audit planning memorandum"), ["planning.apm_ready"]),
+        (("draft the apm", "update the apm", "generate apm", "generate the apm", "audit planning memorandum"), ["planning.apm_ready"]),
         (("generate the rcm", "draft the rcm", "update the rcm", "risk and control matrix"), ["planning.rcm_ready"]),
         (("testing procedures", "planned procedures", "planned tests"), ["planning.planned_tests_ready"]),
         (("translate planned", "executable tests", "execution definitions"), ["fieldwork.definitions_ready"]),
@@ -131,6 +139,13 @@ def _explanation(resolved: list[str], stages: list[dict], reused: list[str], req
 
 
 def _install_resolution(workspace: Workspace, run: dict, resolution: dict) -> None:
+    """Materialize the capability graph onto the run and size its budgets.
+
+    Called either before the worker thread starts (local routing) or from
+    `execute` after the LLM router answers. Promotes the run to schema v3 —
+    from that point `run["workflow"]` is the authoritative execution record and
+    the v2 action ledger stays empty.
+    """
     scope = {
         "target_refs": list(resolution.get("target_refs") or ["workspace:current"]),
         "refresh_policy": resolution.get("refresh_policy") or "missing_or_stale",
@@ -152,6 +167,10 @@ def _install_resolution(workspace: Workspace, run: dict, resolution: dict) -> No
         )
     explanation = _explanation(resolved, stages, reused, requested)
     run["schema_version"] = 3
+    # Budgets are sized from the work actually discovered, not a fixed ceiling:
+    # an engagement with 40 RCM rows legitimately needs far more model turns
+    # than one with 3. _refresh_dynamic_limits re-runs this before every stage
+    # because the RCM grows while the run is in flight.
     planned_count = sum(len(row.get("planned_tests") or []) for row in workspace.rcm)
     qa_pairs = sum(
         len(item.get("document_ids") or [])
@@ -229,6 +248,14 @@ class WorkflowRunner(CommandRunner):
     """Generic scheduler backed by the audit capability registry."""
 
     def execute(self) -> None:
+        """Resolve the command to outcomes, then run the capability graph.
+
+        Three exits before any audit work happens: an isolated mutation is
+        handed down to CommandRunner (v2), an unanswerable request completes
+        with an explanation, and anything else installs a capability graph.
+        Stages then run strictly in dependency order — parallelism lives
+        inside a stage, never across them.
+        """
         if not self.run.get("started"):
             self.run["started"] = store.utcnow()
             self.save()
@@ -253,6 +280,9 @@ class WorkflowRunner(CommandRunner):
                 self.save()
                 self.emit("workflow_resolved", {"workflow": self.run["workflow"]})
                 self.emit("workflow_explanation", {"text": self.run["workflow_explanation"]})
+            # Requeue units interrupted mid-flight, and backfill workflow
+            # hashes onto artifacts created before this run (or by hand), so
+            # readiness does not treat pre-existing work as missing.
             workflow.recovery(self.run["workflow"])
             self._adopt_legacy()
             self.save()
@@ -264,6 +294,9 @@ class WorkflowRunner(CommandRunner):
             for stage in self.run["workflow"].get("stages") or []:
                 if stage.get("status") in {"succeeded", "skipped"}:
                     continue
+                # Reload between stages: the auditor, other tabs, and the
+                # previous stage all write to the workspace, and unit expansion
+                # below must see the current state.
                 self.checkpoint()
                 self._refresh_workspace()
                 self._refresh_dynamic_limits()
@@ -274,6 +307,10 @@ class WorkflowRunner(CommandRunner):
                 ):
                     self._observation_checkpoint()
                     self._refresh_workspace()
+                # Dependencies that may be only partially satisfied. Fieldwork
+                # is naturally ragged — one unusable planned test or one
+                # evidence-blocked document test must not sink the stages
+                # behind it, so these edges tolerate a review_required parent.
                 partial_dependencies = {
                     "fieldwork.definitions_ready": {"planning.planned_tests_ready"},
                     "fieldwork.executed": {"fieldwork.definitions_ready"},
@@ -495,9 +532,17 @@ class WorkflowRunner(CommandRunner):
 
     # ------------------------------------------------------------- stages
     def _run_stage(self, stage: dict) -> None:
+        """Re-expand, dispatch to the capability's handler, then fold statuses.
+
+        Units are re-expanded here rather than trusted from resolution time,
+        because upstream stages have since changed the workspace this stage
+        fans out over.
+        """
         self._stage_event(stage, "running")
         units = self._ensure_stage_units(stage)
         capability = stage["capability"]
+        # Nothing to do: either the capability is genuinely satisfied, or its
+        # inputs never materialized and downstream stages must see it blocked.
         if not units:
             readiness = audit_capabilities.REGISTRY.get(capability).readiness(self.ws, {})
             self._stage_event(stage, "succeeded" if readiness.satisfied else "blocked")
@@ -517,6 +562,9 @@ class WorkflowRunner(CommandRunner):
             "audit.verified": self._verify,
         }
         handlers[capability](stage, units)
+        # Stage status is derived, never set by a handler. `review_required` is
+        # a distinct outcome from failure: the work landed but needs an
+        # auditor, which is what _finish_workflow turns into next_outcomes.
         statuses = {unit["status"] for unit in units}
         if statuses <= {"succeeded", "skipped"}:
             final = "succeeded"
@@ -1016,6 +1064,14 @@ class WorkflowRunner(CommandRunner):
         return f"{required_kind}:{item['id']}"
 
     def _executions(self, stage: dict, units: list[dict]) -> None:
+        """Execute every fieldwork unit and record the outcome as a status.
+
+        The status vocabulary carries audit meaning, not just success/failure:
+        `awaiting_confirmation` means the agent produced an answer that only an
+        auditor may disposition, and `blocked` means evidence is missing —
+        which registers the unit against its evidence request so uploading the
+        document can unblock it later.
+        """
         # Existing services still combine compute and mutation, so execution is
         # deliberately serial. Model planning/spec calls above are safe to fan out.
         for unit in sorted(units, key=lambda item: item["id"]):
@@ -1350,6 +1406,14 @@ class WorkflowRunner(CommandRunner):
 
     # --------------------------------------------------------- concurrency
     def _parallel_candidates(self, stage: dict, units: list[dict], worker_fn):
+        """Generate one model proposal per unit, concurrently, then hand back
+        deterministic (unit, candidate) pairs for serialized commit.
+
+        Generation is the expensive, parallelizable half; commit is the
+        ordering-sensitive half and stays with the caller. A unit whose
+        proposal was already generated in an earlier attempt is restored from
+        its sidecar instead of being re-billed to the model.
+        """
         pending = []
         candidates = []
         for unit in units:
@@ -1373,6 +1437,8 @@ class WorkflowRunner(CommandRunner):
             self.checkpoint()
             self._set_unit(stage, unit, "running")
 
+        # Thread-local correlation: _llm_content reads these to attribute
+        # concurrent provider calls to the right unit in the provenance ledger.
         def correlated_worker(unit: dict):
             self._model_context.unit_id = unit["id"]
             self._model_context.parent_refs = tuple(unit.get("parent_refs") or [])
@@ -1382,6 +1448,9 @@ class WorkflowRunner(CommandRunner):
                 self._model_context.unit_id = None
                 self._model_context.parent_refs = None
 
+        # Persist each proposal as it settles, before any commit runs. A crash
+        # between generation and commit then resumes from the sidecar rather
+        # than paying for the same completion twice.
         def persist_proposal(unit: dict, value, error) -> None:
             if error is not None:
                 return
@@ -1395,6 +1464,8 @@ class WorkflowRunner(CommandRunner):
             max_workers=int((self.run.get("limits") or {}).get("max_llm_concurrency") or 4),
             on_settled=persist_proposal,
         )
+        # Per-unit failures are absorbed so siblings still commit; cancellation
+        # and budget exhaustion are run-level and must propagate.
         for unit, value, error in settled:
             if error is not None:
                 if isinstance(error, (Cancelled, LimitExceeded)):
@@ -1436,6 +1507,14 @@ class WorkflowRunner(CommandRunner):
 
     # ------------------------------------------------------------ finish
     def _finish_workflow(self) -> None:
+        """Close the run on real audit outcomes, not on unit bookkeeping.
+
+        A run that executed every unit cleanly can still be incomplete — open
+        evidence requests, undispositioned observations, or an unreconciled
+        report. Those become `next_outcomes`, the exact input "Continue audit"
+        replays, and they are why `completed_with_open_items` is a distinct
+        terminal status from `completed`.
+        """
         self._refresh_workspace()
         completion = rcm_execution.completion(self.ws)
         stages = self.run["workflow"].get("stages") or []

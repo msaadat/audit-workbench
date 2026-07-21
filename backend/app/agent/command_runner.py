@@ -164,6 +164,14 @@ class CommandRunner(BaseRunner):
             self.save()
 
     def execute(self) -> None:
+        """Interpret the command into an action graph, then drive it to done.
+
+        Re-entrant: a resumed run finds its actions already on the ledger and
+        skips straight to driving the graph. The failure paths differ by how
+        much was committed — a planning command that never produced anything
+        fails outright, while a partially executed graph closes out with the
+        work it did land plus a warning.
+        """
         if not self.run.get("started"):
             self.run["started"] = store.utcnow()
             self.save()
@@ -255,6 +263,13 @@ class CommandRunner(BaseRunner):
         return profiles
 
     def _interpret(self) -> None:
+        """Turn one command into a validated action DAG in a single model turn.
+
+        There is no tool loop: the model sees the workspace index, table
+        schemas/profiles, and the action catalog once, and returns the whole
+        graph. Everything after that is deterministic — the ledger, not the
+        model, decides what is legal and in what order it runs.
+        """
         self.set_status("interpreting")
         self.set_activity(
             "command.interpret", "Preparing the action plan",
@@ -274,6 +289,8 @@ class CommandRunner(BaseRunner):
             self._table_profiles(),
             prepared_planning=self.run.get("prepared_planning"),
         )
+        # One repair round: a batch rejected by the action contracts or graph
+        # validator is fed back with the specific error rather than discarded.
         attempt_user = base_user
         created = []
         payload = {}
@@ -294,6 +311,9 @@ class CommandRunner(BaseRunner):
                 "completion_criteria": _text_list(payload.get("completion_criteria")),
             }
             self.run["goal"] = goal
+            # Strip anything the orchestrator already owns before validation:
+            # planning is done by _prepare_planning, and the terminal full-audit
+            # actions are appended deterministically by _ensure_full_audit_stages.
             proposals = payload.get("actions") or []
             if self.run.get("prepared_planning") and isinstance(proposals, list):
                 proposals = self._remove_redundant_planning_actions(proposals)
@@ -316,6 +336,8 @@ class CommandRunner(BaseRunner):
                 if attempt + 1 >= SEMANTIC_PROPOSAL_ATTEMPTS:
                     raise
                 attempt_user = self._proposal_repair_user(base_user, payload, error)
+        # The model asked for a replanning wave but marked nothing significant;
+        # promote the last read/compute action so the wave can actually fire.
         if payload.get("needs_planning_wave") and not any(item.get("planning_significant") for item in created):
             for item in reversed(created):
                 definition = actions.REGISTRY.get(item["type"], item["definition_version"])
@@ -348,7 +370,19 @@ class CommandRunner(BaseRunner):
         return self._is_planning_command() or self._requests_full_audit()
 
     def _prepare_planning(self) -> None:
-        """Prepare grounded planning before asking for downstream audit work."""
+        """Prepare grounded planning before asking for downstream audit work.
+
+        The v2 pre-pass for planning and full-audit commands: it produces a
+        document-grounded APM, RCM, and planned tests *before* the interpreter
+        sees the command, so the model plans only the remaining fieldwork.
+        WorkflowRunner supersedes this with the capability graph — the path
+        survives for commands that fall through local routing (see §3 of
+        AGENTS.md).
+
+        The four stages mutate the workspace directly rather than proposing
+        actions, so the whole pass is wrapped in an all-or-nothing rollback:
+        a failure in a later stage must not leave a half-written engagement.
+        """
         if self.run.get("prepared_planning"):
             return
         self.set_status("executing")
@@ -366,6 +400,9 @@ class CommandRunner(BaseRunner):
                 "planning.prepare", "Preparing engagement planning",
                 detail="Starting the document-grounded planning workflow.",
             )
+        # Two independent rollback points: `snapshot` restores the workspace
+        # artifacts, `run_snapshot` rewinds the run ledger (artifacts, change
+        # counters, revisions) so a rolled-back attempt reports nothing.
         self.run.setdefault("context", {})["require_planning_quality"] = True
         snapshot = {
             "planning": copy.deepcopy(self.ws.planning),
@@ -389,6 +426,8 @@ class CommandRunner(BaseRunner):
             "planning_revision_count": len(self.run.get("planning_revisions") or []),
         }
         self.save()
+        # Strictly ordered: each stage grounds the next, and each applies its
+        # own deterministic quality gate before committing.
         try:
             basis = self.stage_context()
             apm = self.stage_apm(basis)
@@ -401,6 +440,8 @@ class CommandRunner(BaseRunner):
             self.ws.rcm = snapshot["rcm"]
             self.ws.rcm_migration = snapshot["rcm_migration"]
             self.ws.save()
+            # Rewind the run ledger to its pre-pass state and remember what was
+            # discarded, so the rollback is itself auditable.
             artifacts = self.run.setdefault("artifacts", [])
             rolled_back_artifacts = copy.deepcopy(
                 artifacts[run_snapshot["artifact_count"]:]
@@ -413,6 +454,9 @@ class CommandRunner(BaseRunner):
             self.run["planning_changes"] = run_snapshot["planning_changes"]
             revisions = self.run.get("planning_revisions") or []
             del revisions[run_snapshot["planning_revision_count"]:]
+            # Fail every planning task in the legacy plan projection, including
+            # ones that had already completed: their artifacts no longer exist.
+            # Only the stage that actually raised reports the real error.
             rollback_error = f"Rolled back because a later planning stage failed: {error}"
             changed_tasks = []
             planning_task_ids = {
@@ -447,6 +491,8 @@ class CommandRunner(BaseRunner):
             self.save()
             for task in changed_tasks:
                 self.emit("task_update", {"task": task})
+            # Every discarded artifact gets a "rolled_back" disposition row so
+            # the activity log explains why it vanished from the workspace.
             profile = llm.agent_status()
             for item in rolled_back_artifacts:
                 ref = f"{item['kind']}:{item['id']}"
@@ -479,6 +525,10 @@ class CommandRunner(BaseRunner):
                 "planning": self.ws.planning, "rcm": self.ws.rcm,
             }),
         )
+        # `prepared_planning` is the contract handed to the interpreter: it tells
+        # the model which durable planning artifacts already exist so it plans
+        # only downstream work, and `execution_manifest` is the authoritative
+        # list of execution paths its proposals must cover.
         self.run["prepared_planning"] = {
             "apm": bool(str(self.ws.planning.get("apm_markdown") or "").strip()),
             "rcm_refs": [item["id"] for item in self.ws.rcm],
@@ -1914,10 +1964,23 @@ class CommandRunner(BaseRunner):
             ledger.project_legacy_plan(self.run); self.save()
 
     def _drive_graph(self) -> None:
+        """Single-threaded scheduler over the action ledger.
+
+        Each pass re-reads the ledger and takes the highest-priority eligible
+        item, so the loop stays correct after a resume, an out-of-band
+        interaction response, or a wave that appended new actions mid-run:
+
+            1. an unanswered interaction blocks everything else
+            2. a proposed action gets resolved and gated (target, approval)
+            3. a ready action whose dependencies all succeeded executes
+            4. otherwise wait for in-flight work, or finish
+        """
         self.set_status("executing")
         while True:
             self.checkpoint()
             self._block_failed_dependencies()
+            # An interaction may have been made obsolete by a dependency that
+            # ran after it was raised; dismissing it resumes without the auditor.
             pending_interaction = next((item for item in self.run.get("interactions") or [] if item["status"] == "pending"), None)
             if pending_interaction:
                 action = self._action(pending_interaction["action_id"])
@@ -2114,8 +2177,18 @@ class CommandRunner(BaseRunner):
         self._save_action(action)
 
     def _execute_action(self, action: dict) -> None:
+        """Run one action under an optimistic concurrency check.
+
+        The target was already resolved during gating, but the workspace may
+        have moved since — other runs, the UI, and earlier actions all write to
+        it. So the target is re-resolved and re-hashed immediately before the
+        executor runs, and a drift this run cannot explain becomes a conflict
+        interaction rather than a silent overwrite.
+        """
         definition = actions.validate_action(action)
         self.checkpoint()
+        # Classification is model work owned by the intake runner; borrow it
+        # rather than duplicating the prompt and batch bookkeeping here.
         if action["type"] == "classify_import_batch":
             from .. import intake
             from .intake_runner import IntakeRunner
@@ -2204,6 +2277,11 @@ class CommandRunner(BaseRunner):
                 )
             except Exception:
                 pass
+            # Retry policy turns on whether the failure is deterministic: a
+            # WorkspaceError/ValueError means the same call would fail again, so
+            # only generated Polars code (which can be repaired) earns a second
+            # attempt. Deterministic failures also skip the replanning wave —
+            # the model has nothing new to react to.
             action["error"] = str(error); action["finished_at"] = store.utcnow()
             ledger.transition(action, "failed")
             attempts = int(self.run["limits"].get("max_execution_attempts", 2))
@@ -2305,6 +2383,13 @@ class CommandRunner(BaseRunner):
         return True
 
     def _expand_after(self, action: dict, safe_result: dict | None = None) -> None:
+        """Run one adaptive planning wave against a locally computed result.
+
+        The only place the graph grows in response to data. Bounded twice — by
+        `max_waves` and by the remaining action budget — and fed a *safe*
+        result (aggregates, never raw rows), which is also why a failure passes
+        `{"error": ...}` rather than the receipt.
+        """
         if self.run.get("planning_expansion_disabled"):
             return
         usage = self.run["usage"]

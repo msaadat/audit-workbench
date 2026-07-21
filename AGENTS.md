@@ -2,301 +2,333 @@
 
 ## 1. System Overview
 
-**Purpose:** A **local-first data analysis workbench for auditors**. The unit of
-work is a *workspace* (one per engagement): the auditor loads CSV/Excel files,
-optionally joins them, then profiles, explores (filter/group/aggregate), and
-runs 15 canned audit analytics (Benford + last-two-digit, duplicates, sequence
-gaps, sampling, period comparison, round numbers, outliers, threshold
-clustering, weekend postings, date-lag/backdating, stratification,
-completeness, negative/zero scan, rare values). All computation happens on the user's
-machine. The implemented audit-cycle extension also supports incremental mixed
-folder intake, engagement planning, documents and cited Q&A, document testing,
-working-paper drafts, evidence-linked findings, and editable audit-report
-drafts. This project is the ground-up successor to the "TT Rebate Checker"
-validation platform (separate repo, same author); the EDA profiler was ported
-from there.
+**Purpose:** Audit Workbench is a local-first audit analysis and execution app.
+The unit of work is a workspace per engagement. Auditors import CSV/TSV/Excel
+data, create derived joins, query and aggregate with Polars, run canned audit
+analytics, stage mixed file-folder intake, manage planning artifacts, execute
+data and document tests, promote observations into findings, and draft reports.
+Workspace state and generated artifacts live under `Workspaces/<id>/`.
 
-**Tech stack:** Python 3.12 · FastAPI · **Polars (the only data engine — no
-pandas, no DuckDB)** · XlsxWriter/fastexcel (Excel I/O) — frontend: Vue 3 +
-TypeScript + Vite + **PrimeVue 4** (no Tailwind).
+**Tech stack:** Python 3.12, FastAPI, Polars only for tabular compute, and
+XlsxWriter/fastexcel for Excel I/O. The frontend is Vue 3 + TypeScript + Vite +
+PrimeVue 4. There is no Tailwind, pandas, or DuckDB in the core path.
 
-**Roadmap context (agreed 2026-07-06):** V2 adds charts + pin-to-dashboard
-tiles. V3 (shipped) adds the natural-language **Assistant**: an LLM (**Groq
-cloud API, configurable backend**) answers questions by *calling tools* that
-run locally — structured queries, the analytics library, and an escape hatch
-that runs **visible, editable Polars** (`run_python`). **Only metadata
-(schema/column names/aggregate stats and previews of *aggregated* results) is
-ever sent to the LLM — never raw data rows**; `assistant._frame_for_model` is
-the choke point that withholds row-level detail. A portable-zip distribution
-(embedded Python, mirroring the old platform's `build_portable.py`) is
-planned because target users are on locked-down corporate PCs — this is why
-the LLM transport uses only the standard library (no SDK dependency).
+**Privacy boundary:** Computation runs on the user's machine. The read-only
+assistant and the audit agent can call local tools, but row-level table data is
+not sent to the model provider. The privacy choke points are the assistant
+context builders and the bounded agent context bundles.
 
-**RCM-central audit workflow (implemented 2026-07-19):** The audit assistant
-now uses the RCM as the only active planning-and-fieldwork spine. Structured
-planned tests live under each RCM row; durable Data Tests may be exploratory or
-link to exactly one RCM/planned test, while Document Tests require that link;
-only linked execution participates in audit roll-ups, findings, and reporting. Execution roll-ups create dispositioned
-observations and drive RCM working papers, dashboard curation, preliminary/final
-reporting, and deterministic completion gates. Legacy `work_program` content
-is retained for rollback and read-only compatibility during migration, but is
-not an active UI or report concept.
+**Current product shape:** The original data-workbench surfaces still exist
+(`Data`, `Query`, saved analyses, dashboard tiles), but the shipped product is
+now centered on an RCM-driven audit workflow: planning context and APM, RCM
+rows, planned tests, executable data/document tests, execution rollups,
+working-paper generation, findings, and report drafting.
 
 ## 2. Architecture
 
-```
+```text
 backend/app/
-├─ main.py                    ── app factory; /api routers; serves frontend/dist
-│                                with SPA history fallback when it exists
-├─ loader.py                  ── typed CSV/TSV/Excel reads; in-memory cache keyed
-│                                by (path, size, mtime) — files can be 100MB+
-├─ workspaces.py              ── Workspace model + registry. Storage:
-│                                Workspaces/<id>/workspace.json + Data/ files.
-│                                Joins are named derived tables (can chain).
-├─ profiler.py                ── per-column + dataset profiling (typed-aware)
-├─ explore.py                 ── declarative query engine: filters → group/agg →
-│                                sort → paginate; also build_crosstab() for the
-│                                split_by cross-tab (Excel pivot); frame_payload()
-├─ analytics.py               ── ANALYTICS registry: 15 audit tests, each
-│                                (df, params) -> AnalyticsResult; param metadata
-│                                drives the SPA's dynamic forms; tests suggest a
-│                                default viz (e.g. Benford → bar of obs vs exp).
-│                                Add a test by registering a func + param meta
-│                                (kinds: column/columns/number/select) — no
-│                                frontend change needed
-├─ data_tests.py              ── durable exploratory/RCM-linked analytics,
-│                                validation, and Polars
-│                                definitions, immutable bounded results,
-│                                histories, fingerprints, and semantic gates
-├─ rcm_execution.py           ── planned-test coverage, execution roll-ups,
-│                                observations/dispositions, RCM working papers,
-│                                and full-audit completion checks
-├─ dashboard.py               ── tile computation: re-runs each tile's stored
-│                                spec (query / analytics / python) against
-│                                current frames; broken tiles degrade to cards
-├─ llm.py                     ── LLM transport: OpenAI-compatible chat/tools
-│                                over stdlib urllib (no dep), Groq by default;
-│                                configured via .env or GROQ_API_KEY/MODEL/BASE_URL
-├─ sandbox.py                 ── AST-guarded local Polars executor (no imports,
-│                                no dunder/OS); powers run_python + python tiles
-├─ assistant.py               ── NL agent: bounded unmasked context + tool loop
-│                                (list_tables, describe_table, query_table,
-│                                run_analytics, run_python); gates what the
-│                                model sees compact row/result previews
-├─ agent/                     ── durable audit-assistant run framework:
-│  ├─ store.py                ── durable runs: Workspaces/<id>/AgentRuns/<run>/
-│  │                             {run.json (atomic), events.jsonl (replayable)}
-│  ├─ runner.py               ── threaded run state machine (discovery →
-│  │                             planning → joins → validation → analyses →
-│  │                             dashboard → verify → summary); auto mode
-│  │                             applies validated mutations, permission mode
-│  │                             pauses on editable approval batches; pause/
-│  │                             resume/cancel, steering messages, follow-up
-│  │                             runs, semantic_id rerun reconciliation, fixed
-│  │                             V1 limits. The orchestrator (not the LLM)
-│  │                             decides whether a mutation executes.
-│  ├─ joins.py                ── deterministic join-candidate inference +
-│  │                             diagnostics (match rate, cardinality,
-│  │                             row-multiplication guard)
-│  ├─ suggest.py              ── deterministic profile-based rule suggestions
-│  │                             (shared by the Validation tab + agent runs)
-│  ├─ prompts.py              ── stage prompts (bounded context) + JSON parsing;
-│  │                             every prompt starts with a stable
-│  │                             [agent:<stage>] tag tests key their fakes on
-│  └─ summary.py              ── findings validation + fallback markdown
-└─ routes/
-   ├─ workspace_routes.py     ── workspace/table/join CRUD
-   ├─ analysis_routes.py      ── schema/preview/profile, query (+export),
-   │                              analytics run (+export); exports re-run the
-   │                              computation and stream xlsx (stateless)
-   ├─ dashboard_routes.py     ── tiles CRUD (POST/PATCH/DELETE) + GET dashboard
-   ├─ assistant_routes.py     ── GET /assistant/status, POST /assistant (ask),
-   │                              POST /run-python (execute an edited snippet)
-   ├─ agent_routes.py         ── run CRUD, SSE event stream (cursor replay via
-   │                              Last-Event-ID), pause/resume/cancel,
-   │                              approvals, messages, GET suggest-rules
-   ├─ intake_routes.py        ── source manifests, staging, classification/apply
-   ├─ planning_routes.py      ── planning, templates, RCM/planned-test CRUD,
-   │                              observations, roll-ups, and working papers;
-   │                              legacy procedure reads only
-   ├─ data_test_routes.py     ── Data Test CRUD, execution, and result history
-   ├─ document_routes.py      ── documents, extraction, Q&A, activity, packs
-   ├─ doc_test_routes.py      ── document tests, matching, and working papers
-   └─ report_routes.py        ── findings, report drafts, reconciliation, quality
+|- main.py                     - app factory; mounts all /api routers; serves
+|                                frontend/dist with SPA history fallback; adds
+|                                optimistic workspace revision middleware
+|- workspaces.py               - Workspace model, persistence, revisioned save
+|                                semantics, IDs, CRUD helpers, audit entities
+|- workspace_transactions.py   - compare-and-swap mutation helper used by the
+|                                workflow engine for conflict-aware commits
+|- loader.py                   - typed CSV/TSV/Excel loading and frame cache
+|- profiler.py                 - dataset and per-column profiling
+|- explore.py                  - declarative query engine and frame payloads
+|- analytics.py                - canned analytics registry and result metadata
+|- validation.py               - durable table validation rules and run support
+|- dashboard.py                - dashboard tiles and saved analysis payloads
+|- assistant.py                - read-only NL assistant tool loop
+|- assistant_chats.py          - durable workspace-scoped chats, artifacts,
+|                                ask/act routing, chat-run projections
+|- assistant_settings.py       - provider/model settings validation
+|- llm.py                      - OpenAI-compatible stdlib transport for both
+|                                assistant and agent profiles
+|- sandbox.py                  - guarded local Python/Polars execution
+|- intake.py                   - staged mixed file/document intake
+|- documents.py                - document inventory, versions, extraction,
+|                                metadata, and activity logs
+|- document_context.py         - bounded document context packaging
+|- document_search.py          - retrieval helpers over extracted docs
+|- document_analysis.py        - document-analysis jobs and conflict model
+|- doc_tests.py                - durable document test definitions and runs
+|- data_tests.py               - durable exploratory or RCM-linked data tests
+|- methodology.py              - methodology pack storage and retrieval
+|- evidence.py                 - typed evidence anchors and provenance helpers
+|- findings.py                 - evidence-linked findings CRUD and promotion
+|- report.py                   - draft report generation, reconciliation, QA
+|- rcm_execution.py            - coverage, rollups, observations, completion,
+|                                and RCM working-paper assembly
+|- working_papers.py           - legacy working-paper compatibility layer
+|- templates_store.py          - editable markdown template persistence
+|- debug_store.py              - local telemetry storage for calls/events/state
+|- debug_service.py            - debug read models, timing, causal analysis
+|- model_context.py            - shared model-context helpers
+|- embedding.py                - local embedding utilities
+|- field_names.py              - shared field name normalization helpers
+|- routes/
+|  |- workspace_routes.py      - workspace/table/join CRUD
+|  |- analysis_routes.py       - table preview/profile/query/analytics/export
+|  |- analyses_routes.py       - saved analyses CRUD
+|  |- dashboard_routes.py      - dashboard tiles and engagement status
+|  |- validation_routes.py     - validation rules and runs
+|  |- assistant_routes.py      - legacy ask/run-python assistant endpoints
+|  |- assistant_chat_routes.py - durable unified assistant chat API
+|  |- agent_routes.py          - durable run CRUD, SSE, approvals,
+|  |                             interactions, continue/retry, action coverage
+|  |- intake_routes.py         - folder intake manifests and apply flow
+|  |- planning_routes.py       - planning, templates, RCM, planned tests,
+|  |                             observations, and working papers
+|  |- document_routes.py       - document CRUD, extraction, QA, and activity
+|  |- doc_test_routes.py       - document test CRUD and execution
+|  |- report_routes.py         - findings/report endpoints and reconciliation
+|  `- debug_routes.py          - workspace debug console APIs and live stream
+`- agent/
+   |- store.py                 - durable run storage in AgentRuns/
+   |- base.py                  - BaseRunner: budgets, checkpoints, approvals,
+   |                             interactions, provider call accounting
+   |- runner.py                - thread orchestration, active-handle registry,
+   |                             recovery, pause/resume/cancel/retry/continue
+   |- command_runner.py        - v2 action-graph runner for isolated mutations
+   |- workflow.py              - generic capability graph primitives
+   |- workflow_runner.py       - v3 outcome-driven audit workflow scheduler
+   |- audit_capabilities.py    - audit capability registry and readiness rules
+   |- audit_workers.py         - single-turn model workers with validators
+   |- context_bundles.py       - hard-budgeted agent prompt context builders
+   |- actions.py               - registered action catalog and executors
+   |- ledger.py                - action graph validation and lifecycle ranking
+   |- artifact_index.py        - artifact selectors and canonical resolution
+   |- joins.py                 - deterministic join inference/diagnostics
+   |- suggest.py               - deterministic validation rule suggestions
+   |- prompts.py               - bounded prompts keyed by [agent:<stage>] tags
+   |- summary.py               - finding validation and fallback markdown
+   |- intake_runner.py         - intake batch runner
+   |- doc_test_runner.py       - resumable document-test execution
+   |- document_analysis_runner.py - map/reduce document-analysis execution
 
 frontend/src/
-├─ api.ts                     ── fetch wrapper (ApiError, upload, xlsx download)
-├─ types.ts                   ── mirrors backend payload shapes
-├─ composables/useAgentRun.ts ── module-scope shared agent store per workspace:
-│                                owns the SSE EventSource, debounced run
-│                                refetch, and the workspace_changed bus tabs
-│                                subscribe to for live refresh
-├─ views/HomeView.vue         ── workspace cards + create/delete
-├─ views/WorkspaceView.vue    ── grouped Overview/Plan/Fieldwork/Output tabs,
-│                                folder import action, and persistent right-side
-│                                audit-assistant drawer
-└─ components/
-   ├─ DashboardTab.vue        ── pinned tile grid: chart/table + verdict/stats,
-   │                             rename/note/reorder/remove; remounts per visit
-   ├─ DataTab.vue             ── upload, table list, preview dialog, remove
-   ├─ JoinDialog.vue          ── join builder (schemas fetched per side)
-   ├─ ProfileTab.vue          ── stat cards + expandable column profiles
-   ├─ QueryTab.vue            ── Perspective-style query builder (was ExploreTab;
-   │                             absorbed the old Pivot tab):
-   │                             draggable Fields → Filters/Group by/Split by/
-   │                             Aggregations/Order by zones on the right; live
-   │                             (debounced) recompute. Flat query → lazy DataTable
-   │                             (server page) with group-row drill-down; a Split
-   │                             by field switches it to a cross-tab grid (grouped
-   │                             headers + totals). Chart controls (bar/line/pie)
-   │                             + Pin-to-dashboard ('query' tile, cross-tab too)
-   ├─ AnalysisTab.vue         ── legacy analysis editor retained outside the
-   │                             active audit-cycle navigation
-   ├─ PlanningTab.vue         ── context/APM/RCM planned-test and observation
-   │                             workflow; no separate Audit Program surface
-   ├─ DataTestsTab.vue        ── exploratory/RCM-linked Data Test authoring,
-   │                             run history,
-   │                             bounded results, and exception navigation
-   ├─ DocumentsTab.vue        ── document inventory, preview, Q&A, versions/logs
-   ├─ DocTestsTab.vue         ── test worklists, dispositions, working papers
-   ├─ FindingsTab.vue         ── evidence-linked IIA finding editor
-   ├─ ReportTab.vue           ── report editor/preview/sources & quality
-   ├─ validation/…            ── ValidationTab (rail) + RulesetEditor (grid,
-   │                             ghost suggestions from GET suggest-rules,
-   │                             run results, history)
-   ├─ agent/                  ── AgentDrawer (launch, controls, history) +
-   │                             AgentTaskList + AgentApprovalCard (editable
-   │                             batches) + AgentChat (steering + ad-hoc Q&A
-   │                             with artifacts; replaced the old Ask AI tab)
-   │                             + AgentSummary (findings + markdown)
-   ├─ ChartView.vue           ── Chart.js renderer for a frame + VizSpec
-   │                             (falls back to FrameTable for 'table' viz)
-   ├─ PinDialog.vue           ── title + note prompt shared by both pin flows
-   └─ FrameTable.vue          ── renders a {columns, dtypes, rows} payload
+|- api.ts                      - fetch wrapper, uploads, downloads, error model
+|- types.ts                    - frontend mirror of backend payloads
+|- views/
+|  |- HomeView.vue             - workspace list/create/delete
+|  |- WorkspaceView.vue        - main engagement shell and tab navigation
+|  `- DebugView.vue            - local telemetry console
+|- composables/
+|  |- useAgentRun.ts           - shared run store, SSE connection, live refresh
+|  |- useAssistantChat.ts      - durable chat state and send/retry/artifacts
+|  |- useWorkspaceNavigation.ts - workspace query-string tab state
+|  |- useFileDrop.ts           - global drag/drop import helpers
+|  `- documentStatus.ts        - document/test status helpers
+`- components/
+   |- DashboardTab.vue         - dashboard and engagement home
+   |- DataTab.vue              - data upload/list/remove
+   |- QueryTab.vue             - interactive query builder and pin flow
+   |- AnalysisTab.vue          - saved analyses rail and editors
+   |- PlanningTab.vue          - planning context, APM, RCM, planned tests
+   |- DocumentsTab.vue         - document inventory and review
+   |- DocTestsTab.vue          - document test worklists and execution
+   |- DataTestsTab.vue         - data test authoring/history/results
+   |- FindingsTab.vue          - finding editing and support checks
+   |- ReportTab.vue            - report draft, preview, sources, quality
+   |- ImportDialog.vue         - staged folder/file import review
+   |- PostImportPlanningOffer.vue - shortcut from intake into planning
+   |- MarkdownEditor.vue / MarkdownView.vue - safe markdown editing/rendering
+   |- CodeEditor.vue           - local code editing surface
+   |- EvidenceAnchorDialog.vue - provenance source picker
+   |- ReportReconcileDialog.vue - prevents silent report overwrites
+   |- ChartView.vue / FrameTable.vue / PinDialog.vue / JoinDialog.vue
+   |- planning/RcmGrid.vue     - RCM grid
+   |- validation/*             - validation authoring and run results
+   |- analysis/*               - saved analysis editors
+   |- agent/*                  - persistent right-side assistant drawer:
+   |                             chats, transcript, composer, approvals,
+   |                             interactions, artifacts, run cards/history
+   `- debug/JsonTree.vue       - debug JSON inspector
 ```
 
-**Audit-cycle backend modules:**
+## 3. Runtime Model
 
-- `intake.py` and `agent/intake_runner.py` implement incremental mixed-folder
-  manifests, safe local classification metadata, staging, and idempotent
-  routing into tables/documents.
-- `documents.py`, `evidence.py`, and `methodology.py` implement extraction,
-  versioning, AI-activity logs, typed immutable anchors, cited
-  document Q&A, and local methodology packs.
-- `agent/base.py`, `agent/command_runner.py`, and `agent/doc_test_runner.py`
-  provide shared durable-run plumbing, enriched planning drafts within the
-  unified command graph, and resumable per-item document testing.
-- `doc_tests.py` provides vouching/tracing, attribute, review, and Q&A tests
-  with explainable exact/normalized/fuzzy/tolerance comparisons.
-- `rcm_execution.py` assembles RCM-linked Markdown/HTML working papers across
-  planned tests and immutable Data/Document Test results. `working_papers.py`
-  remains only for legacy read/replay compatibility.
-- `findings.py` provides provenance-aware findings CRUD and explicit promotion
-  from agent observations; `report.py` builds privacy-safe report context,
-  drafts, reconciliation candidates, safe HTML, and deterministic quality
-  checks.
-- The corresponding API surfaces live in `intake_routes.py`,
-  `planning_routes.py`, `document_routes.py`, `doc_test_routes.py`, and
-  `report_routes.py`.
+### Workspace and persistence
 
-**Audit-cycle frontend modules:** `FolderImportDialog.vue`, `PlanningTab.vue`,
-`DocumentsTab.vue`, `DocTestsTab.vue`, `FindingsTab.vue`, and `ReportTab.vue`
-follow the shared rail/detail or editor/preview patterns. `MarkdownView.vue`
-is the safe shared Markdown renderer, `EvidenceAnchorDialog.vue` navigates
-typed sources, and `ReportReconcileDialog.vue` prevents silent overwrites of
-auditor-edited reports.
+- Every workspace is persisted on disk under `Workspaces/<id>/`.
+- Workspace writes are revisioned. `main.py` exposes `ETag` /
+  `X-Workspace-Revision`, and mutating requests may supply `If-Match` to get
+  strict optimistic concurrency.
+- The workflow engine uses `workspace_transactions.mutate(...)` plus parent hash
+  checks to detect conflicts when committing generated artifacts.
 
-**Key conventions:**
-- User-facing errors are `WorkspaceError`/`QueryError` (ValueError subclasses);
-  `main.py` maps both to HTTP 400 with `{"detail": msg}`. Raise those, never
-  bare HTTPException, from core modules.
-- Everything is stateless per request: frames come from the loader cache;
-  no session objects. Exports re-run the computation.
-- API payload for tabular data is always `{columns, dtypes, rows}` (row
-  arrays, JSON-safe values, dates as ISO strings) via `explore.frame_payload`.
-- Analytics tests return `AnalyticsResult` (verdict ok/warn/fail/info, stat
-  chips, summary frame, optional detail frame). Register new tests in
-  `ANALYTICS` with param metadata (`kind`: column/columns/number/select) and
-  the SPA form renders itself.
-- `Workspaces/` is gitignored per-user data. `WORKBENCH_DATA` env var
-  overrides its location.
+### Assistant surfaces
 
-## 3. Commands
+- There are two assistant paths:
+  - `assistant.py`: read-only Q&A with local tools and editable Python results.
+  - `assistant_chats.py`: durable chat UX that routes each message as `ask`,
+    `act`, or clarification, stores local artifacts, and projects linked runs
+    back into the transcript.
+- Chat messages can start new runs or queue commands onto the active run.
+- Assistant artifacts are revisioned and rerunnable; editable Python artifacts
+  are re-executed locally through the sandbox.
+
+### Agent generations
+
+One durable run store supports multiple runner styles:
+
+```text
+BaseRunner
+|- _Runner                  legacy v1 fixed analysis pipeline
+|- IntakeRunner             one import batch
+|- DocTestRunner            one document test
+|- DocumentAnalysisRunner   document analysis map/reduce
+`- CommandRunner            v2 action graph
+   `- WorkflowRunner        v3 capability graph for audit outcomes
+```
+
+- `CommandRunner` is still used for isolated mutations and repairable action
+  graphs.
+- `WorkflowRunner` is the main audit path. It resolves requested outcomes,
+  materializes prerequisite capabilities, fans them out into units, persists
+  model proposals to sidecars before commit, and records `next_outcomes` for
+  `Continue audit`.
+- Local routing in `workflow_runner._local_resolution(...)` is important. It
+  catches common phrases and goal templates before any model call. If routing
+  misses, a bounded router worker may still resolve the command.
+
+### From command to execution
+
+- `assistant_chats._process_message` resolves intent. An `act` intent calls
+  `runner.start_command_run`, which enforces one live run per workspace
+  (`AgentBusyError`; `AGENT_MAX_CONCURRENT` caps the process), creates the run
+  document, tries `initialize_known_workflow`, then launches a daemon thread.
+- `runner._execute` dispatches on `run["kind"]`, guarantees the run reaches a
+  terminal status even on a crash, and in its `finally` starts the next
+  `pending_commands` entry. Control flows through a `RunHandle` (cancel, pause,
+  resume, inbox, interaction responses) held in the `_HANDLES` registry.
+- v3 derives its plan from the registry, not the model.
+  `workflow.materialize(...)` takes the transitive `depends_on` closure over
+  `audit_capabilities.REGISTRY`, skips any capability whose deterministic
+  `readiness()` is already satisfied (content hashes detect staleness, not just
+  absence), and calls `expand_units()` to fan the rest into units. Unit IDs are
+  semantic, so re-expanding after a resume yields the same work.
+- v2 derives its plan from one `[agent:command_interpreter]` turn that returns a
+  DAG of registered action types. `ledger.append_actions(...)` normalizes
+  created-target references, injects lifecycle dependencies, and validates the
+  graph; a rejected batch is fed back once with the specific error.
+  `_drive_graph` then runs a single-threaded priority loop: pending interaction,
+  then proposed action to gate, then ready action to execute.
+
+### Scheduling, concurrency, and budgets
+
+- Stages run strictly in dependency order. Parallelism lives inside a stage:
+  `workflow.stable_all_settled(...)` fans model work out under
+  `limits.max_llm_concurrency`, all-settled, and returns results in unit-ID
+  order so commits stay deterministic.
+- Commits are serialized and conflict-aware. Model proposals are written to
+  sidecars before commit, so a crash between generation and commit resumes from
+  the sidecar instead of re-billing the provider.
+- Backpressure is budgetary, not queue-based: per-workspace serialization,
+  `pending_commands` FIFO between runs, `max_model_turns` /
+  `max_estimated_prompt_tokens` / `max_completion_tokens` (sized in
+  `_install_resolution` from actual RCM, planned-test, and Q&A counts, then
+  refreshed before every stage), `max_actions`, `max_waves`,
+  `max_units_per_stage`, and a runtime deadline extended by time spent blocked
+  on the auditor.
+
+### Model call discipline
+
+- `BaseRunner._llm_content` is the only path to the provider. It charges
+  turn and token budgets before calling, derives the `[agent:<stage>]` tag that
+  drives UI labels and per-worker accounting, holds a process-wide semaphore
+  keyed on `provider:model`, and appends a provenance row containing hashes
+  only, never prompt or document text.
+- Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
+  accept an injected `model_adapter` so their calls are charged to the same
+  budget and provenance ledger.
+
+### Known duplication
+
+- `CommandRunner`'s full-audit path (`_prepare_planning`,
+  `_ensure_full_audit_stages`, `_validate_full_audit_action_graph`,
+  `ORCHESTRATED_FULL_AUDIT_ACTION_TYPES`, and the interpreter-prompt clauses
+  forbidding planning/rollup/report actions) existed to force an LLM-planned
+  graph into a correct audit lifecycle. v3 replaced it with a static dependency
+  graph, and local routing now catches full-audit phrasings before the
+  interpreter runs, so those branches are reachable only when routing misses.
+- The audit lifecycle is therefore encoded in three places:
+  `ledger.AUDIT_LIFECYCLE_STAGES`,
+  `CommandRunner.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES`, and
+  `audit_capabilities.build_registry`. `build_registry` is authoritative.
+
+### Events and live UI
+
+- Runs persist `run.json`, `events.jsonl`, and sidecars under
+  `Workspaces/<id>/AgentRuns/<run_id>/`.
+- The UI consumes SSE from `agent_routes.py`; events are replayable by cursor or
+  `Last-Event-ID`.
+- `useAgentRun.ts` is the shared client-side run bus for tabs and the assistant
+  drawer.
+
+### Debug telemetry
+
+- Debug tracing is local only and lives under the workspace debug store.
+- The debug console exposes:
+  - LLM call records and retries
+  - state transitions and snapshots
+  - run timing metrics
+  - causal-analysis read models
+  - a replayable live event stream
+- Historical runs may predate full telemetry. The debug UI explicitly shows
+  gaps instead of synthesizing missing history.
+
+## 4. Key Conventions
+
+- Raise `WorkspaceError`, `QueryError`, `SandboxError`, `SettingsError`, or
+  `AnalysisConflict` from core modules. `main.py` maps these into stable HTTP
+  responses.
+- Table payloads are always `{columns, dtypes, rows}` with JSON-safe values.
+- Exports re-run the computation; responses stay stateless per request.
+- Analytics are registry-driven. Add a backend function plus param metadata;
+  the SPA form renders from metadata.
+- Saved analyses and dashboard tiles are spec-not-data. They recompute against
+  current workspace frames.
+- The assistant and agent do not use arbitrary tool loops inside `agent/`.
+  Worker calls are single-turn, bounded, and budgeted through `BaseRunner`.
+- Existing uncommitted workspace or code changes may be user-owned. Do not
+  revert them unless explicitly asked.
+
+## 5. Commands
 
 ```bash
 # Backend deps (Python 3.12)
 uv venv .venv
 uv pip install -r backend/requirements-dev.txt
 
-# Tests (including intake, migration, RCM planning/execution, Data Tests,
-#        evidence-aware Document Tests, working papers, findings, and reports)
-cd backend && uv run --no-project pytest
+# Backend tests
+cd backend
+uv run --no-project pytest
 
-# Enable the assistant (optional; unset == graceful "not configured" banner)
-# Copy .env.example to .env and set a provider key; pick provider/model in the
-# UI's Assistant settings. Agent runs optionally use AGENT_PROVIDER/AGENT_MODEL.
+# API dev server
+uv run --no-project uvicorn app.main:app --app-dir backend --reload
 
-# Dev servers
-uv run --no-project uvicorn app.main:app --app-dir backend --reload       # API :8000
-cd frontend && npm run dev                                                # SPA :5173 (proxies /api)
+# Frontend dev server
+cd frontend
+npm run dev
 
-# Production build (then run.bat serves everything on :8000)
-cd frontend && npm run build
+# Frontend type/build gate
+cd frontend
+npm run build
 ```
 
-## 4. State & Next Steps
+## 6. Current Notes
 
-- V1 complete: workspaces, multi-file load, joins, profiling, explore,
-  15 analytics tests, Excel exports, full backend test suite.
-- V2 complete: Chart.js charts in Explore, pinned dashboard (spec-storing
-  tiles, live recompute, per-tile error degradation), Dashboard tab is the
-  landing tab when tiles exist.
-- V3 complete: NL Assistant with a configurable tool-calling loop (list_tables,
-  describe_table, query_table, run_analytics, run_python), AST-sandboxed
-  local Polars, bounded unmasked model previews, and a new **python** tile kind
-  so NL→Python results pin as
-  live dashboard tiles.
-- V4 complete (2026-07-12, per docs/agent-workflow-plan.md): the LLM-driven
-  **data-analyst agent**. One run populates the whole workspace — joins,
-  validation rule sets, library + custom analyses, dashboard tiles — then
-  writes an evidence-linked summary. Auto mode applies validated mutations;
-  permission mode pauses on editable approval batches (joins / rules /
-  suggested tests). Durable runs under `Workspaces/<id>/AgentRuns/` with SSE
-  live events + replay, pause/resume/cancel, restart recovery (interrupted →
-  resumable), steering messages, linked follow-up runs, and semantic_id
-  rerun reconciliation (user-edited items become user-owned and are never
-  touched). The standalone Ask AI tab was folded into the Agent drawer.
-  Verified end-to-end against Mistral (auto + permission on live data).
-- Audit-cycle M1-M5 complete (2026-07-14, per
-  `docs/full-audit-cycle-plan.md`): incremental audit-folder intake; planning
-  interviews and the former editable APM/RCM/audit-program workflow; versioned documents,
-  automatic bounded document context, typed evidence anchors, and methodology
-  packs; resumable vouching/tracing/attribute/review/Q&A tests; evidence-linked
-  working papers; findings CRUD/promotion; and editable report drafting with
-  deterministic quality checks and explicit side-by-side regeneration.
-  Acceptance: 232 backend tests plus the frontend TypeScript/Vite build.
-- RCM-central workflow complete (2026-07-19, per
-  `docs/rcm-central-workflow-plan.md`): schema-v2 compatibility migration;
-  RCM-contained planned tests and outcome roll-ups; first-class durable Data
-  Tests; evidence-aware Document Tests and requests; observation triage;
-  RCM working papers; RCM-central full-run orchestration; deterministic
-  dashboard curation; supported-finding gates; preliminary/final report quality
-  and completion gates; and the RCM/Data Tests frontend workflow. Legacy Audit
-  Program data remains retained and read-only during the migration window.
-  Acceptance: 372 backend tests plus the frontend TypeScript/Vite build.
-- Agent testing pattern: `FakeAgentLLM` in conftest scripts one JSON response
-  per `[agent:<stage>]` prompt tag; `wait_run` polls the store and joins the
-  worker thread.
-- No linter configured; `npm run build` runs vue-tsc as the frontend type gate.
-- Next product stage: optional M6 assistant polish (traceability matrix,
-  risk/coverage heatmap, duplicate suggestions, reusable procedure templates,
-  and editorial actions). Portable-zip distribution remains a separate
-  packaging priority for locked-down corporate machines.
-- Known V1 agent limits: LLM-titled query tiles reconcile by slugified title,
-  so a rerun that words a chart differently pins a new tile; custom-code
-  repair gets one attempt; approval batches don't support partial re-editing
-  after Apply.
-- Gotcha: PrimeVue Select options ignore bare synthetic `.click()` — driving
-  the UI programmatically needs the full pointerdown/mousedown/pointerup/
-  mouseup/click sequence. The Claude preview tool's preview_click does not
-  deliver events on this machine; use preview_eval instead.
+- The product has moved past the older "Ask AI tab" model. The active UX is the
+  persistent right-side assistant drawer backed by durable chats.
+- `ProfileTab.vue` is not part of the current shipped workspace navigation even
+  though profiling code still exists on the backend.
+- Legacy `work_program` and legacy working-paper behavior remain only for
+  compatibility and rollback paths. The active audit model is RCM-first.
+- The debug console is a first-class local diagnostics surface, not just test
+  scaffolding.
+- PrimeVue `Select` still needs the full pointer event sequence in UI-driving
+  tests; bare synthetic `.click()` remains unreliable on this machine.

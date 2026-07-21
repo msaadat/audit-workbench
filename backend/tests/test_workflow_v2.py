@@ -61,6 +61,27 @@ def test_full_template_materializes_locally_without_command_interpreter():
     assert persisted["usage"]["llm_turns"] == 0
 
 
+def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
+    ws = workspaces.create_workspace("Local APM route")
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {
+            "source": "chat",
+            "text": "generate the APM",
+        },
+    )
+
+    assert initialize_known_workflow(ws, run) is True
+    persisted = store.load_run(ws, run["id"])
+    assert persisted["workflow"]["requested_outcomes"] == ["planning.apm_ready"]
+    assert [
+        stage["capability"] for stage in persisted["workflow"]["stages"]
+    ] == ["planning.context_ready", "planning.apm_ready"]
+    assert persisted["interactions"] == []
+    assert persisted["usage"]["llm_turns"] == 0
+
+
 def test_partial_goal_prunes_current_prerequisites():
     ws = _planning_workspace()
     resolved, stages, reused = workflow.materialize(
