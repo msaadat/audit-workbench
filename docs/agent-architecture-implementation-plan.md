@@ -31,10 +31,10 @@ no historical reader or resume adapter is retained.
 
 **Current position:**
 
-- Overall migration: not started.
+- Overall migration: in progress.
 - Current phase: Phase 0.
-- Current task: `P0.1`.
-- Last completed task: none.
+- Current task: `P0.2`.
+- Last completed task: `P0.1`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -48,7 +48,7 @@ status notes below.
 
 | Phase | Status | Next task |
 |---|---|---|
-| 0 | Not started | `P0.1` |
+| 0 | In progress | `P0.2` |
 | 1 | Pending Phase 0 gate | `P1.1` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
@@ -81,9 +81,15 @@ status notes below.
 
 **Status notes and decisions:**
 
-- No implementation task has started.
-- Migration verification: not run; only the implementation plan has been
-  prepared for task-level tracking.
+- `P0.1` completed on 2026-07-21. The active writer, creation, continuation,
+  routing, dispatch, API, chat, UI, intake, document-test, document-analysis,
+  projection, debug, and auxiliary-reader surfaces are recorded in
+  [agent-runtime-active-surface-inventory.md](agent-runtime-active-surface-inventory.md).
+- `P0.1` verification used repository-wide call-site searches for the two store
+  writers, runner control functions, run routes, assistant-chat projections,
+  frontend run endpoints, specialized runners, and `AgentRuns` consumers;
+  documentation links and whitespace validation passed. No runtime behavior
+  changed, so no behavioral test was required for this inventory-only task.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -270,7 +276,7 @@ or source changes.
 
 **Tasks:**
 
-- [ ] `P0.1` Inventory every active run-creation, routing, API, UI, chat, intake,
+- [x] `P0.1` Inventory every active run-creation, routing, API, UI, chat, intake,
   document-test, and document-analysis caller; record the clean-slate cutover
   boundary and the requirement that `Workspaces/` be empty.
 - [ ] `P0.2` Characterize same-schema recovery behavior for unstarted,
