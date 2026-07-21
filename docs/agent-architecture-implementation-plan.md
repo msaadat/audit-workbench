@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 1.
-- Current task: `P1.6`.
-- Last completed task: `P1.5`.
+- Current phase: Phase 2.
+- Current task: `P2.1`.
+- Last completed task: `P1.6`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -49,8 +49,8 @@ status notes below.
 | Phase | Status | Next task |
 |---|---|---|
 | 0 | Complete | — |
-| 1 | In progress | `P1.6` |
-| 2 | Pending Phase 1 gate | `P2.1` |
+| 1 | Complete | — |
+| 2 | In progress | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
@@ -210,6 +210,20 @@ status notes below.
   assistant-routing tests across `test_agent_runner.py` and
   `test_assistant_chats.py`. No frontend payload or API contract changed, so a
   frontend build was not required for this task.
+- `P1.6` completed on 2026-07-21. The Phase 1 deletion gate now proves that a
+  missing engine remains missing through load and summary projection, dispatch
+  fails closed, and the retired `command_runner.py` / `CommandRunner` surface
+  has no module, class alias, re-export, or `agent/compat*` package. It also
+  proves the obsolete full-audit constants, methods, `rcm_execution` import,
+  interpreter inputs, planner inputs, and prompt clauses are absent while the
+  P1.3 workflow-request guard and isolated action behavior remain covered.
+  The gate deliberately asserts that `ledger.AUDIT_LIFECYCLE_STAGES`,
+  `audit_lifecycle`, and `enforce_audit_lifecycle` remain for Phase 2 rather
+  than starting `P2.1` early. Focused verification passed `204` tests across
+  `test_agent_store.py`, `test_workflow_v2.py`, `test_command_agent.py`,
+  `test_agent_runner.py`, `test_agent_api.py`, `test_assistant_chats.py`, and
+  `test_planning.py` in `77.54s`. No frontend payload or API contract changed,
+  so a frontend build was not required.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -468,7 +482,7 @@ obsolete full-audit policy without preserving old run shapes.
   reservations, and full-audit validation from the canonical `ActionRunner`.
 - [x] `P1.5` Remove obsolete interpreter prompt clauses and update focused
   action, workflow, recovery, and routing tests.
-- [ ] `P1.6` Prove the deletion gate, the absence of legacy readers and aliases,
+- [x] `P1.6` Prove the deletion gate, the absence of legacy readers and aliases,
   and update current status.
 
 **Work:**

@@ -3,9 +3,11 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
+import app.agent as agent_package
 from app import documents, llm, workspaces
 from app.agent import (
     action_runner,
@@ -537,6 +539,31 @@ def test_rerun_leaves_user_edited_items_alone(workspace_with_data, fake_agent_ll
 def test_action_runner_has_no_legacy_module_or_class_alias():
     assert importlib.util.find_spec("app.agent.command_runner") is None
     assert not hasattr(action_runner, "CommandRunner")
+    assert not hasattr(agent_package, "CommandRunner")
+
+
+def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
+    workspace_with_data,
+):
+    package_dir = Path(action_runner.__file__).parent
+    forbidden_paths = {
+        path
+        for path in package_dir.iterdir()
+        if path.name == "command_runner.py" or "compat" in path.name.casefold()
+    }
+    assert not forbidden_paths
+
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "run a bounded action"},
+    )
+    run.pop("engine")
+    store.save_run(workspace_with_data, run)
+
+    loaded = store.load_run(workspace_with_data, run["id"])
+    assert "engine" not in loaded
+    assert store.run_summary(loaded)["engine"] is None
 
 
 @pytest.mark.parametrize(

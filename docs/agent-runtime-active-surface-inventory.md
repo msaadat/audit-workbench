@@ -250,8 +250,9 @@ The boundary is intentionally strict:
 
 ## Migration Checkpoints Derived From The Inventory
 
-- Phase 1 must update both store writers and every creation/continuation path
-  before dispatch can require `engine`.
+- Phase 1 updated both store writers and every creation/continuation path;
+  dispatch now requires `engine`, does not infer it while loading or projecting
+  records, and has no retired v2 runner alias or compatibility module.
 - Routing changes must preserve assistant-chat intent handling, pre-launch local
   workflow materialization, bounded-router fallback, generic-action fallback,
   and queued-command FIFO behavior.

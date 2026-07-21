@@ -395,10 +395,10 @@ runners. The target architecture nevertheless applies a strict test: retain a
 separate runner only when it requires a genuinely different scheduling and
 control protocol. Otherwise migrate its work into capabilities and workers.
 
-### Confirmed Vestigial Areas
+### Phase 1 Deletion Boundary
 
-The main dead path is the v2 full-audit orchestration in
-`agent/action_runner.py`, including:
+The v2 full-audit orchestration has been deleted from
+`agent/action_runner.py`. The deletion gate covers:
 
 - `_prepare_planning`.
 - `_ensure_full_audit_stages`.
@@ -412,17 +412,17 @@ The main dead path is the v2 full-audit orchestration in
 This machinery existed to force a model-generated action graph through a safe
 audit lifecycle. V3 replaced that responsibility with deterministic capability
 dependencies. Local routing catches known full-audit phrases and goal templates
-before the v2 command interpreter runs.
+before the action interpreter runs, and `ActionRunner` retains a defensive
+fail-closed guard for malformed records and bounded-router misses.
 
-The audit lifecycle is currently encoded in three places:
+The audit lifecycle is now encoded in two places:
 
 - `ledger.AUDIT_LIFECYCLE_STAGES`.
-- `ActionRunner.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES` and associated methods.
 - `audit_capabilities.build_registry()`.
 
 `build_registry()` is the current authoritative implementation. The target
-moves the authoritative declaration to `workflows/audit.py` and removes the
-other two lifecycle encodings.
+moves the authoritative declaration to `workflows/audit.py`; Phase 2 removes
+the remaining action-ledger encoding.
 
 There is also concrete document-analysis duplication. Both
 `DocumentAnalysisRunner` and `ActionRunner._ensure_planning_analysis` implement

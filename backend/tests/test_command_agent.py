@@ -1608,6 +1608,8 @@ def test_action_runner_has_no_full_audit_or_planning_orchestration():
     }
 
     assert not (removed_members & set(vars(action_runner.ActionRunner)))
+    assert not (removed_members & set(vars(action_runner)))
+    assert "rcm_execution" not in vars(action_runner)
 
 
 def test_action_prompt_contract_has_no_full_audit_orchestration():
@@ -1624,6 +1626,12 @@ def test_action_prompt_contract_has_no_full_audit_orchestration():
         assert "prepared_planning" not in system_prompt
         assert "execution_manifest" not in system_prompt
         assert "final verification" not in system_prompt
+
+
+def test_phase_one_keeps_action_ledger_policy_for_phase_two():
+    assert ledger.AUDIT_LIFECYCLE_STAGES
+    assert "audit_lifecycle" in inspect.signature(ledger.append_actions).parameters
+    assert callable(ledger.enforce_audit_lifecycle)
 
 
 @pytest.mark.parametrize(

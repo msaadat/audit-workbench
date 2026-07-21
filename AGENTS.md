@@ -201,7 +201,7 @@ BaseRunner
   `runner.start_command_run`, which enforces one live run per workspace
   (`AgentBusyError`; `AGENT_MAX_CONCURRENT` caps the process), creates the run
   document, tries `initialize_known_workflow`, then launches a daemon thread.
-- `runner._execute` dispatches on `run["kind"]`, guarantees the run reaches a
+- `runner._execute` dispatches on the explicit `run["engine"]`, guarantees the run reaches a
   terminal status even on a crash, and in its `finally` starts the next
   `pending_commands` entry. Control flows through a `RunHandle` (cancel, pause,
   resume, inbox, interaction responses) held in the `_HANDLES` registry.
@@ -248,17 +248,13 @@ BaseRunner
 
 ### Known duplication
 
-- `ActionRunner`'s full-audit path (`_prepare_planning`,
-  `_ensure_full_audit_stages`, `_validate_full_audit_action_graph`,
-  `ORCHESTRATED_FULL_AUDIT_ACTION_TYPES`, and the interpreter-prompt clauses
-  forbidding planning/rollup/report actions) existed to force an LLM-planned
-  graph into a correct audit lifecycle. v3 replaced it with a static dependency
-  graph, and local routing now catches full-audit phrasings before the
-  interpreter runs, so those branches are reachable only when routing misses.
-- The audit lifecycle is therefore encoded in three places:
-  `ledger.AUDIT_LIFECYCLE_STAGES`,
-  `ActionRunner.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES`, and
-  `audit_capabilities.build_registry`. `build_registry` is authoritative.
+- The obsolete `ActionRunner` full-audit path and its prompt policy were
+  removed in Phase 1. Broad-audit and planning requests fail closed if they
+  bypass workflow routing; isolated action DAGs remain supported.
+- The audit lifecycle is currently encoded in two places:
+  `ledger.AUDIT_LIFECYCLE_STAGES` and
+  `audit_capabilities.build_registry`. `build_registry` is authoritative;
+  Phase 2 removes the action-ledger encoding.
 
 ### Events and live UI
 
