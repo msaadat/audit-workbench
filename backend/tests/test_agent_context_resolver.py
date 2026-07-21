@@ -277,7 +277,7 @@ def test_resolver_denies_unknown_and_undeclared_representations_by_default():
         budget=ContextBudget(max_items=3, max_characters=100),
         privacy=ContextPrivacy(allow_document_text=True),
     )
-    sentinel = "ROW LEVEL DATA MUST NOT BE SUPPLIED"
+    sentinel = "UNDECLARED REPRESENTATION MUST NOT BE SUPPLIED"
     manifest, bundle = _resolve(
         declared_spec,
         ContextScope(
@@ -286,7 +286,7 @@ def test_resolver_denies_unknown_and_undeclared_representations_by_default():
                     ContextCandidate(
                         "document:A",
                         "source-a",
-                        {"table_rows": sentinel},
+                        {"raw_pages": sentinel},
                         metadata={"category": "policy"},
                     ),
                 )
@@ -296,9 +296,26 @@ def test_resolver_denies_unknown_and_undeclared_representations_by_default():
 
     assert bundle.items == ()
     assert manifest.privacy_decisions[0].allowed is False
-    assert manifest.privacy_decisions[0].representation == "table_rows"
+    assert manifest.privacy_decisions[0].representation == "raw_pages"
     assert manifest.omissions[0].reason == "No declared representation is available."
     assert sentinel not in manifest.to_json()
+
+
+def test_context_candidate_structurally_rejects_row_level_table_representation():
+    sentinel = "ROW LEVEL DATA MUST NOT ENTER CONTEXT"
+
+    with pytest.raises(
+        ValueError,
+        match="Row-level table representation 'table_rows' is forbidden",
+    ):
+        ContextCandidate(
+            "table:ledger",
+            {"table": "ledger"},
+            {
+                "table_metadata": {"table": "ledger", "rows": 1},
+                "table_rows": [[sentinel]],
+            },
+        )
 
 
 def test_resolver_rejects_undeclared_sources_before_materializing_content():

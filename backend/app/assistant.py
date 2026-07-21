@@ -36,17 +36,30 @@ HISTORY_MAX_CHARACTERS = 12_000
 HISTORY_MAX_MESSAGE_CHARACTERS = 2_000
 
 # ============================================================ metadata context
-def _column_meta(profile: dict) -> dict:
+def _column_meta(profile: dict, *, include_category_values: bool = True) -> dict:
     """Compact profiler metadata for one column."""
-    return model_context.project_column_profile(profile, category_limit=CATEGORY_SAMPLE_MAX)
+    return model_context.project_column_profile(
+        profile,
+        category_limit=CATEGORY_SAMPLE_MAX,
+        include_category_values=include_category_values,
+    )
 
 
-def table_metadata(workspace: Workspace, table: str) -> dict:
+def table_metadata(
+    workspace: Workspace,
+    table: str,
+    *,
+    include_category_values: bool = True,
+) -> dict:
+    """Return a compact profile, optionally withholding row-derived literals."""
     profile = workspace.get_profile(table)
     return {
         "table": table,
         "rows": profile["rows"],
-        "columns": [_column_meta(c) for c in profile["column_profiles"]],
+        "columns": [
+            _column_meta(c, include_category_values=include_category_values)
+            for c in profile["column_profiles"]
+        ],
     }
 
 

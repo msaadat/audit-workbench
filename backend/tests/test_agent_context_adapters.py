@@ -1,6 +1,8 @@
 import inspect
 
-from app import document_analysis, document_context, documents, methodology, workspaces
+import polars as pl
+
+from app import assistant, document_analysis, document_context, documents, methodology, workspaces
 from app.agent import context as agent_context
 from app.agent.context import ContextResolver, PRESETS
 import app.agent.context.adapters as context_adapters
@@ -123,8 +125,8 @@ def test_apm_document_adapter_leaves_final_truncation_and_omission_to_resolver()
         workspace,
         "approval-b.txt",
         "Approval policy B.",
-        summary="approval " + "C" * 4_000,
-        notes="approval " + "D" * 4_000,
+        summary="approval " + "C" * 29_000,
+        notes="approval " + "D" * 29_000,
     )
 
     manifest, bundle = ContextResolver().resolve(
@@ -149,19 +151,91 @@ def test_apm_document_adapter_leaves_final_truncation_and_omission_to_resolver()
     )
 
 
-def test_planning_apm_preset_declares_only_current_adapter_sources():
+def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
+    monkeypatch,
+):
+    workspace = workspaces.create_workspace("APM table adapter")
+    sentinel = "ROW_SECRET_NEVER_SEND_7F4C"
+    workspace.add_table(
+        "private-ledger.csv",
+        pl.DataFrame(
+            {
+                "invoice_id": [sentinel, "INV-2"],
+                "amount": [100.0, 300.0],
+            }
+        ).write_csv().encode(),
+    )
+
+    schema_calls = []
+    original_schema_brief = assistant.schema_brief
+
+    def tracked_schema_brief(*args, **kwargs):
+        schema_calls.append(True)
+        return original_schema_brief(*args, **kwargs)
+
+    profile_calls = []
+    original_table_metadata = assistant.table_metadata
+
+    def tracked_table_metadata(*args, **kwargs):
+        profile_calls.append(kwargs.get("include_category_values"))
+        return original_table_metadata(*args, **kwargs)
+
+    monkeypatch.setattr(assistant, "schema_brief", tracked_schema_brief)
+    monkeypatch.setattr(assistant, "table_metadata", tracked_table_metadata)
+
+    manifest, bundle = ContextResolver().resolve(
+        workspace,
+        {"id": "planning.apm_ready", "context": "planning.apm"},
+        {"id": "planning.apm:workspace"},
+        agent_context.apm_document_methodology_scope(workspace),
+    )
+
+    assert schema_calls == [True]
+    assert profile_calls == [False]
+    assert [item.representation.kind for item in bundle.items] == [
+        "table_metadata",
+        "table_profile",
+    ]
+    serialized = bundle.to_json()
+    assert "private_ledger" in serialized
+    assert "invoice_id" in serialized
+    assert '"mean":"200"' in serialized
+    assert sentinel not in serialized
+    assert '"values"' not in serialized
+    assert sentinel not in manifest.to_json()
+    assert [selection.source_id for selection in manifest.selections] == [
+        "table_metadata",
+        "table_profiles",
+    ]
+
+
+def test_planning_apm_preset_declares_all_current_adapter_sources():
     spec = PRESETS.compile("planning.apm")
 
-    assert [source.id for source in spec.sources] == ["documents", "methodology"]
+    assert [source.id for source in spec.sources] == [
+        "table_metadata",
+        "table_profiles",
+        "documents",
+        "methodology",
+    ]
     assert [source.selector.selector_id for source in spec.sources] == [
+        "tables.all",
+        "tables.all",
         "documents.lexical",
         "methodology.lexical",
     ]
     assert spec.privacy.allow_document_text is True
-    assert spec.privacy.allow_table_metadata is False
+    assert spec.privacy.allow_table_metadata is True
+    assert spec.privacy.allow_table_profiles is True
+    assert spec.privacy.allow_table_rows is False
 
     adapter_source = inspect.getsource(context_adapters)
+    assert "assistant.schema_brief" in adapter_source
+    assert "assistant.table_metadata" in adapter_source
     assert "document_context.apm_document_context" in adapter_source
     assert "methodology.context_sections" in adapter_source
+    assert ".get_frame(" not in adapter_source
+    assert "project_frame" not in adapter_source
+    assert "profiler" not in adapter_source
     assert "document_analysis" not in adapter_source
     assert "document_search" not in adapter_source

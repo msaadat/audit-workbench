@@ -230,6 +230,37 @@ def test_bundle_round_trip_keeps_local_content_separate_from_manifest_shape():
     assert "content" not in ContextManifest.__dataclass_fields__
 
 
+def test_bundle_item_structurally_rejects_row_level_table_representation():
+    with pytest.raises(
+        ValueError,
+        match="bundle_item.representation cannot use row-level table representation",
+    ):
+        ContextBundleItem(
+            source_id="ledger",
+            source_ref="table:ledger",
+            representation=ContextRepresentation("table_rows"),
+            content=[["ROW SECRET"]],
+            supplied_size=_size(characters=16, estimated_tokens=4),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="selection.representation cannot use row-level table representation",
+    ):
+        ContextSelection(
+            source_id="ledger",
+            source_type="tables",
+            source_ref="table:ledger",
+            source_hash="sha256:" + "1" * 64,
+            selector_kind="deterministic",
+            selector_id="tables.all",
+            selector_definition_hash="sha256:" + "2" * 64,
+            reason="Selected for testing.",
+            representation=ContextRepresentation("table_rows"),
+            supplied_size=_size(characters=16, estimated_tokens=4),
+        )
+
+
 @pytest.mark.parametrize(
     "factory, message",
     [

@@ -33,8 +33,13 @@ def project_frame(df: pl.DataFrame, *, row_limit: int = 40) -> dict:
     }
 
 
-def project_column_profile(profile: dict, *, category_limit: int = 30) -> dict:
-    """Return useful profiler metadata without classifying or masking values."""
+def project_column_profile(
+    profile: dict,
+    *,
+    category_limit: int = 30,
+    include_category_values: bool = True,
+) -> dict:
+    """Return compact profiler metadata with optional category literals."""
     meta = {
         "name": profile["name"],
         "dtype": profile["dtype"],
@@ -46,7 +51,11 @@ def project_column_profile(profile: dict, *, category_limit: int = 30) -> dict:
         meta.update(min=profile.get("min"), max=profile.get("max"))
         if profile.get("mean") is not None:
             meta["mean"] = profile["mean"]
-    if profile["distinct_count"] <= category_limit and profile.get("top_values"):
+    if (
+        include_category_values
+        and profile["distinct_count"] <= category_limit
+        and profile.get("top_values")
+    ):
         meta["values"] = [item.get("value") for item in profile["top_values"]]
     return meta
 

@@ -30,6 +30,7 @@ from .model import (
     ContextManifest,
     ContextPrivacyDecision,
     ContextRepresentation,
+    ROW_LEVEL_TABLE_REPRESENTATIONS,
     ContextSelection,
     ContextSize,
     ContextSource,
@@ -47,7 +48,8 @@ from .presets import (
 _RESOLVER_IDENTITY = (
     "context-resolver:closed-local-selector-strategies:metadata-lexical-embedding:"
     "source-declaration-order:strategy-rank-source-ref:"
-    "per-source-before-global:truncate-text-only:deny-undeclared-representations"
+    "per-source-before-global:truncate-text-only:deny-undeclared-representations:"
+    "reject-row-level-table-candidates"
 )
 RESOLVER_HASH = f"sha256:{hashlib.sha256(_RESOLVER_IDENTITY.encode('utf-8')).hexdigest()}"
 _HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -94,6 +96,11 @@ class ContextCandidate:
             if kind in normalized:
                 raise ValueError(
                     f"context_candidate representation '{kind}' is duplicated."
+                )
+            if kind in ROW_LEVEL_TABLE_REPRESENTATIONS:
+                raise ValueError(
+                    f"Row-level table representation '{kind}' is forbidden in agent "
+                    "context."
                 )
             normalized[kind] = content
         if not isinstance(self.metadata, Mapping):

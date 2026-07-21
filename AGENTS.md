@@ -279,9 +279,11 @@ BaseRunner
   content-free while bundles remain local. The resolver enforces declaration
   order, privacy, hard budgets, stable tie-breaking, and a closed provider-free
   selector set: deterministic metadata, local lexical scoring, or local
-  embeddings bound to model/index hashes. The APM document/methodology adapter
-  reuses the existing bounded document context and methodology section index;
-  table adapters and active-worker adoption are still pending.
+  embeddings bound to model/index hashes. The APM adapter reuses the existing
+  bounded document context, methodology section index, table schema builder,
+  and statistical profiler. Table candidates omit category literals, expose no
+  row preview, and the context models reject `table_rows` before a bundle can
+  reach a worker. Auditor editing and active-worker adoption remain pending.
 
 ### Known duplication
 

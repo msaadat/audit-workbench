@@ -17,6 +17,20 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Mapping, Self
 
 
+ROW_LEVEL_TABLE_REPRESENTATIONS = frozenset({"table_rows"})
+
+
+def _reject_row_level_table_representation(
+    representation: "ContextRepresentation",
+    field_name: str,
+) -> None:
+    if representation.kind in ROW_LEVEL_TABLE_REPRESENTATIONS:
+        raise ValueError(
+            f"{field_name} cannot use row-level table representation "
+            f"'{representation.kind}'."
+        )
+
+
 def _normalized_text(value: object, field_name: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -515,6 +529,10 @@ class ContextSelection(_JSONModel):
             object.__setattr__(self, name, _normalized_text(getattr(self, name), f"selection.{name}"))
         if not isinstance(self.representation, ContextRepresentation):
             raise ValueError("selection.representation must be a ContextRepresentation.")
+        _reject_row_level_table_representation(
+            self.representation,
+            "selection.representation",
+        )
         if not isinstance(self.supplied_size, ContextSize):
             raise ValueError("selection.supplied_size must be a ContextSize.")
 
@@ -782,6 +800,10 @@ class ContextBundleItem(_JSONModel):
         object.__setattr__(self, "source_ref", _normalized_text(self.source_ref, "bundle_item.source_ref"))
         if not isinstance(self.representation, ContextRepresentation):
             raise ValueError("bundle_item.representation must be a ContextRepresentation.")
+        _reject_row_level_table_representation(
+            self.representation,
+            "bundle_item.representation",
+        )
         object.__setattr__(self, "content", _json_value(self.content, "bundle_item.content"))
         if not isinstance(self.supplied_size, ContextSize):
             raise ValueError("bundle_item.supplied_size must be a ContextSize.")

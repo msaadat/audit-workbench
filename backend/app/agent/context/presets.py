@@ -426,6 +426,15 @@ _register_selectors(
             strategy="lexical",
             configuration_keys=("query_fields", "scope"),
         ),
+        SelectorDefinition(
+            selector_id="tables.all",
+            selector_kind="deterministic",
+            supported_source_types=("tables",),
+            implementation_hash=_implementation_hash(
+                "tables.all:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
+        ),
     ),
 )
 
@@ -459,6 +468,22 @@ PRESETS.register(
         spec=ContextSpec(
             sources=(
                 ContextSource(
+                    id="table_metadata",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=12, max_characters=8_000),
+                ),
+                ContextSource(
+                    id="table_profiles",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_profile"),),
+                    budget=ContextBudget(max_items=12, max_characters=16_000),
+                ),
+                ContextSource(
                     id="documents",
                     source_type="documents",
                     required=False,
@@ -483,8 +508,12 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            budget=ContextBudget(max_items=17, max_characters=48_000),
-            privacy=ContextPrivacy(allow_document_text=True),
+            budget=ContextBudget(max_items=41, max_characters=70_000),
+            privacy=ContextPrivacy(
+                allow_document_text=True,
+                allow_table_metadata=True,
+                allow_table_profiles=True,
+            ),
         ),
     )
 )

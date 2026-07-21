@@ -46,15 +46,21 @@ from .resolver import (
 from .adapters import (
     APM_DOCUMENT_SOURCE_ID,
     APM_METHODOLOGY_SOURCE_ID,
+    APM_TABLE_METADATA_SOURCE_ID,
+    APM_TABLE_PROFILE_SOURCE_ID,
     apm_document_candidates,
     apm_document_methodology_scope,
     apm_methodology_candidates,
+    apm_table_metadata_candidates,
+    apm_table_profile_candidates,
 )
 
 __all__ = [
     "AutoSelect",
     "APM_DOCUMENT_SOURCE_ID",
     "APM_METHODOLOGY_SOURCE_ID",
+    "APM_TABLE_METADATA_SOURCE_ID",
+    "APM_TABLE_PROFILE_SOURCE_ID",
     "ContextBudget",
     "ContextBundle",
     "ContextBundleItem",
@@ -92,4 +98,6 @@ __all__ = [
     "apm_document_candidates",
     "apm_document_methodology_scope",
     "apm_methodology_candidates",
+    "apm_table_metadata_candidates",
+    "apm_table_profile_candidates",
 ]

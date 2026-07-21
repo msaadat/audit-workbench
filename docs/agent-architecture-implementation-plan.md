@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.6`.
-- Last completed task: `P4.5`.
+- Current task: `P4.7`.
+- Last completed task: `P4.6`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.6` |
+| 4 | In progress | `P4.7` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -488,6 +488,25 @@ status notes below.
   `test_planning.py` in `20.33s`. No active capability, API payload, or
   frontend contract changed, so a frontend build was not required. The exact
   next task is `P4.6`.
+- `P4.6` completed on 2026-07-21. The normalized `planning.apm` preset now
+  declares bounded table-metadata and table-profile sources selected by the
+  registered deterministic `tables.all` strategy. The APM adapter delegates to
+  the existing assistant schema and profile builders; its profile projection
+  disables category literals and never calls the row-preview projection, while
+  preserving schema, row-count, type, null, distinct, and numeric/date summary
+  metadata. Row-level `table_rows` representations are structurally rejected
+  when candidates enter the resolver boundary and again when manifest
+  selections or local bundle items are constructed, before any worker can
+  receive them. Adapter tests prove real-workspace metadata/profile supply,
+  omission of a sentinel row value, content-free manifests, reuse of the
+  established projection choke points, and the absence of direct frame or
+  profiler logic in the adapter. Focused verification passed `65` tests across
+  `test_agent_context_adapters.py`, `test_agent_context_models.py`,
+  `test_agent_context_resolver.py`, and `test_agent_runtime_contracts.py`; `43`
+  related assistant/profile and workflow privacy regression tests also passed,
+  for `108 passed` in `2.08s`. No active capability, API payload, or frontend
+  contract changed, so a frontend build was not required. The exact next task
+  is `P4.7`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -906,7 +925,7 @@ and manually editable.
   identity tests.
 - [x] `P4.5` Adapt existing document and methodology context builders for the
   APM slice without copying their domain logic.
-- [ ] `P4.6` Adapt table metadata/profile context and structurally reject
+- [x] `P4.6` Adapt table metadata/profile context and structurally reject
   row-level representations before worker invocation.
 - [ ] `P4.7` Specify and implement the intended auditor-editable surface for
   context selection, or amend the objective and contracts to make the scope

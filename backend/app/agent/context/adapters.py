@@ -9,13 +9,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from ... import document_context, methodology
+from ... import assistant, document_context, methodology
 from ...workspaces import Workspace, WorkspaceError
 from .resolver import ContextCandidate, ContextScope
 
 
 APM_DOCUMENT_SOURCE_ID = "documents"
 APM_METHODOLOGY_SOURCE_ID = "methodology"
+APM_TABLE_METADATA_SOURCE_ID = "table_metadata"
+APM_TABLE_PROFILE_SOURCE_ID = "table_profiles"
 
 
 def _normalized_document_ids(
@@ -120,16 +122,60 @@ def apm_methodology_candidates(workspace: Workspace) -> tuple[ContextCandidate, 
     return tuple(candidates)
 
 
+def apm_table_metadata_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Expose schema-only table metadata through the existing assistant builder."""
+    candidates = []
+    for table in assistant.schema_brief(workspace):
+        table_name = str(table.get("table") or "").strip()
+        if not table_name or table.get("error"):
+            continue
+        columns = [str(column.get("name") or "") for column in table.get("columns") or []]
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"table:{table_name}",
+                source=table,
+                representations={"table_metadata": table},
+                metadata={"table": table_name},
+                lexical_text=" ".join((table_name, *columns)),
+            )
+        )
+    return tuple(candidates)
+
+
+def apm_table_profile_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Expose bounded statistical profiles without category or row values."""
+    candidates = []
+    for table_name in workspace.table_names():
+        try:
+            profile = assistant.table_metadata(
+                workspace,
+                table_name,
+                include_category_values=False,
+            )
+        except (OSError, WorkspaceError):
+            continue
+        columns = [str(column.get("name") or "") for column in profile.get("columns") or []]
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"table:{table_name}",
+                source=profile,
+                representations={"table_profile": profile},
+                metadata={"table": table_name},
+                lexical_text=" ".join((table_name, *columns)),
+            )
+        )
+    return tuple(candidates)
+
+
 def apm_document_methodology_scope(
     workspace: Workspace,
     *,
     planning_context: Mapping[str, object] | None = None,
     document_ids: Iterable[str] | None = None,
 ) -> ContextScope:
-    """Build only the document/methodology portion of the future APM scope.
+    """Build the local candidate scope for the future APM vertical slice.
 
-    Live APM execution is intentionally not wired here; P4.8 owns that vertical
-    slice.  P4.6 will add table candidates to this scope.
+    Live APM execution is intentionally not wired here; P4.8 owns that slice.
     """
     context = dict(planning_context or workspace.planning.get("context") or {})
     context["apm_query"] = " ".join(
@@ -138,6 +184,8 @@ def apm_document_methodology_scope(
     ).strip() or "internal audit risk controls procedures"
     return ContextScope(
         candidates={
+            APM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
+            APM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
             APM_DOCUMENT_SOURCE_ID: apm_document_candidates(
                 workspace,
                 document_ids=document_ids,
@@ -151,7 +199,11 @@ def apm_document_methodology_scope(
 __all__ = [
     "APM_DOCUMENT_SOURCE_ID",
     "APM_METHODOLOGY_SOURCE_ID",
+    "APM_TABLE_METADATA_SOURCE_ID",
+    "APM_TABLE_PROFILE_SOURCE_ID",
     "apm_document_candidates",
     "apm_document_methodology_scope",
     "apm_methodology_candidates",
+    "apm_table_metadata_candidates",
+    "apm_table_profile_candidates",
 ]

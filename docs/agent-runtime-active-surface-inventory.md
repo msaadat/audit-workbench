@@ -170,10 +170,12 @@ representations over local candidate scopes. Its automatic selection boundary
 is closed to provider/network services and supports only deterministic
 metadata, local lexical scoring, or local embeddings bound to model/index
 hashes, all with stable tie-breaking. A provider-free APM adapter now exposes
-current bounded document analyses and indexed methodology sections through
-data-only candidate scopes without copying extraction, search, analysis, or
-pack-index logic. No active worker uses that boundary until the later Phase 4
-table-adapter and vertical-slice tasks.
+current bounded document analyses, indexed methodology sections, table schema
+metadata, and statistical profiles through data-only candidate scopes without
+copying extraction, search, analysis, pack-index, or profiler logic. Profile
+candidates omit category literals and row previews, while the context models
+structurally reject `table_rows` candidates, selections, and bundle items. No
+active worker uses that boundary until the later Phase 4 vertical-slice task.
 `ActionRunner` and `WorkflowRunner` accept an injected `RunRuntime`; intake,
 document-test, document-analysis, and legacy analysis remain active leaf
 callers of the facade until their scheduled migrations.
