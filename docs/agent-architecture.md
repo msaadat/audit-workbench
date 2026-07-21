@@ -425,6 +425,12 @@ ledger no longer accepts or invokes lifecycle normalization, and its obsolete
 lifecycle constants and enforcement helper have been deleted. The target later
 moves the authoritative declaration to `workflows/audit.py`.
 
+The Phase 2 exit gate also moved catalog-specific result-significance and
+created-artifact reference rules out of `ledger.py`. Those rules live with the
+registered action definitions and catalog helpers in `actions.py`; the ledger
+only constructs records, validates and transitions the DAG, delegates reference
+normalization, and maintains generic projections.
+
 There is also concrete document-analysis duplication. Both
 `DocumentAnalysisRunner` and `ActionRunner._ensure_planning_analysis` implement
 document extraction, chunk map calls, reduction, validation, and persistence.

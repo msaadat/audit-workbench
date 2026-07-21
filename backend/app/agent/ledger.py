@@ -13,10 +13,6 @@ ACTION_STATUSES = {
     "proposed", "awaiting_input", "awaiting_confirmation", "ready", "blocked",
     "running", "succeeded", "failed", "skipped", "cancelled",
 }
-RESULT_ACTIONS = {
-    "run_data_test", "run_document_test", "rollup_rcm_results",
-}
-
 TRANSITIONS = {
     "proposed": {"awaiting_input", "awaiting_confirmation", "ready", "blocked", "skipped", "cancelled"},
     "awaiting_input": {"proposed", "awaiting_confirmation", "ready", "blocked", "cancelled"},
@@ -63,7 +59,7 @@ def new_action(run: dict, proposal: dict, *, depth: int = 0) -> dict:
         "idempotency_key": f"{run['id']}:{action_id}",
         "failure_policy": str(proposal.get("failure_policy") or definition.failure_policy),
         "planning_significant": bool(
-            proposal.get("planning_significant") or type_ in RESULT_ACTIONS
+            proposal.get("planning_significant") or definition.planning_significant
         ),
         "precondition": None, "postcondition": None,
         "prepared_at": None, "started_at": None, "finished_at": None,
@@ -130,116 +126,6 @@ def validate_graph(run: dict) -> None:
         visit(action_id)
 
 
-CREATE_TARGET_KINDS = {
-    "create_rcm_row": "rcm",
-    "create_rcm_planned_test": "planned_test",
-    "create_procedure": "procedure",
-    "create_data_test": "datatest",
-    "create_validation_rules": "ruleset",
-    "create_custom_analysis": "analysis",
-    "create_document_test": "doctest",
-    "create_finding": "finding",
-    "draft_finding_from_observation": "finding",
-    "pin_dashboard_tile": "tile",
-}
-
-# Some mutation actions write to a stable singleton rather than allocating an
-# id in their arguments.  The model may still reference the producing action
-# id, just as it does for create_* actions, so normalize those references to
-# the durable artifact address before target resolution runs.
-FIXED_ACTION_TARGETS = {
-    "generate_report": ("report", "working"),
-    "edit_report": ("report", "working"),
-}
-
-
-def normalize_created_targets(run: dict, created: list[dict]) -> list[dict]:
-    """Resolve producer-action ids into durable artifact ids."""
-    adjustments = []
-    creators = {
-        item["id"]: item
-        for item in run.get("actions") or []
-        if (
-            item["type"] in FIXED_ACTION_TARGETS
-            or (item["type"] in CREATE_TARGET_KINDS and item.get("args", {}).get("id"))
-        )
-    }
-    argument_refs = {
-        "rcm_id": "create_rcm_row",
-        "planned_test_id": "create_rcm_planned_test",
-    }
-    for action in created:
-        args = action.get("args") or {}
-        for field, creator_type in argument_refs.items():
-            reference = str(args.get(field) or "")
-            creator = creators.get(reference)
-            if creator is None or creator.get("type") != creator_type:
-                continue
-            durable_id = creator.get("args", {}).get("id")
-            if durable_id:
-                args[field] = durable_id
-                if creator["id"] not in action["depends_on"]:
-                    action["depends_on"].append(creator["id"])
-                adjustments.append({
-                    "action_id": action["id"], "kind": "argument_action_reference",
-                    "field": field, "from": reference, "to": durable_id,
-                })
-    for action in created:
-        target = action.get("target") or {}
-        reference = str(target.get("resolved_id") or "")
-        creator = creators.get(reference)
-        if creator is not None:
-            fixed_target = FIXED_ACTION_TARGETS.get(creator["type"])
-            expected_kind = fixed_target[0] if fixed_target else CREATE_TARGET_KINDS[creator["type"]]
-            definition = actions.REGISTRY.get(action["type"], action["definition_version"])
-            targets_doctest_item = definition.target_kinds == ("doctest_item",)
-            if creator["type"] == "create_document_test" and targets_doctest_item:
-                items = creator.get("args", {}).get("items") or []
-                if len(items) != 1 or not isinstance(items[0], dict) or not items[0].get("id"):
-                    raise WorkspaceError(
-                        f"Action '{action['id']}' targets an item in create action '{creator['id']}', "
-                        "which must define exactly one test item for that reference."
-                    )
-                target["kind"] = "doctest_item"
-                target["resolved_id"] = f"{creator['args']['id']}:{items[0]['id']}"
-            elif target.get("kind") != expected_kind:
-                raise WorkspaceError(
-                    f"Action '{action['id']}' target kind '{target.get('kind')}' cannot reference "
-                    f"create action '{creator['id']}' ({expected_kind})."
-                )
-            else:
-                target["resolved_id"] = fixed_target[1] if fixed_target else creator["args"]["id"]
-            if creator["id"] not in action["depends_on"]:
-                action["depends_on"].append(creator["id"])
-            adjustments.append({
-                "action_id": action["id"], "kind": "target_action_reference",
-                "from": reference, "to": target["resolved_id"],
-            })
-
-        selector = str(target.get("selector") or "")
-        if target.get("kind") != "doctest_item" or not selector.startswith("test_id:"):
-            continue
-        creator_id = selector.partition(":")[2]
-        creator = creators.get(creator_id)
-        if creator is None or creator["type"] != "create_document_test":
-            continue
-        items = creator.get("args", {}).get("items") or []
-        if len(items) != 1 or not isinstance(items[0], dict) or not items[0].get("id"):
-            raise WorkspaceError(
-                f"Action '{action['id']}' targets an item in create action '{creator_id}', "
-                "which must define exactly one test item for that reference."
-            )
-        target["selector"] = None
-        target["resolved_id"] = f"{creator['args']['id']}:{items[0]['id']}"
-        if creator_id not in action["depends_on"]:
-            action["depends_on"].append(creator_id)
-        adjustments.append({
-            "action_id": action["id"], "kind": "target_action_reference",
-            "from": selector, "to": target["resolved_id"],
-        })
-    return adjustments
-
-
 def append_actions(
     run: dict,
     proposals: list[dict],
@@ -264,7 +150,7 @@ def append_actions(
     run.setdefault("actions", []).extend(created)
     adjustments = []
     try:
-        adjustments.extend(normalize_created_targets(run, created))
+        adjustments.extend(actions.normalize_created_targets(run, created))
         validate_graph(run)
     except WorkspaceError:
         # Keep the append atomic: a rejected batch must not leave a

@@ -252,8 +252,10 @@ BaseRunner
   removed in Phase 1. Broad-audit and planning requests fail closed if they
   bypass workflow routing; isolated action DAGs remain supported.
 - The action ledger is domain-neutral: its audit-lifecycle switch, constants,
-  and enforcement helper have been removed. `audit_capabilities.build_registry`
-  is the active authoritative audit graph until its Phase 7 move.
+  enforcement helper, and catalog-specific artifact mappings have been removed.
+  Action-specific reference rules live in the action catalog, while
+  `audit_capabilities.build_registry` is the active authoritative audit graph
+  until its Phase 7 move.
 
 ### Events and live UI
 

@@ -1490,6 +1490,22 @@ def test_action_ledger_and_runner_have_no_audit_lifecycle_policy():
     assert "audit_lifecycle" not in inspect.getsource(action_runner.ActionRunner)
 
 
+def test_action_ledger_has_no_audit_artifact_policy():
+    source = inspect.getsource(ledger).casefold()
+    forbidden_terms = {
+        "apm",
+        "rcm",
+        "fieldwork",
+        "finding",
+        "working_paper",
+        "dashboard",
+        "report",
+        "audit",
+    }
+
+    assert not {term for term in forbidden_terms if term in source}
+
+
 @pytest.mark.parametrize(
     "text",
     [

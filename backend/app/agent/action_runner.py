@@ -1546,7 +1546,7 @@ class ActionRunner(BaseRunner):
             return True
         if interaction.get("type") not in {"clarification", "target_choice"}:
             return False
-        adjustments = ledger.normalize_created_targets(self.run, [action])
+        adjustments = actions.normalize_created_targets(self.run, [action])
         if adjustments:
             self.run.setdefault("lifecycle_adjustments", []).extend(adjustments)
         producer = self._pending_target_producer(action)
@@ -1576,7 +1576,7 @@ class ActionRunner(BaseRunner):
         definition = actions.REGISTRY.get(action["type"], action["definition_version"])
         # Also normalize pre-fix persisted proposals when an interrupted run
         # is resumed. New proposals are normalized by the ledger.
-        adjustments = ledger.normalize_created_targets(self.run, [action])
+        adjustments = actions.normalize_created_targets(self.run, [action])
         if adjustments:
             self.run.setdefault("lifecycle_adjustments", []).extend(adjustments)
         if definition.target_kinds and not target.get("kind") and len(definition.target_kinds) == 1:

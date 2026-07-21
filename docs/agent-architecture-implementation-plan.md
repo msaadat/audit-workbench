@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 2.
-- Current task: `P2.4`.
-- Last completed task: `P2.3`.
+- Current phase: Phase 3.
+- Current task: `P3.1`.
+- Last completed task: `P2.4`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -50,8 +50,8 @@ status notes below.
 |---|---|---|
 | 0 | Complete | — |
 | 1 | Complete | — |
-| 2 | In progress | `P2.4` |
-| 3 | Pending Phase 2 gate | `P3.1` |
+| 2 | Complete | — |
+| 3 | In progress | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
@@ -252,6 +252,19 @@ status notes below.
   across `test_command_agent.py` and `test_workflow_v2.py` in `17.94s`. No
   frontend payload or API contract changed, so a frontend build was not
   required.
+- `P2.4` completed on 2026-07-21. The remaining catalog-specific action names
+  used for result significance and created-artifact reference normalization
+  moved from `ledger.py` into the action catalog. `ActionDefinition` now
+  declares the default significance bit, and the ledger invokes the catalog's
+  reference normalizer while retaining generic cycle detection, dependency
+  validation, atomic append rollback, created-target normalization,
+  preconditions, idempotency, failure propagation, and reconciliation. A
+  static exit-gate test rejects APM, RCM, fieldwork, finding, working-paper,
+  dashboard, report, or audit-completion policy in the ledger. Focused
+  verification passed `111` tests across `test_command_agent.py` and
+  `test_workflow_v2.py` in `17.92s`. No frontend payload or API contract
+  changed, so a frontend build was not required. Phase 2 is complete; the exact
+  next task is `P3.1`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -555,7 +568,7 @@ verification stages.
   canonical callers.
 - [x] `P2.3` Remove audit lifecycle constants and enforcement from
   `ledger.py`, then run the action and workflow focused suites.
-- [ ] `P2.4` Prove the domain-neutral ledger exit gate and update status.
+- [x] `P2.4` Prove the domain-neutral ledger exit gate and update status.
 
 **Work:**
 

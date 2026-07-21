@@ -44,6 +44,7 @@ class ActionDefinition:
     executor: Executor
     reconciler: Reconciler | None = None
     result_sanitizer: Callable[[dict], dict] = lambda value: value
+    planning_significant: bool = False
 
 
 class ActionRegistry:
@@ -182,6 +183,115 @@ def allocate_create_id(action: dict) -> None:
         for item in args.get("items") or []:
             if isinstance(item, dict) and not item.get("id"):
                 item["id"] = f"ITEM-{uuid.uuid4().hex[:8].upper()}"
+
+
+CREATE_TARGET_KINDS = {
+    "create_rcm_row": "rcm",
+    "create_rcm_planned_test": "planned_test",
+    "create_procedure": "procedure",
+    "create_data_test": "datatest",
+    "create_validation_rules": "ruleset",
+    "create_custom_analysis": "analysis",
+    "create_document_test": "doctest",
+    "create_finding": "finding",
+    "draft_finding_from_observation": "finding",
+    "pin_dashboard_tile": "tile",
+}
+
+# Some mutation actions write to a stable singleton rather than allocating an
+# id in their arguments. The action catalog owns these domain-specific producer
+# contracts; the ledger only asks the catalog to normalize references.
+FIXED_ACTION_TARGETS = {
+    "generate_report": ("report", "working"),
+    "edit_report": ("report", "working"),
+}
+
+
+def normalize_created_targets(run: dict, created: list[dict]) -> list[dict]:
+    """Resolve producer-action ids into durable artifact ids."""
+    adjustments = []
+    creators = {
+        item["id"]: item
+        for item in run.get("actions") or []
+        if (
+            item["type"] in FIXED_ACTION_TARGETS
+            or (item["type"] in CREATE_TARGET_KINDS and item.get("args", {}).get("id"))
+        )
+    }
+    argument_refs = {
+        "rcm_id": "create_rcm_row",
+        "planned_test_id": "create_rcm_planned_test",
+    }
+    for action in created:
+        args = action.get("args") or {}
+        for field, creator_type in argument_refs.items():
+            reference = str(args.get(field) or "")
+            creator = creators.get(reference)
+            if creator is None or creator.get("type") != creator_type:
+                continue
+            durable_id = creator.get("args", {}).get("id")
+            if durable_id:
+                args[field] = durable_id
+                if creator["id"] not in action["depends_on"]:
+                    action["depends_on"].append(creator["id"])
+                adjustments.append({
+                    "action_id": action["id"], "kind": "argument_action_reference",
+                    "field": field, "from": reference, "to": durable_id,
+                })
+    for action in created:
+        target = action.get("target") or {}
+        reference = str(target.get("resolved_id") or "")
+        creator = creators.get(reference)
+        if creator is not None:
+            fixed_target = FIXED_ACTION_TARGETS.get(creator["type"])
+            expected_kind = fixed_target[0] if fixed_target else CREATE_TARGET_KINDS[creator["type"]]
+            definition = REGISTRY.get(action["type"], action["definition_version"])
+            targets_doctest_item = definition.target_kinds == ("doctest_item",)
+            if creator["type"] == "create_document_test" and targets_doctest_item:
+                items = creator.get("args", {}).get("items") or []
+                if len(items) != 1 or not isinstance(items[0], dict) or not items[0].get("id"):
+                    raise WorkspaceError(
+                        f"Action '{action['id']}' targets an item in create action '{creator['id']}', "
+                        "which must define exactly one test item for that reference."
+                    )
+                target["kind"] = "doctest_item"
+                target["resolved_id"] = f"{creator['args']['id']}:{items[0]['id']}"
+            elif target.get("kind") != expected_kind:
+                raise WorkspaceError(
+                    f"Action '{action['id']}' target kind '{target.get('kind')}' cannot reference "
+                    f"create action '{creator['id']}' ({expected_kind})."
+                )
+            else:
+                target["resolved_id"] = fixed_target[1] if fixed_target else creator["args"]["id"]
+            if creator["id"] not in action["depends_on"]:
+                action["depends_on"].append(creator["id"])
+            adjustments.append({
+                "action_id": action["id"], "kind": "target_action_reference",
+                "from": reference, "to": target["resolved_id"],
+            })
+
+        selector = str(target.get("selector") or "")
+        if target.get("kind") != "doctest_item" or not selector.startswith("test_id:"):
+            continue
+        creator_id = selector.partition(":")[2]
+        creator = creators.get(creator_id)
+        if creator is None or creator["type"] != "create_document_test":
+            continue
+        items = creator.get("args", {}).get("items") or []
+        if len(items) != 1 or not isinstance(items[0], dict) or not items[0].get("id"):
+            raise WorkspaceError(
+                f"Action '{action['id']}' targets an item in create action '{creator_id}', "
+                "which must define exactly one test item for that reference."
+            )
+        target["selector"] = None
+        target["resolved_id"] = f"{creator['args']['id']}:{items[0]['id']}"
+        if creator_id not in action["depends_on"]:
+            action["depends_on"].append(creator_id)
+        adjustments.append({
+            "action_id": action["id"], "kind": "target_action_reference",
+            "from": selector, "to": target["resolved_id"],
+        })
+    return adjustments
 
 
 def approval_required(definition: ActionDefinition, run: dict, action: dict) -> bool:
@@ -912,12 +1022,23 @@ RULE_SPEC = {
 }
 
 
-def _register(type_: str, description: str, risk: str, targets=(), required=(), properties=None, model="none", failure="stop_dependents"):
+def _register(
+    type_: str,
+    description: str,
+    risk: str,
+    targets=(),
+    required=(),
+    properties=None,
+    model="none",
+    failure="stop_dependents",
+    planning_significant=False,
+):
     REGISTRY.register(ActionDefinition(
         type_, 1, description, _schema(required, properties), {"type": "object"}, tuple(targets),
         risk, model, failure, _execute,
         _reconcile if risk not in {"read", "compute"} else None,
         lambda result: result,
+        planning_significant,
     ))
 
 
@@ -990,7 +1111,14 @@ _register(
     },
 )
 _register("edit_data_test", "Edit a durable Data Test definition", "reversible_mutation", ("datatest",), ("changes",), {"changes": OBJ})
-_register("run_data_test", "Execute a Data Test and preserve its immutable bounded result", "compute", ("datatest",), model="interpret_result")
+_register(
+    "run_data_test",
+    "Execute a Data Test and preserve its immutable bounded result",
+    "compute",
+    ("datatest",),
+    model="interpret_result",
+    planning_significant=True,
+)
 _register(
     "link_execution_to_planned_test", "Link a legacy/manual execution artifact to an RCM planned test",
     "reversible_mutation", ("datatest", "doctest"), ("rcm_id", "planned_test_id"),
@@ -1019,10 +1147,23 @@ _register("edit_document_test", "Edit a document test", "reversible_mutation", (
 _register("delete_document_test", "Delete a document test", "destructive", ("doctest",))
 _register("attach_document_to_test", "Attach a document to a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
 _register("detach_document_from_test", "Detach a document from a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
-_register("run_document_test", "Run all items in a document test", "compute", ("doctest",), model="interpret_result")
+_register(
+    "run_document_test",
+    "Run all items in a document test",
+    "compute",
+    ("doctest",),
+    model="interpret_result",
+    planning_significant=True,
+)
 _register("update_test_comparisons", "Update document-test comparisons", "reversible_mutation", ("doctest_item",), ("checks",), {"checks": ARR})
 _register("update_test_disposition", "Update a test-item disposition", "reversible_mutation", ("doctest_item",), ("changes",), {"changes": OBJ})
-_register("rollup_rcm_results", "Roll execution results and observations into RCM outcomes", "broad_rewrite", model="interpret_result")
+_register(
+    "rollup_rcm_results",
+    "Roll execution results and observations into RCM outcomes",
+    "broad_rewrite",
+    model="interpret_result",
+    planning_significant=True,
+)
 _register(
     "disposition_observation", "Record the auditor disposition for an execution observation",
     "reversible_mutation", ("observation",), ("disposition",),
