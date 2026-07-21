@@ -31,6 +31,54 @@ GOAL_TEMPLATES = {
     "report": {"objective": "Prepare evidence-linked audit report working content and run quality checks."},
 }
 
+_WORKFLOW_ONLY_ACTION_TEMPLATES = frozenset({
+    "full_audit_working_draft",
+    "planning",
+    "apm_only",
+})
+_WORKFLOW_ONLY_ACTION_PHRASES = (
+    "full audit",
+    "complete the audit",
+    "complete audit",
+    "entire audit",
+    "end-to-end audit",
+    "end to end audit",
+    "prepare engagement planning",
+    "prepare the engagement planning",
+    "prepare planning",
+    "plan the audit",
+    "draft the apm",
+    "update the apm",
+    "generate apm",
+    "generate the apm",
+    "audit planning memorandum",
+    "generate the rcm",
+    "draft the rcm",
+    "update the rcm",
+    "risk and control matrix",
+    "testing procedures",
+    "planned procedures",
+    "planned tests",
+)
+_ISOLATED_PLANNING_EDIT_VERBS = (
+    "replace",
+    "edit",
+    "rename",
+    "remove",
+    "delete",
+    "attach",
+    "detach",
+)
+_ISOLATED_PLANNING_TARGET_MARKERS = (
+    "paragraph",
+    "sentence",
+    "section",
+    "field",
+    "row",
+    "title",
+    "item",
+)
+
 MAX_SOURCE_DOCUMENTS = 8
 MAX_PLANNING_DOSSIER_CHARACTERS = 60_000
 MAX_PARALLEL_PLANNING_DOCUMENTS = 4
@@ -176,6 +224,7 @@ class ActionRunner(BaseRunner):
             self.run["started"] = store.utcnow()
             self.save()
         try:
+            self._guard_isolated_action_request()
             self._recover_running_actions()
             if not self.run.get("actions"):
                 if self._requests_enriched_planning():
@@ -217,6 +266,35 @@ class ActionRunner(BaseRunner):
                 self._finish(force_issue=True)
         except Exception as error:
             self._fail_run(str(error))
+
+    def _guard_isolated_action_request(self) -> None:
+        """Reject workflow-owned requests before planning or action execution.
+
+        Routing normally selects ``WorkflowRunner`` before launch. This is the
+        defensive boundary for a malformed record or a bounded-router miss: a
+        broad audit or planning request must fail without invoking the action
+        interpreter or executing a pre-populated action graph.
+        """
+        command = self.run.get("command") or {}
+        requested_outcomes = command.get("requested_outcomes")
+        template = str(command.get("goal_template") or "")
+        text = str(command.get("text") or "").casefold()
+        specific_artifact_operation = (
+            any(verb in text for verb in _ISOLATED_PLANNING_EDIT_VERBS)
+            and any(marker in text for marker in _ISOLATED_PLANNING_TARGET_MARKERS)
+        )
+        if (
+            (isinstance(requested_outcomes, list) and bool(requested_outcomes))
+            or template in _WORKFLOW_ONLY_ACTION_TEMPLATES
+            or (
+                not specific_artifact_operation
+                and any(phrase in text for phrase in _WORKFLOW_ONLY_ACTION_PHRASES)
+            )
+        ):
+            raise WorkspaceError(
+                "Broad audit and planning requests must use workflow routing; "
+                "the action runner accepts only isolated artifact operations."
+            )
 
     def _fail_run(self, error: str) -> None:
         self._fail_running_plan_tasks(error)

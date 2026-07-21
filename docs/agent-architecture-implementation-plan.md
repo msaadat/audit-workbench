@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 1.
-- Current task: `P1.3`.
-- Last completed task: `P1.2`.
+- Current task: `P1.4`.
+- Last completed task: `P1.3`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -49,7 +49,7 @@ status notes below.
 | Phase | Status | Next task |
 |---|---|---|
 | 0 | Complete | — |
-| 1 | In progress | `P1.3` |
+| 1 | In progress | `P1.4` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
@@ -168,6 +168,18 @@ status notes below.
   `test_agent_runner.py`, `test_planning.py`, and `test_assistant_chats.py`.
   No frontend payload or API contract changed, so a frontend build was not
   required for this task.
+- `P1.3` completed on 2026-07-21. `ActionRunner.execute()` now validates its
+  command before recovery, legacy planning preparation, interpretation, or
+  execution. Explicit workflow outcomes, broad-audit/planning templates, and
+  broad-audit/planning phrases fail closed with a durable error instructing the
+  caller to use workflow routing. A bounded-router miss therefore cannot reach
+  the canonical action planner, while target-specific planning artifact edits
+  remain valid isolated operations. The obsolete full-audit implementation is
+  intentionally still present for `P1.4`; only its production entry is guarded.
+  Focused verification passed `112` tests across `test_command_agent.py` and
+  `test_workflow_v2.py`, including the bounded-router fallback and zero action-
+  planner-call assertions. No frontend payload or API contract changed, so a
+  frontend build was not required for this task.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -420,7 +432,7 @@ obsolete full-audit policy without preserving old run shapes.
   only current records by that field; add no inference or schema-version field.
 - [x] `P1.2` Rename `CommandRunner` and its module to `ActionRunner`, update all
   live imports and tests in the same task, and retain no alias.
-- [ ] `P1.3` Add a fail-closed guard so broad-audit and planning
+- [x] `P1.3` Add a fail-closed guard so broad-audit and planning
   requests cannot enter the canonical action planner.
 - [ ] `P1.4` Remove planning preparation, audit action insertion, audit budget
   reservations, and full-audit validation from the canonical `ActionRunner`.

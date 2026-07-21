@@ -1684,7 +1684,12 @@ def test_full_audit_mixed_methods_create_required_execution_and_no_speculative_f
         workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
     )
 
-    command.execute()
+    # P1.3 makes this policy unreachable through ActionRunner.execute(). Keep
+    # the private policy characterized until P1.4 deletes it.
+    command._interpret()
+    command._ensure_full_audit_stages()
+    command._drive_graph()
+    command._finish()
     completed = store.load_run(workspace_with_data, run["id"])
     reloaded = workspaces.load_workspace(workspace_with_data.id)
 
@@ -1723,7 +1728,10 @@ def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, w
         raise ConnectionError("remote connection closed")
 
     monkeypatch.setattr(command, "_prepare_planning", fail_during_planning)
-    command.execute()
+    try:
+        command._prepare_planning()
+    except ConnectionError as error:
+        command._fail_run(str(error))
 
     saved = store.load_run(workspace_with_data, run["id"])
     tasks = {
@@ -1735,6 +1743,79 @@ def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, w
     assert tasks["planning:apm"]["status"] == "completed"
     assert tasks["planning:work_program"]["status"] == "failed"
     assert tasks["planning:work_program"]["error"] == "remote connection closed"
+
+
+@pytest.mark.parametrize(
+    "submitted",
+    [
+        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
+        {"source": "goal_template", "goal_template": "planning"},
+        {"source": "goal_template", "goal_template": "apm_only"},
+        {"source": "chat", "text": "Prepare engagement planning"},
+        {
+            "source": "follow_up",
+            "text": "Continue planning",
+            "requested_outcomes": ["planning.apm_ready"],
+        },
+    ],
+)
+def test_action_runner_rejects_workflow_owned_requests_before_planning_or_actions(
+    monkeypatch, workspace_with_data, submitted,
+):
+    run = store.new_command_run(workspace_with_data, "auto", submitted)
+    run["engine"] = store.ACTION_ENGINE
+    store.save_run(workspace_with_data, run)
+    command = action_runner.ActionRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+    monkeypatch.setattr(
+        command,
+        "_recover_running_actions",
+        lambda: pytest.fail("workflow-owned request entered action execution"),
+    )
+    monkeypatch.setattr(
+        command,
+        "_prepare_planning",
+        lambda: pytest.fail("workflow-owned request entered legacy planning"),
+    )
+    monkeypatch.setattr(
+        command,
+        "_interpret",
+        lambda: pytest.fail("workflow-owned request entered the action planner"),
+    )
+
+    command.execute()
+
+    saved = store.load_run(workspace_with_data, run["id"])
+    assert saved["status"] == "failed"
+    assert saved["command"]["status"] == "failed"
+    assert "must use workflow routing" in saved["error"]
+    assert saved["actions"] == []
+    assert saved["usage"]["llm_turns"] == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Replace this APM paragraph with the approved scope",
+        "Edit this audit planning memorandum section",
+        "Rename this RCM row title",
+    ],
+)
+def test_action_runner_guard_preserves_specific_planning_artifact_edits(
+    workspace_with_data, text,
+):
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": text},
+    )
+    run["engine"] = store.ACTION_ENGINE
+    command = action_runner.ActionRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+
+    command._guard_isolated_action_request()
 
 
 def test_task_progress_updates_run_activity_and_timing(workspace_with_data):

@@ -197,6 +197,45 @@ def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
     ]
 
 
+def test_bounded_router_cannot_send_broad_audit_into_action_planner(
+    monkeypatch, workspace_with_data,
+):
+    fake = FakeAgentLLM(
+        {
+            "agent:workflow_router": {
+                "route": "generic_action",
+                "requested_outcomes": [],
+                "objective": "Perform the entire audit",
+                "target_refs": [],
+                "refresh_policy": "missing_or_stale",
+                "action_intent": "generic",
+                "constraints": [],
+                "needs_clarification": False,
+                "clarification": None,
+            },
+        }
+    )
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "Perform the entire audit"},
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["engine"] == store.ACTION_ENGINE
+    assert completed["status"] == "failed"
+    assert "must use workflow routing" in completed["error"]
+    assert completed["actions"] == []
+    assert [call["tag"] for call in fake.calls] == ["agent:workflow_router"]
+
+
 def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
     ws = workspaces.create_workspace("Local APM route")
     run = store.new_command_run(
