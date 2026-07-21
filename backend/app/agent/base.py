@@ -3,34 +3,19 @@
 from __future__ import annotations
 
 import json
-import hashlib
-import os
 import threading
 import time
 import uuid
 from collections.abc import Callable
 
-from .. import debug_store, llm
+from .. import llm
 from ..workspaces import Workspace
 from . import prompts, store
+from .runtime import DefaultModelGateway
 
-MAX_LLM_TURNS = 40
 MAX_TASKS = 60
 MAX_RUNTIME_SECONDS = 1800
 LLM_JSON_ATTEMPTS = 2
-
-_provider_semaphores: dict[str, threading.BoundedSemaphore] = {}
-_provider_semaphores_guard = threading.Lock()
-
-
-def _provider_semaphore(profile: dict, maximum: int) -> threading.BoundedSemaphore:
-    key = f"{profile.get('provider') or profile.get('backend')}:{profile.get('model')}"
-    try:
-        capacity = max(1, int(os.environ.get("AGENT_PROVIDER_MAX_CONCURRENCY") or 4))
-    except ValueError:
-        capacity = 4
-    with _provider_semaphores_guard:
-        return _provider_semaphores.setdefault(key, threading.BoundedSemaphore(capacity))
 
 
 class Cancelled(Exception):
@@ -39,6 +24,24 @@ class Cancelled(Exception):
 
 class LimitExceeded(Exception):
     pass
+
+
+MODEL_WAIT_LABELS = {
+    "agent:command_interpreter": "Preparing the action plan",
+    "agent:command_planner": "Planning the next fieldwork steps",
+    "agent:document_selection": "Selecting planning documents",
+    "agent:document_context": "Analyzing planning documents",
+    "agent:apm": "Drafting the audit planning memorandum",
+    "agent:rcm": "Drafting the risk and control matrix",
+    "agent:work_program": "Drafting RCM planned tests",
+    "agent:data_test_spec": "Defining a Data Test",
+    "agent:document_test_spec": "Defining a Document Test",
+    "agent:document_qa": "Answering from document evidence",
+    "agent:finding": "Drafting an evidence-linked finding",
+    "agent:file_classification": "Classifying staged files",
+    "agent:document_analysis_map": "Analyzing document content",
+    "agent:document_analysis_reduce": "Consolidating document analysis",
+}
 
 
 class BaseRunner:
@@ -59,7 +62,23 @@ class BaseRunner:
         # Independent planning-document requests may run concurrently. Keep
         # provider waits parallel while serializing the shared durable ledger.
         self._state_lock = threading.RLock()
-        self._model_context = threading.local()
+        self.model_gateway = DefaultModelGateway(
+            workspace_id=self.ws.id,
+            workspace_root=str(self.ws.root),
+            run=self.run,
+            state_lock=self._state_lock,
+            checkpoint=self.checkpoint,
+            save=self.save,
+            emit=self.emit,
+            utcnow=store.utcnow,
+            append_provenance=self._append_model_provenance,
+            template_context=self._model_template_context,
+            stage_labels=MODEL_WAIT_LABELS,
+            limit_error=LimitExceeded,
+        )
+        # Temporary compatibility for existing workflow correlation call sites.
+        # The attribution state itself is owned by ModelGateway.
+        self._model_context = self.model_gateway.context
 
     def save(self) -> None:
         with self._state_lock:
@@ -105,63 +124,6 @@ class BaseRunner:
                 activity["waiting_on"] = None
                 activity["model_started_at"] = None
             self.run["activity"] = activity
-            self.run["activity_revision"] = int(self.run.get("activity_revision") or 0) + 1
-            self.save()
-            self.emit("activity_update", {
-                "activity": activity,
-                "revision": self.run["activity_revision"],
-            })
-
-    def _model_wait(self, tag: str, *, started: bool, attempt: int = 1) -> None:
-        """Expose provider waits without logging prompts or source content."""
-        labels = {
-            "agent:command_interpreter": "Preparing the action plan",
-            "agent:command_planner": "Planning the next fieldwork steps",
-            "agent:document_selection": "Selecting planning documents",
-            "agent:document_context": "Analyzing planning documents",
-            "agent:apm": "Drafting the audit planning memorandum",
-            "agent:rcm": "Drafting the risk and control matrix",
-            "agent:work_program": "Drafting RCM planned tests",
-            "agent:data_test_spec": "Defining a Data Test",
-            "agent:document_test_spec": "Defining a Document Test",
-            "agent:document_qa": "Answering from document evidence",
-            "agent:finding": "Drafting an evidence-linked finding",
-            "agent:file_classification": "Classifying staged files",
-            "agent:document_analysis_map": "Analyzing document content",
-            "agent:document_analysis_reduce": "Consolidating document analysis",
-        }
-        now = store.utcnow()
-        with self._state_lock:
-            activity = dict(self.run.get("activity") or {})
-            if not activity:
-                activity = {
-                    "phase": tag.replace("agent:", "model."),
-                    "label": labels.get(tag, "Waiting for the model"),
-                    "detail": None,
-                    "current": None,
-                    "total": None,
-                    "task_id": None,
-                    "action_id": None,
-                    "started_at": now,
-                }
-            active = int(activity.get("model_calls_active") or 0)
-            if started:
-                active += 1
-                activity["model_started_at"] = activity.get("model_started_at") or now
-                activity["waiting_on"] = "model"
-                activity["attempt"] = attempt
-            else:
-                active = max(0, active - 1)
-                if active == 0:
-                    activity["waiting_on"] = None
-                    activity["model_started_at"] = None
-            activity["model_calls_active"] = active
-            activity["updated_at"] = now
-            self.run["activity"] = activity
-            usage = self.run.setdefault("usage", {})
-            usage["max_concurrent_model_calls"] = max(
-                int(usage.get("max_concurrent_model_calls") or 0), active
-            )
             self.run["activity_revision"] = int(self.run.get("activity_revision") or 0) + 1
             self.save()
             self.emit("activity_update", {
@@ -268,177 +230,35 @@ class BaseRunner:
     def _llm_content(
         self, system: str, user: str, activity: dict | None = None, *, attempt: int = 1,
     ) -> str:
-        """Execute and provenance-log one model turn.
+        """Delegate one model turn to the shared gateway."""
+        return self.model_gateway.complete(
+            system,
+            user,
+            activity,
+            attempt=attempt,
+        )
 
-        This is the single path from any runner to the provider; every budget,
-        every provenance row, and every concurrency limit is enforced here.
-        Only accounting and snapshot mutations are locked. The provider call
-        stays outside the lock so independent document analyses can overlap.
-        """
-        self.checkpoint()
-        # Charge the turn and a character-derived token estimate *before*
-        # calling out, so an over-budget run fails without spending money. The
-        # estimate is reconciled against real provider usage further down.
-        with self._state_lock:
-            usage = self.run.setdefault("usage", {})
-            maximum_turns = int(
-                (self.run.get("limits") or {}).get("max_model_turns") or MAX_LLM_TURNS
-            )
-            if usage.get("llm_turns", 0) >= maximum_turns:
-                raise LimitExceeded("model turn limit reached")
-            request_characters = len(system) + len(user)
-            estimated_input_tokens = max(1, request_characters // 4)
-            maximum_prompt_tokens = int(
-                (self.run.get("limits") or {}).get("max_estimated_prompt_tokens")
-                or maximum_turns * 10_000
-            )
-            projected_tokens = int(usage.get("estimated_prompt_tokens") or 0) + estimated_input_tokens
-            if projected_tokens > maximum_prompt_tokens:
-                raise LimitExceeded("estimated prompt-token limit reached")
-            usage["llm_turns"] = usage.get("llm_turns", 0) + 1
-            usage["estimated_prompt_tokens"] = projected_tokens
-            usage["request_characters"] = int(usage.get("request_characters") or 0) + request_characters
-            if attempt > 1:
-                usage["retries"] = int(usage.get("retries") or 0) + 1
-            self.save()
-        # The leading [agent:<stage>] tag is the stage identity for the whole
-        # system: UI labels, per-worker usage totals, and the test fakes all
-        # key on it. Unit/parent correlation comes from thread-local state set
-        # by the parallel workers, so concurrent calls stay attributable.
-        tag = system.split("]", 1)[0].lstrip("[") if system.startswith("[") else "agent"
-        self._model_wait(tag, started=True, attempt=attempt)
-        activity_fields = dict(activity or {})
-        unit_id = getattr(self._model_context, "unit_id", None)
-        parent_refs = getattr(self._model_context, "parent_refs", None)
-        if unit_id:
-            activity_fields.setdefault("unit_id", unit_id)
-        if parent_refs:
-            activity_fields.setdefault("parent_refs", list(parent_refs))
-        activity_fields.setdefault("retry_number", attempt)
-        current_activity = dict(self.run.get("activity") or {})
-        call_started = time.monotonic()
-        # The provider call itself: outside the state lock, inside a trace
-        # context, and gated by a process-wide semaphore keyed on
-        # provider:model — that semaphore, not the thread pools, is what
-        # actually bounds in-flight requests across every concurrent run.
-        try:
-            with debug_store.trace_context(
-                workspace_id=self.ws.id, workspace_root=str(self.ws.root), run_id=self.run["id"],
-                action_id=activity_fields.get("action_id") or current_activity.get("action_id"),
-                task_id=activity_fields.get("task_id") or current_activity.get("task_id"),
-                chat_id=self.run.get("chat_id"), stage=tag, purpose=tag,
-                document_ids=activity_fields.get("document_ids"),
-                artifact_refs=activity_fields.get("artifact_refs"),
-                unit_id=unit_id,
-                parent_refs=parent_refs,
-            ):
-                profile_state = llm.agent_status()
-                concurrency = max(
-                    1,
-                    int((self.run.get("limits") or {}).get("max_llm_concurrency") or 4),
-                )
-                with _provider_semaphore(profile_state, concurrency):
-                    message = llm.chat(
-                        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                        profile="agent",
-                    )
-        finally:
-            self._model_wait(tag, started=False, attempt=attempt)
-        # The ledger stores provenance and hashes, never full prompt or
-        # document content.
+    def _append_model_provenance(self, fields: dict) -> None:
         from ..documents import append_activity
-        profile = llm.agent_status()
-        with self._state_lock:
-            sources = list(self.run.get("model_sources") or [])
+
+        append_activity(self.ws, **fields)
+
+    def _model_template_context(self, tag: str) -> dict | None:
         template_name = {
-            "agent:apm": "apm", "agent:rcm": "rcm",
+            "agent:apm": "apm",
+            "agent:rcm": "rcm",
             "agent:work_program": "workpaper",
         }.get(tag)
-        template_versions = []
-        if template_name:
-            from .. import templates_store
-            active = templates_store.get_template(self.ws, template_name)
-            template_versions.append({
-                "name": template_name, "source": active["source"],
-                "sha1": hashlib.sha1(active["markdown"].encode("utf-8")).hexdigest(),
-            })
-        content = str(message.get("content") or "")
-        latency_ms = round((time.monotonic() - call_started) * 1000, 3)
-        provider_usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
-        # Replace the pre-call estimate with real provider counts, then fold
-        # this call into the per-worker totals and the metrics list the run
-        # summary reports. A blown budget is raised only after the response is
-        # returned to the caller's accounting — the work is already paid for.
-        with self._state_lock:
-            usage = self.run.setdefault("usage", {})
-            prompt_tokens = int(
-                provider_usage.get("prompt_tokens")
-                or provider_usage.get("input_tokens")
-                or estimated_input_tokens
-            )
-            completion_tokens = int(
-                provider_usage.get("completion_tokens") or provider_usage.get("output_tokens") or 0
-            )
-            usage["prompt_tokens"] = int(usage.get("prompt_tokens") or 0) + prompt_tokens
-            usage["completion_tokens"] = int(usage.get("completion_tokens") or 0) + completion_tokens
-            maximum_completion_tokens = int(
-                (self.run.get("limits") or {}).get("max_completion_tokens")
-                or maximum_turns * 4_000
-            )
-            token_budget_exceeded = (
-                usage["prompt_tokens"] > maximum_prompt_tokens
-                or usage["completion_tokens"] > maximum_completion_tokens
-            )
-            usage["model_calls_by_worker"] = dict(usage.get("model_calls_by_worker") or {})
-            usage["model_calls_by_worker"][tag] = int(
-                usage["model_calls_by_worker"].get(tag) or 0
-            ) + 1
-            worker_totals = usage.setdefault("model_usage_by_worker", {}).setdefault(
-                tag,
-                {
-                    "calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
-                    "request_characters": 0, "latency_ms": 0.0, "retries": 0,
-                },
-            )
-            worker_totals["calls"] += 1
-            worker_totals["prompt_tokens"] += prompt_tokens
-            worker_totals["completion_tokens"] += completion_tokens
-            worker_totals["request_characters"] += request_characters
-            worker_totals["latency_ms"] = round(
-                float(worker_totals["latency_ms"]) + latency_ms, 3
-            )
-            worker_totals["retries"] += int(attempt > 1)
-            metrics = usage.setdefault("model_call_metrics", [])
-            metrics.append(
-                {
-                    "worker": tag,
-                    "request_characters": request_characters,
-                    "estimated_input_tokens": estimated_input_tokens,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "latency_ms": latency_ms,
-                    "retry_number": attempt,
-                    "context_metrics": (activity or {}).get("context_metrics"),
-                }
-            )
-            self.save()
-        append_activity(
-            self.ws, run_id=self.run["id"], stage=tag, task=None, purpose=tag,
-            provider=profile.get("provider"), model=profile.get("model"), vision_used=False,
-            prompt_version=hashlib.sha1(f"{system}\n{user}".encode("utf-8")).hexdigest(),
-            template_versions=template_versions,
-            knowledge_packs=[{"source_ref": item["source_ref"], "sha1": item.get("source_sha1")} for item in sources if str(item.get("source_ref", "")).startswith("pack:")],
-            document_ids=activity_fields.pop("document_ids", [item["document_id"] for item in sources if not str(item.get("source_ref", "")).startswith("pack:")]),
-            page_ranges=activity_fields.pop("page_ranges", sorted({page for item in sources for page in item.get("pages", [])})),
-            source_hashes=activity_fields.pop("source_hashes", sorted({item["source_sha1"] for item in sources if item.get("source_sha1")})),
-            response_at=store.utcnow(), response_hash=hashlib.sha1(content.encode("utf-8")).hexdigest(),
-            artifact_ref=None, disposition="generated",
-            latency_ms=latency_ms,
-            **activity_fields,
-        )
-        if token_budget_exceeded:
-            raise LimitExceeded("workflow token budget reached")
-        return content
+        if not template_name:
+            return None
+        from .. import templates_store
+
+        active = templates_store.get_template(self.ws, template_name)
+        return {
+            "name": template_name,
+            "source": active["source"],
+            "markdown": active["markdown"],
+        }
 
     def llm_json(
         self,

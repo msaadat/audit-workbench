@@ -1,33 +1,10 @@
 import inspect
 import json
 import re
-from typing import Any
 
 from app import documents, llm
 from app.agent import base, runner, store
-from app.agent.runtime import ModelGateway, RunRuntime
-
-
-class _ActiveModelGateway:
-    """Expose the still-active BaseRunner behavior through the target contract."""
-
-    def __init__(self, active_runner: base.BaseRunner):
-        self._runner = active_runner
-
-    def complete(
-        self,
-        system: str,
-        user: str,
-        activity: dict[str, Any] | None = None,
-        *,
-        attempt: int = 1,
-    ) -> str:
-        return self._runner._llm_content(
-            system,
-            user,
-            activity,
-            attempt=attempt,
-        )
+from app.agent.runtime import DefaultModelGateway, ModelGateway, RunRuntime
 
 
 def _base_runner(workspace_with_data):
@@ -102,8 +79,8 @@ def test_model_gateway_contract_wraps_active_budget_and_provenance_behavior(
 ):
     calls = []
 
-    def fake_chat(messages, **_kwargs):
-        calls.append(messages)
+    def fake_chat(messages, **kwargs):
+        calls.append((messages, kwargs))
         return {
             "content": "SENSITIVE_PROVIDER_RESPONSE",
             "usage": {"prompt_tokens": 17, "completion_tokens": 5},
@@ -123,22 +100,28 @@ def test_model_gateway_contract_wraps_active_budget_and_provenance_behavior(
         "max_llm_concurrency": 1,
     }
     active.save()
-    gateway = _ActiveModelGateway(active)
+    gateway = active.model_gateway
     system = "[agent:contract_test]\nSENSITIVE_SYSTEM_PROMPT"
     user = "SENSITIVE_USER_PAYLOAD"
 
     assert isinstance(gateway, ModelGateway)
-    assert gateway.complete(system, user) == "SENSITIVE_PROVIDER_RESPONSE"
-    assert calls == [[
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]]
+    assert gateway.complete(system, user, attempt=2) == "SENSITIVE_PROVIDER_RESPONSE"
+    assert calls == [(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        {"profile": "agent"},
+    )]
 
     usage = store.load_run(workspace_with_data, active.run["id"])["usage"]
     assert usage["llm_turns"] == 1
     assert usage["prompt_tokens"] == 17
     assert usage["completion_tokens"] == 5
+    assert usage["retries"] == 1
     assert usage["model_calls_by_worker"] == {"agent:contract_test": 1}
+    assert usage["model_usage_by_worker"]["agent:contract_test"]["retries"] == 1
+    assert usage["model_call_metrics"][0]["retry_number"] == 2
 
     activity = documents.activities(workspace_with_data)["items"][-1]
     serialized = json.dumps(activity)
@@ -147,15 +130,39 @@ def test_model_gateway_contract_wraps_active_budget_and_provenance_behavior(
     assert "SENSITIVE_SYSTEM_PROMPT" not in serialized
     assert "SENSITIVE_USER_PAYLOAD" not in serialized
     assert "SENSITIVE_PROVIDER_RESPONSE" not in serialized
+    assert activity["stage"] == "agent:contract_test"
+    assert activity["retry_number"] == 2
 
 
-def test_runtime_contract_modules_are_behavior_free_and_domain_neutral():
+def test_base_runner_delegates_model_calls_to_gateway(workspace_with_data, monkeypatch):
+    active = _base_runner(workspace_with_data)
+    calls = []
+
+    def fake_complete(system, user, activity=None, *, attempt=1):
+        calls.append((system, user, activity, attempt))
+        return "delegated"
+
+    monkeypatch.setattr(active.model_gateway, "complete", fake_complete)
+
+    assert (
+        active._llm_content(
+            "system",
+            "user",
+            {"task_id": "task-1"},
+            attempt=2,
+        )
+        == "delegated"
+    )
+    assert calls == [("system", "user", {"task_id": "task-1"}, 2)]
+
+
+def test_runtime_contracts_and_gateway_are_domain_neutral():
     assert getattr(ModelGateway, "_is_protocol", False)
     assert getattr(RunRuntime, "_is_protocol", False)
+    assert isinstance(DefaultModelGateway, type)
 
-    for contract in (ModelGateway, RunRuntime):
-        source = inspect.getsource(inspect.getmodule(contract)).casefold()
-        assert "from .." not in source
+    for runtime_type in (DefaultModelGateway, ModelGateway, RunRuntime):
+        source = inspect.getsource(inspect.getmodule(runtime_type)).casefold()
         forbidden = {
             "apm",
             "rcm",
@@ -169,3 +176,16 @@ def test_runtime_contract_modules_are_behavior_free_and_domain_neutral():
         assert not {
             term for term in forbidden if re.search(rf"\b{term}\b", source)
         }
+
+    run_runtime_source = inspect.getsource(inspect.getmodule(RunRuntime)).casefold()
+    assert "from .." not in run_runtime_source
+
+
+def test_base_runner_no_longer_owns_provider_call_behavior():
+    source = inspect.getsource(base.BaseRunner)
+
+    assert "_provider_semaphore" not in source
+    assert "llm.chat(" not in source
+    assert "debug_store.trace_context" not in source
+    assert 'usage["prompt_tokens"]' not in source
+    assert "hashlib.sha1" not in source

@@ -87,12 +87,12 @@ backend/app/
 |  |- report_routes.py         - findings/report endpoints and reconciliation
 |  `- debug_routes.py          - workspace debug console APIs and live stream
 `- agent/
-   |- runtime/                 - behavior-free RunRuntime and ModelGateway
-   |                             public contracts; BaseRunner still owns the
-   |                             active implementations during Phase 3
+   |- runtime/                 - RunRuntime contract plus the active shared
+   |                             ModelGateway implementation for provider
+   |                             calls, accounting, telemetry, and provenance
    |- store.py                 - durable run storage in AgentRuns/
-   |- base.py                  - BaseRunner: budgets, checkpoints, approvals,
-   |                             interactions, provider call accounting
+   |- base.py                  - temporary BaseRunner facade: checkpoints,
+   |                             approvals, interactions, and runtime adapters
    |- runner.py                - thread orchestration, active-handle registry,
    |                             recovery, pause/resume/cancel/retry/continue
    |- action_runner.py         - action-graph runner for isolated mutations
@@ -240,15 +240,16 @@ BaseRunner
 
 ### Model call discipline
 
-- `BaseRunner._llm_content` is the only path to the provider. It charges
-  turn and token budgets before calling, derives the `[agent:<stage>]` tag that
-  drives UI labels and per-worker accounting, holds a process-wide semaphore
-  keyed on `provider:model`, and appends a provenance row containing hashes
-  only, never prompt or document text.
-- `agent.runtime` defines the target `RunRuntime` and `ModelGateway` structural
-  contracts. At the P3.1 boundary these contracts contain no implementation;
-  `BaseRunner` remains the active behavior owner until the subsequent Phase 3
-  delegation tasks.
+- `agent.runtime.DefaultModelGateway.complete` is the only runner path to the
+  provider. It charges turn and token budgets before calling, derives the
+  `[agent:<stage>]` tag that drives UI labels and per-worker accounting, holds
+  a process-wide semaphore keyed on `provider:model`, records debug telemetry,
+  and appends hash-only provenance. `BaseRunner._llm_content` is a temporary
+  delegation facade for existing callers.
+- `agent.runtime` also defines the target `RunRuntime` and `ModelGateway`
+  structural contracts. At the P3.2 boundary provider behavior is implemented
+  by `DefaultModelGateway`; durable run operations remain on `BaseRunner` until
+  the subsequent Phase 3 delegation tasks.
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.

@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 3.
-- Current task: `P3.2`.
-- Last completed task: `P3.1`.
+- Current task: `P3.3`.
+- Last completed task: `P3.2`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -51,7 +51,7 @@ status notes below.
 | 0 | Complete | — |
 | 1 | Complete | — |
 | 2 | Complete | — |
-| 3 | In progress | `P3.2` |
+| 3 | In progress | `P3.3` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
@@ -279,6 +279,21 @@ status notes below.
   `test_agent_runner.py`, `test_command_agent.py`, and `test_workflow_v2.py` in
   `47.95s`. No frontend payload or API contract changed, so a frontend build
   was not required. The exact next task is `P3.2`.
+- `P3.2` completed on 2026-07-21. `DefaultModelGateway` now owns the
+  process-wide provider/model semaphore, agent-profile calls, pre-call turn and
+  estimated-token charging, retry attribution, stage-tag extraction,
+  thread-local unit correlation, model-wait activity, debug trace context,
+  actual-token reconciliation, per-worker metrics, and hash-only provenance.
+  `BaseRunner._llm_content` is now a thin delegation facade; its remaining
+  callbacks only bridge durable save/event operations, provenance persistence,
+  and template lookup until `RunRuntime` extraction. Contract tests bind the
+  concrete gateway to the public protocol, verify delegation, profile and retry
+  attribution, stage tags, privacy, and the absence of provider-call behavior
+  from `BaseRunner`. Focused verification passed `154` tests across
+  `test_agent_runtime_contracts.py`, `test_agent_runner.py`,
+  `test_command_agent.py`, and `test_workflow_v2.py` in `48.52s`. No frontend
+  payload or API contract changed, so a frontend build was not required. The
+  exact next task is `P3.3`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -614,7 +629,7 @@ working papers, dashboard, reports, or audit completion.
 
 - [x] `P3.1` Define the small `RunRuntime` and `ModelGateway` public contracts
   plus active-behavior contract tests, without moving behavior.
-- [ ] `P3.2` Extract the provider semaphore, model profiles, token charging,
+- [x] `P3.2` Extract the provider semaphore, model profiles, token charging,
   retries, stage tags, telemetry, and hash-only provenance into
   `ModelGateway`; make `BaseRunner` delegate to it.
 - [ ] `P3.3` Extract run save, event emission, activity projection, status, and

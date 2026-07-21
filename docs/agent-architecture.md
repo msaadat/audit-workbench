@@ -395,12 +395,14 @@ runners. The target architecture nevertheless applies a strict test: retain a
 separate runner only when it requires a genuinely different scheduling and
 control protocol. Otherwise migrate its work into capabilities and workers.
 
-The behavior-free `RunRuntime` and `ModelGateway` structural contracts now live
-under `agent/runtime/`. `BaseRunner` still owns every active persistence,
-control, approval, interaction, provider, budget, telemetry, and provenance
-operation at the P3.1 boundary. Provider delegation starts in P3.2; runtime
-delegation starts in P3.3. No scheduler behavior moved with the contract-only
-introduction.
+The `RunRuntime` and `ModelGateway` structural contracts live under
+`agent/runtime/`. `DefaultModelGateway` now owns the active provider semaphore,
+agent model profile, pre-call token charging, retry accounting, stage tags,
+debug tracing, usage reconciliation, and hash-only provenance. Existing
+`BaseRunner._llm_content` callers delegate to that gateway, while injected
+callbacks temporarily bridge durable save/event operations and provenance
+storage. Per-run runtime delegation starts in P3.3; no scheduler behavior moved
+with the provider extraction.
 
 ### Phase 1 Deletion Boundary
 
