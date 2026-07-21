@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 1.
-- Current task: `P1.5`.
-- Last completed task: `P1.4`.
+- Current task: `P1.6`.
+- Last completed task: `P1.5`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -49,7 +49,7 @@ status notes below.
 | Phase | Status | Next task |
 |---|---|---|
 | 0 | Complete | — |
-| 1 | In progress | `P1.5` |
+| 1 | In progress | `P1.6` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
@@ -196,6 +196,20 @@ status notes below.
   tests across `test_agent_runner.py` and `test_assistant_chats.py`. No frontend
   payload or API contract changed, so a frontend build was not required for
   this task.
+- `P1.5` completed on 2026-07-21. The canonical action interpreter and adaptive
+  planner prompts no longer describe prepared planning, accept a
+  `prepared_planning` payload, receive an RCM execution manifest, or reserve
+  rollup/report/verification work for a full-audit orchestrator. The prompt
+  builders and their `ActionRunner` callers now expose only generic action
+  context, and the action runner no longer imports `rcm_execution`. Focused
+  tests assert the removed prompt fields and clauses at the direct action,
+  bounded-router fallback, workflow-local-routing, and same-schema recovery
+  boundaries while retaining the `P1.3` fail-closed guard and isolated action
+  execution. Focused verification passed `111` tests across
+  `test_command_agent.py` and `test_workflow_v2.py`, plus `43` recovery and
+  assistant-routing tests across `test_agent_runner.py` and
+  `test_assistant_chats.py`. No frontend payload or API contract changed, so a
+  frontend build was not required for this task.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -452,7 +466,7 @@ obsolete full-audit policy without preserving old run shapes.
   requests cannot enter the canonical action planner.
 - [x] `P1.4` Remove planning preparation, audit action insertion, audit budget
   reservations, and full-audit validation from the canonical `ActionRunner`.
-- [ ] `P1.5` Remove obsolete interpreter prompt clauses and update focused
+- [x] `P1.5` Remove obsolete interpreter prompt clauses and update focused
   action, workflow, recovery, and routing tests.
 - [ ] `P1.6` Prove the deletion gate, the absence of legacy readers and aliases,
   and update current status.

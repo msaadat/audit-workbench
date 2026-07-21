@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .. import (
     analytics, assistant, debug_store, document_analysis, documents, llm, methodology, templates_store,
-    rcm_execution, sandbox, validation,
+    sandbox, validation,
 )
 from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError, slugify
 from ..workspace_transactions import mutate, parent_hashes
@@ -312,7 +312,6 @@ class ActionRunner(BaseRunner):
             command, template, artifact_index.compact(index), self._catalog(), self.run["limits"],
             assistant.schema_brief(self.ws),
             self._table_profiles(),
-            prepared_planning=self.run.get("prepared_planning"),
         )
         # One repair round: a batch rejected by the action contracts or graph
         # validator is fed back with the specific error rather than discarded.
@@ -1899,7 +1898,6 @@ class ActionRunner(BaseRunner):
             {**self.run["limits"], "remaining_actions": remaining_actions},
             assistant.schema_brief(self.ws),
             self._table_profiles(),
-            rcm_execution.execution_manifest(self.ws),
         )
         attempt_user = base_user
         for attempt in range(SEMANTIC_PROPOSAL_ATTEMPTS):

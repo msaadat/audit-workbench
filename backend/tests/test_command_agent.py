@@ -1,3 +1,4 @@
+import inspect
 import json
 import time
 
@@ -5,7 +6,7 @@ import polars as pl
 import pytest
 
 from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, workspaces
-from app.agent import action_runner, actions, artifact_index, audit_capabilities, ledger, runner, store
+from app.agent import action_runner, actions, artifact_index, audit_capabilities, ledger, prompts, runner, store
 from conftest import FakeAgentLLM, wait_run
 
 
@@ -108,6 +109,7 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
 ):
     def interpret(user):
         payload = json.loads(user)
+        assert "prepared_planning" not in payload
         schemas = {item["table"]: item for item in payload["table_schemas"]}
         profiles = {item["table"]: item for item in payload["table_profiles"]}
         transaction_fields = {item["name"] for item in schemas["transactions"]["columns"]}
@@ -1368,7 +1370,14 @@ def test_post_success_planner_failure_keeps_committed_work(monkeypatch, workspac
             {"id": "second", "type": "create_finding", "args": {"title": "Second finding"}, "depends_on": ["first"]},
         ],
     }
-    planner = {"actions": [{"id": "bad", "type": "run_analytics", "args": {}}]}
+    planner_calls = []
+
+    def planner(user):
+        if not planner_calls:
+            assert "execution_manifest" not in json.loads(user)
+        planner_calls.append(user)
+        return {"actions": [{"id": "bad", "type": "run_analytics", "args": {}}]}
+
     fake = FakeAgentLLM({"agent:command_interpreter": interpreter, "agent:command_planner": planner})
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "backend": "fake", "model": "fake"})
@@ -1599,6 +1608,22 @@ def test_action_runner_has_no_full_audit_or_planning_orchestration():
     }
 
     assert not (removed_members & set(vars(action_runner.ActionRunner)))
+
+
+def test_action_prompt_contract_has_no_full_audit_orchestration():
+    assert "prepared_planning" not in inspect.signature(
+        prompts.command_interpreter_user
+    ).parameters
+    assert "execution_manifest" not in inspect.signature(
+        prompts.command_planner_user
+    ).parameters
+    for system_prompt in (
+        prompts.COMMAND_INTERPRETER_SYSTEM,
+        prompts.COMMAND_PLANNER_SYSTEM,
+    ):
+        assert "prepared_planning" not in system_prompt
+        assert "execution_manifest" not in system_prompt
+        assert "final verification" not in system_prompt
 
 
 @pytest.mark.parametrize(

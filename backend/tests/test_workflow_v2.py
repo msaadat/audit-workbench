@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import time
 
@@ -59,6 +60,7 @@ def test_full_template_materializes_locally_without_command_interpreter():
     assert persisted["workflow"]["resolved_capabilities"] == audit_capabilities.REGISTRY.closure(
         audit_capabilities.FULL_AUDIT_OUTCOMES
     )
+    assert "prepared_planning" not in persisted
     assert persisted["usage"]["llm_turns"] == 0
 
 
@@ -146,6 +148,18 @@ def test_common_broad_audit_phrases_fail_closed_to_workflow(text, outcomes):
 def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
     monkeypatch, workspace_with_data
 ):
+    def interpret(user):
+        assert "prepared_planning" not in json.loads(user)
+        return {
+            "objective": "Check the report quality",
+            "constraints": [],
+            "completion_criteria": ["Quality results are recorded"],
+            "needs_planning_wave": False,
+            "actions": [
+                {"id": "quality", "type": "run_report_quality", "args": {}}
+            ],
+        }
+
     fake = FakeAgentLLM(
         {
             "agent:workflow_router": {
@@ -159,15 +173,7 @@ def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
                 "needs_clarification": False,
                 "clarification": None,
             },
-            "agent:command_interpreter": {
-                "objective": "Check the report quality",
-                "constraints": [],
-                "completion_criteria": ["Quality results are recorded"],
-                "needs_planning_wave": False,
-                "actions": [
-                    {"id": "quality", "type": "run_report_quality", "args": {}}
-                ],
-            },
+            "agent:command_interpreter": interpret,
         }
     )
     monkeypatch.setattr(llm, "chat", fake)

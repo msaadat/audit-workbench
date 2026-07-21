@@ -736,6 +736,7 @@ def test_same_schema_orphan_recovery_preserves_durable_checkpoints(workspace_wit
         else:
             checkpoint = durable["usage"]
         assert checkpoint == expected["checkpoint"]
+        assert "prepared_planning" not in durable
         assert store.read_events(workspace_with_data, run_id)[-1] == {
             "seq": 1,
             "at": store.read_events(workspace_with_data, run_id)[-1]["at"],
