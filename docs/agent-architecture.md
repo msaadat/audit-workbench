@@ -447,8 +447,15 @@ limits, truncates bounded text deterministically, and records omissions and
 representation privacy decisions. Required sources block when no permitted
 item can be supplied; optional absence is manifested. Unknown and undeclared
 representations are denied by default, and automatic selections receive stable
-content-free reasons. Domain adapters and active capability wiring remain
-pending in the subsequent Phase 4 slices.
+content-free reasons. The APM document/methodology adapter now translates the
+existing bounded document-analysis context and methodology section index into
+data-only candidates for a normalized `planning.apm` preset. It delegates
+document validity and auditor-override handling to `document_context` and
+methodology section loading to `methodology`, so retrieval and indexing policy
+remain at the existing privacy choke points. Resolver integration records
+selection, omission, and truncation without persisting bundle content. Table
+adapters and active capability wiring remain pending in the subsequent Phase 4
+slices.
 
 ### Phase 1 Deletion Boundary
 

@@ -416,6 +416,16 @@ _register_selectors(
             required_configuration_keys=("refs",),
             tie_breaker="declared_reference_order",
         ),
+        SelectorDefinition(
+            selector_id="methodology.lexical",
+            selector_kind="auto",
+            supported_source_types=("methodology",),
+            implementation_hash=_implementation_hash(
+                "methodology.lexical:stable-local-lexical-score:source-ref-ascending"
+            ),
+            strategy="lexical",
+            configuration_keys=("query_fields", "scope"),
+        ),
     ),
 )
 
@@ -439,6 +449,41 @@ PRESETS.register(
                 ),
             ),
             budget=ContextBudget(max_items=12, max_characters=40_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+PRESETS.register(
+    ContextPreset(
+        preset_id="planning.apm",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="documents",
+                    source_type="documents",
+                    required=False,
+                    selector=AutoSelect(
+                        selector_id="documents.lexical",
+                        item_limit=12,
+                        configuration={"query_fields": ["apm_query"]},
+                    ),
+                    representations=(ContextRepresentation("summary"),),
+                    budget=ContextBudget(max_items=12, max_characters=40_000),
+                ),
+                ContextSource(
+                    id="methodology",
+                    source_type="methodology",
+                    required=False,
+                    selector=AutoSelect(
+                        selector_id="methodology.lexical",
+                        item_limit=5,
+                        configuration={"query_fields": ["apm_query"]},
+                    ),
+                    representations=(ContextRepresentation("excerpt"),),
+                    budget=ContextBudget(max_items=5, max_characters=8_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=17, max_characters=48_000),
             privacy=ContextPrivacy(allow_document_text=True),
         ),
     )

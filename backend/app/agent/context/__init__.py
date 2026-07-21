@@ -43,9 +43,18 @@ from .resolver import (
     LocalEmbeddingQuery,
     RESOLVER_HASH,
 )
+from .adapters import (
+    APM_DOCUMENT_SOURCE_ID,
+    APM_METHODOLOGY_SOURCE_ID,
+    apm_document_candidates,
+    apm_document_methodology_scope,
+    apm_methodology_candidates,
+)
 
 __all__ = [
     "AutoSelect",
+    "APM_DOCUMENT_SOURCE_ID",
+    "APM_METHODOLOGY_SOURCE_ID",
     "ContextBudget",
     "ContextBundle",
     "ContextBundleItem",
@@ -80,4 +89,7 @@ __all__ = [
     "supplied_size",
     "total_supplied_size",
     "truncation_record",
+    "apm_document_candidates",
+    "apm_document_methodology_scope",
+    "apm_methodology_candidates",
 ]

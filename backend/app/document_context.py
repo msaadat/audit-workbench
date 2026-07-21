@@ -12,6 +12,68 @@ SMALL_DOCUMENT_CHARACTERS = 32_000
 MAX_EXCERPT_CHARACTERS = 8_000
 
 
+def apm_document_context(
+    workspace: Workspace,
+    document_id: str,
+    *,
+    max_characters: int = SMALL_DOCUMENT_CHARACTERS,
+) -> dict:
+    """Adapt a current document analysis to one bounded APM representation.
+
+    The adapter deliberately composes :func:`get_document_context` instead of
+    reading analysis sidecars or extracted pages itself.  That keeps document
+    validity, auditor overrides, and the model-facing privacy boundary in one
+    place while giving the generic agent context resolver a plain local value.
+    """
+    max_chars = max(1, int(max_characters))
+    summary = get_document_context(
+        workspace,
+        document_id,
+        "summary",
+        max_characters=max_chars,
+        purpose="apm_context",
+        record_activity=False,
+    )
+    audit_notes = get_document_context(
+        workspace,
+        document_id,
+        "audit_notes",
+        max_characters=max_chars,
+        purpose="apm_context",
+        record_activity=False,
+    )
+    sections = []
+    if summary.get("content"):
+        sections.append(f"DOCUMENT SUMMARY\n{summary['content']}")
+    if audit_notes.get("content"):
+        sections.append(f"AUDIT NOTES\n{audit_notes['content']}")
+    content = "\n\n".join(sections)
+    citations = []
+    seen = set()
+    for item in [*(summary.get("citations") or []), *(audit_notes.get("citations") or [])]:
+        key = (
+            item.get("id"),
+            item.get("page"),
+            item.get("excerpt_hash"),
+            item.get("excerpt"),
+        )
+        if key not in seen:
+            seen.add(key)
+            citations.append(item)
+    available = bool(content)
+    return {
+        "document_id": document_id,
+        "title": summary.get("title") or audit_notes.get("title"),
+        "source_sha1": summary.get("source_sha1") or audit_notes.get("source_sha1"),
+        "analysis_id": summary.get("analysis_id") or audit_notes.get("analysis_id"),
+        "content": content,
+        "characters": len(content),
+        "citations": citations,
+        "outcome": "supplied" if available else "unavailable",
+        "trimmed": bool(summary.get("trimmed") or audit_notes.get("trimmed")),
+    }
+
+
 def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
                          query: str | None = None, pages: list[int] | None = None,
                          max_characters: int | None = None, purpose: str = "document_context",

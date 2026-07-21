@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.5`.
-- Last completed task: `P4.4A`.
+- Current task: `P4.6`.
+- Last completed task: `P4.5`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.5` |
+| 4 | In progress | `P4.6` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -468,6 +468,26 @@ status notes below.
   adapter, API payload, or frontend contract changed, so broader behavioral
   suites and a frontend build were not required. The exact next task is
   `P4.5`.
+- `P4.5` completed on 2026-07-21. The APM context preset now declares bounded
+  document-summary and methodology-excerpt sources selected by registered
+  provider-free lexical strategies. The new APM domain adapter populates only
+  data-only resolver candidates: document content is composed through
+  `document_context.get_document_context(...)`, preserving current-analysis
+  validity and auditor overrides, while methodology candidates come from the
+  same indexed-section inventory now shared by `methodology.search(...)`.
+  Neither extraction, document search, analysis-sidecar reads, nor methodology
+  indexing logic is copied into the agent context package. Adapter integration
+  tests prove deterministic real-workspace selection, local-only bundle
+  content, content-free manifests, resolver-owned truncation and omission, and
+  no document activity side effect before worker invocation. Focused
+  verification passed `62` tests across `test_agent_context_adapters.py`,
+  `test_agent_context_models.py`, `test_agent_context_resolver.py`, and
+  `test_agent_runtime_contracts.py` in `0.98s`; `44` related document,
+  methodology, search, and planning regression tests passed across
+  `test_documents.py`, `test_document_analysis_search.py`, and
+  `test_planning.py` in `20.33s`. No active capability, API payload, or
+  frontend contract changed, so a frontend build was not required. The exact
+  next task is `P4.6`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -884,7 +904,7 @@ and manually editable.
   provider/network service; support only deterministic metadata, lexical, or
   hash-identified local-embedding strategies with stable tie-breaking and
   identity tests.
-- [ ] `P4.5` Adapt existing document and methodology context builders for the
+- [x] `P4.5` Adapt existing document and methodology context builders for the
   APM slice without copying their domain logic.
 - [ ] `P4.6` Adapt table metadata/profile context and structurally reject
   row-level representations before worker invocation.
