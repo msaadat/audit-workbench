@@ -409,44 +409,10 @@ def test_failed_custom_analysis_gets_repaired_code_before_retry(
     ]
 
 
-def test_full_audit_lifecycle_dependencies_and_document_test_binding(workspace_with_data):
+def test_created_rcm_references_add_generic_action_dependencies(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto",
-        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
-    )
-    created = ledger.append_actions(run, [
-        {"id": "quality", "type": "run_report_quality", "args": {}},
-        {"id": "report", "type": "generate_report", "args": {"use_model": False}},
-        {"id": "finding", "type": "create_finding", "args": {"title": "Exception"}},
-        {"id": "paper", "type": "generate_working_paper", "args": {}},
-        {"id": "run-test", "type": "run_document_test", "args": {}},
-        {
-            "id": "create-test", "type": "create_document_test",
-            "args": {
-                "kind": "review", "title": "Review sample",
-                "items": [{"label": "Review sample", "summary": "Review approval evidence"}],
-            },
-        },
-        {"id": "procedure", "type": "create_procedure", "args": {"objective": "Review purchases"}},
-        {"id": "apm", "type": "update_planning_context", "args": {"changes": {"objective": "Audit procurement"}}},
-    ], audit_lifecycle=True)
-    by_id = {item["id"]: item for item in created}
-
-    assert by_id["procedure"]["depends_on"] == ["apm"]
-    assert by_id["create-test"]["depends_on"] == ["procedure"]
-    assert by_id["run-test"]["depends_on"] == ["create-test"]
-    assert by_id["run-test"]["target"]["kind"] == "doctest"
-    assert by_id["run-test"]["target"]["resolved_id"] == by_id["create-test"]["args"]["id"]
-    assert set(by_id["finding"]["depends_on"]) == {"run-test"}
-    assert set(by_id["paper"]["depends_on"]) == {"run-test"}
-    assert set(by_id["report"]["depends_on"]) == {"finding", "paper"}
-    assert by_id["quality"]["depends_on"] == ["report"]
-
-
-def test_rcm_central_lifecycle_resolves_parent_action_references(workspace_with_data):
-    run = store.new_command_run(
-        workspace_with_data, "auto",
-        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
+        {"source": "chat", "text": "create and run this linked data test"},
     )
     created = ledger.append_actions(run, [
         {"id": "rcm", "type": "create_rcm_row", "args": {"risk": "Purchases bypass approval"}},
@@ -467,13 +433,8 @@ def test_rcm_central_lifecycle_resolves_parent_action_references(workspace_with_
             },
         },
         {"id": "run", "type": "run_data_test", "target": {"resolved_id": "data"}},
-        {"id": "rollup", "type": "rollup_rcm_results"},
         {"id": "paper", "type": "generate_rcm_working_paper", "target": {"resolved_id": "rcm"}},
-        {"id": "dashboard", "type": "curate_dashboard"},
-        {"id": "report", "type": "generate_report", "args": {"use_model": False}},
-        {"id": "quality", "type": "run_report_quality"},
-        {"id": "completion", "type": "verify_audit_completion"},
-    ], audit_lifecycle=True)
+    ])
     by_id = {item["id"]: item for item in created}
 
     assert by_id["planned"]["args"]["rcm_id"] == by_id["rcm"]["args"]["id"]
@@ -481,68 +442,10 @@ def test_rcm_central_lifecycle_resolves_parent_action_references(workspace_with_
     assert by_id["data"]["args"]["planned_test_id"] == by_id["planned"]["args"]["id"]
     assert by_id["run"]["target"]["resolved_id"] == by_id["data"]["args"]["id"]
     assert by_id["paper"]["target"]["resolved_id"] == by_id["rcm"]["args"]["id"]
+    assert by_id["planned"]["depends_on"] == ["rcm"]
+    assert set(by_id["data"]["depends_on"]) == {"rcm", "planned"}
     assert by_id["run"]["depends_on"] == ["data"]
-    assert by_id["rollup"]["depends_on"] == ["run"]
-    assert by_id["dashboard"]["depends_on"] == ["paper"]
-    assert by_id["report"]["depends_on"] == ["dashboard"]
-    assert set(by_id["completion"]["depends_on"]) == {"quality"}
-    ledger.validate_graph(run)
-
-
-def test_full_audit_normalizes_report_reconcile_quality_cycle(workspace_with_data):
-    run = store.new_command_run(
-        workspace_with_data, "auto",
-        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
-    )
-    created = ledger.append_actions(run, [
-        {"id": "report", "type": "generate_report", "args": {"use_model": False}},
-        {"id": "quality", "type": "run_report_quality", "args": {}, "depends_on": ["report"]},
-        {
-            "id": "reconcile", "type": "reconcile_report", "args": {"action": "keep"},
-            "depends_on": ["quality"],
-        },
-    ], audit_lifecycle=True)
-    by_id = {item["id"]: item for item in created}
-
-    assert by_id["reconcile"]["depends_on"] == ["report"]
-    assert set(by_id["quality"]["depends_on"]) == {"report", "reconcile"}
-    assert {
-        "action_id": "reconcile", "kind": "removed_backward_dependency",
-        "dependency_id": "quality",
-    } in run["lifecycle_adjustments"]
-
-
-def test_late_full_audit_stages_reorder_existing_terminal_actions(workspace_with_data):
-    run = store.new_command_run(
-        workspace_with_data, "auto",
-        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
-    )
-    ledger.append_actions(run, [
-        {"id": "report", "type": "generate_report", "args": {"use_model": False}},
-        {"id": "quality", "type": "run_report_quality"},
-        {"id": "completion", "type": "verify_audit_completion"},
-    ], audit_lifecycle=True)
-
-    ledger.append_actions(run, [
-        {
-            "id": "analytic", "type": "run_analytics",
-            "args": {
-                "table": "transactions", "test": "duplicates",
-                "params": {"columns": ["invoice_no"]},
-            },
-        },
-        {"id": "rollup", "type": "rollup_rcm_results"},
-        {"id": "papers", "type": "generate_all_rcm_working_papers"},
-        {"id": "dashboard", "type": "curate_dashboard"},
-    ], audit_lifecycle=True)
-
-    by_id = {item["id"]: item for item in run["actions"]}
-    assert by_id["rollup"]["depends_on"] == ["analytic"]
-    assert by_id["papers"]["depends_on"] == ["rollup"]
-    assert by_id["dashboard"]["depends_on"] == ["papers"]
-    assert by_id["report"]["depends_on"] == ["dashboard"]
-    assert by_id["quality"]["depends_on"] == ["report"]
-    assert by_id["completion"]["depends_on"] == ["quality"]
+    assert by_id["paper"]["depends_on"] == ["rcm"]
     ledger.validate_graph(run)
 
 
@@ -745,55 +648,6 @@ def test_cycle_error_reports_the_cycle_path(workspace_with_data):
             {"id": "first", "type": "run_report_quality", "args": {}, "depends_on": ["second"]},
             {"id": "second", "type": "run_report_quality", "args": {"marker": 2}, "depends_on": ["first"]},
         ])
-
-
-def test_latest_full_audit_graph_shape_is_normalized_without_cycle(workspace_with_data):
-    run = store.new_command_run(
-        workspace_with_data, "auto",
-        {"source": "follow_up", "text": "do the full audit"},
-    )
-    created = ledger.append_actions(run, [
-        {
-            "id": "a1_planning_init", "type": "edit_apm", "args": {"apm_markdown": "# Plan"},
-            "target": {"kind": "planning", "resolved_id": "planning:apm"},
-        },
-        {"id": "a2_rcm_creation", "type": "create_rcm_row", "args": {"risk": "Approval bypass"}, "depends_on": ["a1_planning_init"]},
-        {"id": "a3_procedure_creation", "type": "create_procedure", "args": {"objective": "Test approvals"}, "depends_on": ["a2_rcm_creation"]},
-        {
-            "id": "a4_test_creation", "type": "create_document_test",
-            "args": {"kind": "review", "title": "Approval review", "items": [{"summary": "Review approval evidence"}]},
-            "depends_on": ["a3_procedure_creation"],
-        },
-        {
-            "id": "a5_attach_documents", "type": "attach_document_to_test",
-            "target": {"kind": "doctest_item", "selector": "test_id:a4_test_creation"},
-            "args": {"document_id": "DOC-1"}, "depends_on": ["a4_test_creation"],
-        },
-        {
-            "id": "a6_run_test", "type": "run_document_test",
-            "target": {"kind": "doctest", "resolved_id": "a4_test_creation"},
-            "args": {}, "depends_on": ["a5_attach_documents"],
-        },
-        {"id": "a7_create_finding", "type": "create_finding", "args": {"title": "Approval exception"}, "depends_on": ["a6_run_test"]},
-        {
-            "id": "a8_generate_working_paper", "type": "generate_working_paper",
-            "target": {"kind": "procedure", "resolved_id": "a3_procedure_creation"},
-            "args": {}, "depends_on": ["a7_create_finding"],
-        },
-        {"id": "a9_generate_report", "type": "generate_report", "args": {"use_model": False}, "depends_on": ["a8_generate_working_paper"]},
-        {"id": "a10_report_quality_check", "type": "run_report_quality", "args": {}, "depends_on": ["a9_generate_report"]},
-        {
-            "id": "a11_reconcile_report", "type": "reconcile_report",
-            "args": {"action": "keep"}, "depends_on": ["a10_report_quality_check"],
-        },
-    ], audit_lifecycle=True)
-    by_id = {item["id"]: item for item in created}
-
-    assert by_id["a11_reconcile_report"]["depends_on"] == ["a9_generate_report"]
-    assert "a11_reconcile_report" in by_id["a10_report_quality_check"]["depends_on"]
-    assert by_id["a6_run_test"]["target"]["resolved_id"] == by_id["a4_test_creation"]["args"]["id"]
-    assert by_id["a8_generate_working_paper"]["target"]["resolved_id"] == by_id["a3_procedure_creation"]["args"]["id"]
-    ledger.validate_graph(run)
 
 
 def test_artifact_resolution_exact_ambiguous_and_no_match(workspace_with_data):

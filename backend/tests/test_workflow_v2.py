@@ -263,6 +263,75 @@ def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
     assert persisted["usage"]["llm_turns"] == 0
 
 
+def test_audit_workflow_declares_the_complete_lifecycle_graph():
+    expected_dependencies = {
+        "planning.context_ready": (),
+        "planning.apm_ready": ("planning.context_ready",),
+        "planning.rcm_ready": ("planning.apm_ready",),
+        "planning.planned_tests_ready": ("planning.rcm_ready",),
+        "fieldwork.definitions_ready": ("planning.planned_tests_ready",),
+        "fieldwork.executed": ("fieldwork.definitions_ready",),
+        "results.rolled_up": ("fieldwork.executed",),
+        "findings.drafted": ("results.rolled_up",),
+        "working_papers.generated": ("results.rolled_up",),
+        "dashboard.curated": ("results.rolled_up",),
+        "report.working_draft": (
+            "planning.apm_ready",
+            "results.rolled_up",
+            "findings.drafted",
+        ),
+        "audit.verified": (
+            "working_papers.generated",
+            "dashboard.curated",
+            "report.working_draft",
+        ),
+    }
+
+    assert {
+        capability.id: capability.depends_on
+        for capability in audit_capabilities.REGISTRY.all()
+    } == expected_dependencies
+
+
+def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
+    resolved = audit_capabilities.REGISTRY.closure(
+        audit_capabilities.FULL_AUDIT_OUTCOMES
+    )
+
+    assert resolved == [
+        "planning.context_ready",
+        "planning.apm_ready",
+        "planning.rcm_ready",
+        "planning.planned_tests_ready",
+        "fieldwork.definitions_ready",
+        "fieldwork.executed",
+        "results.rolled_up",
+        "findings.drafted",
+        "working_papers.generated",
+        "dashboard.curated",
+        "report.working_draft",
+        "audit.verified",
+    ]
+    position = {capability_id: index for index, capability_id in enumerate(resolved)}
+    assert all(
+        position[dependency] < position[capability.id]
+        for capability in audit_capabilities.REGISTRY.all()
+        for dependency in capability.depends_on
+    )
+    assert {
+        capability_id: audit_capabilities.REGISTRY.get(capability_id).depends_on
+        for capability_id in (
+            "findings.drafted",
+            "working_papers.generated",
+            "dashboard.curated",
+        )
+    } == {
+        "findings.drafted": ("results.rolled_up",),
+        "working_papers.generated": ("results.rolled_up",),
+        "dashboard.curated": ("results.rolled_up",),
+    }
+
+
 def test_partial_goal_prunes_current_prerequisites():
     ws = _planning_workspace()
     resolved, stages, reused = workflow.materialize(

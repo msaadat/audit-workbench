@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 2.
-- Current task: `P2.1`.
-- Last completed task: `P1.6`.
+- Current task: `P2.2`.
+- Last completed task: `P2.1`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -50,7 +50,7 @@ status notes below.
 |---|---|---|
 | 0 | Complete | — |
 | 1 | Complete | — |
-| 2 | In progress | `P2.1` |
+| 2 | In progress | `P2.2` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
@@ -223,6 +223,18 @@ status notes below.
   `test_agent_store.py`, `test_workflow_v2.py`, `test_command_agent.py`,
   `test_agent_runner.py`, `test_agent_api.py`, `test_assistant_chats.py`, and
   `test_planning.py` in `77.54s`. No frontend payload or API contract changed,
+  so a frontend build was not required.
+- `P2.1` completed on 2026-07-21. Audit ordering and cycle-normalization
+  assertions were removed from the action-ledger suite and replaced with exact
+  direct-edge, topological closure, and parallel-branch characterization of the
+  authoritative workflow capability graph. The action suite retains generic
+  created-artifact argument and target resolution, explicit dependency
+  injection, cycle detection, duplicate-intent rejection, failure propagation,
+  reconciliation, rollback, resume, and undo coverage. This task intentionally
+  leaves the `audit_lifecycle` parameter and its callers, lifecycle constants,
+  and `enforce_audit_lifecycle(...)` in place for `P2.2` and `P2.3`. Focused
+  verification passed `110` tests across `test_command_agent.py` and
+  `test_workflow_v2.py` in `17.99s`. No production or frontend contract changed,
   so a frontend build was not required.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
@@ -521,7 +533,7 @@ verification stages.
 
 **Tasks:**
 
-- [ ] `P2.1` Convert audit-lifecycle normalization tests into workflow graph
+- [x] `P2.1` Convert audit-lifecycle normalization tests into workflow graph
   tests while retaining generic DAG characterization.
 - [ ] `P2.2` Remove `audit_lifecycle` from `append_actions(...)` and its
   canonical callers.
