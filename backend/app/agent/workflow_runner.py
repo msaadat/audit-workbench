@@ -30,6 +30,7 @@ from ..workspaces import (
 from . import audit_capabilities, audit_workers, context_bundles, store, workflow
 from .base import Cancelled, LimitExceeded
 from .action_runner import ActionRunner, fill_unavailable_placeholders
+from .runtime import RunRuntime
 
 ELIGIBLE_DISPOSITIONS = {"confirmed_control_exception", "draft_finding_candidate"}
 
@@ -253,6 +254,22 @@ def _install_resolution(workspace: Workspace, run: dict, resolution: dict) -> No
 
 class WorkflowRunner(ActionRunner):
     """Generic scheduler backed by the audit capability registry."""
+
+    def __init__(
+        self,
+        workspace: Workspace,
+        run: dict,
+        handle,
+        *,
+        runtime: RunRuntime | None = None,
+    ):
+        """Create a workflow scheduler with an injectable per-run runtime.
+
+        The optional dependency preserves the existing three-argument
+        construction API while the current audit-specific stage handlers and
+        temporary ``ActionRunner`` inheritance remain unchanged.
+        """
+        super().__init__(workspace, run, handle, runtime=runtime)
 
     def execute(self) -> None:
         """Resolve the command to outcomes, then run the capability graph.

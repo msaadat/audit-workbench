@@ -404,13 +404,15 @@ both inbox-draining modes, approval batches, free-text input waits, and
 structured-interaction transitions. `runtime/interactions.py` persists auditor
 responses before waking a live worker, restores responses submitted while no
 worker is attached, and extends the monotonic deadline by time blocked on the
-auditor. `ActionRunner` now receives an optional `RunRuntime` constructor
-dependency and otherwise preserves its existing three-argument construction by
-using the default runtime through the temporary `BaseRunner` facade. The other
-current runners still obtain these operations from that facade or their runtime
-instance. `DefaultModelGateway` owns provider concurrency, model profiles,
-stage tags, debug tracing, and hash-only provenance, and delegates budget
-accounting and model-wait activity to the runtime.
+auditor. `ActionRunner` and `WorkflowRunner` now receive optional `RunRuntime`
+constructor dependencies and otherwise preserve their existing three-argument
+construction by using the default runtime through the temporary `BaseRunner`
+facade. `WorkflowRunner` still retains its audit-specific stage handlers and
+temporary `ActionRunner` inheritance until their later planned migrations. The
+other current runners still obtain runtime operations from that facade or their
+runtime instance. `DefaultModelGateway` owns provider concurrency, model
+profiles, stage tags, debug tracing, and hash-only provenance, and delegates
+budget accounting and model-wait activity to the runtime.
 
 ### Phase 1 Deletion Boundary
 

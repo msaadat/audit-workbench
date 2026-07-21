@@ -257,8 +257,9 @@ BaseRunner
   inbox draining, approvals, and auditor interactions. `BaseRunner` delegates
   that surface while retaining temporary task and artifact-activity hooks.
   `ActionRunner` accepts an optional injected `RunRuntime` while preserving its
-  existing three-argument default construction; `WorkflowRunner` runtime
-  injection is the next Phase 3 migration task.
+  existing three-argument default construction. `WorkflowRunner` exposes the
+  same optional runtime dependency while retaining its current audit-specific
+  stage handlers and temporary `ActionRunner` inheritance.
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.

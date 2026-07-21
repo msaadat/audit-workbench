@@ -6,7 +6,7 @@ import threading
 import pytest
 
 from app import documents, llm
-from app.agent import action_runner, base, runner, store
+from app.agent import action_runner, base, runner, store, workflow_runner
 from app.agent.runtime import (
     Cancelled,
     DefaultModelGateway,
@@ -147,6 +147,54 @@ def test_action_runner_accepts_an_injected_runtime_without_changing_default_api(
         {"source": "chat", "text": "rename this artifact"},
     )
     default_active = action_runner.ActionRunner(
+        workspace_with_data,
+        default_run,
+        runner.RunHandle(workspace_with_data.id, default_run["id"]),
+    )
+
+    assert isinstance(default_active.runtime, DefaultRunRuntime)
+
+
+def test_workflow_runner_accepts_an_injected_runtime_without_changing_default_api(
+    workspace_with_data,
+    monkeypatch,
+):
+    injected_run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "generate the RCM"},
+    )
+    injected_handle = runner.RunHandle(workspace_with_data.id, injected_run["id"])
+    injected_runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=injected_run,
+        state_lock=threading.RLock(),
+        handle=injected_handle,
+    )
+    calls = []
+    monkeypatch.setattr(
+        injected_runtime,
+        "set_status",
+        lambda status: calls.append(("status", status)),
+    )
+
+    active = workflow_runner.WorkflowRunner(
+        workspace_with_data,
+        injected_run,
+        injected_handle,
+        runtime=injected_runtime,
+    )
+    active.set_status("executing")
+
+    assert active.runtime is injected_runtime
+    assert calls == [("status", "executing")]
+
+    default_run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "draft the report"},
+    )
+    default_active = workflow_runner.WorkflowRunner(
         workspace_with_data,
         default_run,
         runner.RunHandle(workspace_with_data.id, default_run["id"]),
