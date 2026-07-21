@@ -198,8 +198,7 @@ class ActionRunner(BaseRunner):
         skips straight to driving the graph.
         """
         if not self.run.get("started"):
-            self.run["started"] = store.utcnow()
-            self.save()
+            self.mark_started()
         try:
             self._guard_isolated_action_request()
             self._recover_running_actions()
@@ -214,7 +213,7 @@ class ActionRunner(BaseRunner):
                 }:
                     ledger.transition(action, "cancelled")
             ledger.project_legacy_plan(self.run)
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.run["command"]["status"] = "cancelled"
             context = dict(self.handle.cancel_context or {})
             self.run["cancellation"] = {
@@ -262,7 +261,7 @@ class ActionRunner(BaseRunner):
 
     def _fail_run(self, error: str) -> None:
         self.run["error"] = error
-        self.run["finished"] = store.utcnow()
+        self.mark_finished()
         self.run["command"]["status"] = "failed"
         self.set_status("failed")
 
@@ -2063,6 +2062,6 @@ class ActionRunner(BaseRunner):
             lines.extend(["", "### Issues", *[f"- {item['type']}: {item.get('error') or item['status']}" for item in failed]])
         lines.extend(["", "This is assistant working content, not a formal audit-stage conclusion or audit opinion."])
         self.run["summary_markdown"] = "\n".join(lines)
-        self.run["finished"] = store.utcnow(); self.run["command"]["status"] = "completed"
+        self.mark_finished(); self.run["command"]["status"] = "completed"
         status = "completed_with_issues" if force_issue or failed else "completed"
         self.set_status(status); self.emit("summary_ready", {"run_id": self.run["id"]})

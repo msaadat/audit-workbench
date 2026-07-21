@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .. import intake, llm
-from . import prompts, store
+from . import prompts
 from .base import BaseRunner, Cancelled, LimitExceeded
 
 
@@ -18,7 +18,7 @@ class IntakeRunner(BaseRunner):
 
     def execute(self) -> None:
         if not self.run.get("started"):
-            self.run["started"] = store.utcnow()
+            self.mark_started()
         try:
             self.set_status("executing")
             batch_id = str(self.context.get("batch_id") or "")
@@ -99,19 +99,19 @@ class IntakeRunner(BaseRunner):
                 "for manual classification."
             )
             self.task_status(summary, "completed")
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("completed")
             self.emit("summary_ready", {"run_id": self.run["id"]})
         except Cancelled:
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("cancelled")
         except LimitExceeded as error:
             self.run["error"] = str(error)
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("failed")
         except Exception as error:
             self.run["error"] = str(error)
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("failed")
 
     def _classify(self, batch: dict) -> None:

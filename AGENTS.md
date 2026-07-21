@@ -87,12 +87,12 @@ backend/app/
 |  |- report_routes.py         - findings/report endpoints and reconciliation
 |  `- debug_routes.py          - workspace debug console APIs and live stream
 `- agent/
-   |- runtime/                 - RunRuntime contract plus the active shared
-   |                             ModelGateway implementation for provider
-   |                             calls, accounting, telemetry, and provenance
+   |- runtime/                 - RunRuntime contract and active durable-run
+   |                             implementation plus the shared ModelGateway
+   |                             for provider calls and accounting
    |- store.py                 - durable run storage in AgentRuns/
-   |- base.py                  - temporary BaseRunner facade: checkpoints,
-   |                             approvals, interactions, and runtime adapters
+   |- base.py                  - temporary BaseRunner delegation facade for
+   |                             runtime controls, approvals, and interactions
    |- runner.py                - thread orchestration, active-handle registry,
    |                             recovery, pause/resume/cancel/retry/continue
    |- action_runner.py         - action-graph runner for isolated mutations
@@ -246,10 +246,11 @@ BaseRunner
   a process-wide semaphore keyed on `provider:model`, records debug telemetry,
   and appends hash-only provenance. `BaseRunner._llm_content` is a temporary
   delegation facade for existing callers.
-- `agent.runtime` also defines the target `RunRuntime` and `ModelGateway`
-  structural contracts. At the P3.2 boundary provider behavior is implemented
-  by `DefaultModelGateway`; durable run operations remain on `BaseRunner` until
-  the subsequent Phase 3 delegation tasks.
+- `agent.runtime` defines the target `RunRuntime` and `ModelGateway` structural
+  contracts. `DefaultRunRuntime` owns synchronized run saves, event emission,
+  durable run timing, status and warning transitions, and activity/model-wait
+  projections. `BaseRunner` delegates that surface while it still owns the
+  Phase 3 control, budget, approval, and interaction behavior.
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.

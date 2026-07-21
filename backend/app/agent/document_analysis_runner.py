@@ -6,7 +6,7 @@ import os
 
 from .. import document_analysis, documents, llm
 from ..workspaces import Workspace, WorkspaceError
-from . import prompts, store
+from . import prompts
 from .base import BaseRunner, Cancelled, LimitExceeded
 
 
@@ -23,7 +23,7 @@ class DocumentAnalysisRunner(BaseRunner):
 
     def execute(self) -> None:
         if not self.run.get("started"):
-            self.run["started"] = store.utcnow()
+            self.mark_started()
         state = self.run.setdefault("document_analysis", {
             "document_ids": list(self.context.get("document_ids") or []),
             "action": str(self.context.get("action") or "analyze"), "documents": {},
@@ -48,15 +48,15 @@ class DocumentAnalysisRunner(BaseRunner):
                 f"Analyzed **{len(state['document_ids'])}** document(s). Generated content "
                 "is awaiting auditor review and is not evidence that controls operated."
             )
-            self.run["finished"] = store.utcnow(); self.save()
+            self.mark_finished()
             self.set_status("completed")
             self.emit("summary_ready", {"run_id": self.run["id"]})
         except Cancelled:
             if current_document_id:
                 document_analysis.set_run_state(self.ws, current_document_id, "cancelled")
-            self.run["finished"] = store.utcnow(); self.set_status("cancelled")
+            self.mark_finished(); self.set_status("cancelled")
         except LimitExceeded as error:
-            self.run["error"] = str(error); self.run["finished"] = store.utcnow(); self.set_status("failed")
+            self.run["error"] = str(error); self.mark_finished(); self.set_status("failed")
         except Exception as error:
             for document_id in ([current_document_id] if current_document_id else []):
                 try:
@@ -66,7 +66,7 @@ class DocumentAnalysisRunner(BaseRunner):
                         self.task_status(task, "failed", str(error))
                 except Exception:
                     pass
-            self.run["error"] = str(error); self.run["finished"] = store.utcnow(); self.set_status("failed")
+            self.run["error"] = str(error); self.mark_finished(); self.set_status("failed")
 
     def _analyze_one(
         self, document_id: str, state: dict, *, document_index: int, total_documents: int,

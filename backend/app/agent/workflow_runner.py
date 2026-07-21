@@ -265,8 +265,7 @@ class WorkflowRunner(ActionRunner):
         inside a stage, never across them.
         """
         if not self.run.get("started"):
-            self.run["started"] = store.utcnow()
-            self.save()
+            self.mark_started()
         try:
             if not self.run.get("workflow"):
                 resolution = self._resolve()
@@ -282,7 +281,7 @@ class WorkflowRunner(ActionRunner):
                         "This request is not available as an audit workflow."
                     )
                     self.run["command"]["status"] = "completed"
-                    self.run["finished"] = store.utcnow()
+                    self.mark_finished()
                     self.set_status("completed_with_open_items")
                     return
                 _install_resolution(self.ws, self.run, resolution)
@@ -354,20 +353,20 @@ class WorkflowRunner(ActionRunner):
             self._finish_workflow()
         except Cancelled:
             self._cancel_remaining()
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.run["command"]["status"] = "cancelled"
             self.set_status("cancelled")
         except (LimitExceeded, WorkspaceConflict) as error:
             self.run["error"] = str(error)
             if isinstance(error, WorkspaceConflict):
                 self._mark_running_conflict(str(error))
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.run["command"]["status"] = "failed"
             self.set_status("failed")
         except Exception as error:
             self.run["error"] = str(error)
             self._mark_running_failed(str(error))
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.run["command"]["status"] = "failed"
             self.set_status("failed")
 
@@ -1576,7 +1575,7 @@ class WorkflowRunner(ActionRunner):
             f"- Open observations: {len(open_observations)}\n"
             f"- Open evidence requests: {len(open_evidence)}\n"
         )
-        self.run["finished"] = store.utcnow()
+        self.mark_finished()
         self.run["command"]["status"] = terminal
         self.set_status(terminal)
         self.emit("summary_ready", {"run_id": self.run["id"]})

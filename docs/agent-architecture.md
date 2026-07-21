@@ -396,13 +396,15 @@ separate runner only when it requires a genuinely different scheduling and
 control protocol. Otherwise migrate its work into capabilities and workers.
 
 The `RunRuntime` and `ModelGateway` structural contracts live under
-`agent/runtime/`. `DefaultModelGateway` now owns the active provider semaphore,
-agent model profile, pre-call token charging, retry accounting, stage tags,
-debug tracing, usage reconciliation, and hash-only provenance. Existing
-`BaseRunner._llm_content` callers delegate to that gateway, while injected
-callbacks temporarily bridge durable save/event operations and provenance
-storage. Per-run runtime delegation starts in P3.3; no scheduler behavior moved
-with the provider extraction.
+`agent/runtime/`. `DefaultRunRuntime` now owns synchronized run saves, event
+emission, UTC run timing, idempotent status events, warnings, activity
+revisions, and concurrent model-wait projection. Current runners reach those
+operations through the temporary `BaseRunner` facade. `DefaultModelGateway`
+owns provider concurrency, model profiles, token charging, retry accounting,
+stage tags, debug tracing, usage reconciliation, and hash-only provenance, and
+delegates model-wait activity back to the runtime. Budgets, deadlines,
+checkpoints, controls, approvals, and interactions remain on `BaseRunner` for
+the remaining Phase 3 extraction tasks.
 
 ### Phase 1 Deletion Boundary
 

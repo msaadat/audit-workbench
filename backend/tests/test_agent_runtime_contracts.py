@@ -1,10 +1,16 @@
 import inspect
 import json
 import re
+import threading
 
 from app import documents, llm
 from app.agent import base, runner, store
-from app.agent.runtime import DefaultModelGateway, ModelGateway, RunRuntime
+from app.agent.runtime import (
+    DefaultModelGateway,
+    DefaultRunRuntime,
+    ModelGateway,
+    RunRuntime,
+)
 
 
 def _base_runner(workspace_with_data):
@@ -20,13 +26,103 @@ def test_run_runtime_contract_matches_active_base_runner(workspace_with_data):
     assert set(RunRuntime.__dict__) >= {
         "save",
         "emit",
+        "utcnow",
+        "mark_started",
+        "mark_finished",
         "set_status",
         "set_activity",
+        "set_model_wait",
         "warn",
         "checkpoint",
         "wait_for_input",
         "request_approval",
     }
+
+
+def test_base_runner_delegates_durable_run_operations(workspace_with_data, monkeypatch):
+    active = _base_runner(workspace_with_data)
+    calls = []
+
+    monkeypatch.setattr(active.runtime, "save", lambda: calls.append(("save",)))
+    monkeypatch.setattr(
+        active.runtime,
+        "emit",
+        lambda type_, data: calls.append(("emit", type_, data)),
+    )
+    monkeypatch.setattr(
+        active.runtime,
+        "set_status",
+        lambda status: calls.append(("status", status)),
+    )
+    monkeypatch.setattr(
+        active.runtime,
+        "set_activity",
+        lambda phase, label, **fields: calls.append(
+            ("activity", phase, label, fields)
+        ),
+    )
+    monkeypatch.setattr(
+        active.runtime,
+        "warn",
+        lambda warning: calls.append(("warning", warning)),
+    )
+
+    active.save()
+    active.emit("test_event", {"ok": True})
+    active.set_status("executing")
+    active.set_activity("test.phase", "Testing", current=1, total=2)
+    active.warn("Be careful")
+
+    assert calls == [
+        ("save",),
+        ("emit", "test_event", {"ok": True}),
+        ("status", "executing"),
+        (
+            "activity",
+            "test.phase",
+            "Testing",
+            {
+                "detail": None,
+                "current": 1,
+                "total": 2,
+                "attempt": None,
+                "task_id": None,
+                "action_id": None,
+            },
+        ),
+        ("warning", "Be careful"),
+    ]
+
+
+def test_default_run_runtime_owns_durable_timing_and_activity(workspace_with_data):
+    run = store.new_run(workspace_with_data, "auto")
+    timestamps = iter(
+        [
+            "2026-07-21T10:00:00.000+00:00",
+            "2026-07-21T10:00:01.000+00:00",
+            "2026-07-21T10:00:02.000+00:00",
+            "2026-07-21T10:00:03.000+00:00",
+        ]
+    )
+    runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=run,
+        state_lock=threading.RLock(),
+        clock=lambda: next(timestamps),
+    )
+
+    assert runtime.mark_started() == "2026-07-21T10:00:00.000+00:00"
+    assert runtime.mark_started() == "2026-07-21T10:00:00.000+00:00"
+    runtime.set_activity("test.phase", "First")
+    runtime.set_activity("test.phase", "Second")
+    assert runtime.mark_finished() == "2026-07-21T10:00:03.000+00:00"
+
+    durable = store.load_run(workspace_with_data, run["id"])
+    assert durable["started"] == "2026-07-21T10:00:00.000+00:00"
+    assert durable["finished"] == "2026-07-21T10:00:03.000+00:00"
+    assert durable["activity"]["started_at"] == "2026-07-21T10:00:01.000+00:00"
+    assert durable["activity"]["updated_at"] == "2026-07-21T10:00:02.000+00:00"
+    assert durable["activity_revision"] == 2
 
 
 def test_run_runtime_active_status_activity_and_warning_contract(workspace_with_data):
@@ -160,8 +256,14 @@ def test_runtime_contracts_and_gateway_are_domain_neutral():
     assert getattr(ModelGateway, "_is_protocol", False)
     assert getattr(RunRuntime, "_is_protocol", False)
     assert isinstance(DefaultModelGateway, type)
+    assert isinstance(DefaultRunRuntime, type)
 
-    for runtime_type in (DefaultModelGateway, ModelGateway, RunRuntime):
+    for runtime_type in (
+        DefaultModelGateway,
+        DefaultRunRuntime,
+        ModelGateway,
+        RunRuntime,
+    ):
         source = inspect.getsource(inspect.getmodule(runtime_type)).casefold()
         forbidden = {
             "apm",
@@ -177,9 +279,6 @@ def test_runtime_contracts_and_gateway_are_domain_neutral():
             term for term in forbidden if re.search(rf"\b{term}\b", source)
         }
 
-    run_runtime_source = inspect.getsource(inspect.getmodule(RunRuntime)).casefold()
-    assert "from .." not in run_runtime_source
-
 
 def test_base_runner_no_longer_owns_provider_call_behavior():
     source = inspect.getsource(base.BaseRunner)
@@ -189,3 +288,21 @@ def test_base_runner_no_longer_owns_provider_call_behavior():
     assert "debug_store.trace_context" not in source
     assert 'usage["prompt_tokens"]' not in source
     assert "hashlib.sha1" not in source
+
+
+def test_base_runner_no_longer_owns_durable_run_projection_behavior():
+    source = inspect.getsource(base.BaseRunner)
+
+    assert "store.save_run" not in source
+    assert "store.append_event" not in source
+    assert 'self.run["activity"]' not in source
+    assert 'self.run["activity_revision"]' not in source
+    assert 'self.run["status"] = status' not in source
+
+
+def test_model_gateway_delegates_activity_projection_to_runtime():
+    source = inspect.getsource(DefaultModelGateway)
+
+    assert 'self.run["activity"]' not in source
+    assert 'self.run["activity_revision"]' not in source
+    assert 'self._emit("activity_update"' not in source

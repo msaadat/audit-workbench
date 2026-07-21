@@ -11,7 +11,7 @@ from collections.abc import Callable
 from .. import llm
 from ..workspaces import Workspace
 from . import prompts, store
-from .runtime import DefaultModelGateway
+from .runtime import DefaultModelGateway, DefaultRunRuntime
 
 MAX_TASKS = 60
 MAX_RUNTIME_SECONDS = 1800
@@ -62,6 +62,11 @@ class BaseRunner:
         # Independent planning-document requests may run concurrently. Keep
         # provider waits parallel while serializing the shared durable ledger.
         self._state_lock = threading.RLock()
+        self.runtime = DefaultRunRuntime(
+            workspace=self.ws,
+            run=self.run,
+            state_lock=self._state_lock,
+        )
         self.model_gateway = DefaultModelGateway(
             workspace_id=self.ws.id,
             workspace_root=str(self.ws.root),
@@ -69,8 +74,8 @@ class BaseRunner:
             state_lock=self._state_lock,
             checkpoint=self.checkpoint,
             save=self.save,
-            emit=self.emit,
-            utcnow=store.utcnow,
+            model_wait=self.runtime.set_model_wait,
+            utcnow=self.runtime.utcnow,
             append_provenance=self._append_model_provenance,
             template_context=self._model_template_context,
             stage_labels=MODEL_WAIT_LABELS,
@@ -81,12 +86,19 @@ class BaseRunner:
         self._model_context = self.model_gateway.context
 
     def save(self) -> None:
-        with self._state_lock:
-            store.save_run(self.ws, self.run)
+        self.runtime.save()
 
     def emit(self, type_: str, data: dict) -> None:
-        with self._state_lock:
-            store.append_event(self.ws, self.run["id"], type_, data)
+        self.runtime.emit(type_, data)
+
+    def utcnow(self) -> str:
+        return self.runtime.utcnow()
+
+    def mark_started(self) -> str:
+        return self.runtime.mark_started()
+
+    def mark_finished(self) -> str:
+        return self.runtime.mark_finished()
 
     def set_activity(
         self,
@@ -100,48 +112,37 @@ class BaseRunner:
         task_id: str | None = None,
         action_id: str | None = None,
     ) -> None:
-        """Persist one safe, user-facing description of the work in flight."""
-        now = store.utcnow()
-        with self._state_lock:
-            previous = self.run.get("activity") or {}
-            same_phase = previous.get("phase") == phase
-            activity = {
-                "phase": phase,
-                "label": label,
-                "detail": detail,
-                "current": current,
-                "total": total,
-                "attempt": attempt,
-                "task_id": task_id,
-                "action_id": action_id,
-                "started_at": previous.get("started_at") if same_phase else now,
-                "updated_at": now,
-                "waiting_on": previous.get("waiting_on") if same_phase else None,
-                "model_calls_active": int(previous.get("model_calls_active") or 0) if same_phase else 0,
-                "model_started_at": previous.get("model_started_at") if same_phase else None,
-            }
-            if activity["model_calls_active"] <= 0:
-                activity["waiting_on"] = None
-                activity["model_started_at"] = None
-            self.run["activity"] = activity
-            self.run["activity_revision"] = int(self.run.get("activity_revision") or 0) + 1
-            self.save()
-            self.emit("activity_update", {
-                "activity": activity,
-                "revision": self.run["activity_revision"],
-            })
+        self.runtime.set_activity(
+            phase,
+            label,
+            detail=detail,
+            current=current,
+            total=total,
+            attempt=attempt,
+            task_id=task_id,
+            action_id=action_id,
+        )
 
     def set_status(self, status: str) -> None:
-        if self.run["status"] == status:
-            return
-        self.run["status"] = status
-        self.save()
-        self.emit("run_status", {"status": status})
+        self.runtime.set_status(status)
+
+    def set_model_wait(
+        self,
+        phase: str,
+        label: str,
+        *,
+        started: bool,
+        attempt: int = 1,
+    ) -> None:
+        self.runtime.set_model_wait(
+            phase,
+            label,
+            started=started,
+            attempt=attempt,
+        )
 
     def warn(self, text: str) -> None:
-        self.run.setdefault("warnings", []).append(text)
-        self.save()
-        self.emit("warning", {"text": text})
+        self.runtime.warn(text)
 
     def checkpoint(self) -> None:
         if self.handle.cancel.is_set():
@@ -165,7 +166,7 @@ class BaseRunner:
             pending, self.handle.inbox = self.handle.inbox[:], []
         for content in pending:
             self.run.setdefault("messages", []).append(
-                {"role": "user", "content": content, "at": store.utcnow(), "handled": True}
+                {"role": "user", "content": content, "at": self.utcnow(), "handled": True}
             )
         if pending:
             self.save()
@@ -186,7 +187,7 @@ class BaseRunner:
             message = {
                 "role": "agent",
                 "content": question,
-                "at": store.utcnow(),
+                "at": self.utcnow(),
                 "handled": True,
             }
             self.run.setdefault("messages", []).append(message)
@@ -210,7 +211,7 @@ class BaseRunner:
                 content = self.handle.inbox.pop(0) if self.handle.inbox else None
             if content is not None:
                 self.run.setdefault("messages", []).append(
-                    {"role": "user", "content": content, "at": store.utcnow(), "handled": True}
+                    {"role": "user", "content": content, "at": self.utcnow(), "handled": True}
                 )
                 interview["pending_question"] = None
                 self.deadline += time.monotonic() - waited_from
@@ -345,9 +346,9 @@ class BaseRunner:
         task["status"] = status
         task["error"] = error
         if status == "running" and not task.get("started_at"):
-            task["started_at"] = store.utcnow()
+            task["started_at"] = self.utcnow()
         if status in {"completed", "failed", "skipped", "cancelled"}:
-            task["finished_at"] = store.utcnow()
+            task["finished_at"] = self.utcnow()
         self.save()
         self.emit("task_update", {"task": task})
         if status in {"running", "awaiting_approval"}:
@@ -408,7 +409,7 @@ class BaseRunner:
             task=(task or {}).get("id"), purpose="artifact_disposition",
             provider=profile.get("provider"), model=profile.get("model"), vision_used=False,
             prompt_version=None, template_versions=[], knowledge_packs=[], document_ids=[],
-            page_ranges=[], source_hashes=[], response_at=store.utcnow(), response_hash=None,
+            page_ranges=[], source_hashes=[], response_at=self.utcnow(), response_hash=None,
             artifact_ref=ref, disposition="accepted" if self.run.get("mode") == "permission" else "applied",
         )
         self.emit("workspace_changed", {"kind": kind, "id": item_id, "action": action})
@@ -441,7 +442,7 @@ class BaseRunner:
                 "kind": kind,
                 "task_id": task["id"],
                 "status": "pending",
-                "created": store.utcnow(),
+                "created": self.utcnow(),
                 "items": items,
             }
             self.run["approvals"].append(approval)
@@ -503,10 +504,10 @@ class BaseRunner:
                 self.ws, run_id=self.run["id"], stage=kind, task=task["id"],
                 purpose="auditor_disposition", provider=profile.get("provider"), model=profile.get("model"),
                 vision_used=False, prompt_version=None, template_versions=[], knowledge_packs=[],
-                document_ids=[], page_ranges=[], source_hashes=[], response_at=store.utcnow(),
+                document_ids=[], page_ranges=[], source_hashes=[], response_at=self.utcnow(),
                 response_hash=None, artifact_ref=f"proposal:{kind}:{item['id']}", disposition=item["decision"],
             )
-        approval.update(status="resolved", resolved=store.utcnow())
+        approval.update(status="resolved", resolved=self.utcnow())
         approval.pop("response_submitted_at", None)
         # Persist the resolved approval and resumed run status atomically. A
         # save in between exposed an impossible state to pollers: the run said

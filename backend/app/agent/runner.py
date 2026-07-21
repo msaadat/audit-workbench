@@ -783,7 +783,7 @@ class _Runner(BaseRunner):
     # ------------------------------------------------------------- execute
     def execute(self) -> None:
         if not self.run.get("started"):
-            self.run["started"] = store.utcnow()
+            self.mark_started()
         try:
             self.stage_discovery()
             self.stage_planning()
@@ -794,11 +794,11 @@ class _Runner(BaseRunner):
             self.stage_dashboard()
             self.stage_verify()
             self.stage_summary()
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("completed")
             self.emit("summary_ready", {"run_id": self.run["id"]})
         except Cancelled:
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("cancelled")
         except LimitExceeded as error:
             self.warn(f"Execution limit reached ({error}); results are partial.")
@@ -808,7 +808,7 @@ class _Runner(BaseRunner):
             self._finish_partial()
         except Exception as error:
             self.run["error"] = str(error)
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("failed")
 
     def _finish_partial(self) -> None:
@@ -818,7 +818,7 @@ class _Runner(BaseRunner):
             self.stage_summary(allow_llm=False)
         except Exception:
             pass
-        self.run["finished"] = store.utcnow()
+        self.mark_finished()
         self.set_status("completed")
         self.emit("summary_ready", {"run_id": self.run["id"]})
 

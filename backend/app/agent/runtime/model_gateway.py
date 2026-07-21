@@ -71,7 +71,7 @@ class DefaultModelGateway:
         state_lock: threading.RLock,
         checkpoint: Callable[[], None],
         save: Callable[[], None],
-        emit: Callable[[str, dict[str, Any]], None],
+        model_wait: Callable[..., None],
         utcnow: Callable[[], str],
         append_provenance: Callable[[dict[str, Any]], None],
         template_context: Callable[[str], dict[str, Any] | None],
@@ -84,7 +84,7 @@ class DefaultModelGateway:
         self._state_lock = state_lock
         self._checkpoint = checkpoint
         self._save = save
-        self._emit = emit
+        self._model_wait_projection = model_wait
         self._utcnow = utcnow
         self._append_provenance = append_provenance
         self._template_context = template_context
@@ -340,50 +340,9 @@ class DefaultModelGateway:
         ]
 
     def _model_wait(self, tag: str, *, started: bool, attempt: int = 1) -> None:
-        """Expose provider waits without logging prompts or source content."""
-        now = self._utcnow()
-        with self._state_lock:
-            activity = dict(self.run.get("activity") or {})
-            if not activity:
-                activity = {
-                    "phase": tag.replace("agent:", "model."),
-                    "label": self._stage_labels.get(tag, "Waiting for the model"),
-                    "detail": None,
-                    "current": None,
-                    "total": None,
-                    "task_id": None,
-                    "action_id": None,
-                    "started_at": now,
-                }
-            active = int(activity.get("model_calls_active") or 0)
-            if started:
-                active += 1
-                activity["model_started_at"] = (
-                    activity.get("model_started_at") or now
-                )
-                activity["waiting_on"] = "model"
-                activity["attempt"] = attempt
-            else:
-                active = max(0, active - 1)
-                if active == 0:
-                    activity["waiting_on"] = None
-                    activity["model_started_at"] = None
-            activity["model_calls_active"] = active
-            activity["updated_at"] = now
-            self.run["activity"] = activity
-            usage = self.run.setdefault("usage", {})
-            usage["max_concurrent_model_calls"] = max(
-                int(usage.get("max_concurrent_model_calls") or 0),
-                active,
-            )
-            self.run["activity_revision"] = (
-                int(self.run.get("activity_revision") or 0) + 1
-            )
-            self._save()
-            self._emit(
-                "activity_update",
-                {
-                    "activity": activity,
-                    "revision": self.run["activity_revision"],
-                },
-            )
+        self._model_wait_projection(
+            tag.replace("agent:", "model."),
+            self._stage_labels.get(tag, "Waiting for the model"),
+            started=started,
+            attempt=attempt,
+        )

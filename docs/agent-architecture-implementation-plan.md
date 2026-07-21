@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 3.
-- Current task: `P3.3`.
-- Last completed task: `P3.2`.
+- Current task: `P3.4`.
+- Last completed task: `P3.3`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -51,7 +51,7 @@ status notes below.
 | 0 | Complete | — |
 | 1 | Complete | — |
 | 2 | Complete | — |
-| 3 | In progress | `P3.3` |
+| 3 | In progress | `P3.4` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
@@ -294,6 +294,22 @@ status notes below.
   `test_command_agent.py`, and `test_workflow_v2.py` in `48.52s`. No frontend
   payload or API contract changed, so a frontend build was not required. The
   exact next task is `P3.3`.
+- `P3.3` completed on 2026-07-21. `DefaultRunRuntime` now owns synchronized run
+  saves, event emission, the runtime clock, durable run start/finish markers,
+  idempotent status events, warnings, activity revisions, and concurrent
+  model-wait projection. `BaseRunner` retains thin delegation methods so the
+  active action, workflow, legacy analysis, intake, document-test, and
+  document-analysis runners use the runtime without changing their public run
+  or event payloads. `DefaultModelGateway` now delegates model-wait activity to
+  the runtime and no longer writes activity state or events itself. Contract
+  tests cover concrete runtime persistence and timing, facade delegation,
+  status/event idempotence, activity revision behavior, model-wait delegation,
+  and the absence of extracted projection behavior from `BaseRunner` and
+  `DefaultModelGateway`. Focused verification passed `158` tests across
+  `test_agent_runtime_contracts.py`, `test_agent_runner.py`,
+  `test_command_agent.py`, and `test_workflow_v2.py` in `50.38s`. No frontend
+  payload or API contract changed, so a frontend build was not required. The
+  exact next task is `P3.4`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -632,7 +648,7 @@ working papers, dashboard, reports, or audit completion.
 - [x] `P3.2` Extract the provider semaphore, model profiles, token charging,
   retries, stage tags, telemetry, and hash-only provenance into
   `ModelGateway`; make `BaseRunner` delegate to it.
-- [ ] `P3.3` Extract run save, event emission, activity projection, status, and
+- [x] `P3.3` Extract run save, event emission, activity projection, status, and
   durable timing operations into `RunRuntime` with delegation from
   `BaseRunner`.
 - [ ] `P3.4` Extract budgets, dynamic limits, deadlines, checkpoints,

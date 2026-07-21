@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .. import doc_tests
 from ..workspaces import Workspace, WorkspaceError
-from . import store
 from .base import BaseRunner, Cancelled, LimitExceeded
 
 
@@ -13,7 +12,7 @@ class DocTestRunner(BaseRunner):
 
     def execute(self) -> None:
         if not self.run.get("started"):
-            self.run["started"] = store.utcnow()
+            self.mark_started()
         try:
             test_id = str(self.context.get("test_id") or "")
             if not test_id:
@@ -64,19 +63,19 @@ class DocTestRunner(BaseRunner):
             self.run["doc_test"].update({"rollup": rollup, "test_sha1": test["sha1"]})
             self.run["summary_markdown"] = self._summary(test, rollup)
             self.save()
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("completed")
             self.emit("summary_ready", {"run_id": self.run["id"]})
         except Cancelled:
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("cancelled")
         except LimitExceeded as error:
             self.run["error"] = str(error)
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("failed")
         except Exception as error:
             self.run["error"] = str(error)
-            self.run["finished"] = store.utcnow()
+            self.mark_finished()
             self.set_status("failed")
 
     def _prepare(self, test: dict) -> None:
