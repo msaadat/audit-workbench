@@ -1,12 +1,23 @@
+import ast
 import inspect
 import json
 import re
 import threading
+from pathlib import Path
 
 import pytest
 
 from app import documents, llm
-from app.agent import action_runner, base, runner, store, workflow_runner
+from app.agent import (
+    action_runner,
+    base,
+    doc_test_runner,
+    document_analysis_runner,
+    intake_runner,
+    runner,
+    store,
+    workflow_runner,
+)
 from app.agent.runtime import (
     Cancelled,
     DefaultModelGateway,
@@ -23,6 +34,39 @@ def _base_runner(workspace_with_data):
     run = store.new_run(workspace_with_data, "auto")
     handle = runner.RunHandle(workspace_with_data.id, run["id"])
     return base.BaseRunner(workspace_with_data, run, handle)
+
+
+def _active_runner(workspace, runner_type, engine):
+    if engine in {store.ACTION_ENGINE, store.WORKFLOW_ENGINE}:
+        run = store.new_command_run(
+            workspace,
+            "auto",
+            {"source": "chat", "text": f"exercise {engine}"},
+        )
+        run["engine"] = engine
+    else:
+        run = store.new_run(workspace, "auto", kind=engine)
+    run["limits"] = {
+        "max_model_turns": 1,
+        "max_estimated_prompt_tokens": 1_000,
+        "max_completion_tokens": 100,
+        "max_llm_concurrency": 1,
+    }
+    store.save_run(workspace, run)
+    handle = runner.RunHandle(workspace.id, run["id"])
+    return runner_type(workspace, run, handle), handle
+
+
+ACTIVE_RUNNER_CASES = (
+    (action_runner.ActionRunner, store.ACTION_ENGINE),
+    (workflow_runner.WorkflowRunner, store.WORKFLOW_ENGINE),
+    (intake_runner.IntakeRunner, store.INTAKE_ENGINE),
+    (doc_test_runner.DocTestRunner, store.DOC_TEST_ENGINE),
+    (
+        document_analysis_runner.DocumentAnalysisRunner,
+        store.DOCUMENT_ANALYSIS_ENGINE,
+    ),
+)
 
 
 def test_run_runtime_contract_matches_active_base_runner(workspace_with_data):
@@ -201,6 +245,96 @@ def test_workflow_runner_accepts_an_injected_runtime_without_changing_default_ap
     )
 
     assert isinstance(default_active.runtime, DefaultRunRuntime)
+
+
+@pytest.mark.parametrize(
+    ("runner_type", "engine"),
+    ACTIVE_RUNNER_CASES,
+    ids=("action", "workflow", "intake", "doc-test", "document-analysis"),
+)
+def test_active_runners_share_runtime_budget_and_gateway_contract(
+    workspace_with_data,
+    monkeypatch,
+    runner_type,
+    engine,
+):
+    calls = []
+
+    def fake_chat(messages, **_kwargs):
+        calls.append(messages)
+        return {
+            "content": "ok",
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        }
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {
+            "configured": True,
+            "provider": "phase-three-gate",
+            "model": "shared-runtime",
+        },
+    )
+    active, _handle = _active_runner(workspace_with_data, runner_type, engine)
+    tag = engine.replace("_", "-")
+
+    assert isinstance(active.runtime, DefaultRunRuntime)
+    assert isinstance(active.model_gateway, DefaultModelGateway)
+    assert active._llm_content(f"[agent:{tag}]\nsystem", "user") == "ok"
+
+    durable = store.load_run(workspace_with_data, active.run["id"])
+    assert durable["usage"]["llm_turns"] == 1
+    assert durable["usage"]["prompt_tokens"] == 3
+    assert durable["usage"]["completion_tokens"] == 1
+    assert durable["usage"]["model_calls_by_worker"] == {f"agent:{tag}": 1}
+
+    with pytest.raises(LimitExceeded, match="model turn limit"):
+        active._llm_content(f"[agent:{tag}]\nsystem", "second call")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("runner_type", "engine"),
+    ACTIVE_RUNNER_CASES,
+    ids=("action", "workflow", "intake", "doc-test", "document-analysis"),
+)
+def test_active_runners_share_pause_resume_and_cancel_controls(
+    workspace_with_data,
+    runner_type,
+    engine,
+):
+    active, handle = _active_runner(workspace_with_data, runner_type, engine)
+    handle.pause_requested.set()
+    handle.resume.set()
+
+    active.checkpoint()
+
+    durable = store.load_run(workspace_with_data, active.run["id"])
+    assert durable["status"] == "executing"
+    assert [
+        event["data"]["status"]
+        for event in store.read_events(workspace_with_data, active.run["id"])
+    ] == ["paused", "executing"]
+
+    handle.cancel.set()
+    with pytest.raises(Cancelled):
+        active.checkpoint()
+
+
+def test_active_leaf_runners_share_runtime_without_graph_runner_inheritance():
+    leaf_runners = (
+        intake_runner.IntakeRunner,
+        doc_test_runner.DocTestRunner,
+        document_analysis_runner.DocumentAnalysisRunner,
+    )
+
+    for leaf_runner in leaf_runners:
+        assert issubclass(leaf_runner, base.BaseRunner)
+        assert not issubclass(leaf_runner, action_runner.ActionRunner)
+        assert not issubclass(leaf_runner, workflow_runner.WorkflowRunner)
+        assert not issubclass(workflow_runner.WorkflowRunner, leaf_runner)
 
 
 def test_default_run_runtime_owns_durable_timing_and_activity(workspace_with_data):
@@ -714,3 +848,45 @@ def test_model_gateway_delegates_budget_ledger_to_runtime():
     assert 'self.run.get("limits")' not in source
     assert "self._reserve_model_turn(" in source
     assert "self._record_model_usage(" in source
+
+
+def test_agent_provider_calls_are_confined_to_model_gateway():
+    agent_root = Path(base.__file__).parent
+    provider_calls = []
+
+    for path in sorted(agent_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        llm_names = set()
+        direct_call_names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.endswith(".llm"):
+                        llm_names.add(alias.asname or alias.name.rsplit(".", 1)[-1])
+            elif isinstance(node, ast.ImportFrom):
+                if (node.module or "").endswith("llm"):
+                    for alias in node.names:
+                        if alias.name in {"chat", "chat_stream"}:
+                            direct_call_names.add(alias.asname or alias.name)
+                for alias in node.names:
+                    if alias.name == "llm":
+                        llm_names.add(alias.asname or alias.name)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            direct_name = isinstance(node.func, ast.Name) and node.func.id in direct_call_names
+            module_attribute = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"chat", "chat_stream"}
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in llm_names
+            )
+            if direct_name or module_attribute:
+                provider_calls.append(
+                    (path.relative_to(agent_root).as_posix(), node.lineno)
+                )
+
+    assert [path for path, _line in provider_calls] == [
+        "runtime/model_gateway.py"
+    ]

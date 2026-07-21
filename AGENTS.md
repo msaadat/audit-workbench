@@ -263,6 +263,10 @@ BaseRunner
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.
+- The Phase 3 gate exercises runtime budgets and controls across both graph
+  runners and every active leaf runner, preserves queued follow-ups after a
+  terminal crash, and statically confines direct agent provider calls to
+  `runtime/model_gateway.py`.
 
 ### Known duplication
 

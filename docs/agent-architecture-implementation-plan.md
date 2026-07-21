@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 3.
-- Current task: `P3.8`.
-- Last completed task: `P3.7`.
+- Current phase: Phase 4.
+- Current task: `P4.1`.
+- Last completed task: `P3.8`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -51,8 +51,8 @@ status notes below.
 | 0 | Complete | — |
 | 1 | Complete | — |
 | 2 | Complete | — |
-| 3 | In progress | `P3.8` |
-| 4 | Pending Phase 3 gate | `P4.1` |
+| 3 | Complete | — |
+| 4 | In progress | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -372,6 +372,20 @@ status notes below.
   `test_command_agent.py`, and `test_workflow_v2.py` in `56.74s`. No frontend
   payload or API contract changed, so a frontend build was not required. The
   exact next task is `P3.8`.
+- `P3.8` completed on 2026-07-21. The Phase 3 gate now runs the active action,
+  workflow, intake, document-test, and document-analysis runner classes through
+  one durable runtime budget and gateway contract and through the same
+  pause/resume/cancel checkpoints. Leaf runners remain independent of both
+  graph schedulers while using the shared runtime facade. Process-level crash
+  coverage proves an unexpected scheduler exception becomes a durable failed
+  terminal state before the next queued command is launched with its parent and
+  context intact. An AST gate permits direct `llm.chat` or `llm.chat_stream`
+  calls only in `runtime/model_gateway.py`. Focused verification passed `180`
+  tests across `test_agent_runtime_contracts.py`, `test_agent_runner.py`,
+  `test_command_agent.py`, and `test_workflow_v2.py` in `56.94s`; five real
+  intake, document-test, and document-analysis integration tests passed in
+  `1.14s`. No production payload or frontend contract changed, so a frontend
+  build was not required. Phase 3 is complete; the exact next task is `P4.1`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -721,7 +735,7 @@ working papers, dashboard, reports, or audit completion.
   current API behavior.
 - [x] `P3.7` Inject the runtime into the existing `WorkflowRunner` without yet
   making it domain-neutral or moving its stage handlers.
-- [ ] `P3.8` Prove shared budgets, controls, queued follow-ups, terminal crash
+- [x] `P3.8` Prove shared budgets, controls, queued follow-ups, terminal crash
   handling, active leaf-runner behavior, and the no-direct-provider-call gate.
 
 **Work:**

@@ -657,6 +657,73 @@ def test_execute_fails_closed_without_a_supported_explicit_engine(
     assert label in failed["error"]
 
 
+def test_terminal_crash_still_launches_the_next_queued_follow_up(
+    workspace_with_data,
+    monkeypatch,
+):
+    queued = {
+        "id": "follow-up-1",
+        "source": "chat",
+        "text": "then review the report",
+        "run_context": {"document_ids": ["DOC-1"]},
+    }
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "run the first action"},
+    )
+    run["engine"] = store.ACTION_ENGINE
+    run["status"] = "executing"
+    run["pending_commands"] = [queued]
+    store.save_run(workspace_with_data, run)
+    launched = []
+
+    class CrashingActionRunner:
+        def __init__(self, _workspace, _run, _handle):
+            pass
+
+        def execute(self):
+            raise RuntimeError("phase-three crash")
+
+    def capture_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.append(
+            {
+                "workspace_id": workspace.id,
+                "mode": mode,
+                "command": command,
+                "parent_run_id": parent_run_id,
+                "context": context,
+            }
+        )
+        return {"id": "captured-follow-up"}
+
+    monkeypatch.setattr(action_runner, "ActionRunner", CrashingActionRunner)
+    monkeypatch.setattr(runner, "start_command_run", capture_start)
+
+    runner._execute(
+        workspace_with_data.id,
+        run["id"],
+        runner.RunHandle(workspace_with_data.id, run["id"]),
+    )
+
+    failed = store.load_run(workspace_with_data, run["id"])
+    assert failed["status"] == "failed"
+    assert failed["error"] == "phase-three crash"
+    assert failed["finished"]
+    assert failed["pending_commands"] == []
+    assert store.read_events(workspace_with_data, run["id"])[-1]["data"] == {
+        "status": "failed",
+        "error": "phase-three crash",
+    }
+    assert len(launched) == 1
+    assert launched[0]["workspace_id"] == workspace_with_data.id
+    assert launched[0]["mode"] == "auto"
+    assert launched[0]["command"]["id"] == queued["id"]
+    assert launched[0]["command"]["text"] == queued["text"]
+    assert launched[0]["parent_run_id"] == run["id"]
+    assert launched[0]["context"] == {"document_ids": ["DOC-1"]}
+
+
 # -------------------------------------------------------- interruption
 def test_same_schema_orphan_recovery_preserves_durable_checkpoints(workspace_with_data):
     cases = {}

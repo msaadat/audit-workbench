@@ -412,7 +412,11 @@ temporary `ActionRunner` inheritance until their later planned migrations. The
 other current runners still obtain runtime operations from that facade or their
 runtime instance. `DefaultModelGateway` owns provider concurrency, model
 profiles, stage tags, debug tracing, and hash-only provenance, and delegates
-budget accounting and model-wait activity to the runtime.
+budget accounting and model-wait activity to the runtime. The Phase 3 gate
+exercises budgets and pause/resume/cancel controls across both graph runners and
+all active leaf runners, preserves queued follow-ups after a terminal crash,
+and statically confines direct provider calls under `agent/` to
+`runtime/model_gateway.py`.
 
 ### Phase 1 Deletion Boundary
 

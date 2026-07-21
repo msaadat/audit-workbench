@@ -160,8 +160,12 @@ The four protocol values are explicit migration scaffolding for live schedulers,
 not compatibility aliases. Document analysis migrates in Phase 9; Phase 10
 decides the retained intake and document-test protocols; Phase 12 removes the
 legacy analysis engine. The current runners all inherit, directly or indirectly,
-from `BaseRunner`; composition through `RunRuntime` is introduced in later
-phases.
+from the temporary `BaseRunner` facade, which now delegates per-run
+persistence, events, budgets, controls, approvals, interactions, and model
+calls to `DefaultRunRuntime` and `DefaultModelGateway`. `ActionRunner` and
+`WorkflowRunner` accept an injected `RunRuntime`; intake, document-test,
+document-analysis, and legacy analysis remain active leaf callers of the facade
+until their scheduled migrations.
 
 ## Active HTTP Run API
 
@@ -258,6 +262,10 @@ The boundary is intentionally strict:
   and queued-command FIFO behavior.
 - Runtime extraction must preserve the generic agent API and chat projection
   payloads because the frontend joins both surfaces by `run_id`.
+- The Phase 3 exit gate proves shared budgets and controls across action,
+  workflow, intake, document-test, and document-analysis runners, terminal
+  crash handling before queued-command launch, and one direct provider-call
+  path through `runtime/model_gateway.py`.
 - Document analysis has direct UI/API callers in addition to audit-planning
   consumers; its Phase 9 migration must move both.
 - Phase 10 must decide the current engine and scheduler disposition of both
