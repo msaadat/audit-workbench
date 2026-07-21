@@ -100,6 +100,17 @@ but they must compile into a normalized typed `ContextSpec`. Automatic
 selection must use a named, registered strategy with a normalized configuration
 and implementation hash rather than an opaque `auto` flag.
 
+Context policy is declaration-only in the target architecture. It is authored
+in application capability or preset definitions, validated at registry
+construction, and identified by its normalized hash. There is no per-run or
+per-workspace auditor override for permitted sources, selectors,
+representations, budgets, or privacy. Auditors retain control over the source
+artifacts and their domain metadata, and may explicitly force regeneration to
+resolve the current candidate set. Those controls cannot widen the declared
+policy. Adding a runtime policy editor later would require a separate versioned
+persistence, authorization, validation, API, and UX design; it is not implicit
+in `ContextSpec` deserialization or manifest inspection.
+
 Automatic selectors are local, deterministic resolver components. They cannot
 call `ModelGateway`, a provider model, or a network service. A selector may use
 stable metadata, lexical scoring, or a hash-identified local embedding/index
@@ -458,8 +469,8 @@ points. Table profiles omit category literals and never use the row-preview
 projection. Row-level `table_rows` candidates, manifest selections, and local
 bundle items are structurally rejected before worker invocation. Resolver
 integration records selection, omission, and truncation without persisting
-bundle content. Auditor editing and active capability wiring remain pending in
-the subsequent Phase 4 slices.
+bundle content. Context policy is explicitly declaration-only; active
+capability wiring remains pending in the subsequent Phase 4 slice.
 
 ### Phase 1 Deletion Boundary
 
@@ -537,8 +548,8 @@ capabilities, workers, and executors.
 
 ### Context Auditability Requirements
 
-The capability declaration is intended to be the primary auditable and
-manually editable specification. It must identify:
+The capability declaration is the primary auditable, code-authored
+specification. It must identify:
 
 - Dependencies, existence/structural-readiness functions, and unit expansion.
 - Permitted context presets and representations.
@@ -554,6 +565,12 @@ also persists a `ContextManifest` showing the sources actually selected,
 selection reasons, source hashes, omissions, truncations, privacy decisions,
 and supplied size. Provider provenance remains hash-only and does not contain
 document text or row-level table data.
+
+`ContextManifest` is an execution record, not an editable selection request.
+Auditors may curate source artifacts and request explicit regeneration, but the
+resolver accepts context policy only from the registered capability or preset
+declaration. Runtime auditor edits cannot add source references, replace a
+selector, raise a budget, enable a representation, or relax privacy.
 
 ### Recommended Migration Sequence
 

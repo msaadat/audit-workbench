@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.7`.
-- Last completed task: `P4.6`.
+- Current task: `P4.8`.
+- Last completed task: `P4.7`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.7` |
+| 4 | In progress | `P4.8` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -507,6 +507,20 @@ status notes below.
   for `108 passed` in `2.08s`. No active capability, API payload, or frontend
   contract changed, so a frontend build was not required. The exact next task
   is `P4.7`.
+- `P4.7` completed on 2026-07-21 by making context policy explicitly
+  declaration-only. Registered application capability and preset definitions
+  are the sole authority for permitted sources, selectors, representations,
+  budgets, and privacy; neither `ContextSpec` nor `ContextManifest` is a
+  workspace or per-run auditor-edit surface. Auditors retain domain-level
+  source curation and explicit regeneration, which resolves the then-current
+  candidate set without widening policy. Model and registry documentation now
+  state this boundary, and contract tests prove unknown top-level policy
+  overrides and source-reference selections are rejected during normalized
+  deserialization. Focused verification passed `67` tests across
+  `test_agent_context_adapters.py`, `test_agent_context_models.py`,
+  `test_agent_context_resolver.py`, and `test_agent_runtime_contracts.py` in
+  `0.97s`. No active capability, API payload, or frontend contract changed, so
+  a frontend build was not required. The exact next task is `P4.8`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -905,7 +919,7 @@ provider calls outside the runtime APIs.
 ### Phase 4: Introduce Context Contracts And Resolver
 
 **Objective:** Make capability context selection complete, bounded, inspectable,
-and manually editable.
+and governed by hash-identified, code-authored declarations.
 
 **Tasks:**
 
@@ -927,7 +941,7 @@ and manually editable.
   APM slice without copying their domain logic.
 - [x] `P4.6` Adapt table metadata/profile context and structurally reject
   row-level representations before worker invocation.
-- [ ] `P4.7` Specify and implement the intended auditor-editable surface for
+- [x] `P4.7` Specify and implement the intended auditor-editable surface for
   context selection, or amend the objective and contracts to make the scope
   explicitly declaration-only.
 - [ ] `P4.8` Route one real capability through `ContextResolver`, verify
@@ -962,6 +976,11 @@ and manually editable.
   before worker execution.
 - Define deterministic ordering and truncation so the same inputs produce the
   same manifest and hash.
+- Keep context policy declaration-only: registered application capability and
+  preset definitions are authoritative. Auditor source curation and explicit
+  regeneration may change the candidates resolved under that policy, but no
+  per-run or per-workspace override may widen sources, selectors,
+  representations, budgets, or privacy.
 
 **Primary files:**
 

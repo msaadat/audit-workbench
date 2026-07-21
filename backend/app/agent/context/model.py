@@ -1,11 +1,11 @@
 """Normalized context declarations, manifests, and local worker bundles.
 
-These models are deliberately behavior-free.  Registries, policy validation,
-selection, hashing, persistence, and resolution are introduced by later Phase
-4 tasks.  The JSON contracts here keep declarations and execution records
-stable while making the privacy boundary explicit: manifests contain only
-references, hashes, metrics, and decisions; raw supplied content exists only
-in :class:`ContextBundle`.
+These models are deliberately behavior-free and declaration-only.  Context
+policy is authored in registered application capability or preset definitions;
+there is no per-run or per-workspace auditor override in this contract.  The
+JSON contracts keep declarations and execution records stable while making the
+privacy boundary explicit: manifests contain only references, hashes, metrics,
+and decisions; raw supplied content exists only in :class:`ContextBundle`.
 """
 
 from __future__ import annotations
@@ -415,7 +415,13 @@ class ContextSource(_JSONModel):
 
 @dataclass(frozen=True)
 class ContextSpec(_JSONModel):
-    """The complete normalized declaration of context a worker may receive."""
+    """The complete code-authored declaration of context a worker may receive.
+
+    Auditor input curation and explicit regeneration can change the candidate
+    material resolved under this policy, but cannot widen the policy itself.
+    Unknown fields are rejected during deserialization so an undeclared runtime
+    override cannot enter the normalized contract.
+    """
 
     sources: tuple[ContextSource, ...]
     budget: ContextBudget

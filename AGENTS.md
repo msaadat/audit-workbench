@@ -283,7 +283,10 @@ BaseRunner
   bounded document context, methodology section index, table schema builder,
   and statistical profiler. Table candidates omit category literals, expose no
   row preview, and the context models reject `table_rows` before a bundle can
-  reach a worker. Auditor editing and active-worker adoption remain pending.
+  reach a worker. Context policy is declaration-only: registered application
+  capability and preset definitions are authoritative, while auditor source
+  curation and explicit regeneration operate within those declarations. Active
+  worker adoption remains pending.
 
 ### Known duplication
 

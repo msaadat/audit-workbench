@@ -129,6 +129,34 @@ def test_context_spec_normalizes_and_round_trips_deterministically():
     assert ContextSpec.from_json(encoded).to_json() == encoded
 
 
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda payload: payload.update(
+                {"auditor_overrides": {"max_characters": 99_999}}
+            ),
+            "Unknown context_spec field 'auditor_overrides'",
+        ),
+        (
+            lambda payload: payload["sources"][0].update(
+                {"selected_refs": ["document:auditor-choice"]}
+            ),
+            "Unknown source field 'selected_refs'",
+        ),
+    ],
+)
+def test_context_spec_is_declaration_only_and_rejects_runtime_override_fields(
+    mutate,
+    message,
+):
+    payload = PRESETS.compile("documents.policies").to_dict()
+    mutate(payload)
+
+    with pytest.raises(ValueError, match=message):
+        ContextSpec.from_dict(payload)
+
+
 def test_manifest_round_trip_is_content_free_but_records_all_decisions():
     representation = ContextRepresentation("excerpt", {"page_window": 2})
     selection = ContextSelection(

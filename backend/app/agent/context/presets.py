@@ -1,8 +1,10 @@
-"""Normalized context preset and selector registries.
+"""Normalized, application-authored context preset and selector registries.
 
 Selector implementations are a closed set of local strategies implemented by
 the resolver. Registry entries carry stable implementation identities without
-accepting executable callables or service dependencies.
+accepting executable callables or service dependencies. Registrations define
+the declaration-only context policy; they are not workspace or auditor
+overrides.
 """
 
 from __future__ import annotations

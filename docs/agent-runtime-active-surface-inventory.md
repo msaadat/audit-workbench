@@ -176,6 +176,11 @@ copying extraction, search, analysis, pack-index, or profiler logic. Profile
 candidates omit category literals and row previews, while the context models
 structurally reject `table_rows` candidates, selections, and bundle items. No
 active worker uses that boundary until the later Phase 4 vertical-slice task.
+Context policy is declaration-only: registered application capability and
+preset definitions are authoritative, with no per-run, workspace, API, or
+frontend auditor override. Auditor source curation and explicit regeneration
+operate within, and cannot widen, those declarations.
+
 `ActionRunner` and `WorkflowRunner` accept an injected `RunRuntime`; intake,
 document-test, document-analysis, and legacy analysis remain active leaf
 callers of the facade until their scheduled migrations.
