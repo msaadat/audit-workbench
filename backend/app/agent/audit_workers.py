@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
+from collections.abc import Callable
 from typing import Any
 
 from .. import data_tests, doc_tests
 from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError
 from . import context_bundles, prompts
+from .context import ContextBundle as ResolvedContextBundle
 
 ROUTER_SYSTEM = f"""[agent:workflow_router]
 Classify one audit-assistant command. You are a router, not a planner. Return
@@ -61,6 +66,97 @@ severity (critical|high|medium|low|info), condition, criteria, cause or
 cause_pending, effect, recommendation, and severity_rationale. Do not create or
 alter RCM, planned-test, execution, or evidence references. Do not claim auditor
 confirmation. {prompts.JSON_RULES}"""
+
+
+def _sha256_text(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+APM_PROMPT_HASH = _sha256_text(prompts.APM_SYSTEM)
+APM_RESPONSE_SCHEMA_HASH = _sha256_text("apm-response:non-empty-markdown")
+APM_PROPOSAL_SCHEMA_HASH = _sha256_text("apm-proposal:{apm_markdown:string}")
+
+
+def apm_execution_components() -> dict[str, str]:
+    """Hash-only model and proposal identities used by recovery."""
+    return {
+        "prompt_hash": APM_PROMPT_HASH,
+        "worker_hash": _sha256_text(inspect.getsource(apm)),
+        "response_schema_hash": APM_RESPONSE_SCHEMA_HASH,
+        "proposal_schema_hash": APM_PROPOSAL_SCHEMA_HASH,
+    }
+
+
+def _resolved_item(bundle: ResolvedContextBundle, source_id: str) -> object:
+    matches = [item.content for item in bundle.items if item.source_id == source_id]
+    if len(matches) != 1:
+        raise WorkspaceError(
+            f"Resolved APM context source '{source_id}' must supply exactly one item."
+        )
+    return matches[0]
+
+
+def _resolved_context_metrics(bundle: ResolvedContextBundle) -> dict[str, object]:
+    return {
+        "worker_kind": "apm",
+        "total_characters": bundle.supplied_size.characters,
+        "estimated_tokens": bundle.supplied_size.estimated_tokens,
+        "selected_items": bundle.supplied_size.items,
+    }
+
+
+def apm(
+    model_call: Callable[..., str],
+    bundle: ResolvedContextBundle,
+    *,
+    quality_gate: Callable[[dict, str, dict | None], str | None],
+) -> str:
+    """Draft an APM from resolver-supplied content without workspace access."""
+    if not isinstance(bundle, ResolvedContextBundle):
+        raise WorkspaceError("The APM worker requires a resolved context bundle.")
+    template = str(_resolved_item(bundle, "apm_template") or "")
+    current_apm = str(_resolved_item(bundle, "current_apm") or "")
+    planning = _resolved_item(bundle, "planning_context")
+    if not isinstance(planning, dict):
+        raise WorkspaceError("Resolved APM planning context must be an object.")
+    user = json.dumps(
+        {
+            "ACTIVE APM TEMPLATE (verbatim)": template,
+            "CURRENT APM TO REVISE": current_apm,
+            "RESOLVED CONTEXT": bundle.to_dict(),
+        },
+        indent=1,
+        ensure_ascii=False,
+        default=str,
+    )
+    activity = {
+        "artifact_refs": ["planning:apm"],
+        "context_metrics": _resolved_context_metrics(bundle),
+    }
+    markdown = model_call(
+        prompts.APM_SYSTEM,
+        user,
+        legacy_field="apm_markdown",
+        activity=activity,
+    )
+    planning_context = (
+        planning.get("context") if isinstance(planning.get("context"), dict) else {}
+    )
+    error = quality_gate({"apm_markdown": markdown}, template, planning_context)
+    if error:
+        markdown = model_call(
+            prompts.APM_SYSTEM,
+            user
+            + f"\n\nThe APM draft failed the engagement quality gate: {error}. Correct it.",
+            legacy_field="apm_markdown",
+            activity=activity,
+        )
+        error = quality_gate({"apm_markdown": markdown}, template, planning_context)
+        if error:
+            raise WorkspaceError(f"The APM draft failed the quality gate: {error}")
+    if not markdown.strip():
+        raise WorkspaceError("The model returned an empty APM draft.")
+    return markdown
 
 
 def _strings(value: object) -> list[str]:

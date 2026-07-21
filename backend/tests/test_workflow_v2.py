@@ -1,14 +1,25 @@
 import asyncio
+import inspect
 import json
 import threading
 import time
+from dataclasses import replace
 
 import httpx
 import polars as pl
 import pytest
 
-from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, rcm_execution, report, working_papers, workspaces
+from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
 from app.agent import action_runner, audit_capabilities, audit_workers, context_bundles, runner, store, workflow
+from app.agent import workflow_runner as workflow_runner_module
+from app.agent.context import (
+    PRESETS,
+    SELECTORS,
+    ContextPreset,
+    ContextResolver,
+    PresetRegistry,
+    SelectorRegistry,
+)
 from app.agent.workflow_runner import WorkflowRunner, _local_resolution, initialize_known_workflow
 from app.main import create_app
 from app.workspace_transactions import (
@@ -786,6 +797,229 @@ def test_parallel_candidate_reuses_durable_sidecar_without_model_rebilling():
     assert "proposal_reused" in {
         event["type"] for event in store.read_events(ws, run["id"])
     }
+
+
+def _apm_only_runner(workspace, *, context_resolver=None):
+    run = store.new_command_run(
+        workspace,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Regenerate the APM",
+            "requested_outcomes": ["planning.apm_ready"],
+            "refresh_policy": "force",
+        },
+    )
+    assert initialize_known_workflow(workspace, run) is True
+    run = store.load_run(workspace, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "planning.apm_ready"
+    )
+    command = WorkflowRunner(
+        workspace,
+        run,
+        runner.RunHandle(workspace.id, run["id"]),
+        context_resolver=context_resolver,
+    )
+    return command, stage, stage["units"][0]
+
+
+def _changed_apm_context_resolver(change):
+    selectors = SelectorRegistry()
+    for definition in SELECTORS.all():
+        if change == "selector" and definition.selector_id == "planning.current":
+            definition = replace(
+                definition,
+                implementation_hash="sha256:" + "f" * 64,
+            )
+        selectors.register(definition)
+    presets = PresetRegistry(selectors)
+    for preset in PRESETS.all():
+        if change == "spec" and preset.preset_id == "planning.apm":
+            spec = replace(
+                preset.spec,
+                budget=replace(
+                    preset.spec.budget,
+                    max_characters=preset.spec.budget.max_characters - 1,
+                ),
+            )
+            preset = ContextPreset(preset.preset_id, spec)
+        presets.register(preset)
+    return ContextResolver(selectors=selectors, presets=presets)
+
+
+def test_reused_apm_artifact_does_not_run_context_selection():
+    ws = _planning_workspace("Reuse skips APM resolution")
+
+    class ResolverMustNotRun:
+        def resolve(self, *_args, **_kwargs):
+            raise AssertionError("reused artifacts must not rerun context selection")
+
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Use the current APM",
+            "requested_outcomes": ["planning.apm_ready"],
+            "refresh_policy": "missing_or_stale",
+        },
+    )
+    assert initialize_known_workflow(ws, run) is True
+    run = store.load_run(ws, run["id"])
+    command = WorkflowRunner(
+        ws,
+        run,
+        runner.RunHandle(ws.id, run["id"]),
+        context_resolver=ResolverMustNotRun(),
+    )
+
+    command.execute()
+
+    assert command.run["status"] == "completed"
+    assert "planning.apm_ready" in command.run["workflow"]["reused_capabilities"]
+
+
+@pytest.mark.parametrize("change", ["spec", "selector"])
+def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
+    monkeypatch,
+    change,
+):
+    ws = workspaces.create_workspace(f"APM proposal identity {change}")
+    ws.update_planning(
+        {
+            "context": {
+                "objective": "Assess procurement approvals",
+                "scope": "Purchasing",
+            }
+        }
+    )
+    response = (
+        "# Audit Planning Memorandum\n\n"
+        "## Engagement\nProcurement approvals.\n\n"
+        "## Introduction and background\nPurchasing.\n\n"
+        "## Process flow and understanding\nApprovals precede commitment.\n\n"
+        "## Prior audit findings\nNo information available.\n\n"
+        "## Key risks and planned response\nTest approval evidence."
+    )
+    fake = FakeAgentLLM({"agent:apm": {"apm_markdown": response}})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command, stage, unit = _apm_only_runner(ws)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            workflow_runner_module,
+            "mutate",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            command._apm(stage, [unit])
+
+    first_sidecar = store.read_sidecar(
+        ws,
+        command.run["id"],
+        unit["proposal_sidecar"],
+    )
+    first_identity = first_sidecar["execution_identity"]
+    assert [call["tag"] for call in fake.calls] == ["agent:apm"]
+
+    workflow.recovery(command.run["workflow"])
+    resumed = WorkflowRunner(
+        ws,
+        command.run,
+        runner.RunHandle(ws.id, command.run["id"]),
+        context_resolver=_changed_apm_context_resolver(change),
+    )
+    resumed._apm(stage, [unit])
+
+    second_sidecar = store.read_sidecar(
+        resumed.ws,
+        resumed.run["id"],
+        unit["proposal_sidecar"],
+    )
+    assert second_sidecar["execution_identity"] != first_identity
+    assert [call["tag"] for call in fake.calls] == ["agent:apm", "agent:apm"]
+    assert unit["status"] == "succeeded"
+    assert "proposal_reuse_rejected" in {
+        event["type"] for event in store.read_events(resumed.ws, resumed.run["id"])
+    }
+
+
+def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
+    ws = workspaces.create_workspace("Live resolver privacy")
+    sentinel = "ROW_SECRET_NEVER_SEND_P48"
+    methodology_text = "P48_METHODOLOGY_PRIVATE: test approval evidence."
+    ws.update_planning(
+        {
+            "context": {
+                "objective": "Assess procurement approvals",
+                "scope": "Purchasing",
+            }
+        }
+    )
+    ws.add_table(
+        "private-ledger.csv",
+        pl.DataFrame(
+            {"invoice_id": [sentinel, "INV-2"], "amount": [100.0, 200.0]}
+        ).write_csv().encode(),
+    )
+    methodology.save_pack(
+        ws,
+        "Procurement Methodology",
+        f"# Approval testing\n{methodology_text}",
+    )
+    response = (
+        "# Audit Planning Memorandum\n\n"
+        "## Engagement\nProcurement approvals.\n\n"
+        "## Introduction and background\nPurchasing.\n\n"
+        "## Process flow and understanding\nApprovals precede commitment.\n\n"
+        "## Prior audit findings\nNo information available.\n\n"
+        "## Key risks and planned response\nTest approval evidence."
+    )
+    command, stage, unit = _apm_only_runner(ws)
+    captured = {}
+
+    def draft(user):
+        captured["user"] = user
+        reference = unit.get("context_manifest")
+        assert reference
+        manifest = command.load_context_manifest(reference)
+        captured["manifest"] = manifest.to_json()
+        assert documents.activities(ws)["items"] == []
+        return {"apm_markdown": response}
+
+    fake = FakeAgentLLM({"agent:apm": draft})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command._apm(stage, [unit])
+
+    assert methodology_text in captured["user"]
+    assert "private_ledger" in captured["user"]
+    assert "invoice_id" in captured["user"]
+    assert sentinel not in captured["user"]
+    assert methodology_text not in captured["manifest"]
+    assert sentinel not in captured["manifest"]
+    assert sentinel not in json.dumps(command.run.get("provenance") or [])
+    assert "context_bundles.apm" not in inspect.getsource(WorkflowRunner._apm)
+    worker_source = inspect.getsource(audit_workers.apm)
+    assert ".ws" not in worker_source
+    assert "load_workspace" not in worker_source
+    assert list(inspect.signature(audit_workers.apm).parameters) == [
+        "model_call",
+        "bundle",
+        "quality_gate",
+    ]
 
 
 def test_data_test_compute_is_pure_and_commit_is_revisioned():

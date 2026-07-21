@@ -27,14 +27,14 @@ no historical reader or resume adapter is retained.
 
 ## Implementation Status And Session Handoff
 
-**Last updated:** 2026-07-21
+**Last updated:** 2026-07-22
 
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 4.
-- Current task: `P4.8`.
-- Last completed task: `P4.7`.
+- Current phase: Phase 5 (not started).
+- Current task: `P5.1` (not started).
+- Last completed task: `P4.8`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,8 +52,8 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.8` |
-| 5 | Pending Phase 4 gate | `P5.1` |
+| 4 | Complete | — |
+| 5 | Not started | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -521,6 +521,30 @@ status notes below.
   `test_agent_context_resolver.py`, and `test_agent_runtime_contracts.py` in
   `0.97s`. No active capability, API payload, or frontend contract changed, so
   a frontend build was not required. The exact next task is `P4.8`.
+- `P4.8` completed on 2026-07-22. The real `planning.apm_ready`
+  capability now declares the normalized `planning.apm` preset and obtains
+  every model-facing input through `ContextResolver`: planning context and
+  ownership, the active template, the current APM, bounded table metadata and
+  profiles, current document analyses, and methodology excerpts. Its pure APM
+  worker receives only the local `ContextBundle`, has no workspace parameter or
+  lookup, and the content-free `ContextManifest` is durably persisted before
+  the provider call. APM proposal sidecars now carry an exact execution
+  identity covering the capability declaration, unit input, manifest, context
+  spec, resolver, every declared selector definition, prompt, worker,
+  response schema, and proposal schema; recovery rejects and regenerates a
+  cached proposal when either the context spec or a selector implementation
+  hash changes. Integration coverage proves real-workspace deterministic
+  selection, local-only methodology content, content-free manifests and
+  provenance, row-value exclusion, manifest availability before worker
+  invocation, and no document activity side effect at that boundary. Existing
+  structurally usable artifacts still bypass materialization and explicit
+  `force` resolves the then-current candidates; no freshness watch, automatic
+  invalidation, or stale propagation was added. The focused context/workflow
+  gate passed `120` tests in `11.62s`, related planning/document regressions
+  passed `44` tests in `23.55s`, and the final full backend Phase 4 gate passed
+  `560` tests in `99.27s`. No API or frontend payload changed, so a frontend build
+  was not required. Phase 4 is complete; the exact next task is `P5.1`, and no
+  P5.1 work has started.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -944,7 +968,7 @@ and governed by hash-identified, code-authored declarations.
 - [x] `P4.7` Specify and implement the intended auditor-editable surface for
   context selection, or amend the objective and contracts to make the scope
   explicitly declaration-only.
-- [ ] `P4.8` Route one real capability through `ContextResolver`, verify
+- [x] `P4.8` Route one real capability through `ContextResolver`, verify
   proposal-reuse rejection on spec/selector changes, and prove the privacy exit
   gate without adding automatic freshness monitoring.
 

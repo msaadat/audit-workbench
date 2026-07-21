@@ -34,6 +34,9 @@ _STABLE_TIE_BREAKERS = {"source_ref_ascending", "declared_reference_order"}
 # Representation permissions are intentionally structural.  A declaration
 # cannot make sensitive content permissible merely by naming it differently.
 _REPRESENTATION_PRIVACY_FIELD = {
+    "planning_context": "allow_planning_context",
+    "artifact_template": "allow_template_text",
+    "current_artifact": "allow_document_text",
     "excerpt": "allow_document_text",
     "raw_pages": "allow_document_text",
     "summary": "allow_document_text",
@@ -386,6 +389,33 @@ _register_selectors(
     SELECTORS,
     (
         SelectorDefinition(
+            selector_id="planning.current",
+            selector_kind="deterministic",
+            supported_source_types=("planning",),
+            implementation_hash=_implementation_hash(
+                "planning.current:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
+        ),
+        SelectorDefinition(
+            selector_id="templates.current",
+            selector_kind="deterministic",
+            supported_source_types=("templates",),
+            implementation_hash=_implementation_hash(
+                "templates.current:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
+        ),
+        SelectorDefinition(
+            selector_id="artifacts.current",
+            selector_kind="deterministic",
+            supported_source_types=("artifacts",),
+            implementation_hash=_implementation_hash(
+                "artifacts.current:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
+        ),
+        SelectorDefinition(
             selector_id="documents.by_category",
             selector_kind="deterministic",
             supported_source_types=("documents",),
@@ -470,6 +500,30 @@ PRESETS.register(
         spec=ContextSpec(
             sources=(
                 ContextSource(
+                    id="planning_context",
+                    source_type="planning",
+                    required=True,
+                    selector=ContextSelector(selector_id="planning.current"),
+                    representations=(ContextRepresentation("planning_context"),),
+                    budget=ContextBudget(max_items=1, max_characters=10_000),
+                ),
+                ContextSource(
+                    id="apm_template",
+                    source_type="templates",
+                    required=True,
+                    selector=ContextSelector(selector_id="templates.current"),
+                    representations=(ContextRepresentation("artifact_template"),),
+                    budget=ContextBudget(max_items=1, max_characters=16_000),
+                ),
+                ContextSource(
+                    id="current_apm",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=20_000),
+                ),
+                ContextSource(
                     id="table_metadata",
                     source_type="tables",
                     required=False,
@@ -510,8 +564,10 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            budget=ContextBudget(max_items=41, max_characters=70_000),
+            budget=ContextBudget(max_items=44, max_characters=70_000),
             privacy=ContextPrivacy(
+                allow_planning_context=True,
+                allow_template_text=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
                 allow_table_profiles=True,

@@ -12,7 +12,6 @@ from ..workspaces import Workspace, WorkspaceError
 
 CHARACTER_BUDGETS = {
     "command_router": 6_000,
-    "apm": 70_000,
     "rcm": 45_000,
     "planned_test_generation": 20_000,
     "data_test_spec": 22_000,
@@ -110,27 +109,6 @@ def planning_basis_projection(basis: dict) -> dict:
             for item in basis.get("document_analyses") or []
         ],
     }
-
-
-def apm(basis: dict, *, template: str, current_apm: str, ownership: dict) -> ContextBundle:
-    projection = planning_basis_projection(basis)
-    sections = {
-        "template": template,
-        "CURRENT APM TO REVISE": current_apm,
-        "ownership": ownership,
-        "planning_basis": projection,
-    }
-    # The upstream planning builder already bounds document analyses.  If a
-    # legacy basis is unusually large, retain citations/metadata and remove
-    # verbose document-source coverage before failing.
-    try:
-        return _bundle("apm", sections)
-    except WorkspaceError:
-        projection["document_sources"] = [
-            {key: item.get(key) for key in ("document_id", "title", "source_sha1", "analysis_id", "citations")}
-            for item in projection.get("document_sources") or []
-        ]
-        return _bundle("apm", sections, reducer_ran=True)
 
 
 def rcm(basis: dict, *, template: str, apm_markdown: str, current_rows: list[dict]) -> ContextBundle:

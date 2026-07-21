@@ -77,6 +77,7 @@ class Capability:
     depends_on: tuple[str, ...]
     readiness: Callable[[Workspace, dict], Readiness]
     expand_units: Callable[[Workspace, dict], list[UnitSpec]]
+    context: object | None = None
     barrier: str = "all_settled_then_validate"
     commit_policy: str = "serialized"
     approval_policy: str = "auto_or_stage_batch"
@@ -148,6 +149,7 @@ def new_unit(spec: UnitSpec, capability_id: str) -> dict:
         "status": "queued",
         "attempts": 0,
         "input_sha1": spec.input_sha1,
+        "context_manifest": None,
         "proposal_sidecar": None,
         "result_refs": [],
         "error": None,

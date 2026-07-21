@@ -270,7 +270,7 @@ BaseRunner
   runners and every active leaf runner, preserves queued follow-ups after a
   terminal crash, and statically confines direct agent provider calls to
   `runtime/model_gateway.py`.
-- Phase 4 now has normalized context declarations and serialization contracts
+- Phase 4 completed with normalized context declarations and serialization contracts
   under `agent/context/`, plus hash-identified preset and selector registries
   that reject duplicate or unknown keys, unhashable definitions, unsupported
   source types, and invalid privacy combinations. Deterministic source and
@@ -285,8 +285,14 @@ BaseRunner
   row preview, and the context models reject `table_rows` before a bundle can
   reach a worker. Context policy is declaration-only: registered application
   capability and preset definitions are authoritative, while auditor source
-  curation and explicit regeneration operate within those declarations. Active
-  worker adoption remains pending.
+  curation and explicit regeneration operate within those declarations. The
+  live `planning.apm_ready` capability now declares `planning.apm`, persists
+  its content-free manifest before the provider call, and supplies its pure APM
+  worker only the resolver bundle. APM proposal recovery rejects sidecars when
+  the capability, unit, manifest, spec, resolver, selector, prompt, worker, or
+  schema identity changes. Existing usable artifacts still bypass resolution;
+  explicit force resolves current candidates, and no automatic freshness
+  monitoring was added.
 
 ### Known duplication
 

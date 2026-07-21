@@ -572,6 +572,45 @@ class ContextResolver:
     def resolver_hash(self) -> str:
         return RESOLVER_HASH
 
+    def execution_identity(
+        self,
+        capability: object,
+        manifest: ContextManifest,
+    ) -> dict[str, object]:
+        """Return the complete content-free context identity for proposal reuse."""
+        if not isinstance(manifest, ContextManifest):
+            raise ContextResolutionError(
+                "Context execution identity requires a ContextManifest."
+            )
+        capability_id = _required_id(capability, "capability")
+        spec = self._selectors.validate_spec(
+            _context_spec(capability, self._presets)
+        )
+        spec_hash = _spec_hash(spec)
+        if (
+            manifest.capability_id != capability_id
+            or manifest.context_spec_hash != spec_hash
+            or manifest.resolver_hash != self.resolver_hash
+        ):
+            raise ContextResolutionError(
+                "Context manifest does not match the current capability policy."
+            )
+        return {
+            "context_manifest_hash": manifest.manifest_hash,
+            "context_spec_hash": spec_hash,
+            "resolver_hash": self.resolver_hash,
+            "selector_definition_hashes": [
+                {
+                    "source_id": source.id,
+                    "selector_id": source.selector.selector_id,
+                    "definition_hash": self._selectors.validate_source(
+                        source
+                    ).definition_hash,
+                }
+                for source in spec.sources
+            ],
+        }
+
     def resolve(
         self,
         workspace: object,

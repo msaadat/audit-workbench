@@ -93,6 +93,9 @@ def test_apm_adapters_reuse_document_and_methodology_boundaries(monkeypatch):
     assert document_calls == [policy["id"], unrelated["id"]]
     assert section_calls == [True]
     assert [item.source_ref for item in bundle.items] == [
+        "planning:context",
+        "template:apm",
+        "planning:apm",
         f"document:{policy['id']}",
         "methodology:workspace:procurement-audit-guide:1",
     ]
@@ -101,6 +104,9 @@ def test_apm_adapters_reuse_document_and_methodology_boundaries(monkeypatch):
     assert "SENSITIVE PROCUREMENT SUMMARY" not in manifest.to_json()
     assert "SENSITIVE METHODOLOGY" not in manifest.to_json()
     assert {item.source_id for item in manifest.selections} == {
+        "planning_context",
+        "apm_template",
+        "current_apm",
         "documents",
         "methodology",
     }
@@ -143,8 +149,9 @@ def test_apm_document_adapter_leaves_final_truncation_and_omission_to_resolver()
     assert manifest.truncations
     assert manifest.truncations[0].source_id == "documents"
     assert manifest.truncations[0].supplied_size.characters == 40_000
-    assert len(bundle.items) == 1
-    assert bundle.supplied_size.characters == 40_000
+    document_items = [item for item in bundle.items if item.source_id == "documents"]
+    assert len(document_items) == 1
+    assert document_items[0].supplied_size.characters == 40_000
     assert any(
         item.source_id == "documents" and "size limit" in item.reason
         for item in manifest.omissions
@@ -193,6 +200,9 @@ def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
     assert schema_calls == [True]
     assert profile_calls == [False]
     assert [item.representation.kind for item in bundle.items] == [
+        "planning_context",
+        "artifact_template",
+        "current_artifact",
         "table_metadata",
         "table_profile",
     ]
@@ -204,6 +214,9 @@ def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
     assert '"values"' not in serialized
     assert sentinel not in manifest.to_json()
     assert [selection.source_id for selection in manifest.selections] == [
+        "planning_context",
+        "apm_template",
+        "current_apm",
         "table_metadata",
         "table_profiles",
     ]
@@ -213,17 +226,25 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     spec = PRESETS.compile("planning.apm")
 
     assert [source.id for source in spec.sources] == [
+        "planning_context",
+        "apm_template",
+        "current_apm",
         "table_metadata",
         "table_profiles",
         "documents",
         "methodology",
     ]
     assert [source.selector.selector_id for source in spec.sources] == [
+        "planning.current",
+        "templates.current",
+        "artifacts.current",
         "tables.all",
         "tables.all",
         "documents.lexical",
         "methodology.lexical",
     ]
+    assert spec.privacy.allow_planning_context is True
+    assert spec.privacy.allow_template_text is True
     assert spec.privacy.allow_document_text is True
     assert spec.privacy.allow_table_metadata is True
     assert spec.privacy.allow_table_profiles is True

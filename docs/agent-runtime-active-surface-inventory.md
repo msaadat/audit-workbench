@@ -174,8 +174,13 @@ current bounded document analyses, indexed methodology sections, table schema
 metadata, and statistical profiles through data-only candidate scopes without
 copying extraction, search, analysis, pack-index, or profiler logic. Profile
 candidates omit category literals and row previews, while the context models
-structurally reject `table_rows` candidates, selections, and bundle items. No
-active worker uses that boundary until the later Phase 4 vertical-slice task.
+structurally reject `table_rows` candidates, selections, and bundle items. The
+active `planning.apm_ready` workflow capability now uses this boundary for
+every APM model input, persists the content-free manifest before invocation,
+and calls a bundle-only worker with no workspace access. Its proposal recovery
+identity includes the manifest, spec, resolver, selector definitions, prompt,
+worker, schemas, capability declaration, and unit input; mismatches regenerate
+rather than reuse the sidecar.
 Context policy is declaration-only: registered application capability and
 preset definitions are authoritative, with no per-run, workspace, API, or
 frontend auditor override. Auditor source curation and explicit regeneration

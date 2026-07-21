@@ -201,6 +201,8 @@ class ContextPrivacy(_JSONModel):
     """
 
     allow_provider: bool = True
+    allow_planning_context: bool = False
+    allow_template_text: bool = False
     allow_document_text: bool = False
     allow_table_metadata: bool = False
     allow_table_profiles: bool = False
@@ -209,6 +211,8 @@ class ContextPrivacy(_JSONModel):
 
     _FIELDS: ClassVar[tuple[str, ...]] = (
         "allow_provider",
+        "allow_planning_context",
+        "allow_template_text",
         "allow_document_text",
         "allow_table_metadata",
         "allow_table_profiles",

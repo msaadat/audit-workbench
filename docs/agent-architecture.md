@@ -469,8 +469,16 @@ points. Table profiles omit category literals and never use the row-preview
 projection. Row-level `table_rows` candidates, manifest selections, and local
 bundle items are structurally rejected before worker invocation. Resolver
 integration records selection, omission, and truncation without persisting
-bundle content. Context policy is explicitly declaration-only; active
-capability wiring remains pending in the subsequent Phase 4 slice.
+bundle content. Context policy is explicitly declaration-only. The live
+`planning.apm_ready` capability now declares `planning.apm`, resolves every
+model-facing APM input through `ContextResolver`, persists its content-free
+manifest before the provider call, and invokes a pure bundle-only APM worker
+with no workspace access. Its proposal sidecar execution identity covers the
+capability declaration, unit input, manifest, spec, resolver, every declared
+selector definition, prompt, worker, response schema, and proposal schema, so
+recovery rejects cached proposals after spec or selector changes. Existing
+usable artifacts still bypass materialization and explicit force resolves the
+then-current candidates; no automatic freshness monitoring was added.
 
 ### Phase 1 Deletion Boundary
 

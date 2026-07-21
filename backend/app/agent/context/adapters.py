@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from ... import assistant, document_context, methodology
+from ... import assistant, document_context, methodology, templates_store
 from ...workspaces import Workspace, WorkspaceError
 from .resolver import ContextCandidate, ContextScope
 
@@ -18,6 +18,9 @@ APM_DOCUMENT_SOURCE_ID = "documents"
 APM_METHODOLOGY_SOURCE_ID = "methodology"
 APM_TABLE_METADATA_SOURCE_ID = "table_metadata"
 APM_TABLE_PROFILE_SOURCE_ID = "table_profiles"
+APM_PLANNING_SOURCE_ID = "planning_context"
+APM_TEMPLATE_SOURCE_ID = "apm_template"
+APM_CURRENT_ARTIFACT_SOURCE_ID = "current_apm"
 
 
 def _normalized_document_ids(
@@ -173,17 +176,47 @@ def apm_document_methodology_scope(
     planning_context: Mapping[str, object] | None = None,
     document_ids: Iterable[str] | None = None,
 ) -> ContextScope:
-    """Build the local candidate scope for the future APM vertical slice.
-
-    Live APM execution is intentionally not wired here; P4.8 owns that slice.
-    """
+    """Build the complete local candidate scope for the live APM capability."""
     context = dict(planning_context or workspace.planning.get("context") or {})
-    context["apm_query"] = " ".join(
+    apm_query = " ".join(
         str(context.get(key) or "")
         for key in ("objective", "scope", "background_notes", "entity", "period")
     ).strip() or "internal audit risk controls procedures"
+    planning_content = {
+        "context": context,
+        "ownership": {
+            key: workspace.planning.get(key)
+            for key in ("created_by", "agent_run_id", "updated")
+        },
+    }
+    template = templates_store.get_template(workspace, "apm")["markdown"]
+    current_apm = str(workspace.planning.get("apm_markdown") or "")
     return ContextScope(
         candidates={
+            APM_PLANNING_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:context",
+                    source=planning_content,
+                    representations={"planning_context": planning_content},
+                    metadata={"artifact": "planning_context"},
+                ),
+            ),
+            APM_TEMPLATE_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="template:apm",
+                    source=template,
+                    representations={"artifact_template": template},
+                    metadata={"template": "apm"},
+                ),
+            ),
+            APM_CURRENT_ARTIFACT_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:apm",
+                    source=current_apm,
+                    representations={"current_artifact": current_apm},
+                    metadata={"artifact": "apm"},
+                ),
+            ),
             APM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
             APM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
             APM_DOCUMENT_SOURCE_ID: apm_document_candidates(
@@ -192,7 +225,7 @@ def apm_document_methodology_scope(
             ),
             APM_METHODOLOGY_SOURCE_ID: apm_methodology_candidates(workspace),
         },
-        selector_context=context,
+        selector_context={**context, "apm_query": apm_query},
     )
 
 
@@ -201,6 +234,9 @@ __all__ = [
     "APM_METHODOLOGY_SOURCE_ID",
     "APM_TABLE_METADATA_SOURCE_ID",
     "APM_TABLE_PROFILE_SOURCE_ID",
+    "APM_PLANNING_SOURCE_ID",
+    "APM_TEMPLATE_SOURCE_ID",
+    "APM_CURRENT_ARTIFACT_SOURCE_ID",
     "apm_document_candidates",
     "apm_document_methodology_scope",
     "apm_methodology_candidates",

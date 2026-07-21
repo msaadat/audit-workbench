@@ -30,9 +30,52 @@ from ..workspaces import (
 from . import audit_capabilities, audit_workers, context_bundles, store, workflow
 from .base import Cancelled, LimitExceeded
 from .action_runner import ActionRunner, fill_unavailable_placeholders
+from .context import ContextManifest, ContextResolver, apm_document_methodology_scope
 from .runtime import RunRuntime
 
 ELIGIBLE_DISPOSITIONS = {"confirmed_control_exception", "draft_finding_candidate"}
+
+
+def _sha256_json(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _capability_definition_hash(capability: workflow.Capability) -> str:
+    return _sha256_json(
+        {
+            "id": capability.id,
+            "stage_id": capability.stage_id,
+            "title": capability.title,
+            "worker_kind": capability.worker_kind,
+            "depends_on": list(capability.depends_on),
+            "context": capability.context,
+            "barrier": capability.barrier,
+            "commit_policy": capability.commit_policy,
+            "approval_policy": capability.approval_policy,
+            "invalidate_on": list(capability.invalidate_on),
+        }
+    )
+
+
+def _apm_execution_identity(
+    capability: workflow.Capability,
+    unit: dict,
+    resolver: ContextResolver,
+    manifest: ContextManifest,
+) -> dict[str, object]:
+    return {
+        "capability_definition_hash": _capability_definition_hash(capability),
+        "unit_input_sha1": str(unit.get("input_sha1") or ""),
+        **resolver.execution_identity(capability, manifest),
+        **audit_workers.apm_execution_components(),
+    }
 
 
 def _local_resolution(command: dict) -> dict | None:
@@ -262,6 +305,7 @@ class WorkflowRunner(ActionRunner):
         handle,
         *,
         runtime: RunRuntime | None = None,
+        context_resolver: ContextResolver | None = None,
     ):
         """Create a workflow scheduler with an injectable per-run runtime.
 
@@ -270,6 +314,7 @@ class WorkflowRunner(ActionRunner):
         temporary ``ActionRunner`` inheritance remain unchanged.
         """
         super().__init__(workspace, run, handle, runtime=runtime)
+        self.context_resolver = context_resolver or ContextResolver()
 
     def execute(self) -> None:
         """Resolve the command to outcomes, then run the capability graph.
@@ -624,44 +669,75 @@ class WorkflowRunner(ActionRunner):
             basis = self.run.get("planning_basis") or {
                 "planning": self.ws.planning, "tables": [], "documents": [], "methodology": []
             }
-            template = templates_store.get_template(self.ws, "apm")["markdown"]
+            capability = audit_capabilities.REGISTRY.get(stage["capability"])
+            selected_document_ids = [
+                str(item.get("document_id"))
+                for item in basis.get("document_analyses") or []
+                if item.get("document_id")
+            ]
+            manifest, bundle = self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                apm_document_methodology_scope(
+                    self.ws,
+                    planning_context=(basis.get("planning") or {}).get("context") or {},
+                    document_ids=(
+                        selected_document_ids
+                        if "document_analyses" in basis
+                        else None
+                    ),
+                ),
+            )
+            unit["context_manifest"] = self.persist_context_manifest(manifest)
+            execution_identity = _apm_execution_identity(
+                capability,
+                unit,
+                self.context_resolver,
+                manifest,
+            )
+            self.save()
             cached = None
             if unit.get("proposal_sidecar"):
-                cached = store.read_sidecar(
+                candidate = store.read_sidecar(
                     self.ws, self.run["id"], unit["proposal_sidecar"]
                 )
-                self.emit(
-                    "proposal_reused",
-                    {"stage_id": stage["id"], "unit_id": unit["id"], "sidecar": unit["proposal_sidecar"]},
-                )
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("execution_identity") == execution_identity
+                    and isinstance(candidate.get("proposal"), dict)
+                ):
+                    cached = candidate["proposal"]
+                    self.emit(
+                        "proposal_reused",
+                        {"stage_id": stage["id"], "unit_id": unit["id"], "sidecar": unit["proposal_sidecar"]},
+                    )
+                else:
+                    self.emit(
+                        "proposal_reuse_rejected",
+                        {
+                            "stage_id": stage["id"],
+                            "unit_id": unit["id"],
+                            "reason": "The persisted proposal execution identity no longer matches.",
+                        },
+                    )
+                    unit["proposal_sidecar"] = None
+                    self.save()
             if isinstance(cached, dict) and cached.get("apm_markdown"):
                 markdown = str(cached["apm_markdown"])
             else:
-                bundle = context_bundles.apm(
-                    basis, template=template,
-                    current_apm=str(self.ws.planning.get("apm_markdown") or ""),
-                    ownership={key: self.ws.planning.get(key) for key in ("created_by", "agent_run_id", "updated")},
+                markdown = audit_workers.apm(
+                    self.llm_markdown,
+                    bundle,
+                    quality_gate=self._apm_quality,
                 )
-                markdown = self.llm_markdown(
-                    audit_workers.prompts.APM_SYSTEM,
-                    bundle.serialized(),
-                    legacy_field="apm_markdown",
-                    activity={"artifact_refs": ["planning:apm"], "context_metrics": bundle.metrics()},
-                )
-                error = self._apm_quality({"apm_markdown": markdown}, template, (basis.get("planning") or {}).get("context") or {})
-                if error:
-                    markdown = self.llm_markdown(
-                        audit_workers.prompts.APM_SYSTEM,
-                        bundle.serialized()
-                        + f"\n\nThe APM draft failed the engagement quality gate: {error}. Correct it.",
-                        legacy_field="apm_markdown",
-                        activity={"artifact_refs": ["planning:apm"], "context_metrics": bundle.metrics()},
-                    )
-                    error = self._apm_quality({"apm_markdown": markdown}, template, (basis.get("planning") or {}).get("context") or {})
-                    if error:
-                        raise WorkspaceError(f"The APM draft failed the quality gate: {error}")
                 unit["proposal_sidecar"] = store.write_sidecar(
-                    self.ws, self.run["id"], {"apm_markdown": markdown}
+                    self.ws,
+                    self.run["id"],
+                    {
+                        "execution_identity": execution_identity,
+                        "proposal": {"apm_markdown": markdown},
+                    },
                 )
                 self.save()
             markdown = fill_unavailable_placeholders(markdown)

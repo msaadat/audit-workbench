@@ -523,7 +523,7 @@ def build_registry() -> CapabilityRegistry:
     registry = CapabilityRegistry()
     register = registry.register
     register(Capability("planning.context_ready", "planning_context", "Planning context", "planning_context", (), _context_ready, _single("planning_context", "Assemble planning context"), invalidate_on=("sources",)))
-    register(Capability("planning.apm_ready", "apm", "Audit planning memorandum", "apm", ("planning.context_ready",), _apm_ready, _single("apm", "Draft audit planning memorandum", "planning:context"), invalidate_on=("planning:context",)))
+    register(Capability("planning.apm_ready", "apm", "Audit planning memorandum", "apm", ("planning.context_ready",), _apm_ready, _single("apm", "Draft audit planning memorandum", "planning:context"), context="planning.apm", invalidate_on=("planning:context",)))
     register(Capability("planning.rcm_ready", "rcm", "Risk and control matrix", "rcm", ("planning.apm_ready",), _rcm_ready, _single("rcm", "Draft risk and control matrix", "planning:apm"), invalidate_on=("planning:apm",)))
     register(Capability("planning.planned_tests_ready", "planned_tests", "RCM planned tests", "planned_test_generation", ("planning.rcm_ready",), _planned_ready, _planned_units, invalidate_on=("rcm",)))
     register(Capability("fieldwork.definitions_ready", "execution_definitions", "Execution definitions", "execution_spec", ("planning.planned_tests_ready",), _definitions_ready, _definition_units, invalidate_on=("planned_test",)))
