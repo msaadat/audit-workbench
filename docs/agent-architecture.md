@@ -418,6 +418,17 @@ all active leaf runners, preserves queued follow-ups after a terminal crash,
 and statically confines direct provider calls under `agent/` to
 `runtime/model_gateway.py`.
 
+The normalized context data contracts now live under `agent/context/`.
+`ContextSpec` composes typed source, representation, global and per-source
+budget, privacy, deterministic-selector, and bounded automatic-selector
+declarations. `ContextManifest` and its records are content-free by shape and
+store only identifiers, source and definition hashes, reasons, metrics,
+omissions, truncations, and privacy decisions. `ContextBundle` is a separate
+explicitly local model that may hold worker content. These models have stable
+canonical JSON round trips, but selector and preset registries, manifest
+identity and persistence, and `ContextResolver` behavior remain pending after
+the P4.1 contract-only checkpoint.
+
 ### Phase 1 Deletion Boundary
 
 The v2 full-audit orchestration has been deleted from

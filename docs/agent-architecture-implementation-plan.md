@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 4.
-- Current task: `P4.1`.
-- Last completed task: `P3.8`.
+- Current task: `P4.2`.
+- Last completed task: `P4.1`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -52,7 +52,7 @@ status notes below.
 | 1 | Complete | — |
 | 2 | Complete | — |
 | 3 | Complete | — |
-| 4 | In progress | `P4.1` |
+| 4 | In progress | `P4.2` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
@@ -386,6 +386,21 @@ status notes below.
   intake, document-test, and document-analysis integration tests passed in
   `1.14s`. No production payload or frontend contract changed, so a frontend
   build was not required. Phase 3 is complete; the exact next task is `P4.1`.
+- `P4.1` completed on 2026-07-21. The new `agent.context` package defines
+  normalized, typed declaration models for context sources,
+  representations, global and per-source budgets, deny-by-default content
+  privacy permissions, named deterministic selectors, and bounded
+  `AutoSelect` declarations. It also defines content-free selection, omission,
+  truncation, privacy-decision, size, and manifest records alongside explicitly
+  local bundle-item and bundle models. Every model has strict, deterministic
+  JSON-object and canonical JSON-string round trips; manifest models contain
+  only references, hashes, metrics, and decisions while bundle serialization is
+  the only new context contract that can contain supplied source content.
+  Registry validation, definition hashing, persistence, and resolution remain
+  intentionally unimplemented for `P4.2` through `P4.4A`. Focused verification
+  passed `7` tests in `test_agent_context_models.py` in `0.01s`. No active
+  runtime path or frontend payload changed, so broader behavioral suites and a
+  frontend build were not required. The exact next task is `P4.2`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -788,7 +803,7 @@ and manually editable.
 
 **Tasks:**
 
-- [ ] `P4.1` Define normalized `ContextSpec`, source, representation, budget,
+- [x] `P4.1` Define normalized `ContextSpec`, source, representation, budget,
   privacy, selector, manifest, and bundle models with serialization tests.
 - [ ] `P4.2` Add preset and selector registries with duplicate, unknown,
   unhashable, unsupported-source, and invalid-privacy validation.

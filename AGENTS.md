@@ -90,6 +90,9 @@ backend/app/
    |- runtime/                 - RunRuntime contract and active durable-run
    |                             implementation, restart-safe auditor response
    |                             transitions, and shared ModelGateway
+   |- context/                 - normalized context declarations, content-free
+   |                             manifest records, and local bundle models;
+   |                             registries and resolver are being migrated
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners
@@ -267,6 +270,11 @@ BaseRunner
   runners and every active leaf runner, preserves queued follow-ups after a
   terminal crash, and statically confines direct agent provider calls to
   `runtime/model_gateway.py`.
+- Phase 4 has begun with normalized context declarations and serialization
+  contracts under `agent/context/`. The current models separate persistable,
+  content-free manifests from local bundles that may contain worker context;
+  selector registries, manifest persistence, and context resolution are still
+  pending and no active worker uses the new contracts yet.
 
 ### Known duplication
 
