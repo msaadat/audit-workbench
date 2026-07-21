@@ -544,53 +544,6 @@ def test_late_full_audit_stages_reorder_existing_terminal_actions(workspace_with
     ledger.validate_graph(run)
 
 
-def test_full_audit_semantics_reject_document_substitution_for_analytics(
-    workspace_with_data,
-):
-    row = workspace_with_data.add_rcm({"risk": "Duplicate invoices may be paid"})
-    planned = workspace_with_data.add_planned_test(row["id"], {
-        "title": "Duplicate invoice test", "objective": "Identify duplicate invoices",
-        "method": "data_analytics", "steps": ["Analyze duplicate invoice numbers."],
-    })
-    run = store.new_command_run(
-        workspace_with_data, "auto",
-        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
-    )
-    command = action_runner.ActionRunner(
-        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
-    )
-    substituted = [{
-        "id": "doc", "type": "create_document_test",
-        "args": {
-            "kind": "review", "title": "Review duplicates",
-            "rcm_id": row["id"], "planned_test_id": planned["id"],
-            "items": [{"label": "Review", "summary": "Review duplicate invoices"}],
-        },
-    }]
-
-    with pytest.raises(workspaces.WorkspaceError, match="requires a linked datatest"):
-        command._validate_full_audit_action_graph(substituted, initial=True)
-
-    valid = [
-        {
-            "id": "create-data", "type": "create_data_test",
-            "args": {
-                "rcm_id": row["id"], "planned_test_id": planned["id"],
-                "title": "Duplicate invoices", "objective": "Identify duplicates",
-                "engine": "analytics", "table_refs": ["transactions"],
-                "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
-            },
-        },
-        {
-            "id": "run-data", "type": "run_data_test",
-            "target": {"kind": "datatest", "resolved_id": "create-data"},
-            "depends_on": ["create-data"],
-        },
-    ]
-    command._canonicalize_proposals(valid)
-    command._validate_full_audit_action_graph(valid, initial=True)
-
-
 def test_description_only_document_test_is_rejected(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto", {"source": "chat", "text": "test documents"}
@@ -1586,165 +1539,6 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     assert any(item["stage"] == "agent:apm" and item["template_versions"] for item in activity)
 
 
-def test_full_audit_mixed_methods_create_required_execution_and_no_speculative_findings(
-    monkeypatch, workspace_with_data,
-):
-    workspace_with_data.update_planning({
-        "context": {"objective": "Audit invoice controls", "scope": "Supplied transactions"},
-        "apm_markdown": "# Audit Planning Memorandum\n\nInvoice controls.",
-    })
-    document = documents.add_document(
-        workspace_with_data, "Invoice policy.txt", b"Invoices require documented approval."
-    )
-    data_row = workspace_with_data.add_rcm({
-        "risk": "Duplicate invoices may be paid", "risk_rating": "high",
-    })
-    data_planned = workspace_with_data.add_planned_test(data_row["id"], {
-        "title": "Duplicate invoice analytics", "objective": "Identify duplicate invoices",
-        "method": "data_analytics", "steps": ["Analyze invoice number duplicates."],
-    })
-    doc_row = workspace_with_data.add_rcm({
-        "risk": "Approval evidence may be missing", "risk_rating": "medium",
-    })
-    doc_planned = workspace_with_data.add_planned_test(doc_row["id"], {
-        "title": "Approval evidence review", "objective": "Inspect approval evidence",
-        "method": "document_inspection", "steps": ["Review the approval policy."],
-    })
-
-    def interpret(user):
-        payload = json.loads(user)
-        requirements = {
-            item["planned_test_id"]: item["required_execution"]
-            for item in payload["prepared_planning"]["execution_manifest"]
-        }
-        assert requirements == {
-            data_planned["id"]: ["datatest"],
-            doc_planned["id"]: ["doctest"],
-        }
-        return {
-            "objective": "Execute mixed-method fieldwork",
-            "constraints": [], "completion_criteria": [],
-            "actions": [
-                {
-                    "id": "create-data", "type": "create_data_test",
-                    "args": {
-                        "rcm_id": data_row["id"], "planned_test_id": data_planned["id"],
-                        "title": "Duplicate invoices", "objective": "Identify duplicate invoices",
-                        "engine": "analytics", "table_refs": ["transactions"],
-                        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
-                    },
-                },
-                {
-                    "id": "run-data", "type": "run_data_test",
-                    "target": {"kind": "datatest", "resolved_id": "create-data"},
-                    "depends_on": ["create-data"],
-                },
-                {
-                    "id": "create-doc", "type": "create_document_test",
-                    "args": {
-                        "kind": "review", "title": "Approval policy review",
-                        "rcm_id": doc_row["id"], "planned_test_id": doc_planned["id"],
-                        "items": [{
-                            "label": "Policy page 1", "document_ids": [document["id"]],
-                            "page": 1, "excerpt": "Invoices require documented approval.",
-                        }],
-                    },
-                },
-                {
-                    "id": "run-doc", "type": "run_document_test",
-                    "target": {"kind": "doctest", "resolved_id": "create-doc"},
-                    "depends_on": ["create-doc"],
-                },
-                {
-                    "id": "speculative", "type": "create_finding",
-                    "args": {"title": "Possible approval issue"},
-                },
-            ],
-        }
-
-    fake = FakeAgentLLM({"agent:command_interpreter": interpret})
-    monkeypatch.setattr(llm, "chat", fake)
-    monkeypatch.setattr(
-        llm, "agent_status",
-        lambda: {"configured": False, "backend": "fake", "model": "fake"},
-    )
-    run = store.new_command_run(
-        workspace_with_data, "auto",
-        {"source": "goal_template", "goal_template": "full_audit_working_draft"},
-    )
-    run["prepared_planning"] = {
-        "apm": True,
-        "rcm_refs": [data_row["id"], doc_row["id"]],
-        "planned_test_refs": [data_planned["id"], doc_planned["id"]],
-        "execution_manifest": rcm_execution.execution_manifest(workspace_with_data),
-        "document_content_included": True,
-    }
-    store.save_run(workspace_with_data, run)
-    command = action_runner.ActionRunner(
-        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
-    )
-
-    # P1.3 makes this policy unreachable through ActionRunner.execute(). Keep
-    # the private policy characterized until P1.4 deletes it.
-    command._interpret()
-    command._ensure_full_audit_stages()
-    command._drive_graph()
-    command._finish()
-    completed = store.load_run(workspace_with_data, run["id"])
-    reloaded = workspaces.load_workspace(workspace_with_data.id)
-
-    action_types = [item["type"] for item in completed["actions"]]
-    assert "create_data_test" in action_types and "run_data_test" in action_types
-    assert "create_document_test" in action_types and "run_document_test" in action_types
-    assert "create_finding" not in action_types
-    assert completed["orchestrator_removed_action_types"] == ["create_finding"]
-    assert len(reloaded.data_tests) == 1
-    assert reloaded.findings == []
-    assert completed["audit_outcome"]["data_tests_executed"] == 1
-    assert completed["audit_outcome"]["document_tests_executed"] == 0
-    assert completed["audit_outcome"]["planned_tests_review_required"] == 1
-    completion_action = next(
-        item for item in completed["actions"] if item["type"] == "verify_audit_completion"
-    )
-    quality_action = next(
-        item for item in completed["actions"] if item["type"] == "run_report_quality"
-    )
-    assert completion_action["depends_on"] == [quality_action["id"]]
-
-
-def test_full_audit_failure_closes_embedded_running_planning_task(monkeypatch, workspace_with_data):
-    run = store.new_command_run(
-        workspace_with_data, "auto",
-        {"source": "follow_up", "text": "do the full audit"},
-    )
-    handle = runner.RunHandle(workspace_with_data.id, run["id"])
-    command = action_runner.ActionRunner(workspace_with_data, run, handle)
-
-    def fail_during_planning():
-        completed = command.add_task("apm", "planning:apm", "Draft the APM")
-        command.task_status(completed, "completed")
-        running = command.add_task("work_program", "planning:work_program", "Draft the audit program")
-        command.task_status(running, "running")
-        raise ConnectionError("remote connection closed")
-
-    monkeypatch.setattr(command, "_prepare_planning", fail_during_planning)
-    try:
-        command._prepare_planning()
-    except ConnectionError as error:
-        command._fail_run(str(error))
-
-    saved = store.load_run(workspace_with_data, run["id"])
-    tasks = {
-        task["id"]: task
-        for stage in saved["plan"]["stages"]
-        for task in stage["tasks"]
-    }
-    assert saved["status"] == "failed"
-    assert tasks["planning:apm"]["status"] == "completed"
-    assert tasks["planning:work_program"]["status"] == "failed"
-    assert tasks["planning:work_program"]["error"] == "remote connection closed"
-
-
 @pytest.mark.parametrize(
     "submitted",
     [
@@ -1775,11 +1569,6 @@ def test_action_runner_rejects_workflow_owned_requests_before_planning_or_action
     )
     monkeypatch.setattr(
         command,
-        "_prepare_planning",
-        lambda: pytest.fail("workflow-owned request entered legacy planning"),
-    )
-    monkeypatch.setattr(
-        command,
         "_interpret",
         lambda: pytest.fail("workflow-owned request entered the action planner"),
     )
@@ -1792,6 +1581,24 @@ def test_action_runner_rejects_workflow_owned_requests_before_planning_or_action
     assert "must use workflow routing" in saved["error"]
     assert saved["actions"] == []
     assert saved["usage"]["llm_turns"] == 0
+
+
+def test_action_runner_has_no_full_audit_or_planning_orchestration():
+    removed_members = {
+        "ORCHESTRATED_FULL_AUDIT_ACTION_TYPES",
+        "FULL_AUDIT_TERMINAL_RESERVE",
+        "FULL_AUDIT_ADAPTIVE_RESERVE",
+        "_prepare_planning",
+        "_finish_planning",
+        "_ensure_full_audit_stages",
+        "_validate_full_audit_action_graph",
+        "_remove_orchestrated_full_audit_actions",
+        "_remove_redundant_planning_actions",
+        "_requests_full_audit",
+        "_is_full_audit_goal",
+    }
+
+    assert not (removed_members & set(vars(action_runner.ActionRunner)))
 
 
 @pytest.mark.parametrize(

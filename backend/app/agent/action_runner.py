@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from .. import (
-    analytics, assistant, debug_store, document_analysis, documents, findings, llm, methodology, templates_store,
+    analytics, assistant, debug_store, document_analysis, documents, llm, methodology, templates_store,
     rcm_execution, sandbox, validation,
 )
 from ..workspaces import PLANNED_TEST_METHODS, Workspace, WorkspaceError, slugify
@@ -142,27 +142,7 @@ class ActionRunner(BaseRunner):
         # Persisted stage key kept for replay compatibility; the active
         # artifact is now the RCM's structured planned-test collection.
         "work_program": "RCM planned tests",
-        "verify": "Traceability",
-        "summary": "Planning summary",
     }
-    PLANNING_ACTION_TYPES = {
-        "update_planning_context", "generate_apm", "edit_apm",
-        "create_rcm_row", "edit_rcm_row", "create_rcm_planned_test",
-        "edit_rcm_planned_test", "create_procedure", "edit_procedure",
-    }
-    ORCHESTRATED_FULL_AUDIT_ACTION_TYPES = {
-        "rollup_rcm_results", "generate_rcm_working_paper",
-        "generate_all_rcm_working_papers", "curate_dashboard",
-        "generate_report", "run_report_quality", "verify_audit_completion",
-    }
-    RESULT_DRIVEN_FINDING_ACTION_TYPES = {
-        # Findings are derived only after local results have produced an
-        # auditor-dispositioned observation; they never belong in wave zero.
-        "create_finding", "edit_finding", "promote_agent_finding",
-        "draft_finding_from_observation",
-    }
-    FULL_AUDIT_TERMINAL_RESERVE = 6
-    FULL_AUDIT_ADAPTIVE_RESERVE = 4
 
     @staticmethod
     def _planning_context(payload: dict) -> dict:
@@ -215,10 +195,7 @@ class ActionRunner(BaseRunner):
         """Interpret the command into an action graph, then drive it to done.
 
         Re-entrant: a resumed run finds its actions already on the ledger and
-        skips straight to driving the graph. The failure paths differ by how
-        much was committed — a planning command that never produced anything
-        fails outright, while a partially executed graph closes out with the
-        work it did land plus a warning.
+        skips straight to driving the graph.
         """
         if not self.run.get("started"):
             self.run["started"] = store.utcnow()
@@ -227,14 +204,7 @@ class ActionRunner(BaseRunner):
             self._guard_isolated_action_request()
             self._recover_running_actions()
             if not self.run.get("actions"):
-                if self._requests_enriched_planning():
-                    self._prepare_planning()
-                    if self._is_planning_command():
-                        self._finish_planning()
-                        return
                 self._interpret()
-            if self._is_full_audit_goal():
-                self._ensure_full_audit_stages()
             self._drive_graph()
             self._finish()
         except Cancelled:
@@ -256,14 +226,8 @@ class ActionRunner(BaseRunner):
             }
             self.set_status("cancelled")
         except (LimitExceeded, llm.LLMError) as error:
-            if self._is_planning_command() or (
-                self._requests_full_audit() and not self.run.get("prepared_planning")
-            ):
-                self._fail_run(str(error))
-            else:
-                self._fail_running_plan_tasks(str(error))
-                self.warn(str(error))
-                self._finish(force_issue=True)
+            self.warn(str(error))
+            self._finish(force_issue=True)
         except Exception as error:
             self._fail_run(str(error))
 
@@ -297,24 +261,10 @@ class ActionRunner(BaseRunner):
             )
 
     def _fail_run(self, error: str) -> None:
-        self._fail_running_plan_tasks(error)
         self.run["error"] = error
         self.run["finished"] = store.utcnow()
         self.run["command"]["status"] = "failed"
         self.set_status("failed")
-
-    def _fail_running_plan_tasks(self, error: str) -> None:
-        """Close embedded planning tasks when a command run ends abruptly.
-
-        Full-audit commands prepare their APM, RCM, and planned tests before
-        the action graph is interpreted.  Those tasks live in the legacy plan
-        projection, so a transport error would otherwise leave the current
-        planning task permanently displayed as running after the run failed.
-        """
-        for stage in self.run.get("plan", {}).get("stages", []):
-            for task in stage.get("tasks", []):
-                if task.get("status") == "running":
-                    self.task_status(task, "failed", error)
 
     def _catalog(self) -> list[dict]:
         return [
@@ -358,11 +308,8 @@ class ActionRunner(BaseRunner):
         template = GOAL_TEMPLATES.get(command.get("goal_template"))
         if command.get("goal_template") and template is None:
             raise WorkspaceError("Unknown goal template.")
-        planning_limits = dict(self.run["limits"])
-        if self.run.get("prepared_planning") and self._requests_full_audit():
-            planning_limits["initial_action_limit"] = self._initial_full_audit_action_limit()
         base_user = prompts.command_interpreter_user(
-            command, template, artifact_index.compact(index), self._catalog(), planning_limits,
+            command, template, artifact_index.compact(index), self._catalog(), self.run["limits"],
             assistant.schema_brief(self.ws),
             self._table_profiles(),
             prepared_planning=self.run.get("prepared_planning"),
@@ -389,24 +336,13 @@ class ActionRunner(BaseRunner):
                 "completion_criteria": _text_list(payload.get("completion_criteria")),
             }
             self.run["goal"] = goal
-            # Strip anything the orchestrator already owns before validation:
-            # planning is done by _prepare_planning, and the terminal full-audit
-            # actions are appended deterministically by _ensure_full_audit_stages.
             proposals = payload.get("actions") or []
-            if self.run.get("prepared_planning") and isinstance(proposals, list):
-                proposals = self._remove_redundant_planning_actions(proposals)
-                if self._requests_full_audit():
-                    proposals = self._remove_orchestrated_full_audit_actions(
-                        proposals, initial=True
-                    )
             try:
                 if not isinstance(proposals, list):
                     raise WorkspaceError("Command interpreter actions must be a list.")
                 self._canonicalize_proposals(proposals)
-                if self.run.get("prepared_planning") and self._requests_full_audit():
-                    self._validate_full_audit_action_graph(proposals, initial=True)
                 created = ledger.append_actions(
-                    self.run, proposals, audit_lifecycle=self._is_full_audit_goal(goal)
+                    self.run, proposals, audit_lifecycle=False
                 )
                 break
             except WorkspaceError as error:
@@ -430,196 +366,6 @@ class ActionRunner(BaseRunner):
             detail=f"Prepared {len(created)} action{'s' if len(created) != 1 else ''} for execution.",
             current=0, total=len(created),
         )
-
-    def _requests_full_audit(self) -> bool:
-        command = self.run.get("command") or {}
-        if command.get("goal_template") == "full_audit_working_draft":
-            return True
-        text = str(command.get("text") or "").casefold()
-        return any(phrase in text for phrase in (
-            "full audit", "complete the audit", "complete audit", "entire audit",
-            "end-to-end audit", "end to end audit",
-        ))
-
-    def _is_planning_command(self) -> bool:
-        return (self.run.get("command") or {}).get("goal_template") == "planning"
-
-    def _requests_enriched_planning(self) -> bool:
-        return self._is_planning_command() or self._requests_full_audit()
-
-    def _prepare_planning(self) -> None:
-        """Prepare grounded planning before asking for downstream audit work.
-
-        The v2 pre-pass for planning and full-audit commands: it produces a
-        document-grounded APM, RCM, and planned tests *before* the interpreter
-        sees the command, so the model plans only the remaining fieldwork.
-        WorkflowRunner supersedes this with the capability graph — the path
-        survives for commands that fall through local routing (see §3 of
-        AGENTS.md).
-
-        The four stages mutate the workspace directly rather than proposing
-        actions, so the whole pass is wrapped in an all-or-nothing rollback:
-        a failure in a later stage must not leave a half-written engagement.
-        """
-        if self.run.get("prepared_planning"):
-            return
-        self.set_status("executing")
-        if self.run.get("parent_run_id"):
-            detail = "Reusing valid document analyses and rebuilding the planning transaction."
-            try:
-                parent = store.load_run(self.ws, self.run["parent_run_id"])
-                if parent.get("error"):
-                    detail = f"Retrying after: {parent['error']}"
-            except WorkspaceError:
-                pass
-            self.set_activity("planning.retry", "Retrying engagement planning", detail=detail)
-        else:
-            self.set_activity(
-                "planning.prepare", "Preparing engagement planning",
-                detail="Starting the document-grounded planning workflow.",
-            )
-        # Two independent rollback points: `snapshot` restores the workspace
-        # artifacts, `run_snapshot` rewinds the run ledger (artifacts, change
-        # counters, revisions) so a rolled-back attempt reports nothing.
-        self.run.setdefault("context", {})["require_planning_quality"] = True
-        snapshot = {
-            "planning": copy.deepcopy(self.ws.planning),
-            "rcm": copy.deepcopy(self.ws.rcm),
-            "rcm_migration": copy.deepcopy(self.ws.rcm_migration),
-        }
-        self.run["planning_transaction"] = {
-            "status": "staging",
-            "before": store.write_sidecar(self.ws, self.run["id"], snapshot),
-            "started_at": store.utcnow(),
-        }
-        self.run.setdefault("planning_changes", {
-            "apm_updated": 0, "apm_proposed": 0,
-            "rcm_created": 0, "rcm_updated": 0, "rcm_preserved": 0,
-            "planned_test_created": 0, "planned_test_updated": 0,
-            "planned_test_preserved": 0,
-        })
-        run_snapshot = {
-            "artifact_count": len(self.run.get("artifacts") or []),
-            "planning_changes": copy.deepcopy(self.run["planning_changes"]),
-            "planning_revision_count": len(self.run.get("planning_revisions") or []),
-        }
-        self.save()
-        # Strictly ordered: each stage grounds the next, and each applies its
-        # own deterministic quality gate before committing.
-        try:
-            basis = self.stage_context()
-            apm = self.stage_apm(basis)
-            rcm = self.stage_rcm(basis, apm)
-            self.stage_work_program(basis, rcm)
-        except Exception as error:
-            # Document analyses created while assembling the basis remain
-            # reusable; only active planning mutations are rolled back.
-            self.ws.planning = snapshot["planning"]
-            self.ws.rcm = snapshot["rcm"]
-            self.ws.rcm_migration = snapshot["rcm_migration"]
-            self.ws.save()
-            # Rewind the run ledger to its pre-pass state and remember what was
-            # discarded, so the rollback is itself auditable.
-            artifacts = self.run.setdefault("artifacts", [])
-            rolled_back_artifacts = copy.deepcopy(
-                artifacts[run_snapshot["artifact_count"]:]
-            )
-            del artifacts[run_snapshot["artifact_count"]:]
-            rolled_back_refs = {
-                f"{item['kind']}:{item['id']}" for item in rolled_back_artifacts
-            }
-            rolled_back_changes = copy.deepcopy(self.run.get("planning_changes") or {})
-            self.run["planning_changes"] = run_snapshot["planning_changes"]
-            revisions = self.run.get("planning_revisions") or []
-            del revisions[run_snapshot["planning_revision_count"]:]
-            # Fail every planning task in the legacy plan projection, including
-            # ones that had already completed: their artifacts no longer exist.
-            # Only the stage that actually raised reports the real error.
-            rollback_error = f"Rolled back because a later planning stage failed: {error}"
-            changed_tasks = []
-            planning_task_ids = {
-                "planning:context", "planning:apm", "planning:rcm",
-                "planning:work_program",
-            }
-            for stage in self.run.get("plan", {}).get("stages", []):
-                for task in stage.get("tasks", []):
-                    if task.get("id") not in planning_task_ids:
-                        continue
-                    task["result_refs"] = [
-                        ref for ref in task.get("result_refs") or []
-                        if ref not in rolled_back_refs
-                    ]
-                    if task.get("status") in {
-                        "queued", "running", "awaiting_approval", "completed"
-                    }:
-                        task["status"] = "failed"
-                        task["error"] = (
-                            str(error)
-                            if task.get("id") == "planning:work_program"
-                            else rollback_error
-                        )
-                        task["finished_at"] = store.utcnow()
-                        changed_tasks.append(copy.deepcopy(task))
-            self.run["planning_transaction"].update(
-                status="rolled_back", finished_at=store.utcnow(), error=str(error),
-                rolled_back_artifacts=rolled_back_artifacts,
-                rolled_back_changes=rolled_back_changes,
-            )
-            self.run.pop("prepared_planning", None)
-            self.save()
-            for task in changed_tasks:
-                self.emit("task_update", {"task": task})
-            # Every discarded artifact gets a "rolled_back" disposition row so
-            # the activity log explains why it vanished from the workspace.
-            profile = llm.agent_status()
-            for item in rolled_back_artifacts:
-                ref = f"{item['kind']}:{item['id']}"
-                documents.append_activity(
-                    self.ws, run_id=self.run["id"], stage="planning:rollback",
-                    task="planning:rollback", purpose="artifact_disposition",
-                    provider=profile.get("provider") or profile.get("backend"),
-                    model=profile.get("model"), vision_used=False,
-                    prompt_version=None, template_versions=[], knowledge_packs=[],
-                    document_ids=[], page_ranges=[], source_hashes=[],
-                    response_at=store.utcnow(), response_hash=None,
-                    artifact_ref=ref, disposition="rolled_back",
-                )
-                self.emit(
-                    "workspace_changed",
-                    {"kind": item["kind"], "id": item["id"], "action": "rolled_back"},
-                )
-            self.emit(
-                "workspace_changed",
-                {"kind": "planning", "id": "transaction", "action": "rolled_back"},
-            )
-            self.set_activity(
-                "planning.rollback", "Engagement planning rolled back",
-                detail=str(error), task_id="planning:work_program",
-            )
-            raise
-        self.run["planning_transaction"].update(
-            status="committed", finished_at=store.utcnow(),
-            committed_sha1=artifact_index.canonical_sha1({
-                "planning": self.ws.planning, "rcm": self.ws.rcm,
-            }),
-        )
-        # `prepared_planning` is the contract handed to the interpreter: it tells
-        # the model which durable planning artifacts already exist so it plans
-        # only downstream work, and `execution_manifest` is the authoritative
-        # list of execution paths its proposals must cover.
-        self.run["prepared_planning"] = {
-            "apm": bool(str(self.ws.planning.get("apm_markdown") or "").strip()),
-            "rcm_refs": [item["id"] for item in self.ws.rcm],
-            "planned_test_refs": [
-                planned["id"]
-                for row in self.ws.rcm
-                for planned in row.get("planned_tests") or []
-            ],
-            "execution_manifest": rcm_execution.execution_manifest(self.ws),
-            "document_content_included": bool(basis.get("document_content_included")),
-        }
-        self.run["planning_basis_run_id"] = self.run["id"]
-        self.save()
 
     def stage_context(self) -> dict:
         task = self.add_task(
@@ -1584,355 +1330,6 @@ class ActionRunner(BaseRunner):
                 resolved.append(row["id"])
         return resolved
 
-    def stage_verify(self) -> None:
-        task = self.add_task("verify", "planning:verify", "Verify planning traceability")
-        if task["status"] == "completed":
-            return
-        self.set_status("verifying")
-        self.task_status(task, "running")
-        issues = []
-        for row in self.ws.rcm:
-            if not row.get("planned_tests"):
-                issues.append(f"{row['id']} has no structured planned test.")
-        if (self.run.get("planning_basis") or {}).get("document_analyses"):
-            recovered = self._context_fallback(self.run["planning_basis"]["document_analyses"])
-            if recovered and not any(
-                str((self.ws.planning.get("context") or {}).get(key) or "").strip()
-                for key in recovered
-            ):
-                issues.append("Planning documents contain labelled engagement facts, but planning context is empty.")
-        self.run["verification"] = {"ok": not issues, "issues": issues}
-        for issue in issues:
-            self.warn(issue)
-        self.save()
-        self.task_status(task, "completed")
-
-    def stage_summary(self) -> None:
-        task = self.add_task("summary", "planning:summary", "Summarize planning drafts")
-        if task["status"] == "completed":
-            return
-        self.set_status("summarizing")
-        self.task_status(task, "running")
-        changes = self.run.get("planning_changes") or {}
-        self.run["summary_markdown"] = (
-            "# Planning draft summary\n\n"
-            f"Revised the audit planning memorandum; RCM changes: "
-            f"**{int(changes.get('rcm_created') or 0)} created**, "
-            f"**{int(changes.get('rcm_updated') or 0)} updated**, and "
-            f"**{int(changes.get('rcm_preserved') or 0)} auditor-owned preserved**. "
-            f"The active RCM contains **{len(self.ws.rcm)}** row(s). Planned-test changes: "
-            f"**{int(changes.get('planned_test_created') or 0)} created**, "
-            f"**{int(changes.get('planned_test_updated') or 0)} updated**, and "
-            f"**{int(changes.get('planned_test_preserved') or 0)} auditor-owned preserved**; "
-            f"**{sum(len(row.get('planned_tests') or []) for row in self.ws.rcm)}** active structured planned test(s)."
-        )
-        self.save()
-        self.task_status(task, "completed")
-
-    def _finish_planning(self) -> None:
-        self.stage_verify()
-        self.stage_summary()
-        self.run["finished"] = store.utcnow()
-        self.run["command"]["status"] = "completed"
-        self.set_status("completed")
-        self.emit("summary_ready", {"run_id": self.run["id"]})
-
-    def _remove_redundant_planning_actions(self, proposals: list[dict]) -> list[dict]:
-        removed_ids = {
-            str(item.get("id") or "") for item in proposals
-            if isinstance(item, dict) and item.get("type") in self.PLANNING_ACTION_TYPES
-        }
-        cleaned = []
-        for proposal in proposals:
-            if not isinstance(proposal, dict) or proposal.get("type") in self.PLANNING_ACTION_TYPES:
-                continue
-            item = dict(proposal)
-            dependencies = item.get("depends_on") or []
-            if isinstance(dependencies, list):
-                item["depends_on"] = [str(value) for value in dependencies if str(value) not in removed_ids]
-            cleaned.append(item)
-        return cleaned
-
-    def _initial_full_audit_action_limit(self) -> int:
-        maximum = int(self.run["limits"].get("max_actions", 60))
-        return max(
-            1,
-            maximum - self.FULL_AUDIT_TERMINAL_RESERVE - self.FULL_AUDIT_ADAPTIVE_RESERVE,
-        )
-
-    def _remove_orchestrated_full_audit_actions(
-        self, proposals: list[dict], *, initial: bool
-    ) -> list[dict]:
-        """Keep wave zero focused on executable fieldwork.
-
-        Output/gate phases are injected locally after the graph passes semantic
-        coverage validation.  Removing them here prevents the model from
-        consuming the action budget or placing findings ahead of results.
-        """
-        orchestrated_types = set(self.ORCHESTRATED_FULL_AUDIT_ACTION_TYPES)
-        if initial:
-            orchestrated_types.update(self.RESULT_DRIVEN_FINDING_ACTION_TYPES)
-        removed_ids = {
-            str(item.get("id") or "")
-            for item in proposals
-            if isinstance(item, dict)
-            and item.get("type") in orchestrated_types
-        }
-        cleaned = []
-        removed_types = []
-        for proposal in proposals:
-            if not isinstance(proposal, dict):
-                cleaned.append(proposal)
-                continue
-            if proposal.get("type") in orchestrated_types:
-                removed_types.append(str(proposal.get("type") or ""))
-                continue
-            item = dict(proposal)
-            dependencies = item.get("depends_on") or []
-            if isinstance(dependencies, list):
-                item["depends_on"] = [
-                    str(value) for value in dependencies if str(value) not in removed_ids
-                ]
-            cleaned.append(item)
-        if removed_types:
-            self.run.setdefault("orchestrator_removed_action_types", []).extend(
-                value
-                for value in removed_types
-                if value not in self.run.get("orchestrator_removed_action_types", [])
-            )
-        return cleaned
-
-    @staticmethod
-    def _proposal_target_tokens(action: dict) -> set[str]:
-        target = action.get("target") or {}
-        values = {
-            str(target.get("resolved_id") or "").strip(),
-            str(target.get("selector") or "").strip(),
-        }
-        output = {value for value in values if value}
-        for value in list(output):
-            prefix, separator, item_id = value.partition(":")
-            if separator and prefix in {"datatest", "doctest", "observation"} and item_id:
-                output.add(item_id)
-        return output
-
-    def _validate_full_audit_action_graph(
-        self, proposals: list[dict], *, initial: bool = False
-    ) -> None:
-        """Enforce plan-to-execution coverage before committing a graph batch."""
-        if initial and len(proposals) > self._initial_full_audit_action_limit():
-            raise WorkspaceError(
-                "Full-audit initial action graph exceeds the reserved fieldwork limit of "
-                f"{self._initial_full_audit_action_limit()} actions. Consolidate the test plan; "
-                "terminal stages and adaptive capacity are reserved locally."
-            )
-        manifest = rcm_execution.execution_manifest(self.ws)
-        actions_to_check = [
-            item for item in proposals if isinstance(item, dict)
-        ]
-        data_creates: dict[str, list[dict]] = {}
-        doc_creates: dict[str, list[dict]] = {}
-        for action in actions_to_check:
-            args = action.get("args") or {}
-            planned_id = str(args.get("planned_test_id") or "")
-            if action.get("type") == "create_data_test" and planned_id:
-                data_creates.setdefault(planned_id, []).append(action)
-            elif action.get("type") == "create_document_test" and planned_id:
-                doc_creates.setdefault(planned_id, []).append(action)
-        data_runs = [
-            action for action in actions_to_check if action.get("type") == "run_data_test"
-        ]
-        doc_runs = [
-            action for action in actions_to_check if action.get("type") == "run_document_test"
-        ]
-
-        def has_run(kind: str, candidates: set[str]) -> bool:
-            runs = data_runs if kind == "datatest" else doc_runs
-            return any(self._proposal_target_tokens(action) & candidates for action in runs)
-
-        issues = []
-        for requirement in manifest:
-            planned_id = requirement["planned_test_id"]
-            rcm_id = requirement["rcm_id"]
-            existing = requirement.get("existing_execution") or []
-            for kind in requirement.get("required_execution") or []:
-                existing_kind = [
-                    item for item in existing
-                    if item.get("kind") == kind and item.get("executable", True)
-                ]
-                creates = (
-                    data_creates.get(planned_id, [])
-                    if kind == "datatest" else doc_creates.get(planned_id, [])
-                )
-                valid_creates = [
-                    action for action in creates
-                    if str((action.get("args") or {}).get("rcm_id") or "") == rcm_id
-                ]
-                if requirement.get("required_engine") and kind == "datatest":
-                    valid_creates = [
-                        action for action in valid_creates
-                        if str((action.get("args") or {}).get("engine") or "")
-                        == requirement["required_engine"]
-                    ]
-                    existing_kind = [
-                        item for item in existing_kind
-                        if item.get("engine") == requirement["required_engine"]
-                    ]
-                if not existing_kind and not valid_creates:
-                    issues.append(f"{planned_id} requires a linked {kind} definition")
-                    continue
-                if any(item.get("has_durable_result") for item in existing_kind):
-                    continue
-                candidates = {str(item.get("id") or "") for item in existing_kind}
-                for create in valid_creates:
-                    candidates.add(str(create.get("id") or ""))
-                    candidates.add(str((create.get("args") or {}).get("id") or ""))
-                candidates.discard("")
-                if not has_run(kind, candidates):
-                    issues.append(f"{planned_id} requires a run action for its linked {kind}")
-        for action in actions_to_check:
-            if action.get("type") == "draft_finding_from_observation":
-                observation_ids = self._proposal_target_tokens(action)
-                observation = next(
-                    (
-                        item for item in self.ws.observations
-                        if str(item.get("id") or "") in observation_ids
-                    ),
-                    None,
-                )
-                if (
-                    observation is None
-                    or observation.get("status") != "disposed"
-                    or observation.get("disposition") not in {
-                        "confirmed_control_exception", "draft_finding_candidate",
-                    }
-                ):
-                    issues.append(
-                        f"{action.get('id') or 'draft_finding_from_observation'} requires an "
-                        "auditor-dispositioned finding-candidate observation"
-                    )
-                continue
-            if action.get("type") != "create_finding":
-                continue
-            args = action.get("args") or {}
-            required_fields = (
-                "condition", "criteria", "effect", "recommendation",
-                "severity_rationale", "rcm_refs", "planned_test_refs",
-                "execution_refs",
-            )
-            missing = [field for field in required_fields if not args.get(field)]
-            if not args.get("cause") and not args.get("cause_pending"):
-                missing.append("cause or cause_pending")
-            execution_refs = {str(value) for value in args.get("execution_refs") or []}
-            supported_observation = any(
-                item.get("status") == "disposed"
-                and item.get("disposition") in {
-                    "confirmed_control_exception", "draft_finding_candidate",
-                }
-                and str(item.get("execution_ref") or "") in execution_refs
-                for item in self.ws.observations
-            )
-            if not supported_observation:
-                missing.append("auditor-dispositioned supporting observation")
-            if missing:
-                issues.append(
-                    f"{action.get('id') or 'create_finding'} is not result-supported "
-                    f"({', '.join(missing)})"
-                )
-        if issues:
-            raise WorkspaceError(
-                "Full-audit action graph does not satisfy planned-test execution requirements: "
-                + "; ".join(issues)
-                + "."
-            )
-
-    def _is_full_audit_goal(self, goal: dict | None = None) -> bool:
-        command = self.run.get("command") or {}
-        if self._requests_full_audit():
-            return True
-        goal = goal or self.run.get("goal") or {}
-        combined = " ".join([
-            str(command.get("text") or ""),
-            str(goal.get("objective") or ""),
-            *[str(value) for value in goal.get("completion_criteria") or []],
-        ]).casefold()
-        wants_report = "report" in combined and any(word in combined for word in ("draft", "generate", "complete"))
-        wants_full_cycle = any(phrase in combined for phrase in (
-            "complete the audit", "full audit", "all steps", "all procedures", "all_procedures",
-        ))
-        return wants_report and wants_full_cycle
-
-    def _ensure_full_audit_stages(self) -> None:
-        """Inject mandatory local output/gate phases independently of LLM expansion.
-
-        The model may propose execution and judgment work, but it cannot omit
-        roll-up, RCM papers, dashboard curation, report generation, or terminal
-        verification from a full-audit graph. Existing matching actions are
-        retained so restart/replay remains idempotent.
-        """
-        existing = self.run.get("actions") or []
-        existing_types = {item.get("type") for item in existing}
-        proposals = []
-        if "rollup_rcm_results" not in existing_types:
-            proposals.append({"id": "mandatory_rcm_rollup", "type": "rollup_rcm_results"})
-        paper_targets = set()
-        for item in existing:
-            if item.get("type") != "generate_rcm_working_paper":
-                continue
-            target = item.get("target") or {}
-            value = str(target.get("resolved_id") or target.get("selector") or "")
-            if value.startswith("rcm:"):
-                value = value.split(":", 1)[1]
-            if value:
-                paper_targets.add(value)
-        required_papers = {row["id"] for row in self.ws.rcm}
-        if (
-            "generate_all_rcm_working_papers" not in existing_types
-            and not required_papers.issubset(paper_targets)
-        ):
-            proposals.append({
-                "id": "mandatory_rcm_papers", "type": "generate_all_rcm_working_papers",
-            })
-        if "curate_dashboard" not in existing_types:
-            proposals.append({"id": "mandatory_dashboard", "type": "curate_dashboard"})
-        if "generate_report" not in existing_types:
-            proposals.append({"id": "mandatory_report", "type": "generate_report", "args": {"use_model": True}})
-        if "run_report_quality" not in existing_types:
-            proposals.append({"id": "mandatory_report_quality", "type": "run_report_quality"})
-        if "verify_audit_completion" not in existing_types:
-            proposals.append({"id": "mandatory_completion", "type": "verify_audit_completion"})
-        if not proposals:
-            return
-        available = int(self.run["limits"].get("max_actions", 60)) - len(existing)
-        if available <= 0:
-            self.run.setdefault("mandatory_stage_issues", []).append(
-                "The action limit prevented deterministic full-audit stages from being added."
-            )
-            self.warn(self.run["mandatory_stage_issues"][-1])
-            return
-        if len(proposals) > available:
-            # Preserve the terminal gates and output phases ahead of per-RCM
-            # paper generation when a model has already consumed the budget.
-            priority = {
-                "rollup_rcm_results": 0, "curate_dashboard": 1,
-                "generate_report": 2, "run_report_quality": 3,
-                "verify_audit_completion": 4, "generate_all_rcm_working_papers": 5,
-            }
-            proposals.sort(key=lambda item: priority[item["type"]])
-            proposals = proposals[:available]
-            self.run.setdefault("mandatory_stage_issues", []).append(
-                "The action limit prevented some deterministic full-audit stages from being scheduled."
-            )
-            self.warn(self.run["mandatory_stage_issues"][-1])
-        created = ledger.append_actions(
-            self.run, proposals, audit_lifecycle=True
-        )
-        self.save()
-        self.emit(
-            "graph_update",
-            {"revision": self.run["graph_revision"], "added": [item["id"] for item in created]},
-        )
-
     @staticmethod
     def _proposal_repair_user(base_user: str, payload: dict, error: Exception) -> str:
         validation_guidance = ""
@@ -2527,20 +1924,10 @@ class ActionRunner(BaseRunner):
             # Expansion is opportunistic follow-up planning; even repeated
             # invalid proposals must not fail work that already committed.
             try:
-                if self._is_full_audit_goal():
-                    proposals = self._remove_orchestrated_full_audit_actions(
-                        proposals, initial=False
-                    )
-                    if not proposals:
-                        return
                 self._canonicalize_proposals(proposals)
-                if self._is_full_audit_goal():
-                    self._validate_full_audit_action_graph(
-                        [*(self.run.get("actions") or []), *proposals]
-                    )
                 created = ledger.append_actions(
                     self.run, proposals, depth=action["depth"] + 1,
-                    audit_lifecycle=self._is_full_audit_goal(),
+                    audit_lifecycle=False,
                 )
             except WorkspaceError as error:
                 self._record_rejected_proposals("command_planner", proposals, error)
@@ -2675,90 +2062,6 @@ class ActionRunner(BaseRunner):
         skipped = [item for item in self.run.get("actions") or [] if item["status"] == "skipped"]
         lines = [f"## Command result", "", self.run["goal"].get("objective") or self.run["command"].get("text") or "Audit command", ""]
         lines.append(f"Completed {len(succeeded)} action(s); {len(failed)} failed or blocked; {len(skipped)} skipped.")
-        if self._is_full_audit_goal():
-            manifest = rcm_execution.execution_manifest(self.ws)
-            planned = [
-                item
-                for row in self.ws.rcm
-                for item in row.get("planned_tests") or []
-            ]
-            def requirement_satisfied(item: dict, kind: str) -> bool:
-                return any(
-                    execution.get("kind") == kind and execution.get("has_durable_result")
-                    for execution in item.get("existing_execution") or []
-                )
-
-            required_data = [item for item in manifest if "datatest" in item.get("required_execution", [])]
-            required_docs = [item for item in manifest if "doctest" in item.get("required_execution", [])]
-            completion = rcm_execution.completion(self.ws)
-            report_quality = next(
-                (
-                    (item.get("receipt") or {}).get("result") or {}
-                    for item in reversed(self.run.get("actions") or [])
-                    if item.get("type") == "run_report_quality" and item.get("status") == "succeeded"
-                ),
-                {},
-            )
-            run_findings = [
-                item for item in self.ws.findings
-                if item.get("agent_run_id") == self.run["id"]
-            ]
-            supported_run_findings = [
-                item for item in run_findings
-                if item.get("auditor_confirmed")
-                and not findings.support_issues(self.ws, item)
-            ]
-            self.run["finding_refs"] = [item["id"] for item in run_findings]
-            self.run["supported_finding_refs"] = [item["id"] for item in supported_run_findings]
-            self.run["draft_finding_refs"] = [
-                item["id"] for item in run_findings if item not in supported_run_findings
-            ]
-            open_gate_count = (
-                int((completion.get("coverage") or {}).get("issue_count") or 0)
-                + len(completion.get("open_observations") or [])
-                + len(completion.get("incomplete_outcomes") or [])
-                + len(completion.get("blank_conclusions") or [])
-                + len(completion.get("missing_planning_context") or [])
-                + len(completion.get("blocked_without_plan") or [])
-                + len(completion.get("rcm_without_conclusion") or [])
-            )
-            outcome = {
-                "audit_complete": completion.get("status") == "completed" and bool(report_quality.get("ok")),
-                "completion_status": completion.get("status"),
-                "planned_tests_total": len(planned),
-                "planned_tests_completed": sum(
-                    str(item.get("status") or "").startswith("completed") for item in planned
-                ),
-                "planned_tests_review_required": sum(
-                    item.get("status") == "review_required" for item in planned
-                ),
-                "planned_tests_blocked": sum(item.get("status") == "blocked" for item in planned),
-                "data_tests_required": len(required_data),
-                "data_tests_executed": sum(requirement_satisfied(item, "datatest") for item in required_data),
-                "document_tests_required": len(required_docs),
-                "document_tests_executed": sum(requirement_satisfied(item, "doctest") for item in required_docs),
-                "open_observations": len(completion.get("open_observations") or []),
-                "supported_findings": len(supported_run_findings),
-                "draft_findings": len(run_findings) - len(supported_run_findings),
-                "report_quality_ok": report_quality.get("ok"),
-                "report_quality_errors": sum(
-                    issue.get("severity") == "error" for issue in report_quality.get("issues") or []
-                ),
-                "open_gate_count": open_gate_count,
-            }
-            self.run["audit_outcome"] = outcome
-            lines.extend([
-                "", "### Audit coverage",
-                f"- Planned tests completed: {outcome['planned_tests_completed']} of {outcome['planned_tests_total']}",
-                f"- Required Data Tests executed: {outcome['data_tests_executed']} of {outcome['data_tests_required']}",
-                f"- Required Document Tests completed: {outcome['document_tests_executed']} of {outcome['document_tests_required']}",
-                f"- Review-required planned tests: {outcome['planned_tests_review_required']}",
-                f"- Open observations: {outcome['open_observations']}",
-                f"- Supported findings created by this run: {outcome['supported_findings']}",
-                f"- Draft findings awaiting auditor confirmation: {outcome['draft_findings']}",
-                f"- Report quality: {'passed' if outcome['report_quality_ok'] else 'failed or unavailable'}",
-                f"- Open completion gates: {outcome['open_gate_count']}",
-            ])
         if succeeded:
             lines.extend(["", "### Committed work", *[f"- {actions.REGISTRY.get(item['type'], item['definition_version']).description}" for item in succeeded]])
         if failed:
@@ -2767,18 +2070,4 @@ class ActionRunner(BaseRunner):
         self.run["summary_markdown"] = "\n".join(lines)
         self.run["finished"] = store.utcnow(); self.run["command"]["status"] = "completed"
         status = "completed_with_issues" if force_issue or failed else "completed"
-        if self._is_full_audit_goal() and status == "completed":
-            verification = next(
-                (
-                    (item.get("receipt") or {}).get("result") or {}
-                    for item in reversed(self.run.get("actions") or [])
-                    if item.get("type") == "verify_audit_completion"
-                    and item.get("status") == "succeeded"
-                ),
-                None,
-            )
-            if verification is None or self.run.get("mandatory_stage_issues"):
-                status = "completed_with_issues"
-            else:
-                status = str(verification.get("status") or "completed_with_issues")
         self.set_status(status); self.emit("summary_ready", {"run_id": self.run["id"]})

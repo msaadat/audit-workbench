@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 1.
-- Current task: `P1.4`.
-- Last completed task: `P1.3`.
+- Current task: `P1.5`.
+- Last completed task: `P1.4`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -49,7 +49,7 @@ status notes below.
 | Phase | Status | Next task |
 |---|---|---|
 | 0 | Complete | — |
-| 1 | In progress | `P1.4` |
+| 1 | In progress | `P1.5` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
@@ -174,12 +174,28 @@ status notes below.
   broad-audit/planning phrases fail closed with a durable error instructing the
   caller to use workflow routing. A bounded-router miss therefore cannot reach
   the canonical action planner, while target-specific planning artifact edits
-  remain valid isolated operations. The obsolete full-audit implementation is
-  intentionally still present for `P1.4`; only its production entry is guarded.
+  remain valid isolated operations. At that checkpoint, the obsolete full-audit
+  implementation remained present for its deletion in `P1.4`; only its
+  production entry was guarded.
   Focused verification passed `112` tests across `test_command_agent.py` and
   `test_workflow_v2.py`, including the bounded-router fallback and zero action-
   planner-call assertions. No frontend payload or API contract changed, so a
   frontend build was not required for this task.
+- `P1.4` completed on 2026-07-21. The canonical `ActionRunner` no longer runs
+  the legacy planning pre-pass, inserts deterministic audit terminal stages,
+  reserves action capacity for a full audit, validates proposed full-audit
+  coverage, applies full-audit-specific adaptive expansion, or produces its
+  audit-specific completion summary. The P1.3 fail-closed guard remains the
+  defensive boundary for workflow-owned requests, while isolated action DAGs
+  continue through the generic interpreter, ledger, and executor path. Shared
+  planning helpers still inherited by `WorkflowRunner` remain in place until
+  their later extraction, and the obsolete interpreter prompt fields are left
+  intentionally for `P1.5`. Focused verification passed `110` tests across
+  `test_command_agent.py` and `test_workflow_v2.py`, `21` selected planning-
+  workflow tests in `test_planning.py`, and `43` recovery and chat integration
+  tests across `test_agent_runner.py` and `test_assistant_chats.py`. No frontend
+  payload or API contract changed, so a frontend build was not required for
+  this task.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -434,7 +450,7 @@ obsolete full-audit policy without preserving old run shapes.
   live imports and tests in the same task, and retain no alias.
 - [x] `P1.3` Add a fail-closed guard so broad-audit and planning
   requests cannot enter the canonical action planner.
-- [ ] `P1.4` Remove planning preparation, audit action insertion, audit budget
+- [x] `P1.4` Remove planning preparation, audit action insertion, audit budget
   reservations, and full-audit validation from the canonical `ActionRunner`.
 - [ ] `P1.5` Remove obsolete interpreter prompt clauses and update focused
   action, workflow, recovery, and routing tests.
