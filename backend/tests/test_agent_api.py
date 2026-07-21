@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import workspaces
-from app.agent import store
+from app.agent import runner, store
 from app.main import create_app
 from conftest import wait_run
 
@@ -119,6 +119,95 @@ def test_approval_round_trip_over_api(client, ws_id, workspace_with_data, fake_a
     assert done["status"] == "completed"
     ws = workspaces.load_workspace(ws_id)
     assert ws.rulesets and ws.tiles
+
+
+def test_offline_control_responses_are_durable_before_resume(
+    client, ws_id, workspace_with_data
+):
+    run = store.new_command_run(
+        workspace_with_data,
+        "permission",
+        {"source": "chat", "text": "wait for auditor controls"},
+    )
+    run["status"] = "awaiting_approval"
+    run["approvals"] = [
+        {
+            "id": "approval-offline",
+            "kind": "proposal_approval",
+            "status": "pending",
+            "items": [{"id": "proposal-1"}],
+        }
+    ]
+    run["interactions"] = [
+        {
+            "id": "interaction-offline",
+            "action_id": "action-1",
+            "type": "clarification",
+            "status": "pending",
+            "prompt": "Which artifact?",
+        }
+    ]
+    store.save_run(workspace_with_data, run)
+
+    approval_response = client.post(
+        f"/api/workspaces/{ws_id}/agent/runs/{run['id']}/approvals/approval-offline",
+        json={"decisions": [{"item_id": "proposal-1", "action": "approve"}]},
+    )
+    interaction_response = client.post(
+        f"/api/workspaces/{ws_id}/agent/runs/{run['id']}/interactions/interaction-offline/respond",
+        json={"text": "Use the working report"},
+    )
+
+    assert approval_response.status_code == 200
+    assert interaction_response.status_code == 200
+    durable = store.load_run(workspace_with_data, run["id"])
+    assert durable["status"] == "interrupted"
+    assert durable["approvals"][0]["submitted_decisions"] == [
+        {"item_id": "proposal-1", "action": "approve"}
+    ]
+    assert durable["interactions"][0]["submitted_response"] == {
+        "text": "Use the working report"
+    }
+    assert [event["type"] for event in store.read_events(workspace_with_data, run["id"])] == [
+        "approval_response_stored",
+        "interaction_response_stored",
+    ]
+
+
+def test_continue_endpoint_creates_linked_run_from_next_outcomes(
+    client, ws_id, workspace_with_data, fake_agent_llm, monkeypatch
+):
+    previous = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "run the audit"},
+    )
+    previous["schema_version"] = 3
+    previous["status"] = "completed_with_open_items"
+    previous["finished"] = store.utcnow()
+    previous["workflow"] = {
+        "requested_outcomes": ["planning.apm_ready"],
+        "target_refs": ["workspace:current"],
+        "next_outcomes": ["planning.apm_ready"],
+        "stages": [],
+    }
+    store.save_run(workspace_with_data, previous)
+    monkeypatch.setattr(runner, "_launch", lambda *_args: None)
+
+    response = client.post(
+        f"/api/workspaces/{ws_id}/agent/runs/{previous['id']}/continue"
+    )
+
+    assert response.status_code == 200
+    continued = store.load_run(workspace_with_data, response.json()["id"])
+    assert continued["parent_run_id"] == previous["id"]
+    assert continued["schema_version"] == 3
+    assert continued["command"]["source"] == "follow_up"
+    assert continued["workflow"]["requested_outcomes"] == ["planning.apm_ready"]
+    assert continued["workflow"]["target_refs"] == ["workspace:current"]
+    assert [event["type"] for event in store.read_events(workspace_with_data, continued["id"])] == [
+        "run_status"
+    ]
 
 
 def test_message_endpoint_steers_and_follows_up(

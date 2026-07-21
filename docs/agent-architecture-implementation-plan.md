@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 0.
-- Current task: `P0.4`.
-- Last completed task: `P0.3`.
+- Current task: `P0.5`.
+- Last completed task: `P0.4`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -48,7 +48,7 @@ status notes below.
 
 | Phase | Status | Next task |
 |---|---|---|
-| 0 | In progress | `P0.4` |
+| 0 | In progress | `P0.5` |
 | 1 | Pending Phase 0 gate | `P1.1` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
@@ -102,6 +102,13 @@ status notes below.
   audit mapping, the broad-audit fail-closed workflow route, and the unknown
   command path from bounded workflow router into the generic action
   interpreter. Focused verification: `19 passed` in `test_workflow_v2.py`.
+- `P0.4` completed on 2026-07-21. The control-surface suite now explicitly
+  proves offline approval and interaction responses are persisted before
+  resume and that Continue creates a linked workflow from durable
+  `next_outcomes`. Together with the existing SSE cursor, activity, chat
+  projection, confirmation, queued-command FIFO, and retry tests, focused
+  verification passed `9` selected tests across `test_agent_api.py`,
+  `test_assistant_chats.py`, and `test_command_agent.py`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -296,7 +303,7 @@ or source changes.
   interrupted-provider, and completed runs created during a test.
 - [x] `P0.3` Characterize deterministic local routing, bounded-router fallback,
   generic action-interpreter fallback, and fail-closed broad-audit behavior.
-- [ ] `P0.4` Characterize SSE events, activity records, run projections,
+- [x] `P0.4` Characterize SSE events, activity records, run projections,
   approvals, interactions, queued commands, retry, and continue behavior.
 - [ ] `P0.5` Characterize workflow materialization, semantic unit IDs,
   readiness and staleness, stable parallel results, serialized commits,
