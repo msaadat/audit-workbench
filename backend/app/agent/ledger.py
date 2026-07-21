@@ -381,7 +381,6 @@ def append_actions(
     proposals: list[dict],
     *,
     depth: int = 0,
-    audit_lifecycle: bool = False,
 ) -> list[dict]:
     existing_actions = list(run.get("actions") or [])
     existing_ids = {action["id"] for action in existing_actions}
@@ -402,8 +401,6 @@ def append_actions(
     adjustments = []
     try:
         adjustments.extend(normalize_created_targets(run, created))
-        if audit_lifecycle:
-            adjustments.extend(enforce_audit_lifecycle(run, created))
         validate_graph(run)
     except WorkspaceError:
         # Keep the append atomic: a rejected batch must not leave a

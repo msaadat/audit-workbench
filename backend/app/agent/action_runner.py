@@ -340,9 +340,7 @@ class ActionRunner(BaseRunner):
                 if not isinstance(proposals, list):
                     raise WorkspaceError("Command interpreter actions must be a list.")
                 self._canonicalize_proposals(proposals)
-                created = ledger.append_actions(
-                    self.run, proposals, audit_lifecycle=False
-                )
+                created = ledger.append_actions(self.run, proposals)
                 break
             except WorkspaceError as error:
                 self._record_rejected_proposals("command_interpreter", proposals, error)
@@ -1925,7 +1923,6 @@ class ActionRunner(BaseRunner):
                 self._canonicalize_proposals(proposals)
                 created = ledger.append_actions(
                     self.run, proposals, depth=action["depth"] + 1,
-                    audit_lifecycle=False,
                 )
             except WorkspaceError as error:
                 self._record_rejected_proposals("command_planner", proposals, error)

@@ -213,8 +213,8 @@ BaseRunner
   semantic, so re-expanding after a resume yields the same work.
 - v2 derives its plan from one `[agent:command_interpreter]` turn that returns a
   DAG of registered action types. `ledger.append_actions(...)` normalizes
-  created-target references, injects lifecycle dependencies, and validates the
-  graph; a rejected batch is fed back once with the specific error.
+  created-target references and validates the graph; a rejected batch is fed
+  back once with the specific error.
   `_drive_graph` then runs a single-threaded priority loop: pending interaction,
   then proposed action to gate, then ready action to execute.
 
@@ -251,10 +251,9 @@ BaseRunner
 - The obsolete `ActionRunner` full-audit path and its prompt policy were
   removed in Phase 1. Broad-audit and planning requests fail closed if they
   bypass workflow routing; isolated action DAGs remain supported.
-- The audit lifecycle is currently encoded in two places:
-  `ledger.AUDIT_LIFECYCLE_STAGES` and
-  `audit_capabilities.build_registry`. `build_registry` is authoritative;
-  Phase 2 removes the action-ledger encoding.
+- The action-ledger lifecycle switch has been removed. Its now-unreachable
+  constants and enforcement helper remain only for the next Phase 2 deletion
+  task; `audit_capabilities.build_registry` is the active authoritative graph.
 
 ### Events and live UI
 

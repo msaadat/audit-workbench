@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 2.
-- Current task: `P2.2`.
-- Last completed task: `P2.1`.
+- Current task: `P2.3`.
+- Last completed task: `P2.2`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -50,7 +50,7 @@ status notes below.
 |---|---|---|
 | 0 | Complete | — |
 | 1 | Complete | — |
-| 2 | In progress | `P2.2` |
+| 2 | In progress | `P2.3` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
@@ -236,6 +236,14 @@ status notes below.
   verification passed `110` tests across `test_command_agent.py` and
   `test_workflow_v2.py` in `17.99s`. No production or frontend contract changed,
   so a frontend build was not required.
+- `P2.2` completed on 2026-07-21. `ledger.append_actions(...)` no longer accepts
+  or invokes the `audit_lifecycle` switch, and both canonical action-planning
+  call sites now use only the domain-neutral append contract. The lifecycle
+  constants and unreachable `enforce_audit_lifecycle(...)` helper remain
+  intentionally for their direct deletion in `P2.3`. Focused verification
+  passed `110` tests across `test_command_agent.py` and `test_workflow_v2.py`
+  in `17.97s`. No frontend payload or API contract changed, so a frontend build
+  was not required.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -535,7 +543,7 @@ verification stages.
 
 - [x] `P2.1` Convert audit-lifecycle normalization tests into workflow graph
   tests while retaining generic DAG characterization.
-- [ ] `P2.2` Remove `audit_lifecycle` from `append_actions(...)` and its
+- [x] `P2.2` Remove `audit_lifecycle` from `append_actions(...)` and its
   canonical callers.
 - [ ] `P2.3` Remove audit lifecycle constants and enforcement from
   `ledger.py`, then run the action and workflow focused suites.

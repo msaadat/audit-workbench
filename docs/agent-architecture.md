@@ -415,14 +415,15 @@ dependencies. Local routing catches known full-audit phrases and goal templates
 before the action interpreter runs, and `ActionRunner` retains a defensive
 fail-closed guard for malformed records and bounded-router misses.
 
-The audit lifecycle is now encoded in two places:
+The audit lifecycle was encoded in two places at the Phase 1 boundary:
 
 - `ledger.AUDIT_LIFECYCLE_STAGES`.
 - `audit_capabilities.build_registry()`.
 
-`build_registry()` is the current authoritative implementation. The target
-moves the authoritative declaration to `workflows/audit.py`; Phase 2 removes
-the remaining action-ledger encoding.
+`build_registry()` is the current authoritative implementation. The action
+ledger no longer accepts or invokes lifecycle normalization; its unreachable
+constants and enforcement helper remain for the next Phase 2 deletion task.
+The target later moves the authoritative declaration to `workflows/audit.py`.
 
 There is also concrete document-analysis duplication. Both
 `DocumentAnalysisRunner` and `ActionRunner._ensure_planning_analysis` implement
