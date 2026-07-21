@@ -370,6 +370,45 @@ def test_router_bundle_is_small_and_excludes_domain_catalogs():
     assert "artifact_index" not in serialized
 
 
+def test_data_test_context_contains_schema_metadata_but_no_table_rows():
+    ws = workspaces.create_workspace("Row privacy boundary")
+    ws.add_table(
+        "private_ledger.csv",
+        pl.DataFrame(
+            {
+                "invoice_id": ["ROW_SECRET_NEVER_SEND_7F4C"],
+                "amount": [123.45],
+            }
+        ).write_csv().encode(),
+    )
+    row = ws.add_rcm(
+        {
+            "risk": "Duplicate private-ledger invoices may be paid",
+            "control": "Duplicate invoice monitoring",
+        }
+    )
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Test duplicate invoice IDs",
+            "objective": "Identify duplicate invoices",
+            "criteria": "Invoice IDs should be unique",
+            "steps": ["Run duplicate analysis."],
+            "method": "data_analytics",
+            "expected_evidence": "Duplicate-analysis output",
+        },
+    )
+
+    bundle = context_bundles.data_test_spec(ws, row, planned)
+    serialized = bundle.serialized()
+
+    assert "private_ledger" in serialized
+    assert "invoice_id" in serialized
+    assert "ROW_SECRET_NEVER_SEND_7F4C" not in serialized
+    assert bundle.total_characters <= bundle.character_budget
+    assert set(bundle.sections["table_schemas"][0]) == {"table", "rows", "columns"}
+
+
 def test_transaction_merges_unrelated_revision_and_rejects_parent_change():
     ws = _planning_workspace("Transaction merge")
     rcm_id = ws.rcm[0]["id"]

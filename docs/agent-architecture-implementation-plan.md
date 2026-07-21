@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 0.
-- Current task: `P0.7`.
-- Last completed task: `P0.6`.
+- Current task: `P0.8`.
+- Last completed task: `P0.7`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -48,7 +48,7 @@ status notes below.
 
 | Phase | Status | Next task |
 |---|---|---|
-| 0 | In progress | `P0.7` |
+| 0 | In progress | `P0.8` |
 | 1 | Pending Phase 0 gate | `P1.1` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
@@ -123,6 +123,15 @@ status notes below.
   preconditions and external conflict, resume/rebase, batch rollback,
   after-apply reconciliation, and undo: `9 passed` in
   `test_command_agent.py`.
+- `P0.7` completed on 2026-07-21. Provider characterization proves turn and
+  token accounting occurs at the single runner choke point, exhausted budgets
+  block before another provider call, and a provider/model semaphore bounds
+  calls across separate runs. Privacy characterization proves model-backed
+  data-test context contains schema metadata without a sentinel row value,
+  oversized unscoped documents are withheld, and durable AI activity stores
+  prompt/response hashes rather than content. Focused verification: `5 passed`
+  across `test_agent_runner.py`, `test_workflow_v2.py`, and
+  `test_document_analysis_search.py`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -325,7 +334,7 @@ or source changes.
 - [x] `P0.6` Characterize generic action DAG validation, repair,
   preconditions, idempotence, reconciliation, undo, resume, and failure
   propagation without changing active behavior.
-- [ ] `P0.7` Add provider-accounting and privacy assertions covering budgets,
+- [x] `P0.7` Add provider-accounting and privacy assertions covering budgets,
   concurrency, table-row exclusion, bounded document context, and hash-only
   provenance.
 - [ ] `P0.8` Run the Phase 0 focused suites, prove legacy records are outside

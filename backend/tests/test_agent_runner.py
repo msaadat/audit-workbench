@@ -1,8 +1,11 @@
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from app import llm, workspaces
+from app import documents, llm, workspaces
 from app.agent import ledger, runner, store
 from conftest import wait_run
 
@@ -116,6 +119,126 @@ def test_run_requires_configured_llm(workspace_with_data, monkeypatch):
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": False})
     with pytest.raises(llm.LLMError, match="not configured"):
         _start(workspace_with_data)
+
+
+def test_model_gateway_charges_budgets_and_persists_hash_only_provenance(
+    workspace_with_data, monkeypatch
+):
+    calls = []
+
+    def fake_chat(messages, **_kwargs):
+        calls.append(messages)
+        return {
+            "content": "SENSITIVE_PROVIDER_RESPONSE",
+            "usage": {"prompt_tokens": 17, "completion_tokens": 5},
+        }
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "accounting-test", "model": "model"},
+    )
+    run = store.new_run(workspace_with_data, "auto")
+    run["limits"] = {
+        "max_model_turns": 1,
+        "max_estimated_prompt_tokens": 1_000,
+        "max_completion_tokens": 100,
+        "max_llm_concurrency": 1,
+    }
+    store.save_run(workspace_with_data, run)
+    command = runner._Runner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+    system = "[agent:accounting_test]\nSENSITIVE_SYSTEM_PROMPT"
+    user = "SENSITIVE_USER_PAYLOAD"
+
+    assert command._llm_content(system, user) == "SENSITIVE_PROVIDER_RESPONSE"
+
+    usage = store.load_run(workspace_with_data, run["id"])["usage"]
+    assert usage["llm_turns"] == 1
+    assert usage["request_characters"] == len(system) + len(user)
+    assert usage["prompt_tokens"] == 17
+    assert usage["completion_tokens"] == 5
+    assert usage["model_calls_by_worker"] == {"agent:accounting_test": 1}
+    assert usage["model_call_metrics"][0]["estimated_input_tokens"] == max(
+        1, (len(system) + len(user)) // 4
+    )
+    activity = documents.activities(workspace_with_data)["items"][-1]
+    serialized = json.dumps(activity)
+    assert activity["prompt_version"]
+    assert activity["response_hash"]
+    assert "SENSITIVE_SYSTEM_PROMPT" not in serialized
+    assert "SENSITIVE_USER_PAYLOAD" not in serialized
+    assert "SENSITIVE_PROVIDER_RESPONSE" not in serialized
+
+    with pytest.raises(runner.LimitExceeded, match="model turn limit"):
+        command._llm_content(system, user)
+    assert len(calls) == 1
+
+
+def test_provider_concurrency_is_shared_and_bounded_across_runs(
+    workspace_with_data, monkeypatch
+):
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_chat(_messages, **_kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.05)
+            return {"content": "ok", "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setenv("AGENT_PROVIDER_MAX_CONCURRENCY", "1")
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {
+            "configured": True,
+            "provider": "shared-concurrency-characterization",
+            "model": "one-at-a-time",
+        },
+    )
+    commands = []
+    for index in range(2):
+        run = store.new_run(
+            workspace_with_data, "auto", {"objective": f"concurrency {index}"}
+        )
+        run["limits"] = {
+            "max_model_turns": 2,
+            "max_estimated_prompt_tokens": 100,
+            "max_completion_tokens": 10,
+            "max_llm_concurrency": 2,
+        }
+        store.save_run(workspace_with_data, run)
+        commands.append(
+            runner._Runner(
+                workspace_with_data,
+                run,
+                runner.RunHandle(workspace_with_data.id, run["id"]),
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda command: command._llm_content(
+                    "[agent:concurrency_test]", "bounded request"
+                ),
+                commands,
+            )
+        )
+
+    assert results == ["ok", "ok"]
+    assert peak == 1
 
 
 def test_concurrent_run_rejected(workspace_with_data, fake_agent_llm):
