@@ -87,6 +87,9 @@ backend/app/
 |  |- report_routes.py         - findings/report endpoints and reconciliation
 |  `- debug_routes.py          - workspace debug console APIs and live stream
 `- agent/
+   |- runtime/                 - behavior-free RunRuntime and ModelGateway
+   |                             public contracts; BaseRunner still owns the
+   |                             active implementations during Phase 3
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - BaseRunner: budgets, checkpoints, approvals,
    |                             interactions, provider call accounting
@@ -242,6 +245,10 @@ BaseRunner
   drives UI labels and per-worker accounting, holds a process-wide semaphore
   keyed on `provider:model`, and appends a provenance row containing hashes
   only, never prompt or document text.
+- `agent.runtime` defines the target `RunRuntime` and `ModelGateway` structural
+  contracts. At the P3.1 boundary these contracts contain no implementation;
+  `BaseRunner` remains the active behavior owner until the subsequent Phase 3
+  delegation tasks.
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.

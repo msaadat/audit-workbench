@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 3.
-- Current task: `P3.1`.
-- Last completed task: `P2.4`.
+- Current task: `P3.2`.
+- Last completed task: `P3.1`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -51,7 +51,7 @@ status notes below.
 | 0 | Complete | — |
 | 1 | Complete | — |
 | 2 | Complete | — |
-| 3 | In progress | `P3.1` |
+| 3 | In progress | `P3.2` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
 | 6 | Pending Phase 5 gate | `P6.1` |
@@ -265,6 +265,20 @@ status notes below.
   `test_workflow_v2.py` in `17.92s`. No frontend payload or API contract
   changed, so a frontend build was not required. Phase 2 is complete; the exact
   next task is `P3.1`.
+- `P3.1` completed on 2026-07-21. The new `agent.runtime` package defines small,
+  behavior-free, runtime-checkable `RunRuntime` and `ModelGateway` structural
+  contracts. `RunRuntime` names the current durable state, event, status,
+  activity, warning, checkpoint, input, and approval surface. `ModelGateway`
+  exposes one budgeted and attributed completion operation while leaving prompt
+  construction and response parsing with callers. Contract tests bind those
+  interfaces to the active `BaseRunner` state/event and provider-accounting
+  behavior, including durable activity revisions, idempotent status events,
+  provider usage, stage attribution, and hash-only provenance. No production
+  behavior, provider call, or scheduler call site moved. Focused verification
+  passed `152` tests across `test_agent_runtime_contracts.py`,
+  `test_agent_runner.py`, `test_command_agent.py`, and `test_workflow_v2.py` in
+  `47.95s`. No frontend payload or API contract changed, so a frontend build
+  was not required. The exact next task is `P3.2`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -598,7 +612,7 @@ working papers, dashboard, reports, or audit completion.
 
 **Tasks:**
 
-- [ ] `P3.1` Define the small `RunRuntime` and `ModelGateway` public contracts
+- [x] `P3.1` Define the small `RunRuntime` and `ModelGateway` public contracts
   plus active-behavior contract tests, without moving behavior.
 - [ ] `P3.2` Extract the provider semaphore, model profiles, token charging,
   retries, stage tags, telemetry, and hash-only provenance into

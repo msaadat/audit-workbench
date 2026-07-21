@@ -395,6 +395,13 @@ runners. The target architecture nevertheless applies a strict test: retain a
 separate runner only when it requires a genuinely different scheduling and
 control protocol. Otherwise migrate its work into capabilities and workers.
 
+The behavior-free `RunRuntime` and `ModelGateway` structural contracts now live
+under `agent/runtime/`. `BaseRunner` still owns every active persistence,
+control, approval, interaction, provider, budget, telemetry, and provenance
+operation at the P3.1 boundary. Provider delegation starts in P3.2; runtime
+delegation starts in P3.3. No scheduler behavior moved with the contract-only
+introduction.
+
 ### Phase 1 Deletion Boundary
 
 The v2 full-audit orchestration has been deleted from
