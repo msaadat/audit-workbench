@@ -1935,20 +1935,19 @@ class ActionRunner(BaseRunner):
             return
 
     def _wait_interaction(self, action: dict, interaction: dict) -> None:
-        self.set_status("awaiting_input" if interaction["type"] in {"clarification", "target_choice", "conflict_resolution"} else "awaiting_approval")
-        waited_from = time.monotonic()
-        response = interaction.pop("submitted_response", None)
-        while response is None:
-            if self.handle.cancel.is_set():
-                raise Cancelled()
-            if self.handle.command_queued.is_set():
-                self._drain_inbox()
-            if self.handle.interaction_resolved.wait(0.05):
-                self.handle.interaction_resolved.clear()
-                response = self.handle.interaction_responses.pop(interaction["id"], None)
-        self.deadline += time.monotonic() - waited_from
+        waiting_status = (
+            "awaiting_input"
+            if interaction["type"]
+            in {"clarification", "target_choice", "conflict_resolution"}
+            else "awaiting_approval"
+        )
+        response = self.runtime.wait_for_interaction(
+            interaction,
+            waiting_status=waiting_status,
+            queue_commands=True,
+            poll_interval=0.05,
+        )
         decision = str(response.get("decision") or response.get("choice") or "").strip()
-        interaction.update(status="resolved", response=response, actor="auditor", resolved_at=store.utcnow())
         if interaction["type"] == "clarification":
             text = str(response.get("text") or "").strip()
             if not text:
@@ -1974,9 +1973,12 @@ class ActionRunner(BaseRunner):
                 ledger.transition(action, "proposed")
             else:
                 ledger.transition(action, "skipped")
-        self.set_status("executing")
-        self._save_action(action)
-        self.emit("interaction_resolved", {"interaction_id": interaction["id"], "action_id": action["id"], "decision": decision})
+        self.runtime.resolve_interaction(
+            interaction,
+            response,
+            event_data={"action_id": action["id"], "decision": decision},
+            persist=lambda: self._save_action(action),
+        )
 
     def _block_failed_dependencies(self) -> None:
         by_id = {action["id"]: action for action in self.run["actions"]}

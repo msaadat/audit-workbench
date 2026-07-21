@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import uuid
 from collections.abc import Callable
 
@@ -64,6 +63,8 @@ class BaseRunner:
             handle=self.handle,
             limit_error=LimitExceeded,
             cancelled_error=Cancelled,
+            task_transition=self.task_status,
+            approval_disposition=self._record_approval_disposition,
         )
         self.model_gateway = DefaultModelGateway(
             workspace_id=self.ws.id,
@@ -175,53 +176,7 @@ class BaseRunner:
         self.runtime.drain_inbox()
 
     def wait_for_input(self, question: str) -> str:
-        """Persist one agent question and wait durably for an inbox answer."""
-        for message in self.run.get("messages", []):
-            if message.get("role") == "user" and not message.get("handled", True):
-                message["handled"] = True
-                self.run.setdefault("interview", {})["pending_question"] = None
-                self.save()
-                return str(message.get("content") or "")
-
-        interview = self.run.setdefault(
-            "interview", {"captured": {}, "turns": 0, "pending_question": None}
-        )
-        if interview.get("pending_question") != question:
-            message = {
-                "role": "agent",
-                "content": question,
-                "at": self.utcnow(),
-                "handled": True,
-            }
-            self.run.setdefault("messages", []).append(message)
-            interview["pending_question"] = question
-            self.save()
-            self.emit("message", {"message": message})
-        self.set_status("awaiting_input")
-        waited_from = time.monotonic()
-        while True:
-            if self.handle.cancel.is_set():
-                raise Cancelled()
-            if self.handle.pause_requested.is_set():
-                self.set_status("paused")
-                while not self.handle.resume.wait(0.2):
-                    if self.handle.cancel.is_set():
-                        raise Cancelled()
-                self.handle.resume.clear()
-                self.handle.pause_requested.clear()
-                self.set_status("awaiting_input")
-            with self.handle.lock:
-                content = self.handle.inbox.pop(0) if self.handle.inbox else None
-            if content is not None:
-                self.run.setdefault("messages", []).append(
-                    {"role": "user", "content": content, "at": self.utcnow(), "handled": True}
-                )
-                interview["pending_question"] = None
-                self.deadline += time.monotonic() - waited_from
-                self.save()
-                self.set_status("executing")
-                return str(content)
-            time.sleep(0.2)
+        return self.runtime.wait_for_input(question)
 
     @property
     def guidance(self) -> list[str]:
@@ -418,115 +373,67 @@ class BaseRunner:
         self.emit("workspace_changed", {"kind": kind, "id": item_id, "action": action})
         return ref
 
-    def _pending_approval(self, kind: str, task_id: str) -> dict | None:
-        return next(
-            (
-                approval
-                for approval in self.run.get("approvals", [])
-                if approval.get("kind") == kind
-                and approval.get("task_id") == task_id
-                and approval.get("status") == "pending"
-            ),
-            None,
+    def request_approval(self, kind: str, task: dict, items: list[dict]) -> list[dict]:
+        return self.runtime.request_approval(kind, task, items)
+
+    def wait_for_interaction(
+        self,
+        interaction: dict,
+        *,
+        waiting_status: str = "awaiting_input",
+        queue_commands: bool = False,
+        poll_interval: float = 0.1,
+    ) -> dict:
+        return self.runtime.wait_for_interaction(
+            interaction,
+            waiting_status=waiting_status,
+            queue_commands=queue_commands,
+            poll_interval=poll_interval,
         )
 
-    def request_approval(self, kind: str, task: dict, items: list[dict]) -> list[dict]:
-        """Block on an editable approval batch and return the accepted specs.
+    def resolve_interaction(
+        self,
+        interaction: dict,
+        response: dict,
+        *,
+        event_data: dict | None = None,
+        persist: Callable[[], None] | None = None,
+    ) -> None:
+        self.runtime.resolve_interaction(
+            interaction,
+            response,
+            event_data=event_data,
+            persist=persist,
+        )
 
-        Reuses any pending batch for this task so a resumed run re-presents the
-        same items instead of proposing them twice.
-        """
-        approval = self._pending_approval(kind, task["id"])
-        if approval is None:
-            if not items:
-                return []
-            approval = {
-                "id": uuid.uuid4().hex[:10],
-                "kind": kind,
-                "task_id": task["id"],
-                "status": "pending",
-                "created": self.utcnow(),
-                "items": items,
-            }
-            self.run["approvals"].append(approval)
-        self.task_status(task, "awaiting_approval")
-        self.emit("approval_request", {"approval": approval})
-        self.set_status("awaiting_approval")
-        waited_from = time.monotonic()
-        # Wait durably: the handle delivers decisions in-process, but a
-        # decision submitted while no handle was attached only exists on disk,
-        # so the run document is re-read each pass. Time spent blocked on the
-        # auditor is added back to the deadline rather than counted against it.
-        decisions = approval.pop("submitted_decisions", None)
-        while decisions is None:
-            if self.handle.cancel.is_set():
-                raise Cancelled()
-            if self.handle.pause_requested.is_set():
-                self.set_status("paused")
-                while not self.handle.resume.wait(0.2):
-                    if self.handle.cancel.is_set():
-                        raise Cancelled()
-                self.handle.resume.clear()
-                self.handle.pause_requested.clear()
-                self.set_status("awaiting_approval")
-            if self.handle.approval_resolved.wait(0.2):
-                self.handle.approval_resolved.clear()
-                decisions = self.handle.decisions.pop(approval["id"], None)
-            if decisions is None:
-                durable = store.load_run(self.ws, self.run["id"])
-                current = next(
-                    (
-                        item for item in durable.get("approvals") or []
-                        if item.get("id") == approval["id"]
-                    ),
-                    None,
-                )
-                if current and current.get("submitted_decisions") is not None:
-                    decisions = current["submitted_decisions"]
-        self.deadline += time.monotonic() - waited_from
-        # Apply the decisions, then default anything the auditor did not answer
-        # to rejected — silence must never be read as consent for a mutation.
-        by_id = {item["id"]: item for item in approval["items"]}
-        for decision in decisions:
-            item = by_id.get(str(decision.get("item_id")))
-            action = decision.get("action")
-            if item is None or action not in ("approve", "reject", "edit"):
-                continue
-            if action == "edit":
-                item["decision"] = "edited"
-                item["edited_spec"] = decision.get("spec")
-            else:
-                item["decision"] = "approved" if action == "approve" else "rejected"
-        for item in approval["items"]:
-            if not item.get("decision"):
-                item["decision"] = "rejected"
+    def _record_approval_disposition(
+        self,
+        kind: str,
+        task: dict,
+        item: dict,
+    ) -> None:
         from ..documents import append_activity
         profile = llm.agent_status()
-        for item in approval["items"]:
-            append_activity(
-                self.ws, run_id=self.run["id"], stage=kind, task=task["id"],
-                purpose="auditor_disposition", provider=profile.get("provider"), model=profile.get("model"),
-                vision_used=False, prompt_version=None, template_versions=[], knowledge_packs=[],
-                document_ids=[], page_ranges=[], source_hashes=[], response_at=self.utcnow(),
-                response_hash=None, artifact_ref=f"proposal:{kind}:{item['id']}", disposition=item["decision"],
-            )
-        approval.update(status="resolved", resolved=self.utcnow())
-        approval.pop("response_submitted_at", None)
-        # Persist the resolved approval and resumed run status atomically. A
-        # save in between exposed an impossible state to pollers: the run said
-        # awaiting_approval while no pending approval existed.
-        self.run["status"] = "executing"
-        self.save()
-        self.emit("approval_resolved", {"approval": approval})
-        self.emit("run_status", {"status": "executing"})
-        self.task_status(task, "running")
-        accepted = []
-        for item in approval["items"]:
-            if item["decision"] == "approved":
-                accepted.append({**item, "spec": item["spec"]})
-            elif item["decision"] == "edited" and item.get("edited_spec"):
-                accepted.append({**item, "spec": item["edited_spec"]})
-        return accepted
+        append_activity(
+            self.ws,
+            run_id=self.run["id"],
+            stage=kind,
+            task=task["id"],
+            purpose="auditor_disposition",
+            provider=profile.get("provider"),
+            model=profile.get("model"),
+            vision_used=False,
+            prompt_version=None,
+            template_versions=[],
+            knowledge_packs=[],
+            document_ids=[],
+            page_ranges=[],
+            source_hashes=[],
+            response_at=self.utcnow(),
+            response_hash=None,
+            artifact_ref=f"proposal:{kind}:{item['id']}",
+            disposition=item["decision"],
+        )
 
     def proposal_item(self, title: str, rationale: str, spec: dict, evidence: dict | None = None) -> dict:
         return {

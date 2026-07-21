@@ -27,6 +27,7 @@ from ..workspaces import Workspace, WorkspaceError, load_workspace, slugify
 from . import joins as joins_mod
 from . import prompts, store, suggest, summary as summary_mod
 from .base import BaseRunner, Cancelled, LimitExceeded
+from .runtime import submit_approval_response, submit_interaction_response
 
 # Fixed V1 limits — deliberately not user-configurable yet.
 MAX_CUSTOM_ANALYSES = 6
@@ -515,60 +516,25 @@ def cancel_run(
 def resolve_approval(
     workspace: Workspace, run_id: str, approval_id: str, decisions: list
 ) -> dict:
-    run = store.load_run(workspace, run_id)
-    approval = next(
-        (a for a in run["approvals"] if a["id"] == approval_id), None
+    return submit_approval_response(
+        workspace,
+        run_id,
+        approval_id,
+        decisions,
+        handle=get_handle(run_id),
     )
-    if approval is None:
-        raise WorkspaceError("Approval not found on this run.")
-    if approval["status"] != "pending":
-        raise WorkspaceError("This approval batch was already resolved.")
-    approval["submitted_decisions"] = list(decisions or [])
-    approval["response_submitted_at"] = store.utcnow()
-    store.save_run(workspace, run)
-    store.append_event(
-        workspace, run_id, "approval_response_stored",
-        {"approval_id": approval_id},
-    )
-    handle = get_handle(run_id)
-    if handle is not None:
-        handle.decisions[approval_id] = list(decisions or [])
-        handle.approval_resolved.set()
-    elif run["status"] not in store.TERMINAL_STATUSES:
-        run["status"] = "interrupted"
-        store.save_run(workspace, run)
-    return run
 
 
 def resolve_interaction(
     workspace: Workspace, run_id: str, interaction_id: str, response: dict
 ) -> dict:
-    run = store.load_run(workspace, run_id)
-    interaction = next((item for item in run.get("interactions") or [] if item["id"] == interaction_id), None)
-    if interaction is None:
-        raise WorkspaceError("Interaction not found on this run.")
-    if interaction["status"] != "pending":
-        raise WorkspaceError("This interaction was already resolved.")
-    # Persist first so a restart between the HTTP response and worker wakeup
-    # cannot lose an auditor clarification or disposition batch.  A live
-    # handle consumes the same value immediately; an interrupted handle
-    # consumes it on resume.
-    interaction["submitted_response"] = dict(response or {})
-    interaction["response_submitted_at"] = store.utcnow()
-    store.save_run(workspace, run)
-    store.append_event(
-        workspace, run_id, "interaction_response_stored",
-        {"interaction_id": interaction_id},
+    return submit_interaction_response(
+        workspace,
+        run_id,
+        interaction_id,
+        response,
+        handle=get_handle(run_id),
     )
-    handle = get_handle(run_id)
-    if handle is not None:
-        with handle.lock:
-            handle.interaction_responses[interaction_id] = dict(response or {})
-        handle.interaction_resolved.set()
-    elif run["status"] not in store.TERMINAL_STATUSES:
-        run["status"] = "interrupted"
-        store.save_run(workspace, run)
-    return run
 
 
 def steer(

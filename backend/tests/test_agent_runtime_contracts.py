@@ -14,6 +14,8 @@ from app.agent.runtime import (
     LimitExceeded,
     ModelGateway,
     RunRuntime,
+    submit_approval_response,
+    submit_interaction_response,
 )
 
 
@@ -45,6 +47,8 @@ def test_run_runtime_contract_matches_active_base_runner(workspace_with_data):
         "drain_inbox",
         "wait_for_input",
         "request_approval",
+        "wait_for_interaction",
+        "resolve_interaction",
     }
 
 
@@ -263,6 +267,129 @@ def test_default_run_runtime_owns_checkpoint_controls_deadline_and_inbox(
         expired_runtime.checkpoint()
 
 
+def test_default_run_runtime_owns_restart_safe_approval_transitions(
+    workspace_with_data,
+):
+    run = store.new_run(workspace_with_data, "permission")
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    monotonic_values = iter([100.0, 110.0, 125.0])
+    runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=run,
+        state_lock=threading.RLock(),
+        handle=handle,
+        monotonic=lambda: next(monotonic_values),
+    )
+    task = {"id": "task-1", "status": "running"}
+    result = {}
+
+    worker = threading.Thread(
+        target=lambda: result.setdefault(
+            "accepted",
+            runtime.request_approval(
+                "proposal",
+                task,
+                [
+                    {
+                        "id": "item-1",
+                        "title": "Proposal",
+                        "rationale": "Contract test",
+                        "spec": {"value": 1},
+                        "decision": None,
+                        "edited_spec": None,
+                    }
+                ],
+            ),
+        )
+    )
+    worker.start()
+    for _ in range(100):
+        durable = store.load_run(workspace_with_data, run["id"])
+        if durable["status"] == "awaiting_approval":
+            break
+        threading.Event().wait(0.01)
+    else:
+        raise AssertionError("approval transition did not block")
+
+    approval = durable["approvals"][0]
+    submit_approval_response(
+        workspace_with_data,
+        run["id"],
+        approval["id"],
+        [{"item_id": "item-1", "action": "approve"}],
+        handle=None,
+    )
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert result["accepted"][0]["spec"] == {"value": 1}
+    assert runtime.deadline == 1915.0
+    durable = store.load_run(workspace_with_data, run["id"])
+    assert durable["status"] == "executing"
+    assert durable["approvals"][0]["status"] == "resolved"
+    assert durable["approvals"][0]["items"][0]["decision"] == "approved"
+    assert task["status"] == "running"
+
+
+def test_default_run_runtime_owns_restart_safe_structured_interactions(
+    workspace_with_data,
+):
+    run = store.new_command_run(
+        workspace_with_data,
+        "permission",
+        {"source": "chat", "text": "wait for structured input"},
+    )
+    interaction = {
+        "id": "interaction-1",
+        "type": "clarification",
+        "status": "pending",
+        "prompt": "Which target?",
+    }
+    run["interactions"] = [interaction]
+    store.save_run(workspace_with_data, run)
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    monotonic_values = iter([200.0, 210.0, 230.0])
+    runtime = DefaultRunRuntime(
+        workspace=workspace_with_data,
+        run=run,
+        state_lock=threading.RLock(),
+        handle=handle,
+        monotonic=lambda: next(monotonic_values),
+    )
+    result = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault(
+            "response", runtime.wait_for_interaction(interaction)
+        )
+    )
+    worker.start()
+    for _ in range(100):
+        durable = store.load_run(workspace_with_data, run["id"])
+        if durable["status"] == "awaiting_input":
+            break
+        threading.Event().wait(0.01)
+    else:
+        raise AssertionError("structured interaction did not block")
+
+    submit_interaction_response(
+        workspace_with_data,
+        run["id"],
+        interaction["id"],
+        {"text": "Use the report"},
+        handle=None,
+    )
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert result["response"] == {"text": "Use the report"}
+    assert runtime.deadline == 2020.0
+    runtime.resolve_interaction(interaction, result["response"])
+    durable = store.load_run(workspace_with_data, run["id"])
+    assert durable["status"] == "executing"
+    assert durable["interactions"][0]["status"] == "resolved"
+    assert durable["interactions"][0]["response"] == {"text": "Use the report"}
+
+
 def test_run_runtime_active_status_activity_and_warning_contract(workspace_with_data):
     active = _base_runner(workspace_with_data)
 
@@ -458,6 +585,30 @@ def test_base_runner_no_longer_owns_budgets_or_checkpoint_controls():
     assert "self.handle.cancel.is_set()" not in checkpoint_source
     assert "self.handle.pause_requested.is_set()" not in checkpoint_source
     assert "self.handle.inbox[:]" not in inbox_source
+
+
+def test_runtime_owns_approval_and_structured_interaction_transitions():
+    base_source = inspect.getsource(base.BaseRunner)
+    workflow_wait = inspect.getsource(
+        __import__(
+            "app.agent.workflow_runner", fromlist=["WorkflowRunner"]
+        ).WorkflowRunner._wait_interaction_response
+    )
+    action_wait = inspect.getsource(
+        __import__(
+            "app.agent.action_runner", fromlist=["ActionRunner"]
+        ).ActionRunner._wait_interaction
+    )
+    approval_submit = inspect.getsource(runner.resolve_approval)
+    interaction_submit = inspect.getsource(runner.resolve_interaction)
+
+    assert "submitted_decisions" not in base_source
+    assert "submitted_response" not in workflow_wait
+    assert "interaction_resolved.wait" not in action_wait
+    assert "store.save_run" not in approval_submit
+    assert "store.save_run" not in interaction_submit
+    assert "runtime.wait_for_interaction" in workflow_wait
+    assert "runtime.wait_for_interaction" in action_wait
 
 
 def test_model_gateway_delegates_budget_ledger_to_runtime():

@@ -88,11 +88,11 @@ backend/app/
 |  `- debug_routes.py          - workspace debug console APIs and live stream
 `- agent/
    |- runtime/                 - RunRuntime contract and active durable-run
-   |                             implementation plus the shared ModelGateway
-   |                             for provider calls and accounting
+   |                             implementation, restart-safe auditor response
+   |                             transitions, and shared ModelGateway
    |- store.py                 - durable run storage in AgentRuns/
-   |- base.py                  - temporary BaseRunner delegation facade for
-   |                             runtime controls, approvals, and interactions
+   |- base.py                  - temporary BaseRunner delegation facade and
+   |                             task/artifact hooks for current runners
    |- runner.py                - thread orchestration, active-handle registry,
    |                             recovery, pause/resume/cancel/retry/continue
    |- action_runner.py         - action-graph runner for isolated mutations
@@ -237,8 +237,9 @@ BaseRunner
   refreshed before every stage), `max_actions`, `max_waves`,
   `max_units_per_stage`, and a runtime deadline extended by time spent blocked
   on the auditor. `DefaultRunRuntime` owns the durable model-budget ledger,
-  dynamic limit updates, deadline, checkpoint controls, and live inbox
-  draining.
+  dynamic limit updates, deadline, checkpoint controls, live inbox draining,
+  approval batches, and structured-interaction waits. Offline auditor
+  responses are persisted before wakeup and consumed on same-schema restart.
 
 ### Model call discipline
 
@@ -252,9 +253,9 @@ BaseRunner
 - `agent.runtime` defines the target `RunRuntime` and `ModelGateway` structural
   contracts. `DefaultRunRuntime` owns synchronized run saves, event emission,
   durable run timing, status and warning transitions, activity/model-wait
-  projections, budgets, dynamic limits, deadlines, checkpoints, controls, and
-  inbox draining. `BaseRunner` delegates that surface while it still owns the
-  Phase 3 approval and interaction behavior.
+  projections, budgets, dynamic limits, deadlines, checkpoints, controls,
+  inbox draining, approvals, and auditor interactions. `BaseRunner` delegates
+  that surface while retaining temporary task and artifact-activity hooks.
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.

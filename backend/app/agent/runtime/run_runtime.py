@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from .. import store
+from .interactions import InteractionTransitions
 
 DEFAULT_MAX_MODEL_TURNS = 40
 DEFAULT_MAX_RUNTIME_SECONDS = 1800
@@ -113,6 +114,24 @@ class RunRuntime(Protocol):
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]: ...
 
+    def wait_for_interaction(
+        self,
+        interaction: dict[str, Any],
+        *,
+        waiting_status: str = "awaiting_input",
+        queue_commands: bool = False,
+        poll_interval: float = 0.1,
+    ) -> dict[str, Any]: ...
+
+    def resolve_interaction(
+        self,
+        interaction: dict[str, Any],
+        response: dict[str, Any],
+        *,
+        event_data: dict[str, Any] | None = None,
+        persist: Callable[[], None] | None = None,
+    ) -> None: ...
+
 
 class DefaultRunRuntime:
     """Own durable state, budgets, projections, and per-run controls."""
@@ -129,6 +148,11 @@ class DefaultRunRuntime:
         max_runtime_seconds: float = DEFAULT_MAX_RUNTIME_SECONDS,
         limit_error: type[Exception] = LimitExceeded,
         cancelled_error: type[Exception] = Cancelled,
+        task_transition: Callable[[dict[str, Any], str], None] | None = None,
+        approval_disposition: Callable[
+            [str, dict[str, Any], dict[str, Any]], None
+        ]
+        | None = None,
     ):
         self.workspace = workspace
         self.run = run
@@ -139,6 +163,23 @@ class DefaultRunRuntime:
         self._limit_error = limit_error
         self._cancelled_error = cancelled_error
         self._deadline = self._monotonic() + max_runtime_seconds
+        self._interactions = InteractionTransitions(
+            workspace=self.workspace,
+            run=self.run,
+            handle=self.handle,
+            save=self.save,
+            emit=self.emit,
+            set_status=self.set_status,
+            utcnow=self.utcnow,
+            monotonic=self._monotonic,
+            extend_deadline=self._extend_deadline,
+            cancelled_error=self._cancelled_error,
+            task_transition=task_transition,
+            approval_disposition=approval_disposition,
+        )
+
+    def _extend_deadline(self, seconds: float) -> None:
+        self._deadline += max(0.0, float(seconds))
 
     def save(self) -> None:
         with self._state_lock:
@@ -467,3 +508,44 @@ class DefaultRunRuntime:
             )
         if pending:
             self.save()
+
+    def wait_for_input(self, question: str) -> str:
+        return self._interactions.wait_for_input(question)
+
+    def request_approval(
+        self,
+        kind: str,
+        task: dict[str, Any],
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return self._interactions.request_approval(kind, task, items)
+
+    def wait_for_interaction(
+        self,
+        interaction: dict[str, Any],
+        *,
+        waiting_status: str = "awaiting_input",
+        queue_commands: bool = False,
+        poll_interval: float = 0.1,
+    ) -> dict[str, Any]:
+        return self._interactions.wait_for_interaction(
+            interaction,
+            waiting_status=waiting_status,
+            queue_commands=queue_commands,
+            poll_interval=poll_interval,
+        )
+
+    def resolve_interaction(
+        self,
+        interaction: dict[str, Any],
+        response: dict[str, Any],
+        *,
+        event_data: dict[str, Any] | None = None,
+        persist: Callable[[], None] | None = None,
+    ) -> None:
+        self._interactions.resolve_interaction(
+            interaction,
+            response,
+            event_data=event_data,
+            persist=persist,
+        )

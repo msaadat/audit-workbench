@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import time
 import uuid
 
 from .. import (
@@ -1483,33 +1482,10 @@ class WorkflowRunner(ActionRunner):
 
     # --------------------------------------------------------- interactions
     def _wait_interaction_response(self, interaction: dict) -> dict:
-        self.set_status("awaiting_input")
-        waited_from = time.monotonic()
-        response = interaction.pop("submitted_response", None)
-        while response is None:
-            if self.handle.cancel.is_set():
-                raise Cancelled()
-            if self.handle.pause_requested.is_set():
-                self.checkpoint()
-            if self.handle.interaction_resolved.wait(0.1):
-                self.handle.interaction_resolved.clear()
-                response = self.handle.interaction_responses.pop(interaction["id"], None)
-            if response is None:
-                # The response may have been persisted while no handle was
-                # attached, then this run resumed.
-                durable = store.load_run(self.ws, self.run["id"])
-                current = next((item for item in durable.get("interactions") or [] if item["id"] == interaction["id"]), None)
-                if current and current.get("submitted_response") is not None:
-                    response = current["submitted_response"]
-        self.deadline += time.monotonic() - waited_from
-        self.set_status("executing")
-        return dict(response or {})
+        return self.runtime.wait_for_interaction(interaction)
 
     def _resolve_interaction_record(self, interaction: dict, response: dict) -> None:
-        interaction.pop("submitted_response", None)
-        interaction.update(status="resolved", response=response, actor="auditor", resolved_at=store.utcnow())
-        self.save()
-        self.emit("interaction_resolved", {"interaction_id": interaction["id"]})
+        self.runtime.resolve_interaction(interaction, response)
 
     # ------------------------------------------------------------ finish
     def _finish_workflow(self) -> None:

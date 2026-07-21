@@ -400,12 +400,15 @@ The `RunRuntime` and `ModelGateway` structural contracts live under
 emission, UTC run timing, idempotent status events, warnings, activity
 revisions, concurrent model-wait projection, durable budgets and usage
 accounting, generic limit updates, the monotonic deadline, checkpoint controls,
-and both inbox-draining modes. Current runners reach those operations through
-the temporary `BaseRunner` facade. `DefaultModelGateway` owns provider
-concurrency, model profiles, stage tags, debug tracing, and hash-only
+both inbox-draining modes, approval batches, free-text input waits, and
+structured-interaction transitions. `runtime/interactions.py` persists auditor
+responses before waking a live worker, restores responses submitted while no
+worker is attached, and extends the monotonic deadline by time blocked on the
+auditor. Current runners reach these operations through the temporary
+`BaseRunner` facade or their runtime instance. `DefaultModelGateway` owns
+provider concurrency, model profiles, stage tags, debug tracing, and hash-only
 provenance, and delegates budget accounting and model-wait activity to the
-runtime. Approval and structured-interaction transitions remain on
-`BaseRunner` and the current schedulers for P3.5.
+runtime.
 
 ### Phase 1 Deletion Boundary
 
