@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 0.
-- Current task: `P0.2`.
-- Last completed task: `P0.1`.
+- Current task: `P0.3`.
+- Last completed task: `P0.2`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -48,7 +48,7 @@ status notes below.
 
 | Phase | Status | Next task |
 |---|---|---|
-| 0 | In progress | `P0.2` |
+| 0 | In progress | `P0.3` |
 | 1 | Pending Phase 0 gate | `P1.1` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
@@ -90,6 +90,13 @@ status notes below.
   frontend run endpoints, specialized runners, and `AgentRuns` consumers;
   documentation links and whitespace validation passed. No runtime behavior
   changed, so no behavioral test was required for this inventory-only task.
+- `P0.2` completed on 2026-07-21. Current-writer recovery now has a durable
+  checkpoint matrix covering queued, partially committed, approval-blocked,
+  interaction-blocked, interrupted-provider, and completed command runs.
+  Orphan recovery preserves the checkpoint payload, appends one interrupted
+  status event for active records, and leaves completed records untouched.
+  Focused verification: `2 passed` in `test_agent_runner.py` (the recovery
+  matrix plus approval-checkpoint resume-to-completion).
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -279,7 +286,7 @@ or source changes.
 - [x] `P0.1` Inventory every active run-creation, routing, API, UI, chat, intake,
   document-test, and document-analysis caller; record the clean-slate cutover
   boundary and the requirement that `Workspaces/` be empty.
-- [ ] `P0.2` Characterize same-schema recovery behavior for unstarted,
+- [x] `P0.2` Characterize same-schema recovery behavior for unstarted,
   partially committed, approval-blocked, interaction-blocked,
   interrupted-provider, and completed runs created during a test.
 - [ ] `P0.3` Characterize deterministic local routing, bounded-router fallback,

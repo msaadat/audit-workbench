@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app import llm, workspaces
-from app.agent import runner, store
+from app.agent import ledger, runner, store
 from conftest import wait_run
 
 
@@ -401,6 +401,124 @@ def test_rerun_leaves_user_edited_items_alone(workspace_with_data, fake_agent_ll
 
 
 # -------------------------------------------------------- interruption
+def test_same_schema_orphan_recovery_preserves_durable_checkpoints(workspace_with_data):
+    cases = {}
+
+    queued = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "queued command"}
+    )
+    cases[queued["id"]] = {"status": "queued", "checkpoint": queued["command"]}
+
+    partial = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "partially committed command"}
+    )
+    committed, in_flight = ledger.append_actions(
+        partial,
+        [
+            {"id": "committed", "type": "run_report_quality", "args": {}},
+            {
+                "id": "in-flight",
+                "type": "run_analytics",
+                "args": {
+                    "table": "transactions",
+                    "test": "duplicates",
+                    "params": {"columns": ["invoice_no"]},
+                },
+                "depends_on": ["committed"],
+            },
+        ],
+    )
+    ledger.transition(committed, "ready")
+    ledger.transition(committed, "running")
+    ledger.transition(committed, "succeeded")
+    ledger.transition(in_flight, "ready")
+    ledger.transition(in_flight, "running")
+    partial["status"] = "executing"
+    store.save_run(workspace_with_data, partial)
+    cases[partial["id"]] = {
+        "status": "executing",
+        "checkpoint": [action["status"] for action in partial["actions"]],
+    }
+
+    approval = store.new_command_run(
+        workspace_with_data, "permission", {"source": "chat", "text": "approval command"}
+    )
+    approval["status"] = "awaiting_approval"
+    approval["approvals"] = [
+        {"id": "approval-1", "kind": "mutations", "status": "pending", "items": []}
+    ]
+    store.save_run(workspace_with_data, approval)
+    cases[approval["id"]] = {
+        "status": "awaiting_approval",
+        "checkpoint": approval["approvals"],
+    }
+
+    interaction = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "interaction command"}
+    )
+    interaction["status"] = "awaiting_input"
+    interaction["interactions"] = [
+        {
+            "id": "interaction-1",
+            "action_id": "missing-target",
+            "type": "clarification",
+            "status": "pending",
+            "prompt": "Which artifact?",
+        }
+    ]
+    store.save_run(workspace_with_data, interaction)
+    cases[interaction["id"]] = {
+        "status": "awaiting_input",
+        "checkpoint": interaction["interactions"],
+    }
+
+    provider = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "provider command"}
+    )
+    provider["status"] = "interpreting"
+    provider["usage"].update(llm_turns=1, estimated_prompt_tokens=321)
+    store.save_run(workspace_with_data, provider)
+    cases[provider["id"]] = {
+        "status": "interpreting",
+        "checkpoint": provider["usage"],
+    }
+
+    completed = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "completed command"}
+    )
+    completed.update(status="completed", finished=store.utcnow(), summary_markdown="Done")
+    store.save_run(workspace_with_data, completed)
+
+    recovered = runner.recover_workspace(workspace_with_data)
+
+    assert set(recovered) == set(cases)
+    for run_id, expected in cases.items():
+        durable = store.load_run(workspace_with_data, run_id)
+        assert durable["status"] == "interrupted"
+        if expected["status"] == "queued":
+            checkpoint = durable["command"]
+        elif expected["status"] == "executing":
+            checkpoint = [action["status"] for action in durable["actions"]]
+        elif expected["status"] == "awaiting_approval":
+            checkpoint = durable["approvals"]
+        elif expected["status"] == "awaiting_input":
+            checkpoint = durable["interactions"]
+        else:
+            checkpoint = durable["usage"]
+        assert checkpoint == expected["checkpoint"]
+        assert store.read_events(workspace_with_data, run_id)[-1] == {
+            "seq": 1,
+            "at": store.read_events(workspace_with_data, run_id)[-1]["at"],
+            "type": "run_status",
+            "data": {"status": "interrupted"},
+        }
+
+    durable_completed = store.load_run(workspace_with_data, completed["id"])
+    assert durable_completed["status"] == "completed"
+    assert durable_completed["summary_markdown"] == "Done"
+    assert store.read_events(workspace_with_data, completed["id"]) == []
+
+
 def test_interrupted_run_can_resume_to_completion(workspace_with_data, fake_agent_llm):
     run = _start(workspace_with_data, mode="permission")
     _next_gate(workspace_with_data, run["id"])
