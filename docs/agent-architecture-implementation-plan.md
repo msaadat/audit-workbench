@@ -23,6 +23,72 @@ application runnable and persisted runs recoverable. Old code is deleted only
 after the replacement path has characterization tests and has become the only
 writer for that behavior.
 
+## Implementation Status And Session Handoff
+
+**Last updated:** 2026-07-21
+
+**Current position:**
+
+- Overall migration: not started.
+- Current phase: Phase 0.
+- Current task: `P0.1`.
+- Last completed task: none.
+- Active blockers: none.
+
+The checklists under each phase are the durable execution ledger for this
+migration. A task ID identifies the smallest intended implementation and review
+unit. An unchecked task is pending and a checked task is complete. The
+`Current position` above identifies the next task when idle or the one task in
+progress when active; blockers and material deviations are recorded in the
+status notes below.
+
+**Phase status:**
+
+| Phase | Status | Next task |
+|---|---|---|
+| 0 | Not started | `P0.1` |
+| 1 | Pending Phase 0 gate | `P1.1` |
+| 2 | Pending Phase 1 gate | `P2.1` |
+| 3 | Pending Phase 2 gate | `P3.1` |
+| 4 | Pending Phase 3 gate | `P4.1` |
+| 5 | Pending Phase 4 gate | `P5.1` |
+| 6 | Pending Phase 5 gate | `P6.1` |
+| 7 | Pending Phase 6 gate | `P7.1` |
+| 8 | Pending Phase 7 gate | `P8.1` |
+| 9 | Pending Phase 8 gate | `P9.1` |
+| 10 | Pending Phase 9 gate | `P10.1` |
+| 11 | Pending required workflow migrations | `P11.1` |
+| 12 | Pending routing consolidation | `P12.1` |
+| 13 | Pending compatibility horizons | `P13.1` |
+
+**Status update rules:**
+
+1. At the start of a session, read this section, the current phase checklist,
+   recent Git history, and the worktree status before changing code.
+2. Work on only the `Current task` unless the task is explicitly split in this
+   document first. Do not start the next task merely because time remains.
+3. Mark a task complete only after its focused tests pass and its stated
+   compatibility expectations are met. A phase remains incomplete until its
+   exit or deletion gate passes.
+4. Commit the implementation, tests, and this status update together. The Git
+   commit is the authoritative handoff between sessions and computers.
+5. Before ending a session, update `Current position`, the phase table, the
+   relevant checkbox, test results, decisions, and the exact next task.
+6. If blocked, leave the task unchecked, record the blocker and evidence in
+   the status notes, and do not silently advance to a later task.
+
+**Status notes and decisions:**
+
+- No implementation task has started.
+- Migration verification: not run; only the implementation plan has been
+  prepared for task-level tracking.
+- The persisted-run compatibility policy must be made explicit in `P0.2` and
+  `P1.2` before v2 full-audit code is removed.
+- Partially executed v2 broad-audit runs must not be converted in a way that
+  repeats committed actions or loses pending approvals or interactions.
+- Run-engine inference is intentionally scheduled before action-runner policy
+  deletion, even though final routing consolidation occurs in Phase 11.
+
 ## 2. Outcomes And Non-Goals
 
 ### Required Outcomes
@@ -261,6 +327,30 @@ or source changes.
 
 **Objective:** Freeze the behavior that must survive the refactor.
 
+**Tasks:**
+
+- [ ] `P0.1` Inventory current run shapes and add representative fixture
+  directories for v1, v2 action, v3 workflow, intake, document-test, and
+  document-analysis runs.
+- [ ] `P0.2` Define and characterize the resume policy for every fixture,
+  including unstarted, partially committed, approval-blocked,
+  interaction-blocked, interrupted-provider, and completed runs.
+- [ ] `P0.3` Characterize deterministic local routing, bounded-router fallback,
+  generic action-interpreter fallback, and fail-closed broad-audit behavior.
+- [ ] `P0.4` Characterize SSE events, activity records, run projections,
+  approvals, interactions, queued commands, retry, and continue behavior.
+- [ ] `P0.5` Characterize workflow materialization, semantic unit IDs,
+  readiness and staleness, stable parallel results, serialized commits,
+  sidecar reuse, and conflict recovery.
+- [ ] `P0.6` Characterize generic action DAG validation, repair,
+  preconditions, idempotence, reconciliation, undo, resume, and failure
+  propagation without changing production behavior.
+- [ ] `P0.7` Add provider-accounting and privacy assertions covering budgets,
+  concurrency, table-row exclusion, bounded document context, and hash-only
+  provenance.
+- [ ] `P0.8` Run the Phase 0 focused suites, document any intentionally
+  unsupported historical shape, and update the phase gate and current status.
+
 **Work:**
 
 - Document current run shapes for legacy v1, generic v2 actions, broad-audit
@@ -300,6 +390,31 @@ persisted run shape has an explicit resume expectation.
 **Objective:** Make the v2 scheduler a genuinely generic action runner before
 changing class structure.
 
+**Tasks:**
+
+- [ ] `P1.1` Add additive `engine` and `engine_schema_version` fields for new
+  runs plus a pure engine-inference helper for old run shapes; keep dispatch
+  behavior unchanged.
+- [ ] `P1.2` Implement the Phase 0 compatibility matrix: distinguish
+  convertible unstarted v2 broad-audit runs from partially executed runs that
+  require a compatibility path.
+- [ ] `P1.3` Introduce `ActionRunner` as the canonical class name with a
+  temporary `CommandRunner` import alias; make no policy deletion in this
+  naming-only task.
+- [ ] `P1.4` Add a fail-closed guard so newly routed broad-audit and planning
+  requests cannot enter the canonical action planner.
+- [ ] `P1.5` Convert eligible unstarted persisted v2 broad-audit runs to the
+  workflow engine with a durable compatibility event and stable run identity.
+- [ ] `P1.6` Isolate any still-supported partially executed v2 broad-audit
+  behavior in a compatibility adapter that preserves actions, approvals,
+  interactions, receipts, and queued commands.
+- [ ] `P1.7` Remove planning preparation, audit action insertion, audit budget
+  reservations, and full-audit validation from the canonical `ActionRunner`.
+- [ ] `P1.8` Remove obsolete interpreter prompt clauses and update focused
+  action, workflow, recovery, and routing tests.
+- [ ] `P1.9` Prove the deletion gate and update the compatibility horizon and
+  current status.
+
 **Work:**
 
 - Rename `CommandRunner` to `ActionRunner` or introduce `ActionRunner` as the
@@ -337,6 +452,18 @@ verification stages.
 
 **Objective:** Make the action ledger domain-neutral.
 
+**Tasks:**
+
+- [ ] `P2.1` Move any lifecycle behavior still required by resumable legacy v2
+  runs behind the Phase 1 compatibility adapter, with fixture-based tests.
+- [ ] `P2.2` Convert audit-lifecycle normalization tests into workflow or
+  compatibility tests while retaining generic DAG characterization.
+- [ ] `P2.3` Remove `audit_lifecycle` from `append_actions(...)` and its
+  canonical callers.
+- [ ] `P2.4` Remove audit lifecycle constants and enforcement from
+  `ledger.py`, then run the action and workflow focused suites.
+- [ ] `P2.5` Prove the domain-neutral ledger exit gate and update status.
+
 **Work:**
 
 - Remove `AUDIT_LIFECYCLE_STAGES` and `AUDIT_LIFECYCLE_RANK`.
@@ -362,6 +489,27 @@ working papers, dashboard, reports, or audit completion.
 ### Phase 3: Introduce Shared Runtime Services
 
 **Objective:** Separate scheduler algorithms from durable-run housekeeping.
+
+**Tasks:**
+
+- [ ] `P3.1` Define the small `RunRuntime` and `ModelGateway` public contracts
+  plus compatibility tests, without moving behavior.
+- [ ] `P3.2` Extract the provider semaphore, model profiles, token charging,
+  retries, stage tags, telemetry, and hash-only provenance into
+  `ModelGateway`; make `BaseRunner` delegate to it.
+- [ ] `P3.3` Extract run save, event emission, activity projection, status, and
+  durable timing operations into `RunRuntime` with delegation from
+  `BaseRunner`.
+- [ ] `P3.4` Extract budgets, dynamic limits, deadlines, checkpoints,
+  pause/resume, cancellation, and inbox draining into `RunRuntime`.
+- [ ] `P3.5` Extract approval and structured-interaction transitions, including
+  blocked-time deadline extension and restart behavior.
+- [ ] `P3.6` Inject the runtime into `ActionRunner` while retaining the
+  compatibility facade and existing API behavior.
+- [ ] `P3.7` Inject the runtime into the existing `WorkflowRunner` without yet
+  making it domain-neutral or moving its stage handlers.
+- [ ] `P3.8` Prove shared budgets, controls, queued follow-ups, terminal crash
+  handling, leaf-runner compatibility, and the no-direct-provider-call gate.
 
 **Work:**
 
@@ -409,6 +557,28 @@ provider calls outside the runtime APIs.
 
 **Objective:** Make capability context selection complete, bounded, inspectable,
 and manually editable.
+
+**Tasks:**
+
+- [ ] `P4.1` Define versioned `ContextSpec`, source, representation, budget,
+  privacy, selector, manifest, and bundle models with serialization tests.
+- [ ] `P4.2` Add preset and selector registries with duplicate, unknown,
+  unversioned, unsupported-source, and invalid-privacy validation.
+- [ ] `P4.3` Implement deterministic manifest identity, atomic persistence,
+  source hashing, omission records, truncation records, and supplied-size
+  metrics without persisting bundle content.
+- [ ] `P4.4` Implement resolver ordering, global and per-source limits,
+  required/optional source behavior, deny-by-default representations, and
+  stable automatic-selection reasons.
+- [ ] `P4.5` Adapt existing document and methodology context builders for the
+  APM slice without copying their domain logic.
+- [ ] `P4.6` Adapt table metadata/profile context and structurally reject
+  row-level representations before worker invocation.
+- [ ] `P4.7` Specify and implement the intended auditor-editable surface for
+  context selection, or amend the objective and contracts to make the scope
+  explicitly declaration-only.
+- [ ] `P4.8` Route one real capability through `ContextResolver`, verify
+  invalidation on spec/selector changes, and prove the privacy exit gate.
 
 **Work:**
 
@@ -463,6 +633,27 @@ through `ContextResolver`, and its worker has no workspace access.
 **Objective:** Establish the model-generation/mutation boundary before moving
 all audit stages.
 
+**Tasks:**
+
+- [ ] `P5.1` Define immutable worker request/result models, versioned registry
+  metadata, response-schema validation, and bounded repair contracts.
+- [ ] `P5.2` Define executor request/result and receipt models, registry
+  metadata, parent-hash/CAS requirements, and reconciliation contracts.
+- [ ] `P5.3` Implement a runner-independent unit-pipeline service for context,
+  manifest, worker, proposal, approval, executor, receipt, and readiness
+  sequencing.
+- [ ] `P5.4` Add proposal and receipt sidecar validation and recovery tests for
+  every interruption boundary in the recovery matrix.
+- [ ] `P5.5` Extract the existing APM prompt and semantic validation into a
+  planning worker that has no workspace access.
+- [ ] `P5.6` Extract APM mutation, parent checks, edit preservation,
+  postconditions, reconciliation, and receipts into a planning executor with
+  no model dependency.
+- [ ] `P5.7` Switch only `planning.apm_ready` to the registered pipeline,
+  remove its old writer, and preserve payload and UI projections.
+- [ ] `P5.8` Prove no rebilling after proposal persistence, conflict behavior,
+  approval ordering, and the APM vertical-slice exit gate.
+
 **Work:**
 
 - Add worker request/result types, worker registry validation, prompt/version
@@ -508,6 +699,26 @@ registered worker, a proposal sidecar, and a registered executor.
 
 **Objective:** Remove inheritance from the action runner and make capability
 execution entirely registry-driven.
+
+**Tasks:**
+
+- [ ] `P6.1` Add a synthetic non-audit workflow registry and golden tests for
+  closure, readiness, semantic units, stable scheduling, and recovery.
+- [ ] `P6.2` Extract generic materialization, unit transitions, stage folding,
+  stable all-settled scheduling, and finish behavior into the new runtime
+  scheduler without switching production dispatch.
+- [ ] `P6.3` Replace domain handler dispatch with capability, worker, executor,
+  and context registry lookup through the Phase 5 unit pipeline.
+- [ ] `P6.4` Move legacy adoption and run-shape translation behind the
+  persisted-run compatibility adapter.
+- [ ] `P6.5` Inject routing results into the scheduler and remove scheduler
+  fallback calls to the action interpreter; leave final routing consolidation
+  for Phase 11.
+- [ ] `P6.6` Switch production workflow dispatch to the composed scheduler and
+  retain only a temporary import adapter at the old module path.
+- [ ] `P6.7` Add and pass import-boundary enforcement for runtime modules.
+- [ ] `P6.8` Prove parity for dynamic expansion, partial failure, deterministic
+  commit order, next outcomes, and the no-inheritance/no-domain-handler gate.
 
 **Work:**
 
@@ -555,6 +766,70 @@ execution entirely registry-driven.
 
 **Objective:** Make one file authoritative for audit dependencies and migrate
 the remaining v3 handlers to declarations, workers, and executors.
+
+**Tasks:**
+
+- [ ] `P7.1` Create `workflows/audit.py` with versioned workflow metadata and
+  the current dependency graph, preserving capability IDs and ordering behind
+  a compatibility re-export.
+- [ ] `P7.2` Add registry composition and startup validation for grouped audit
+  capability, context, worker, and executor modules before moving a writer.
+- [ ] `P7A.1` Move `planning.context_ready` readiness, invalidation, and unit
+  expansion into the planning capability module with golden identity tests.
+- [ ] `P7A.2` Extract context synthesis and planning-context commit behavior,
+  switch the capability to the registered pipeline, and remove its old handler.
+- [ ] `P7B.1` Move the completed `planning.apm_ready` declaration and registry
+  wiring into the grouped planning modules without changing identity.
+- [ ] `P7B.2` Remove the temporary APM vertical-slice adapter and prove the
+  Phase 5 behavior through the authoritative audit workflow.
+- [ ] `P7C.1` Move `planning.rcm_ready` readiness, invalidation, semantic units,
+  context, matching, and validation into grouped declarations and workers.
+- [ ] `P7C.2` Extract row-level commit, edit preservation, CAS, reconciliation,
+  and receipts; switch the writer and delete the old RCM handler.
+- [ ] `P7D.1` Move `planning.planned_tests_ready` readiness and per-RCM unit
+  expansion with stable unit and matching tests.
+- [ ] `P7D.2` Extract planned-test generation, validation, commit, rollback,
+  and receipts; switch the writer and delete the old handler.
+- [ ] `P7E.1` Move fieldwork-definition readiness and unit expansion while
+  preserving required execution-engine and planned-test linkage rules.
+- [ ] `P7E.2` Migrate data-test definition workers and linked-write executors,
+  switch their writer, and prove rollback and recovery.
+- [ ] `P7E.3` Migrate document-test definition workers and linked-write
+  executors, switch their writer, and prove attachment/linkage compatibility.
+- [ ] `P7F.1` Move fieldwork-execution readiness, invalidation, attempt limits,
+  and data/document semantic units.
+- [ ] `P7F.2` Migrate deterministic and data-test execution paths with local
+  Polars computation, receipts, and recovery.
+- [ ] `P7F.3` Migrate model-backed document QA through the injected gateway and
+  declared context, then remove the old execution handler.
+- [ ] `P7G.1` Move rollup readiness and deterministic execution into a local
+  executor with stable result and observation identities.
+- [ ] `P7G.2` Migrate the observation/disposition interaction to a declared
+  checkpoint and prove pause, resume, and auditor-edit behavior.
+- [ ] `P7H.1` Move finding readiness, eligible-observation units, context,
+  evidence rules, and proposal validation.
+- [ ] `P7H.2` Extract evidence-preserving finding commits and receipts, switch
+  the writer, and remove the old finding handler.
+- [ ] `P7I.1` Move working-paper readiness and semantic units into the
+  reporting capability module.
+- [ ] `P7I.2` Switch working-paper generation to a deterministic executor and
+  remove the old handler.
+- [ ] `P7J.1` Move dashboard readiness, inputs, and deterministic selection or
+  declared curation context into the reporting capability module.
+- [ ] `P7J.2` Switch tile commits to a conflict-aware executor and remove the
+  old dashboard handler.
+- [ ] `P7K.1` Move report readiness, bounded context, reconciliation policy,
+  prompt, schema validation, and source rules.
+- [ ] `P7K.2` Extract report commit and reconciliation receipts, switch the
+  writer, and remove the old report handler.
+- [ ] `P7L.1` Move audit-verification readiness and quality checks into a
+  deterministic capability and executor.
+- [ ] `P7L.2` Switch verification, preserve completion projections, and remove
+  the final audit-specific scheduler handler.
+- [ ] `P7.3` Replace `audit_capabilities.py` and `audit_workers.py` with
+  compatibility re-exports only, then delete them when imports permit.
+- [ ] `P7.4` Prove the phase gate, authoritative graph uniqueness, import
+  boundaries, full workflow closure, frontend projections, and status update.
 
 **Work:**
 
@@ -614,6 +889,33 @@ soon as its slice passes; do not keep dual writers.
 
 **Objective:** Handle requests such as "see the two tables, perform relevant
 joins and data analysis" as a durable outcome workflow.
+
+**Tasks:**
+
+- [ ] `P8.1` Decide and document the persisted artifact and readiness contract
+  for inferred relationships, materialized joins, analysis definitions, and
+  bounded results without silently changing workspace schemas.
+- [ ] `P8.2` Define `workflows/analysis.py`, capability identities,
+  dependencies, scope limits, and deterministic routing outcomes.
+- [ ] `P8.3` Implement table scope resolution for explicit targets, selected UI
+  artifacts, and bounded eligible-workspace fallback, including clarification
+  for ambiguous scope.
+- [ ] `P8.4` Implement `data.relationships_inferred` from deterministic local
+  diagnostics, with stable evidence and no model-generated relationship facts.
+- [ ] `P8.5` Implement `data.joins_ready` with ambiguity handling,
+  materialization preconditions, idempotence, CAS, and receipts.
+- [ ] `P8.6` Add declared schema/profile/aggregate context with structural
+  table-row exclusion and privacy tests.
+- [ ] `P8.7` Implement the analysis-definition worker, bounded repair, and
+  validation for analytics, validations, query specs, and safe Polars code.
+- [ ] `P8.8` Implement deterministic persistence of rerunnable analysis
+  definitions with deduplication and receipts.
+- [ ] `P8.9` Implement `analysis.executed` through existing local services and
+  persist only the approved bounded result contract.
+- [ ] `P8.10` Route data-analysis requests to the workflow while preserving
+  isolated run/pin operations in `ActionRunner`.
+- [ ] `P8.11` Prove repeat-run reuse, unsafe-join behavior, privacy, local-only
+  execution, full integration tests, and the phase gate.
 
 **Workflow:**
 
@@ -678,6 +980,32 @@ workflow scheduler with different declared outcome sets.
 **Objective:** Replace duplicate standalone and planning document-analysis
 implementations with one capability workflow.
 
+**Tasks:**
+
+- [ ] `P9.1` Define the persistence and readiness contract for run-local chunk
+  proposals, reduced document analyses, review state, and downstream source
+  hashes.
+- [ ] `P9.2` Define `workflows/documents.py`, stable document/chunk unit IDs,
+  dependencies, eligible text states, bounds, and routing scope.
+- [ ] `P9.3` Implement deterministic text readiness and extraction execution
+  by adapting existing document services.
+- [ ] `P9.4` Extract the single chunk-map worker with declared context,
+  citation rules, validation, and per-chunk proposal persistence.
+- [ ] `P9.5` Add bounded all-settled chunk scheduling and recovery so successful
+  chunk proposals survive sibling failure and restart.
+- [ ] `P9.6` Extract the single reduction worker with stable chunk ordering,
+  proposal-sidecar inputs, bounded context, and semantic validation.
+- [ ] `P9.7` Extract the single analysis persistence executor with source/text
+  hashes, CAS, reconciliation, receipts, and refresh/conflict behavior.
+- [ ] `P9.8` Separate generated and auditor-reviewed readiness and preserve
+  status, review, citation, and activity projections.
+- [ ] `P9.9` Route standalone analysis and audit-planning dependencies through
+  the same workflow implementation.
+- [ ] `P9.10` Reduce `DocumentAnalysisRunner` to a persisted-run adapter and
+  remove every duplicate map/reduce implementation.
+- [ ] `P9.11` Prove billing reuse, replacement invalidation, format parity,
+  page/character bounds, integration behavior, and the phase gate.
+
 **Workflow:**
 
 ```text
@@ -741,6 +1069,26 @@ and one persistence executor.
 **Objective:** Apply the architecture consistently without forcing unlike
 scheduling protocols into the workflow runner.
 
+**Tasks:**
+
+- [ ] `P10.1` Inventory intake scheduling requirements and write the required
+  decision record against workflow semantic units, review checkpoints, file
+  operations, batch identity, and recovery.
+- [ ] `P10.2` Implement the intake decision: either migrate declared outcomes
+  incrementally or retain a thin runner using `RunRuntime`, `ModelGateway`, and
+  declared worker/context contracts.
+- [ ] `P10.3` Prove intake review, idempotent apply, local file privacy,
+  budgets, restart behavior, and persisted compatibility.
+- [ ] `P10.4` Inventory document-test scheduling requirements and write the
+  required decision record against fan-out, comparisons, disposition,
+  attachments, evidence anchors, linked writes, and recovery.
+- [ ] `P10.5` Implement the document-test decision and route all model calls
+  through the injected gateway without duplicating `doc_tests.run_item`.
+- [ ] `P10.6` Prove per-item resume, comparison/disposition behavior,
+  RCM-linked receipts, privacy, budgets, and persisted compatibility.
+- [ ] `P10.7` Update the package migration and compatibility horizon to reflect
+  both decisions, then run the phase integration gate and update status.
+
 #### Intake
 
 - Model intake as capabilities only if its classify/review/apply lifecycle maps
@@ -774,6 +1122,23 @@ implementation.
 
 **Objective:** Give requests one clear route and make the execution engine
 explicit.
+
+**Tasks:**
+
+- [ ] `P11.1` Reconcile the early engine fields and inference from Phase 1 with
+  final workflow/action/compatibility engine names and schema versions.
+- [ ] `P11.2` Move deterministic templates, phrases, outcome validation, and
+  action-intent validation into pure `agent/routing.py` functions.
+- [ ] `P11.3` Define and validate the bounded router-worker result schema for
+  workflow, action, clarification, and unsupported outcomes.
+- [ ] `P11.4` Persist one normalized route and selected engine before thread
+  launch, preserving current API projections.
+- [ ] `P11.5` Dispatch new runs only by explicit engine and old runs only
+  through the compatibility classifier.
+- [ ] `P11.6` Remove local resolution and cross-scheduler fallback from both
+  schedulers, preserving deterministic no-model routing for common requests.
+- [ ] `P11.7` Prove the routing matrix, one-live-run rule, global concurrency,
+  queued FIFO, retry/continue links, terminal crash guarantees, and phase gate.
 
 **Work:**
 
@@ -815,6 +1180,21 @@ scheduler contains a fallback call into the other scheduler.
 **Objective:** Remove the final obsolete general runner without coupling that
 risk to the v2/v3 cleanup.
 
+**Tasks:**
+
+- [ ] `P12.1` Inventory all v1 creation, resume, API, UI, chat, and historical
+  projection callers, then lock the inventory with tests.
+- [ ] `P12.2` Route supported exploratory-analysis creation paths to the Phase
+  8 workflow while preserving request scope and visible projections.
+- [ ] `P12.3` Stop creating new v1 runs and fail closed or clarify unsupported
+  legacy-only request shapes.
+- [ ] `P12.4` Move the fixed v1 runner, stages, validators, and limits into the
+  compatibility package without changing persisted resume behavior.
+- [ ] `P12.5` Implement the chosen compatibility horizon: read-only history,
+  adapter resume, or safe explicit conversion per characterized run shape.
+- [ ] `P12.6` Prove all current UI/API paths use workflow or action engines,
+  historical cards still render, and the phase gate passes.
+
 **Work:**
 
 - Inventory every caller of `start_run(..., kind="analysis")` and every UI/API
@@ -837,6 +1217,21 @@ engines, and removal does not alter historical run display.
 
 **Objective:** Finish the simplification after all replacement paths are
 stable.
+
+**Tasks:**
+
+- [ ] `P13.1` Verify each documented compatibility horizon against persisted
+  fixtures and production-support policy before deleting an adapter or writer.
+- [ ] `P13.2` Remove expired runner adapters, aliases, empty modules, duplicate
+  writers, and re-export shims one family at a time with focused tests.
+- [ ] `P13.3` Remove obsolete run projections only after frontend and debug
+  consumers have migrated and historical fixtures remain renderable.
+- [ ] `P13.4` Add final static import-boundary and single-provider-path
+  enforcement across runtime, schedulers, workers, executors, and domains.
+- [ ] `P13.5` Update architecture, API, telemetry, developer, and handoff docs;
+  run the full backend suite and frontend build.
+- [ ] `P13.6` Prove the definition of done, mark the migration complete, and
+  record any intentionally retained compatibility reader and its owner.
 
 **Work:**
 
@@ -1033,15 +1428,26 @@ from zero values. Do not backfill invented details for old runs.
 
 ## 11. Review And Commit Strategy
 
+The default Git commit unit is one checked task ID from the phase checklists.
+A task commit includes its production changes, tests, and status edits. If a
+session must end with a task incomplete, the handoff commit must leave the
+application runnable, keep the task unchecked, identify itself as incomplete,
+and record the exact remaining work under `Status notes and decisions`.
+
+Pull requests may group consecutive task commits when they share one phase gate,
+but they must remain reviewable commit by commit. Do not squash away task
+boundaries until the migration is complete and persisted-run compatibility no
+longer depends on the historical sequence.
+
 Prefer reviewable pull requests in this order:
 
 1. Characterization fixtures and tests only.
-2. V2 full-audit removal and action-runner naming.
+2. Engine inference, v2 compatibility policy, and action-runner naming.
 3. Ledger audit-policy removal.
 4. Runtime and model-gateway extraction with delegation.
 5. Context contracts plus one adapter-backed resolver slice.
 6. Worker/executor interfaces plus APM vertical slice.
-7. Domain-neutral workflow scheduler and routing extraction.
+7. Domain-neutral workflow scheduler and injected routing boundary.
 8. One pull request per audit capability family or tightly related group.
 9. Exploratory analysis workflow.
 10. Document-analysis unification.
@@ -1101,8 +1507,9 @@ The architecture migration is complete when:
 ## 14. Recommended Starting Point
 
 Begin with Phase 0 and land it independently. The first production-code change
-should then remove v2 full-audit orchestration while preserving the v3 audit
-path and generic action behavior. Do not start by moving files or rewriting
-`WorkflowRunner`; doing so before the compatibility tests and policy cleanup
-would obscure which scheduler owns each behavior and make persisted-run
-regressions harder to diagnose.
+should be `P1.1`, which adds explicit engine identity and inference without
+changing dispatch. Then establish the persisted v2 compatibility path before
+removing full-audit orchestration from the canonical action runner. Do not start
+by moving files or rewriting `WorkflowRunner`; doing so before the compatibility
+tests and policy cleanup would obscure which scheduler owns each behavior and
+make persisted-run regressions harder to diagnose.
