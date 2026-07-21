@@ -35,6 +35,26 @@ def test_registry_and_graph_reject_invalid_contracts(workspace_with_data):
         ledger.append_actions(run, [{"id": "a", "type": "run_report_quality", "args": {}, "depends_on": ["missing"]}])
 
 
+def test_action_graph_rejects_duplicate_intent_even_with_distinct_ids(
+    workspace_with_data,
+):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "check once"}
+    )
+
+    with pytest.raises(workspaces.WorkspaceError, match="duplicate action intent"):
+        ledger.append_actions(
+            run,
+            [
+                {"id": "quality-1", "type": "run_report_quality", "args": {}},
+                {"id": "quality-2", "type": "run_report_quality", "args": {}},
+            ],
+        )
+
+    assert run["actions"] == []
+    assert run["graph_revision"] == 0
+
+
 def test_singleton_target_kind_is_normalized_before_validation(workspace_with_data):
     run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "run the document test"})
     action = ledger.append_actions(run, [{
@@ -1006,6 +1026,56 @@ def test_dependent_mutations_rebase_to_succeeded_dependency(workspace_with_data)
     assert run["interactions"] == []
     assert workspace_with_data.planning["context"]["objective"] == "Audit procurement"
     assert workspace_with_data.planning["apm_markdown"] == "# Procurement audit plan"
+
+
+def test_failed_action_blocks_transitive_dependents_without_execution(
+    workspace_with_data,
+):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "dependent checks"}
+    )
+    failed, child, grandchild = ledger.append_actions(
+        run,
+        [
+            {"id": "quality", "type": "run_report_quality", "args": {}},
+            {
+                "id": "duplicates",
+                "type": "run_analytics",
+                "args": {
+                    "table": "transactions",
+                    "test": "duplicates",
+                    "params": {"columns": ["invoice_no"]},
+                },
+                "depends_on": ["quality"],
+            },
+            {
+                "id": "amounts",
+                "type": "run_analytics",
+                "args": {
+                    "table": "transactions",
+                    "test": "round_numbers",
+                    "params": {"column": "amount"},
+                },
+                "depends_on": ["duplicates"],
+            },
+        ],
+    )
+    ledger.transition(failed, "ready")
+    ledger.transition(failed, "running")
+    ledger.transition(failed, "failed")
+    command = command_runner.CommandRunner(
+        workspace_with_data, run, runner.RunHandle(workspace_with_data.id, run["id"])
+    )
+
+    command._block_failed_dependencies()
+    command._block_failed_dependencies()
+
+    assert failed["status"] == "failed"
+    assert child["status"] == "blocked"
+    assert grandchild["status"] == "blocked"
+    assert child["error"] == "A required action did not succeed."
+    assert grandchild["error"] == "A required action did not succeed."
+    assert run["activity"]["phase"] == "actions.blocked"
 
 
 def test_external_change_still_requires_conflict_resolution(workspace_with_data):

@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 0.
-- Current task: `P0.6`.
-- Last completed task: `P0.5`.
+- Current task: `P0.7`.
+- Last completed task: `P0.6`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -48,7 +48,7 @@ status notes below.
 
 | Phase | Status | Next task |
 |---|---|---|
-| 0 | In progress | `P0.6` |
+| 0 | In progress | `P0.7` |
 | 1 | Pending Phase 0 gate | `P1.1` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
@@ -116,6 +116,13 @@ status notes below.
   detection, bounded all-settled ordering, dynamic expansion, unrelated-write
   merge versus parent conflict, and linked-write recovery: `8 passed` in
   `test_workflow_v2.py`.
+- `P0.6` completed on 2026-07-21. Generic action characterization now
+  explicitly rejects duplicate semantic intent across distinct IDs and proves
+  failure propagation blocks direct and transitive dependents without
+  execution. The focused gate also covers graph repair, cycle validation,
+  preconditions and external conflict, resume/rebase, batch rollback,
+  after-apply reconciliation, and undo: `9 passed` in
+  `test_command_agent.py`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -315,7 +322,7 @@ or source changes.
 - [x] `P0.5` Characterize workflow materialization, semantic unit IDs,
   readiness and staleness, stable parallel results, serialized commits,
   sidecar reuse, and conflict recovery.
-- [ ] `P0.6` Characterize generic action DAG validation, repair,
+- [x] `P0.6` Characterize generic action DAG validation, repair,
   preconditions, idempotence, reconciliation, undo, resume, and failure
   propagation without changing active behavior.
 - [ ] `P0.7` Add provider-accounting and privacy assertions covering budgets,
