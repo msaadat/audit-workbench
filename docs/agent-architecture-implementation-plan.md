@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 0.
-- Current task: `P0.3`.
-- Last completed task: `P0.2`.
+- Current task: `P0.4`.
+- Last completed task: `P0.3`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -48,7 +48,7 @@ status notes below.
 
 | Phase | Status | Next task |
 |---|---|---|
-| 0 | In progress | `P0.3` |
+| 0 | In progress | `P0.4` |
 | 1 | Pending Phase 0 gate | `P1.1` |
 | 2 | Pending Phase 1 gate | `P2.1` |
 | 3 | Pending Phase 2 gate | `P3.1` |
@@ -97,6 +97,11 @@ status notes below.
   status event for active records, and leaves completed records untouched.
   Focused verification: `2 passed` in `test_agent_runner.py` (the recovery
   matrix plus approval-checkpoint resume-to-completion).
+- `P0.3` completed on 2026-07-21. Routing characterization covers every
+  registered goal template, representative phrases for every deterministic
+  audit mapping, the broad-audit fail-closed workflow route, and the unknown
+  command path from bounded workflow router into the generic action
+  interpreter. Focused verification: `19 passed` in `test_workflow_v2.py`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -289,7 +294,7 @@ or source changes.
 - [x] `P0.2` Characterize same-schema recovery behavior for unstarted,
   partially committed, approval-blocked, interaction-blocked,
   interrupted-provider, and completed runs created during a test.
-- [ ] `P0.3` Characterize deterministic local routing, bounded-router fallback,
+- [x] `P0.3` Characterize deterministic local routing, bounded-router fallback,
   generic action-interpreter fallback, and fail-closed broad-audit behavior.
 - [ ] `P0.4` Characterize SSE events, activity records, run projections,
   approvals, interactions, queued commands, retry, and continue behavior.

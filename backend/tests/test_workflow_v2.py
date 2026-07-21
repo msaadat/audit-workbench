@@ -7,8 +7,8 @@ import polars as pl
 import pytest
 
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, rcm_execution, report, working_papers, workspaces
-from app.agent import audit_capabilities, audit_workers, context_bundles, runner, store, workflow
-from app.agent.workflow_runner import initialize_known_workflow
+from app.agent import audit_capabilities, audit_workers, command_runner, context_bundles, runner, store, workflow
+from app.agent.workflow_runner import _local_resolution, initialize_known_workflow
 from app.main import create_app
 from app.workspace_transactions import (
     ParentConflict,
@@ -59,6 +59,123 @@ def test_full_template_materializes_locally_without_command_interpreter():
         audit_capabilities.FULL_AUDIT_OUTCOMES
     )
     assert persisted["usage"]["llm_turns"] == 0
+
+
+@pytest.mark.parametrize(
+    ("template", "route", "outcomes"),
+    [
+        ("full_audit_working_draft", "workflow", audit_capabilities.FULL_AUDIT_OUTCOMES),
+        (
+            "planning",
+            "workflow",
+            ["planning.apm_ready", "planning.rcm_ready", "planning.planned_tests_ready"],
+        ),
+        ("apm_only", "workflow", ["planning.apm_ready"]),
+        ("report", "workflow", ["report.working_draft", "audit.verified"]),
+        ("data_analysis", "generic_action", []),
+        ("document_testing", "generic_action", []),
+    ],
+)
+def test_every_registered_goal_template_has_a_deterministic_local_route(
+    template, route, outcomes
+):
+    assert set(command_runner.GOAL_TEMPLATES) == {
+        "full_audit_working_draft",
+        "planning",
+        "apm_only",
+        "data_analysis",
+        "document_testing",
+        "report",
+    }
+
+    resolution = _local_resolution(
+        {
+            "source": "goal_template",
+            "text": f"Run {template}",
+            "goal_template": template,
+        }
+    )
+
+    assert resolution is not None
+    assert resolution["route"] == route
+    assert resolution["requested_outcomes"] == outcomes
+
+
+@pytest.mark.parametrize(
+    ("text", "outcomes"),
+    [
+        ("Do a full audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
+        ("Complete the audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
+        ("Run an end-to-end audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
+        ("Draft the audit planning memorandum", ["planning.apm_ready"]),
+        ("Generate the risk and control matrix", ["planning.rcm_ready"]),
+        ("Create the planned procedures", ["planning.planned_tests_ready"]),
+        ("Translate planned work into executable tests", ["fieldwork.definitions_ready"]),
+        ("Execute the RCM tests", ["fieldwork.executed", "results.rolled_up"]),
+        ("Draft eligible findings", ["findings.drafted"]),
+        ("Generate the audit report", ["report.working_draft"]),
+    ],
+)
+def test_common_broad_audit_phrases_fail_closed_to_workflow(text, outcomes):
+    resolution = _local_resolution({"source": "chat", "text": text})
+
+    assert resolution is not None
+    assert resolution["route"] == "workflow"
+    assert resolution["requested_outcomes"] == outcomes
+    assert resolution["action_intent"] is None
+
+
+def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
+    monkeypatch, workspace_with_data
+):
+    fake = FakeAgentLLM(
+        {
+            "agent:workflow_router": {
+                "route": "generic_action",
+                "requested_outcomes": [],
+                "objective": "Check the report quality",
+                "target_refs": [],
+                "refresh_policy": "missing_or_stale",
+                "action_intent": "quality_check",
+                "constraints": [],
+                "needs_clarification": False,
+                "clarification": None,
+            },
+            "agent:command_interpreter": {
+                "objective": "Check the report quality",
+                "constraints": [],
+                "completion_criteria": ["Quality results are recorded"],
+                "needs_planning_wave": False,
+                "actions": [
+                    {"id": "quality", "type": "run_report_quality", "args": {}}
+                ],
+            },
+        }
+    )
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "Please handle the outstanding work appropriately"},
+    )
+    completed = wait_run(workspace_with_data, started["id"])
+
+    assert completed["status"] in {"completed", "completed_with_issues"}
+    assert completed["schema_version"] == 2
+    assert completed["command_route"]["route"] == "generic_action"
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:workflow_router",
+        "agent:command_interpreter",
+    ]
+    assert [action["type"] for action in completed["actions"]] == [
+        "run_report_quality"
+    ]
 
 
 def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
