@@ -8,7 +8,7 @@ import pytest
 
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, rcm_execution, report, working_papers, workspaces
 from app.agent import audit_capabilities, audit_workers, command_runner, context_bundles, runner, store, workflow
-from app.agent.workflow_runner import _local_resolution, initialize_known_workflow
+from app.agent.workflow_runner import WorkflowRunner, _local_resolution, initialize_known_workflow
 from app.main import create_app
 from app.workspace_transactions import (
     ParentConflict,
@@ -217,6 +217,37 @@ def test_partial_goal_prunes_current_prerequisites():
     assert reused == resolved[:-1]
     assert [stage["capability"] for stage in stages] == ["planning.planned_tests_ready"]
     assert len(stages[0]["units"]) == 1
+
+
+def test_repeated_materialization_preserves_semantic_unit_identity():
+    ws = _planning_workspace("Stable semantic units")
+    scope = {"target_refs": ["workspace:current"], "refresh_policy": "force"}
+
+    first = workflow.materialize(
+        audit_capabilities.REGISTRY,
+        ws,
+        ["planning.planned_tests_ready"],
+        scope,
+    )
+    second = workflow.materialize(
+        audit_capabilities.REGISTRY,
+        workspaces.load_workspace(ws.id),
+        ["planning.planned_tests_ready"],
+        dict(scope),
+    )
+
+    def identities(materialized):
+        _resolved, stages, _reused = materialized
+        return [
+            (
+                stage["capability"],
+                [(unit["id"], unit["kind"], unit["input_sha1"]) for unit in stage["units"]],
+            )
+            for stage in stages
+        ]
+
+    assert identities(first) == identities(second)
+    assert all(unit_id for _capability, units in identities(first) for unit_id, _kind, _sha1 in units)
 
 
 def test_workflow_planned_test_repair_reports_all_contract_errors(monkeypatch):
@@ -534,6 +565,55 @@ def test_all_settled_is_bounded_failure_isolated_and_stably_ordered():
     assert [value for _unit, value, error in settled if error is None] == [
         "unit-0", "unit-1", "unit-2", "unit-4", "unit-5"
     ]
+
+
+def test_parallel_candidate_reuses_durable_sidecar_without_model_rebilling():
+    ws = _planning_workspace("Proposal sidecar reuse")
+    run = store.new_command_run(
+        ws, "auto", {"source": "chat", "text": "generate planned tests"}
+    )
+    proposal = {"planned_tests": [{"title": "Cached proposal"}]}
+    unit = {
+        "id": "unit:cached",
+        "kind": "planned_tests",
+        "title": "Cached planned-test proposal",
+        "capability": "planning.planned_tests_ready",
+        "parent_refs": [],
+        "status": "queued",
+        "attempts": 0,
+        "input_sha1": "input-sha1",
+        "proposal_sidecar": store.write_sidecar(ws, run["id"], proposal),
+        "result_refs": [],
+        "error": None,
+        "started_at": None,
+        "finished_at": None,
+    }
+    stage = {
+        "id": "stage:planned-tests",
+        "capability": "planning.planned_tests_ready",
+        "units": [unit],
+    }
+    run["schema_version"] = 3
+    run["workflow"] = {"stages": [stage]}
+    store.save_run(ws, run)
+    worker_calls = 0
+
+    def worker(_unit):
+        nonlocal worker_calls
+        worker_calls += 1
+        raise AssertionError("a valid proposal sidecar must bypass the model worker")
+
+    command = WorkflowRunner(ws, run, runner.RunHandle(ws.id, run["id"]))
+    before_turns = run["usage"]["llm_turns"]
+    candidates = command._parallel_candidates(stage, stage["units"], worker)
+
+    assert candidates == [(unit, proposal)]
+    assert worker_calls == 0
+    assert run["usage"]["llm_turns"] == before_turns
+    assert unit["status"] == "running"
+    assert "proposal_reused" in {
+        event["type"] for event in store.read_events(ws, run["id"])
+    }
 
 
 def test_data_test_compute_is_pure_and_commit_is_revisioned():
