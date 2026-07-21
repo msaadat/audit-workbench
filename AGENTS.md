@@ -99,7 +99,7 @@ backend/app/
    |- audit_workers.py         - single-turn model workers with validators
    |- context_bundles.py       - hard-budgeted agent prompt context builders
    |- actions.py               - registered action catalog and executors
-   |- ledger.py                - action graph validation and lifecycle ranking
+   |- ledger.py                - domain-neutral action graph validation
    |- artifact_index.py        - artifact selectors and canonical resolution
    |- joins.py                 - deterministic join inference/diagnostics
    |- suggest.py               - deterministic validation rule suggestions
@@ -251,9 +251,9 @@ BaseRunner
 - The obsolete `ActionRunner` full-audit path and its prompt policy were
   removed in Phase 1. Broad-audit and planning requests fail closed if they
   bypass workflow routing; isolated action DAGs remain supported.
-- The action-ledger lifecycle switch has been removed. Its now-unreachable
-  constants and enforcement helper remain only for the next Phase 2 deletion
-  task; `audit_capabilities.build_registry` is the active authoritative graph.
+- The action ledger is domain-neutral: its audit-lifecycle switch, constants,
+  and enforcement helper have been removed. `audit_capabilities.build_registry`
+  is the active authoritative audit graph until its Phase 7 move.
 
 ### Events and live UI
 

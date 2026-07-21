@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 2.
-- Current task: `P2.3`.
-- Last completed task: `P2.2`.
+- Current task: `P2.4`.
+- Last completed task: `P2.3`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -50,7 +50,7 @@ status notes below.
 |---|---|---|
 | 0 | Complete | — |
 | 1 | Complete | — |
-| 2 | In progress | `P2.3` |
+| 2 | In progress | `P2.4` |
 | 3 | Pending Phase 2 gate | `P3.1` |
 | 4 | Pending Phase 3 gate | `P4.1` |
 | 5 | Pending Phase 4 gate | `P5.1` |
@@ -244,6 +244,14 @@ status notes below.
   passed `110` tests across `test_command_agent.py` and `test_workflow_v2.py`
   in `17.97s`. No frontend payload or API contract changed, so a frontend build
   was not required.
+- `P2.3` completed on 2026-07-21. The action ledger no longer defines audit
+  lifecycle stages or ranks and no longer contains the unreachable lifecycle
+  enforcement or traversal helpers. The existing boundary test now asserts
+  that these policy surfaces are absent while the generic append contract and
+  action-runner boundary remain intact. Focused verification passed `110` tests
+  across `test_command_agent.py` and `test_workflow_v2.py` in `17.94s`. No
+  frontend payload or API contract changed, so a frontend build was not
+  required.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -545,7 +553,7 @@ verification stages.
   tests while retaining generic DAG characterization.
 - [x] `P2.2` Remove `audit_lifecycle` from `append_actions(...)` and its
   canonical callers.
-- [ ] `P2.3` Remove audit lifecycle constants and enforcement from
+- [x] `P2.3` Remove audit lifecycle constants and enforcement from
   `ledger.py`, then run the action and workflow focused suites.
 - [ ] `P2.4` Prove the domain-neutral ledger exit gate and update status.
 

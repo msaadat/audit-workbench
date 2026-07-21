@@ -1482,11 +1482,12 @@ def test_action_prompt_contract_has_no_full_audit_orchestration():
         assert "final verification" not in system_prompt
 
 
-def test_append_actions_and_action_runner_have_no_audit_lifecycle_switch():
-    assert ledger.AUDIT_LIFECYCLE_STAGES
+def test_action_ledger_and_runner_have_no_audit_lifecycle_policy():
+    assert not hasattr(ledger, "AUDIT_LIFECYCLE_STAGES")
+    assert not hasattr(ledger, "AUDIT_LIFECYCLE_RANK")
+    assert not hasattr(ledger, "enforce_audit_lifecycle")
     assert "audit_lifecycle" not in inspect.signature(ledger.append_actions).parameters
     assert "audit_lifecycle" not in inspect.getsource(action_runner.ActionRunner)
-    assert callable(ledger.enforce_audit_lifecycle)
 
 
 @pytest.mark.parametrize(
