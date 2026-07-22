@@ -409,23 +409,21 @@ def test_rootless_batches_share_one_direct_uploads_source():
     assert len(intake.list_sources(ws)) == 1
 
 
-def test_deterministic_table_roles_and_confidence_tiers():
+def test_deterministic_classification_uses_document_confidence_tiers_only():
     def classify(path, route="table"):
         return intake.deterministic_classification({
             "relative_path": path,
             "local_metadata": {"route": route, "parse_ok": True},
         })
 
-    assert classify("Data/vendor master list.xlsx")["table_role"] == "master_lookup"
-    assert classify("Data/prior year ledger.csv")["table_role"] == "prior_period"
-    assert classify("Data/depreciation rates.csv")["table_role"] == "parameters"
-    assert classify("Data/fixed asset register.csv")["table_role"] == "schedule"
-
-    known_role = classify("Data/vendor master list.xlsx")
-    unknown_role = classify("Data/q3_extract.csv")
-    assert known_role["confidence"] == "high"
-    assert unknown_role["table_role"] == "unknown"
-    assert unknown_role["confidence"] == "medium"
+    known_table = classify("Data/vendor master list.xlsx")
+    generic_table = classify("Data/q3_extract.csv")
+    assert known_table["route"] == "table"
+    assert generic_table["route"] == "table"
+    assert "table_role" not in known_table
+    assert "table_role" not in generic_table
+    assert known_table["confidence"] == "high"
+    assert generic_table["confidence"] == "high"
 
     known_category = classify("Docs/procurement policy.pdf", route="document")
     unknown_category = classify("Docs/scan0001.pdf", route="document")

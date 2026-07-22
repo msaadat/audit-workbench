@@ -264,8 +264,8 @@ def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "failed"
-    assert reloaded.planning != before["planning"]
-    assert reloaded.rcm != before["rcm"]
+    assert reloaded.planning == before["planning"]
+    assert reloaded.rcm == before["rcm"]
     units = [
         unit
         for stage in completed["workflow"]["stages"]
@@ -565,7 +565,7 @@ def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
     ws = workspaces.create_workspace("Permission planning")
     started = start_planning(ws, "permission")
     seen = []
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         run = store.load_run(ws, started["id"])
         if run["status"] == "awaiting_approval":
@@ -624,7 +624,7 @@ def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
     })
     started = start_planning(ws, "permission")
     kinds, seen = [], []
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         run = store.load_run(ws, started["id"])
         if run["status"] == "awaiting_approval":

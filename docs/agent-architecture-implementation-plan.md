@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 6 (in progress).
-- Current task: `P6.8` (not started).
-- Last completed task: `P6.7`.
+- Current phase: Phase 7 (not started).
+- Current task: `P7.1` (not started).
+- Last completed task: `P6.8`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,8 +54,8 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | In progress | `P6.8` |
-| 7 | Pending Phase 6 gate | `P7.1` |
+| 6 | Complete | — |
+| 7 | Pending | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -771,6 +771,24 @@ status notes below.
   The domain-neutral scheduler and its runtime collaborators pass the gate.
   Focused verification passed `11` import-boundary and synthetic scheduler
   tests. The exact next task is `P6.8`.
+- `P6.8` completed on 2026-07-22. The Phase 6 exit gate now proves runtime
+  re-expansion after upstream changes, all-settled partial-failure isolation,
+  semantic-order serialized commits after out-of-order parallel completion,
+  domain-projected `next_outcomes`, deletion of the former scheduler module,
+  and the absence of `ActionRunner` inheritance or domain-stage methods on
+  `WorkflowRunner`. Existing active audit tests continue to prove ragged
+  dependency execution, evidence-blocked continuation outcomes, and dynamic
+  definition expansion. The first full-suite run exposed two stale assertions:
+  the already-removed intake table-role classifier and the now-deleted legacy
+  workflow adoption mutation. After aligning those assertions with their
+  committed behavior, a timing-sensitive permission test left an approval
+  pending under full-suite debug load and caused a process-wide busy cascade;
+  both permission approval drivers now retain their existing behavior with a
+  load-tolerant deadline. Focused parity verification passed `15` tests, the
+  combined planning/workflow regression gate passed `78` tests, the final full
+  backend gate passed `649` tests in `421.55s`, and the frontend type-check and
+  production build passed. Phase 6 is complete; the exact next task is `P7.1`,
+  and no Phase 7 work has started.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1364,7 +1382,7 @@ execution entirely registry-driven.
 - [x] `P6.6` Switch active workflow dispatch to the composed scheduler and
   update live imports, then delete the old scheduler module without an adapter.
 - [x] `P6.7` Add and pass import-boundary enforcement for runtime modules.
-- [ ] `P6.8` Prove parity for dynamic expansion, partial failure, deterministic
+- [x] `P6.8` Prove parity for dynamic expansion, partial failure, deterministic
   commit order, next outcomes, and the no-inheritance/no-domain-handler gate.
 
 **Work:**

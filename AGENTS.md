@@ -313,6 +313,14 @@ WorkflowRunner             domain-neutral capability graph scheduler
   prompt, worker, schema, capability, or unit identities regenerate with stable
   rejection reasons. Workflow units project content-free context, proposal,
   and receipt references; the former APM caller and writer paths were removed.
+- Phase 6 completed with `runtime.WorkflowRunner` as the only active capability
+  scheduler. It is domain-neutral, composed with `RunRuntime` and validated
+  capability executions, and has no `ActionRunner` inheritance or audit-stage
+  methods. Routing lives in `agent/routing.py`; active audit dispatch composes
+  temporary handlers from `audit_execution.py` until their Phase 7 registry
+  migrations. The former `agent/workflow_runner.py`, legacy adoption, and
+  run-shape translation were deleted. Runtime import-boundary tests reject
+  planning, RCM, document, finding, report, and audit-domain imports.
 
 ### Known duplication
 

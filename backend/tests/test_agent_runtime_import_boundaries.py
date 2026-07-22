@@ -6,6 +6,8 @@ import ast
 from pathlib import Path
 
 import app.agent.runtime as runtime_package
+from app.agent.action_runner import ActionRunner
+from app.agent.runtime import WorkflowRunner
 
 
 FORBIDDEN_DOMAIN_PREFIXES = (
@@ -65,3 +67,24 @@ def test_runtime_modules_do_not_import_audit_or_product_domains():
                 violations.append(f"{path.name}: {imported}")
 
     assert violations == []
+
+
+def test_workflow_runner_has_no_action_inheritance_or_domain_stage_methods():
+    domain_stage_methods = {
+        "_planning_basis",
+        "_apm",
+        "_rcm",
+        "_planned_tests",
+        "_definitions",
+        "_executions",
+        "_rollup",
+        "_finding_drafts",
+        "_working_papers",
+        "_dashboard",
+        "_report",
+        "_verify",
+    }
+
+    assert not issubclass(WorkflowRunner, ActionRunner)
+    assert domain_stage_methods.isdisjoint(WorkflowRunner.__dict__)
+    assert not (Path(runtime_package.__file__).parent.parent / "workflow_runner.py").exists()

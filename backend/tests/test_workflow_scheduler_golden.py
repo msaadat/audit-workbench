@@ -600,6 +600,147 @@ def test_extracted_scheduler_blocks_dependencies_and_folds_partial_failure():
     assert run["error"] == "invalid record"
 
 
+def test_extracted_scheduler_reexpands_downstream_units_after_upstream_change():
+    initial = SyntheticCatalog(ready_outcomes=frozenset(), records=())
+    current = {"catalog": initial}
+    run = {
+        "id": "run_dynamic_expansion",
+        "command": {"status": "queued"},
+        "limits": {"max_execution_attempts": 2, "max_units_per_stage": 20},
+    }
+    runtime = SyntheticRuntime(run)
+    runner: WorkflowRunner
+
+    def complete(stage: dict, units: list[dict]) -> None:
+        if stage["capability"] == SOURCES_READY:
+            current["catalog"] = SyntheticCatalog(
+                ready_outcomes=frozenset({SOURCES_READY}),
+                records=(("delta", 40), ("epsilon", 50)),
+            )
+        for unit in units:
+            runner.set_unit(stage, unit, "running")
+            runner.set_unit(stage, unit, "succeeded")
+
+    registry = synthetic_registry()
+    runner = WorkflowRunner(
+        subject=initial,
+        run=run,
+        runtime=runtime,
+        registry=registry,
+        executions=synthetic_executions(registry, complete),
+        refresh_subject=lambda: current["catalog"],
+    )
+    state = runner.materialize([PUBLISHED], generation_mode="force")
+    records_stage = next(
+        stage for stage in state["stages"] if stage["capability"] == RECORDS_READY
+    )
+    assert records_stage["units"] == []
+
+    runner.execute()
+
+    assert [unit["id"] for unit in records_stage["units"]] == [
+        "catalog-record:delta",
+        "catalog-record:epsilon",
+    ]
+    assert {unit["status"] for unit in records_stage["units"]} == {"succeeded"}
+    assert run["status"] == "completed"
+
+
+def test_extracted_scheduler_settles_in_parallel_and_commits_in_semantic_order():
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({SOURCES_READY}))
+    run = {
+        "id": "run_commit_order",
+        "command": {"status": "queued"},
+        "limits": {
+            "max_execution_attempts": 2,
+            "max_units_per_stage": 20,
+            "max_llm_concurrency": 3,
+        },
+    }
+    runtime = SyntheticRuntime(run)
+    completion_order: list[str] = []
+    commit_order: list[str] = []
+    runner: WorkflowRunner
+
+    def complete(stage: dict, units: list[dict]) -> None:
+        if stage["capability"] != RECORDS_READY:
+            for unit in units:
+                runner.set_unit(stage, unit, "running")
+                runner.set_unit(stage, unit, "succeeded")
+            return
+
+        def generate(unit: dict) -> str:
+            delay = {
+                "catalog-record:alpha": 0.03,
+                "catalog-record:beta": 0.01,
+                "catalog-record:gamma": 0.0,
+            }[unit["id"]]
+            time.sleep(delay)
+            completion_order.append(unit["id"])
+            return unit["id"]
+
+        for unit, proposal, error in runner.stable_all_settled(units, generate):
+            assert error is None
+            assert proposal == unit["id"]
+            commit_order.append(unit["id"])
+            runner.set_unit(stage, unit, "running")
+            runner.set_unit(stage, unit, "succeeded")
+
+    registry = synthetic_registry()
+    runner = WorkflowRunner(
+        subject=catalog,
+        run=run,
+        runtime=runtime,
+        registry=registry,
+        executions=synthetic_executions(registry, complete),
+    )
+    runner.materialize([PUBLISHED])
+    runner.execute()
+
+    assert completion_order[0] == "catalog-record:gamma"
+    assert commit_order == [
+        "catalog-record:alpha",
+        "catalog-record:beta",
+        "catalog-record:gamma",
+    ]
+    assert run["status"] == "completed"
+
+
+def test_extracted_scheduler_preserves_domain_projected_next_outcomes():
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({SOURCES_READY}))
+    run = {
+        "id": "run_next_outcomes",
+        "command": {"status": "queued"},
+        "limits": {"max_execution_attempts": 2, "max_units_per_stage": 20},
+    }
+    runtime = SyntheticRuntime(run)
+    runner: WorkflowRunner
+
+    def complete(stage: dict, units: list[dict]) -> None:
+        for unit in units:
+            runner.set_unit(stage, unit, "running")
+            runner.set_unit(stage, unit, "succeeded")
+
+    registry = synthetic_registry()
+    runner = WorkflowRunner(
+        subject=catalog,
+        run=run,
+        runtime=runtime,
+        registry=registry,
+        executions=synthetic_executions(registry, complete),
+        finish_evaluator=lambda _subject, _state, _stages: FinishProjection(
+            next_outcomes=(INDEX_READY, PUBLISHED, INDEX_READY),
+            terminal_status="completed_with_open_items",
+        ),
+    )
+    runner.materialize([PUBLISHED])
+    runner.execute()
+
+    assert run["workflow"]["next_outcomes"] == [INDEX_READY, PUBLISHED]
+    assert run["status"] == "completed_with_open_items"
+    assert run["command"]["status"] == "completed_with_open_items"
+
+
 def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
     catalog = SyntheticCatalog(
         ready_outcomes=frozenset(
