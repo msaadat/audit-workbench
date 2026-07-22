@@ -12,6 +12,9 @@ import pytest
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
 from app.agent import action_runner, audit_capabilities, audit_workers, context_bundles, runner, store, workflow
 from app.agent import workflow_runner as workflow_runner_module
+from app.agent.executors import planning as planning_executor
+from app.agent.runtime import UnitSidecarStore
+from app.agent.workers import planning as planning_worker
 from app.agent.context import (
     PRESETS,
     SELECTORS,
@@ -915,17 +918,17 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
 
     with monkeypatch.context() as interrupted:
         interrupted.setattr(
-            workflow_runner_module,
+            planning_executor,
             "mutate",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
         )
         with pytest.raises(KeyboardInterrupt):
             command._apm(stage, [unit])
 
-    first_sidecar = store.read_sidecar(
-        ws,
-        command.run["id"],
-        unit["proposal_sidecar"],
+    first_sidecar = UnitSidecarStore(
+        ws, command.run["id"]
+    ).load_proposal(
+        unit["id"], unit["proposal_sidecar"]
     )
     first_identity = first_sidecar["execution_identity"]
     assert [call["tag"] for call in fake.calls] == ["agent:apm"]
@@ -939,10 +942,10 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
     )
     resumed._apm(stage, [unit])
 
-    second_sidecar = store.read_sidecar(
-        resumed.ws,
-        resumed.run["id"],
-        unit["proposal_sidecar"],
+    second_sidecar = UnitSidecarStore(
+        resumed.ws, resumed.run["id"]
+    ).load_proposal(
+        unit["id"], unit["proposal_sidecar"]
     )
     assert second_sidecar["execution_identity"] != first_identity
     assert [call["tag"] for call in fake.calls] == ["agent:apm", "agent:apm"]
@@ -1011,15 +1014,26 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
     assert methodology_text not in captured["manifest"]
     assert sentinel not in captured["manifest"]
     assert sentinel not in json.dumps(command.run.get("provenance") or [])
+    assert unit["proposal_sidecar"]["path"] == "proposals/apm.json"
+    assert unit["receipt_sidecar"]["path"] == "receipts/apm.json"
+    assert (
+        store.run_dir(command.ws, command.run["id"])
+        / unit["receipt_sidecar"]["path"]
+    ).is_file()
     assert "context_bundles.apm" not in inspect.getsource(WorkflowRunner._apm)
-    worker_source = inspect.getsource(audit_workers.apm)
+    assert "audit_workers.apm" not in inspect.getsource(WorkflowRunner._apm)
+    assert "mutate(" not in inspect.getsource(WorkflowRunner._apm)
+    worker_source = inspect.getsource(planning_worker.run_apm_worker)
     assert ".ws" not in worker_source
     assert "load_workspace" not in worker_source
-    assert list(inspect.signature(audit_workers.apm).parameters) == [
-        "model_call",
-        "bundle",
-        "quality_gate",
+    assert list(inspect.signature(planning_worker.run_apm_worker).parameters) == [
+        "request",
+        "gateway",
+        "attempt",
     ]
+    assert not hasattr(audit_workers, "apm")
+    assert not hasattr(action_runner.ActionRunner, "stage_apm")
+    assert not hasattr(action_runner.ActionRunner, "_apm_quality")
 
 
 def test_data_test_compute_is_pure_and_commit_is_revisioned():

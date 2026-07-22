@@ -31,6 +31,21 @@ class UnitPipelineError(RuntimeError):
 class UnitPipelineConflict(UnitPipelineError):
     """Recovery found a changed parent or committed target."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        manifest_reference: Mapping[str, str] | None = None,
+        proposal_reference: Mapping[str, str] | None = None,
+        receipt_reference: Mapping[str, str] | None = None,
+        proposal_reuse_rejection_reasons: tuple[str, ...] = (),
+    ) -> None:
+        self.manifest_reference = manifest_reference
+        self.proposal_reference = proposal_reference
+        self.receipt_reference = receipt_reference
+        self.proposal_reuse_rejection_reasons = proposal_reuse_rejection_reasons
+        super().__init__(message)
+
 
 class UnitSidecarValidationError(WorkspaceError):
     """A semantic-unit sidecar failed shape or integrity validation."""
@@ -344,6 +359,7 @@ ContextProvider = Callable[[], tuple[ContextManifest, ContextBundle]]
 ApprovalProvider = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
 ReadinessProvider = Callable[[], object]
 ContextIdentityProvider = Callable[[ContextManifest], Mapping[str, Any]]
+PersistenceObserver = Callable[[Mapping[str, str]], None]
 
 
 class UnitPipeline:
@@ -383,6 +399,9 @@ class UnitPipeline:
         context_identity_provider: ContextIdentityProvider,
         approval_provider: ApprovalProvider | None = None,
         readiness_provider: ReadinessProvider | None = None,
+        on_manifest_persisted: PersistenceObserver | None = None,
+        on_proposal_persisted: PersistenceObserver | None = None,
+        on_receipt_persisted: PersistenceObserver | None = None,
     ) -> UnitPipelineOutcome:
         if not isinstance(request, UnitPipelineRequest):
             raise UnitPipelineError("Unit pipeline requires a UnitPipelineRequest.")
@@ -403,21 +422,35 @@ class UnitPipeline:
                 "Resolved context identity does not match the pipeline unit."
             )
         manifest_reference = self.runtime.persist_context_manifest(manifest)
+        if on_manifest_persisted is not None:
+            on_manifest_persisted(manifest_reference)
         worker_definition = self.workers.get(request.worker_id)
         context_identity = context_identity_provider(manifest)
         if not isinstance(context_identity, Mapping):
             raise UnitPipelineError("Context execution identity must be an object.")
-        if context_identity.get("manifest_hash") != manifest.manifest_hash:
+        context_manifest_hash = (
+            context_identity.get("context_manifest_hash")
+            or context_identity.get("manifest_hash")
+        )
+        if context_manifest_hash != manifest.manifest_hash:
             raise UnitPipelineError("Context execution identity manifest hash is invalid.")
         if context_identity.get("context_spec_hash") != manifest.context_spec_hash:
             raise UnitPipelineError("Context execution identity spec hash is invalid.")
         if context_identity.get("resolver_hash") != manifest.resolver_hash:
             raise UnitPipelineError("Context execution identity resolver hash is invalid.")
+        raw_selector_identities = context_identity.get("selector_definition_hashes") or []
         selector_hashes = tuple(
             sorted(
                 {
-                    _require_hash(value, "selector_definition_hashes")
-                    for value in context_identity.get("selector_definition_hashes") or []
+                    _require_hash(
+                        (
+                            value.get("definition_hash")
+                            if isinstance(value, Mapping)
+                            else value
+                        ),
+                        "selector_definition_hashes",
+                    )
+                    for value in raw_selector_identities
                 }
             )
         )
@@ -506,6 +539,8 @@ class UnitPipeline:
                 "unit_id": request.unit_id,
                 "payload_hash": _sha256(proposal_payload),
             }
+        if on_proposal_persisted is not None:
+            on_proposal_persisted(proposal_reference)
 
         if approval_provider is not None and proposal_payload.get("status") != "accepted":
             accepted = approval_provider(proposal)
@@ -531,6 +566,8 @@ class UnitPipeline:
             proposal_reference = self.sidecars.persist_proposal(
                 request.unit_id, proposal_payload
             )
+            if on_proposal_persisted is not None:
+                on_proposal_persisted(proposal_reference)
 
         executor_request = ExecutorRequest(
             executor_id=request.executor_id,
@@ -558,7 +595,11 @@ class UnitPipeline:
             if reconciliation.disposition != "already_applied":
                 raise UnitPipelineConflict(
                     reconciliation.reason
-                    or "Persisted receipt postcondition no longer holds."
+                    or "Persisted receipt postcondition no longer holds.",
+                    manifest_reference=manifest_reference,
+                    proposal_reference=proposal_reference,
+                    receipt_reference=request.receipt_reference,
+                    proposal_reuse_rejection_reasons=rejection_reasons,
                 )
             receipt_reference = request.receipt_reference or {
                 "path": f"receipts/{_unit_filename(request.unit_id)}",
@@ -578,11 +619,16 @@ class UnitPipeline:
             executor_reconciled = True
         elif reconciliation.disposition == "conflict":
             raise UnitPipelineConflict(
-                reconciliation.reason or "Executor reconciliation found a conflict."
+                reconciliation.reason or "Executor reconciliation found a conflict.",
+                manifest_reference=manifest_reference,
+                proposal_reference=proposal_reference,
+                proposal_reuse_rejection_reasons=rejection_reasons,
             )
         else:
             receipt = self.executors.execute(executor_request, target)
             receipt_reference = self.sidecars.persist_receipt(request.unit_id, receipt)
+        if on_receipt_persisted is not None:
+            on_receipt_persisted(receipt_reference)
         readiness = readiness_provider() if readiness_provider is not None else None
         if readiness is not None:
             satisfied = (

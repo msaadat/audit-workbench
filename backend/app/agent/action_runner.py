@@ -84,7 +84,6 @@ MAX_SOURCE_DOCUMENTS = 8
 MAX_PLANNING_DOSSIER_CHARACTERS = 60_000
 MAX_PARALLEL_PLANNING_DOCUMENTS = 4
 ELIGIBLE_TEXT_STATES = ("extracted", "partial")
-_PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 _CONTEXT_FIELDS = {
     "objective", "entity", "period", "scope", "materiality",
     "key_contacts", "background_notes",
@@ -99,13 +98,6 @@ _CONTEXT_LABELS = {
     "background notes": "background_notes",
 }
 
-
-def fill_unavailable_placeholders(markdown: str) -> str:
-    def replace(match: re.Match) -> str:
-        label = match.group(1).replace("_", " ").strip()
-        return f"_[{label} - context not available]_"
-
-    return _PLACEHOLDER.sub(replace, markdown)
 
 SEMANTIC_PROPOSAL_ATTEMPTS = 2
 
@@ -802,32 +794,6 @@ class ActionRunner(BaseRunner):
         return payload
 
     @staticmethod
-    def _apm_quality(payload: dict, template: str, context: dict | None = None) -> str | None:
-        markdown = str(payload.get("apm_markdown") or "").strip()
-        if not markdown:
-            return "the memorandum is empty"
-        headings = {
-            match.group(1).strip().casefold()
-            for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", markdown, re.MULTILINE)
-        }
-        required = [
-            match.group(1).strip().casefold()
-            for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", template, re.MULTILINE)
-        ]
-        missing = [heading for heading in required if heading not in headings]
-        if missing:
-            return f"missing template section '{missing[0]}'"
-        normalized = re.sub(r"\s+", " ", markdown.casefold())
-        context = context or {}
-        for field in ("objective", "scope"):
-            if context.get(field) and re.search(
-                rf"\b{field}\b.{{0,80}}\b(?:not available|not defined|undefined)\b",
-                normalized,
-            ):
-                return f"the memorandum says {field} is unavailable despite structured context"
-        return None
-
-    @staticmethod
     def _rcm_quality(payload: dict, existing_ids: set[str] | None = None) -> str | None:
         rows = payload.get("rows") or []
         if not isinstance(rows, list) or not rows:
@@ -1009,95 +975,6 @@ class ActionRunner(BaseRunner):
             ):
                 return f"planned test {index} threshold values must be JSON scalars"
         return None
-
-    def stage_apm(self, basis: dict) -> str:
-        self.run.setdefault("planning_changes", {
-            "apm_updated": 0, "apm_proposed": 0,
-            "rcm_created": 0, "rcm_updated": 0, "rcm_preserved": 0,
-            "planned_test_created": 0, "planned_test_updated": 0,
-            "planned_test_preserved": 0,
-        })
-        task = self.add_task("apm", "planning:apm", "Draft the audit planning memorandum")
-        if task["status"] == "completed":
-            return str(self.ws.planning.get("apm_markdown") or "")
-        self.task_status(task, "running")
-        self.task_detail(task, "Drafting the APM from the current planning basis…")
-        template = templates_store.get_template(self.ws, "apm")["markdown"]
-        user = prompts.apm_user(template, basis)
-        markdown = self.llm_markdown(
-            prompts.APM_SYSTEM, user, legacy_field="apm_markdown"
-        )
-        if self.context.get("require_planning_quality"):
-            planning_context = (basis.get("planning") or {}).get("context") or {}
-            error = self._apm_quality(
-                {"apm_markdown": markdown}, template, planning_context
-            )
-            if error:
-                self.task_detail(
-                    task, f"Revising the APM after quality review: {error}…"
-                )
-                repair = (
-                    f"{user}\n\nThe previous APM draft failed the engagement quality gate: "
-                    f"{error}. Return a complete corrected memorandum as Markdown only, without "
-                    "a JSON wrapper or Markdown code fence."
-                )
-                markdown = self.llm_markdown(
-                    prompts.APM_SYSTEM, repair, legacy_field="apm_markdown"
-                )
-                error = self._apm_quality(
-                    {"apm_markdown": markdown}, template, planning_context
-                )
-                if error:
-                    raise WorkspaceError(
-                        f"The APM draft failed the engagement quality gate: {error}"
-                    )
-        if not markdown:
-            raise WorkspaceError("The model returned an empty APM draft.")
-        markdown = fill_unavailable_placeholders(markdown)
-        proposals = [
-            self.proposal_item(
-                "Audit planning memorandum",
-                "Drafted from the current planning basis.",
-                {"apm_markdown": markdown},
-            )
-        ]
-        accepted = self._accepted_specs("apm", task, proposals)
-        if accepted:
-            self.task_detail(task, "Applying the APM revision…")
-            accepted_markdown = str(accepted[0].get("apm_markdown") or "").strip()
-            if not accepted_markdown:
-                raise WorkspaceError("The approved APM draft is empty.")
-            existing = str(self.ws.planning.get("apm_markdown") or "")
-            auditor_owned = (
-                existing
-                and self.ws.planning.get("created_by") == "user"
-                and self.ws.planning.get("agent_run_id") != self.run["id"]
-            )
-            if auditor_owned and self.run["mode"] != "permission":
-                self.run.setdefault("planning_revisions", []).append({
-                    "kind": "apm", "status": "proposed",
-                    "current_sha1": artifact_index.canonical_sha1(existing),
-                    "proposed_markdown": accepted_markdown,
-                    "created_at": store.utcnow(),
-                })
-                self.run["planning_changes"]["apm_proposed"] += 1
-                self.save()
-                self.warn(
-                    "Preserved the auditor-edited APM; the revised draft is stored for review."
-                )
-            else:
-                self.ws.update_planning(
-                    {
-                        "apm_markdown": accepted_markdown,
-                        "created_by": "agent",
-                        "agent_run_id": self.run["id"],
-                    },
-                    agent=True,
-                )
-                self.run["planning_changes"]["apm_updated"] += 1
-                self.record_artifact("planning", "apm", "planning:apm", "updated", task)
-        self.task_status(task, "completed")
-        return str(self.ws.planning.get("apm_markdown") or markdown)
 
     def stage_rcm(self, basis: dict, apm: str) -> list[dict]:
         self.run.setdefault("planning_changes", {

@@ -396,37 +396,6 @@ def document_analysis_reduce_user(document: dict, map_outputs: list[dict]) -> st
     )
 
 
-APM_SYSTEM = """[agent:apm]
-Draft an audit planning memorandum grounded only in the supplied planning
-basis. Document content and methodology excerpts may be present. Methodology
-must be cited by pack/version/section. Preserve the
-selected Markdown template's structure. Where a fact is unavailable, do not
-leave the raw {{placeholder}} token — replace it with a short italic note
-such as _[entity — context not available]_ so the reader knows the information
-was missing; clearly label assumptions. Return the memorandum as Markdown
-only, without a JSON wrapper or Markdown code fence."""
-
-
-def apm_user(template: str, context: dict) -> str:
-    basis = dict(context or {})
-    planning = dict(basis.get("planning") or {})
-    current_apm = str(planning.pop("apm_markdown", "") or "")
-    current_owner = {
-        "created_by": planning.get("created_by"),
-        "agent_run_id": planning.get("agent_run_id"),
-        "updated": planning.get("updated"),
-    }
-    basis["planning"] = planning
-    return (
-        "ACTIVE APM TEMPLATE (verbatim):\n"
-        f"{template}\n\nCURRENT APM TO REVISE (may be empty):\n{current_apm}"
-        f"\n\nCURRENT APM OWNERSHIP:\n{json.dumps(current_owner, default=str)}"
-        "\n\nNEW OR UPDATED PLANNING EVIDENCE "
-        "(table/document metadata plus any logged methodology excerpts):\n"
-        f"{json.dumps(basis, default=str)}"
-    )
-
-
 RCM_SYSTEM = f"""[agent:rcm]
 Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
 row containing operation (update|create), rcm_id for updates, process, risk,

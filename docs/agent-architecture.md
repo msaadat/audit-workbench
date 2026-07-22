@@ -541,6 +541,14 @@ generated-content replacement, auditor-edit preservation, artifact
 postconditions, and interrupted-commit reconciliation. It creates the existing
 planning payload/provenance shape through the transaction coordinator and has
 no gateway, worker, or provider dependency.
+The live `planning.apm_ready` capability now crosses those boundaries through
+`UnitPipeline`: it resolves and persists content-free context identity, invokes
+the registered worker, durably records the proposal before approval, commits
+through the registered executor, persists a receipt, and only then reevaluates
+readiness. Workflow units project the three durable sidecar references for UI
+and recovery. The former APM caller, prompt, validator, writer, and quality
+helpers have been deleted from the runner-era modules; the workflow runner now
+adapts only runtime activity, approval, conflict, and artifact projections.
 
 ### Phase 1 Deletion Boundary
 

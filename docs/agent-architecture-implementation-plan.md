@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 5 (in progress).
-- Current task: `P5.7` (not started).
-- Last completed task: `P5.6`.
+- Current task: `P5.8` (not started).
+- Last completed task: `P5.7`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.7` |
+| 5 | In progress | `P5.8` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -649,6 +649,17 @@ status notes below.
   and provider dependencies. Focused verification passed `52` executor,
   worker, pipeline, and contract tests. No live capability or frontend contract
   changed. The exact next task is `P5.7`.
+- `P5.7` completed on 2026-07-22. The live `planning.apm_ready` capability now
+  runs through `UnitPipeline`, the registered `planning.apm` worker, and the
+  registered planning executor. The runner persists and projects context,
+  proposal, and receipt references at their durability boundaries, retains the
+  existing approval, activity, artifact, conflict, and UI projections, and
+  preserves auditor-owned APM content when an automatic regeneration races an
+  edit. The duplicate APM prompt, model caller, validator, mutation helper, and
+  quality helper were removed from `audit_workers`, `ActionRunner`, and
+  `prompts`. Focused verification passed `115` planning, workflow, executor,
+  worker, and pipeline tests. The live unit payload gained the durable receipt
+  sidecar reference. The exact next task is `P5.8`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1165,7 +1176,7 @@ all audit stages.
 - [x] `P5.6` Extract APM mutation, parent checks, edit preservation,
   postconditions, reconciliation, and receipts into a planning executor with
   no model dependency.
-- [ ] `P5.7` Switch only `planning.apm_ready` to the registered pipeline,
+- [x] `P5.7` Switch only `planning.apm_ready` to the registered pipeline,
   remove its old writer, and preserve payload and UI projections.
 - [ ] `P5.8` Prove no rebilling after proposal persistence, conflict behavior,
   approval ordering, and the APM vertical-slice exit gate.

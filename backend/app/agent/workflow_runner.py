@@ -29,9 +29,21 @@ from ..workspaces import (
 )
 from . import audit_capabilities, audit_workers, context_bundles, store, workflow
 from .base import Cancelled, LimitExceeded
-from .action_runner import ActionRunner, fill_unavailable_placeholders
-from .context import ContextManifest, ContextResolver, apm_document_methodology_scope
-from .runtime import RunRuntime
+from .action_runner import ActionRunner
+from .context import ContextResolver, apm_document_methodology_scope
+from .executors import EXECUTORS
+from .executors.planning import (
+    AUDITOR_EDIT_PRESERVED,
+    ApmExecutorTarget,
+)
+from .runtime import (
+    RunRuntime,
+    UnitPipeline,
+    UnitPipelineConflict,
+    UnitPipelineRequest,
+    UnitSidecarStore,
+)
+from .workers import WORKERS
 
 ELIGIBLE_DISPOSITIONS = {"confirmed_control_exception", "draft_finding_candidate"}
 
@@ -62,20 +74,6 @@ def _capability_definition_hash(capability: workflow.Capability) -> str:
             "invalidate_on": list(capability.invalidate_on),
         }
     )
-
-
-def _apm_execution_identity(
-    capability: workflow.Capability,
-    unit: dict,
-    resolver: ContextResolver,
-    manifest: ContextManifest,
-) -> dict[str, object]:
-    return {
-        "capability_definition_hash": _capability_definition_hash(capability),
-        "unit_input_sha1": str(unit.get("input_sha1") or ""),
-        **resolver.execution_identity(capability, manifest),
-        **audit_workers.apm_execution_components(),
-    }
 
 
 def _local_resolution(command: dict) -> dict | None:
@@ -664,6 +662,7 @@ class WorkflowRunner(ActionRunner):
     def _apm(self, stage: dict, units: list[dict]) -> None:
         unit = units[0]
         self._set_unit(stage, unit, "running")
+        task = self.add_task("apm", "workflow:apm", "Audit planning memorandum")
         try:
             expected_context = parent_hashes(self.ws, ["planning:context"])
             basis = self.run.get("planning_basis") or {
@@ -675,113 +674,143 @@ class WorkflowRunner(ActionRunner):
                 for item in basis.get("document_analyses") or []
                 if item.get("document_id")
             ]
-            manifest, bundle = self.context_resolver.resolve(
+            target = ApmExecutorTarget(
                 self.ws,
-                capability,
-                unit,
-                apm_document_methodology_scope(
-                    self.ws,
-                    planning_context=(basis.get("planning") or {}).get("context") or {},
-                    document_ids=(
-                        selected_document_ids
-                        if "document_analyses" in basis
-                        else None
-                    ),
-                ),
+                self.run["id"],
+                allow_auditor_overwrite=self.run["mode"] == "permission",
             )
-            unit["context_manifest"] = self.persist_context_manifest(manifest)
-            execution_identity = _apm_execution_identity(
-                capability,
-                unit,
-                self.context_resolver,
-                manifest,
-            )
-            self.save()
-            cached = None
-            if unit.get("proposal_sidecar"):
-                candidate = store.read_sidecar(
-                    self.ws, self.run["id"], unit["proposal_sidecar"]
-                )
-                if (
-                    isinstance(candidate, dict)
-                    and candidate.get("execution_identity") == execution_identity
-                    and isinstance(candidate.get("proposal"), dict)
-                ):
-                    cached = candidate["proposal"]
-                    self.emit(
-                        "proposal_reused",
-                        {"stage_id": stage["id"], "unit_id": unit["id"], "sidecar": unit["proposal_sidecar"]},
-                    )
-                else:
-                    self.emit(
-                        "proposal_reuse_rejected",
-                        {
-                            "stage_id": stage["id"],
-                            "unit_id": unit["id"],
-                            "reason": "The persisted proposal execution identity no longer matches.",
-                        },
-                    )
-                    unit["proposal_sidecar"] = None
-                    self.save()
-            if isinstance(cached, dict) and cached.get("apm_markdown"):
-                markdown = str(cached["apm_markdown"])
-            else:
-                markdown = audit_workers.apm(
-                    self.llm_markdown,
-                    bundle,
-                    quality_gate=self._apm_quality,
-                )
-                unit["proposal_sidecar"] = store.write_sidecar(
-                    self.ws,
-                    self.run["id"],
-                    {
-                        "execution_identity": execution_identity,
-                        "proposal": {"apm_markdown": markdown},
-                    },
-                )
-                self.save()
-            markdown = fill_unavailable_placeholders(markdown)
-            proposals = [self.proposal_item("Audit planning memorandum", "Drafted from the current planning basis.", {"apm_markdown": markdown})]
-            task = self.add_task("apm", "workflow:apm", "Audit planning memorandum")
-            accepted = self.request_approval("apm", task, proposals) if self.run["mode"] == "permission" else proposals
-            if not accepted:
-                self._set_unit(stage, unit, "blocked", error="The APM proposal was not approved.")
-                return
-            accepted_markdown = str(accepted[0]["spec"].get("apm_markdown") or "").strip()
-            self.checkpoint()
-            def commit(fresh: Workspace):
-                existing = str(fresh.planning.get("apm_markdown") or "")
-                if (
-                    existing
-                    and fresh.planning.get("created_by") == "user"
-                    and self.run["mode"] != "permission"
-                ):
-                    return "preserved"
-                fresh.update_planning(
-                    {
-                        "apm_markdown": accepted_markdown,
-                        "created_by": "agent",
-                        "agent_run_id": self.run["id"],
-                        "workflow_basis_sha1": audit_capabilities.planning_basis_sha1(fresh),
-                    },
-                    agent=True,
-                )
-                return "updated"
 
-            committed = mutate(
-                self.ws,
-                commit,
-                expected_parents=expected_context,
-            )
-            self.ws = committed.workspace
-            if committed.value == "preserved":
-                ref = store.write_sidecar(
+            def context_provider():
+                return self.context_resolver.resolve(
                     self.ws,
-                    self.run["id"],
-                    {"proposed_markdown": accepted_markdown},
+                    capability,
+                    unit,
+                    apm_document_methodology_scope(
+                        self.ws,
+                        planning_context=(basis.get("planning") or {}).get("context") or {},
+                        document_ids=(
+                            selected_document_ids
+                            if "document_analyses" in basis
+                            else None
+                        ),
+                    ),
                 )
+
+            def approval_provider(proposal):
+                proposals = [
+                    self.proposal_item(
+                        "Audit planning memorandum",
+                        "Drafted from the current planning basis.",
+                        dict(proposal),
+                    )
+                ]
+                accepted = self.request_approval("apm", task, proposals)
+                return dict(accepted[0]["spec"]) if accepted else None
+
+            def record_reference(field):
+                def record(reference):
+                    unit[field] = dict(reference)
+                    self.save()
+
+                return record
+
+            pipeline = UnitPipeline(
+                runtime=self.runtime,
+                gateway=self.model_gateway,
+                workers=WORKERS,
+                executors=EXECUTORS,
+                sidecars=UnitSidecarStore(self.ws, self.run["id"]),
+            )
+            outcome = pipeline.run(
+                UnitPipelineRequest(
+                    capability_id=capability.id,
+                    unit_id=unit["id"],
+                    worker_id="planning.apm",
+                    executor_id="planning.apm",
+                    unit_input={
+                        "kind": unit.get("kind"),
+                        "input_sha1": unit.get("input_sha1"),
+                        "parent_refs": list(unit.get("parent_refs") or []),
+                    },
+                    activity={
+                        "artifact_refs": ["planning:apm"],
+                        "task_id": task["id"],
+                    },
+                    expected_revision=self.ws.revision,
+                    expected_parents=expected_context,
+                    capability_definition_hash=_capability_definition_hash(capability),
+                    approval_kind=("apm" if self.run["mode"] == "permission" else None),
+                    proposal_reference=unit.get("proposal_sidecar"),
+                    receipt_reference=unit.get("receipt_sidecar"),
+                ),
+                context_provider=context_provider,
+                context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                    capability, manifest
+                ),
+                target=target,
+                approval_provider=(
+                    approval_provider if self.run["mode"] == "permission" else None
+                ),
+                readiness_provider=lambda: capability.readiness(target.workspace, {}),
+                on_manifest_persisted=record_reference("context_manifest"),
+                on_proposal_persisted=record_reference("proposal_sidecar"),
+                on_receipt_persisted=record_reference("receipt_sidecar"),
+            )
+            if outcome.status == "approval_rejected":
+                self._set_unit(
+                    stage,
+                    unit,
+                    "blocked",
+                    error="The APM proposal was not approved.",
+                )
+                return
+            self.ws = target.workspace
+            if outcome.proposal_reused:
+                self.emit(
+                    "proposal_reused",
+                    {
+                        "stage_id": stage["id"],
+                        "unit_id": unit["id"],
+                        "sidecar": dict(outcome.proposal_reference),
+                    },
+                )
+            if outcome.proposal_reuse_rejection_reasons:
+                self.emit(
+                    "proposal_reuse_rejected",
+                    {
+                        "stage_id": stage["id"],
+                        "unit_id": unit["id"],
+                        "reasons": list(outcome.proposal_reuse_rejection_reasons),
+                    },
+                )
+            self.run["planning_changes"]["apm_updated"] += 1
+            self.record_artifact("planning", "apm", "planning:apm", "updated", task)
+            self._set_unit(stage, unit, "succeeded", result_refs=["planning:apm"])
+        except (Cancelled, LimitExceeded):
+            raise
+        except UnitPipelineConflict as error:
+            if error.manifest_reference:
+                unit["context_manifest"] = dict(error.manifest_reference)
+            if error.proposal_reference:
+                unit["proposal_sidecar"] = dict(error.proposal_reference)
+            if error.receipt_reference:
+                unit["receipt_sidecar"] = dict(error.receipt_reference)
+            if error.proposal_reuse_rejection_reasons:
+                self.emit(
+                    "proposal_reuse_rejected",
+                    {
+                        "stage_id": stage["id"],
+                        "unit_id": unit["id"],
+                        "reasons": list(error.proposal_reuse_rejection_reasons),
+                    },
+                )
+            if str(error) == AUDITOR_EDIT_PRESERVED:
                 self.run.setdefault("planning_revisions", []).append(
-                    {"kind": "apm", "status": "proposed", "sidecar": ref}
+                    {
+                        "kind": "apm",
+                        "status": "proposed",
+                        "sidecar": dict(error.proposal_reference or {}),
+                    }
                 )
                 self.run["planning_changes"]["apm_proposed"] += 1
                 self._set_unit(
@@ -790,12 +819,8 @@ class WorkflowRunner(ActionRunner):
                     "awaiting_confirmation",
                     error="Auditor-owned APM was preserved.",
                 )
-                return
-            self.run["planning_changes"]["apm_updated"] += 1
-            self.record_artifact("planning", "apm", "planning:apm", "updated", task)
-            self._set_unit(stage, unit, "succeeded", result_refs=["planning:apm"])
-        except (Cancelled, LimitExceeded):
-            raise
+            else:
+                self._set_unit(stage, unit, "conflict", error=str(error))
         except WorkspaceConflict as error:
             self._set_unit(stage, unit, "conflict", error=str(error))
         except Exception as error:

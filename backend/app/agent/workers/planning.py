@@ -60,7 +60,33 @@ def _fill_unavailable_placeholders(markdown: str) -> str:
 
 
 def _response_schema(response: str) -> Mapping[str, Any]:
-    return {"apm_markdown": str(response or "")}
+    value = str(response or "").strip()
+    fenced = re.fullmatch(
+        r"```(?:markdown|md)?\s*\n?(.*?)\n?```",
+        value,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if fenced:
+        value = fenced.group(1).strip()
+    if value.startswith("{"):
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and "apm_markdown" in payload:
+            return {"apm_markdown": str(payload.get("apm_markdown") or "")}
+        marker = re.search(r'["\']apm_markdown["\']\s*:\s*["\']', value)
+        if marker:
+            body = value[marker.end() :].strip()
+            body = re.sub(r'["\']\s*}\s*$', "", body, count=1).strip()
+            try:
+                value = json.loads(f'"{body}"').strip()
+            except json.JSONDecodeError:
+                value = body.replace(r"\n", "\n").replace(r'\"', '"').strip()
+    heading = re.search(r"(?m)^#{1,6}\s+", value)
+    if heading:
+        value = value[heading.start() :].strip()
+    return {"apm_markdown": value}
 
 
 def validate_apm_proposal(

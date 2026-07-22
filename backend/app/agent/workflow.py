@@ -151,6 +151,7 @@ def new_unit(spec: UnitSpec, capability_id: str) -> dict:
         "input_sha1": spec.input_sha1,
         "context_manifest": None,
         "proposal_sidecar": None,
+        "receipt_sidecar": None,
         "result_refs": [],
         "error": None,
         "started_at": None,
