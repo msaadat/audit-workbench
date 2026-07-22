@@ -514,6 +514,13 @@ before post-commit readiness evaluation. The service depends only on the
 runtime, gateway, context, worker, and executor contracts; it has no audit
 domain or scheduler dependency. Exact proposal recovery identity and sidecar
 recovery validation remain the next Phase 5 tasks.
+Proposal sidecars now carry one exact execution identity over capability,
+semantic unit input, manifest and selected sources, context spec, resolver,
+declared selectors, worker implementation/definition, prompt, and response
+schema. Compatible proposals bypass the provider; incompatible proposals are
+regenerated with stable field-level rejection reasons. This identity applies
+only before commit and is deliberately not reused as a freshness or currency
+assessment for committed artifacts.
 
 ### Phase 1 Deletion Boundary
 

@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 5 (in progress).
-- Current task: `P5.3A` (not started).
-- Last completed task: `P5.3`.
+- Current task: `P5.4` (not started).
+- Last completed task: `P5.3A`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.3A` |
+| 5 | In progress | `P5.4` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -593,6 +593,20 @@ status notes below.
   `test_agent_unit_pipeline.py`, `test_agent_executor_models.py`, and
   `test_agent_worker_models.py`. No live capability uses the service yet and no
   API or frontend contract changed. The exact next task is `P5.3A`.
+- `P5.3A` completed on 2026-07-22. `ProposalExecutionIdentity` now persists an
+  exact SHA-256 identity over the capability definition, semantic unit input,
+  exact context manifest, context spec, resolver, all declared selector
+  definitions, selected source hashes, worker definition and implementation,
+  prompt, and response schema. The unit pipeline loads the semantic proposal
+  sidecar before worker invocation, reuses only an exact compatible proposal,
+  verifies proposal and identity hashes, skips a resolved approval when the
+  accepted proposal is already durable, and otherwise regenerates with stable
+  field-level rejection reasons such as `prompt_changed`,
+  `selected_sources_changed`, or `unit_input_changed`. The identity protects
+  only the uncommitted proposal execution; receipts and committed artifacts
+  gained no freshness or currency identity. Focused verification passed `50`
+  tests across the pipeline, executor, and worker contract suites. No live
+  capability or frontend contract changed. The exact next task is `P5.4`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1099,7 +1113,7 @@ all audit stages.
 - [x] `P5.3` Implement a runner-independent unit-pipeline service for context,
   manifest, worker, proposal, approval, executor, receipt, and readiness
   sequencing.
-- [ ] `P5.3A` Implement and persist exact proposal execution identities with
+- [x] `P5.3A` Implement and persist exact proposal execution identities with
   explicit rejection reasons for incompatible sidecar reuse; do not introduce
   a committed-artifact freshness identity.
 - [ ] `P5.4` Add proposal and receipt sidecar validation and recovery tests for
