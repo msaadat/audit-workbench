@@ -490,6 +490,23 @@ recovery rejects cached proposals after spec or selector changes. Existing
 usable artifacts still bypass materialization and explicit force resolves the
 then-current candidates; no automatic freshness monitoring was added.
 
+The immutable worker boundary now lives under `agent/workers/`. Detached
+`WorkerRequest` values contain only a resolved local bundle, semantic unit
+input, and activity metadata. Hash-identified worker definitions own prompt and
+response-schema identity, while the registry owns a hard-bounded structured
+validation and repair loop through `ModelGateway`; validated results retain
+only an object proposal and response hash. The complementary deterministic
+executor boundary now lives under `agent/executors/`. Detached requests carry
+accepted proposals and an explicit concurrency snapshot. Each hash-identified
+executor definition declares strict workspace-revision CAS or material
+parent-hash guarding and provides both an implementation and an interrupted-
+commit reconciler. The registry validates guard and semantic-unit identity,
+revision claims, exact applied parents, artifact postconditions, and typed
+reconciliation outcomes before creating immutable, hash-identified receipts.
+The executor contract layer has no model, context resolver, workspace
+implementation, run-store, or scheduler dependency; the runner-independent
+pipeline and the first domain executor are introduced by later Phase 5 tasks.
+
 ### Phase 1 Deletion Boundary
 
 The v2 full-audit orchestration has been deleted from

@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 5 (in progress).
-- Current task: `P5.2` (not started).
-- Last completed task: `P5.1`.
+- Current task: `P5.3` (not started).
+- Last completed task: `P5.2`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.2` |
+| 5 | In progress | `P5.3` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -560,6 +560,25 @@ status notes below.
   persisted payload, API, or frontend contract changed, so broader behavioral
   suites and a frontend build were not required. The exact next task is
   `P5.2`.
+- `P5.2` completed on 2026-07-22. The new `agent.executors` package defines
+  immutable, detached executor requests, implementation results, durable
+  receipt payloads, typed interrupted-commit reconciliation outcomes, and a
+  duplicate/unknown-safe hash-identified registry. Each executor definition
+  declares either strict workspace-revision CAS or material parent-hash
+  concurrency. The registry rejects missing or extraneous guards, validates
+  executor/capability/unit identity, exact applied parent hashes, revision
+  claims, artifact postcondition coverage, and ambiguous reconciliation
+  outcomes before producing a receipt. Reconciliation can prove an interrupted
+  commit already applied and produce a marked receipt without invoking the
+  executor again; not-applied and conflict outcomes cannot produce receipts.
+  The contract layer imports no workspace implementation, transaction helper,
+  model gateway, context resolver, run store, or scheduler; domain executors
+  will supply the actual CAS/mutation behavior in `P5.6`. Focused verification
+  passed `39` tests across `test_agent_executor_models.py` and
+  `test_agent_worker_models.py`; backend compile validation also passed. No
+  active executor, scheduler, persisted run, API, or frontend contract changed,
+  so broader behavioral suites and a frontend build were not required. The
+  exact next task is `P5.3`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1061,7 +1080,7 @@ all audit stages.
 
 - [x] `P5.1` Define immutable worker request/result models, hash-identified
   registry metadata, response-schema validation, and bounded repair contracts.
-- [ ] `P5.2` Define executor request/result and receipt models, registry
+- [x] `P5.2` Define executor request/result and receipt models, registry
   metadata, parent-hash/CAS requirements, and reconciliation contracts.
 - [ ] `P5.3` Implement a runner-independent unit-pipeline service for context,
   manifest, worker, proposal, approval, executor, receipt, and readiness
