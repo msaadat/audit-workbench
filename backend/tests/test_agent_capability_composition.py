@@ -16,6 +16,7 @@ import hashlib
 import pytest
 
 from app.agent import audit_capabilities, capabilities
+from app.agent.capabilities import planning
 from app.agent.runtime import CapabilityExecution, CapabilityExecutionRegistry
 from app.agent.workflow import Capability, CapabilityRegistry
 from app.agent.workflows import audit as audit_workflow
@@ -68,6 +69,9 @@ def _locally_owned_ids() -> frozenset[str]:
     return frozenset(owned)
 
 
+_ALL_LOCALLY_OWNED = sorted(_locally_owned_ids())
+
+
 def test_composition_from_live_source_selects_or_owns_matching_declarations():
     live = audit_capabilities.REGISTRY
     composed = capabilities.build_audit_registry(source=live)
@@ -91,35 +95,80 @@ def test_composition_from_live_source_selects_or_owns_matching_declarations():
 class _StubWorkspace:
     """Minimal stand-in exposing only what planning readiness/expansion read."""
 
-    def __init__(self, *, planning=None, tables=None, documents=None):
+    def __init__(self, *, planning=None, tables=None, documents=None, rcm=None):
         self.planning = planning or {}
         self.tables = tables or {}
         self.documents = documents or []
+        self.rcm = list(rcm or [])
 
 
-_CONTEXT_READY_STATES = (
-    _StubWorkspace(planning={"context": {"objective": "o", "scope": "s"}}),
-    _StubWorkspace(planning={"context": {"objective": "o"}}, tables={"t": 1}),
-    _StubWorkspace(planning={}),  # no objective/scope, no data or documents
-    _StubWorkspace(planning={"context": {"scope": "s"}}, documents=[{"id": "d"}]),
+# Representative states exercising each planning capability's readiness branches:
+# absent inputs, satisfied context + structured APM, valid RCM rows with
+# executable planned tests, and an invalid RCM row.
+_PLANNING_STATES = (
+    _StubWorkspace(planning={}),
+    _StubWorkspace(
+        planning={
+            "context": {"objective": "o", "scope": "s"},
+            "apm_markdown": "# Objective\n\nbody",
+        },
+        tables={"t": 1},
+    ),
+    _StubWorkspace(
+        planning={"context": {"objective": "o"}},
+        documents=[{"id": "d"}],
+        rcm=[
+            {
+                "id": "R1",
+                "risk": "r",
+                "control": "c",
+                "planned_tests": [
+                    {"id": "P1", "method": "validation", "steps": ["s"]}
+                ],
+            }
+        ],
+    ),
+    _StubWorkspace(rcm=[{"id": "R2", "risk": "", "control": ""}]),
 )
 
 
-def test_locally_owned_context_ready_matches_live_declaration_and_behavior():
-    owned = capabilities.AUDIT_REGISTRY.get("planning.context_ready")
-    live = audit_capabilities.REGISTRY.get("planning.context_ready")
+@pytest.mark.parametrize("capability_id", sorted(planning.LOCALLY_OWNED))
+def test_locally_owned_planning_declaration_matches_live_across_stub_states(capability_id):
+    owned = capabilities.AUDIT_REGISTRY.get(capability_id)
+    live = audit_capabilities.REGISTRY.get(capability_id)
 
     # Golden identity: the moved declaration is hash-relevant identical to live.
-    assert "planning.context_ready" in _locally_owned_ids()
+    assert capability_id in _locally_owned_ids()
     assert _declaration_fields(owned) == _declaration_fields(live)
 
-    # Golden behavior: readiness matches live across representative states.
-    for stub in _CONTEXT_READY_STATES:
+    # Golden behavior: readiness and unit expansion match live across the
+    # planning branches (absent, satisfied, valid rows, invalid row).
+    for stub in _PLANNING_STATES:
         assert owned.readiness(stub, {}).payload() == live.readiness(stub, {}).payload()
+        assert owned.expand_units(stub, {}) == live.expand_units(stub, {})
 
-    # Golden behavior: unit expansion produces identical semantic units.
-    stub = _CONTEXT_READY_STATES[0]
-    assert owned.expand_units(stub, {}) == live.expand_units(stub, {})
+
+@pytest.mark.parametrize("capability_id", _ALL_LOCALLY_OWNED)
+def test_locally_owned_declaration_matches_live_on_real_workspace(
+    capability_id, workspace_with_data
+):
+    """Every migrated declaration matches the live registry field-for-field and
+    behaves identically (readiness + expansion) against a real workspace.
+
+    Fieldwork and reporting readiness read RCM execution manifests, document
+    tests, working papers, findings, and report state, so a real workspace — not
+    a stub — is required to exercise them without diverging from live."""
+    owned = capabilities.AUDIT_REGISTRY.get(capability_id)
+    live = audit_capabilities.REGISTRY.get(capability_id)
+
+    assert _declaration_fields(owned) == _declaration_fields(live)
+    assert (
+        owned.readiness(workspace_with_data, {}).payload()
+        == live.readiness(workspace_with_data, {}).payload()
+    )
+    assert owned.expand_units(workspace_with_data, {}) == live.expand_units(
+        workspace_with_data, {}
+    )
 
 
 def test_startup_registry_matches_authoritative_graph():

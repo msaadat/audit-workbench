@@ -4,16 +4,30 @@ Owns the fieldwork and roll-up outcomes of the authoritative audit graph:
 ``fieldwork.definitions_ready``, ``fieldwork.executed``, and
 ``results.rolled_up``.
 
-As with :mod:`planning`, these declarations are selected from the transitional
-``audit_capabilities`` registry during Phase 7; slices P7E–P7G move each
-capability's readiness, unit expansion, workers, and executors into this module
-and its sibling grouped modules while keeping the IDs and ordering stable.
+As with :mod:`planning`, each Phase 7 slice moves a capability's readiness and
+unit expansion into this module (constructed locally instead of selected from the
+transitional ``audit_capabilities`` registry) while keeping the IDs, ordering,
+and normalized definition hashes stable. The ``.1`` declaration moves here only
+populate the parallel grouped ``capabilities`` package; the live dispatch path
+still runs on ``audit_capabilities.REGISTRY`` and the ``audit_execution``
+handlers until ``P7.3``.
 """
 
 from __future__ import annotations
 
-from .. import audit_capabilities
-from ..workflow import Capability, CapabilityRegistry
+from ... import doc_tests, rcm_execution
+from ...workspaces import Workspace
+from ..workflow import (
+    Capability,
+    CapabilityRegistry,
+    Readiness,
+    UnitSpec,
+    semantic_unit_id,
+)
+from ..workflows import audit as audit_workflow
+from ._shared import rows as _rows
+from ._shared import single_unit as _single
+from ._shared import target_rcm_ids as _target_rcm_ids
 
 CAPABILITY_IDS: tuple[str, ...] = (
     "fieldwork.definitions_ready",
@@ -21,9 +35,300 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "results.rolled_up",
 )
 
+LOCALLY_OWNED: frozenset[str] = frozenset(
+    {
+        "fieldwork.definitions_ready",
+        "fieldwork.executed",
+        "results.rolled_up",
+    }
+)
+
+
+# --------------------------------------------------------------------------- #
+# fieldwork.definitions_ready (P7E)
+# --------------------------------------------------------------------------- #
+def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
+    selected = set(_target_rcm_ids(workspace, scope))
+    manifest = [
+        item
+        for item in rcm_execution.execution_manifest(workspace)
+        if item["rcm_id"] in selected
+    ]
+    missing = sum(len(item.get("missing_execution") or []) for item in manifest)
+    if not manifest:
+        return Readiness("missing", ("no planned tests are available to translate",))
+    if missing:
+        return Readiness(
+            "missing",
+            (f"{missing} required execution definition(s) are missing",),
+            details={"missing": missing, "total": len(manifest)},
+        )
+    # Required execution definitions all exist; currency relative to their
+    # planned test is not assessed. Parent hashes remain for executor CAS.
+    return Readiness("satisfied", details={"total": len(manifest)})
+
+
+def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    selected = set(_target_rcm_ids(workspace, scope))
+    units = []
+    for item in rcm_execution.execution_manifest(workspace):
+        if item["rcm_id"] not in selected:
+            continue
+        missing = set(item.get("missing_execution") or [])
+        for kind in item.get("required_execution") or []:
+            # Generate only missing definitions, or everything on explicit force.
+            # A definition that predates its planned test (currency) is not
+            # regenerated automatically; the auditor forces regeneration instead.
+            needs = kind in missing or (
+                kind == "datatest" and "validation_datatest" in missing
+            )
+            if not needs and scope.get("generation_mode") != "force":
+                continue
+            worker_kind = "data_test_spec" if kind == "datatest" else "document_test_spec"
+            units.append(
+                UnitSpec(
+                    semantic_unit_id(worker_kind, item["planned_test_id"]),
+                    worker_kind,
+                    f"Create {kind} definition — {item['title']}",
+                    (f"rcm:{item['rcm_id']}", f"planned_test:{item['planned_test_id']}"),
+                    item,
+                )
+            )
+    return units
+
+
+def _fieldwork_definitions_ready() -> Capability:
+    return Capability(
+        "fieldwork.definitions_ready",
+        "execution_definitions",
+        "Execution definitions",
+        "execution_spec",
+        audit_workflow.dependencies("fieldwork.definitions_ready"),
+        _definitions_ready,
+        _definition_units,
+        invalidate_on=("planned_test",),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# fieldwork.executed (P7F)
+# --------------------------------------------------------------------------- #
+def _execution_ready(workspace: Workspace, scope: dict) -> Readiness:
+    selected = set(_target_rcm_ids(workspace, scope))
+    manifest = [
+        item
+        for item in rcm_execution.execution_manifest(workspace)
+        if item["rcm_id"] in selected
+    ]
+    pending = []
+    review = []
+    blocked = []
+    for requirement in manifest:
+        for artifact in requirement.get("existing_execution") or []:
+            # An artifact with a durable result counts as executed. Whether that
+            # result predates changed inputs (``result_stale``) is currency, not
+            # structural usability, and is not assessed by the framework.
+            if not artifact.get("executable"):
+                review.append(artifact["id"])
+            elif artifact.get("has_durable_result"):
+                continue
+            elif artifact.get("status") == "blocked":
+                blocked.append(artifact["id"])
+            elif artifact.get("status") == "review_required" and artifact["kind"] == "doctest":
+                review.append(artifact["id"])
+            else:
+                pending.append(artifact["id"])
+    details = {
+        "pending": len(pending),
+        "review_required": len(review),
+        "blocked": len(blocked),
+    }
+    if pending:
+        return Readiness(
+            "missing",
+            (f"{len(pending)} execution artifact(s) have not run",),
+            details=details,
+        )
+    if review:
+        return Readiness(
+            "review_required",
+            (f"{len(review)} execution artifact(s) require auditor review",),
+            details=details,
+        )
+    if blocked:
+        return Readiness(
+            "review_required",
+            (f"{len(blocked)} execution artifact(s) are blocked on evidence",),
+            details=details,
+        )
+    return Readiness("satisfied", details=details)
+
+
+def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    selected = set(_target_rcm_ids(workspace, scope))
+    units = []
+    for item in rcm_execution.execution_manifest(workspace):
+        if item["rcm_id"] not in selected:
+            continue
+        for artifact in item.get("existing_execution") or []:
+            if artifact.get("has_durable_result") and scope.get("generation_mode") != "force":
+                continue
+            if artifact["kind"] == "datatest":
+                units.append(
+                    UnitSpec(
+                        semantic_unit_id("data_test_execution", artifact["id"]),
+                        "data_test_execution",
+                        f"Execute datatest — {item['title']}",
+                        (f"planned_test:{item['planned_test_id']}", f"datatest:{artifact['id']}"),
+                        artifact,
+                    )
+                )
+                continue
+            test = doc_tests.load_test(workspace, artifact["id"])
+            if test.get("kind") == "qa":
+                if doc_tests.evidence_blocked(test):
+                    units.append(
+                        UnitSpec(
+                            semantic_unit_id("document_test_execution", artifact["id"]),
+                            "document_test_execution",
+                            f"Execute doctest — {item['title']}",
+                            (
+                                f"planned_test:{item['planned_test_id']}",
+                                f"doctest:{artifact['id']}",
+                            ),
+                            artifact,
+                        )
+                    )
+                    continue
+                qa_units = []
+                for test_item in test.get("items") or []:
+                    answered = set((test_item.get("qa_answers") or {}).keys())
+                    for document_id in test_item.get("document_ids") or []:
+                        if document_id in answered and scope.get("generation_mode") != "force":
+                            continue
+                        qa_units.append(
+                            UnitSpec(
+                                semantic_unit_id(
+                                    "document_qa_execution",
+                                    artifact["id"],
+                                    test_item["id"],
+                                    document_id,
+                                ),
+                                "document_qa_execution",
+                                f"Answer {test_item.get('label') or test_item['id']} — {document_id}",
+                                (
+                                    f"planned_test:{item['planned_test_id']}",
+                                    f"doctest:{artifact['id']}",
+                                    f"docitem:{test_item['id']}",
+                                    f"document:{document_id}",
+                                ),
+                                {
+                                    "test_sha1": test.get("sha1"),
+                                    "question": test_item.get("question"),
+                                    "document_sha1": next(
+                                        (
+                                            document.get("sha1")
+                                            for document in workspace.documents
+                                            if document.get("id") == document_id
+                                        ),
+                                        None,
+                                    ),
+                                },
+                            )
+                        )
+                if qa_units:
+                    units.extend(qa_units)
+                    continue
+                units.append(
+                    UnitSpec(
+                        semantic_unit_id("document_test_review", artifact["id"]),
+                        "document_test_review",
+                        f"Review document Q&A — {item['title']}",
+                        (f"planned_test:{item['planned_test_id']}", f"doctest:{artifact['id']}"),
+                        artifact,
+                    )
+                )
+                continue
+            already_checked = bool(test.get("items")) and all(
+                test_item.get("state")
+                in {"agent_checked", "manual_review", "confirmed", "exception"}
+                for test_item in test.get("items") or []
+            )
+            kind = "document_test_review" if already_checked else "document_test_execution"
+            units.append(
+                UnitSpec(
+                    semantic_unit_id(kind, artifact["id"]),
+                    kind,
+                    f"{'Review' if already_checked else 'Execute'} doctest — {item['title']}",
+                    (f"planned_test:{item['planned_test_id']}", f"doctest:{artifact['id']}"),
+                    artifact,
+                )
+            )
+    return units
+
+
+def _fieldwork_executed() -> Capability:
+    return Capability(
+        "fieldwork.executed",
+        "execution",
+        "Fieldwork execution",
+        "mixed_execution",
+        audit_workflow.dependencies("fieldwork.executed"),
+        _execution_ready,
+        _execution_units,
+        invalidate_on=("definition", "evidence"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# results.rolled_up (P7G)
+# --------------------------------------------------------------------------- #
+def _rollup_ready(workspace: Workspace, scope: dict) -> Readiness:
+    rcm_rows = _rows(workspace, scope)
+    missing = [row["id"] for row in rcm_rows if not row.get("execution_rollup")]
+    if missing:
+        return Readiness(
+            "missing", (f"{len(missing)} RCM row(s) have not been rolled up",)
+        )
+    return Readiness("satisfied", details={"artifact_count": len(rcm_rows)})
+
+
+def _results_rolled_up() -> Capability:
+    return Capability(
+        "results.rolled_up",
+        "rollup",
+        "Results and observations",
+        "rollup",
+        audit_workflow.dependencies("results.rolled_up"),
+        _rollup_ready,
+        _single("rollup", "Roll up RCM results"),
+        invalidate_on=("execution",),
+    )
+
+
+_BUILDERS = {
+    "fieldwork.definitions_ready": _fieldwork_definitions_ready,
+    "fieldwork.executed": _fieldwork_executed,
+    "results.rolled_up": _results_rolled_up,
+}
+
 
 def capabilities(source: CapabilityRegistry | None = None) -> tuple[Capability, ...]:
     """Return this group's capability declarations in authoritative order."""
 
-    registry = source if source is not None else audit_capabilities.build_registry()
-    return tuple(registry.get(capability_id) for capability_id in CAPABILITY_IDS)
+    resolved: list[Capability] = []
+    registry: CapabilityRegistry | None = None
+    for capability_id in CAPABILITY_IDS:
+        builder = _BUILDERS.get(capability_id)
+        if builder is not None:
+            resolved.append(builder())
+            continue
+        if registry is None:
+            if source is not None:
+                registry = source
+            else:
+                from .. import audit_capabilities
+
+                registry = audit_capabilities.build_registry()
+        resolved.append(registry.get(capability_id))
+    return tuple(resolved)

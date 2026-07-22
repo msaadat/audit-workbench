@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
@@ -192,12 +193,175 @@ APM_EXECUTOR = ExecutorDefinition(
 EXECUTORS.register(APM_EXECUTOR)
 
 
+# --------------------------------------------------------------------------- #
+# planning.context executor (P7A)
+# --------------------------------------------------------------------------- #
+PLANNING_CONTEXT_EXECUTOR_ID = "planning.context"
+PLANNING_CONTEXT_REF = "planning:context"
+# The synthesizable structured planning-context fields. Matches the fields the
+# synthesis worker is permitted to write; provenance and free-form keys stay out.
+PLANNING_CONTEXT_FIELDS = frozenset(
+    {
+        "objective",
+        "entity",
+        "period",
+        "scope",
+        "materiality",
+        "key_contacts",
+        "background_notes",
+    }
+)
+
+
+@dataclass
+class PlanningContextExecutorTarget:
+    """Mutable target for the deterministic planning-context commit."""
+
+    workspace: Workspace
+    run_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Planning-context executor target requires a Workspace.")
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("Planning-context executor target requires a run_id.")
+
+
+def _validated_context(
+    request: ExecutorRequest,
+    target: object,
+) -> tuple[PlanningContextExecutorTarget, dict[str, str]]:
+    if not isinstance(target, PlanningContextExecutorTarget):
+        raise WorkspaceError(
+            "Planning-context executor requires a PlanningContextExecutorTarget."
+        )
+    if set(request.expected_parents) != {PLANNING_CONTEXT_REF}:
+        raise WorkspaceError(
+            "Planning-context executor requires exactly the planning-context parent hash."
+        )
+    raw = request.proposal.get("context")
+    if not isinstance(raw, Mapping):
+        raise WorkspaceError("The accepted planning-context proposal must carry a context object.")
+    context = {
+        key: str(value)
+        for key, value in raw.items()
+        if key in PLANNING_CONTEXT_FIELDS and str(value or "").strip()
+    }
+    if not context:
+        raise WorkspaceError("The accepted planning context is empty.")
+    return target, context
+
+
+def _context_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    context: dict[str, str],
+) -> ExecutorResult:
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=[PLANNING_CONTEXT_REF],
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, [PLANNING_CONTEXT_REF]),
+        output={"status": "updated", "fields": sorted(context)},
+    )
+
+
+def execute_planning_context(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
+    """Merge one accepted planning context under the parent-hash guard.
+
+    The synthesized fields are merged into ``planning.context`` (auditor-entered
+    fields outside the proposal are preserved by the merge), guarded by the
+    planning-context parent hash so a concurrent context change is a conflict
+    rather than a silent overwrite.
+    """
+    target, context = _validated_context(request, raw_target)
+
+    def commit(fresh: Workspace) -> None:
+        fresh.update_planning({"context": context}, agent=True)
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _context_result(
+        request,
+        committed.workspace,
+        revision_before=committed.revision - 1,
+        context=context,
+    )
+
+
+def reconcile_planning_context(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted planning-context commit without mutating state."""
+    target, context = _validated_context(request, raw_target)
+    current = Workspace(target.workspace.root)
+    current_parent = parent_hashes(current, [PLANNING_CONTEXT_REF])[PLANNING_CONTEXT_REF]
+    expected_parent = request.expected_parents[PLANNING_CONTEXT_REF]
+    if current_parent == expected_parent:
+        # The context material is unchanged: the guarded merge has not landed,
+        # so a normal (idempotent) execution is safe.
+        return ExecutorReconciliation("not_applied")
+    current_context = current.planning.get("context") or {}
+    if all(str(current_context.get(key)) == value for key, value in context.items()):
+        if current.revision <= request.expected_revision:
+            return ExecutorReconciliation(
+                "conflict",
+                reason="Planning-context commit revision did not advance.",
+            )
+        target.workspace = current
+        return ExecutorReconciliation(
+            "already_applied",
+            result=_context_result(
+                request,
+                current,
+                revision_before=max(request.expected_revision, current.revision - 1),
+                context=context,
+            ),
+            reason="The accepted planning context already holds.",
+        )
+    return ExecutorReconciliation(
+        "conflict",
+        reason="Planning context changed before the interrupted commit was reconciled.",
+    )
+
+
+PLANNING_CONTEXT_EXECUTOR = ExecutorDefinition(
+    executor_id=PLANNING_CONTEXT_EXECUTOR_ID,
+    implementation_hash=_sha256_text(inspect.getsource(execute_planning_context)),
+    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_planning_context)),
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_planning_context,
+    reconciler=reconcile_planning_context,
+)
+
+EXECUTORS.register(PLANNING_CONTEXT_EXECUTOR)
+
+
 __all__ = [
     "APM_EXECUTOR",
     "APM_EXECUTOR_ID",
     "AUDITOR_EDIT_PRESERVED",
     "ApmEditPreserved",
     "ApmExecutorTarget",
+    "PLANNING_CONTEXT_EXECUTOR",
+    "PLANNING_CONTEXT_EXECUTOR_ID",
+    "PLANNING_CONTEXT_FIELDS",
+    "PLANNING_CONTEXT_REF",
+    "PlanningContextExecutorTarget",
     "execute_apm",
+    "execute_planning_context",
     "reconcile_apm",
+    "reconcile_planning_context",
 ]

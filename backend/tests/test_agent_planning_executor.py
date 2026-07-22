@@ -14,6 +14,9 @@ from app.agent.executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmEditPreserved,
     ApmExecutorTarget,
+    PLANNING_CONTEXT_EXECUTOR,
+    PLANNING_CONTEXT_REF,
+    PlanningContextExecutorTarget,
 )
 from app.workspace_transactions import ParentConflict, parent_hashes
 
@@ -130,6 +133,82 @@ def test_apm_executor_reconciles_interrupted_commit_and_detects_later_edit():
     conflict = APM_EXECUTOR.reconciler(request, target)
     assert conflict.disposition == "conflict"
     assert conflict.reason == AUDITOR_EDIT_PRESERVED
+
+
+def _context_request(workspace, context=None):
+    return ExecutorRequest(
+        executor_id="planning.context",
+        capability_id="planning.context_ready",
+        unit_id="planning_context",
+        proposal={
+            "context": context
+            or {"scope": "Purchase commitments and approvals", "materiality": "$50k"}
+        },
+        expected_revision=workspace.revision,
+        expected_parents=parent_hashes(workspace, [PLANNING_CONTEXT_REF]),
+        activity={"artifact_refs": [PLANNING_CONTEXT_REF]},
+    )
+
+
+def test_planning_context_executor_merges_and_preserves_auditor_fields():
+    workspace = _planning_workspace("Context commit")  # objective + scope present
+    request = _context_request(workspace, {"scope": "Updated scope", "materiality": "$50k"})
+    target = PlanningContextExecutorTarget(workspace, "run-ctx")
+
+    receipt = EXECUTORS.execute(request, target)
+
+    context = target.workspace.planning["context"]
+    assert context["objective"] == "Assess procurement approvals"  # auditor field kept
+    assert context["scope"] == "Updated scope"  # updated by merge
+    assert context["materiality"] == "$50k"  # added by merge
+    assert receipt.workspace_revision_after == receipt.workspace_revision_before + 1
+    assert receipt.expected_parents == request.expected_parents
+    assert receipt.postcondition_hashes == parent_hashes(
+        target.workspace, [PLANNING_CONTEXT_REF]
+    )
+
+
+def test_planning_context_executor_parent_hash_rejects_concurrent_context_change():
+    workspace = _planning_workspace("Context guard")
+    request = _context_request(workspace, {"materiality": "$10k"})
+    workspace.update_planning({"context": {"background_notes": "Late auditor note"}})
+    before = dict(workspace.planning["context"])
+
+    with pytest.raises(ParentConflict):
+        PLANNING_CONTEXT_EXECUTOR.implementation(
+            request, PlanningContextExecutorTarget(workspace, "run-conflict")
+        )
+    assert workspaces.load_workspace(workspace.id).planning["context"] == before
+
+
+def test_planning_context_executor_reconciles_interrupted_commit_and_detects_later_edit():
+    workspace = _planning_workspace("Context reconcile")
+    request = _context_request(workspace, {"materiality": "$25k"})
+    target = PlanningContextExecutorTarget(workspace, "run-reconcile")
+
+    # Before the commit lands the guard still matches: safe to (re)execute.
+    assert PLANNING_CONTEXT_EXECUTOR.reconciler(request, target).disposition == "not_applied"
+
+    PLANNING_CONTEXT_EXECUTOR.implementation(request, target)
+    recovered = PLANNING_CONTEXT_EXECUTOR.reconciler(request, target)
+    assert recovered.disposition == "already_applied"
+    assert recovered.result.postcondition_hashes == parent_hashes(
+        target.workspace, [PLANNING_CONTEXT_REF]
+    )
+
+    target.workspace.update_planning({"context": {"materiality": "$99k"}})
+    conflict = PLANNING_CONTEXT_EXECUTOR.reconciler(request, target)
+    assert conflict.disposition == "conflict"
+
+
+def test_planning_context_executor_rejects_empty_accepted_context():
+    workspace = _planning_workspace("Context empty")
+    request = _context_request(workspace, {"not_a_context_field": "value"})
+
+    with pytest.raises(workspaces.WorkspaceError):
+        PLANNING_CONTEXT_EXECUTOR.implementation(
+            request, PlanningContextExecutorTarget(workspace, "run-empty")
+        )
 
 
 def test_planning_executor_has_no_gateway_worker_or_provider_dependency():

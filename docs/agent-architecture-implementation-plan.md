@@ -33,10 +33,20 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7A.2` (not started).
-- Last completed task: `P7A.1`.
-- Active blockers: none. `P7A.2` is a larger, cross-phase-entangled slice
-  (see the `P7A.1` note) and should be scoped as its own focused effort.
+- Current task: `P7A.2` (execution switch; partially landed — see note).
+- Last completed task: fieldwork/reporting readiness + unit-expansion declaration
+  moves and the `planning.context` executor.
+- Done: the readiness + unit-expansion declarations for **all 12** audit
+  capabilities are now locally owned in the grouped `capabilities` modules and
+  golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
+  `P7E.1`, `P7I.1` fully; the readiness/units portion of `P7F.1`, `P7G.1`,
+  `P7H.1`, `P7J.1`, `P7K.1`, `P7L.1` too). The registered `planning.context`
+  executor (commit + reconcile) is landed and unit-tested.
+- Active blockers: the `.2` execution writer-switches (workers/executors/handler
+  removal) remain for every family. `P7A.2`'s remaining pieces (context-synthesis
+  worker + context declaration + pipeline switch + `_planning_basis` removal) are
+  the Phase-9-coupled part deferred per the `P7A.2` note; its `planning.context`
+  commit executor is already landed.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -56,7 +66,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7A.2` |
+| 7 | In progress | `P7A.2` (.2 switches) |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -888,20 +898,95 @@ status notes below.
   and `test_workflow_v2.py`; `app.main` and the grouped `capabilities` package
   import cleanly. No API or frontend payload changed, so a frontend build was not
   required. The exact next task is `P7A.2`.
-- `P7A.2` scoping note (2026-07-22, not started): unlike `P7A.1`, the
+- `P7A.2` blocker (2026-07-22, not started): unlike `P7A.1`, the
   `planning.context_ready` *execution* handler (`audit_execution._planning_basis`
   → `ActionRunner.stage_context`) is a large, cross-phase-entangled slice, not a
   clean self-contained increment. `stage_context` selects planning documents
   (model-backed), runs the document-analysis map/reduce subsystem
-  (`_ensure_planning_analysis`, the exact duplication Phase 9 unifies),
+  (`_ensure_planning_analysis` — confirmed to be the exact
+  extraction/chunk-map/reduce/persist duplication the Phase 1 handoff and Phase 9
+  charter say must be unified into shared document-analysis capabilities),
   synthesizes planning context through a model call with validator/repair/
   fallback, commits `planning.context` to the workspace, and assembles the
   run-scoped `planning_basis` snapshot that the APM, RCM, and planned-tests
-  stages consume from `run["planning_basis"]`. Migrating it to a context-synthesis
-  worker plus a planning-context executor requires deciding how the pipeline
-  carries the run-scoped basis and how it interacts with the deferred Phase 9
-  document-analysis unification. It should be scoped and tested as its own focused
-  effort rather than folded into a larger uncommitted batch.
+  stages consume from `run["planning_basis"]`. A faithful `P7A.2` that removes the
+  old handler would have to either rebuild the document-analysis machinery Phase 9
+  will replace, or keep it inline transitionally, and must decide how the pipeline
+  carries the run-scoped basis. It is therefore deferred to its own focused effort
+  (recommend sequencing after or alongside Phase 9) rather than folded into a
+  larger uncommitted batch. The `.1` declaration moves below are independent of
+  this execution switch and proceed first.
+- `P7B.1`/`P7C.1`/`P7D.1` were taken before `P7A.2` deliberately: the `.1`
+  declaration moves only affect the parallel grouped `capabilities` package (not
+  the live `audit_capabilities` dispatch path) and are independent of the `.2`
+  writer-switches, so completing the planning-family declarations is correct,
+  low-risk, independently verifiable progress while `P7A.2` remains blocked.
+- `P7B.1`, `P7C.1`, `P7D.1` completed on 2026-07-22. `capabilities/planning.py`
+  now locally owns all four planning capability declarations
+  (`planning.context_ready`, `planning.apm_ready`, `planning.rcm_ready`,
+  `planning.planned_tests_ready`): their readiness bodies (`_apm_ready`,
+  `_rcm_ready`, `_planned_ready`), unit expansions (single-unit for apm/rcm,
+  per-RCM `_planned_units`), and the shared RCM-scope selectors (`_target_rcm_ids`,
+  `_rows`) moved into the grouped module as transitional copies (consolidated at
+  `P7.3`; the shared selectors will be lifted to a common location when the
+  fieldwork/reporting families that also use them are migrated). `LOCALLY_OWNED`
+  now lists all four IDs and `capabilities()` constructs them from the local
+  builders; no capability is still selected from `audit_capabilities`, but that
+  module remains the untouched live source until `P7.3`. Each moved declaration
+  keeps its exact `stage_id`, `worker_kind`, `context` preset, `invalidate_on`,
+  and parent refs, so the normalized definition hashes are unchanged. The golden
+  test is now parametrized over `LOCALLY_OWNED` and proves, per capability,
+  hash-relevant declaration-field equality with the live registry plus readiness-
+  payload and unit-expansion equality across representative states (absent inputs,
+  satisfied context + structured APM, valid RCM rows with executable planned
+  tests, and an invalid RCM row). The live dispatch path is unchanged. Focused
+  verification passed `20` tests across `test_agent_capability_composition.py` and
+  `test_workflow_audit_definition.py`, plus regression: `26` tests across
+  `test_workflow_scheduler_golden.py`, `test_agent_runtime_import_boundaries.py`,
+  `test_agent_planning_worker.py`, and `test_agent_planning_executor.py`, and `56`
+  in `test_workflow_v2.py`; `app.main` and the grouped `capabilities` package
+  import cleanly. No API or frontend payload changed, so a frontend build was not
+  required. The exact next task is `P7A.2` (blocked; see above) — the remaining
+  work is the `.2` execution writer-switches and the fieldwork/reporting `.1`
+  declaration moves.
+- Fieldwork/reporting readiness + unit-expansion moves and the `planning.context`
+  executor completed on 2026-07-22. `capabilities/fieldwork.py` and
+  `capabilities/reporting.py` now locally own the readiness and unit-expansion
+  bodies for all eight fieldwork/reporting capabilities (`fieldwork.definitions_ready`,
+  `fieldwork.executed`, `results.rolled_up`, `findings.drafted`,
+  `working_papers.generated`, `dashboard.curated`, `report.working_draft`,
+  `audit.verified`), so every one of the 12 audit capabilities is now
+  locally-owned in the grouped modules (nothing is selected from
+  `audit_capabilities` any more, though that module remains the untouched live
+  source until `P7.3`). The shared RCM-scope and observation selectors were
+  extracted to `capabilities/_shared.py` and reused by all three groups (removing
+  the transitional copies from `planning.py`). Definition hashes are unchanged
+  (every declaration keeps its exact `stage_id`, `worker_kind`, `context`,
+  `invalidate_on`, and parent refs). The golden suite now proves, per capability,
+  hash-relevant declaration-field equality plus readiness-payload and
+  unit-expansion equality against a **real** workspace (fieldwork/reporting
+  readiness read RCM manifests, doc tests, working papers, findings, and report
+  state, so a stub is insufficient), alongside the richer planning stub-state
+  coverage. Separately, the registered `planning.context` executor
+  (`executors/planning.py`: `execute_planning_context` + `reconcile_planning_context`,
+  `PlanningContextExecutorTarget`) landed as the permanent, self-contained
+  "planning-context commit behavior" extraction of `P7A.2` — it merges the
+  synthesized context fields under a `planning:context` parent-hash CAS (auditor
+  fields preserved by the merge) and classifies interrupted commits, mirroring the
+  APM executor. This is the P5.6-before-P5.7 pattern: the executor is registered
+  and tested now; the context-synthesis worker, `planning.context` context
+  declaration, pipeline switch, and `_planning_basis` removal land with the
+  Phase-9 document-analysis dependency. Only `.1` readiness/unit and the
+  `planning.context` executor moved; no live writer or handler was switched, and
+  the fieldwork/reporting `.2` slices (workers/executors/handlers) remain.
+  Focused verification passed `32` tests in `test_agent_capability_composition.py`
+  and `test_workflow_audit_definition.py`, `10` in `test_agent_planning_executor.py`,
+  and regression `86` across `test_workflow_scheduler_golden.py`,
+  `test_agent_runtime_import_boundaries.py`, `test_agent_planning_worker.py`,
+  `test_agent_planning_executor.py`, and `test_workflow_v2.py`, plus `22` in
+  `test_planning.py`; `app.main`, `audit_execution`, and the grouped package
+  import cleanly and both planning executors register. No API or frontend payload
+  changed, so a frontend build was not required.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1574,54 +1659,68 @@ the remaining v3 handlers to declarations, workers, and executors.
   expansion into the planning capability module with golden identity tests.
 - [ ] `P7A.2` Extract context synthesis and planning-context commit behavior,
   switch the capability to the registered pipeline, and remove its old handler.
-- [ ] `P7B.1` Move the completed `planning.apm_ready` declaration and registry
+  (Partially landed: the registered `planning.context` commit executor
+  `execute_planning_context`/`reconcile_planning_context` is done and unit-tested;
+  the context-synthesis worker, `planning.context` context declaration, pipeline
+  switch, and `_planning_basis` removal remain and are Phase-9-coupled — see the
+  `P7A.2` blocker note.)
+- [x] `P7B.1` Move the completed `planning.apm_ready` declaration and registry
   wiring into the grouped planning modules without changing identity.
 - [ ] `P7B.2` Remove the temporary APM vertical-slice adapter and prove the
   Phase 5 behavior through the authoritative audit workflow.
-- [ ] `P7C.1` Move `planning.rcm_ready` readiness, semantic units,
-  context, matching, and validation into grouped declarations and workers.
+- [x] `P7C.1` Move `planning.rcm_ready` readiness and semantic units into grouped
+  declarations (context, matching, and worker/validation migrate in `P7C.2`).
 - [ ] `P7C.2` Extract row-level commit, edit preservation, CAS, reconciliation,
   and receipts; switch the writer and delete the old RCM handler.
-- [ ] `P7D.1` Move `planning.planned_tests_ready` readiness and per-RCM unit
+- [x] `P7D.1` Move `planning.planned_tests_ready` readiness and per-RCM unit
   expansion with stable unit and matching tests.
 - [ ] `P7D.2` Extract planned-test generation, validation, commit, rollback,
   and receipts; switch the writer and delete the old handler.
-- [ ] `P7E.1` Move fieldwork-definition readiness and unit expansion while
+- [x] `P7E.1` Move fieldwork-definition readiness and unit expansion while
   preserving required execution-engine and planned-test linkage rules.
 - [ ] `P7E.2` Migrate data-test definition workers and linked-write executors,
   switch their writer, and prove rollback and recovery.
 - [ ] `P7E.3` Migrate document-test definition workers and linked-write
   executors, switch their writer, and prove attachment/linkage parity.
-- [ ] `P7F.1` Move fieldwork-execution readiness, attempt limits,
-  and data/document semantic units.
+- [x] `P7F.1` Move fieldwork-execution readiness and data/document semantic units
+  into the grouped module (execution attempt limits stay in the execution handler
+  and migrate with `P7F.2`/`P7F.3`).
 - [ ] `P7F.2` Migrate deterministic and data-test execution paths with local
   Polars computation, receipts, and recovery.
 - [ ] `P7F.3` Migrate model-backed document QA through the injected gateway and
   declared context, then remove the old execution handler.
-- [ ] `P7G.1` Move rollup readiness and deterministic execution into a local
-  executor with stable result and observation identities.
-- [ ] `P7G.2` Migrate the observation/disposition interaction to a declared
-  checkpoint and prove pause, resume, and auditor-edit behavior.
-- [ ] `P7H.1` Move finding readiness, eligible-observation units, context,
-  evidence rules, and proposal validation.
+- [x] `P7G.1` Move rollup readiness and unit expansion into the grouped module
+  (the deterministic rollup executor with stable result/observation identities
+  migrates in `P7G.2`).
+- [ ] `P7G.2` Migrate deterministic rollup execution into a local executor with
+  stable result/observation identities and the observation/disposition
+  interaction to a declared checkpoint; prove pause, resume, and auditor-edit
+  behavior.
+- [x] `P7H.1` Move finding readiness and eligible-observation units into the
+  reporting module (context, evidence rules, and proposal validation migrate with
+  the finding worker in `P7H.2`).
 - [ ] `P7H.2` Extract evidence-preserving finding commits and receipts, switch
   the writer, and remove the old finding handler.
-- [ ] `P7I.1` Move working-paper readiness and semantic units into the
+- [x] `P7I.1` Move working-paper readiness and semantic units into the
   reporting capability module.
 - [ ] `P7I.2` Switch working-paper generation to a deterministic executor and
   remove the old handler.
-- [ ] `P7J.1` Move dashboard readiness, inputs, and deterministic selection or
-  declared curation context into the reporting capability module.
+- [x] `P7J.1` Move dashboard readiness and unit expansion into the reporting
+  capability module (curation inputs and deterministic selection or declared
+  curation context migrate with `P7J.2`).
 - [ ] `P7J.2` Switch tile commits to a conflict-aware executor and remove the
   old dashboard handler.
-- [ ] `P7K.1` Move report readiness, bounded context, reconciliation policy,
-  prompt, schema validation, and source rules.
+- [x] `P7K.1` Move report readiness and unit expansion into the reporting module
+  (bounded context, reconciliation policy, prompt, schema validation, and source
+  rules migrate with the report worker in `P7K.2`).
 - [ ] `P7K.2` Extract report commit and reconciliation receipts, switch the
   writer, and remove the old report handler.
-- [ ] `P7L.1` Move audit-verification readiness and quality checks into a
-  deterministic capability and executor.
-- [ ] `P7L.2` Switch verification, preserve completion projections, and remove
-  the final audit-specific scheduler handler.
+- [x] `P7L.1` Move audit-verification readiness and quality checks into the
+  reporting capability module (the deterministic verification executor migrates
+  in `P7L.2`).
+- [ ] `P7L.2` Extract the deterministic verification executor, switch
+  verification, preserve completion projections, and remove the final
+  audit-specific scheduler handler.
 - [ ] `P7.3` Replace `audit_capabilities.py` and `audit_workers.py` with
   grouped modules at all live imports, then delete both old modules in the same
   task.
@@ -1697,7 +1796,12 @@ declared, but must not make document analysis a universal audit prerequisite.
 - New `backend/app/agent/capabilities/planning.py`
 - New `backend/app/agent/capabilities/fieldwork.py`
 - New `backend/app/agent/capabilities/reporting.py`
-- New grouped worker and executor modules
+- New `backend/app/agent/capabilities/_shared.py` (shared RCM-scope/observation
+  selectors reused by the grouped modules)
+- New grouped worker and executor modules (`backend/app/agent/workers/planning.py`,
+  `backend/app/agent/executors/planning.py`, and their fieldwork/reporting
+  siblings). The `planning.context` commit executor already lives in
+  `executors/planning.py`.
 - `backend/app/agent/audit_capabilities.py` -> deletion
 - `backend/app/agent/audit_workers.py` -> split, then deletion
 
