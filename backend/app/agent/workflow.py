@@ -12,6 +12,7 @@ from ..workspaces import Workspace, WorkspaceError, slugify
 from . import store
 
 WORKFLOW_DEFINITION = "audit_workflow_v2"
+GENERATION_MODES = {"reuse_existing", "force"}
 READINESS_STATES = {"satisfied", "missing", "stale", "blocked", "review_required"}
 UNIT_STATUSES = {
     "queued", "running", "succeeded", "failed", "blocked", "awaiting_input",
@@ -29,6 +30,35 @@ def canonical_sha1(value: object) -> str:
 def semantic_unit_id(kind: str, *refs: object) -> str:
     suffix = ":".join(slugify(str(ref)) for ref in refs if str(ref or "").strip())
     return f"{kind}:{suffix}" if suffix else kind
+
+
+def normalize_generation_mode(value: object | None) -> str:
+    mode = str(value or "reuse_existing").strip()
+    if mode not in GENERATION_MODES:
+        raise WorkspaceError(
+            "Workflow generation_mode must be 'reuse_existing' or 'force'."
+        )
+    return mode
+
+
+def command_generation_mode(command: dict[str, Any]) -> str:
+    """Resolve an explicit mode or deterministic regeneration instruction."""
+
+    if command.get("generation_mode") is not None:
+        return normalize_generation_mode(command.get("generation_mode"))
+    text = str(command.get("text") or "").casefold()
+    force_phrases = (
+        "improve ",
+        "generate again",
+        "regenerate",
+        "refresh ",
+    )
+    explicit_generate_again = "generate" in text and "again" in text
+    return (
+        "force"
+        if explicit_generate_again or any(phrase in text for phrase in force_phrases)
+        else "reuse_existing"
+    )
 
 
 @dataclass(frozen=True)
@@ -164,8 +194,10 @@ def materialize(
     workspace: Workspace,
     requested_outcomes: list[str],
     scope: dict | None = None,
+    *,
+    generation_mode: str = "reuse_existing",
 ) -> tuple[list[str], list[dict], list[str]]:
-    """Resolve closure and materialize only missing/stale/review units.
+    """Resolve closure and materialize missing or explicitly forced outcomes.
 
     This is where the "action plan" for an audit command comes from — a
     dependency closure plus deterministic readiness, not a model. Walking the
@@ -173,6 +205,7 @@ def materialize(
     capabilities already scheduled.
     """
     scope = dict(scope or {})
+    mode = normalize_generation_mode(generation_mode)
     resolved = registry.closure(requested_outcomes)
     stages: list[dict] = []
     reused: list[str] = []
@@ -180,13 +213,16 @@ def materialize(
     for capability_id in resolved:
         capability = registry.get(capability_id)
         readiness = capability.readiness(workspace, scope)
-        # Satisfied output is reused unless something upstream is about to
-        # rewrite its inputs, or the auditor explicitly forced a refresh.
-        dependency_will_change = any(dependency in scheduled for dependency in capability.depends_on)
-        if (
-            readiness.satisfied
-            and not dependency_will_change
-            and scope.get("refresh_policy", "missing_or_stale") != "force"
+        # A legacy stale signal describes currency, not structural usability.
+        # The target scheduler never turns that signal into automatic work.
+        # Committed usable output is reused unless the auditor explicitly
+        # requested force; currency is deliberately reported as not assessed.
+        dependency_will_materialize = any(
+            dependency in scheduled for dependency in capability.depends_on
+        )
+        if mode == "reuse_existing" and (
+            readiness.state == "stale"
+            or (readiness.satisfied and not dependency_will_materialize)
         ):
             reused.append(capability_id)
             continue

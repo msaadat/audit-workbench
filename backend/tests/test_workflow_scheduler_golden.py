@@ -24,6 +24,7 @@ PUBLISHED = "catalog.published"
 @dataclass(frozen=True)
 class SyntheticCatalog:
     ready_outcomes: frozenset[str]
+    stale_outcomes: frozenset[str] = frozenset()
     records: tuple[tuple[str, int], ...] = (
         ("alpha", 10),
         ("beta", 20),
@@ -68,6 +69,12 @@ def _readiness(outcome: str):
         if outcome in catalog.ready_outcomes:
             return workflow.Readiness(
                 "satisfied",
+                details={"artifact_ref": f"synthetic:{outcome}"},
+            )
+        if outcome in catalog.stale_outcomes:
+            return workflow.Readiness(
+                "stale",
+                reasons=("legacy source hash changed",),
                 details={"artifact_ref": f"synthetic:{outcome}"},
             )
         return workflow.Readiness("missing", reasons=(f"{outcome} is absent",))
@@ -574,3 +581,78 @@ def test_extracted_scheduler_blocks_dependencies_and_folds_partial_failure():
     ]
     assert run["status"] == "failed"
     assert run["error"] == "invalid record"
+
+
+def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
+    catalog = SyntheticCatalog(
+        ready_outcomes=frozenset(
+            {SOURCES_READY, RECORDS_READY, PREVIEW_READY, INDEX_READY}
+        ),
+        stale_outcomes=frozenset({PUBLISHED}),
+    )
+    reuse_run = {"id": "reuse", "command": {"status": "queued"}}
+    reuse_runner = WorkflowRunner(
+        subject=catalog,
+        run=reuse_run,
+        runtime=SyntheticRuntime(reuse_run),
+        registry=synthetic_registry(),
+        stage_handlers={},
+    )
+
+    reused = reuse_runner.materialize([PUBLISHED])
+
+    assert reused["generation_mode"] == "reuse_existing"
+    assert reused["stages"] == []
+    assert reused["reused_outcomes"] == [
+        SOURCES_READY,
+        RECORDS_READY,
+        PREVIEW_READY,
+        INDEX_READY,
+        PUBLISHED,
+    ]
+    assert reused["reused_outcome_details"] == [
+        {"capability": capability_id, "currency_status": "not_assessed"}
+        for capability_id in reused["reused_outcomes"]
+    ]
+
+    force_run = {"id": "force", "command": {"status": "queued"}}
+    force_runner = WorkflowRunner(
+        subject=catalog,
+        run=force_run,
+        runtime=SyntheticRuntime(force_run),
+        registry=synthetic_registry(),
+        stage_handlers={},
+    )
+    forced = force_runner.materialize([PUBLISHED], generation_mode="force")
+
+    assert forced["generation_mode"] == "force"
+    assert forced["reused_outcomes"] == []
+    assert [stage["capability"] for stage in forced["stages"]] == [
+        SOURCES_READY,
+        RECORDS_READY,
+        PREVIEW_READY,
+        INDEX_READY,
+        PUBLISHED,
+    ]
+
+
+def test_generation_mode_normalization_is_explicit_and_deterministic():
+    assert workflow.command_generation_mode({"text": "Prepare the APM"}) == (
+        "reuse_existing"
+    )
+    assert workflow.command_generation_mode({"text": "Improve the APM"}) == "force"
+    assert workflow.command_generation_mode({"text": "Generate the APM again"}) == (
+        "force"
+    )
+    assert workflow.command_generation_mode({"text": "Regenerate the RCM"}) == "force"
+    assert workflow.command_generation_mode({"text": "Refresh audit report"}) == "force"
+    assert workflow.command_generation_mode(
+        {"text": "Regenerate the APM", "generation_mode": "reuse_existing"}
+    ) == "reuse_existing"
+
+    try:
+        workflow.normalize_generation_mode("missing_or_stale")
+    except Exception as error:
+        assert "reuse_existing" in str(error)
+    else:
+        raise AssertionError("legacy generation modes must fail closed")

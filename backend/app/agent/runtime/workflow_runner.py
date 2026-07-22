@@ -77,6 +77,7 @@ class WorkflowRunner:
         *,
         scope: dict[str, Any] | None = None,
         workflow_id: str = workflow.WORKFLOW_DEFINITION,
+        generation_mode: str = "reuse_existing",
     ) -> dict[str, Any]:
         """Install a deterministic capability closure on the durable run."""
 
@@ -86,13 +87,22 @@ class WorkflowRunner:
             self.subject,
             list(requested_outcomes),
             normalized_scope,
+            generation_mode=generation_mode,
         )
         state = {
             "id": workflow_id,
             "requested_outcomes": list(requested_outcomes),
             "resolved_outcomes": resolved,
             "scope": normalized_scope,
+            "generation_mode": workflow.normalize_generation_mode(generation_mode),
             "reused_outcomes": reused,
+            "reused_outcome_details": [
+                {
+                    "capability": capability_id,
+                    "currency_status": "not_assessed",
+                }
+                for capability_id in reused
+            ],
             "stages": stages,
             "next_outcomes": [],
         }

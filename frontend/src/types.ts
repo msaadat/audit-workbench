@@ -1288,12 +1288,13 @@ export interface AgentWorkflow {
   route: 'workflow'
   requested_outcomes: string[]
   target_refs: string[]
-  refresh_policy: 'missing_or_stale' | 'force'
+  generation_mode: 'reuse_existing' | 'force'
   workflow_explanation: string
   next_outcomes: string[]
   pending_checkpoint: string | null
   resolved_capabilities: string[]
   reused_capabilities: string[]
+  reused_capability_details: Array<{ capability: string; currency_status: 'not_assessed' }>
   workspace_revision: number
   stages: WorkflowStage[]
 }

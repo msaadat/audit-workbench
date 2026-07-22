@@ -94,7 +94,7 @@ def _local_resolution(command: dict) -> dict | None:
             "route": "workflow", "requested_outcomes": requested,
             "objective": str(command.get("text") or "Continue the requested audit outcomes.").strip(),
             "target_refs": [str(item) for item in command.get("target_refs") or ["workspace:current"]],
-            "refresh_policy": str(command.get("refresh_policy") or "missing_or_stale"),
+            "generation_mode": workflow.command_generation_mode(command),
             "action_intent": None, "constraints": [str(item) for item in command.get("constraints") or []],
             "needs_clarification": False, "clarification": None,
         }
@@ -103,16 +103,16 @@ def _local_resolution(command: dict) -> dict | None:
         return {
             "route": "generic_action", "requested_outcomes": [],
             "objective": str(command.get("text") or "").strip(), "target_refs": [],
-            "refresh_policy": "missing_or_stale", "action_intent": template,
+            "generation_mode": "reuse_existing", "action_intent": template,
             "constraints": [], "needs_clarification": False, "clarification": None,
         }
     outcomes = audit_capabilities.outcomes_for_template(template)
     if outcomes is not None:
-        refresh_policy = "force" if template in {"planning", "apm_only"} else "missing_or_stale"
         return {
             "route": "workflow", "requested_outcomes": outcomes,
             "objective": str(command.get("text") or template.replace("_", " ")).strip(),
-            "target_refs": ["workspace:current"], "refresh_policy": refresh_policy,
+            "target_refs": ["workspace:current"],
+            "generation_mode": workflow.command_generation_mode(command),
             "action_intent": None, "constraints": [], "needs_clarification": False,
             "clarification": None,
         }
@@ -136,7 +136,8 @@ def _local_resolution(command: dict) -> dict | None:
             return {
                 "route": "workflow", "requested_outcomes": list(requested),
                 "objective": str(command.get("text") or "").strip(),
-                "target_refs": ["workspace:current"], "refresh_policy": "missing_or_stale",
+                "target_refs": ["workspace:current"],
+                "generation_mode": workflow.command_generation_mode(command),
                 "action_intent": None, "constraints": [], "needs_clarification": False,
                 "clarification": None,
             }
@@ -150,7 +151,7 @@ def _local_resolution(command: dict) -> dict | None:
         return {
             "route": "generic_action", "requested_outcomes": [],
             "objective": str(command.get("text") or "").strip(), "target_refs": [],
-            "refresh_policy": "missing_or_stale", "action_intent": "isolated_mutation",
+            "generation_mode": "reuse_existing", "action_intent": "isolated_mutation",
             "constraints": [], "needs_clarification": False, "clarification": None,
         }
     return None
@@ -197,12 +198,18 @@ def _install_resolution(workspace: Workspace, run: dict, resolution: dict) -> No
     """
     scope = {
         "target_refs": list(resolution.get("target_refs") or ["workspace:current"]),
-        "refresh_policy": resolution.get("refresh_policy") or "missing_or_stale",
         "permission_mode": run.get("mode") == "permission",
     }
+    generation_mode = workflow.normalize_generation_mode(
+        resolution.get("generation_mode") or "reuse_existing"
+    )
     requested = list(resolution.get("requested_outcomes") or [])
     resolved, stages, reused = workflow.materialize(
-        audit_capabilities.REGISTRY, workspace, requested, scope
+        audit_capabilities.REGISTRY,
+        workspace,
+        requested,
+        scope,
+        generation_mode=generation_mode,
     )
     maximum_units = int(run.get("limits", {}).get("max_units_per_stage") or 250)
     oversized = next(
@@ -262,12 +269,19 @@ def _install_resolution(workspace: Workspace, run: dict, resolution: dict) -> No
         "route": "workflow",
         "requested_outcomes": requested,
         "target_refs": scope["target_refs"],
-        "refresh_policy": scope["refresh_policy"],
+        "generation_mode": generation_mode,
         "workflow_explanation": explanation,
         "next_outcomes": [],
         "pending_checkpoint": None,
         "resolved_capabilities": resolved,
         "reused_capabilities": reused,
+        "reused_capability_details": [
+            {
+                "capability": capability_id,
+                "currency_status": "not_assessed",
+            }
+            for capability_id in reused
+        ],
         "workspace_revision": workspace.revision,
         "state_at_resolution": audit_capabilities.workflow_state(workspace, scope),
         "stages": stages,
@@ -563,8 +577,11 @@ class WorkflowRunner(ActionRunner):
         capability = audit_capabilities.REGISTRY.get(stage["capability"])
         scope = {
             "target_refs": self.run["workflow"].get("target_refs") or [],
-            "refresh_policy": self.run["workflow"].get("refresh_policy") or "missing_or_stale",
         }
+        generation_mode = workflow.normalize_generation_mode(
+            self.run["workflow"].get("generation_mode") or "reuse_existing"
+        )
+        scope["generation_mode"] = generation_mode
         specs = capability.expand_units(self.ws, scope)
         maximum = int((self.run.get("limits") or {}).get("max_units_per_stage") or 250)
         if len(specs) > maximum:

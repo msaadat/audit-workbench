@@ -304,9 +304,9 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
         "planning_basis_run_id": previous.get("planning_basis_run_id"),
         "requested_outcomes": list(previous_workflow.get("requested_outcomes") or []),
         "target_refs": list(previous_workflow.get("target_refs") or []),
-        # Semantic readiness keeps successful siblings; carrying a prior
-        # ``force`` policy into retry would unnecessarily repeat them.
-        "refresh_policy": "missing_or_stale",
+        # Structural readiness keeps successful siblings; carrying a prior
+        # ``force`` mode into retry would unnecessarily repeat them.
+        "generation_mode": "reuse_existing",
     }
     return start_command_run(
         workspace,
@@ -336,7 +336,7 @@ def continue_audit(workspace: Workspace, run_id: str) -> dict:
             "text": "Continue the open audit work from the linked run.",
             "requested_outcomes": outcomes,
             "target_refs": list(workflow_state.get("target_refs") or ["workspace:current"]),
-            "refresh_policy": "missing_or_stale",
+            "generation_mode": "reuse_existing",
             "parent_command_id": (previous.get("command") or {}).get("id"),
             "chat_id": previous.get("chat_id"),
             "source_message_id": previous.get("source_message_id"),

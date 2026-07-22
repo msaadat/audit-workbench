@@ -39,7 +39,8 @@ existing records and append events through `store.save_run(...)` and
 - Otherwise it calls `runner.start_run(...)`; absent `kind` defaults to the
   legacy `analysis` run.
 - The endpoint supplies `mode`, `context`, `parent_run_id`, requested outcomes,
-  target references, and the current `missing_or_stale` refresh policy.
+  target references, and the normalized `reuse_existing` or `force` generation
+  mode.
 
 `frontend/src/composables/useAgentRun.ts` wraps this endpoint with
 `startCommand(...)` and `startRun(...)`. The composable also owns run history,

@@ -159,6 +159,20 @@ def test_common_broad_audit_phrases_fail_closed_to_workflow(text, outcomes):
     assert resolution["action_intent"] is None
 
 
+def test_workflow_routes_use_normalized_generation_modes():
+    ordinary = _local_resolution({"source": "chat", "text": "Draft the APM"})
+    forced = _local_resolution(
+        {"source": "chat", "text": "Regenerate the APM"}
+    )
+
+    assert ordinary is not None
+    assert ordinary["generation_mode"] == "reuse_existing"
+    assert forced is not None
+    assert forced["generation_mode"] == "force"
+    assert "refresh_policy" not in ordinary
+    assert "refresh_policy" not in forced
+
+
 def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
     monkeypatch, workspace_with_data
 ):
@@ -181,7 +195,7 @@ def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
                 "requested_outcomes": [],
                 "objective": "Check the report quality",
                 "target_refs": [],
-                "refresh_policy": "missing_or_stale",
+                "generation_mode": "reuse_existing",
                 "action_intent": "quality_check",
                 "constraints": [],
                 "needs_clarification": False,
@@ -227,7 +241,7 @@ def test_bounded_router_cannot_send_broad_audit_into_action_planner(
                 "requested_outcomes": [],
                 "objective": "Perform the entire audit",
                 "target_refs": [],
-                "refresh_policy": "missing_or_stale",
+                "generation_mode": "reuse_existing",
                 "action_intent": "generic",
                 "constraints": [],
                 "needs_clarification": False,
@@ -352,7 +366,7 @@ def test_partial_goal_prunes_current_prerequisites():
         audit_capabilities.REGISTRY,
         ws,
         ["planning.planned_tests_ready"],
-        {"target_refs": ["workspace:current"], "refresh_policy": "missing_or_stale"},
+        {"target_refs": ["workspace:current"]},
     )
 
     assert resolved == [
@@ -368,19 +382,21 @@ def test_partial_goal_prunes_current_prerequisites():
 
 def test_repeated_materialization_preserves_semantic_unit_identity():
     ws = _planning_workspace("Stable semantic units")
-    scope = {"target_refs": ["workspace:current"], "refresh_policy": "force"}
+    scope = {"target_refs": ["workspace:current"]}
 
     first = workflow.materialize(
         audit_capabilities.REGISTRY,
         ws,
         ["planning.planned_tests_ready"],
         scope,
+        generation_mode="force",
     )
     second = workflow.materialize(
         audit_capabilities.REGISTRY,
         workspaces.load_workspace(ws.id),
         ["planning.planned_tests_ready"],
         dict(scope),
+        generation_mode="force",
     )
 
     def identities(materialized):
@@ -810,7 +826,7 @@ def _apm_only_runner(workspace, *, context_resolver=None):
             "source": "follow_up",
             "text": "Regenerate the APM",
             "requested_outcomes": ["planning.apm_ready"],
-            "refresh_policy": "force",
+            "generation_mode": "force",
         },
     )
     assert initialize_known_workflow(workspace, run) is True
@@ -867,7 +883,7 @@ def test_reused_apm_artifact_does_not_run_context_selection():
             "source": "follow_up",
             "text": "Use the current APM",
             "requested_outcomes": ["planning.apm_ready"],
-            "refresh_policy": "missing_or_stale",
+            "generation_mode": "reuse_existing",
         },
     )
     assert initialize_known_workflow(ws, run) is True
@@ -883,6 +899,10 @@ def test_reused_apm_artifact_does_not_run_context_selection():
 
     assert command.run["status"] == "completed"
     assert "planning.apm_ready" in command.run["workflow"]["reused_capabilities"]
+    assert {
+        "capability": "planning.apm_ready",
+        "currency_status": "not_assessed",
+    } in command.run["workflow"]["reused_capability_details"]
 
 
 def test_apm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
@@ -1326,7 +1346,7 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
             "source": "follow_up",
             "text": "Continue through a preliminary report.",
             "requested_outcomes": ["report.working_draft"],
-            "refresh_policy": "missing_or_stale",
+            "generation_mode": "reuse_existing",
         },
     )
     completed = wait_run(ws, started["id"])

@@ -382,7 +382,7 @@ def _planned_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             f"Draft planned tests — {row.get('risk') or row['id']}", (f"rcm:{row['id']}",), row,
         )
         for row in _rows(workspace, scope)
-        if not row.get("planned_tests") or scope.get("refresh_policy") == "force"
+        if not row.get("planned_tests") or scope.get("generation_mode") == "force"
     ]
 
 
@@ -403,7 +403,7 @@ def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
                 and artifact.get("workflow_parent_sha1") != expected_parent
                 for artifact in existing
             )
-            if not needs and scope.get("refresh_policy") != "force":
+            if not needs and scope.get("generation_mode") != "force":
                 continue
             worker_kind = "data_test_spec" if kind == "datatest" else "document_test_spec"
             units.append(UnitSpec(
@@ -421,7 +421,7 @@ def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
         if item["rcm_id"] not in selected:
             continue
         for artifact in item.get("existing_execution") or []:
-            if artifact.get("has_durable_result") and scope.get("refresh_policy") != "force":
+            if artifact.get("has_durable_result") and scope.get("generation_mode") != "force":
                 continue
             if artifact["kind"] == "datatest":
                 units.append(UnitSpec(
@@ -449,7 +449,7 @@ def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
                 for test_item in test.get("items") or []:
                     answered = set((test_item.get("qa_answers") or {}).keys())
                     for document_id in test_item.get("document_ids") or []:
-                        if document_id in answered and scope.get("refresh_policy") != "force":
+                        if document_id in answered and scope.get("generation_mode") != "force":
                             continue
                         qa_units.append(UnitSpec(
                             semantic_unit_id(

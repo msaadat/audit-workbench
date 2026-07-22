@@ -29,6 +29,7 @@ from ..workspaces import Workspace, WorkspaceError, write_json_atomic
 RUNS_DIRNAME = "AgentRuns"
 
 MODES = ("auto", "permission")
+GENERATION_MODES = ("reuse_existing", "force")
 WORKFLOW_ENGINE = "workflow"
 ACTION_ENGINE = "action"
 
@@ -201,6 +202,11 @@ def new_command_run(
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     command_id = f"cmd_{uuid.uuid4().hex[:12]}"
+    generation_mode = str(command.get("generation_mode") or "reuse_existing")
+    if generation_mode not in GENERATION_MODES:
+        raise WorkspaceError(
+            "Workflow generation_mode must be 'reuse_existing' or 'force'."
+        )
     run = {
         "schema_version": 2,
         # Unresolved commands enter the workflow router. Deterministic local
@@ -228,7 +234,7 @@ def new_command_run(
             "context_refs": list(command.get("context_refs") or []),
             "requested_outcomes": [str(value) for value in command.get("requested_outcomes") or []],
             "target_refs": [str(value) for value in command.get("target_refs") or []],
-            "refresh_policy": str(command.get("refresh_policy") or "missing_or_stale"),
+            "generation_mode": generation_mode,
             "constraints": [str(value) for value in command.get("constraints") or []],
         },
         "goal": {"objective": text, "constraints": [], "completion_criteria": []},
@@ -325,7 +331,7 @@ def _hydrate_run(run: dict) -> None:
         command.setdefault("context_refs", [])
         command.setdefault("requested_outcomes", [])
         command.setdefault("target_refs", [])
-        command.setdefault("refresh_policy", "missing_or_stale")
+        command.setdefault("generation_mode", "reuse_existing")
         command.setdefault("constraints", [])
         for pending in run.get("pending_commands") or []:
             pending.setdefault("chat_id", None)
@@ -336,7 +342,17 @@ def _hydrate_run(run: dict) -> None:
         workflow.setdefault("definition", "audit_workflow_v2")
         workflow.setdefault("requested_outcomes", [])
         workflow.setdefault("target_refs", ["workspace:current"])
-        workflow.setdefault("refresh_policy", "missing_or_stale")
+        workflow.setdefault("generation_mode", "reuse_existing")
+        workflow.setdefault(
+            "reused_capability_details",
+            [
+                {
+                    "capability": capability_id,
+                    "currency_status": "not_assessed",
+                }
+                for capability_id in workflow.get("reused_capabilities") or []
+            ],
+        )
         workflow.setdefault("workflow_explanation", "")
         workflow.setdefault("next_outcomes", [])
         workflow.setdefault("pending_checkpoint", None)

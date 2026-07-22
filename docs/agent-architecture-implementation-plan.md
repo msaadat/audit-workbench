@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 6 (in progress).
-- Current task: `P6.3` (not started).
-- Last completed task: `P6.2`.
+- Current task: `P6.4` (not started).
+- Last completed task: `P6.3`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,7 +54,7 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | In progress | `P6.3` |
+| 6 | In progress | `P6.4` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -702,6 +702,25 @@ status notes below.
   `test_workflow_scheduler_golden.py`. No production dispatch, API payload, or
   frontend contract changed, so broader behavioral suites and a frontend build
   were not required. The exact next task is `P6.3`.
+- `P6.3` completed on 2026-07-22. New command and workflow records now use only
+  normalized `generation_mode="reuse_existing"|"force"`; the active API,
+  local and bounded routing results, retry/continue paths, capability unit
+  expansion, persisted projections, and frontend contract no longer write or
+  consume the legacy `missing_or_stale` policy. Ordinary requests reuse
+  structurally present output, including legacy readiness signals that only
+  describe source-hash currency, and project each reused capability with
+  `currency_status="not_assessed"`. Explicit improve, generate-again,
+  regenerate, or refresh instructions select `force`, while explicit supplied
+  modes are validated and take precedence. The synthetic gate proves reuse and
+  forced closure behavior; active planning coverage proves explicit forced
+  revision and reuse without context resolution. Focused verification passed
+  `28` selected store, API, planning, active-workflow, and synthetic scheduler
+  tests; the frontend type-check and production build passed. A broader
+  85-test workflow/planning run passed 81 tests; four timing-sensitive planning
+  tests exceeded their 15-second polling deadline while local debug telemetry
+  serialization was active, and the first timed-out concurrency test passed
+  alone on immediate rerun. The full Phase 6 gate remains scheduled for
+  `P6.8`. The exact next task is `P6.4`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1284,7 +1303,7 @@ execution entirely registry-driven.
 - [x] `P6.2` Extract generic materialization, unit transitions, stage folding,
   stable all-settled scheduling, and finish behavior into the new runtime
   scheduler without switching active dispatch.
-- [ ] `P6.3` Implement normalized `reuse_existing` and `force` generation modes
+- [x] `P6.3` Implement normalized `reuse_existing` and `force` generation modes
   and label reused artifact currency as not assessed; delete legacy
   `missing_or_stale` scheduling rather than adapting it.
 - [ ] `P6.4` Replace domain handler dispatch with capability, worker, executor,

@@ -58,7 +58,7 @@ async def create_run(workspace_id: str, payload: dict = Body(default={})):
                     text=command.get("text") or "Run the selected audit outcomes.",
                     requested_outcomes=payload.get("requested_outcomes"),
                     target_refs=payload.get("target_refs") or ["workspace:current"],
-                    refresh_policy=payload.get("refresh_policy") or "missing_or_stale",
+                    generation_mode=payload.get("generation_mode") or "reuse_existing",
                 )
             run = await asyncio.to_thread(
                 runner.start_command_run, ws, payload.get("mode") or "auto",

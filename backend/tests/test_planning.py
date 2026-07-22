@@ -78,7 +78,7 @@ def configure_planning_llm(monkeypatch, overrides=None):
     return fake
 
 
-def start_planning(ws, mode="auto", context=None):
+def start_planning(ws, mode="auto", context=None, *, generation_mode=None):
     return runner.start_command_run(
         ws,
         mode,
@@ -86,6 +86,7 @@ def start_planning(ws, mode="auto", context=None):
             "source": "goal_template",
             "text": "Update planning using current engagement evidence.",
             "goal_template": "planning",
+            **({"generation_mode": generation_mode} if generation_mode else {}),
         },
         context=context or {},
     )
@@ -211,7 +212,10 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
         "agent:apm": revised_apm, "agent:rcm": revised_rcm,
         "agent:work_program": revised_tests,
     })
-    completed = wait_run(ws, start_planning(ws)["id"])
+    completed = wait_run(
+        ws,
+        start_planning(ws, generation_mode="force")["id"],
+    )
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
@@ -253,7 +257,7 @@ def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
             "source": "follow_up",
             "text": "Complete the missing planned tests.",
             "requested_outcomes": ["planning.planned_tests_ready"],
-            "refresh_policy": "missing_or_stale",
+            "generation_mode": "reuse_existing",
         },
     )
     completed = wait_run(ws, started["id"])

@@ -12,8 +12,8 @@ from . import context_bundles, prompts
 ROUTER_SYSTEM = f"""[agent:workflow_router]
 Classify one audit-assistant command. You are a router, not a planner. Return
 route (workflow|generic_action|question|unsupported), requested_outcomes (only
-supported outcome IDs), objective, target_refs, refresh_policy
-(missing_or_stale|force), action_intent (null or a short normalized operation),
+supported outcome IDs), objective, target_refs, generation_mode
+(reuse_existing|force), action_intent (null or a short normalized operation),
 constraints, needs_clarification, and clarification. Never propose actions,
 workers, dependencies, tests, columns, or execution steps. {prompts.JSON_RULES}"""
 
@@ -85,9 +85,9 @@ def validate_route(payload: dict, supported: set[str]) -> dict:
     outcomes = payload.get("requested_outcomes") or []
     if not isinstance(outcomes, list) or any(str(item) not in supported for item in outcomes):
         raise ValueError("requested_outcomes contains an unsupported capability")
-    refresh = str(payload.get("refresh_policy") or "missing_or_stale")
-    if refresh not in {"missing_or_stale", "force"}:
-        raise ValueError("refresh_policy is unsupported")
+    generation_mode = str(payload.get("generation_mode") or "reuse_existing")
+    if generation_mode not in {"reuse_existing", "force"}:
+        raise ValueError("generation_mode is unsupported")
     needs = bool(payload.get("needs_clarification"))
     if route == "workflow" and not outcomes and not needs:
         raise ValueError("a workflow route needs at least one requested outcome")
@@ -96,7 +96,7 @@ def validate_route(payload: dict, supported: set[str]) -> dict:
         "requested_outcomes": [str(item) for item in outcomes],
         "objective": str(payload.get("objective") or "").strip(),
         "target_refs": [str(item) for item in payload.get("target_refs") or []],
-        "refresh_policy": refresh,
+        "generation_mode": generation_mode,
         "action_intent": str(payload.get("action_intent") or "").strip() or None,
         "constraints": [str(item) for item in payload.get("constraints") or []],
         "needs_clarification": needs,
