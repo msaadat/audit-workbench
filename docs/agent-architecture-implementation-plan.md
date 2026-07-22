@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 5 (in progress).
-- Current task: `P5.3` (not started).
-- Last completed task: `P5.2`.
+- Current task: `P5.3A` (not started).
+- Last completed task: `P5.3`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.3` |
+| 5 | In progress | `P5.3A` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -579,6 +579,20 @@ status notes below.
   active executor, scheduler, persisted run, API, or frontend contract changed,
   so broader behavioral suites and a frontend build were not required. The
   exact next task is `P5.3`.
+- `P5.3` completed on 2026-07-22. The new runner-independent
+  `runtime.unit_pipeline` service sequences declared context resolution,
+  content-free manifest persistence, registered worker execution, atomic
+  semantic-unit proposal persistence, optional approval, registered executor
+  execution, atomic receipt persistence, and post-commit readiness evaluation.
+  Auditor-edited accepted proposals replace the proposed sidecar before any
+  mutation, rejected approvals never invoke an executor, and a failed
+  post-commit readiness check occurs only after the receipt is durable. The
+  concrete sidecar store establishes the target `proposals/<unit_id>.json` and
+  `receipts/<unit_id>.json` layout without importing either scheduler or audit
+  domain policy. Focused verification passed `44` tests across
+  `test_agent_unit_pipeline.py`, `test_agent_executor_models.py`, and
+  `test_agent_worker_models.py`. No live capability uses the service yet and no
+  API or frontend contract changed. The exact next task is `P5.3A`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1082,7 +1096,7 @@ all audit stages.
   registry metadata, response-schema validation, and bounded repair contracts.
 - [x] `P5.2` Define executor request/result and receipt models, registry
   metadata, parent-hash/CAS requirements, and reconciliation contracts.
-- [ ] `P5.3` Implement a runner-independent unit-pipeline service for context,
+- [x] `P5.3` Implement a runner-independent unit-pipeline service for context,
   manifest, worker, proposal, approval, executor, receipt, and readiness
   sequencing.
 - [ ] `P5.3A` Implement and persist exact proposal execution identities with

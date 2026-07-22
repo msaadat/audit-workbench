@@ -506,6 +506,14 @@ reconciliation outcomes before creating immutable, hash-identified receipts.
 The executor contract layer has no model, context resolver, workspace
 implementation, run-store, or scheduler dependency; the runner-independent
 pipeline and the first domain executor are introduced by later Phase 5 tasks.
+`runtime.unit_pipeline` now provides that runner-independent sequence and the
+atomic semantic-unit `proposals/` and `receipts/` sidecar layout. It persists a
+content-free manifest before worker execution, a proposal before approval or
+mutation, an auditor-edited accepted proposal before execution, and a receipt
+before post-commit readiness evaluation. The service depends only on the
+runtime, gateway, context, worker, and executor contracts; it has no audit
+domain or scheduler dependency. Exact proposal recovery identity and sidecar
+recovery validation remain the next Phase 5 tasks.
 
 ### Phase 1 Deletion Boundary
 
