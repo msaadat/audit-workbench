@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 5 (not started).
-- Current task: `P5.1` (not started).
-- Last completed task: `P4.8`.
+- Current phase: Phase 5 (in progress).
+- Current task: `P5.2` (not started).
+- Last completed task: `P5.1`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | Not started | `P5.1` |
+| 5 | In progress | `P5.2` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -545,6 +545,21 @@ status notes below.
   `560` tests in `99.27s`. No API or frontend payload changed, so a frontend build
   was not required. Phase 4 is complete; the exact next task is `P5.1`, and no
   P5.1 work has started.
+- `P5.1` completed on 2026-07-22. The new `agent.workers` package defines
+  immutable, detached worker requests and validated proposal results, typed
+  attempt and repair-policy contracts, hash-identified response schemas and
+  worker definitions, and a duplicate/unknown-safe registry. The registry owns
+  one common response-validation loop with a hard maximum of two repair turns,
+  bounded error count and guidance characters, immediate failure for worker or
+  schema implementation contract violations, and structural enforcement that
+  execution receives the shared `ModelGateway`. Requests accept only an
+  already-resolved local `ContextBundle`, matching capability/unit identity,
+  JSON unit input, and activity metadata; results expose no raw model response.
+  Focused verification passed `16` tests in
+  `test_agent_worker_models.py`. No active worker, scheduler, provider call,
+  persisted payload, API, or frontend contract changed, so broader behavioral
+  suites and a frontend build were not required. The exact next task is
+  `P5.2`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1044,7 +1059,7 @@ all audit stages.
 
 **Tasks:**
 
-- [ ] `P5.1` Define immutable worker request/result models, hash-identified
+- [x] `P5.1` Define immutable worker request/result models, hash-identified
   registry metadata, response-schema validation, and bounded repair contracts.
 - [ ] `P5.2` Define executor request/result and receipt models, registry
   metadata, parent-hash/CAS requirements, and reconciliation contracts.

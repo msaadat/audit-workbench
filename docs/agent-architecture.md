@@ -175,6 +175,16 @@ A worker does not schedule units, persist run state, request arbitrary context,
 or mutate the workspace. All provider calls go through `ModelGateway`, which
 applies budgets, concurrency controls, retries, and provenance accounting.
 
+The worker boundary is represented by immutable `WorkerRequest`,
+`WorkerAttempt`, and `WorkerResult` models. Registered definitions carry exact
+SHA-256 identities for the implementation, prompt, response schema, and any
+repair guidance. `WorkerRegistry` validates those definitions and owns a hard-
+bounded response-validation loop: schema failures may supply only bounded
+validator guidance to a fixed number of repair attempts, while implementation
+contract failures stop immediately. Requests contain only the already-resolved
+local context bundle plus detached unit input; results contain a validated
+object proposal and hash-only response identity, never the raw response.
+
 ## Executor Contract
 
 An executor applies an accepted proposal deterministically. It owns:
