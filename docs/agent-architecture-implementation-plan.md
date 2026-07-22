@@ -33,9 +33,10 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7A.1` (not started).
-- Last completed task: `P7.2A`.
-- Active blockers: none.
+- Current task: `P7A.2` (not started).
+- Last completed task: `P7A.1`.
+- Active blockers: none. `P7A.2` is a larger, cross-phase-entangled slice
+  (see the `P7A.1` note) and should be scoped as its own focused effort.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -55,7 +56,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7A.1` |
+| 7 | In progress | `P7A.2` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -865,6 +866,42 @@ status notes below.
   dashboard-advice concepts, unrelated to workflow readiness, so no frontend
   change or build was required. Phase 7 foundational tasks (`P7.1`, `P7.1A`,
   `P7.2`, `P7.2A`) are complete; the exact next task is `P7A.1`.
+- `P7A.1` completed on 2026-07-22. `capabilities/planning.py` now *locally owns*
+  the `planning.context_ready` declaration: its readiness (`_context_ready`) and
+  single-unit expansion bodies moved into the grouped module, and
+  `capabilities()` constructs that capability from them while still selecting the
+  three unmigrated planning capabilities from the transitional
+  `audit_capabilities` registry. A `LOCALLY_OWNED` set records which IDs a slice
+  has migrated so the composition can mix locally-constructed and selected
+  declarations; transitional duplication with `audit_capabilities` is removed at
+  `P7.3` when that module is deleted and the grouped registry goes live. The
+  composition test now asserts object identity for still-selected capabilities
+  and hash-relevant declaration-field equality for locally-owned ones, and a new
+  golden test proves the moved `planning.context_ready` declaration is
+  field-identical to the live registry and behaviorally identical (readiness
+  payloads across satisfied/missing/blocked states, and unit expansion). The live
+  dispatch path is unchanged: `audit_capabilities.REGISTRY` and the
+  `audit_execution` handlers still drive production runs. Focused verification
+  passed `17` tests across `test_agent_capability_composition.py` and
+  `test_workflow_audit_definition.py`, plus `71` regression tests across
+  `test_workflow_scheduler_golden.py`, `test_agent_runtime_import_boundaries.py`,
+  and `test_workflow_v2.py`; `app.main` and the grouped `capabilities` package
+  import cleanly. No API or frontend payload changed, so a frontend build was not
+  required. The exact next task is `P7A.2`.
+- `P7A.2` scoping note (2026-07-22, not started): unlike `P7A.1`, the
+  `planning.context_ready` *execution* handler (`audit_execution._planning_basis`
+  → `ActionRunner.stage_context`) is a large, cross-phase-entangled slice, not a
+  clean self-contained increment. `stage_context` selects planning documents
+  (model-backed), runs the document-analysis map/reduce subsystem
+  (`_ensure_planning_analysis`, the exact duplication Phase 9 unifies),
+  synthesizes planning context through a model call with validator/repair/
+  fallback, commits `planning.context` to the workspace, and assembles the
+  run-scoped `planning_basis` snapshot that the APM, RCM, and planned-tests
+  stages consume from `run["planning_basis"]`. Migrating it to a context-synthesis
+  worker plus a planning-context executor requires deciding how the pipeline
+  carries the run-scoped basis and how it interacts with the deferred Phase 9
+  document-analysis unification. It should be scoped and tested as its own focused
+  effort rather than folded into a larger uncommitted batch.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1533,7 +1570,7 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7.2A` Define existence/structural readiness for every audit capability,
   remove stale-state scheduling from new declarations, and delete legacy stale
   projections.
-- [ ] `P7A.1` Move `planning.context_ready` readiness and unit
+- [x] `P7A.1` Move `planning.context_ready` readiness and unit
   expansion into the planning capability module with golden identity tests.
 - [ ] `P7A.2` Extract context synthesis and planning-context commit behavior,
   switch the capability to the registered pipeline, and remove its old handler.

@@ -51,15 +51,75 @@ def test_groups_partition_the_authoritative_graph_exactly_once():
     assert set(grouped) == set(audit_workflow.DEPENDENCIES)
 
 
-def test_composition_from_live_source_selects_identical_declarations():
+def _declaration_fields(capability: Capability) -> dict:
+    """Normalized, hash-relevant declaration fields (excludes the callables)."""
+
+    return {
+        field.name: getattr(capability, field.name)
+        for field in dataclasses.fields(capability)
+        if field.name not in {"readiness", "expand_units"}
+    }
+
+
+def _locally_owned_ids() -> frozenset[str]:
+    owned: set[str] = set()
+    for group in capabilities.CAPABILITY_GROUPS:
+        owned |= set(getattr(group, "LOCALLY_OWNED", frozenset()))
+    return frozenset(owned)
+
+
+def test_composition_from_live_source_selects_or_owns_matching_declarations():
     live = audit_capabilities.REGISTRY
     composed = capabilities.build_audit_registry(source=live)
     composed_ids = [capability.id for capability in composed.all()]
+    owned = _locally_owned_ids()
 
     assert composed_ids == list(capabilities.grouped_capability_ids())
-    # The grouped modules select the exact live declarations, so the composed
-    # registry holds the same Capability objects — no divergent restatement.
-    assert all(composed.get(cid) is live.get(cid) for cid in composed_ids)
+    for cid in composed_ids:
+        if cid in owned:
+            # A migrated slice constructs its declaration locally; it is no
+            # longer the same object but stays declaration-identical to live.
+            assert composed.get(cid) is not live.get(cid)
+            assert _declaration_fields(composed.get(cid)) == _declaration_fields(
+                live.get(cid)
+            )
+        else:
+            # Unmigrated capabilities are still selected as the exact live object.
+            assert composed.get(cid) is live.get(cid)
+
+
+class _StubWorkspace:
+    """Minimal stand-in exposing only what planning readiness/expansion read."""
+
+    def __init__(self, *, planning=None, tables=None, documents=None):
+        self.planning = planning or {}
+        self.tables = tables or {}
+        self.documents = documents or []
+
+
+_CONTEXT_READY_STATES = (
+    _StubWorkspace(planning={"context": {"objective": "o", "scope": "s"}}),
+    _StubWorkspace(planning={"context": {"objective": "o"}}, tables={"t": 1}),
+    _StubWorkspace(planning={}),  # no objective/scope, no data or documents
+    _StubWorkspace(planning={"context": {"scope": "s"}}, documents=[{"id": "d"}]),
+)
+
+
+def test_locally_owned_context_ready_matches_live_declaration_and_behavior():
+    owned = capabilities.AUDIT_REGISTRY.get("planning.context_ready")
+    live = audit_capabilities.REGISTRY.get("planning.context_ready")
+
+    # Golden identity: the moved declaration is hash-relevant identical to live.
+    assert "planning.context_ready" in _locally_owned_ids()
+    assert _declaration_fields(owned) == _declaration_fields(live)
+
+    # Golden behavior: readiness matches live across representative states.
+    for stub in _CONTEXT_READY_STATES:
+        assert owned.readiness(stub, {}).payload() == live.readiness(stub, {}).payload()
+
+    # Golden behavior: unit expansion produces identical semantic units.
+    stub = _CONTEXT_READY_STATES[0]
+    assert owned.expand_units(stub, {}) == live.expand_units(stub, {})
 
 
 def test_startup_registry_matches_authoritative_graph():
