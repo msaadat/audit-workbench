@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 6 (not started).
-- Current task: `P6.1` (not started).
-- Last completed task: `P5.8`.
+- Current phase: Phase 6 (in progress).
+- Current task: `P6.2` (not started).
+- Last completed task: `P6.1`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,7 +54,7 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | Not started | `P6.1` |
+| 6 | In progress | `P6.2` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -677,6 +677,18 @@ status notes below.
   user commit `538af17`, which intentionally removed table-role
   classification without changing its old test. That user-owned change was
   preserved. Phase 5 is complete and the exact next task is `P6.1`.
+- `P6.1` completed on 2026-07-22. A synthetic catalog-publication registry now
+  provides a domain-neutral golden harness for the scheduler extraction. Its
+  five focused tests pin topological dependency closure and parallel branches,
+  dependency-blocked readiness, stable semantic unit IDs and input hashes,
+  deterministic all-settled result ordering with isolated sibling failure, and
+  restart recovery that requeues only interrupted work while preserving durable
+  proposal and receipt references. The fixture imports only the generic
+  workflow primitives and does not use an audit module or workspace fixture.
+  Focused verification passed `5` tests in
+  `test_workflow_scheduler_golden.py`. No production scheduler, active dispatch,
+  persisted payload, API, or frontend contract changed, so broader behavioral
+  suites and a frontend build were not required. The exact next task is `P6.2`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1254,7 +1266,7 @@ execution entirely registry-driven.
 
 **Tasks:**
 
-- [ ] `P6.1` Add a synthetic non-audit workflow registry and golden tests for
+- [x] `P6.1` Add a synthetic non-audit workflow registry and golden tests for
   closure, readiness, semantic units, stable scheduling, and recovery.
 - [ ] `P6.2` Extract generic materialization, unit transitions, stage folding,
   stable all-settled scheduling, and finish behavior into the new runtime
