@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 6 (in progress).
-- Current task: `P6.7` (not started).
-- Last completed task: `P6.6`.
+- Current task: `P6.8` (not started).
+- Last completed task: `P6.7`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,7 +54,7 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | In progress | `P6.7` |
+| 6 | In progress | `P6.8` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -764,6 +764,13 @@ status notes below.
   legacy adoption and run-shape translation. Focused verification passed `29`
   scheduler/pipeline tests, `31` runtime-contract tests, `38` runner tests, and
   `56` active workflow tests. The exact next task is `P6.7`.
+- `P6.7` completed on 2026-07-22. A static AST import gate now resolves both
+  absolute and relative imports across every module in `agent/runtime/` and
+  rejects dependencies on planning, RCM, document, finding, report, dashboard,
+  audit capability/worker/adapter, and legacy audit context-bundle modules.
+  The domain-neutral scheduler and its runtime collaborators pass the gate.
+  Focused verification passed `11` import-boundary and synthetic scheduler
+  tests. The exact next task is `P6.8`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1356,7 +1363,7 @@ execution entirely registry-driven.
   for Phase 11.
 - [x] `P6.6` Switch active workflow dispatch to the composed scheduler and
   update live imports, then delete the old scheduler module without an adapter.
-- [ ] `P6.7` Add and pass import-boundary enforcement for runtime modules.
+- [x] `P6.7` Add and pass import-boundary enforcement for runtime modules.
 - [ ] `P6.8` Prove parity for dynamic expansion, partial failure, deterministic
   commit order, next outcomes, and the no-inheritance/no-domain-handler gate.
 
