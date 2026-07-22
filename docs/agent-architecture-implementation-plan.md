@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 6 (in progress).
-- Current task: `P6.5` (not started).
-- Last completed task: `P6.4`.
+- Current task: `P6.6` (not started).
+- Last completed task: `P6.5`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,7 +54,7 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | In progress | `P6.5` |
+| 6 | In progress | `P6.6` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -737,6 +737,21 @@ status notes below.
   including a real registry-to-context-to-worker-to-executor-to-receipt
   scheduler path. No active dispatch or frontend payload changed. The exact
   next task is `P6.5`.
+- `P6.5` completed on 2026-07-22. Deterministic templates, explicit outcomes,
+  phrase routing, generation-mode selection, bounded router-worker fallback,
+  clarification, and workflow materialization now live in `agent/routing.py`.
+  Process orchestration resolves an unresolved command record before selecting
+  its scheduler, persists the resulting engine and route, and then dispatches
+  either the workflow or action engine. The workflow scheduler now fails
+  closed when no materialized route is supplied and contains no resolution,
+  clarification, or `ActionRunner.execute(...)` fallback call. Known local
+  routes are still installed before thread launch, and bounded unknown-command
+  routing retains provider accounting and generic-action fallback through the
+  shared runtime. Focused workflow and runner verification passed `93` of `94`
+  tests; the sole failure was an over-broad new static assertion matching the
+  word "routing" inside the intended fail-closed error message, and the
+  assertion was narrowed to actual routing function names. The exact next task
+  is `P6.6`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1324,7 +1339,7 @@ execution entirely registry-driven.
   `missing_or_stale` scheduling rather than adapting it.
 - [x] `P6.4` Replace domain handler dispatch with capability, worker, executor,
   and context registry lookup through the Phase 5 unit pipeline.
-- [ ] `P6.5` Inject routing results into the scheduler and remove scheduler
+- [x] `P6.5` Inject routing results into the scheduler and remove scheduler
   fallback calls to the action interpreter; leave final routing consolidation
   for Phase 11.
 - [ ] `P6.6` Switch active workflow dispatch to the composed scheduler and

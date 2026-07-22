@@ -262,7 +262,7 @@ def start_command_run(
     run = store.new_command_run(
         workspace, mode, command, parent_run_id=parent_run_id, context=context
     )
-    from .workflow_runner import initialize_known_workflow
+    from .routing import initialize_known_workflow
     initialize_known_workflow(workspace, run)
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
     _launch(workspace.id, run["id"])
@@ -663,6 +663,16 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
             debug_store.capture_structural_state(workspace, trigger="run_start", run_id=run_id)
             try:
                 engine = run.get("engine")
+                if (
+                    engine == store.WORKFLOW_ENGINE
+                    and not run.get("workflow")
+                    and isinstance(run.get("command"), dict)
+                ):
+                    from .routing import route_unresolved_run
+
+                    engine = route_unresolved_run(workspace, run, handle)
+                    if engine is None:
+                        return
                 if engine == store.INTAKE_ENGINE:
                     from .intake_runner import IntakeRunner
 

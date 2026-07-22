@@ -341,26 +341,9 @@ class WorkflowRunner(ActionRunner):
             self.mark_started()
         try:
             if not self.run.get("workflow"):
-                resolution = self._resolve()
-                if resolution.get("route") == "generic_action":
-                    self.run["engine"] = store.ACTION_ENGINE
-                    self.run["command_route"] = resolution
-                    self.run["schema_version"] = 2
-                    self.save()
-                    ActionRunner.execute(self)
-                    return
-                if resolution.get("route") in {"question", "unsupported"}:
-                    self.run["summary_markdown"] = resolution.get("clarification") or (
-                        "This request is not available as an audit workflow."
-                    )
-                    self.run["command"]["status"] = "completed"
-                    self.mark_finished()
-                    self.set_status("completed_with_open_items")
-                    return
-                _install_resolution(self.ws, self.run, resolution)
-                self.save()
-                self.emit("workflow_resolved", {"workflow": self.run["workflow"]})
-                self.emit("workflow_explanation", {"text": self.run["workflow_explanation"]})
+                raise WorkspaceError(
+                    "Workflow routing must be persisted before scheduler execution."
+                )
             # Requeue units interrupted mid-flight, and backfill workflow
             # hashes onto artifacts created before this run (or by hand), so
             # readiness does not treat pre-existing work as missing.
@@ -442,63 +425,6 @@ class WorkflowRunner(ActionRunner):
             self.mark_finished()
             self.run["command"]["status"] = "failed"
             self.set_status("failed")
-
-    # --------------------------------------------------------- resolution
-    def _resolve(self) -> dict:
-        local = _local_resolution(self.run.get("command") or {})
-        if local is not None:
-            return local
-        self.set_status("interpreting")
-        state = audit_capabilities.workflow_state(self.ws)
-        bundle = context_bundles.command_router(
-            self.run.get("command") or {}, state,
-            [item.id for item in audit_capabilities.REGISTRY.all()],
-            permission_mode=self.run["mode"],
-        )
-        resolution = audit_workers.resolve_command(
-            self, bundle, {item.id for item in audit_capabilities.REGISTRY.all()}
-        )
-        self.run["partial_resolution"] = resolution
-        self.save()
-        if resolution.get("needs_clarification"):
-            answer = self._clarification(str(resolution.get("clarification") or "Please clarify the intended audit outcome."))
-            command = dict(self.run.get("command") or {})
-            command["text"] = f"{command.get('text') or ''}\n\nClarification: {answer}".strip()
-            state = audit_capabilities.workflow_state(load_workspace(self.ws.id))
-            bundle = context_bundles.command_router(
-                command, state, [item.id for item in audit_capabilities.REGISTRY.all()],
-                permission_mode=self.run["mode"],
-            )
-            resolution = audit_workers.resolve_command(
-                self, bundle, {item.id for item in audit_capabilities.REGISTRY.all()}
-            )
-            if resolution.get("needs_clarification"):
-                raise WorkspaceError("The command still needs clarification after the supplied answer.")
-        return resolution
-
-    def _clarification(self, prompt: str) -> str:
-        interaction = next(
-            (item for item in self.run.get("interactions") or [] if item.get("type") == "clarification" and item.get("status") == "pending"),
-            None,
-        )
-        if interaction is None:
-            interaction = {
-                "id": f"int_{uuid.uuid4().hex[:12]}", "action_id": "workflow:resolver",
-                "type": "clarification", "prompt": prompt, "options": [],
-                "payload": {"original_command": (self.run.get("command") or {}).get("text")},
-                "policy_reason": "The answer materially changes the requested audit outcome.",
-                "status": "pending", "response": None, "actor": None,
-                "created_at": store.utcnow(), "resolved_at": None,
-            }
-            self.run.setdefault("interactions", []).append(interaction)
-            self.save()
-            self.emit("checkpoint_request", {"interaction": interaction})
-        response = self._wait_interaction_response(interaction)
-        text = str(response.get("text") or "").strip()
-        if not text:
-            raise WorkspaceError("A clarification response is required.")
-        self._resolve_interaction_record(interaction, response)
-        return text
 
     # ------------------------------------------------------------ ledger
     def _refresh_workspace(self) -> None:

@@ -23,7 +23,11 @@ from app.agent.context import (
     PresetRegistry,
     SelectorRegistry,
 )
-from app.agent.workflow_runner import WorkflowRunner, _local_resolution, initialize_known_workflow
+from app.agent.routing import (
+    initialize_known_workflow,
+    local_resolution as _local_resolution,
+)
+from app.agent.workflow_runner import WorkflowRunner
 from app.main import create_app
 from app.workspace_transactions import (
     ParentConflict,
@@ -171,6 +175,16 @@ def test_workflow_routes_use_normalized_generation_modes():
     assert forced["generation_mode"] == "force"
     assert "refresh_policy" not in ordinary
     assert "refresh_policy" not in forced
+
+
+def test_workflow_scheduler_receives_persisted_route_without_action_fallback():
+    source = inspect.getsource(WorkflowRunner)
+
+    assert "def _resolve(" not in source
+    assert "def _clarification(" not in source
+    assert "ActionRunner.execute" not in source
+    assert "local_resolution" not in source
+    assert "route_unresolved_run" not in source
 
 
 def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
