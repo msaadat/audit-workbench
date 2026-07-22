@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 6 (in progress).
-- Current task: `P6.2` (not started).
-- Last completed task: `P6.1`.
+- Current task: `P6.3` (not started).
+- Last completed task: `P6.2`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,7 +54,7 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | In progress | `P6.2` |
+| 6 | In progress | `P6.3` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -689,6 +689,19 @@ status notes below.
   `test_workflow_scheduler_golden.py`. No production scheduler, active dispatch,
   persisted payload, API, or frontend contract changed, so broader behavioral
   suites and a frontend build were not required. The exact next task is `P6.2`.
+- `P6.2` completed on 2026-07-22. The new runtime `WorkflowRunner` owns generic
+  capability materialization, same-schema recovery, dependency blocking,
+  dynamic semantic-unit re-expansion, attempt-bounded unit transitions, stage
+  folding, stable all-settled scheduling, cancellation/failure cleanup, and
+  terminal status/summary folding. It depends only on an injected runtime,
+  capability registry, local subject, and transitional stage-handler hooks;
+  active production dispatch remains on the existing audit runner until
+  `P6.6`. The synthetic scheduler gate now executes a complete non-audit graph
+  and a partial-failure dependency-blocking path through the extracted class.
+  Focused verification passed `7` tests in
+  `test_workflow_scheduler_golden.py`. No production dispatch, API payload, or
+  frontend contract changed, so broader behavioral suites and a frontend build
+  were not required. The exact next task is `P6.3`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1268,7 +1281,7 @@ execution entirely registry-driven.
 
 - [x] `P6.1` Add a synthetic non-audit workflow registry and golden tests for
   closure, readiness, semantic units, stable scheduling, and recovery.
-- [ ] `P6.2` Extract generic materialization, unit transitions, stage folding,
+- [x] `P6.2` Extract generic materialization, unit transitions, stage folding,
   stable all-settled scheduling, and finish behavior into the new runtime
   scheduler without switching active dispatch.
 - [ ] `P6.3` Implement normalized `reuse_existing` and `force` generation modes

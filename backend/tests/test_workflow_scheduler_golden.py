@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 
 from app.agent import workflow
+from app.agent.runtime.workflow_runner import FinishProjection, WorkflowRunner
 
 
 SOURCES_READY = "catalog.sources_ready"
@@ -28,6 +29,38 @@ class SyntheticCatalog:
         ("beta", 20),
         ("gamma", 30),
     )
+
+
+class SyntheticRuntime:
+    def __init__(self, run: dict):
+        self.run = run
+        self.events: list[tuple[str, dict]] = []
+        self.saves = 0
+        self.clock = 0
+
+    def save(self) -> None:
+        self.saves += 1
+
+    def emit(self, type_: str, data: dict) -> None:
+        self.events.append((type_, data))
+
+    def utcnow(self) -> str:
+        self.clock += 1
+        return f"2026-07-22T10:00:{self.clock:02d}Z"
+
+    def mark_started(self) -> str:
+        self.run["started"] = self.utcnow()
+        return self.run["started"]
+
+    def mark_finished(self) -> str:
+        self.run["finished"] = self.utcnow()
+        return self.run["finished"]
+
+    def set_status(self, status: str) -> None:
+        self.run["status"] = status
+
+    def checkpoint(self, **_kwargs) -> None:
+        return None
 
 
 def _readiness(outcome: str):
@@ -428,3 +461,116 @@ def test_synthetic_recovery_requeues_only_interrupted_units_and_keeps_sidecars()
     assert workflow_state["stages"][1]["units"][0]["status"] == (
         "awaiting_confirmation"
     )
+
+
+def test_extracted_scheduler_materializes_transitions_and_finishes_generically():
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({SOURCES_READY}))
+    run = {
+        "id": "run_synthetic",
+        "command": {"status": "queued"},
+        "limits": {"max_execution_attempts": 2, "max_units_per_stage": 20},
+    }
+    runtime = SyntheticRuntime(run)
+    runner: WorkflowRunner
+
+    def complete(stage: dict, units: list[dict]) -> None:
+        for unit in units:
+            runner.set_unit(stage, unit, "running")
+            runner.set_unit(
+                stage,
+                unit,
+                "succeeded",
+                result_refs=[f"synthetic:{unit['id']}"],
+            )
+
+    handlers = {
+        capability.id: complete
+        for capability in synthetic_registry().all()
+    }
+    registry = synthetic_registry()
+    runner = WorkflowRunner(
+        subject=catalog,
+        run=run,
+        runtime=runtime,
+        registry=registry,
+        stage_handlers=handlers,
+        finish_evaluator=lambda _subject, _workflow, _stages: FinishProjection(
+            summary_markdown="# Synthetic catalog complete\n"
+        ),
+    )
+
+    state = runner.materialize([PUBLISHED])
+    runner.execute()
+
+    assert state["resolved_outcomes"] == [
+        SOURCES_READY,
+        RECORDS_READY,
+        PREVIEW_READY,
+        INDEX_READY,
+        PUBLISHED,
+    ]
+    assert state["reused_outcomes"] == [SOURCES_READY]
+    assert [stage["status"] for stage in state["stages"]] == [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+    ]
+    assert all(
+        unit["status"] == "succeeded"
+        for stage in state["stages"]
+        for unit in stage["units"]
+    )
+    assert run["status"] == "completed"
+    assert run["command"]["status"] == "completed"
+    assert run["summary_markdown"] == "# Synthetic catalog complete\n"
+    assert runtime.events[-1] == ("summary_ready", {"run_id": "run_synthetic"})
+
+
+def test_extracted_scheduler_blocks_dependencies_and_folds_partial_failure():
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({SOURCES_READY}))
+    run = {
+        "id": "run_partial",
+        "command": {"status": "queued"},
+        "limits": {"max_execution_attempts": 2, "max_units_per_stage": 20},
+    }
+    runtime = SyntheticRuntime(run)
+    runner: WorkflowRunner
+
+    def complete_or_fail(stage: dict, units: list[dict]) -> None:
+        for unit in units:
+            runner.set_unit(stage, unit, "running")
+            if unit["id"] == "catalog-record:beta":
+                runner.set_unit(stage, unit, "failed", error="invalid record")
+            else:
+                runner.set_unit(stage, unit, "succeeded")
+
+    registry = synthetic_registry()
+    runner = WorkflowRunner(
+        subject=catalog,
+        run=run,
+        runtime=runtime,
+        registry=registry,
+        stage_handlers={
+            capability.id: complete_or_fail for capability in registry.all()
+        },
+    )
+    runner.materialize([PUBLISHED])
+
+    runner.execute()
+
+    stages = run["workflow"]["stages"]
+    assert stages[0]["status"] == "failed"
+    assert [stage["status"] for stage in stages[1:]] == [
+        "blocked",
+        "blocked",
+        "blocked",
+    ]
+    assert run["workflow"]["next_outcomes"] == [
+        RECORDS_READY,
+        PREVIEW_READY,
+        INDEX_READY,
+        PUBLISHED,
+    ]
+    assert run["status"] == "failed"
+    assert run["error"] == "invalid record"
