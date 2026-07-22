@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 6 (in progress).
-- Current task: `P6.6` (not started).
-- Last completed task: `P6.5`.
+- Current task: `P6.7` (not started).
+- Last completed task: `P6.6`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,7 +54,7 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | In progress | `P6.6` |
+| 6 | In progress | `P6.7` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -752,6 +752,18 @@ status notes below.
   word "routing" inside the intended fail-closed error message, and the
   assertion was narrowed to actual routing function names. The exact next task
   is `P6.6`.
+- `P6.6` completed on 2026-07-22. Active workflow dispatch now constructs the
+  domain-neutral `runtime.WorkflowRunner` with the audit capability registry,
+  hash-identified execution bindings, runtime services, refresh and dependency
+  policies, the observation checkpoint, and audit completion projection. The
+  former scheduler module was deleted without a compatibility adapter; its
+  still-unmigrated domain handlers now live in the explicitly temporary
+  `audit_execution.py` adapter for the Phase 7 capability-family moves.
+  Generic recovery, re-expansion, stage transitions, dependency blocking, and
+  terminal folding have one active owner. The clean-slate cutover also deleted
+  legacy adoption and run-shape translation. Focused verification passed `29`
+  scheduler/pipeline tests, `31` runtime-contract tests, `38` runner tests, and
+  `56` active workflow tests. The exact next task is `P6.7`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1342,7 +1354,7 @@ execution entirely registry-driven.
 - [x] `P6.5` Inject routing results into the scheduler and remove scheduler
   fallback calls to the action interpreter; leave final routing consolidation
   for Phase 11.
-- [ ] `P6.6` Switch active workflow dispatch to the composed scheduler and
+- [x] `P6.6` Switch active workflow dispatch to the composed scheduler and
   update live imports, then delete the old scheduler module without an adapter.
 - [ ] `P6.7` Add and pass import-boundary enforcement for runtime modules.
 - [ ] `P6.8` Prove parity for dynamic expansion, partial failure, deterministic

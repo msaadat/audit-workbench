@@ -1,4 +1,4 @@
-"""Outcome-driven, thin orchestration for composable audit workflows."""
+"""Temporary audit capability execution adapters for the runtime scheduler."""
 
 from __future__ import annotations
 
@@ -37,11 +37,15 @@ from .executors.planning import (
     ApmExecutorTarget,
 )
 from .runtime import (
+    CapabilityExecution,
+    CapabilityExecutionRegistry,
+    FinishProjection,
     RunRuntime,
     UnitPipeline,
     UnitPipelineConflict,
     UnitPipelineRequest,
     UnitSidecarStore,
+    WorkflowRunner,
 )
 from .workers import WORKERS
 
@@ -76,239 +80,9 @@ def _capability_definition_hash(capability: workflow.Capability) -> str:
     )
 
 
-def _local_resolution(command: dict) -> dict | None:
-    """Route a command to capability outcomes without calling the model.
 
-    Tried in confidence order — explicit outcomes (follow-up/retry runs), then
-    goal templates, then command phrasing, then markers that mean "this is an
-    isolated mutation, hand it to ActionRunner". Returning None is what sends
-    the command to the LLM router, so every phrase added here removes a model
-    call from the common path.
-    """
-    direct = command.get("requested_outcomes")
-    if isinstance(direct, list) and direct:
-        requested = [str(item) for item in direct]
-        # Validate through the local registry before the run is launched.
-        audit_capabilities.REGISTRY.closure(requested)
-        return {
-            "route": "workflow", "requested_outcomes": requested,
-            "objective": str(command.get("text") or "Continue the requested audit outcomes.").strip(),
-            "target_refs": [str(item) for item in command.get("target_refs") or ["workspace:current"]],
-            "generation_mode": workflow.command_generation_mode(command),
-            "action_intent": None, "constraints": [str(item) for item in command.get("constraints") or []],
-            "needs_clarification": False, "clarification": None,
-        }
-    template = str(command.get("goal_template") or "")
-    if template in {"data_analysis", "document_testing"}:
-        return {
-            "route": "generic_action", "requested_outcomes": [],
-            "objective": str(command.get("text") or "").strip(), "target_refs": [],
-            "generation_mode": "reuse_existing", "action_intent": template,
-            "constraints": [], "needs_clarification": False, "clarification": None,
-        }
-    outcomes = audit_capabilities.outcomes_for_template(template)
-    if outcomes is not None:
-        return {
-            "route": "workflow", "requested_outcomes": outcomes,
-            "objective": str(command.get("text") or template.replace("_", " ")).strip(),
-            "target_refs": ["workspace:current"],
-            "generation_mode": workflow.command_generation_mode(command),
-            "action_intent": None, "constraints": [], "needs_clarification": False,
-            "clarification": None,
-        }
-    text = str(command.get("text") or "").casefold()
-    mappings = [
-        (("full audit", "complete the audit", "end-to-end audit", "end to end audit"), audit_capabilities.FULL_AUDIT_OUTCOMES),
-        (("draft the apm", "update the apm", "generate apm", "generate the apm", "audit planning memorandum"), ["planning.apm_ready"]),
-        (("generate the rcm", "draft the rcm", "update the rcm", "risk and control matrix"), ["planning.rcm_ready"]),
-        (("testing procedures", "planned procedures", "planned tests"), ["planning.planned_tests_ready"]),
-        (("translate planned", "executable tests", "execution definitions"), ["fieldwork.definitions_ready"]),
-        (("run the rcm tests", "execute the rcm tests", "run rcm tests", "execute planned tests"), ["fieldwork.executed", "results.rolled_up"]),
-        (("draft eligible findings", "draft findings"), ["findings.drafted"]),
-        (("generate the report", "draft the report", "audit report"), ["report.working_draft"]),
-    ]
-    for phrases, requested in mappings:
-        if any(phrase in text for phrase in phrases):
-            # "run planned tests" is execution, even though it contains the
-            # narrower authorship phrase.
-            if requested == ["planning.planned_tests_ready"] and any(word in text for word in ("run ", "execute ")):
-                continue
-            return {
-                "route": "workflow", "requested_outcomes": list(requested),
-                "objective": str(command.get("text") or "").strip(),
-                "target_refs": ["workspace:current"],
-                "generation_mode": workflow.command_generation_mode(command),
-                "action_intent": None, "constraints": [], "needs_clarification": False,
-                "clarification": None,
-            }
-    generic_markers = (
-        "join ", "rename ", "remove ", "delete ", "add a finding", "create a finding",
-        "validate ", "validation", "check report quality", "pin ", "rerun ",
-        "analyze ", "analyse ", "analysis", "upload ", "attach ", "detach ",
-        "document test", "prepare report", "finding", " undo ", "review the apm",
-    )
-    if any(marker in text for marker in generic_markers):
-        return {
-            "route": "generic_action", "requested_outcomes": [],
-            "objective": str(command.get("text") or "").strip(), "target_refs": [],
-            "generation_mode": "reuse_existing", "action_intent": "isolated_mutation",
-            "constraints": [], "needs_clarification": False, "clarification": None,
-        }
-    return None
-
-
-def initialize_known_workflow(workspace: Workspace, run: dict) -> bool:
-    """Persist template/local routing before the worker starts (no LLM call)."""
-    resolution = _local_resolution(run.get("command") or {})
-    if resolution is None:
-        return False
-    if resolution.get("route") == "generic_action":
-        run["engine"] = store.ACTION_ENGINE
-        run["command_route"] = resolution
-        store.save_run(workspace, run)
-        return False
-    if resolution.get("route") != "workflow":
-        return False
-    run["engine"] = store.WORKFLOW_ENGINE
-    _install_resolution(workspace, run, resolution)
-    store.save_run(workspace, run)
-    return True
-
-
-def _explanation(resolved: list[str], stages: list[dict], reused: list[str], requested: list[str]) -> str:
-    running = [stage["capability"] for stage in stages]
-    automatically_added = [item for item in resolved if item not in requested]
-    parts = [f"Requested outcome(s): {', '.join(requested)}."]
-    if automatically_added:
-        parts.append("Added prerequisite(s): " + ", ".join(automatically_added) + ".")
-    if reused:
-        parts.append("Reusing current capability output(s): " + ", ".join(reused) + ".")
-    if running:
-        parts.append("Running in dependency order: " + " → ".join(running) + ".")
-    return " ".join(parts)
-
-
-def _install_resolution(workspace: Workspace, run: dict, resolution: dict) -> None:
-    """Materialize the capability graph onto the run and size its budgets.
-
-    Called either before the worker thread starts (local routing) or from
-    `execute` after the LLM router answers. Promotes the run to schema v3 —
-    from that point `run["workflow"]` is the authoritative execution record and
-    the v2 action ledger stays empty.
-    """
-    scope = {
-        "target_refs": list(resolution.get("target_refs") or ["workspace:current"]),
-        "permission_mode": run.get("mode") == "permission",
-    }
-    generation_mode = workflow.normalize_generation_mode(
-        resolution.get("generation_mode") or "reuse_existing"
-    )
-    requested = list(resolution.get("requested_outcomes") or [])
-    resolved, stages, reused = workflow.materialize(
-        audit_capabilities.REGISTRY,
-        workspace,
-        requested,
-        scope,
-        generation_mode=generation_mode,
-    )
-    maximum_units = int(run.get("limits", {}).get("max_units_per_stage") or 250)
-    oversized = next(
-        (stage for stage in stages if len(stage.get("units") or []) > maximum_units),
-        None,
-    )
-    if oversized is not None:
-        raise LimitExceeded(
-            f"Stage '{oversized['title']}' requires {len(oversized['units'])} units, "
-            f"above its {maximum_units}-unit limit."
-        )
-    explanation = _explanation(resolved, stages, reused, requested)
-    run["schema_version"] = 3
-    # Budgets are sized from the work actually discovered, not a fixed ceiling:
-    # an engagement with 40 RCM rows legitimately needs far more model turns
-    # than one with 3. _refresh_dynamic_limits re-runs this before every stage
-    # because the RCM grows while the run is in flight.
-    planned_count = sum(len(row.get("planned_tests") or []) for row in workspace.rcm)
-    qa_pairs = sum(
-        len(item.get("document_ids") or [])
-        for summary in doc_tests.list_tests(workspace)
-        for item in doc_tests.load_test(workspace, summary["id"]).get("items") or []
-        if summary.get("kind") == "qa"
-    )
-    eligible_findings = sum(
-        item.get("status") == "disposed"
-        and item.get("disposition") in ELIGIBLE_DISPOSITIONS
-        for item in workspace.observations
-    )
-    calculated_model_turns = (
-        20 + 4 * len(workspace.rcm) + 4 * planned_count
-        + 2 * qa_pairs + 2 * eligible_findings
-    )
-    run.setdefault("limits", {}).update(
-        max_llm_concurrency=int(run.get("limits", {}).get("max_llm_concurrency") or 4),
-        max_compute_concurrency=int(run.get("limits", {}).get("max_compute_concurrency") or 2),
-        max_model_turns=calculated_model_turns,
-        max_execution_attempts=2,
-        max_units_per_stage=maximum_units,
-        max_estimated_prompt_tokens=max(
-            int(run.get("limits", {}).get("max_estimated_prompt_tokens") or 0),
-            calculated_model_turns * 10_000,
-        ),
-        max_completion_tokens=max(
-            int(run.get("limits", {}).get("max_completion_tokens") or 0),
-            calculated_model_turns * 4_000,
-        ),
-    )
-    run["goal"] = {
-        "objective": resolution.get("objective") or (run.get("command") or {}).get("text") or "",
-        "constraints": list(resolution.get("constraints") or []),
-        "completion_criteria": requested,
-    }
-    run["workflow"] = {
-        "definition": workflow.WORKFLOW_DEFINITION,
-        "revision": 1,
-        "route": "workflow",
-        "requested_outcomes": requested,
-        "target_refs": scope["target_refs"],
-        "generation_mode": generation_mode,
-        "workflow_explanation": explanation,
-        "next_outcomes": [],
-        "pending_checkpoint": None,
-        "resolved_capabilities": resolved,
-        "reused_capabilities": reused,
-        "reused_capability_details": [
-            {
-                "capability": capability_id,
-                "currency_status": "not_assessed",
-            }
-            for capability_id in reused
-        ],
-        "workspace_revision": workspace.revision,
-        "state_at_resolution": audit_capabilities.workflow_state(workspace, scope),
-        "stages": stages,
-        "legacy_adoptions": [],
-    }
-    run["workflow_explanation"] = explanation
-    run["command"]["status"] = "resolved"
-    # Retain the compact planning-change counters used by existing activity
-    # views while the workflow ledger remains the authoritative execution
-    # record.
-    run.setdefault(
-        "planning_changes",
-        {
-            "apm_updated": 0,
-            "apm_proposed": 0,
-            "rcm_created": 0,
-            "rcm_updated": 0,
-            "rcm_preserved": 0,
-            "planned_test_created": 0,
-            "planned_test_updated": 0,
-            "planned_test_preserved": 0,
-        },
-    )
-
-
-class WorkflowRunner(ActionRunner):
-    """Generic scheduler backed by the audit capability registry."""
+class AuditWorkflowExecution(ActionRunner):
+    """Audit execution behavior awaiting grouped Phase 7 registrations."""
 
     def __init__(
         self,
@@ -327,107 +101,10 @@ class WorkflowRunner(ActionRunner):
         """
         super().__init__(workspace, run, handle, runtime=runtime)
         self.context_resolver = context_resolver or ContextResolver()
-
-    def execute(self) -> None:
-        """Resolve the command to outcomes, then run the capability graph.
-
-        Three exits before any audit work happens: an isolated mutation is
-        handed down to ActionRunner, an unanswerable request completes
-        with an explanation, and anything else installs a capability graph.
-        Stages then run strictly in dependency order — parallelism lives
-        inside a stage, never across them.
-        """
-        if not self.run.get("started"):
-            self.mark_started()
-        try:
-            if not self.run.get("workflow"):
-                raise WorkspaceError(
-                    "Workflow routing must be persisted before scheduler execution."
-                )
-            # Requeue units interrupted mid-flight, and backfill workflow
-            # hashes onto artifacts created before this run (or by hand), so
-            # readiness does not treat pre-existing work as missing.
-            workflow.recovery(self.run["workflow"])
-            self._adopt_legacy()
-            self.save()
-            self.set_status("executing")
-            scheduled = {
-                stage["capability"]: stage
-                for stage in self.run["workflow"].get("stages") or []
-            }
-            for stage in self.run["workflow"].get("stages") or []:
-                if stage.get("status") in {"succeeded", "skipped"}:
-                    continue
-                # Reload between stages: the auditor, other tabs, and the
-                # previous stage all write to the workspace, and unit expansion
-                # below must see the current state.
-                self.checkpoint()
-                self._refresh_workspace()
-                self._refresh_dynamic_limits()
-                capability = audit_capabilities.REGISTRY.get(stage["capability"])
-                if (
-                    capability.id == "findings.drafted"
-                    and self.run.get("mode") == "permission"
-                ):
-                    self._observation_checkpoint()
-                    self._refresh_workspace()
-                # Dependencies that may be only partially satisfied. Fieldwork
-                # is naturally ragged — one unusable planned test or one
-                # evidence-blocked document test must not sink the stages
-                # behind it, so these edges tolerate a review_required parent.
-                partial_dependencies = {
-                    "fieldwork.definitions_ready": {"planning.planned_tests_ready"},
-                    "fieldwork.executed": {"fieldwork.definitions_ready"},
-                    "results.rolled_up": {"fieldwork.executed"},
-                    "report.working_draft": {"findings.drafted"},
-                    "audit.verified": {
-                        "working_papers.generated",
-                        "dashboard.curated",
-                        "report.working_draft",
-                    },
-                }
-                blocking = [
-                    dependency
-                    for dependency in capability.depends_on
-                    if dependency in scheduled
-                    and scheduled[dependency].get("status") not in {"succeeded", "skipped"}
-                    and dependency not in partial_dependencies.get(capability.id, set())
-                ]
-                if blocking:
-                    units = self._ensure_stage_units(stage)
-                    reason = "Blocked by prerequisite stage(s): " + ", ".join(blocking)
-                    for unit in units:
-                        if unit.get("status") == "queued":
-                            self._set_unit(stage, unit, "blocked", error=reason)
-                    self._stage_event(stage, "blocked")
-                    self.emit(
-                        "stage_summary",
-                        {"stage_id": stage["id"], "status": "blocked", "counts": workflow.stage_counts(stage)},
-                    )
-                    continue
-                self._run_stage(stage)
-            self._finish_workflow()
-        except Cancelled:
-            self._cancel_remaining()
-            self.mark_finished()
-            self.run["command"]["status"] = "cancelled"
-            self.set_status("cancelled")
-        except (LimitExceeded, WorkspaceConflict) as error:
-            self.run["error"] = str(error)
-            if isinstance(error, WorkspaceConflict):
-                self._mark_running_conflict(str(error))
-            self.mark_finished()
-            self.run["command"]["status"] = "failed"
-            self.set_status("failed")
-        except Exception as error:
-            self.run["error"] = str(error)
-            self._mark_running_failed(str(error))
-            self.mark_finished()
-            self.run["command"]["status"] = "failed"
-            self.set_status("failed")
+        self.scheduler: WorkflowRunner | None = None
 
     # ------------------------------------------------------------ ledger
-    def _refresh_workspace(self) -> None:
+    def _refresh_workspace(self) -> Workspace:
         previous = int(self.run["workflow"].get("workspace_revision") or 0)
         self.ws = load_workspace(self.ws.id)
         self.run["workflow"]["workspace_revision"] = self.ws.revision
@@ -436,6 +113,7 @@ class WorkflowRunner(ActionRunner):
                 "workspace_revision",
                 {"previous_revision": previous, "workspace_revision": self.ws.revision},
             )
+        return self.ws
 
     def _refresh_dynamic_limits(self) -> None:
         planned_count = sum(
@@ -469,6 +147,15 @@ class WorkflowRunner(ActionRunner):
         return next(item for item in stage.get("units") or [] if item["id"] == unit_id)
 
     def _set_unit(self, stage: dict, unit: dict, status: str, *, error: str | None = None, result_refs: list[str] | None = None) -> None:
+        if self.scheduler is not None:
+            self.scheduler.set_unit(
+                stage,
+                unit,
+                status,
+                error=error,
+                result_refs=result_refs,
+            )
+            return
         was_attempted = int(unit.get("attempts") or 0)
         maximum_attempts = int(
             (self.run.get("limits") or {}).get("max_execution_attempts") or 2
@@ -489,101 +176,6 @@ class WorkflowRunner(ActionRunner):
                 "unit_retry",
                 {"stage_id": stage["id"], "unit_id": unit["id"], "attempt": unit["attempts"]},
             )
-
-    def _stage_event(self, stage: dict, status: str) -> None:
-        stage["status"] = status
-        if status == "running":
-            stage["started_at"] = stage.get("started_at") or store.utcnow()
-        if status in {"succeeded", "failed", "review_required", "blocked", "skipped", "cancelled"}:
-            stage["finished_at"] = store.utcnow()
-        self.save()
-        self.emit("stage_update", {"stage": copy.deepcopy(stage)})
-
-    def _ensure_stage_units(self, stage: dict) -> list[dict]:
-        capability = audit_capabilities.REGISTRY.get(stage["capability"])
-        scope = {
-            "target_refs": self.run["workflow"].get("target_refs") or [],
-        }
-        generation_mode = workflow.normalize_generation_mode(
-            self.run["workflow"].get("generation_mode") or "reuse_existing"
-        )
-        scope["generation_mode"] = generation_mode
-        specs = capability.expand_units(self.ws, scope)
-        maximum = int((self.run.get("limits") or {}).get("max_units_per_stage") or 250)
-        if len(specs) > maximum:
-            raise LimitExceeded(
-                f"Stage '{stage['title']}' requires {len(specs)} units, above its {maximum}-unit limit."
-            )
-        units = stage.setdefault("units", [])
-        existing = {unit["id"]: unit for unit in units}
-        changed = False
-        for spec in specs:
-            current = existing.get(spec.id)
-            if current is None:
-                units.append(workflow.new_unit(spec, capability.id))
-                changed = True
-                continue
-            if current.get("status") == "queued":
-                refreshed = {
-                    "kind": spec.kind,
-                    "title": spec.title,
-                    "parent_refs": list(spec.parent_refs),
-                    "input_sha1": spec.input_sha1,
-                }
-                if any(current.get(key) != value for key, value in refreshed.items()):
-                    current.update(refreshed)
-                    changed = True
-        if changed:
-            self.save()
-            self.emit("stage_update", {"stage": copy.deepcopy(stage)})
-        return stage["units"]
-
-    # ------------------------------------------------------------- stages
-    def _run_stage(self, stage: dict) -> None:
-        """Re-expand, dispatch to the capability's handler, then fold statuses.
-
-        Units are re-expanded here rather than trusted from resolution time,
-        because upstream stages have since changed the workspace this stage
-        fans out over.
-        """
-        self._stage_event(stage, "running")
-        units = self._ensure_stage_units(stage)
-        capability = stage["capability"]
-        # Nothing to do: either the capability is genuinely satisfied, or its
-        # inputs never materialized and downstream stages must see it blocked.
-        if not units:
-            readiness = audit_capabilities.REGISTRY.get(capability).readiness(self.ws, {})
-            self._stage_event(stage, "succeeded" if readiness.satisfied else "blocked")
-            return
-        handlers = {
-            "planning.context_ready": self._planning_basis,
-            "planning.apm_ready": self._apm,
-            "planning.rcm_ready": self._rcm,
-            "planning.planned_tests_ready": self._planned_tests,
-            "fieldwork.definitions_ready": self._definitions,
-            "fieldwork.executed": self._executions,
-            "results.rolled_up": self._rollup,
-            "findings.drafted": self._finding_drafts,
-            "working_papers.generated": self._working_papers,
-            "dashboard.curated": self._dashboard,
-            "report.working_draft": self._report,
-            "audit.verified": self._verify,
-        }
-        handlers[capability](stage, units)
-        # Stage status is derived, never set by a handler. `review_required` is
-        # a distinct outcome from failure: the work landed but needs an
-        # auditor, which is what _finish_workflow turns into next_outcomes.
-        statuses = {unit["status"] for unit in units}
-        if statuses <= {"succeeded", "skipped"}:
-            final = "succeeded"
-        elif "failed" in statuses or "conflict" in statuses:
-            final = "failed"
-        elif statuses & {"blocked", "awaiting_input", "awaiting_confirmation"}:
-            final = "review_required"
-        else:
-            final = "failed"
-        self._stage_event(stage, final)
-        self.emit("stage_summary", {"stage_id": stage["id"], "status": final, "counts": workflow.stage_counts(stage)})
 
     def _planning_basis(self, stage: dict, units: list[dict]) -> None:
         unit = units[0]
@@ -1549,7 +1141,12 @@ class WorkflowRunner(ActionRunner):
         self.runtime.resolve_interaction(interaction, response)
 
     # ------------------------------------------------------------ finish
-    def _finish_workflow(self) -> None:
+    def _finish_projection(
+        self,
+        subject: Workspace,
+        _workflow_state: dict,
+        stages: tuple[dict, ...],
+    ) -> FinishProjection:
         """Close the run on real audit outcomes, not on unit bookkeeping.
 
         A run that executed every unit cleanly can still be incomplete — open
@@ -1558,13 +1155,12 @@ class WorkflowRunner(ActionRunner):
         replays, and they are why `completed_with_open_items` is a distinct
         terminal status from `completed`.
         """
-        self._refresh_workspace()
-        completion = rcm_execution.completion(self.ws)
-        stages = self.run["workflow"].get("stages") or []
+        self.ws = subject
+        completion = rcm_execution.completion(subject)
         failed = sum(unit.get("status") in {"failed", "conflict"} for stage in stages for unit in stage.get("units") or [])
         open_units = sum(unit.get("status") in {"blocked", "awaiting_input", "awaiting_confirmation"} for stage in stages for unit in stage.get("units") or [])
-        open_observations = [item for item in self.ws.observations if item.get("status") != "disposed"]
-        open_evidence = [item for item in self.ws.evidence_requests if item.get("status") == "open"]
+        open_observations = [item for item in subject.observations if item.get("status") != "disposed"]
+        open_evidence = [item for item in subject.evidence_requests if item.get("status") == "open"]
         next_outcomes = []
         execution_open = bool(open_evidence) or any(
             stage.get("capability") == "fieldwork.executed"
@@ -1585,8 +1181,7 @@ class WorkflowRunner(ActionRunner):
         )
         if execution_open or open_observations or reconciliation_open:
             next_outcomes.extend(["report.working_draft", "audit.verified"])
-        self.run["workflow"]["next_outcomes"] = list(dict.fromkeys(next_outcomes))
-        self.run["workflow"]["workspace_revision"] = self.ws.revision
+        self.run["workflow"]["workspace_revision"] = subject.revision
         requires_full_completion = "audit.verified" in self.run["workflow"].get("requested_outcomes", [])
         if failed:
             terminal = "failed"
@@ -1601,7 +1196,7 @@ class WorkflowRunner(ActionRunner):
             terminal = "completed" if not open_units else "completed_with_open_items"
         else:
             terminal = "completed" if completion["status"] == "completed" and not open_units else "completed_with_open_items"
-        self.run["summary_markdown"] = (
+        summary = (
             "# Audit workflow summary\n\n"
             f"- Requested outcomes: {', '.join(self.run['workflow']['requested_outcomes'])}\n"
             f"- Completion status: {completion['status']}\n"
@@ -1610,173 +1205,114 @@ class WorkflowRunner(ActionRunner):
             f"- Open observations: {len(open_observations)}\n"
             f"- Open evidence requests: {len(open_evidence)}\n"
         )
-        self.mark_finished()
-        self.run["command"]["status"] = terminal
-        self.set_status(terminal)
-        self.emit("summary_ready", {"run_id": self.run["id"]})
+        return FinishProjection(
+            next_outcomes=tuple(dict.fromkeys(next_outcomes)),
+            summary_markdown=summary,
+            terminal_status=terminal,
+        )
 
-    def _adopt_legacy(self) -> None:
-        workflow_state = self.run["workflow"]
-        if workflow_state.get("legacy_adoptions"):
-            return
-        adoptions = []
-        planning = self.ws.planning
-        workspace_changed = False
-        apm_readiness = audit_capabilities.REGISTRY.get("planning.apm_ready").readiness(self.ws, {})
-        if apm_readiness.satisfied and not planning.get("workflow_basis_sha1"):
-            planning["workflow_basis_sha1"] = audit_capabilities.planning_basis_sha1(self.ws)
-            workspace_changed = True
-            payload = {
-                "artifact_ref": "planning:apm",
-                "content_sha1": canonical_sha1(planning.get("apm_markdown")),
-                "prerequisite_hashes": {"planning_basis": planning["workflow_basis_sha1"]},
-                "currency": "unverified", "ownership": planning.get("created_by"),
-                "review_state": planning.get("review_status"), "adopted_at": store.utcnow(),
-            }
-            payload["sidecar"] = store.write_sidecar(self.ws, self.run["id"], payload)
-            adoptions.append(payload)
-        for row in self.ws.rcm:
-            if str(row.get("risk") or "").strip() and str(row.get("control") or "").strip():
-                if not row.get("workflow_parent_sha1"):
-                    row["workflow_parent_sha1"] = audit_capabilities.apm_sha1(self.ws)
-                    workspace_changed = True
-                    payload = {
-                        "artifact_ref": f"rcm:{row['id']}",
-                        "content_sha1": canonical_sha1(row),
-                        "prerequisite_hashes": {"planning:apm": row["workflow_parent_sha1"]},
-                        "currency": "unverified", "ownership": row.get("created_by"),
-                        "review_state": row.get("review_status"), "adopted_at": store.utcnow(),
+
+_AUDIT_HANDLER_NAMES = {
+    "planning.context_ready": "_planning_basis",
+    "planning.apm_ready": "_apm",
+    "planning.rcm_ready": "_rcm",
+    "planning.planned_tests_ready": "_planned_tests",
+    "fieldwork.definitions_ready": "_definitions",
+    "fieldwork.executed": "_executions",
+    "results.rolled_up": "_rollup",
+    "findings.drafted": "_finding_drafts",
+    "working_papers.generated": "_working_papers",
+    "dashboard.curated": "_dashboard",
+    "report.working_draft": "_report",
+    "audit.verified": "_verify",
+}
+
+_PARTIAL_DEPENDENCIES = {
+    "fieldwork.definitions_ready": {"planning.planned_tests_ready"},
+    "fieldwork.executed": {"fieldwork.definitions_ready"},
+    "results.rolled_up": {"fieldwork.executed"},
+    "report.working_draft": {"findings.drafted"},
+    "audit.verified": {
+        "working_papers.generated",
+        "dashboard.curated",
+        "report.working_draft",
+    },
+}
+
+
+def build_audit_workflow_runner(
+    workspace: Workspace,
+    run: dict,
+    handle,
+    *,
+    runtime: RunRuntime | None = None,
+    context_resolver: ContextResolver | None = None,
+) -> WorkflowRunner:
+    """Compose the domain-neutral scheduler with temporary audit adapters."""
+
+    adapter = AuditWorkflowExecution(
+        workspace,
+        run,
+        handle,
+        runtime=runtime,
+        context_resolver=context_resolver,
+    )
+    executions = CapabilityExecutionRegistry()
+    for capability in audit_capabilities.REGISTRY.all():
+        handler_name = _AUDIT_HANDLER_NAMES[capability.id]
+        handler = getattr(adapter, handler_name)
+
+        def execute_batch(
+            _scheduler: WorkflowRunner,
+            stage: dict,
+            units: list[dict],
+            *,
+            _handler=handler,
+        ) -> None:
+            _handler(stage, units)
+
+        executions.register(
+            CapabilityExecution(
+                capability_id=capability.id,
+                implementation_hash=_sha256_json(
+                    {
+                        "capability": capability.id,
+                        "adapter": handler_name,
                     }
-                    payload["sidecar"] = store.write_sidecar(self.ws, self.run["id"], payload)
-                    adoptions.append(payload)
-            for planned in row.get("planned_tests") or []:
-                if planned.get("workflow_parent_sha1") or not planned.get("steps"):
-                    continue
-                planned["workflow_parent_sha1"] = audit_capabilities.rcm_row_sha1(row)
-                workspace_changed = True
-                payload = {
-                    "artifact_ref": f"planned_test:{planned['id']}",
-                    "content_sha1": canonical_sha1(planned),
-                    "prerequisite_hashes": {f"rcm:{row['id']}": planned["workflow_parent_sha1"]},
-                    "currency": "unverified", "ownership": planned.get("created_by"),
-                    "review_state": planned.get("status"), "adopted_at": store.utcnow(),
-                }
-                payload["sidecar"] = store.write_sidecar(self.ws, self.run["id"], payload)
-                adoptions.append(payload)
-        for item in self.ws.data_tests:
-            if item.get("workflow_parent_sha1") or not item.get("planned_test_id"):
-                continue
-            try:
-                _row, planned = self.ws.planned_test(item["planned_test_id"])
-            except WorkspaceError:
-                continue
-            item["workflow_parent_sha1"] = audit_capabilities.planned_test_sha1(planned)
-            workspace_changed = True
-            payload = {
-                "artifact_ref": f"datatest:{item['id']}", "content_sha1": canonical_sha1(item),
-                "prerequisite_hashes": {f"planned_test:{planned['id']}": item["workflow_parent_sha1"]},
-                "currency": "unverified", "ownership": item.get("created_by"),
-                "review_state": item.get("status"), "adopted_at": store.utcnow(),
-            }
-            payload["sidecar"] = store.write_sidecar(self.ws, self.run["id"], payload)
-            adoptions.append(payload)
-        for item in self.ws.findings:
-            if item.get("workflow_adoption_sha1"):
-                continue
-            # Findings that are not yet support-complete remain visible drafts;
-            # adoption records their ownership without upgrading their status.
-            content_sha1 = canonical_sha1(
-                {key: value for key, value in item.items() if key != "workflow_adoption_sha1"}
+                ),
+                transitional_batch_executor=execute_batch,
             )
-            prerequisites = {}
-            for ref in item.get("execution_refs") or []:
-                kind, separator, source_id = str(ref).partition(":")
-                resolved = findings.artifact(self.ws, kind, source_id) if separator else None
-                prerequisites[str(ref)] = (
-                    resolved.get("sha1") if resolved else canonical_sha1(ref)
-                )
-            item["workflow_adoption_sha1"] = content_sha1
-            workspace_changed = True
-            payload = {
-                "artifact_ref": f"finding:{item['id']}",
-                "content_sha1": content_sha1,
-                "prerequisite_hashes": prerequisites,
-                "currency": "unverified", "ownership": item.get("created_by") or item.get("source"),
-                "review_state": "confirmed" if item.get("auditor_confirmed") else "draft",
-                "support_issues": findings.support_issues(self.ws, item),
-                "adopted_at": store.utcnow(),
-            }
-            payload["sidecar"] = store.write_sidecar(self.ws, self.run["id"], payload)
-            adoptions.append(payload)
-        current_report = report.hydrate(self.ws)
-        if (
-            str(current_report.get("markdown") or current_report.get("generated_markdown") or "").strip()
-            and not current_report.get("workflow_parent_sha1")
-        ):
-            current_report["workflow_parent_sha1"] = canonical_sha1(
-                report.build_context(self.ws)
-            )
-            self.ws.report = current_report
-            workspace_changed = True
-            payload = {
-                "artifact_ref": "report:draft",
-                "content_sha1": canonical_sha1(current_report.get("generated_markdown") or current_report.get("markdown")),
-                "prerequisite_hashes": {
-                    "report_context": current_report["workflow_parent_sha1"]
-                },
-                "currency": "unverified", "ownership": "auditor" if current_report.get("edited") else "legacy",
-                "review_state": "reconciliation_required" if current_report.get("edited") else "draft",
-                "adopted_at": store.utcnow(),
-            }
-            payload["sidecar"] = store.write_sidecar(self.ws, self.run["id"], payload)
-            adoptions.append(payload)
-        if workspace_changed:
-            self.ws.save()
-        for summary in doc_tests.list_tests(self.ws):
-            if summary.get("workflow_parent_sha1") or not summary.get("planned_test_id"):
-                continue
-            try:
-                _row, planned = self.ws.planned_test(summary["planned_test_id"])
-            except WorkspaceError:
-                continue
-            test = doc_tests.load_test(self.ws, summary["id"])
-            test["workflow_parent_sha1"] = audit_capabilities.planned_test_sha1(planned)
-            doc_tests.save_test(self.ws, test)
-            payload = {
-                "artifact_ref": f"doctest:{test['id']}", "content_sha1": test.get("sha1"),
-                "prerequisite_hashes": {f"planned_test:{planned['id']}": test["workflow_parent_sha1"]},
-                "currency": "unverified", "ownership": test.get("created_by"),
-                "review_state": test.get("status"), "adopted_at": store.utcnow(),
-            }
-            payload["sidecar"] = store.write_sidecar(self.ws, self.run["id"], payload)
-            adoptions.append(payload)
-        workflow_state["legacy_adoptions"] = adoptions
-        if adoptions:
-            self.warn(f"Adopted {len(adoptions)} valid legacy planning artifact(s) with unverified currency; auditor-owned content was preserved.")
+        )
 
-    def _cancel_remaining(self) -> None:
-        for stage in self.run.get("workflow", {}).get("stages") or []:
-            for unit in stage.get("units") or []:
-                if unit.get("status") in {"queued", "running", "blocked", "awaiting_input", "awaiting_confirmation"}:
-                    workflow.transition_unit(unit, "cancelled")
-            if stage.get("status") in {"queued", "running"}:
-                stage["status"] = "cancelled"
-        self.save()
+    def dependency_policy(
+        capability_id: str,
+        dependency_id: str,
+        _dependency_status: str,
+    ) -> bool:
+        return dependency_id in _PARTIAL_DEPENDENCIES.get(capability_id, set())
 
-    def _mark_running_failed(self, error: str) -> None:
-        for stage in self.run.get("workflow", {}).get("stages") or []:
-            for unit in stage.get("units") or []:
-                if unit.get("status") == "running":
-                    workflow.transition_unit(unit, "failed", error=error)
-            if stage.get("status") == "running":
-                stage["status"] = "failed"
-        self.save()
+    def before_stage(
+        subject: Workspace,
+        capability: workflow.Capability,
+        _stage: dict,
+    ) -> None:
+        adapter.ws = subject
+        if capability.id == "findings.drafted" and run.get("mode") == "permission":
+            adapter._observation_checkpoint()
 
-    def _mark_running_conflict(self, error: str) -> None:
-        for stage in self.run.get("workflow", {}).get("stages") or []:
-            for unit in stage.get("units") or []:
-                if unit.get("status") == "running":
-                    workflow.transition_unit(unit, "conflict", error=error)
-            if stage.get("status") == "running":
-                stage["status"] = "failed"
-        self.save()
+    scheduler = WorkflowRunner(
+        subject=workspace,
+        run=run,
+        runtime=adapter.runtime,
+        registry=audit_capabilities.REGISTRY,
+        executions=executions,
+        refresh_subject=adapter._refresh_workspace,
+        refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
+        dependency_policy=dependency_policy,
+        before_stage=before_stage,
+        finish_evaluator=adapter._finish_projection,
+    )
+    adapter.scheduler = scheduler
+    scheduler.execution_adapter = adapter
+    return scheduler
+

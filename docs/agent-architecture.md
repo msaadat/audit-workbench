@@ -397,13 +397,14 @@ The repository currently contains three generations of general agent planning:
 |---|---|---|---|---|
 | v1 | `_Runner` in `agent/runner.py` | Hard-coded stages | Task | Straight-line stage calls |
 | v2 | `ActionRunner` | Model-generated action DAG | Action | Priority loop over the action ledger |
-| v3 | `WorkflowRunner` | Capability registry closure and readiness | Semantic unit | Dependency-ordered stages with bounded parallelism |
+| v3 | runtime `WorkflowRunner` plus registered audit executions | Capability registry closure and readiness | Semantic unit | Dependency-ordered stages with bounded parallelism |
 
-The current audit path is v3. `WorkflowRunner` inherits from
-`ActionRunner` and currently reuses planning context, quality checks, proposal
-formatting, approvals, and RCM matching through that inheritance. This sharing
-is intentional, but the inheritance also exposes the entire v2 scheduler and
-its obsolete full-audit logic to v3.
+The current audit path is v3. The runtime `WorkflowRunner` is domain-neutral,
+receives its runtime and registries through composition, and does not inherit
+from `ActionRunner`. Until the Phase 7 capability-family migrations complete,
+`audit_execution.py` supplies registered transitional handlers that reuse
+planning context, quality checks, proposal formatting, approvals, and RCM
+matching through a temporary `ActionRunner`-based execution adapter.
 
 `ActionRunner` remains useful for isolated mutations, including attaching a
 document, pinning a dashboard tile, renaming an artifact, or composing a small
@@ -425,13 +426,12 @@ both inbox-draining modes, approval batches, free-text input waits, and
 structured-interaction transitions. `runtime/interactions.py` persists auditor
 responses before waking a live worker, restores responses submitted while no
 worker is attached, and extends the monotonic deadline by time blocked on the
-auditor. `ActionRunner` and `WorkflowRunner` now receive optional `RunRuntime`
-constructor dependencies and otherwise preserve their existing three-argument
-construction by using the default runtime through the temporary `BaseRunner`
-facade. `WorkflowRunner` still retains its audit-specific stage handlers and
-temporary `ActionRunner` inheritance until their later planned migrations. The
-other current runners still obtain runtime operations from that facade or their
-runtime instance. `DefaultModelGateway` owns provider concurrency, model
+auditor. `ActionRunner` and the temporary audit execution adapter accept an
+optional `RunRuntime` and otherwise use the default runtime through the
+temporary `BaseRunner` facade. `WorkflowRunner` receives the runtime directly
+along with capability execution, refresh, dependency, checkpoint, and finish
+policies. The other current runners still obtain runtime operations from that
+facade or their runtime instance. `DefaultModelGateway` owns provider concurrency, model
 profiles, stage tags, debug tracing, and hash-only provenance, and delegates
 budget accounting and model-wait activity to the runtime. The Phase 3 gate
 exercises budgets and pause/resume/cancel controls across both graph runners and

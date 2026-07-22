@@ -87,10 +87,10 @@ backend/app/
 |  |- report_routes.py         - findings/report endpoints and reconciliation
 |  `- debug_routes.py          - workspace debug console APIs and live stream
 `- agent/
-   |- runtime/                 - RunRuntime contract and active durable-run
-   |                             implementation, restart-safe auditor response
-   |                             transitions, shared ModelGateway, and the
-   |                             runner-independent unit pipeline
+|- runtime/                 - RunRuntime contract and active durable-run
+|                             implementation, restart-safe auditor response,
+|                             shared ModelGateway, unit pipeline, and the
+|                             domain-neutral workflow scheduler
    |- context/                 - normalized context declarations, content-free
    |                             manifest identity/persistence, local bundle
    |                             models, and validated preset/selector registries
@@ -105,7 +105,7 @@ backend/app/
    |                             recovery, pause/resume/cancel/retry/continue
    |- action_runner.py         - action-graph runner for isolated mutations
    |- workflow.py              - generic capability graph primitives
-   |- workflow_runner.py       - v3 outcome-driven audit workflow scheduler
+   |- audit_execution.py       - temporary audit capability execution adapters
    |- audit_capabilities.py    - audit capability registry and readiness rules
    |- audit_workers.py         - single-turn model workers with validators
    |- context_bundles.py       - hard-budgeted agent prompt context builders
@@ -192,17 +192,19 @@ BaseRunner
 |- IntakeRunner             one import batch
 |- DocTestRunner            one document test
 |- DocumentAnalysisRunner   document analysis map/reduce
-`- ActionRunner             action graph
-   `- WorkflowRunner        v3 capability graph for audit outcomes
+|- ActionRunner             action graph
+`- AuditWorkflowExecution  temporary audit execution adapter
+
+WorkflowRunner             domain-neutral capability graph scheduler
 ```
 
 - `ActionRunner` is still used for isolated mutations and repairable action
   graphs.
-- `WorkflowRunner` is the main audit path. It resolves requested outcomes,
-  materializes prerequisite capabilities, fans them out into units, persists
-  model proposals to sidecars before commit, and records `next_outcomes` for
-  `Continue audit`.
-- Local routing in `workflow_runner._local_resolution(...)` is important. It
+- `WorkflowRunner` is the main audit scheduler. It receives a materialized
+  route and registered capability executions, fans outcomes into units, and
+  records `next_outcomes` for `Continue audit`. Temporary audit handlers are
+  composed from `audit_execution.py` pending their Phase 7 registry moves.
+- Local routing in `routing.local_resolution(...)` is important. It
   catches common phrases and goal templates before any model call. If routing
   misses, a bounded router worker may still resolve the command.
 
@@ -265,9 +267,10 @@ BaseRunner
   inbox draining, approvals, and auditor interactions. `BaseRunner` delegates
   that surface while retaining temporary task and artifact-activity hooks.
   `ActionRunner` accepts an optional injected `RunRuntime` while preserving its
-  existing three-argument default construction. `WorkflowRunner` exposes the
-  same optional runtime dependency while retaining its current audit-specific
-  stage handlers and temporary `ActionRunner` inheritance.
+  existing three-argument default construction. The domain-neutral
+  `WorkflowRunner` receives `RunRuntime` and all scheduler dependencies by
+  composition; the temporary audit execution adapter still uses `BaseRunner`
+  hooks until its Phase 7 capability-family migrations.
 - Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
   accept an injected `model_adapter` so their calls are charged to the same
   budget and provenance ledger.

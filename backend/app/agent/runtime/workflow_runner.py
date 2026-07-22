@@ -28,6 +28,7 @@ from .unit_pipeline import (
 RefreshSubject = Callable[[], Any]
 RefreshLimits = Callable[[Any], None]
 DependencyPolicy = Callable[[str, str, str], bool]
+BeforeStage = Callable[[Any, workflow.Capability, dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,7 @@ class WorkflowRunner:
         refresh_subject: RefreshSubject | None = None,
         refresh_limits: RefreshLimits | None = None,
         dependency_policy: DependencyPolicy | None = None,
+        before_stage: BeforeStage | None = None,
         finish_evaluator: FinishEvaluator | None = None,
     ) -> None:
         self.subject = subject
@@ -173,6 +175,7 @@ class WorkflowRunner:
         self.refresh_subject = refresh_subject
         self.refresh_limits = refresh_limits
         self.dependency_policy = dependency_policy
+        self.before_stage = before_stage
         self.finish_evaluator = finish_evaluator
 
     def materialize(
@@ -236,6 +239,9 @@ class WorkflowRunner:
                 self.runtime.checkpoint()
                 self._refresh()
                 capability = self.registry.get(str(stage["capability"]))
+                if self.before_stage is not None:
+                    self.before_stage(self.subject, capability, stage)
+                    self._refresh()
                 blocking = [
                     dependency
                     for dependency in capability.depends_on
@@ -340,7 +346,7 @@ class WorkflowRunner:
         """Re-expand a stage against the current subject with stable IDs."""
 
         capability = self.registry.get(str(stage["capability"]))
-        scope = dict((self.run.get("workflow") or {}).get("scope") or {})
+        scope = self._workflow_scope()
         specs = capability.expand_units(self.subject, scope)
         maximum = int(
             (self.run.get("limits") or {}).get("max_units_per_stage") or 250
@@ -379,6 +385,19 @@ class WorkflowRunner:
             self.subject = self.refresh_subject()
         if self.refresh_limits is not None:
             self.refresh_limits(self.subject)
+
+    def _workflow_scope(self) -> dict[str, Any]:
+        state = self.run.get("workflow") or {}
+        scope = dict(state.get("scope") or {})
+        if "target_refs" not in scope and state.get("target_refs") is not None:
+            scope["target_refs"] = list(state.get("target_refs") or [])
+        scope.setdefault(
+            "generation_mode",
+            workflow.normalize_generation_mode(
+                state.get("generation_mode") or "reuse_existing"
+            ),
+        )
+        return scope
 
     def _dependency_satisfied(
         self,
@@ -421,7 +440,7 @@ class WorkflowRunner:
         if not units:
             readiness = capability.readiness(
                 self.subject,
-                dict((self.run.get("workflow") or {}).get("scope") or {}),
+                self._workflow_scope(),
             )
             self._set_stage(stage, "succeeded" if readiness.satisfied else "blocked")
             return

@@ -23,8 +23,8 @@ All new durable agent runs are created under
 
 No route, chat service, or frontend component calls these writers directly.
 They enter through the control surface in `backend/app/agent/runner.py`.
-`BaseRunner`, `WorkflowRunner`, and the control functions in `runner.py` update
-existing records and append events through `store.save_run(...)` and
+`BaseRunner`, `DefaultRunRuntime`, and the control functions in `runner.py`
+update existing records and append events through `store.save_run(...)` and
 `store.append_event(...)`.
 
 ## Run Creation And Continuation Callers
@@ -125,8 +125,8 @@ run routing.
 ### Command routing
 
 `runner.start_command_run(...)` creates the command record and calls
-`workflow_runner.initialize_known_workflow(...)` before launching it.
-`workflow_runner._local_resolution(...)` resolves, in order:
+`routing.initialize_known_workflow(...)` before launching it.
+`routing.local_resolution(...)` resolves, in order:
 
 1. Explicit `requested_outcomes`.
 2. Known goal templates.
@@ -150,7 +150,7 @@ from its explicit `engine`:
 | `engine="intake"` | `IntakeRunner` |
 | `engine="doc_test"` | `DocTestRunner` |
 | `engine="document_analysis"` | `DocumentAnalysisRunner` |
-| `engine="workflow"` | `WorkflowRunner` |
+| `engine="workflow"` | runtime `WorkflowRunner` composed by `audit_execution.build_audit_workflow_runner(...)` |
 | `engine="action"` | `ActionRunner` |
 | `engine="analysis"` | legacy `_Runner` analysis pipeline |
 
@@ -160,10 +160,12 @@ Missing or unsupported engines fail closed. No engine is inferred from `kind` or
 The four protocol values are explicit migration scaffolding for live schedulers,
 not compatibility aliases. Document analysis migrates in Phase 9; Phase 10
 decides the retained intake and document-test protocols; Phase 12 removes the
-legacy analysis engine. The current runners all inherit, directly or indirectly,
-from the temporary `BaseRunner` facade, which now delegates per-run
-persistence, events, budgets, controls, approvals, interactions, and model
-calls to `DefaultRunRuntime` and `DefaultModelGateway`. `DefaultRunRuntime` also
+legacy analysis engine. The runtime `WorkflowRunner` is composed directly with
+`RunRuntime` and does not inherit from another runner. Current leaf runners,
+`ActionRunner`, and the temporary audit execution adapter still inherit from
+the temporary `BaseRunner` facade, which delegates per-run persistence, events,
+budgets, controls, approvals, interactions, and model calls to
+`DefaultRunRuntime` and `DefaultModelGateway`. `DefaultRunRuntime` also
 owns atomic, integrity-checked persistence for content-free per-unit context
 manifests. The generic context resolver now enforces deterministic ordering,
 hard source/global limits, required/optional behavior, and deny-by-default
@@ -194,9 +196,9 @@ preset definitions are authoritative, with no per-run, workspace, API, or
 frontend auditor override. Auditor source curation and explicit regeneration
 operate within, and cannot widen, those declarations.
 
-`ActionRunner` and `WorkflowRunner` accept an injected `RunRuntime`; intake,
-document-test, document-analysis, and legacy analysis remain active leaf
-callers of the facade until their scheduled migrations.
+`ActionRunner` and the audit workflow composition accept an injected
+`RunRuntime`; intake, document-test, document-analysis, and legacy analysis
+remain active leaf callers of the facade until their scheduled migrations.
 
 ## Active HTTP Run API
 

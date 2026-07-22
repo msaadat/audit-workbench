@@ -11,9 +11,12 @@ import pytest
 
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
 from app.agent import action_runner, audit_capabilities, audit_workers, context_bundles, runner, store, workflow
-from app.agent import workflow_runner as workflow_runner_module
+from app.agent.audit_execution import (
+    AuditWorkflowExecution,
+    build_audit_workflow_runner,
+)
 from app.agent.executors import planning as planning_executor
-from app.agent.runtime import UnitSidecarStore
+from app.agent.runtime import UnitSidecarStore, WorkflowRunner
 from app.agent.workers import planning as planning_worker
 from app.agent.context import (
     PRESETS,
@@ -27,7 +30,6 @@ from app.agent.routing import (
     initialize_known_workflow,
     local_resolution as _local_resolution,
 )
-from app.agent.workflow_runner import WorkflowRunner
 from app.main import create_app
 from app.workspace_transactions import (
     ParentConflict,
@@ -819,7 +821,7 @@ def test_parallel_candidate_reuses_durable_sidecar_without_model_rebilling():
         worker_calls += 1
         raise AssertionError("a valid proposal sidecar must bypass the model worker")
 
-    command = WorkflowRunner(ws, run, runner.RunHandle(ws.id, run["id"]))
+    command = AuditWorkflowExecution(ws, run, runner.RunHandle(ws.id, run["id"]))
     before_turns = run["usage"]["llm_turns"]
     candidates = command._parallel_candidates(stage, stage["units"], worker)
 
@@ -850,7 +852,7 @@ def _apm_only_runner(workspace, *, context_resolver=None):
         for item in run["workflow"]["stages"]
         if item["capability"] == "planning.apm_ready"
     )
-    command = WorkflowRunner(
+    command = AuditWorkflowExecution(
         workspace,
         run,
         runner.RunHandle(workspace.id, run["id"]),
@@ -902,7 +904,7 @@ def test_reused_apm_artifact_does_not_run_context_selection():
     )
     assert initialize_known_workflow(ws, run) is True
     run = store.load_run(ws, run["id"])
-    command = WorkflowRunner(
+    command = build_audit_workflow_runner(
         ws,
         run,
         runner.RunHandle(ws.id, run["id"]),
@@ -961,7 +963,7 @@ def test_apm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
     assert not (run_root / "receipts" / "apm.json").exists()
 
     workflow.recovery(command.run["workflow"])
-    resumed = WorkflowRunner(
+    resumed = AuditWorkflowExecution(
         ws,
         command.run,
         runner.RunHandle(ws.id, command.run["id"]),
@@ -1025,7 +1027,7 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
     assert [call["tag"] for call in fake.calls] == ["agent:apm"]
 
     workflow.recovery(command.run["workflow"])
-    resumed = WorkflowRunner(
+    resumed = AuditWorkflowExecution(
         ws,
         command.run,
         runner.RunHandle(ws.id, command.run["id"]),
@@ -1111,9 +1113,9 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
         store.run_dir(command.ws, command.run["id"])
         / unit["receipt_sidecar"]["path"]
     ).is_file()
-    assert "context_bundles.apm" not in inspect.getsource(WorkflowRunner._apm)
-    assert "audit_workers.apm" not in inspect.getsource(WorkflowRunner._apm)
-    assert "mutate(" not in inspect.getsource(WorkflowRunner._apm)
+    assert "context_bundles.apm" not in inspect.getsource(AuditWorkflowExecution._apm)
+    assert "audit_workers.apm" not in inspect.getsource(AuditWorkflowExecution._apm)
+    assert "mutate(" not in inspect.getsource(AuditWorkflowExecution._apm)
     worker_source = inspect.getsource(planning_worker.run_apm_worker)
     assert ".ws" not in worker_source
     assert "load_workspace" not in worker_source

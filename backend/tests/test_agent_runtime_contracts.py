@@ -10,13 +10,13 @@ import pytest
 from app import documents, llm
 from app.agent import (
     action_runner,
+    audit_execution,
     base,
     doc_test_runner,
     document_analysis_runner,
     intake_runner,
     runner,
     store,
-    workflow_runner,
 )
 from app.agent.runtime import (
     Cancelled,
@@ -25,6 +25,7 @@ from app.agent.runtime import (
     LimitExceeded,
     ModelGateway,
     RunRuntime,
+    WorkflowRunner,
     submit_approval_response,
     submit_interaction_response,
 )
@@ -59,7 +60,7 @@ def _active_runner(workspace, runner_type, engine):
 
 ACTIVE_RUNNER_CASES = (
     (action_runner.ActionRunner, store.ACTION_ENGINE),
-    (workflow_runner.WorkflowRunner, store.WORKFLOW_ENGINE),
+    (audit_execution.build_audit_workflow_runner, store.WORKFLOW_ENGINE),
     (intake_runner.IntakeRunner, store.INTAKE_ENGINE),
     (doc_test_runner.DocTestRunner, store.DOC_TEST_ENGINE),
     (
@@ -224,13 +225,13 @@ def test_workflow_runner_accepts_an_injected_runtime_without_changing_default_ap
         lambda status: calls.append(("status", status)),
     )
 
-    active = workflow_runner.WorkflowRunner(
+    active = audit_execution.build_audit_workflow_runner(
         workspace_with_data,
         injected_run,
         injected_handle,
         runtime=injected_runtime,
     )
-    active.set_status("executing")
+    active.runtime.set_status("executing")
 
     assert active.runtime is injected_runtime
     assert calls == [("status", "executing")]
@@ -240,7 +241,7 @@ def test_workflow_runner_accepts_an_injected_runtime_without_changing_default_ap
         "auto",
         {"source": "chat", "text": "draft the report"},
     )
-    default_active = workflow_runner.WorkflowRunner(
+    default_active = audit_execution.build_audit_workflow_runner(
         workspace_with_data,
         default_run,
         runner.RunHandle(workspace_with_data.id, default_run["id"]),
@@ -280,11 +281,12 @@ def test_active_runners_share_runtime_budget_and_gateway_contract(
         },
     )
     active, _handle = _active_runner(workspace_with_data, runner_type, engine)
+    execution = getattr(active, "execution_adapter", active)
     tag = engine.replace("_", "-")
 
     assert isinstance(active.runtime, DefaultRunRuntime)
-    assert isinstance(active.model_gateway, DefaultModelGateway)
-    assert active._llm_content(f"[agent:{tag}]\nsystem", "user") == "ok"
+    assert isinstance(execution.model_gateway, DefaultModelGateway)
+    assert execution._llm_content(f"[agent:{tag}]\nsystem", "user") == "ok"
 
     durable = store.load_run(workspace_with_data, active.run["id"])
     assert durable["usage"]["llm_turns"] == 1
@@ -293,7 +295,7 @@ def test_active_runners_share_runtime_budget_and_gateway_contract(
     assert durable["usage"]["model_calls_by_worker"] == {f"agent:{tag}": 1}
 
     with pytest.raises(LimitExceeded, match="model turn limit"):
-        active._llm_content(f"[agent:{tag}]\nsystem", "second call")
+        execution._llm_content(f"[agent:{tag}]\nsystem", "second call")
     assert len(calls) == 1
 
 
@@ -308,10 +310,11 @@ def test_active_runners_share_pause_resume_and_cancel_controls(
     engine,
 ):
     active, handle = _active_runner(workspace_with_data, runner_type, engine)
+    execution = getattr(active, "execution_adapter", active)
     handle.pause_requested.set()
     handle.resume.set()
 
-    active.checkpoint()
+    execution.checkpoint()
 
     durable = store.load_run(workspace_with_data, active.run["id"])
     assert durable["status"] == "executing"
@@ -322,7 +325,7 @@ def test_active_runners_share_pause_resume_and_cancel_controls(
 
     handle.cancel.set()
     with pytest.raises(Cancelled):
-        active.checkpoint()
+        execution.checkpoint()
 
 
 def test_active_leaf_runners_share_runtime_without_graph_runner_inheritance():
@@ -335,8 +338,8 @@ def test_active_leaf_runners_share_runtime_without_graph_runner_inheritance():
     for leaf_runner in leaf_runners:
         assert issubclass(leaf_runner, base.BaseRunner)
         assert not issubclass(leaf_runner, action_runner.ActionRunner)
-        assert not issubclass(leaf_runner, workflow_runner.WorkflowRunner)
-        assert not issubclass(workflow_runner.WorkflowRunner, leaf_runner)
+        assert not issubclass(leaf_runner, WorkflowRunner)
+        assert not issubclass(WorkflowRunner, leaf_runner)
 
 
 def test_default_run_runtime_owns_durable_timing_and_activity(workspace_with_data):
@@ -823,8 +826,8 @@ def test_runtime_owns_approval_and_structured_interaction_transitions():
     base_source = inspect.getsource(base.BaseRunner)
     workflow_wait = inspect.getsource(
         __import__(
-            "app.agent.workflow_runner", fromlist=["WorkflowRunner"]
-        ).WorkflowRunner._wait_interaction_response
+            "app.agent.audit_execution", fromlist=["AuditWorkflowExecution"]
+        ).AuditWorkflowExecution._wait_interaction_response
     )
     action_wait = inspect.getsource(
         __import__(

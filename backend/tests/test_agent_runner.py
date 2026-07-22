@@ -11,13 +11,13 @@ import app.agent as agent_package
 from app import documents, llm, workspaces
 from app.agent import (
     action_runner,
+    audit_execution,
     doc_test_runner,
     document_analysis_runner,
     intake_runner,
     ledger,
     runner,
     store,
-    workflow_runner,
 )
 from conftest import wait_run
 
@@ -542,6 +542,10 @@ def test_action_runner_has_no_legacy_module_or_class_alias():
     assert not hasattr(agent_package, "CommandRunner")
 
 
+def test_old_workflow_scheduler_module_was_deleted_without_an_adapter():
+    assert importlib.util.find_spec("app.agent.workflow_runner") is None
+
+
 def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
     workspace_with_data,
 ):
@@ -569,7 +573,12 @@ def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
 @pytest.mark.parametrize(
     ("engine", "module", "class_name", "expected"),
     [
-        (store.WORKFLOW_ENGINE, workflow_runner, "WorkflowRunner", "workflow"),
+        (
+            store.WORKFLOW_ENGINE,
+            audit_execution,
+            "build_audit_workflow_runner",
+            "workflow",
+        ),
         (store.ACTION_ENGINE, action_runner, "ActionRunner", "action"),
         (store.INTAKE_ENGINE, intake_runner, "IntakeRunner", "intake"),
         (store.DOC_TEST_ENGINE, doc_test_runner, "DocTestRunner", "doc_test"),

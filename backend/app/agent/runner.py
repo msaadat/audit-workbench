@@ -686,9 +686,9 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
 
                     DocumentAnalysisRunner(workspace, run, handle).execute()
                 elif engine == store.WORKFLOW_ENGINE:
-                    from .workflow_runner import WorkflowRunner
+                    from .audit_execution import build_audit_workflow_runner
 
-                    WorkflowRunner(workspace, run, handle).execute()
+                    build_audit_workflow_runner(workspace, run, handle).execute()
                 elif engine == store.ACTION_ENGINE:
                     from .action_runner import ActionRunner
 
