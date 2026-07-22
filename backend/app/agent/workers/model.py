@@ -273,6 +273,7 @@ class WorkerRepairPolicy:
 
 
 ResponseValidator = Callable[[str], Mapping[str, Any]]
+SemanticValidator = Callable[[Mapping[str, Any], WorkerRequest], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -327,6 +328,10 @@ class WorkerDefinition:
     response_schema: WorkerResponseSchema
     repair_policy: WorkerRepairPolicy
     implementation: WorkerImplementation = field(repr=False, compare=False)
+    semantic_validation_hash: str | None = None
+    semantic_validator: SemanticValidator | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -344,6 +349,20 @@ class WorkerDefinition:
             )
         if not callable(self.implementation):
             raise ValueError("worker_definition.implementation must be callable.")
+        if self.semantic_validator is None:
+            if self.semantic_validation_hash is not None:
+                raise ValueError(
+                    "worker_definition.semantic_validation_hash requires a validator."
+                )
+        else:
+            if not callable(self.semantic_validator):
+                raise ValueError(
+                    "worker_definition.semantic_validator must be callable."
+                )
+            _require_hash(
+                self.semantic_validation_hash,
+                "worker_definition.semantic_validation_hash",
+            )
         self.definition_hash
 
     def to_dict(self) -> dict[str, object]:
@@ -353,6 +372,7 @@ class WorkerDefinition:
             "prompt_hash": self.prompt_hash,
             "response_schema_id": self.response_schema.schema_id,
             "response_schema_hash": self.response_schema.schema_hash,
+            "semantic_validation_hash": self.semantic_validation_hash,
             "repair_policy": self.repair_policy.to_dict(),
         }
 
@@ -460,6 +480,12 @@ class WorkerRegistry:
                 )
             try:
                 proposal = definition.response_schema.validate(response)
+                if definition.semantic_validator is not None:
+                    proposal = definition.semantic_validator(proposal, request)
+                    encoded = _canonical_object(
+                        proposal, "worker_result.semantic_proposal"
+                    )
+                    proposal = _frozen_json(json.loads(encoded))  # type: ignore[assignment]
             except WorkerResponseValidationError as error:
                 errors = definition.repair_policy.bounded_errors(error.errors)
                 if attempt_number == total_attempts:

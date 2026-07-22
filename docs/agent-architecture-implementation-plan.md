@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 5 (in progress).
-- Current task: `P5.5` (not started).
-- Last completed task: `P5.4`.
+- Current task: `P5.6` (not started).
+- Last completed task: `P5.5`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.5` |
+| 5 | In progress | `P5.6` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -621,6 +621,19 @@ status notes below.
   changed target. Focused verification passed `57` pipeline, executor, and
   worker contract tests, and backend compile validation passed. No live
   capability or frontend contract changed. The exact next task is `P5.5`.
+- `P5.5` completed on 2026-07-22. `workers.planning` now owns the registered
+  `planning.apm` model worker, preserving the existing APM system prompt,
+  resolved-bundle message shape, placeholder normalization, required-template
+  heading checks, and objective/scope contradiction checks. `WorkerDefinition`
+  now supports a separately hash-identified semantic validator inside the
+  common bounded repair loop; the APM worker permits exactly one repair with
+  bounded specific guidance. Worker tests use constructed bundles and a
+  gateway stub, prove detached inputs and hash metadata, and statically exclude
+  workspace, transaction, store, resolver, and scheduler dependencies. The old
+  live APM caller remains temporarily until `P5.7` switches it and deletes the
+  duplicate. Focused verification passed `62` planning-worker, pipeline,
+  executor, and worker tests. No API or frontend contract changed. The exact
+  next task is `P5.6`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1132,7 +1145,7 @@ all audit stages.
   a committed-artifact freshness identity.
 - [x] `P5.4` Add proposal and receipt sidecar validation and recovery tests for
   every interruption boundary in the recovery matrix.
-- [ ] `P5.5` Extract the existing APM prompt and semantic validation into a
+- [x] `P5.5` Extract the existing APM prompt and semantic validation into a
   planning worker that has no workspace access.
 - [ ] `P5.6` Extract APM mutation, parent checks, edit preservation,
   postconditions, reconciliation, and receipts into a planning executor with

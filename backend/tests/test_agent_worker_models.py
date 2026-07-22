@@ -144,6 +144,7 @@ def test_worker_metadata_is_hash_identified_and_definition_hash_is_stable():
         "prompt_hash": HASH_B,
         "response_schema_id": "planning.apm.response",
         "response_schema_hash": HASH_C,
+        "semantic_validation_hash": None,
         "repair_policy": WorkerRepairPolicy(1, HASH_A).to_dict(),
     }
 

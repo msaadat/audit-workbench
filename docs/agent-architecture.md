@@ -528,6 +528,13 @@ provider call, durable proposed or accepted approval, commit-before-receipt,
 and receipt-before-unit-folding. Executors reconcile before any repeated
 mutation; a persisted receipt succeeds only if its postcondition still holds,
 while changed targets become conflicts.
+The first registered domain worker is `workers.planning:planning.apm`. It owns
+the unchanged APM prompt, bundle-to-message transformation, response schema,
+template and structured-context semantic checks, placeholder normalization,
+and one bounded repair. The worker is tested entirely with constructed bundles
+and has no workspace, transaction, context-resolver, store, or scheduler
+access. The old live caller remains only until the Phase 5 vertical-slice
+switch.
 
 ### Phase 1 Deletion Boundary
 
