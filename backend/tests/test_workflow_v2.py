@@ -885,6 +885,63 @@ def test_reused_apm_artifact_does_not_run_context_selection():
     assert "planning.apm_ready" in command.run["workflow"]["reused_capabilities"]
 
 
+def test_apm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
+    ws = workspaces.create_workspace("APM proposal no rebilling")
+    ws.update_planning(
+        {
+            "context": {
+                "objective": "Assess procurement approvals",
+                "scope": "Purchasing",
+            }
+        }
+    )
+    response = (
+        "# Audit Planning Memorandum\n\n"
+        "## Engagement\nProcurement approvals.\n\n"
+        "## Introduction and background\nPurchasing.\n\n"
+        "## Process flow and understanding\nApprovals precede commitment.\n\n"
+        "## Prior audit findings\nNo information available.\n\n"
+        "## Key risks and planned response\nTest approval evidence."
+    )
+    fake = FakeAgentLLM({"agent:apm": {"apm_markdown": response}})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command, stage, unit = _apm_only_runner(ws)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            planning_executor,
+            "mutate",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            command._apm(stage, [unit])
+
+    run_root = store.run_dir(ws, command.run["id"])
+    assert [call["tag"] for call in fake.calls] == ["agent:apm"]
+    assert (run_root / unit["proposal_sidecar"]["path"]).is_file()
+    assert not (run_root / "receipts" / "apm.json").exists()
+
+    workflow.recovery(command.run["workflow"])
+    resumed = WorkflowRunner(
+        ws,
+        command.run,
+        runner.RunHandle(ws.id, command.run["id"]),
+    )
+    resumed._apm(stage, [unit])
+
+    assert [call["tag"] for call in fake.calls] == ["agent:apm"]
+    assert unit["status"] == "succeeded"
+    assert (run_root / unit["receipt_sidecar"]["path"]).is_file()
+    assert "proposal_reused" in {
+        event["type"] for event in store.read_events(ws, resumed.run["id"])
+    }
+
+
 @pytest.mark.parametrize("change", ["spec", "selector"])
 def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
     monkeypatch,

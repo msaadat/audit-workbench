@@ -505,15 +505,15 @@ revision claims, exact applied parents, artifact postconditions, and typed
 reconciliation outcomes before creating immutable, hash-identified receipts.
 The executor contract layer has no model, context resolver, workspace
 implementation, run-store, or scheduler dependency; the runner-independent
-pipeline and the first domain executor are introduced by later Phase 5 tasks.
+pipeline composes it with those adjacent contracts without weakening that
+boundary.
 `runtime.unit_pipeline` now provides that runner-independent sequence and the
 atomic semantic-unit `proposals/` and `receipts/` sidecar layout. It persists a
 content-free manifest before worker execution, a proposal before approval or
 mutation, an auditor-edited accepted proposal before execution, and a receipt
 before post-commit readiness evaluation. The service depends only on the
 runtime, gateway, context, worker, and executor contracts; it has no audit
-domain or scheduler dependency. Exact proposal recovery identity and sidecar
-recovery validation remain the next Phase 5 tasks.
+domain or scheduler dependency.
 Proposal sidecars now carry one exact execution identity over capability,
 semantic unit input, manifest and selected sources, context spec, resolver,
 declared selectors, worker implementation/definition, prompt, and response
@@ -533,8 +533,7 @@ the unchanged APM prompt, bundle-to-message transformation, response schema,
 template and structured-context semantic checks, placeholder normalization,
 and one bounded repair. The worker is tested entirely with constructed bundles
 and has no workspace, transaction, context-resolver, store, or scheduler
-access. The old live caller remains only until the Phase 5 vertical-slice
-switch.
+access.
 The matching `executors.planning:planning.apm` executor now owns APM domain
 validation, the exact planning-context parent guard, revisioned mutation,
 generated-content replacement, auditor-edit preservation, artifact
@@ -549,6 +548,9 @@ readiness. Workflow units project the three durable sidecar references for UI
 and recovery. The former APM caller, prompt, validator, writer, and quality
 helpers have been deleted from the runner-era modules; the workflow runner now
 adapts only runtime activity, approval, conflict, and artifact projections.
+Semantic unit IDs are percent-encoded into portable filenames, including
+Windows-reserved characters, while the original semantic ID remains inside
+each integrity-checked reference and payload.
 
 ### Phase 1 Deletion Boundary
 

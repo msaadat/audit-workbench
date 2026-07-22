@@ -204,6 +204,36 @@ def test_pipeline_orders_manifest_worker_proposal_approval_executor_receipt_read
     assert proposal["proposal"]["apm_markdown"] == "# Auditor-edited APM"
 
 
+def test_pipeline_percent_encodes_windows_reserved_semantic_unit_characters():
+    workspace = workspaces.create_workspace("Portable unit sidecars")
+    events = []
+    pipeline, run = _pipeline(workspace, events)
+    request = UnitPipelineRequest(
+        **{**_request(workspace).__dict__, "unit_id": "planning.apm:workspace"}
+    )
+
+    outcome = pipeline.run(
+        request,
+        context_provider=lambda: _context(unit=request.unit_id),
+        context_identity_provider=_context_identity,
+        target=workspace,
+    )
+
+    assert outcome.manifest_reference["path"] == (
+        "contexts/planning.apm%3Aworkspace.json"
+    )
+    assert outcome.proposal_reference["path"] == (
+        "proposals/planning.apm%3Aworkspace.json"
+    )
+    assert outcome.receipt_reference["path"] == (
+        "receipts/planning.apm%3Aworkspace.json"
+    )
+    run_root = store.run_dir(workspace, run["id"])
+    assert (run_root / outcome.manifest_reference["path"]).is_file()
+    assert (run_root / outcome.proposal_reference["path"]).is_file()
+    assert (run_root / outcome.receipt_reference["path"]).is_file()
+
+
 def test_pipeline_persists_proposal_before_rejected_approval_and_skips_executor():
     workspace = workspaces.create_workspace("Rejected unit pipeline")
     events = []

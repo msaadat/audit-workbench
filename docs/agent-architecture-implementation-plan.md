@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 5 (in progress).
-- Current task: `P5.8` (not started).
-- Last completed task: `P5.7`.
+- Current phase: Phase 6 (not started).
+- Current task: `P6.1` (not started).
+- Last completed task: `P5.8`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,8 +53,8 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.8` |
-| 6 | Pending Phase 5 gate | `P6.1` |
+| 5 | Complete | — |
+| 6 | Not started | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -660,6 +660,23 @@ status notes below.
   `prompts`. Focused verification passed `115` planning, workflow, executor,
   worker, and pipeline tests. The live unit payload gained the durable receipt
   sidecar reference. The exact next task is `P5.8`.
+- `P5.8` completed on 2026-07-22. A live APM interruption test now proves that
+  restart after exact proposal persistence completes through reconciliation,
+  executor, receipt, and readiness without another provider call. The phase
+  gate also proves proposal-before-approval ordering, accepted-approval resume,
+  parent and auditor-edit conflicts, exact identity rejection, postcondition
+  receipt recovery, bundle-only worker isolation, executor model isolation, and
+  deletion of the runner-owned APM caller/writer. Windows-reserved semantic
+  unit characters are now percent-encoded consistently across context,
+  proposal, and receipt paths; the previously failing manifest tests and a new
+  end-to-end sidecar test pass. The Phase 5 focused selection passed `144`
+  tests, the complete agent/runtime group passed `218`, and the frontend
+  type-check and production build passed. Sequential repository coverage
+  passed `629` of `630` backend tests; the remaining intake assertion is
+  outside this migration and was made obsolete during this task by concurrent
+  user commit `538af17`, which intentionally removed table-role
+  classification without changing its old test. That user-owned change was
+  preserved. Phase 5 is complete and the exact next task is `P6.1`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1178,7 +1195,7 @@ all audit stages.
   no model dependency.
 - [x] `P5.7` Switch only `planning.apm_ready` to the registered pipeline,
   remove its old writer, and preserve payload and UI projections.
-- [ ] `P5.8` Prove no rebilling after proposal persistence, conflict behavior,
+- [x] `P5.8` Prove no rebilling after proposal persistence, conflict behavior,
   approval ordering, and the APM vertical-slice exit gate.
 
 **Work:**

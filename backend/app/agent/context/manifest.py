@@ -133,9 +133,10 @@ def manifest_identity(manifest: ContextManifest) -> str:
 
 
 def _unit_filename(unit_id: str) -> str:
-    # Unit IDs are semantic and may contain colons.  Percent-encoding path
-    # separators keeps the one-unit/one-file layout without lossy slugging.
-    filename = quote(unit_id, safe="._-:")
+    # Unit IDs are semantic and may contain Windows-reserved characters such as
+    # colons. Percent-encoding them keeps the one-unit/one-file layout portable
+    # without lossy slugging.
+    filename = quote(unit_id, safe="._-")
     if filename in {".", ".."}:
         filename = "".join(f"%{byte:02X}" for byte in unit_id.encode("utf-8"))
     return f"{filename}.json"

@@ -1243,6 +1243,15 @@ export type WorkflowUnitStatus =
   | 'awaiting_input' | 'awaiting_confirmation' | 'conflict'
   | 'skipped' | 'cancelled'
 
+export interface WorkflowSidecarReference {
+  path: string
+  sha1?: string
+  unit_id?: string
+  manifest_hash?: string
+  payload_hash?: string
+  receipt_hash?: string
+}
+
 export interface WorkflowUnit {
   id: string
   kind: string
@@ -1252,7 +1261,9 @@ export interface WorkflowUnit {
   status: WorkflowUnitStatus
   attempts: number
   input_sha1: string
-  proposal_sidecar: { sha1: string; path: string } | null
+  context_manifest: WorkflowSidecarReference | null
+  proposal_sidecar: WorkflowSidecarReference | null
+  receipt_sidecar: WorkflowSidecarReference | null
   result_refs: string[]
   error: string | null
   started_at: string | null

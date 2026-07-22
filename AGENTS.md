@@ -89,10 +89,15 @@ backend/app/
 `- agent/
    |- runtime/                 - RunRuntime contract and active durable-run
    |                             implementation, restart-safe auditor response
-   |                             transitions, and shared ModelGateway
+   |                             transitions, shared ModelGateway, and the
+   |                             runner-independent unit pipeline
    |- context/                 - normalized context declarations, content-free
    |                             manifest identity/persistence, local bundle
    |                             models, and validated preset/selector registries
+   |- workers/                 - immutable model-worker contracts, registry,
+   |                             bounded validation/repair, and planning worker
+   |- executors/               - deterministic mutation/reconciliation
+   |                             contracts, registry, receipts, and APM executor
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners
@@ -293,6 +298,18 @@ BaseRunner
   schema identity changes. Existing usable artifacts still bypass resolution;
   explicit force resolves current candidates, and no automatic freshness
   monitoring was added.
+- Phase 5 completed with immutable, hash-identified worker and executor
+  contracts plus a runner-independent unit pipeline. The pipeline persists the
+  context manifest before a model call, persists an exact-identity proposal
+  before approval or mutation, reconciles interrupted commits, persists a
+  postcondition receipt, and reevaluates readiness last. The live
+  `planning.apm_ready` capability is the first vertical slice: its registered
+  worker receives only the resolved local bundle, and its registered executor
+  owns parent-guarded workspace mutation and auditor-edit preservation. Resume
+  after proposal persistence does not rebill; incompatible context, selector,
+  prompt, worker, schema, capability, or unit identities regenerate with stable
+  rejection reasons. Workflow units project content-free context, proposal,
+  and receipt references; the former APM caller and writer paths were removed.
 
 ### Known duplication
 

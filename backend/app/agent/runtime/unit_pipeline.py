@@ -87,7 +87,7 @@ def _unit_filename(unit_id: str) -> str:
     value = str(unit_id or "").strip()
     if not value:
         raise ValueError("Pipeline unit_id must be non-empty.")
-    filename = quote(value, safe="._-:")
+    filename = quote(value, safe="._-")
     if filename in {".", ".."}:
         filename = "".join(f"%{byte:02X}" for byte in value.encode("utf-8"))
     return f"{filename}.json"

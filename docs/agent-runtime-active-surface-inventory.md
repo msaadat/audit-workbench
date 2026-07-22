@@ -176,11 +176,18 @@ copying extraction, search, analysis, pack-index, or profiler logic. Profile
 candidates omit category literals and row previews, while the context models
 structurally reject `table_rows` candidates, selections, and bundle items. The
 active `planning.apm_ready` workflow capability now uses this boundary for
-every APM model input, persists the content-free manifest before invocation,
-and calls a bundle-only worker with no workspace access. Its proposal recovery
-identity includes the manifest, spec, resolver, selector definitions, prompt,
-worker, schemas, capability declaration, and unit input; mismatches regenerate
-rather than reuse the sidecar.
+every APM model input and enters the runner-independent `UnitPipeline`. The
+pipeline invokes the registered bundle-only `planning.apm` worker, persists the
+exact-identity proposal before approval, commits through the registered
+deterministic APM executor, persists its postcondition receipt, and reevaluates
+readiness last. Its proposal recovery identity includes the manifest, spec,
+resolver, selector definitions and selected sources, prompt, worker, schemas,
+capability declaration, and unit input; mismatches regenerate rather than
+reuse the sidecar. Compatible proposals resume without another provider call,
+while commit-before-receipt recovery reconciles the workspace before any
+repeated mutation. Workflow units durably project context, proposal, and
+receipt references. The old runner-owned APM prompt, caller, validator, writer,
+and quality helper are no longer active surfaces.
 Context policy is declaration-only: registered application capability and
 preset definitions are authoritative, with no per-run, workspace, API, or
 frontend auditor override. Auditor source curation and explicit regeneration
