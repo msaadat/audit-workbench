@@ -13,7 +13,12 @@ from urllib.parse import quote
 from ...workspaces import WorkspaceError, write_json_atomic
 from .. import store
 from ..context import ContextBundle, ContextManifest
-from ..executors import ExecutorReceipt, ExecutorRegistry, ExecutorRequest
+from ..executors import (
+    ExecutorDefinition,
+    ExecutorReceipt,
+    ExecutorRegistry,
+    ExecutorRequest,
+)
 from ..workers import WorkerRegistry, WorkerRequest
 from .model_gateway import ModelGateway
 from .run_runtime import RunRuntime
@@ -21,6 +26,14 @@ from .run_runtime import RunRuntime
 
 class UnitPipelineError(RuntimeError):
     """A unit could not complete the declared pipeline contract."""
+
+
+class UnitPipelineConflict(UnitPipelineError):
+    """Recovery found a changed parent or committed target."""
+
+
+class UnitSidecarValidationError(WorkspaceError):
+    """A semantic-unit sidecar failed shape or integrity validation."""
 
 
 _SHA256_PREFIX = "sha256:"
@@ -106,17 +119,43 @@ class UnitSidecarStore:
     ) -> dict[str, str]:
         return self._persist("proposals", unit_id, payload)
 
-    def load_proposal(self, unit_id: str) -> Mapping[str, Any] | None:
-        path = self._folder("proposals") / _unit_filename(unit_id)
+    def _load(
+        self,
+        kind: str,
+        unit_id: str,
+        reference: Mapping[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        path = self._folder(kind) / _unit_filename(unit_id)
         if not path.is_file():
             return None
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise WorkspaceError("Unit proposal sidecar is invalid.") from error
+            raise UnitSidecarValidationError(
+                f"Unit {kind[:-1]} sidecar is invalid."
+            ) from error
         if not isinstance(value, dict):
-            raise WorkspaceError("Unit proposal sidecar must contain an object.")
+            raise UnitSidecarValidationError(
+                f"Unit {kind[:-1]} sidecar must contain an object."
+            )
+        if reference is not None:
+            expected_path = f"{kind}/{path.name}"
+            if (
+                reference.get("path") != expected_path
+                or reference.get("unit_id") != unit_id
+                or reference.get("payload_hash") != _sha256(value)
+            ):
+                raise UnitSidecarValidationError(
+                    f"Unit {kind[:-1]} sidecar reference is incompatible."
+                )
         return value
+
+    def load_proposal(
+        self,
+        unit_id: str,
+        reference: Mapping[str, str] | None = None,
+    ) -> Mapping[str, Any] | None:
+        return self._load("proposals", unit_id, reference)
 
     def persist_receipt(
         self,
@@ -129,6 +168,38 @@ class UnitSidecarStore:
         reference = self._persist("receipts", unit_id, payload)
         reference["receipt_hash"] = receipt.receipt_hash
         return reference
+
+    def load_receipt(
+        self,
+        unit_id: str,
+        *,
+        request: ExecutorRequest,
+        definition: ExecutorDefinition,
+        reference: Mapping[str, str] | None = None,
+    ) -> ExecutorReceipt | None:
+        payload = self._load("receipts", unit_id, reference)
+        if payload is None:
+            return None
+        receipt_hash = payload.pop("receipt_hash", None)
+        try:
+            receipt = ExecutorReceipt.from_dict(
+                payload,
+                request=request,
+                definition=definition,
+            )
+        except (TypeError, ValueError) as error:
+            raise UnitSidecarValidationError(
+                "Unit receipt sidecar contract is invalid."
+            ) from error
+        if receipt_hash != receipt.receipt_hash:
+            raise UnitSidecarValidationError(
+                "Unit receipt sidecar hash does not match its payload."
+            )
+        if reference is not None and reference.get("receipt_hash") != receipt.receipt_hash:
+            raise UnitSidecarValidationError(
+                "Unit receipt reference hash does not match its payload."
+            )
+        return receipt
 
 
 @dataclass(frozen=True)
@@ -143,6 +214,8 @@ class UnitPipelineRequest:
     expected_parents: Mapping[str, str]
     capability_definition_hash: str
     approval_kind: str | None = None
+    proposal_reference: Mapping[str, str] | None = None
+    receipt_reference: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +228,8 @@ class UnitPipelineOutcome:
     status: str
     proposal_reused: bool = False
     proposal_reuse_rejection_reasons: tuple[str, ...] = ()
+    receipt_reused: bool = False
+    executor_reconciled: bool = False
 
 
 @dataclass(frozen=True)
@@ -363,9 +438,15 @@ class UnitPipeline:
             response_schema_hash=worker_definition.response_schema.schema_hash,
         )
 
-        cached = self.sidecars.load_proposal(request.unit_id)
-        proposal_reused = False
         rejection_reasons: tuple[str, ...] = ()
+        try:
+            cached = self.sidecars.load_proposal(
+                request.unit_id, request.proposal_reference
+            )
+        except UnitSidecarValidationError:
+            cached = None
+            rejection_reasons = ("proposal_sidecar_invalid",)
+        proposal_reused = False
         proposal_payload: dict[str, Any]
         if cached is not None:
             try:
@@ -427,7 +508,7 @@ class UnitPipeline:
             }
 
         if approval_provider is not None and proposal_payload.get("status") != "accepted":
-            accepted = approval_provider(worker_result.proposal)
+            accepted = approval_provider(proposal)
             if accepted is None:
                 return UnitPipelineOutcome(
                     manifest_reference=manifest_reference,
@@ -460,8 +541,48 @@ class UnitPipeline:
             expected_parents=request.expected_parents,
             activity=request.activity,
         )
-        receipt = self.executors.execute(executor_request, target)
-        receipt_reference = self.sidecars.persist_receipt(request.unit_id, receipt)
+        executor_definition = self.executors.get(request.executor_id)
+        try:
+            receipt = self.sidecars.load_receipt(
+                request.unit_id,
+                request=executor_request,
+                definition=executor_definition,
+                reference=request.receipt_reference,
+            )
+        except UnitSidecarValidationError:
+            receipt = None
+        receipt_reused = receipt is not None
+        executor_reconciled = False
+        reconciliation = self.executors.reconcile(executor_request, target)
+        if receipt is not None:
+            if reconciliation.disposition != "already_applied":
+                raise UnitPipelineConflict(
+                    reconciliation.reason
+                    or "Persisted receipt postcondition no longer holds."
+                )
+            receipt_reference = request.receipt_reference or {
+                "path": f"receipts/{_unit_filename(request.unit_id)}",
+                "unit_id": request.unit_id,
+                "payload_hash": _sha256(
+                    {**receipt.to_dict(), "receipt_hash": receipt.receipt_hash}
+                ),
+                "receipt_hash": receipt.receipt_hash,
+            }
+        elif reconciliation.disposition == "already_applied":
+            receipt = self.executors.receipt_for_reconciliation(
+                executor_request, reconciliation
+            )
+            receipt_reference = self.sidecars.persist_receipt(
+                request.unit_id, receipt
+            )
+            executor_reconciled = True
+        elif reconciliation.disposition == "conflict":
+            raise UnitPipelineConflict(
+                reconciliation.reason or "Executor reconciliation found a conflict."
+            )
+        else:
+            receipt = self.executors.execute(executor_request, target)
+            receipt_reference = self.sidecars.persist_receipt(request.unit_id, receipt)
         readiness = readiness_provider() if readiness_provider is not None else None
         if readiness is not None:
             satisfied = (
@@ -483,6 +604,8 @@ class UnitPipeline:
             status="succeeded",
             proposal_reused=proposal_reused,
             proposal_reuse_rejection_reasons=rejection_reasons,
+            receipt_reused=receipt_reused,
+            executor_reconciled=executor_reconciled,
         )
 
 
@@ -493,8 +616,10 @@ __all__ = [
     "ProposalExecutionIdentity",
     "ReadinessProvider",
     "UnitPipeline",
+    "UnitPipelineConflict",
     "UnitPipelineError",
     "UnitPipelineOutcome",
     "UnitPipelineRequest",
     "UnitSidecarStore",
+    "UnitSidecarValidationError",
 ]

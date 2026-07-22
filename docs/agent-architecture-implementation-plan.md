@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 5 (in progress).
-- Current task: `P5.4` (not started).
-- Last completed task: `P5.3A`.
+- Current task: `P5.5` (not started).
+- Last completed task: `P5.4`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.4` |
+| 5 | In progress | `P5.5` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -607,6 +607,20 @@ status notes below.
   gained no freshness or currency identity. Focused verification passed `50`
   tests across the pipeline, executor, and worker contract suites. No live
   capability or frontend contract changed. The exact next task is `P5.4`.
+- `P5.4` completed on 2026-07-22. Proposal and receipt loads now validate the
+  semantic unit path, optional durable reference and payload hash, exact
+  proposal execution identity, proposal hash, receipt hash, executor
+  definition, request identity, concurrency guard, revisions, and artifact
+  postconditions. The recovery matrix covers normal start, an already
+  persisted manifest, an interrupted provider call, a durable proposal,
+  proposed and accepted approval states, commit completion before receipt,
+  receipt completion before unit folding, corrupted sidecars, and changed
+  parent/target conflict. A commit without a receipt is reconciled before any
+  retry; a valid receipt is reused only while its postcondition still holds;
+  corrupt sidecars regenerate or reconcile without silently overwriting a
+  changed target. Focused verification passed `57` pipeline, executor, and
+  worker contract tests, and backend compile validation passed. No live
+  capability or frontend contract changed. The exact next task is `P5.5`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1116,7 +1130,7 @@ all audit stages.
 - [x] `P5.3A` Implement and persist exact proposal execution identities with
   explicit rejection reasons for incompatible sidecar reuse; do not introduce
   a committed-artifact freshness identity.
-- [ ] `P5.4` Add proposal and receipt sidecar validation and recovery tests for
+- [x] `P5.4` Add proposal and receipt sidecar validation and recovery tests for
   every interruption boundary in the recovery matrix.
 - [ ] `P5.5` Extract the existing APM prompt and semantic validation into a
   planning worker that has no workspace access.

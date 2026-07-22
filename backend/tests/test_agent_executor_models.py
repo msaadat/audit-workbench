@@ -349,6 +349,25 @@ def test_receipt_preserves_nested_json_and_validates_direct_construction():
         )
 
 
+def test_receipt_round_trip_revalidates_request_definition_and_payload():
+    request = _request()
+    definition = _definition()
+    receipt = ExecutorReceipt(
+        request=request,
+        definition=definition,
+        result=_result(request),
+    )
+
+    assert ExecutorReceipt.from_dict(
+        receipt.to_dict(), request=request, definition=definition
+    ) == receipt
+    tampered = {**receipt.to_dict(), "proposal_hash": HASH_B}
+    with pytest.raises(ValueError, match="identity does not match"):
+        ExecutorReceipt.from_dict(
+            tampered, request=request, definition=definition
+        )
+
+
 @pytest.mark.parametrize(
     "outcome, message",
     [

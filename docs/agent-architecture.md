@@ -521,6 +521,13 @@ schema. Compatible proposals bypass the provider; incompatible proposals are
 regenerated with stable field-level rejection reasons. This identity applies
 only before commit and is deliberately not reused as a freshness or currency
 assessment for committed artifacts.
+Proposal and receipt sidecar reads now validate their semantic paths,
+references, payload hashes, component identities, proposal/receipt hashes,
+concurrency guards, and postconditions. Recovery distinguishes an interrupted
+provider call, durable proposed or accepted approval, commit-before-receipt,
+and receipt-before-unit-folding. Executors reconcile before any repeated
+mutation; a persisted receipt succeeds only if its postcondition still holds,
+while changed targets become conflicts.
 
 ### Phase 1 Deletion Boundary
 

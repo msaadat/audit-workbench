@@ -65,7 +65,22 @@ def _context(capability="planning.apm_ready", unit="planning.apm"):
     )
 
 
-def _pipeline(workspace, events, *, executor=None):
+def _committed_result(request, *, before=None, after=None):
+    revision_before = request.expected_revision if before is None else before
+    revision_after = revision_before + 1 if after is None else after
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=revision_after,
+        artifact_refs=["planning:apm"],
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes={"planning:apm": POST},
+    )
+
+
+def _pipeline(workspace, events, *, executor=None, reconciler=None):
     run = store.new_command_run(
         workspace,
         "auto",
@@ -96,16 +111,7 @@ def _pipeline(workspace, events, *, executor=None):
 
     def default_executor(request, target):
         events.append("executor")
-        return ExecutorResult(
-            executor_id=request.executor_id,
-            capability_id=request.capability_id,
-            unit_id=request.unit_id,
-            workspace_revision_before=request.expected_revision,
-            workspace_revision_after=request.expected_revision + 1,
-            artifact_refs=["planning:apm"],
-            applied_parents=dict(request.expected_parents),
-            postcondition_hashes={"planning:apm": POST},
-        )
+        return _committed_result(request)
 
     executors.register(
         ExecutorDefinition(
@@ -114,7 +120,8 @@ def _pipeline(workspace, events, *, executor=None):
             reconciliation_hash=HASH_B,
             concurrency=ExecutorConcurrency("parent_hashes"),
             implementation=executor or default_executor,
-            reconciler=lambda request, target: ExecutorReconciliation("not_applied"),
+            reconciler=reconciler
+            or (lambda request, target: ExecutorReconciliation("not_applied")),
         )
     )
     return (
@@ -263,6 +270,7 @@ def test_exact_proposal_identity_reuses_sidecar_without_worker_rebilling():
         context_identity_provider=_context_identity,
         target=workspace,
     )
+    (store.run_dir(workspace, run["id"]) / "receipts" / "planning.apm.json").unlink()
 
     second_events = []
     runtime = DefaultRunRuntime(
@@ -306,6 +314,7 @@ def test_proposal_reuse_reports_exact_incompatibility_reason(change, expected_re
         context_identity_provider=_context_identity,
         target=workspace,
     )
+    (store.run_dir(workspace, run["id"]) / "receipts" / "planning.apm.json").unlink()
     events.clear()
 
     next_request = request
@@ -373,6 +382,278 @@ def _context_with_resolver(resolver_hash):
         ),
         bundle,
     )
+
+
+def test_recovery_after_manifest_or_interrupted_provider_calls_worker_again():
+    workspace = workspaces.create_workspace("Interrupted provider")
+    events = []
+    pipeline, run = _pipeline(workspace, events)
+    calls = {"worker": 0}
+    original = pipeline.workers.get("planning.apm")
+
+    def interrupted(request, gateway, attempt):
+        calls["worker"] += 1
+        if calls["worker"] == 1:
+            raise RuntimeError("provider interrupted")
+        return "# Recovered APM"
+
+    pipeline.workers._definitions["planning.apm"] = WorkerDefinition(
+        worker_id=original.worker_id,
+        implementation_hash=original.implementation_hash,
+        prompt_hash=original.prompt_hash,
+        response_schema=original.response_schema,
+        repair_policy=original.repair_policy,
+        implementation=interrupted,
+    )
+    request = _request(workspace)
+
+    with pytest.raises(RuntimeError, match="provider interrupted"):
+        pipeline.run(
+            request,
+            context_provider=_context,
+            context_identity_provider=_context_identity,
+            target=workspace,
+        )
+    run_root = store.run_dir(workspace, run["id"])
+    assert (run_root / "contexts" / "planning.apm.json").is_file()
+    assert not (run_root / "proposals" / "planning.apm.json").exists()
+
+    outcome = pipeline.run(
+        request,
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=workspace,
+    )
+    assert outcome.status == "succeeded"
+    assert calls["worker"] == 2
+
+
+def test_recovery_restores_proposed_approval_without_rebilling_worker():
+    workspace = workspaces.create_workspace("Approval recovery")
+    events = []
+    pipeline, _run = _pipeline(workspace, events)
+    request = _request(workspace)
+    first = pipeline.run(
+        request,
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=workspace,
+        approval_provider=lambda proposal: None,
+    )
+    events.clear()
+    approvals = []
+
+    second = pipeline.run(
+        UnitPipelineRequest(
+            **{**request.__dict__, "proposal_reference": first.proposal_reference}
+        ),
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=workspace,
+        approval_provider=lambda proposal: approvals.append(dict(proposal)) or proposal,
+    )
+
+    assert events == ["executor"]
+    assert len(approvals) == 1
+    assert second.proposal_reused is True
+
+
+def test_recovery_after_accepted_proposal_skips_approval_and_retries_commit():
+    workspace = workspaces.create_workspace("Accepted proposal recovery")
+    events = []
+    calls = {"executor": 0}
+
+    def executor(request, target):
+        calls["executor"] += 1
+        if calls["executor"] == 1:
+            raise RuntimeError("stopped before commit")
+        return _committed_result(request)
+
+    pipeline, _run = _pipeline(workspace, events, executor=executor)
+    request = _request(workspace)
+    with pytest.raises(RuntimeError, match="stopped before commit"):
+        pipeline.run(
+            request,
+            context_provider=_context,
+            context_identity_provider=_context_identity,
+            target=workspace,
+            approval_provider=lambda proposal: proposal,
+        )
+
+    outcome = pipeline.run(
+        request,
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=workspace,
+        approval_provider=lambda proposal: pytest.fail("approval must not repeat"),
+    )
+    assert outcome.status == "succeeded"
+    assert outcome.proposal_reused is True
+    assert calls["executor"] == 2
+
+
+def test_recovery_reconciles_commit_without_receipt_before_retrying_executor():
+    workspace = workspaces.create_workspace("Commit reconciliation")
+    events = []
+    target = {"applied": False, "conflict": False}
+    calls = {"executor": 0}
+
+    def executor(request, state):
+        calls["executor"] += 1
+        state["applied"] = True
+        raise RuntimeError("crash after commit")
+
+    def reconciler(request, state):
+        if state["applied"]:
+            return ExecutorReconciliation(
+                "already_applied", result=_committed_result(request)
+            )
+        return ExecutorReconciliation("not_applied")
+
+    pipeline, run = _pipeline(
+        workspace, events, executor=executor, reconciler=reconciler
+    )
+    request = _request(workspace)
+    with pytest.raises(RuntimeError, match="crash after commit"):
+        pipeline.run(
+            request,
+            context_provider=_context,
+            context_identity_provider=_context_identity,
+            target=target,
+        )
+    assert not (store.run_dir(workspace, run["id"]) / "receipts").exists()
+
+    outcome = pipeline.run(
+        request,
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=target,
+    )
+    assert calls["executor"] == 1
+    assert outcome.executor_reconciled is True
+    assert outcome.receipt.reconciled is True
+
+
+def test_recovery_reuses_valid_receipt_only_when_postcondition_still_holds():
+    workspace = workspaces.create_workspace("Receipt recovery")
+    events = []
+    target = {"applied": False, "conflict": False}
+    calls = {"executor": 0}
+
+    def executor(request, state):
+        calls["executor"] += 1
+        state["applied"] = True
+        return _committed_result(request)
+
+    def reconciler(request, state):
+        if state["applied"]:
+            return ExecutorReconciliation(
+                "already_applied", result=_committed_result(request)
+            )
+        if state["conflict"]:
+            return ExecutorReconciliation("conflict", reason="target changed")
+        return ExecutorReconciliation("not_applied")
+
+    pipeline, _run = _pipeline(
+        workspace, events, executor=executor, reconciler=reconciler
+    )
+    request = _request(workspace)
+    first = pipeline.run(
+        request,
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=target,
+    )
+    events.clear()
+    second = pipeline.run(
+        UnitPipelineRequest(
+            **{
+                **request.__dict__,
+                "proposal_reference": first.proposal_reference,
+                "receipt_reference": first.receipt_reference,
+            }
+        ),
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=target,
+    )
+    assert calls["executor"] == 1
+    assert events == []
+    assert second.receipt_reused is True
+
+    target["applied"] = False
+    target["conflict"] = True
+    with pytest.raises(UnitPipelineError, match="target changed"):
+        pipeline.run(
+            UnitPipelineRequest(
+                **{
+                    **request.__dict__,
+                    "proposal_reference": first.proposal_reference,
+                    "receipt_reference": first.receipt_reference,
+                }
+            ),
+            context_provider=_context,
+            context_identity_provider=_context_identity,
+            target=target,
+        )
+    assert calls["executor"] == 1
+
+
+def test_corrupt_proposal_regenerates_and_corrupt_receipt_reconciles():
+    workspace = workspaces.create_workspace("Sidecar validation")
+    events = []
+    target = {"applied": False}
+
+    def executor(request, state):
+        state["applied"] = True
+        events.append("executor")
+        return _committed_result(request)
+
+    def reconciler(request, state):
+        return (
+            ExecutorReconciliation(
+                "already_applied", result=_committed_result(request)
+            )
+            if state["applied"]
+            else ExecutorReconciliation("not_applied")
+        )
+
+    pipeline, run = _pipeline(
+        workspace, events, executor=executor, reconciler=reconciler
+    )
+    request = _request(workspace)
+    first = pipeline.run(
+        request,
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=target,
+    )
+    run_root = store.run_dir(workspace, run["id"])
+    proposal_path = run_root / "proposals" / "planning.apm.json"
+    receipt_path = run_root / "receipts" / "planning.apm.json"
+    proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+    proposal["proposal"]["apm_markdown"] = "tampered"
+    proposal_path.write_text(json.dumps(proposal), encoding="utf-8")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["receipt_hash"] = HASH_A
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    events.clear()
+
+    outcome = pipeline.run(
+        UnitPipelineRequest(
+            **{
+                **request.__dict__,
+                "proposal_reference": first.proposal_reference,
+                "receipt_reference": first.receipt_reference,
+            }
+        ),
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=target,
+    )
+    assert events == ["worker"]
+    assert "proposal_sidecar_invalid" in outcome.proposal_reuse_rejection_reasons
+    assert outcome.executor_reconciled is True
 
 
 def test_unit_pipeline_module_has_no_scheduler_or_audit_domain_dependency():

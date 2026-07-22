@@ -574,6 +574,55 @@ class ExecutorReceipt:
     def receipt_hash(self) -> str:
         return _sha256_json(self.to_dict(), "executor_receipt")
 
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        request: ExecutorRequest,
+        definition: ExecutorDefinition,
+    ) -> "ExecutorReceipt":
+        if not isinstance(value, Mapping):
+            raise ValueError("executor_receipt must be an object.")
+        expected_fields = {
+            "executor_id",
+            "executor_definition_hash",
+            "capability_id",
+            "unit_id",
+            "proposal_hash",
+            "concurrency_mode",
+            "expected_revision",
+            "expected_parents",
+            "workspace_revision_before",
+            "workspace_revision_after",
+            "artifact_refs",
+            "postcondition_hashes",
+            "output",
+            "reconciled",
+        }
+        if set(value) != expected_fields:
+            raise ValueError("executor_receipt fields are invalid.")
+        result = ExecutorResult(
+            executor_id=value.get("executor_id"),
+            capability_id=value.get("capability_id"),
+            unit_id=value.get("unit_id"),
+            workspace_revision_before=value.get("workspace_revision_before"),
+            workspace_revision_after=value.get("workspace_revision_after"),
+            artifact_refs=value.get("artifact_refs"),
+            applied_parents=value.get("expected_parents"),
+            postcondition_hashes=value.get("postcondition_hashes"),
+            output=value.get("output"),
+        )
+        receipt = cls(
+            request=request,
+            definition=definition,
+            result=result,
+            reconciled=value.get("reconciled"),
+        )
+        if receipt.to_dict() != dict(value):
+            raise ValueError("executor_receipt identity does not match its request.")
+        return receipt
+
 
 class ExecutorRegistry:
     """Validated registry and common execution/reconciliation boundary."""
