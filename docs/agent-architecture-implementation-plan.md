@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 6 (in progress).
-- Current task: `P6.4` (not started).
-- Last completed task: `P6.3`.
+- Current task: `P6.5` (not started).
+- Last completed task: `P6.4`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -54,7 +54,7 @@ status notes below.
 | 3 | Complete | — |
 | 4 | Complete | — |
 | 5 | Complete | — |
-| 6 | In progress | `P6.4` |
+| 6 | In progress | `P6.5` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
@@ -721,6 +721,22 @@ status notes below.
   serialization was active, and the first timed-out concurrency test passed
   alone on immediate rerun. The full Phase 6 gate remains scheduled for
   `P6.8`. The exact next task is `P6.4`.
+- `P6.4` completed on 2026-07-22. The extracted scheduler no longer accepts a
+  raw stage-handler mapping. A validated, hash-identified
+  `CapabilityExecutionRegistry` now requires exactly one execution binding for
+  every declared capability and rejects duplicates, missing entries, and
+  unknown entries. Pipeline-backed bindings create detached
+  `BoundUnitPipeline` requests; the scheduler records manifest, proposal, and
+  receipt references at each durability boundary and folds proposal reuse,
+  approval rejection, conflicts, artifact references, and readiness through
+  the Phase 5 `UnitPipeline`, whose injected context, worker, and executor
+  registries remain authoritative. Explicit transitional batch bindings are
+  retained only for capability families scheduled for Phase 7 migration, so
+  no domain handler is hard-coded in the runtime scheduler. Focused
+  verification passed `29` synthetic scheduler and unit-pipeline tests,
+  including a real registry-to-context-to-worker-to-executor-to-receipt
+  scheduler path. No active dispatch or frontend payload changed. The exact
+  next task is `P6.5`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1306,7 +1322,7 @@ execution entirely registry-driven.
 - [x] `P6.3` Implement normalized `reuse_existing` and `force` generation modes
   and label reused artifact currency as not assessed; delete legacy
   `missing_or_stale` scheduling rather than adapting it.
-- [ ] `P6.4` Replace domain handler dispatch with capability, worker, executor,
+- [x] `P6.4` Replace domain handler dispatch with capability, worker, executor,
   and context registry lookup through the Phase 5 unit pipeline.
 - [ ] `P6.5` Inject routing results into the scheduler and remove scheduler
   fallback calls to the action interpreter; leave final routing consolidation

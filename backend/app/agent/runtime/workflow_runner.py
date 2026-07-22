@@ -15,9 +15,16 @@ from typing import Any
 
 from .. import workflow
 from .run_runtime import Cancelled, LimitExceeded, RunRuntime
+from .unit_pipeline import (
+    ContextIdentityProvider,
+    ContextProvider,
+    UnitPipeline,
+    UnitPipelineConflict,
+    UnitPipelineOutcome,
+    UnitPipelineRequest,
+)
 
 
-StageHandler = Callable[[dict[str, Any], list[dict[str, Any]]], None]
 RefreshSubject = Callable[[], Any]
 RefreshLimits = Callable[[Any], None]
 DependencyPolicy = Callable[[str, str, str], bool]
@@ -37,6 +44,98 @@ FinishEvaluator = Callable[
 ]
 
 
+@dataclass(frozen=True)
+class BoundUnitPipeline:
+    """All local providers needed to execute one registered pipeline unit."""
+
+    request: UnitPipelineRequest
+    context_provider: ContextProvider
+    context_identity_provider: ContextIdentityProvider
+    target: object
+    approval_provider: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None
+    readiness_provider: Callable[[], object] | None = None
+
+
+PipelineBinder = Callable[
+    [Any, dict[str, Any], workflow.Capability, dict[str, Any], dict[str, Any]],
+    BoundUnitPipeline,
+]
+BatchExecutor = Callable[
+    ["WorkflowRunner", dict[str, Any], list[dict[str, Any]]], None
+]
+
+
+@dataclass(frozen=True)
+class CapabilityExecution:
+    """Hash-identified execution binding for one capability declaration."""
+
+    capability_id: str
+    implementation_hash: str
+    pipeline_binder: PipelineBinder | None = None
+    transitional_batch_executor: BatchExecutor | None = None
+
+    def __post_init__(self) -> None:
+        capability_id = str(self.capability_id or "").strip()
+        implementation_hash = str(self.implementation_hash or "").strip()
+        if not capability_id:
+            raise ValueError("Capability execution requires a capability_id.")
+        if not implementation_hash.startswith("sha256:") or len(implementation_hash) != 71:
+            raise ValueError(
+                "Capability execution implementation_hash must be a sha256 hash."
+            )
+        bindings = sum(
+            value is not None
+            for value in (self.pipeline_binder, self.transitional_batch_executor)
+        )
+        if bindings != 1:
+            raise ValueError(
+                "Capability execution requires exactly one pipeline or transitional binding."
+            )
+        object.__setattr__(self, "capability_id", capability_id)
+        object.__setattr__(self, "implementation_hash", implementation_hash)
+
+    @property
+    def pipeline_backed(self) -> bool:
+        return self.pipeline_binder is not None
+
+
+class CapabilityExecutionRegistry:
+    """Validated lookup boundary between declarations and unit execution."""
+
+    def __init__(self) -> None:
+        self._values: dict[str, CapabilityExecution] = {}
+
+    def register(self, execution: CapabilityExecution) -> CapabilityExecution:
+        if not isinstance(execution, CapabilityExecution):
+            raise ValueError("Execution registry values must be CapabilityExecution.")
+        if execution.capability_id in self._values:
+            raise ValueError(
+                f"Capability execution '{execution.capability_id}' is already registered."
+            )
+        self._values[execution.capability_id] = execution
+        return execution
+
+    def get(self, capability_id: str) -> CapabilityExecution:
+        try:
+            return self._values[str(capability_id)]
+        except KeyError as error:
+            raise ValueError(
+                f"Capability '{capability_id}' has no registered execution."
+            ) from error
+
+    def validate(self, registry: workflow.CapabilityRegistry) -> None:
+        declared = {capability.id for capability in registry.all()}
+        unknown = sorted(set(self._values) - declared)
+        missing = sorted(declared - set(self._values))
+        if unknown or missing:
+            parts = []
+            if missing:
+                parts.append("missing: " + ", ".join(missing))
+            if unknown:
+                parts.append("unknown: " + ", ".join(unknown))
+            raise ValueError("Capability execution registry mismatch (" + "; ".join(parts) + ").")
+
+
 class WorkflowRunner:
     """Schedule a declared capability graph through injected runtime services.
 
@@ -44,8 +143,8 @@ class WorkflowRunner:
     object assessed by capability readiness functions; applications may
     refresh it between stages through ``refresh_subject``.  Stage behavior is
     temporarily injected as handlers so the generic mechanics can be verified
-    before active dispatch changes.  P6.4 replaces that transitional boundary
-    with registered unit-pipeline lookup.
+    before active dispatch changes. Pipeline-backed execution resolves declared
+    context and delegates worker/executor lookup to :class:`UnitPipeline`.
     """
 
     def __init__(
@@ -55,7 +154,8 @@ class WorkflowRunner:
         run: dict[str, Any],
         runtime: RunRuntime,
         registry: workflow.CapabilityRegistry,
-        stage_handlers: Mapping[str, StageHandler],
+        executions: CapabilityExecutionRegistry,
+        unit_pipeline: UnitPipeline | None = None,
         refresh_subject: RefreshSubject | None = None,
         refresh_limits: RefreshLimits | None = None,
         dependency_policy: DependencyPolicy | None = None,
@@ -65,7 +165,11 @@ class WorkflowRunner:
         self.run = run
         self.runtime = runtime
         self.registry = registry
-        self.stage_handlers = dict(stage_handlers)
+        if not isinstance(executions, CapabilityExecutionRegistry):
+            raise ValueError("WorkflowRunner requires a CapabilityExecutionRegistry.")
+        executions.validate(registry)
+        self.executions = executions
+        self.unit_pipeline = unit_pipeline
         self.refresh_subject = refresh_subject
         self.refresh_limits = refresh_limits
         self.dependency_policy = dependency_policy
@@ -321,13 +425,12 @@ class WorkflowRunner:
             )
             self._set_stage(stage, "succeeded" if readiness.satisfied else "blocked")
             return
-        try:
-            handler = self.stage_handlers[capability.id]
-        except KeyError as error:
-            raise ValueError(
-                f"Capability '{capability.id}' has no registered stage handler."
-            ) from error
-        handler(stage, units)
+        execution = self.executions.get(capability.id)
+        if execution.pipeline_backed:
+            self._run_pipeline_units(execution, capability, stage, units)
+        else:
+            assert execution.transitional_batch_executor is not None
+            execution.transitional_batch_executor(self, stage, units)
         final = self._fold_stage(units)
         self._set_stage(stage, final)
         self.runtime.emit(
@@ -338,6 +441,112 @@ class WorkflowRunner:
                 "counts": workflow.stage_counts(stage),
             },
         )
+
+    def _run_pipeline_units(
+        self,
+        execution: CapabilityExecution,
+        capability: workflow.Capability,
+        stage: dict[str, Any],
+        units: list[dict[str, Any]],
+    ) -> None:
+        if self.unit_pipeline is None:
+            raise ValueError(
+                f"Pipeline-backed capability '{capability.id}' requires UnitPipeline."
+            )
+        assert execution.pipeline_binder is not None
+        for unit in sorted(units, key=lambda item: str(item["id"])):
+            if unit.get("status") in {"succeeded", "skipped"}:
+                continue
+            self.runtime.checkpoint()
+            self.set_unit(stage, unit, "running")
+            try:
+                bound = execution.pipeline_binder(
+                    self.subject,
+                    self.run,
+                    capability,
+                    stage,
+                    unit,
+                )
+                if not isinstance(bound, BoundUnitPipeline):
+                    raise ValueError(
+                        "Pipeline binder must return BoundUnitPipeline."
+                    )
+
+                def record(field: str):
+                    def persist(reference: Mapping[str, str]) -> None:
+                        unit[field] = dict(reference)
+                        self.runtime.save()
+
+                    return persist
+
+                outcome = self.unit_pipeline.run(
+                    bound.request,
+                    context_provider=bound.context_provider,
+                    context_identity_provider=bound.context_identity_provider,
+                    target=bound.target,
+                    approval_provider=bound.approval_provider,
+                    readiness_provider=bound.readiness_provider,
+                    on_manifest_persisted=record("context_manifest"),
+                    on_proposal_persisted=record("proposal_sidecar"),
+                    on_receipt_persisted=record("receipt_sidecar"),
+                )
+                self._fold_pipeline_outcome(stage, unit, outcome)
+            except UnitPipelineConflict as error:
+                self._record_pipeline_error_references(unit, error)
+                self.set_unit(stage, unit, "conflict", error=str(error))
+            except (Cancelled, LimitExceeded):
+                raise
+            except Exception as error:
+                self.set_unit(stage, unit, "failed", error=str(error))
+
+    def _fold_pipeline_outcome(
+        self,
+        stage: dict[str, Any],
+        unit: dict[str, Any],
+        outcome: UnitPipelineOutcome,
+    ) -> None:
+        if outcome.proposal_reused:
+            self.runtime.emit(
+                "proposal_reused",
+                {
+                    "stage_id": stage["id"],
+                    "unit_id": unit["id"],
+                    "sidecar": dict(outcome.proposal_reference),
+                },
+            )
+        for reason in outcome.proposal_reuse_rejection_reasons:
+            self.runtime.emit(
+                "proposal_reuse_rejected",
+                {
+                    "stage_id": stage["id"],
+                    "unit_id": unit["id"],
+                    "reason": reason,
+                },
+            )
+        if outcome.status == "approval_rejected":
+            self.set_unit(
+                stage,
+                unit,
+                "blocked",
+                error="The capability proposal was not approved.",
+            )
+            return
+        result_refs = (
+            list(outcome.receipt.artifact_refs) if outcome.receipt is not None else []
+        )
+        self.set_unit(stage, unit, "succeeded", result_refs=result_refs)
+
+    @staticmethod
+    def _record_pipeline_error_references(
+        unit: dict[str, Any], error: UnitPipelineConflict
+    ) -> None:
+        for field, reference in (
+            ("context_manifest", error.manifest_reference),
+            ("proposal_sidecar", error.proposal_reference),
+            ("receipt_sidecar", error.receipt_reference),
+        ):
+            if reference is not None:
+                unit[field] = dict(reference)
 
     @staticmethod
     def _fold_stage(units: list[dict[str, Any]]) -> str:

@@ -13,7 +13,13 @@ from .unit_pipeline import (
     UnitSidecarStore,
     UnitSidecarValidationError,
 )
-from .workflow_runner import FinishProjection, WorkflowRunner
+from .workflow_runner import (
+    BoundUnitPipeline,
+    CapabilityExecution,
+    CapabilityExecutionRegistry,
+    FinishProjection,
+    WorkflowRunner,
+)
 
 __all__ = [
     "Cancelled",
@@ -33,5 +39,8 @@ __all__ = [
     "UnitSidecarStore",
     "UnitSidecarValidationError",
     "FinishProjection",
+    "BoundUnitPipeline",
+    "CapabilityExecution",
+    "CapabilityExecutionRegistry",
     "WorkflowRunner",
 ]

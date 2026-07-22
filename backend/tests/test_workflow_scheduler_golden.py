@@ -11,7 +11,12 @@ import time
 from dataclasses import dataclass
 
 from app.agent import workflow
-from app.agent.runtime.workflow_runner import FinishProjection, WorkflowRunner
+from app.agent.runtime.workflow_runner import (
+    CapabilityExecution,
+    CapabilityExecutionRegistry,
+    FinishProjection,
+    WorkflowRunner,
+)
 
 
 SOURCES_READY = "catalog.sources_ready"
@@ -201,6 +206,24 @@ def synthetic_registry() -> workflow.CapabilityRegistry:
         )
     )
     return registry
+
+
+def synthetic_executions(
+    registry: workflow.CapabilityRegistry,
+    executor,
+) -> CapabilityExecutionRegistry:
+    executions = CapabilityExecutionRegistry()
+    for capability in registry.all():
+        executions.register(
+            CapabilityExecution(
+                capability_id=capability.id,
+                implementation_hash="sha256:" + "1" * 64,
+                transitional_batch_executor=(
+                    lambda _runner, stage, units, execute=executor: execute(stage, units)
+                ),
+            )
+        )
+    return executions
 
 
 def _unit_projection(stages: list[dict]) -> list[tuple[str, list[tuple[str, str, str]]]]:
@@ -490,17 +513,13 @@ def test_extracted_scheduler_materializes_transitions_and_finishes_generically()
                 result_refs=[f"synthetic:{unit['id']}"],
             )
 
-    handlers = {
-        capability.id: complete
-        for capability in synthetic_registry().all()
-    }
     registry = synthetic_registry()
     runner = WorkflowRunner(
         subject=catalog,
         run=run,
         runtime=runtime,
         registry=registry,
-        stage_handlers=handlers,
+        executions=synthetic_executions(registry, complete),
         finish_evaluator=lambda _subject, _workflow, _stages: FinishProjection(
             summary_markdown="# Synthetic catalog complete\n"
         ),
@@ -558,9 +577,7 @@ def test_extracted_scheduler_blocks_dependencies_and_folds_partial_failure():
         run=run,
         runtime=runtime,
         registry=registry,
-        stage_handlers={
-            capability.id: complete_or_fail for capability in registry.all()
-        },
+        executions=synthetic_executions(registry, complete_or_fail),
     )
     runner.materialize([PUBLISHED])
 
@@ -596,7 +613,9 @@ def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
         run=reuse_run,
         runtime=SyntheticRuntime(reuse_run),
         registry=synthetic_registry(),
-        stage_handlers={},
+        executions=synthetic_executions(
+            synthetic_registry(), lambda _stage, _units: None
+        ),
     )
 
     reused = reuse_runner.materialize([PUBLISHED])
@@ -620,8 +639,10 @@ def test_generation_modes_reuse_without_currency_claim_and_force_full_closure():
         subject=catalog,
         run=force_run,
         runtime=SyntheticRuntime(force_run),
-        registry=synthetic_registry(),
-        stage_handlers={},
+        registry=(force_registry := synthetic_registry()),
+        executions=synthetic_executions(
+            force_registry, lambda _stage, _units: None
+        ),
     )
     forced = force_runner.materialize([PUBLISHED], generation_mode="force")
 
@@ -656,3 +677,37 @@ def test_generation_mode_normalization_is_explicit_and_deterministic():
         assert "reuse_existing" in str(error)
     else:
         raise AssertionError("legacy generation modes must fail closed")
+
+
+def test_capability_execution_registry_rejects_duplicates_and_mismatched_graphs():
+    registry = synthetic_registry()
+    executions = synthetic_executions(registry, lambda _stage, _units: None)
+
+    try:
+        executions.register(
+            CapabilityExecution(
+                capability_id=PUBLISHED,
+                implementation_hash="sha256:" + "2" * 64,
+                transitional_batch_executor=lambda _runner, _stage, _units: None,
+            )
+        )
+    except ValueError as error:
+        assert "already registered" in str(error)
+    else:
+        raise AssertionError("duplicate capability execution must be rejected")
+
+    incomplete = CapabilityExecutionRegistry()
+    incomplete.register(
+        CapabilityExecution(
+            capability_id=PUBLISHED,
+            implementation_hash="sha256:" + "3" * 64,
+            transitional_batch_executor=lambda _runner, _stage, _units: None,
+        )
+    )
+    try:
+        incomplete.validate(registry)
+    except ValueError as error:
+        assert "missing" in str(error)
+        assert SOURCES_READY in str(error)
+    else:
+        raise AssertionError("incomplete execution registry must be rejected")

@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from app import workspaces
-from app.agent import store
+from app.agent import runner as agent_runner
+from app.agent import store, workflow
 from app.agent.context import ContextBundle, ContextManifest, ContextSize
 from app.agent.executors import (
     ExecutorConcurrency,
@@ -22,6 +23,12 @@ from app.agent.runtime.unit_pipeline import (
     UnitPipelineError,
     UnitPipelineRequest,
     UnitSidecarStore,
+)
+from app.agent.runtime.workflow_runner import (
+    BoundUnitPipeline,
+    CapabilityExecution,
+    CapabilityExecutionRegistry,
+    WorkflowRunner,
 )
 from app.agent.workers import (
     WorkerDefinition,
@@ -202,6 +209,69 @@ def test_pipeline_orders_manifest_worker_proposal_approval_executor_receipt_read
     )
     assert proposal["status"] == "accepted"
     assert proposal["proposal"]["apm_markdown"] == "# Auditor-edited APM"
+
+
+def test_runtime_scheduler_resolves_capability_through_registered_unit_pipeline():
+    workspace = workspaces.create_workspace("Scheduler pipeline registry")
+    events = []
+    pipeline, run = _pipeline(workspace, events)
+    pipeline.runtime.handle = agent_runner.RunHandle(workspace.id, run["id"])
+    registry = workflow.CapabilityRegistry()
+    registry.register(
+        workflow.Capability(
+            id="planning.apm_ready",
+            stage_id="stage:planning-apm",
+            title="Draft the APM",
+            worker_kind="planning.apm",
+            depends_on=(),
+            readiness=lambda _subject, _scope: workflow.Readiness("missing"),
+            expand_units=lambda _subject, _scope: [
+                workflow.UnitSpec(
+                    id="planning.apm",
+                    kind="apm",
+                    title="Draft the APM",
+                    input_payload={"input_sha1": "unit-input"},
+                )
+            ],
+            context="planning.apm",
+        )
+    )
+    executions = CapabilityExecutionRegistry()
+    executions.register(
+        CapabilityExecution(
+            capability_id="planning.apm_ready",
+            implementation_hash=HASH_A,
+            pipeline_binder=lambda subject, _run, _capability, _stage, _unit: (
+                BoundUnitPipeline(
+                    request=_request(subject),
+                    context_provider=_context,
+                    context_identity_provider=_context_identity,
+                    target=subject,
+                    readiness_provider=lambda: {"state": "satisfied"},
+                )
+            ),
+        )
+    )
+    scheduler = WorkflowRunner(
+        subject=workspace,
+        run=run,
+        runtime=pipeline.runtime,
+        registry=registry,
+        executions=executions,
+        unit_pipeline=pipeline,
+    )
+
+    scheduler.materialize(["planning.apm_ready"])
+    scheduler.execute()
+
+    unit = run["workflow"]["stages"][0]["units"][0]
+    assert events == ["worker", "executor"], (run.get("error"), unit)
+    assert unit["status"] == "succeeded"
+    assert unit["context_manifest"]["path"] == "contexts/planning.apm.json"
+    assert unit["proposal_sidecar"]["path"] == "proposals/planning.apm.json"
+    assert unit["receipt_sidecar"]["path"] == "receipts/planning.apm.json"
+    assert unit["result_refs"] == ["planning:apm"]
+    assert run["status"] == "completed"
 
 
 def test_pipeline_percent_encodes_windows_reserved_semantic_unit_characters():
