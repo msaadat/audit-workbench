@@ -33,8 +33,8 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 5 (in progress).
-- Current task: `P5.6` (not started).
-- Last completed task: `P5.5`.
+- Current task: `P5.7` (not started).
+- Last completed task: `P5.6`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -53,7 +53,7 @@ status notes below.
 | 2 | Complete | — |
 | 3 | Complete | — |
 | 4 | Complete | — |
-| 5 | In progress | `P5.6` |
+| 5 | In progress | `P5.7` |
 | 6 | Pending Phase 5 gate | `P6.1` |
 | 7 | Pending Phase 6 gate | `P7.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
@@ -634,6 +634,21 @@ status notes below.
   duplicate. Focused verification passed `62` planning-worker, pipeline,
   executor, and worker tests. No API or frontend contract changed. The exact
   next task is `P5.6`.
+- `P5.6` completed on 2026-07-22. `executors.planning` now owns the registered
+  `planning.apm` deterministic executor and reconciler. The executor requires
+  exactly the captured `planning:context` parent hash, commits through the
+  workspace transaction coordinator, preserves the existing APM workspace
+  fields and provenance shape, replaces generated content, refuses to silently
+  replace auditor-owned content without explicit permission, and returns exact
+  artifact postcondition hashes for receipt creation. The reconciler detects
+  parent changes, recognizes the same run's already-applied postcondition after
+  an interrupted commit, and treats later auditor edits as conflicts. Tests
+  prove parent-hash merge behavior, context conflict, edit preservation,
+  explicitly approved replacement, postconditions, reconciliation, and receipt
+  construction without any model stub; static checks exclude gateway, worker,
+  and provider dependencies. Focused verification passed `52` executor,
+  worker, pipeline, and contract tests. No live capability or frontend contract
+  changed. The exact next task is `P5.7`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1147,7 +1162,7 @@ all audit stages.
   every interruption boundary in the recovery matrix.
 - [x] `P5.5` Extract the existing APM prompt and semantic validation into a
   planning worker that has no workspace access.
-- [ ] `P5.6` Extract APM mutation, parent checks, edit preservation,
+- [x] `P5.6` Extract APM mutation, parent checks, edit preservation,
   postconditions, reconciliation, and receipts into a planning executor with
   no model dependency.
 - [ ] `P5.7` Switch only `planning.apm_ready` to the registered pipeline,

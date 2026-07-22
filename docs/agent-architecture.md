@@ -535,6 +535,12 @@ and one bounded repair. The worker is tested entirely with constructed bundles
 and has no workspace, transaction, context-resolver, store, or scheduler
 access. The old live caller remains only until the Phase 5 vertical-slice
 switch.
+The matching `executors.planning:planning.apm` executor now owns APM domain
+validation, the exact planning-context parent guard, revisioned mutation,
+generated-content replacement, auditor-edit preservation, artifact
+postconditions, and interrupted-commit reconciliation. It creates the existing
+planning payload/provenance shape through the transaction coordinator and has
+no gateway, worker, or provider dependency.
 
 ### Phase 1 Deletion Boundary
 
