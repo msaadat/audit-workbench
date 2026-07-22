@@ -33,9 +33,6 @@ SUPPORTED_SUFFIXES = TABLE_SUFFIXES | DOCUMENT_SUFFIXES
 DOCUMENT_CATEGORIES = frozenset(
     {"background", "policy", "regulation", "contract", "minutes", "voucher", "evidence", "prior_report", "correspondence", "other"}
 )
-TABLE_ROLES = frozenset(
-    {"population", "master_lookup", "prior_period", "schedule", "parameters", "unknown"}
-)
 ROUTES = frozenset({"table", "document", "unsupported", "ignore"})
 PLANNING_DOCUMENT_CATEGORIES = frozenset(
     {"background", "policy", "regulation", "contract", "minutes", "prior_report", "correspondence"}
@@ -429,18 +426,6 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
     route = route if route in ROUTES else "unsupported"
     name = slugify(Path(item["relative_path"]).stem).replace("-", "_") or "imported_file"
     label = str(item.get("relative_path") or "").casefold()
-    table_role = None
-    if route == "table":
-        if any(token in label for token in ("master", "lookup", "mapping", "chart of accounts", "reference")):
-            table_role = "master_lookup"
-        elif any(token in label for token in ("prior", "last year", "previous year", "comparative")):
-            table_role = "prior_period"
-        elif any(token in label for token in ("param", "rate", "threshold", "config", "setting")):
-            table_role = "parameters"
-        elif any(token in label for token in ("schedule", "register", "listing", "log")):
-            table_role = "schedule"
-        else:
-            table_role = "unknown"
     document_category = None
     if route == "document":
         if any(token in label for token in ("minute", "meeting note")):
@@ -463,24 +448,19 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
             document_category = "background"
         else:
             document_category = "other"
-    uncertain_metadata = document_category == "other" or table_role == "unknown"
+    uncertain_metadata = document_category == "other"
     if not meta.get("parse_ok"):
         confidence = "low"
         rationale = meta.get("error") or "Unsupported format."
     elif uncertain_metadata:
         confidence = "medium"
-        rationale = (
-            "Supported format parsed locally; the document category needs confirmation."
-            if route == "document"
-            else "Supported format parsed locally; the table role needs confirmation."
-        )
+        rationale = "Supported format parsed locally; the document category needs confirmation."
     else:
         confidence = "high"
         rationale = "Supported format parsed locally."
     return {
         "route": route,
         "document_category": document_category,
-        "table_role": table_role,
         "subtype": "",
         "proposed_name": name,
         "confidence": confidence,
@@ -529,8 +509,6 @@ def merge_model_classifications(batch: dict, proposals: list[dict]) -> None:
             current["route"] = route
         if proposal.get("document_category") in DOCUMENT_CATEGORIES:
             current["document_category"] = proposal["document_category"]
-        if proposal.get("table_role") in TABLE_ROLES:
-            current["table_role"] = proposal["table_role"]
         if confidence in ("high", "medium", "low"):
             current["confidence"] = confidence
         for key in ("subtype", "proposed_name", "rationale"):
@@ -562,8 +540,6 @@ def _validated_decision(item: dict, decision: dict) -> dict:
         raise WorkspaceError(f"Invalid classification for '{item['relative_path']}'.")
     if route == "document" and base.get("document_category") not in DOCUMENT_CATEGORIES:
         base["document_category"] = "other"
-    if route == "table" and base.get("table_role") not in TABLE_ROLES:
-        base["table_role"] = "unknown"
     base["proposed_name"] = slugify(base.get("proposed_name") or Path(item["relative_path"]).stem).replace("-", "_")
     return base
 
@@ -625,7 +601,6 @@ def apply_batch(workspace: Workspace, batch_id: str, decisions: list[dict] | Non
             "sha1": item["sha1"],
             "route": route,
             "category": classification.get("document_category"),
-            "role": classification.get("table_role"),
             "target_id": target_id,
             "imported_at": utcnow(),
             "history": [],
@@ -783,7 +758,6 @@ def _incorporate_table_from_path(workspace: Workspace, staged: Path, item: dict,
         relative_path=item["relative_path"],
         source_sha1=item["sha1"],
         imported_at=utcnow(),
-        role=classification.get("table_role") or "unknown",
     )
     workspace.save()
     return name

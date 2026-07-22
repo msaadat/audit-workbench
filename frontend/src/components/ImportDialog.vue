@@ -47,7 +47,6 @@ const routeOptions = [
   { label: 'Leave out', value: 'ignore' },
 ]
 const documentCategories = ['background', 'policy', 'regulation', 'contract', 'minutes', 'voucher', 'evidence', 'prior_report', 'correspondence', 'other'].map((value) => ({ label: value.replace('_', ' '), value }))
-const tableRoles = ['population', 'master_lookup', 'prior_period', 'schedule', 'parameters', 'unknown'].map((value) => ({ label: value.replace('_', ' '), value }))
 const actionOptions = [
   { label: 'Import file', value: 'import' },
   { label: 'Leave out', value: 'ignore' },
@@ -387,7 +386,6 @@ function reset() {
             <div v-if="edits[item.id]" class="classification-fields" :class="{ readonly: !classificationEditable }">
               <label><span>Use as</span><Select v-model="edits[item.id].route" :options="routeOptions" optionLabel="label" optionValue="value" :disabled="!classificationEditable" /></label>
               <label v-if="edits[item.id].route === 'document'"><span>Document type</span><Select v-model="edits[item.id].document_category" :options="documentCategories" optionLabel="label" optionValue="value" :disabled="!classificationEditable" /></label>
-              <label v-else-if="edits[item.id].route === 'table'"><span>Data role</span><Select v-model="edits[item.id].table_role" :options="tableRoles" optionLabel="label" optionValue="value" :disabled="!classificationEditable" /></label>
               <label v-if="edits[item.id].route === 'table' || edits[item.id].route === 'document'" class="name-field"><span>Name in workspace</span><InputText v-model="edits[item.id].proposed_name" :disabled="!classificationEditable" /></label>
               <label v-if="classificationEditable"><span>Decision</span><Select v-model="edits[item.id].proposed_action" :options="actionOptions" optionLabel="label" optionValue="value" /></label>
             </div>
