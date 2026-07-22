@@ -98,6 +98,12 @@ backend/app/
    |                             bounded validation/repair, and planning worker
    |- executors/               - deterministic mutation/reconciliation
    |                             contracts, registry, receipts, and APM executor
+   |- workflows/               - authoritative workflow definitions; audit.py
+   |                             owns the audit dependency graph, workflow id,
+   |                             and hash-identified definition metadata
+   |- capabilities/            - grouped audit capability composition
+   |                             (planning/fieldwork/reporting) with startup
+   |                             validation against the authoritative graph
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners

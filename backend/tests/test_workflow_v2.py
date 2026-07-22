@@ -1284,35 +1284,27 @@ def test_document_qa_expands_per_document_and_merges_in_attachment_order():
     assert merged["auditor_disposition"] == "pending"
 
 
-def test_output_readiness_detects_changed_parents():
+def test_output_readiness_is_existence_structural_and_not_currency():
+    # P7.2A: readiness reports existence and structural usability only. Changing
+    # an output's source parents does not make an existing, structurally usable
+    # output "stale"; currency is not assessed by the framework. The auditor
+    # forces regeneration when changed sources warrant it.
     ws = _planning_workspace("Output invalidation")
     row_id = ws.rcm[0]["id"]
     working_papers.generate_rcm(ws, row_id)
     dashboard.curate_rcm_tiles(ws, run_id="run-output")
     report.generate(ws, use_model=False, run_id="run-output")
 
-    assert audit_capabilities.REGISTRY.get("working_papers.generated").readiness(
-        ws, {}
-    ).state == "satisfied"
-    assert audit_capabilities.REGISTRY.get("dashboard.curated").readiness(
-        ws, {}
-    ).state == "satisfied"
-    assert audit_capabilities.REGISTRY.get("report.working_draft").readiness(
-        ws, {}
-    ).state == "satisfied"
+    for outcome in ("working_papers.generated", "dashboard.curated", "report.working_draft"):
+        assert audit_capabilities.REGISTRY.get(outcome).readiness(ws, {}).state == "satisfied"
 
     ws.update_rcm(row_id, {"control": "Auditor changed the control after output generation"})
     ws.update_planning({"context": {"entity": "Changed entity"}})
 
-    assert audit_capabilities.REGISTRY.get("working_papers.generated").readiness(
-        ws, {}
-    ).state == "stale"
-    assert audit_capabilities.REGISTRY.get("dashboard.curated").readiness(
-        ws, {}
-    ).state == "stale"
-    assert audit_capabilities.REGISTRY.get("report.working_draft").readiness(
-        ws, {}
-    ).state == "stale"
+    # The outputs still exist and are structurally usable, so they stay
+    # satisfied — no "stale" state is produced by the audit declarations.
+    for outcome in ("working_papers.generated", "dashboard.curated", "report.working_draft"):
+        assert audit_capabilities.REGISTRY.get(outcome).readiness(ws, {}).state == "satisfied"
 
 
 def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypatch):

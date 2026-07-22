@@ -32,9 +32,9 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 7 (not started).
-- Current task: `P7.1` (not started).
-- Last completed task: `P6.8`.
+- Current phase: Phase 7 (in progress).
+- Current task: `P7A.1` (not started).
+- Last completed task: `P7.2A`.
 - Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
@@ -55,7 +55,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | Pending | `P7.1` |
+| 7 | In progress | `P7A.1` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -789,6 +789,82 @@ status notes below.
   backend gate passed `649` tests in `421.55s`, and the frontend type-check and
   production build passed. Phase 6 is complete; the exact next task is `P7.1`,
   and no Phase 7 work has started.
+- `P7.1` completed on 2026-07-22. The new `agent/workflows/` package now holds
+  `workflows/audit.py` as the single authoritative source of the audit
+  lifecycle structure: `WORKFLOW_ID`, a hash-identified `definition_hash()` over
+  the workflow identity and full normalized dependency graph, the baseline
+  `DEPENDENCIES` graph (unchanged capability IDs and edges), `FULL_AUDIT_OUTCOMES`,
+  and the goal-template outcome sets. `audit_capabilities.build_registry()` now
+  derives every capability's `depends_on` from `audit_workflow.dependencies(...)`
+  rather than restating the edges inline, and re-exports `FULL_AUDIT_OUTCOMES`,
+  `TEMPLATE_OUTCOMES`, and `outcomes_for_template` from the authoritative module
+  so existing routing and test call sites are stable. Routing now persists
+  `definition = audit_workflow.WORKFLOW_ID` plus the new `definition_hash`
+  field on each workflow run. The audit-specific `WORKFLOW_DEFINITION` constant
+  was removed from the domain-neutral `agent/workflow.py`; the runtime scheduler
+  default is now the neutral `workflow.DEFAULT_WORKFLOW_ID = "workflow"`, and
+  production audit runs carry the authoritative id through routing. Readiness,
+  unit expansion, workers, and executors remain in `audit_capabilities.py` /
+  `audit_execution.py` for the later Phase 7 capability-family slices; only the
+  graph definition and workflow metadata moved in this task.
+- `P7.1A` completed on 2026-07-22. `tests/test_workflow_audit_definition.py`
+  pins the baseline edges, the topological full-audit closure, the intentional
+  parallel branches after `results.rolled_up`, template-outcome membership,
+  definition-hash stability, and that adding an edge changes the hash. Its module
+  docstring documents that a Phase 9 scoped `documents.analysis_generated` edge
+  deliberately changes the definition hash but must not become a universal audit
+  prerequisite. Focused verification passed `22` tests across
+  `test_workflow_audit_definition.py`, `test_agent_runtime_import_boundaries.py`,
+  and `test_workflow_scheduler_golden.py`; regression suites passed `118` tests
+  across `test_workflow_v2.py` and `test_command_agent.py`, and `37` tests across
+  `test_planning.py` and `test_agent_store.py`. No API or frontend payload
+  changed, so a frontend build was not required. The exact next task is `P7.2`.
+- `P7.2` completed on 2026-07-22. The new `agent/capabilities/` package composes
+  the audit capability registry from grouped `planning`, `fieldwork`, and
+  `reporting` modules and validates the composition at import (startup
+  validation). Each grouped module declares a disjoint slice of the authoritative
+  graph (`CAPABILITY_IDS`) and a `capabilities(source)` selector; during Phase 7
+  they still select their declaration bodies from the transitional
+  `audit_capabilities` registry, so composing from the live registry yields the
+  identical Capability objects in authoritative order. `validate_audit_composition`
+  checks that the groups partition the audit graph exactly once, that the composed
+  registry declares precisely the authoritative capabilities and edges, that the
+  dependency closure is acyclic, that every declared context preset is registered
+  in `context.PRESETS`, and — when supplied — that a `CapabilityExecution` binding
+  exists for each capability. `AUDIT_REGISTRY` is built and validated at import.
+  This task is additive: `audit_capabilities.REGISTRY` remains the live source for
+  routing and audit dispatch, and no writer was switched (`P7.3` updates callers
+  and deletes the old modules). Focused verification passed `9` tests in
+  `test_agent_capability_composition.py`, and the import-boundary and audit-graph
+  golden suites (`9` tests) still pass; `app.main` and the `capabilities` package
+  import cleanly. No API or frontend payload changed, so a frontend build was not
+  required. The exact next task is `P7.2A`.
+- `P7.2A` completed on 2026-07-22. Every audit capability readiness function now
+  reports existence and structural usability only; the `stale` Readiness returns
+  and their `details` projections were deleted from `_apm_ready`, `_rcm_ready`,
+  `_planned_ready`, `_definitions_ready`, `_working_papers_ready`,
+  `_dashboard_ready`, and `_report_ready`, and the legacy "currency unverified"
+  APM warning was removed. `_execution_ready` no longer forces a `result_stale`
+  datatest (a durable result now counts as executed), and `_definition_units` no
+  longer schedules regeneration for definitions whose `workflow_parent_sha1`
+  predates their planned test — missing definitions and explicit `force` are the
+  only triggers. Parent/source hashes remain on artifacts and are still consumed
+  by the executors and `audit_execution` for CAS, provenance, proposal reuse, and
+  conflict detection; they are no longer used to claim currency or schedule work.
+  The generic scheduler retains its domain-neutral `stale`-reuse affordance
+  (exercised only by the synthetic golden harness); no audit declaration emits it.
+  The former `test_output_readiness_detects_changed_parents` characterization was
+  rewritten as `test_output_readiness_is_existence_structural_and_not_currency`,
+  proving outputs stay `satisfied` after their source parents change. Focused
+  verification passed `169` tests across `test_workflow_v2.py`, `test_planning.py`,
+  `test_command_agent.py`, `test_agent_capability_composition.py`,
+  `test_workflow_audit_definition.py`, and `test_workflow_scheduler_golden.py`,
+  plus `82` tests across `test_agent_api.py`, `test_agent_runner.py`,
+  `test_assistant_chats.py`, `test_agent_planning_executor.py`, and
+  `test_agent_unit_pipeline.py`. Frontend `stale` usages are document-analysis and
+  dashboard-advice concepts, unrelated to workflow readiness, so no frontend
+  change or build was required. Phase 7 foundational tasks (`P7.1`, `P7.1A`,
+  `P7.2`, `P7.2A`) are complete; the exact next task is `P7A.1`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1446,15 +1522,15 @@ the remaining v3 handlers to declarations, workers, and executors.
 
 **Tasks:**
 
-- [ ] `P7.1` Create `workflows/audit.py` with hash-identified workflow metadata and
+- [x] `P7.1` Create `workflows/audit.py` with hash-identified workflow metadata and
   the current dependency graph, preserving capability IDs and ordering while
   updating live imports directly.
-- [ ] `P7.1A` Add golden edge, closure, and parallel-branch tests for the
+- [x] `P7.1A` Add golden edge, closure, and parallel-branch tests for the
   baseline audit DAG, and document how a later Phase 9 graph-definition change
   may add scoped document-analysis dependencies without making them global.
-- [ ] `P7.2` Add registry composition and startup validation for grouped audit
+- [x] `P7.2` Add registry composition and startup validation for grouped audit
   capability, context, worker, and executor modules before moving a writer.
-- [ ] `P7.2A` Define existence/structural readiness for every audit capability,
+- [x] `P7.2A` Define existence/structural readiness for every audit capability,
   remove stale-state scheduling from new declarations, and delete legacy stale
   projections.
 - [ ] `P7A.1` Move `planning.context_ready` readiness and unit

@@ -11,7 +11,10 @@ from typing import Any, Callable, Iterable
 from ..workspaces import Workspace, WorkspaceError, slugify
 from . import store
 
-WORKFLOW_DEFINITION = "audit_workflow_v2"
+# Neutral fallback identity for the domain-neutral scheduler. Domain workflow
+# definitions (e.g. ``workflows.audit.WORKFLOW_ID``) supply the authoritative id
+# for their runs; production audit runs never rely on this default.
+DEFAULT_WORKFLOW_ID = "workflow"
 GENERATION_MODES = {"reuse_existing", "force"}
 READINESS_STATES = {"satisfied", "missing", "stale", "blocked", "review_required"}
 UNIT_STATUSES = {

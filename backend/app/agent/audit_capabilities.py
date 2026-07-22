@@ -14,31 +14,15 @@ from .workflow import (
     canonical_sha1,
     semantic_unit_id,
 )
+from .workflows import audit as audit_workflow
 
-FULL_AUDIT_OUTCOMES = [
-    "findings.drafted",
-    "working_papers.generated",
-    "dashboard.curated",
-    "report.working_draft",
-    "audit.verified",
-]
-
-TEMPLATE_OUTCOMES = {
-    "full_audit_working_draft": FULL_AUDIT_OUTCOMES,
-    "planning": [
-        "planning.apm_ready", "planning.rcm_ready", "planning.planned_tests_ready",
-    ],
-    "apm_only": ["planning.apm_ready"],
-    # The legacy data-analysis and single-document-test buttons are isolated
-    # operations, not RCM workflow goals; ActionRunner/DocTestRunner retain
-    # those paths during the compatibility window.
-    "report": ["report.working_draft", "audit.verified"],
-}
-
-
-def outcomes_for_template(template: str) -> list[str] | None:
-    values = TEMPLATE_OUTCOMES.get(str(template or ""))
-    return list(values) if values is not None else None
+# The audit dependency graph and outcome sets are authoritative in
+# ``workflows.audit``. These re-exports keep existing call sites stable while
+# ``build_registry`` below derives every capability's ``depends_on`` from the
+# authoritative graph rather than restating the edges.
+FULL_AUDIT_OUTCOMES = audit_workflow.FULL_AUDIT_OUTCOMES
+TEMPLATE_OUTCOMES = audit_workflow.TEMPLATE_OUTCOMES
+outcomes_for_template = audit_workflow.outcomes_for_template
 
 
 def planning_basis_sha1(workspace: Workspace) -> str:
@@ -134,13 +118,10 @@ def _apm_ready(workspace: Workspace, _scope: dict) -> Readiness:
         return Readiness("missing", ("APM content is empty",))
     if not any(line.lstrip().startswith("#") for line in markdown.splitlines()):
         return Readiness("review_required", ("APM has no structured headings",))
-    basis_sha1 = workspace.planning.get("workflow_basis_sha1")
-    if basis_sha1 and basis_sha1 != planning_basis_sha1(workspace):
-        return Readiness("stale", ("planning sources changed after the APM was drafted",))
-    warning = (
-        "legacy planning currency is unverified",
-    ) if not workspace.planning.get("workflow_basis_sha1") else ()
-    return Readiness("satisfied", warning, details={"artifact_count": 1})
+    # Existence and structural usability only. Whether the APM is substantively
+    # current with respect to changed planning sources is not assessed by the
+    # framework; the auditor decides when to force a regeneration.
+    return Readiness("satisfied", details={"artifact_count": 1})
 
 
 def _rcm_ready(workspace: Workspace, scope: dict) -> Readiness:
@@ -150,14 +131,8 @@ def _rcm_ready(workspace: Workspace, scope: dict) -> Readiness:
     invalid = [row["id"] for row in rows if not str(row.get("risk") or "").strip() or not str(row.get("control") or "").strip()]
     if invalid:
         return Readiness("review_required", (f"{len(invalid)} RCM row(s) lack a risk or control",), details={"artifact_count": len(rows)})
-    stale = [
-        row["id"]
-        for row in rows
-        if row.get("workflow_parent_sha1")
-        and row.get("workflow_parent_sha1") != apm_sha1(workspace)
-    ]
-    if stale:
-        return Readiness("stale", (f"{len(stale)} RCM row(s) predate the current APM",), details={"artifact_count": len(rows)})
+    # Structurally usable RCM rows exist; currency relative to the APM is not
+    # assessed. Parent hashes remain on the rows for executor CAS/provenance.
     return Readiness("satisfied", details={"artifact_count": len(rows)})
 
 
@@ -173,15 +148,8 @@ def _planned_ready(workspace: Workspace, scope: dict) -> Readiness:
     ]
     if invalid:
         return Readiness("review_required", (f"{len(invalid)} planned test(s) are not executable",), details={"ready": ready, "total": total})
-    stale = [
-        planned.get("id")
-        for row in rows
-        for planned in row.get("planned_tests") or []
-        if planned.get("workflow_parent_sha1")
-        and planned.get("workflow_parent_sha1") != rcm_row_sha1(row)
-    ]
-    if stale:
-        return Readiness("stale", (f"{len(stale)} planned test(s) predate their RCM row",), details={"ready": ready, "total": total})
+    # Every RCM row has executable planned tests; currency relative to the RCM
+    # row is not assessed. Parent hashes remain for executor CAS/provenance.
     if total and ready == total:
         return Readiness("satisfied", details={"ready": ready, "total": total})
     return Readiness("missing", (f"{total - ready} RCM row(s) need planned tests",), details={"ready": ready, "total": total})
@@ -191,23 +159,12 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
     selected = set(_target_rcm_ids(workspace, scope))
     manifest = [item for item in rcm_execution.execution_manifest(workspace) if item["rcm_id"] in selected]
     missing = sum(len(item.get("missing_execution") or []) for item in manifest)
-    planned_by_id = {
-        planned["id"]: planned
-        for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
-    }
-    stale = 0
-    for requirement in manifest:
-        expected = planned_test_sha1(planned_by_id[requirement["planned_test_id"]])
-        for artifact in requirement.get("existing_execution") or []:
-            if artifact.get("workflow_parent_sha1") and artifact.get("workflow_parent_sha1") != expected:
-                stale += 1
     if not manifest:
         return Readiness("missing", ("no planned tests are available to translate",))
     if missing:
         return Readiness("missing", (f"{missing} required execution definition(s) are missing",), details={"missing": missing, "total": len(manifest)})
-    if stale:
-        return Readiness("stale", (f"{stale} execution definition(s) predate their planned test",), details={"missing": 0, "stale": stale, "total": len(manifest)})
+    # Required execution definitions all exist; currency relative to their
+    # planned test is not assessed. Parent hashes remain for executor CAS.
     return Readiness("satisfied", details={"total": len(manifest)})
 
 
@@ -219,9 +176,10 @@ def _execution_ready(workspace: Workspace, scope: dict) -> Readiness:
     blocked = []
     for requirement in manifest:
         for artifact in requirement.get("existing_execution") or []:
-            if artifact.get("result_stale"):
-                pending.append(artifact["id"])
-            elif not artifact.get("executable"):
+            # An artifact with a durable result counts as executed. Whether that
+            # result predates changed inputs (``result_stale``) is currency, not
+            # structural usability, and is not assessed by the framework.
+            if not artifact.get("executable"):
                 review.append(artifact["id"])
             elif artifact.get("has_durable_result"):
                 continue
@@ -295,27 +253,17 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
 def _working_papers_ready(workspace: Workspace, scope: dict) -> Readiness:
     rows = _rows(workspace, scope)
     missing = []
-    stale = []
-    from ..workspace_transactions import parent_hashes
-
     for row in rows:
         path = workspace.root / "WorkingPapers" / f"{row['id']}.json"
         if not path.is_file():
             missing.append(row["id"])
             continue
         try:
-            paper = json.loads(path.read_text(encoding="utf-8"))
+            json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             missing.append(row["id"])
-            continue
-        expected = parent_hashes(workspace, [f"rcm:{row['id']}"])[f"rcm:{row['id']}"]
-        if paper.get("workflow_parent_sha1") and paper.get("workflow_parent_sha1") != expected:
-            stale.append(row["id"])
-    if stale:
-        return Readiness(
-            "stale", (f"{len(stale)} RCM working paper(s) predate their source results",),
-            details={"missing": len(missing), "stale": len(stale)},
-        )
+    # Existence and structural readability only; whether a paper predates changed
+    # source results is currency and is not assessed by the framework.
     return (
         Readiness("missing", (f"{len(missing)} RCM working paper(s) are missing",), details={"missing": len(missing)})
         if missing else Readiness("satisfied", details={"artifact_count": len(rows)})
@@ -326,11 +274,8 @@ def _dashboard_ready(workspace: Workspace, _scope: dict) -> Readiness:
     curation = workspace.planning.get("dashboard_curation") or {}
     if not curation.get("completed_at"):
         return Readiness("missing", ("the RCM dashboard has not been curated",))
-    from ..workspace_transactions import material_projection
-
-    expected = canonical_sha1({"rcm": material_projection(workspace.rcm)})
-    if curation.get("workflow_parent_sha1") and curation.get("workflow_parent_sha1") != expected:
-        return Readiness("stale", ("the RCM dashboard predates current roll-ups",))
+    # A completed curation exists; whether it predates current roll-ups is
+    # currency and is not assessed by the framework.
     return Readiness("satisfied", details={"tile_count": int(curation.get("created_count") or 0)})
 
 
@@ -340,9 +285,8 @@ def _report_ready(workspace: Workspace, _scope: dict) -> Readiness:
         return Readiness("missing", ("the report working draft is empty",))
     if current.get("edited") and current.get("generated_markdown") != current.get("markdown"):
         return Readiness("review_required", ("an auditor-edited report has a generated candidate awaiting reconciliation",))
-    expected = canonical_sha1(report.build_context(workspace))
-    if current.get("workflow_parent_sha1") and current.get("workflow_parent_sha1") != expected:
-        return Readiness("stale", ("the report predates current planning, results, or supported findings",))
+    # A non-empty, reconciled report working draft exists; whether it predates
+    # current planning/results/findings is currency and is not assessed here.
     preliminary = any(
         planned.get("status") in {"not_ready", "ready", "in_progress", "blocked", "review_required"}
         for row in workspace.rcm for planned in row.get("planned_tests") or []
@@ -393,16 +337,11 @@ def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
         if item["rcm_id"] not in selected:
             continue
         missing = set(item.get("missing_execution") or [])
-        _row, planned = workspace.planned_test(item["planned_test_id"])
-        expected_parent = planned_test_sha1(planned)
         for kind in item.get("required_execution") or []:
+            # Generate only missing definitions, or everything on explicit force.
+            # A definition that predates its planned test (currency) is not
+            # regenerated automatically; the auditor forces regeneration instead.
             needs = kind in missing or (kind == "datatest" and "validation_datatest" in missing)
-            existing = [artifact for artifact in item.get("existing_execution") or [] if artifact.get("kind") == kind]
-            needs = needs or any(
-                artifact.get("workflow_parent_sha1")
-                and artifact.get("workflow_parent_sha1") != expected_parent
-                for artifact in existing
-            )
             if not needs and scope.get("generation_mode") != "force":
                 continue
             worker_kind = "data_test_spec" if kind == "datatest" else "document_test_spec"
@@ -519,21 +458,27 @@ def _paper_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     ]
 
 
+def _depends_on(capability_id: str) -> tuple[str, ...]:
+    """Direct dependencies from the authoritative ``workflows.audit`` graph."""
+
+    return audit_workflow.dependencies(capability_id)
+
+
 def build_registry() -> CapabilityRegistry:
     registry = CapabilityRegistry()
     register = registry.register
-    register(Capability("planning.context_ready", "planning_context", "Planning context", "planning_context", (), _context_ready, _single("planning_context", "Assemble planning context"), invalidate_on=("sources",)))
-    register(Capability("planning.apm_ready", "apm", "Audit planning memorandum", "apm", ("planning.context_ready",), _apm_ready, _single("apm", "Draft audit planning memorandum", "planning:context"), context="planning.apm", invalidate_on=("planning:context",)))
-    register(Capability("planning.rcm_ready", "rcm", "Risk and control matrix", "rcm", ("planning.apm_ready",), _rcm_ready, _single("rcm", "Draft risk and control matrix", "planning:apm"), invalidate_on=("planning:apm",)))
-    register(Capability("planning.planned_tests_ready", "planned_tests", "RCM planned tests", "planned_test_generation", ("planning.rcm_ready",), _planned_ready, _planned_units, invalidate_on=("rcm",)))
-    register(Capability("fieldwork.definitions_ready", "execution_definitions", "Execution definitions", "execution_spec", ("planning.planned_tests_ready",), _definitions_ready, _definition_units, invalidate_on=("planned_test",)))
-    register(Capability("fieldwork.executed", "execution", "Fieldwork execution", "mixed_execution", ("fieldwork.definitions_ready",), _execution_ready, _execution_units, invalidate_on=("definition", "evidence")))
-    register(Capability("results.rolled_up", "rollup", "Results and observations", "rollup", ("fieldwork.executed",), _rollup_ready, _single("rollup", "Roll up RCM results"), invalidate_on=("execution",)))
-    register(Capability("findings.drafted", "findings", "Eligible finding drafts", "finding_draft", ("results.rolled_up",), _findings_ready, _finding_units, invalidate_on=("observation",)))
-    register(Capability("working_papers.generated", "working_papers", "RCM working papers", "working_paper", ("results.rolled_up",), _working_papers_ready, _paper_units, invalidate_on=("rollup",)))
-    register(Capability("dashboard.curated", "dashboard", "Dashboard curation", "dashboard", ("results.rolled_up",), _dashboard_ready, _single("dashboard", "Curate RCM dashboard"), invalidate_on=("rollup",)))
-    register(Capability("report.working_draft", "report", "Report working draft", "report", ("planning.apm_ready", "results.rolled_up", "findings.drafted"), _report_ready, _single("report", "Assemble report working draft"), invalidate_on=("planning:apm", "rollup", "findings")))
-    register(Capability("audit.verified", "verify", "Audit verification", "verify", ("working_papers.generated", "dashboard.curated", "report.working_draft"), _verified, _single("verify", "Verify completion and report quality"), invalidate_on=("outputs",)))
+    register(Capability("planning.context_ready", "planning_context", "Planning context", "planning_context", _depends_on("planning.context_ready"), _context_ready, _single("planning_context", "Assemble planning context"), invalidate_on=("sources",)))
+    register(Capability("planning.apm_ready", "apm", "Audit planning memorandum", "apm", _depends_on("planning.apm_ready"), _apm_ready, _single("apm", "Draft audit planning memorandum", "planning:context"), context="planning.apm", invalidate_on=("planning:context",)))
+    register(Capability("planning.rcm_ready", "rcm", "Risk and control matrix", "rcm", _depends_on("planning.rcm_ready"), _rcm_ready, _single("rcm", "Draft risk and control matrix", "planning:apm"), invalidate_on=("planning:apm",)))
+    register(Capability("planning.planned_tests_ready", "planned_tests", "RCM planned tests", "planned_test_generation", _depends_on("planning.planned_tests_ready"), _planned_ready, _planned_units, invalidate_on=("rcm",)))
+    register(Capability("fieldwork.definitions_ready", "execution_definitions", "Execution definitions", "execution_spec", _depends_on("fieldwork.definitions_ready"), _definitions_ready, _definition_units, invalidate_on=("planned_test",)))
+    register(Capability("fieldwork.executed", "execution", "Fieldwork execution", "mixed_execution", _depends_on("fieldwork.executed"), _execution_ready, _execution_units, invalidate_on=("definition", "evidence")))
+    register(Capability("results.rolled_up", "rollup", "Results and observations", "rollup", _depends_on("results.rolled_up"), _rollup_ready, _single("rollup", "Roll up RCM results"), invalidate_on=("execution",)))
+    register(Capability("findings.drafted", "findings", "Eligible finding drafts", "finding_draft", _depends_on("findings.drafted"), _findings_ready, _finding_units, invalidate_on=("observation",)))
+    register(Capability("working_papers.generated", "working_papers", "RCM working papers", "working_paper", _depends_on("working_papers.generated"), _working_papers_ready, _paper_units, invalidate_on=("rollup",)))
+    register(Capability("dashboard.curated", "dashboard", "Dashboard curation", "dashboard", _depends_on("dashboard.curated"), _dashboard_ready, _single("dashboard", "Curate RCM dashboard"), invalidate_on=("rollup",)))
+    register(Capability("report.working_draft", "report", "Report working draft", "report", _depends_on("report.working_draft"), _report_ready, _single("report", "Assemble report working draft"), invalidate_on=("planning:apm", "rollup", "findings")))
+    register(Capability("audit.verified", "verify", "Audit verification", "verify", _depends_on("audit.verified"), _verified, _single("verify", "Verify completion and report quality"), invalidate_on=("outputs",)))
     return registry
 
 

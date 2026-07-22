@@ -183,7 +183,7 @@ class WorkflowRunner:
         requested_outcomes: list[str],
         *,
         scope: dict[str, Any] | None = None,
-        workflow_id: str = workflow.WORKFLOW_DEFINITION,
+        workflow_id: str = workflow.DEFAULT_WORKFLOW_ID,
         generation_mode: str = "reuse_existing",
     ) -> dict[str, Any]:
         """Install a deterministic capability closure on the durable run."""

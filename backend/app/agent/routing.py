@@ -8,6 +8,7 @@ from .. import doc_tests
 from ..workspaces import Workspace, WorkspaceError, load_workspace
 from . import audit_capabilities, audit_workers, context_bundles, store, workflow
 from .base import BaseRunner, LimitExceeded
+from .workflows import audit as audit_workflow
 
 
 ELIGIBLE_DISPOSITIONS = {
@@ -257,7 +258,8 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         "completion_criteria": requested,
     }
     run["workflow"] = {
-        "definition": workflow.WORKFLOW_DEFINITION,
+        "definition": audit_workflow.WORKFLOW_ID,
+        "definition_hash": audit_workflow.definition_hash(),
         "revision": 1,
         "route": "workflow",
         "requested_outcomes": requested,
