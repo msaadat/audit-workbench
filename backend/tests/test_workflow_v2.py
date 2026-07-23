@@ -852,7 +852,7 @@ def _apm_only_runner(workspace, *, context_resolver=None):
         for item in run["workflow"]["stages"]
         if item["capability"] == "planning.apm_ready"
     )
-    command = AuditWorkflowExecution(
+    command = build_audit_workflow_runner(
         workspace,
         run,
         runner.RunHandle(workspace.id, run["id"]),
@@ -955,7 +955,7 @@ def test_apm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
             lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
         )
         with pytest.raises(KeyboardInterrupt):
-            command._apm(stage, [unit])
+            command._run_stage(stage)
 
     run_root = store.run_dir(ws, command.run["id"])
     assert [call["tag"] for call in fake.calls] == ["agent:apm"]
@@ -963,12 +963,12 @@ def test_apm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
     assert not (run_root / "receipts" / "apm.json").exists()
 
     workflow.recovery(command.run["workflow"])
-    resumed = AuditWorkflowExecution(
+    resumed = build_audit_workflow_runner(
         ws,
         command.run,
         runner.RunHandle(ws.id, command.run["id"]),
     )
-    resumed._apm(stage, [unit])
+    resumed._run_stage(stage)
 
     assert [call["tag"] for call in fake.calls] == ["agent:apm"]
     assert unit["status"] == "succeeded"
@@ -1016,7 +1016,7 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
             lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
         )
         with pytest.raises(KeyboardInterrupt):
-            command._apm(stage, [unit])
+            command._run_stage(stage)
 
     first_sidecar = UnitSidecarStore(
         ws, command.run["id"]
@@ -1027,16 +1027,16 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
     assert [call["tag"] for call in fake.calls] == ["agent:apm"]
 
     workflow.recovery(command.run["workflow"])
-    resumed = AuditWorkflowExecution(
+    resumed = build_audit_workflow_runner(
         ws,
         command.run,
         runner.RunHandle(ws.id, command.run["id"]),
         context_resolver=_changed_apm_context_resolver(change),
     )
-    resumed._apm(stage, [unit])
+    resumed._run_stage(stage)
 
     second_sidecar = UnitSidecarStore(
-        resumed.ws, resumed.run["id"]
+        resumed.subject, resumed.run["id"]
     ).load_proposal(
         unit["id"], unit["proposal_sidecar"]
     )
@@ -1044,7 +1044,7 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
     assert [call["tag"] for call in fake.calls] == ["agent:apm", "agent:apm"]
     assert unit["status"] == "succeeded"
     assert "proposal_reuse_rejected" in {
-        event["type"] for event in store.read_events(resumed.ws, resumed.run["id"])
+        event["type"] for event in store.read_events(resumed.subject, resumed.run["id"])
     }
 
 
@@ -1086,7 +1086,7 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
         captured["user"] = user
         reference = unit.get("context_manifest")
         assert reference
-        manifest = command.load_context_manifest(reference)
+        manifest = command.runtime.load_context_manifest(reference)
         captured["manifest"] = manifest.to_json()
         assert documents.activities(ws)["items"] == []
         return {"apm_markdown": response}
@@ -1098,7 +1098,7 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
         "agent_status",
         lambda: {"configured": True, "backend": "fake", "model": "fake"},
     )
-    command._apm(stage, [unit])
+    command._run_stage(stage)
 
     assert methodology_text in captured["user"]
     assert "private_ledger" in captured["user"]
@@ -1110,12 +1110,15 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
     assert unit["proposal_sidecar"]["path"] == "proposals/apm.json"
     assert unit["receipt_sidecar"]["path"] == "receipts/apm.json"
     assert (
-        store.run_dir(command.ws, command.run["id"])
+        store.run_dir(ws, command.run["id"])
         / unit["receipt_sidecar"]["path"]
     ).is_file()
-    assert "context_bundles.apm" not in inspect.getsource(AuditWorkflowExecution._apm)
-    assert "audit_workers.apm" not in inspect.getsource(AuditWorkflowExecution._apm)
-    assert "mutate(" not in inspect.getsource(AuditWorkflowExecution._apm)
+    # The APM path is now a native pipeline binding: the domain-neutral scheduler
+    # drives the UnitPipeline and the binder inlines no bundle builder, model
+    # worker, or workspace mutation.
+    assert "context_bundles.apm" not in inspect.getsource(AuditWorkflowExecution._bind_apm)
+    assert "audit_workers.apm" not in inspect.getsource(AuditWorkflowExecution._bind_apm)
+    assert "mutate(" not in inspect.getsource(AuditWorkflowExecution._bind_apm)
     worker_source = inspect.getsource(planning_worker.run_apm_worker)
     assert ".ws" not in worker_source
     assert "load_workspace" not in worker_source

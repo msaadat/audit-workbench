@@ -45,6 +45,15 @@ FinishEvaluator = Callable[
 ]
 
 
+OutcomeHandler = Callable[
+    [dict[str, Any], dict[str, Any], UnitPipelineOutcome], None
+]
+ConflictHandler = Callable[
+    [dict[str, Any], dict[str, Any], UnitPipelineConflict],
+    tuple[str, str] | None,
+]
+
+
 @dataclass(frozen=True)
 class BoundUnitPipeline:
     """All local providers needed to execute one registered pipeline unit."""
@@ -55,6 +64,13 @@ class BoundUnitPipeline:
     target: object
     approval_provider: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None
     readiness_provider: Callable[[], object] | None = None
+    # Optional domain callbacks. These keep the scheduler domain-neutral: the
+    # binding supplies them, the scheduler merely invokes them. ``on_committed``
+    # runs after a successful commit and before the unit is marked succeeded;
+    # ``conflict_handler`` may translate a domain-recognized ``UnitPipelineConflict``
+    # into a ``(status, error)`` override instead of the default ``conflict``.
+    on_committed: OutcomeHandler | None = None
+    conflict_handler: ConflictHandler | None = None
 
 
 PipelineBinder = Callable[
@@ -478,6 +494,7 @@ class WorkflowRunner:
                 continue
             self.runtime.checkpoint()
             self.set_unit(stage, unit, "running")
+            bound: BoundUnitPipeline | None = None
             try:
                 bound = execution.pipeline_binder(
                     self.subject,
@@ -509,10 +526,19 @@ class WorkflowRunner:
                     on_proposal_persisted=record("proposal_sidecar"),
                     on_receipt_persisted=record("receipt_sidecar"),
                 )
-                self._fold_pipeline_outcome(stage, unit, outcome)
+                self._fold_pipeline_outcome(stage, unit, outcome, bound)
             except UnitPipelineConflict as error:
                 self._record_pipeline_error_references(unit, error)
-                self.set_unit(stage, unit, "conflict", error=str(error))
+                override = (
+                    bound.conflict_handler(stage, unit, error)
+                    if bound is not None and bound.conflict_handler is not None
+                    else None
+                )
+                if override is not None:
+                    status, message = override
+                    self.set_unit(stage, unit, status, error=message)
+                else:
+                    self.set_unit(stage, unit, "conflict", error=str(error))
             except (Cancelled, LimitExceeded):
                 raise
             except Exception as error:
@@ -523,6 +549,7 @@ class WorkflowRunner:
         stage: dict[str, Any],
         unit: dict[str, Any],
         outcome: UnitPipelineOutcome,
+        bound: BoundUnitPipeline,
     ) -> None:
         if outcome.proposal_reused:
             self.runtime.emit(
@@ -550,6 +577,8 @@ class WorkflowRunner:
                 error="The capability proposal was not approved.",
             )
             return
+        if bound.on_committed is not None:
+            bound.on_committed(stage, unit, outcome)
         result_refs = (
             list(outcome.receipt.artifact_refs) if outcome.receipt is not None else []
         )

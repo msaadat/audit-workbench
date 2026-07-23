@@ -37,12 +37,12 @@ from .executors.planning import (
     ApmExecutorTarget,
 )
 from .runtime import (
+    BoundUnitPipeline,
     CapabilityExecution,
     CapabilityExecutionRegistry,
     FinishProjection,
     RunRuntime,
     UnitPipeline,
-    UnitPipelineConflict,
     UnitPipelineRequest,
     UnitSidecarStore,
     WorkflowRunner,
@@ -194,172 +194,119 @@ class AuditWorkflowExecution(ActionRunner):
         except Exception as error:
             self._set_unit(stage, unit, "failed", error=str(error))
 
-    def _apm(self, stage: dict, units: list[dict]) -> None:
-        unit = units[0]
-        self._set_unit(stage, unit, "running")
+    def _bind_apm(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind the APM capability to the shared ``UnitPipeline``.
+
+        This is the native pipeline binding for ``planning.apm_ready``: the
+        domain-neutral :class:`WorkflowRunner` owns manifest/proposal/receipt
+        persistence, proposal reuse, approval, and readiness reevaluation. The
+        binding supplies only the APM-specific context, executor target, and two
+        domain callbacks — post-commit bookkeeping and the auditor-edit-preserved
+        conflict translation — that the scheduler invokes.
+        """
+        self.ws = subject
+        expected_context = parent_hashes(self.ws, ["planning:context"])
+        basis = self.run.get("planning_basis") or {
+            "planning": self.ws.planning, "tables": [], "documents": [], "methodology": []
+        }
+        selected_document_ids = [
+            str(item.get("document_id"))
+            for item in basis.get("document_analyses") or []
+            if item.get("document_id")
+        ]
+        target = ApmExecutorTarget(
+            self.ws,
+            self.run["id"],
+            allow_auditor_overwrite=self.run["mode"] == "permission",
+        )
         task = self.add_task("apm", "workflow:apm", "Audit planning memorandum")
-        try:
-            expected_context = parent_hashes(self.ws, ["planning:context"])
-            basis = self.run.get("planning_basis") or {
-                "planning": self.ws.planning, "tables": [], "documents": [], "methodology": []
-            }
-            capability = audit_capabilities.REGISTRY.get(stage["capability"])
-            selected_document_ids = [
-                str(item.get("document_id"))
-                for item in basis.get("document_analyses") or []
-                if item.get("document_id")
-            ]
-            target = ApmExecutorTarget(
+
+        def context_provider():
+            return self.context_resolver.resolve(
                 self.ws,
-                self.run["id"],
-                allow_auditor_overwrite=self.run["mode"] == "permission",
-            )
-
-            def context_provider():
-                return self.context_resolver.resolve(
+                capability,
+                unit,
+                apm_document_methodology_scope(
                     self.ws,
-                    capability,
-                    unit,
-                    apm_document_methodology_scope(
-                        self.ws,
-                        planning_context=(basis.get("planning") or {}).get("context") or {},
-                        document_ids=(
-                            selected_document_ids
-                            if "document_analyses" in basis
-                            else None
-                        ),
+                    planning_context=(basis.get("planning") or {}).get("context") or {},
+                    document_ids=(
+                        selected_document_ids
+                        if "document_analyses" in basis
+                        else None
                     ),
-                )
-
-            def approval_provider(proposal):
-                proposals = [
-                    self.proposal_item(
-                        "Audit planning memorandum",
-                        "Drafted from the current planning basis.",
-                        dict(proposal),
-                    )
-                ]
-                accepted = self.request_approval("apm", task, proposals)
-                return dict(accepted[0]["spec"]) if accepted else None
-
-            def record_reference(field):
-                def record(reference):
-                    unit[field] = dict(reference)
-                    self.save()
-
-                return record
-
-            pipeline = UnitPipeline(
-                runtime=self.runtime,
-                gateway=self.model_gateway,
-                workers=WORKERS,
-                executors=EXECUTORS,
-                sidecars=UnitSidecarStore(self.ws, self.run["id"]),
+                ),
             )
-            outcome = pipeline.run(
-                UnitPipelineRequest(
-                    capability_id=capability.id,
-                    unit_id=unit["id"],
-                    worker_id="planning.apm",
-                    executor_id="planning.apm",
-                    unit_input={
-                        "kind": unit.get("kind"),
-                        "input_sha1": unit.get("input_sha1"),
-                        "parent_refs": list(unit.get("parent_refs") or []),
-                    },
-                    activity={
-                        "artifact_refs": ["planning:apm"],
-                        "task_id": task["id"],
-                    },
-                    expected_revision=self.ws.revision,
-                    expected_parents=expected_context,
-                    capability_definition_hash=_capability_definition_hash(capability),
-                    approval_kind=("apm" if self.run["mode"] == "permission" else None),
-                    proposal_reference=unit.get("proposal_sidecar"),
-                    receipt_reference=unit.get("receipt_sidecar"),
-                ),
-                context_provider=context_provider,
-                context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
-                    capability, manifest
-                ),
-                target=target,
-                approval_provider=(
-                    approval_provider if self.run["mode"] == "permission" else None
-                ),
-                readiness_provider=lambda: capability.readiness(target.workspace, {}),
-                on_manifest_persisted=record_reference("context_manifest"),
-                on_proposal_persisted=record_reference("proposal_sidecar"),
-                on_receipt_persisted=record_reference("receipt_sidecar"),
-            )
-            if outcome.status == "approval_rejected":
-                self._set_unit(
-                    stage,
-                    unit,
-                    "blocked",
-                    error="The APM proposal was not approved.",
+
+        def approval_provider(proposal):
+            proposals = [
+                self.proposal_item(
+                    "Audit planning memorandum",
+                    "Drafted from the current planning basis.",
+                    dict(proposal),
                 )
-                return
+            ]
+            accepted = self.request_approval("apm", task, proposals)
+            return dict(accepted[0]["spec"]) if accepted else None
+
+        def on_committed(_stage, _unit, _outcome) -> None:
             self.ws = target.workspace
-            if outcome.proposal_reused:
-                self.emit(
-                    "proposal_reused",
-                    {
-                        "stage_id": stage["id"],
-                        "unit_id": unit["id"],
-                        "sidecar": dict(outcome.proposal_reference),
-                    },
-                )
-            if outcome.proposal_reuse_rejection_reasons:
-                self.emit(
-                    "proposal_reuse_rejected",
-                    {
-                        "stage_id": stage["id"],
-                        "unit_id": unit["id"],
-                        "reasons": list(outcome.proposal_reuse_rejection_reasons),
-                    },
-                )
             self.run["planning_changes"]["apm_updated"] += 1
             self.record_artifact("planning", "apm", "planning:apm", "updated", task)
-            self._set_unit(stage, unit, "succeeded", result_refs=["planning:apm"])
-        except (Cancelled, LimitExceeded):
-            raise
-        except UnitPipelineConflict as error:
-            if error.manifest_reference:
-                unit["context_manifest"] = dict(error.manifest_reference)
-            if error.proposal_reference:
-                unit["proposal_sidecar"] = dict(error.proposal_reference)
-            if error.receipt_reference:
-                unit["receipt_sidecar"] = dict(error.receipt_reference)
-            if error.proposal_reuse_rejection_reasons:
-                self.emit(
-                    "proposal_reuse_rejected",
-                    {
-                        "stage_id": stage["id"],
-                        "unit_id": unit["id"],
-                        "reasons": list(error.proposal_reuse_rejection_reasons),
-                    },
-                )
-            if str(error) == AUDITOR_EDIT_PRESERVED:
-                self.run.setdefault("planning_revisions", []).append(
-                    {
-                        "kind": "apm",
-                        "status": "proposed",
-                        "sidecar": dict(error.proposal_reference or {}),
-                    }
-                )
-                self.run["planning_changes"]["apm_proposed"] += 1
-                self._set_unit(
-                    stage,
-                    unit,
-                    "awaiting_confirmation",
-                    error="Auditor-owned APM was preserved.",
-                )
-            else:
-                self._set_unit(stage, unit, "conflict", error=str(error))
-        except WorkspaceConflict as error:
-            self._set_unit(stage, unit, "conflict", error=str(error))
-        except Exception as error:
-            self._set_unit(stage, unit, "failed", error=str(error))
+
+        def conflict_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            if str(error) != AUDITOR_EDIT_PRESERVED:
+                return None
+            self.run.setdefault("planning_revisions", []).append(
+                {
+                    "kind": "apm",
+                    "status": "proposed",
+                    "sidecar": dict(error.proposal_reference or {}),
+                }
+            )
+            self.run["planning_changes"]["apm_proposed"] += 1
+            return ("awaiting_confirmation", "Auditor-owned APM was preserved.")
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.apm",
+                executor_id="planning.apm",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": ["planning:apm"],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_context,
+                capability_definition_hash=_capability_definition_hash(capability),
+                approval_kind=("apm" if self.run["mode"] == "permission" else None),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=lambda: capability.readiness(target.workspace, {}),
+            on_committed=on_committed,
+            conflict_handler=conflict_handler,
+        )
 
     def _rcm(self, stage: dict, units: list[dict]) -> None:
         unit = units[0]
@@ -1212,9 +1159,11 @@ class AuditWorkflowExecution(ActionRunner):
         )
 
 
+# Capabilities still executed by the transitional batch adapter. Migrated
+# capabilities (native pipeline bindings) are handled explicitly below and are
+# intentionally absent from this map.
 _AUDIT_HANDLER_NAMES = {
     "planning.context_ready": "_planning_basis",
-    "planning.apm_ready": "_apm",
     "planning.rcm_ready": "_rcm",
     "planning.planned_tests_ready": "_planned_tests",
     "fieldwork.definitions_ready": "_definitions",
@@ -1257,8 +1206,37 @@ def build_audit_workflow_runner(
         runtime=runtime,
         context_resolver=context_resolver,
     )
+    unit_pipeline = UnitPipeline(
+        runtime=adapter.runtime,
+        gateway=adapter.model_gateway,
+        workers=WORKERS,
+        executors=EXECUTORS,
+        sidecars=UnitSidecarStore(workspace, run["id"]),
+    )
+    # Capabilities that have completed their Phase 7 execution migration are
+    # registered as native pipeline bindings; the domain-neutral scheduler drives
+    # their UnitPipeline. Everything else still uses the transitional batch adapter.
+    _PIPELINE_BINDERS = {
+        "planning.apm_ready": (
+            adapter._bind_apm,
+            {"worker": "planning.apm", "executor": "planning.apm"},
+        ),
+    }
     executions = CapabilityExecutionRegistry()
     for capability in audit_capabilities.REGISTRY.all():
+        pipeline_binding = _PIPELINE_BINDERS.get(capability.id)
+        if pipeline_binding is not None:
+            binder, identity = pipeline_binding
+            executions.register(
+                CapabilityExecution(
+                    capability_id=capability.id,
+                    implementation_hash=_sha256_json(
+                        {"capability": capability.id, **identity}
+                    ),
+                    pipeline_binder=binder,
+                )
+            )
+            continue
         handler_name = _AUDIT_HANDLER_NAMES[capability.id]
         handler = getattr(adapter, handler_name)
 
@@ -1306,6 +1284,7 @@ def build_audit_workflow_runner(
         runtime=adapter.runtime,
         registry=audit_capabilities.REGISTRY,
         executions=executions,
+        unit_pipeline=unit_pipeline,
         refresh_subject=adapter._refresh_workspace,
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,

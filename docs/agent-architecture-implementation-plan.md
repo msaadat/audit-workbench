@@ -27,26 +27,33 @@ no historical reader or resume adapter is retained.
 
 ## Implementation Status And Session Handoff
 
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-23
 
 **Current position:**
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7A.2` (execution switch; partially landed — see note).
-- Last completed task: fieldwork/reporting readiness + unit-expansion declaration
-  moves and the `planning.context` executor.
+- Current task: `P7C.2` (RCM execution writer-switch) is the next unblocked
+  slice; `P7A.2` remains deferred (Phase-9-coupled — see note).
+- Last completed task: `P7B.2` — the APM capability is now a native pipeline
+  binding driven by the domain-neutral `WorkflowRunner`; the transitional
+  `_apm` batch adapter was removed.
 - Done: the readiness + unit-expansion declarations for **all 12** audit
   capabilities are now locally owned in the grouped `capabilities` modules and
   golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
   `P7E.1`, `P7I.1` fully; the readiness/units portion of `P7F.1`, `P7G.1`,
   `P7H.1`, `P7J.1`, `P7K.1`, `P7L.1` too). The registered `planning.context`
-  executor (commit + reconcile) is landed and unit-tested.
+  executor (commit + reconcile) is landed and unit-tested. `planning.apm_ready`
+  (`P7B.2`) is the first capability whose live execution runs through the
+  scheduler's native `pipeline_binder` path rather than a transitional batch
+  handler.
 - Active blockers: the `.2` execution writer-switches (workers/executors/handler
-  removal) remain for every family. `P7A.2`'s remaining pieces (context-synthesis
-  worker + context declaration + pipeline switch + `_planning_basis` removal) are
-  the Phase-9-coupled part deferred per the `P7A.2` note; its `planning.context`
-  commit executor is already landed.
+  removal) remain for the RCM, planned-tests, definitions, fieldwork execution,
+  rollup, findings, working-papers, dashboard, report, and verify families.
+  `P7A.2`'s remaining pieces (context-synthesis worker + context declaration +
+  pipeline switch + `_planning_basis` removal) are the Phase-9-coupled part
+  deferred per the `P7A.2` note; its `planning.context` commit executor is
+  already landed.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -66,7 +73,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7A.2` (.2 switches) |
+| 7 | In progress | `P7C.2` (`P7A.2` deferred) |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -987,6 +994,36 @@ status notes below.
   `test_planning.py`; `app.main`, `audit_execution`, and the grouped package
   import cleanly and both planning executors register. No API or frontend payload
   changed, so a frontend build was not required.
+- `P7B.2` completed on 2026-07-23. `planning.apm_ready` is now the first audit
+  capability whose live execution runs through the domain-neutral scheduler's
+  native `pipeline_binder` path. The transitional `AuditWorkflowExecution._apm`
+  batch method — which manually constructed a `UnitPipeline` and drove it inside
+  the audit adapter — was deleted and replaced by `_bind_apm`, which returns a
+  `BoundUnitPipeline` describing only the APM-specific context provider, executor
+  target, approval provider, and two domain callbacks. `build_audit_workflow_runner`
+  now constructs one shared `UnitPipeline`, registers `planning.apm_ready` as a
+  `pipeline_binder`-backed `CapabilityExecution` (all other capabilities remain
+  transitional batch bindings), and passes the pipeline to `WorkflowRunner`. To
+  keep the scheduler domain-neutral while preserving the APM adapter's
+  post-commit bookkeeping (`planning_changes.apm_updated`, artifact recording)
+  and its auditor-edit-preserved outcome, `BoundUnitPipeline` gained two optional
+  injected callbacks — `on_committed` and `conflict_handler` — that the generic
+  pipeline path invokes; the scheduler itself gained no audit awareness. The
+  `planning.apm` worker and executor, proposal-execution identity, sidecar
+  layout, reuse/rebilling behavior, and content-free manifests are unchanged, so
+  this is a dispatch-path move, not a behavior change. The three previously
+  adapter-coupled APM tests now drive the scheduler's native stage path
+  (`build_audit_workflow_runner(...)._run_stage(stage)`); the full planning
+  integration and permission approval-gate suites exercise the native binding
+  end-to-end. Focused verification passed `7` APM tests, `115` across
+  `test_workflow_v2.py`/`test_workflow_scheduler_golden.py`/
+  `test_agent_runtime_import_boundaries.py`/`test_agent_capability_composition.py`/
+  `test_agent_unit_pipeline.py`, `130` across planning/command-agent/executor/
+  worker/runtime-contract suites, `58` across runner/API/chats/RCM-e2e, and the
+  full backend suite passed `685` tests in `105.96s`. No frontend consumer reads
+  the `proposal_reused`/`proposal_reuse_rejected` payloads, and no API or
+  frontend contract changed, so a frontend build was not required. The exact
+  next task is `P7C.2`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1666,7 +1703,7 @@ the remaining v3 handlers to declarations, workers, and executors.
   `P7A.2` blocker note.)
 - [x] `P7B.1` Move the completed `planning.apm_ready` declaration and registry
   wiring into the grouped planning modules without changing identity.
-- [ ] `P7B.2` Remove the temporary APM vertical-slice adapter and prove the
+- [x] `P7B.2` Remove the temporary APM vertical-slice adapter and prove the
   Phase 5 behavior through the authoritative audit workflow.
 - [x] `P7C.1` Move `planning.rcm_ready` readiness and semantic units into grouped
   declarations (context, matching, and worker/validation migrate in `P7C.2`).
