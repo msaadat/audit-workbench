@@ -33,11 +33,13 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7C.2` (RCM execution writer-switch) is the next unblocked
-  slice; `P7A.2` remains deferred (Phase-9-coupled — see note).
-- Last completed task: `P7B.2` — the APM capability is now a native pipeline
-  binding driven by the domain-neutral `WorkflowRunner`; the transitional
-  `_apm` batch adapter was removed.
+- Current task: `P7I.2` (deterministic working-paper executor) is the next
+  clean deterministic slice; the model-backed `P7C.2`/`P7D.2` remain, and
+  `P7A.2`/`P7F.2`/`P7F.3` stay deferred (Phase-9-coupled — see notes).
+- Last completed task: `P7L.2` — `audit.verified` now runs through the
+  scheduler's new domain-neutral deterministic execution path; its `_verify`
+  batch handler was removed and its computation extracted to
+  `executors/reporting.py`.
 - Done: the readiness + unit-expansion declarations for **all 12** audit
   capabilities are now locally owned in the grouped `capabilities` modules and
   golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
@@ -46,10 +48,11 @@ no historical reader or resume adapter is retained.
   executor (commit + reconcile) is landed and unit-tested. `planning.apm_ready`
   (`P7B.2`) is the first capability whose live execution runs through the
   scheduler's native `pipeline_binder` path rather than a transitional batch
-  handler.
+  handler. `audit.verified` (`P7L.2`) is the first capability on the scheduler's
+  new deterministic (no-model) execution path.
 - Active blockers: the `.2` execution writer-switches (workers/executors/handler
   removal) remain for the RCM, planned-tests, definitions, fieldwork execution,
-  rollup, findings, working-papers, dashboard, report, and verify families.
+  rollup, findings, working-papers, dashboard, and report families.
   `P7A.2`'s remaining pieces (context-synthesis worker + context declaration +
   pipeline switch + `_planning_basis` removal) are the Phase-9-coupled part
   deferred per the `P7A.2` note; its `planning.context` commit executor is
@@ -73,7 +76,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7C.2` (`P7A.2` deferred) |
+| 7 | In progress | `P7I.2` (deterministic slices) |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -1024,6 +1027,34 @@ status notes below.
   the `proposal_reused`/`proposal_reuse_rejected` payloads, and no API or
   frontend contract changed, so a frontend build was not required. The exact
   next task is `P7C.2`.
+- `P7L.2` completed on 2026-07-23. `audit.verified` is the first capability on a
+  new domain-neutral **deterministic execution path** added to the scheduler.
+  `WorkflowRunner` now recognizes a third `CapabilityExecution` binding kind —
+  `deterministic_executor` (alongside `pipeline_binder` and the transitional
+  batch executor) — and `_run_deterministic_units` runs each unit, requires a
+  returned `DeterministicUnitResult(status, result_refs, error)`, and folds it
+  through the existing generic stage logic. The scheduler gained no audit
+  awareness. The read-only verification computation moved out of the audit
+  adapter's `_verify` batch method into `executors/reporting.py::verify_audit`
+  (a pure `Workspace -> outcome` function reused by the terminal capability); the
+  adapter now exposes only a thin `_bind_verify` that records `run["audit_outcome"]`
+  and derives the terminal `succeeded`/`blocked` unit status, and
+  `build_audit_workflow_runner` binds `audit.verified` as deterministic-backed.
+  The `audit_outcome` shape, `audit:verification` result ref, and completion
+  projection are unchanged, so the full-run `test_command_agent` verification
+  assertions pass untouched. New focused tests: two in
+  `test_workflow_scheduler_golden.py` (a synthetic deterministic binding runs and
+  folds a non-succeeded status to `review_required`; `CapabilityExecution`
+  requires exactly one binding kind) and three in
+  `test_agent_reporting_executor.py` (verification is read-only and
+  deterministic; reports incomplete when outputs are missing). This deterministic
+  path is the reusable mechanism for the remaining deterministic slices
+  (`P7I.2` working papers, `P7J.2` dashboard, `P7G.2` rollup). Focused
+  verification passed `18` deterministic/golden/reporting tests and `217` across
+  command-agent, workflow, boundary, composition, runtime-contract, unit-pipeline,
+  and planning suites; the full backend suite passed `690` tests in `106.75s`.
+  No API or frontend contract changed (no frontend consumer reads `audit_outcome`),
+  so a frontend build was not required. The exact next task is `P7I.2`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1755,7 +1786,7 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7L.1` Move audit-verification readiness and quality checks into the
   reporting capability module (the deterministic verification executor migrates
   in `P7L.2`).
-- [ ] `P7L.2` Extract the deterministic verification executor, switch
+- [x] `P7L.2` Extract the deterministic verification executor, switch
   verification, preserve completion projections, and remove the final
   audit-specific scheduler handler.
 - [ ] `P7.3` Replace `audit_capabilities.py` and `audit_workers.py` with

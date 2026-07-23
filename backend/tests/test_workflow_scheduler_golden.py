@@ -14,6 +14,7 @@ from app.agent import workflow
 from app.agent.runtime.workflow_runner import (
     CapabilityExecution,
     CapabilityExecutionRegistry,
+    DeterministicUnitResult,
     FinishProjection,
     WorkflowRunner,
 )
@@ -818,6 +819,102 @@ def test_generation_mode_normalization_is_explicit_and_deterministic():
         assert "reuse_existing" in str(error)
     else:
         raise AssertionError("legacy generation modes must fail closed")
+
+
+def _deterministic_executions(
+    registry: workflow.CapabilityRegistry,
+    executor,
+) -> CapabilityExecutionRegistry:
+    executions = CapabilityExecutionRegistry()
+    for capability in registry.all():
+        executions.register(
+            CapabilityExecution(
+                capability_id=capability.id,
+                implementation_hash="sha256:" + "4" * 64,
+                deterministic_executor=executor,
+            )
+        )
+    return executions
+
+
+def test_extracted_scheduler_runs_deterministic_bindings_and_folds():
+    catalog = SyntheticCatalog(ready_outcomes=frozenset({SOURCES_READY}))
+    run = {
+        "id": "run_deterministic",
+        "command": {"status": "queued"},
+        "limits": {"max_execution_attempts": 2, "max_units_per_stage": 20},
+    }
+    runtime = SyntheticRuntime(run)
+    seen: list[tuple[str, str]] = []
+
+    def deterministic(subject, run_arg, capability, _stage, unit):
+        # The scheduler hands the deterministic executor the local subject and
+        # run without wrapping either in a model pipeline.
+        assert subject is catalog
+        assert run_arg is run
+        seen.append((capability.id, unit["id"]))
+        if capability.id == PUBLISHED:
+            return DeterministicUnitResult("blocked", (), "publish gate is open")
+        return DeterministicUnitResult(
+            "succeeded", (f"synthetic:{unit['id']}",)
+        )
+
+    registry = synthetic_registry()
+    runner = WorkflowRunner(
+        subject=catalog,
+        run=run,
+        runtime=runtime,
+        registry=registry,
+        executions=_deterministic_executions(registry, deterministic),
+    )
+    runner.materialize([PUBLISHED])
+    runner.execute()
+
+    stages = {stage["capability"]: stage for stage in run["workflow"]["stages"]}
+    assert stages[RECORDS_READY]["status"] == "succeeded"
+    assert {unit["status"] for unit in stages[RECORDS_READY]["units"]} == {
+        "succeeded"
+    }
+    assert stages[RECORDS_READY]["units"][0]["result_refs"] == [
+        "synthetic:catalog-record:alpha"
+    ]
+    # A non-succeeded deterministic status folds through the generic stage logic.
+    assert stages[PUBLISHED]["status"] == "review_required"
+    assert stages[PUBLISHED]["units"][0]["status"] == "blocked"
+    assert stages[PUBLISHED]["units"][0]["error"] == "publish gate is open"
+    assert run["status"] == "completed_with_open_items"
+    assert (RECORDS_READY, "catalog-record:alpha") in seen
+    assert (PUBLISHED, "publish:catalog") in seen
+
+
+def test_capability_execution_requires_exactly_one_binding():
+    valid = CapabilityExecution(
+        capability_id="x",
+        implementation_hash="sha256:" + "5" * 64,
+        deterministic_executor=lambda *_args: DeterministicUnitResult("succeeded"),
+    )
+    assert valid.deterministic_backed
+    assert not valid.pipeline_backed
+
+    for kwargs in (
+        {},
+        {
+            "deterministic_executor": lambda *_a: DeterministicUnitResult(
+                "succeeded"
+            ),
+            "transitional_batch_executor": lambda _r, _s, _u: None,
+        },
+    ):
+        try:
+            CapabilityExecution(
+                capability_id="x",
+                implementation_hash="sha256:" + "5" * 64,
+                **kwargs,
+            )
+        except ValueError as error:
+            assert "exactly one" in str(error)
+        else:
+            raise AssertionError("invalid binding count must be rejected")
 
 
 def test_capability_execution_registry_rejects_duplicates_and_mismatched_graphs():

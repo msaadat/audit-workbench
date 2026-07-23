@@ -17,6 +17,7 @@ from .workflow_runner import (
     BoundUnitPipeline,
     CapabilityExecution,
     CapabilityExecutionRegistry,
+    DeterministicUnitResult,
     FinishProjection,
     WorkflowRunner,
 )
@@ -42,5 +43,6 @@ __all__ = [
     "BoundUnitPipeline",
     "CapabilityExecution",
     "CapabilityExecutionRegistry",
+    "DeterministicUnitResult",
     "WorkflowRunner",
 ]

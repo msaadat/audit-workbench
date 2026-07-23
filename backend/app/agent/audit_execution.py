@@ -36,10 +36,12 @@ from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
 )
+from .executors.reporting import VERIFICATION_REF, output_issues, verify_audit
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
     CapabilityExecutionRegistry,
+    DeterministicUnitResult,
     FinishProjection,
     RunRuntime,
     UnitPipeline,
@@ -958,56 +960,32 @@ class AuditWorkflowExecution(ActionRunner):
         except Exception as error:
             self._set_unit(stage, unit, "failed", error=str(error))
 
-    def _verify(self, stage: dict, units: list[dict]) -> None:
-        unit = units[0]
-        self._set_unit(stage, unit, "running")
-        try:
-            completion = rcm_execution.completion(self.ws)
-            quality = report.quality_checks(self.ws)
-            errors = [item for item in quality.get("issues") or [] if item.get("severity") == "error"]
-            output_states = {
-                capability: audit_capabilities.REGISTRY.get(capability).readiness(
-                    self.ws, {}
-                ).payload()
-                for capability in (
-                    "working_papers.generated", "dashboard.curated", "report.working_draft"
-                )
-            }
-            output_issues = [
-                capability
-                for capability, readiness in output_states.items()
-                if readiness.get("state") != "satisfied"
-            ]
-            self.run["audit_outcome"] = {
-                "audit_complete": completion["status"] == "completed" and not errors and not output_issues,
-                "completion_status": completion["status"],
-                "planned_tests_total": sum(len(row.get("planned_tests") or []) for row in self.ws.rcm),
-                "planned_tests_completed": sum(str(item.get("status") or "").startswith("completed") for row in self.ws.rcm for item in row.get("planned_tests") or []),
-                "planned_tests_review_required": sum(item.get("status") == "review_required" for row in self.ws.rcm for item in row.get("planned_tests") or []),
-                "planned_tests_blocked": sum(item.get("status") == "blocked" for row in self.ws.rcm for item in row.get("planned_tests") or []),
-                "data_tests_required": sum("datatest" in rcm_execution.required_execution_kinds(item.get("method") or "") for row in self.ws.rcm for item in row.get("planned_tests") or []),
-                "data_tests_executed": sum(bool(item.get("last_run")) for item in self.ws.data_tests if item.get("planned_test_id")),
-                "document_tests_required": sum("doctest" in rcm_execution.required_execution_kinds(item.get("method") or "") for row in self.ws.rcm for item in row.get("planned_tests") or []),
-                "document_tests_executed": sum(item.get("status") == "completed" for item in doc_tests.list_tests(self.ws)),
-                "open_observations": len(completion.get("open_observations") or []),
-                "supported_findings": sum(item.get("auditor_confirmed") and not findings.support_issues(self.ws, item) for item in self.ws.findings),
-                "draft_findings": sum(not item.get("auditor_confirmed") for item in self.ws.findings),
-                "report_quality_ok": not errors,
-                "report_quality_errors": len(errors),
-                "output_readiness": output_states,
-                "open_gate_count": len(completion.get("open_observations") or []) + int((completion.get("coverage") or {}).get("issue_count") or 0) + len(errors) + len(output_issues),
-            }
-            status = "succeeded" if self.run["audit_outcome"]["audit_complete"] else "blocked"
-            self._set_unit(
-                stage, unit, status,
-                error=None if status == "succeeded" else (
-                    f"Completion status: {completion['status']}; report errors: {len(errors)}; "
-                    f"output gates: {len(output_issues)}."
-                ),
-                result_refs=["audit:verification"],
-            )
-        except Exception as error:
-            self._set_unit(stage, unit, "failed", error=str(error))
+    def _bind_verify(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``audit.verified``.
+
+        Verification is read-only: it computes the completion/quality/output
+        outcome, records it on the run for the completion projection, and derives
+        the terminal unit status from it. No workspace mutation, model call, or
+        approval is involved.
+        """
+        self.ws = subject
+        outcome = verify_audit(self.ws)
+        self.run["audit_outcome"] = outcome
+        if outcome["audit_complete"]:
+            return DeterministicUnitResult("succeeded", (VERIFICATION_REF,))
+        error = (
+            f"Completion status: {outcome['completion_status']}; "
+            f"report errors: {outcome['report_quality_errors']}; "
+            f"output gates: {len(output_issues(outcome))}."
+        )
+        return DeterministicUnitResult("blocked", (VERIFICATION_REF,), error)
 
     # --------------------------------------------------------- concurrency
     def _parallel_candidates(self, stage: dict, units: list[dict], worker_fn):
@@ -1173,7 +1151,6 @@ _AUDIT_HANDLER_NAMES = {
     "working_papers.generated": "_working_papers",
     "dashboard.curated": "_dashboard",
     "report.working_draft": "_report",
-    "audit.verified": "_verify",
 }
 
 _PARTIAL_DEPENDENCIES = {
@@ -1222,6 +1199,14 @@ def build_audit_workflow_runner(
             {"worker": "planning.apm", "executor": "planning.apm"},
         ),
     }
+    # Deterministic (no-model) capabilities bound through the scheduler's
+    # deterministic execution path instead of the transitional batch adapter.
+    _DETERMINISTIC_BINDERS = {
+        "audit.verified": (
+            adapter._bind_verify,
+            {"deterministic": "reporting.verify"},
+        ),
+    }
     executions = CapabilityExecutionRegistry()
     for capability in audit_capabilities.REGISTRY.all():
         pipeline_binding = _PIPELINE_BINDERS.get(capability.id)
@@ -1234,6 +1219,19 @@ def build_audit_workflow_runner(
                         {"capability": capability.id, **identity}
                     ),
                     pipeline_binder=binder,
+                )
+            )
+            continue
+        deterministic_binding = _DETERMINISTIC_BINDERS.get(capability.id)
+        if deterministic_binding is not None:
+            binder, identity = deterministic_binding
+            executions.register(
+                CapabilityExecution(
+                    capability_id=capability.id,
+                    implementation_hash=_sha256_json(
+                        {"capability": capability.id, **identity}
+                    ),
+                    deterministic_executor=binder,
                 )
             )
             continue

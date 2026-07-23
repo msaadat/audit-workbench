@@ -73,6 +73,15 @@ class BoundUnitPipeline:
     conflict_handler: ConflictHandler | None = None
 
 
+@dataclass(frozen=True)
+class DeterministicUnitResult:
+    """Outcome of one deterministic (no-model) unit execution."""
+
+    status: str
+    result_refs: tuple[str, ...] = ()
+    error: str | None = None
+
+
 PipelineBinder = Callable[
     [Any, dict[str, Any], workflow.Capability, dict[str, Any], dict[str, Any]],
     BoundUnitPipeline,
@@ -80,16 +89,27 @@ PipelineBinder = Callable[
 BatchExecutor = Callable[
     ["WorkflowRunner", dict[str, Any], list[dict[str, Any]]], None
 ]
+DeterministicExecutor = Callable[
+    [Any, dict[str, Any], workflow.Capability, dict[str, Any], dict[str, Any]],
+    DeterministicUnitResult,
+]
 
 
 @dataclass(frozen=True)
 class CapabilityExecution:
-    """Hash-identified execution binding for one capability declaration."""
+    """Hash-identified execution binding for one capability declaration.
+
+    Exactly one binding kind is supplied: a ``pipeline_binder`` (model
+    worker + executor through :class:`UnitPipeline`), a ``deterministic_executor``
+    (a no-model per-unit computation/commit), or a transitional batch executor
+    retained for capability families still awaiting their Phase 7 migration.
+    """
 
     capability_id: str
     implementation_hash: str
     pipeline_binder: PipelineBinder | None = None
     transitional_batch_executor: BatchExecutor | None = None
+    deterministic_executor: DeterministicExecutor | None = None
 
     def __post_init__(self) -> None:
         capability_id = str(self.capability_id or "").strip()
@@ -102,11 +122,16 @@ class CapabilityExecution:
             )
         bindings = sum(
             value is not None
-            for value in (self.pipeline_binder, self.transitional_batch_executor)
+            for value in (
+                self.pipeline_binder,
+                self.transitional_batch_executor,
+                self.deterministic_executor,
+            )
         )
         if bindings != 1:
             raise ValueError(
-                "Capability execution requires exactly one pipeline or transitional binding."
+                "Capability execution requires exactly one pipeline, deterministic, "
+                "or transitional binding."
             )
         object.__setattr__(self, "capability_id", capability_id)
         object.__setattr__(self, "implementation_hash", implementation_hash)
@@ -114,6 +139,10 @@ class CapabilityExecution:
     @property
     def pipeline_backed(self) -> bool:
         return self.pipeline_binder is not None
+
+    @property
+    def deterministic_backed(self) -> bool:
+        return self.deterministic_executor is not None
 
 
 class CapabilityExecutionRegistry:
@@ -463,6 +492,8 @@ class WorkflowRunner:
         execution = self.executions.get(capability.id)
         if execution.pipeline_backed:
             self._run_pipeline_units(execution, capability, stage, units)
+        elif execution.deterministic_backed:
+            self._run_deterministic_units(execution, capability, stage, units)
         else:
             assert execution.transitional_batch_executor is not None
             execution.transitional_batch_executor(self, stage, units)
@@ -539,6 +570,43 @@ class WorkflowRunner:
                     self.set_unit(stage, unit, status, error=message)
                 else:
                     self.set_unit(stage, unit, "conflict", error=str(error))
+            except (Cancelled, LimitExceeded):
+                raise
+            except Exception as error:
+                self.set_unit(stage, unit, "failed", error=str(error))
+
+    def _run_deterministic_units(
+        self,
+        execution: CapabilityExecution,
+        capability: workflow.Capability,
+        stage: dict[str, Any],
+        units: list[dict[str, Any]],
+    ) -> None:
+        assert execution.deterministic_executor is not None
+        for unit in sorted(units, key=lambda item: str(item["id"])):
+            if unit.get("status") in {"succeeded", "skipped"}:
+                continue
+            self.runtime.checkpoint()
+            self.set_unit(stage, unit, "running")
+            try:
+                result = execution.deterministic_executor(
+                    self.subject,
+                    self.run,
+                    capability,
+                    stage,
+                    unit,
+                )
+                if not isinstance(result, DeterministicUnitResult):
+                    raise ValueError(
+                        "Deterministic executor must return DeterministicUnitResult."
+                    )
+                self.set_unit(
+                    stage,
+                    unit,
+                    result.status,
+                    error=result.error,
+                    result_refs=list(result.result_refs),
+                )
             except (Cancelled, LimitExceeded):
                 raise
             except Exception as error:
