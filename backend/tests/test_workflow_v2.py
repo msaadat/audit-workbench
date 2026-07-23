@@ -834,6 +834,45 @@ def test_parallel_candidate_reuses_durable_sidecar_without_model_rebilling():
     }
 
 
+def test_working_papers_generate_through_deterministic_scheduler_path():
+    ws = _planning_workspace("Working paper stage")
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Generate the working papers",
+            "requested_outcomes": ["working_papers.generated"],
+            "generation_mode": "force",
+        },
+    )
+    assert initialize_known_workflow(ws, run) is True
+    run = store.load_run(ws, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "working_papers.generated"
+    )
+    command = build_audit_workflow_runner(
+        ws, run, runner.RunHandle(ws.id, run["id"])
+    )
+
+    # execute() refreshes the subject from disk before each stage; mirror that
+    # here so the stage runs against a disk-consistent workspace.
+    command._refresh()
+    command._run_stage(stage)
+
+    rcm_id = ws.rcm[0]["id"]
+    # The deterministic path committed the paper file and folded a succeeded unit.
+    assert (ws.root / "WorkingPapers" / f"{rcm_id}.json").is_file()
+    unit = stage["units"][0]
+    assert unit["status"] == "succeeded"
+    assert unit["result_refs"] == [f"working_paper:{rcm_id}"]
+    assert stage["status"] == "succeeded"
+    # Deterministic execution makes no provider call.
+    assert run["usage"]["llm_turns"] == 0
+
+
 def _apm_only_runner(workspace, *, context_resolver=None):
     run = store.new_command_run(
         workspace,

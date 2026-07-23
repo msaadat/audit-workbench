@@ -1,18 +1,40 @@
 """Deterministic executors for audit reporting/verification capabilities.
 
 These executors perform no model calls. ``verify_audit`` is a pure, read-only
-computation of the audit-verification outcome; the audit lifecycle's terminal
-``audit.verified`` capability binds it through the scheduler's deterministic
-execution path.
+computation of the audit-verification outcome; ``generate_working_paper`` renders
+and commits one RCM working paper. Both bind through the scheduler's
+deterministic execution path — ``audit.verified`` (read-only) and
+``working_papers.generated`` (per-RCM commit).
 """
 
 from __future__ import annotations
 
 from .. import audit_capabilities
-from ... import doc_tests, findings, rcm_execution, report
+from ... import doc_tests, findings, rcm_execution, report, working_papers
 from ...workspaces import Workspace
 
 VERIFICATION_REF = "audit:verification"
+WORKING_PAPER_REF_PREFIX = "working_paper"
+
+
+def working_paper_ref(rcm_id: str) -> str:
+    """The stable artifact reference for one RCM working paper."""
+
+    return f"{WORKING_PAPER_REF_PREFIX}:{rcm_id}"
+
+
+def generate_working_paper(workspace: Workspace, rcm_id: str) -> str:
+    """Render and commit one RCM working paper; return its artifact reference.
+
+    Deterministic and self-committing: ``working_papers.generate_rcm`` renders the
+    paper from current RCM and linked execution state, then writes it under a
+    parent-hash-guarded ``mutate``. A changed RCM parent therefore surfaces as a
+    :class:`WorkspaceConflict` instead of overwriting a paper generated against a
+    different basis. No model call is involved.
+    """
+
+    working_papers.generate_rcm(workspace, rcm_id)
+    return working_paper_ref(rcm_id)
 
 # The output capabilities whose structural readiness gates audit completion.
 _OUTPUT_CAPABILITIES = (
@@ -119,4 +141,11 @@ def verify_audit(workspace: Workspace) -> dict:
     }
 
 
-__all__ = ["VERIFICATION_REF", "output_issues", "verify_audit"]
+__all__ = [
+    "VERIFICATION_REF",
+    "WORKING_PAPER_REF_PREFIX",
+    "generate_working_paper",
+    "output_issues",
+    "verify_audit",
+    "working_paper_ref",
+]

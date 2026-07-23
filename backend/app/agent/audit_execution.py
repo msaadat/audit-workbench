@@ -16,7 +16,6 @@ from .. import (
     rcm_execution,
     report,
     templates_store,
-    working_papers,
 )
 from ..workspace_transactions import canonical_sha1, mutate, parent_hashes
 from ..workspaces import (
@@ -36,7 +35,12 @@ from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
 )
-from .executors.reporting import VERIFICATION_REF, output_issues, verify_audit
+from .executors.reporting import (
+    VERIFICATION_REF,
+    generate_working_paper,
+    output_issues,
+    verify_audit,
+)
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -919,18 +923,28 @@ class AuditWorkflowExecution(ActionRunner):
             if unit["id"] not in accepted_ids and unit["status"] == "running":
                 self._set_unit(stage, unit, "blocked", error="The finding draft was not approved.")
 
-    def _working_papers(self, stage: dict, units: list[dict]) -> None:
-        for unit in units:
-            self.checkpoint()
-            self._set_unit(stage, unit, "running")
-            try:
-                rcm_id = unit["parent_refs"][0].split(":", 1)[1]
-                paper = working_papers.generate_rcm(self.ws, rcm_id)
-                self._set_unit(stage, unit, "succeeded", result_refs=[f"working_paper:{rcm_id}"])
-            except WorkspaceConflict as error:
-                self._set_unit(stage, unit, "conflict", error=str(error))
-            except Exception as error:
-                self._set_unit(stage, unit, "failed", error=str(error))
+    def _bind_working_papers(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``working_papers.generated``.
+
+        Each unit renders and commits one RCM working paper. Generation is a pure
+        projection of current RCM/execution state, and the commit is parent-hash
+        guarded, so a changed RCM parent surfaces as a conflict rather than an
+        overwrite. No model call or approval is involved.
+        """
+        self.ws = subject
+        rcm_id = unit["parent_refs"][0].split(":", 1)[1]
+        try:
+            ref = generate_working_paper(self.ws, rcm_id)
+        except WorkspaceConflict as error:
+            return DeterministicUnitResult("conflict", error=str(error))
+        return DeterministicUnitResult("succeeded", (ref,))
 
     def _dashboard(self, stage: dict, units: list[dict]) -> None:
         unit = units[0]
@@ -1148,7 +1162,6 @@ _AUDIT_HANDLER_NAMES = {
     "fieldwork.executed": "_executions",
     "results.rolled_up": "_rollup",
     "findings.drafted": "_finding_drafts",
-    "working_papers.generated": "_working_papers",
     "dashboard.curated": "_dashboard",
     "report.working_draft": "_report",
 }
@@ -1202,6 +1215,10 @@ def build_audit_workflow_runner(
     # Deterministic (no-model) capabilities bound through the scheduler's
     # deterministic execution path instead of the transitional batch adapter.
     _DETERMINISTIC_BINDERS = {
+        "working_papers.generated": (
+            adapter._bind_working_papers,
+            {"deterministic": "reporting.working_paper"},
+        ),
         "audit.verified": (
             adapter._bind_verify,
             {"deterministic": "reporting.verify"},

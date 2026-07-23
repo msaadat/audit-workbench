@@ -1,12 +1,16 @@
-"""Focused tests for the deterministic audit-verification executor."""
+"""Focused tests for the deterministic audit reporting executors."""
 
 from __future__ import annotations
+
+import json
 
 from app import workspaces
 from app.agent.executors.reporting import (
     VERIFICATION_REF,
+    generate_working_paper,
     output_issues,
     verify_audit,
+    working_paper_ref,
 )
 
 
@@ -48,3 +52,35 @@ def test_verify_audit_reports_incomplete_when_outputs_missing():
 
 def test_verification_ref_is_the_stable_artifact_reference():
     assert VERIFICATION_REF == "audit:verification"
+
+
+def test_generate_working_paper_commits_paper_and_returns_stable_ref():
+    ws = workspaces.create_workspace("Working paper generation")
+    row = ws.add_rcm(
+        {"process": "AP", "risk": "Duplicate payments", "control": "Duplicate check"}
+    )
+
+    ref = generate_working_paper(ws, row["id"])
+
+    assert ref == working_paper_ref(row["id"]) == f"working_paper:{row['id']}"
+    paper_path = ws.root / "WorkingPapers" / f"{row['id']}.json"
+    assert paper_path.is_file()
+    paper = json.loads(paper_path.read_text(encoding="utf-8"))
+    assert paper["rcm_id"] == row["id"]
+    assert paper["markdown"].startswith(f"# RCM Working Paper — {row['id']}")
+
+
+def test_generate_working_paper_is_deterministic_over_unchanged_state():
+    ws = workspaces.create_workspace("Working paper determinism")
+    row = ws.add_rcm({"process": "AP", "risk": "Duplicate payments"})
+    paper_path = ws.root / "WorkingPapers" / f"{row['id']}.json"
+
+    generate_working_paper(ws, row["id"])
+    first = json.loads(paper_path.read_text(encoding="utf-8"))
+    generate_working_paper(ws, row["id"])
+    second = json.loads(paper_path.read_text(encoding="utf-8"))
+
+    # The rendered content (and its content hash) is a pure projection of the
+    # unchanged RCM/execution state; only the wall-clock stamp differs.
+    assert second["markdown"] == first["markdown"]
+    assert second["source_sha1"] == first["source_sha1"]

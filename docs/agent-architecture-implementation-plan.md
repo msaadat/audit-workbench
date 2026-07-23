@@ -33,13 +33,14 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7I.2` (deterministic working-paper executor) is the next
-  clean deterministic slice; the model-backed `P7C.2`/`P7D.2` remain, and
+- Current task: `P7J.2` (conflict-aware dashboard tile executor) is the next
+  clean deterministic slice; the model-backed `P7C.2`/`P7D.2` remain, `P7G.2`
+  (rollup + observation checkpoint) is a heavier deterministic slice, and
   `P7A.2`/`P7F.2`/`P7F.3` stay deferred (Phase-9-coupled — see notes).
-- Last completed task: `P7L.2` — `audit.verified` now runs through the
-  scheduler's new domain-neutral deterministic execution path; its `_verify`
-  batch handler was removed and its computation extracted to
-  `executors/reporting.py`.
+- Last completed task: `P7I.2` — `working_papers.generated` now runs through the
+  scheduler's domain-neutral deterministic execution path; its `_working_papers`
+  batch handler was removed and generation extracted to
+  `executors/reporting.py::generate_working_paper`.
 - Done: the readiness + unit-expansion declarations for **all 12** audit
   capabilities are now locally owned in the grouped `capabilities` modules and
   golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
@@ -49,10 +50,12 @@ no historical reader or resume adapter is retained.
   (`P7B.2`) is the first capability whose live execution runs through the
   scheduler's native `pipeline_binder` path rather than a transitional batch
   handler. `audit.verified` (`P7L.2`) is the first capability on the scheduler's
-  new deterministic (no-model) execution path.
+  deterministic (no-model) execution path, and `working_papers.generated`
+  (`P7I.2`) is the second — the first deterministic slice that mutates
+  (renders + commits per-RCM working papers) rather than being read-only.
 - Active blockers: the `.2` execution writer-switches (workers/executors/handler
   removal) remain for the RCM, planned-tests, definitions, fieldwork execution,
-  rollup, findings, working-papers, dashboard, and report families.
+  rollup, findings, dashboard, and report families.
   `P7A.2`'s remaining pieces (context-synthesis worker + context declaration +
   pipeline switch + `_planning_basis` removal) are the Phase-9-coupled part
   deferred per the `P7A.2` note; its `planning.context` commit executor is
@@ -76,7 +79,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7I.2` (deterministic slices) |
+| 7 | In progress | `P7J.2` (deterministic slices) |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -1055,6 +1058,41 @@ status notes below.
   and planning suites; the full backend suite passed `690` tests in `106.75s`.
   No API or frontend contract changed (no frontend consumer reads `audit_outcome`),
   so a frontend build was not required. The exact next task is `P7I.2`.
+- `P7I.2` completed on 2026-07-23. `working_papers.generated` is now the second
+  capability on the scheduler's deterministic execution path, and the first
+  deterministic slice that **mutates** (renders and commits per-RCM working
+  papers) rather than being read-only like `audit.verified`. The transitional
+  `AuditWorkflowExecution._working_papers` batch method — which looped units,
+  called `working_papers.generate_rcm`, and translated `WorkspaceConflict` to a
+  `conflict` unit status — was deleted and replaced by a thin `_bind_working_papers`
+  deterministic binder returning `DeterministicUnitResult`. Generation itself was
+  extracted to `executors/reporting.py::generate_working_paper` (a
+  `Workspace, rcm_id -> ref` function that delegates to the unchanged
+  `working_papers.generate_rcm`), with a `working_paper_ref` helper owning the
+  stable `working_paper:<rcm_id>` reference. Per-RCM commit stays parent-hash
+  guarded inside `generate_rcm`, so a changed RCM parent still surfaces as a
+  `conflict`; the binder catches `WorkspaceConflict` and preserves that status,
+  since the generic deterministic path folds only `Cancelled`/`LimitExceeded`
+  (re-raised) and other exceptions (`failed`). `_AUDIT_HANDLER_NAMES` lost
+  `working_papers.generated` and `_DETERMINISTIC_BINDERS` gained it; the unused
+  `working_papers` import was dropped from `audit_execution.py`. The `mutate`,
+  file layout, artifact ref, and readiness are unchanged, so this is a dispatch
+  move, not a behavior change. New focused tests: two in
+  `test_agent_reporting_executor.py` (`generate_working_paper` commits the paper
+  file and returns the stable ref; content/`source_sha1` is deterministic over
+  unchanged state) and one in `test_workflow_v2.py` that drives the
+  `working_papers.generated` stage through the scheduler's deterministic path
+  (`build_audit_workflow_runner(...)._refresh()` then `_run_stage(stage)`),
+  asserting the committed paper file, a succeeded unit with the
+  `working_paper:<rcm_id>` ref, and zero LLM turns. The stage-driving test mirrors
+  `execute()`'s pre-stage `_refresh()` because the in-memory subject diverges from
+  disk after materialization (the RCM rollup in `render_rcm` mutates the row) and
+  production always refreshes to disk before a stage. Focused verification passed
+  `6` reporting-executor + stage tests and `185` across
+  workflow/scheduler-golden/command-agent/composition/boundary/unit-pipeline
+  suites; the full backend suite passed `693` tests. No API or frontend contract
+  changed (no frontend consumer reads working-paper unit refs), so a frontend
+  build was not required. The exact next task is `P7J.2`.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1771,7 +1809,7 @@ the remaining v3 handlers to declarations, workers, and executors.
   the writer, and remove the old finding handler.
 - [x] `P7I.1` Move working-paper readiness and semantic units into the
   reporting capability module.
-- [ ] `P7I.2` Switch working-paper generation to a deterministic executor and
+- [x] `P7I.2` Switch working-paper generation to a deterministic executor and
   remove the old handler.
 - [x] `P7J.1` Move dashboard readiness and unit expansion into the reporting
   capability module (curation inputs and deterministic selection or declared
