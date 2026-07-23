@@ -33,14 +33,15 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7J.2` (conflict-aware dashboard tile executor) is the next
-  clean deterministic slice; the model-backed `P7C.2`/`P7D.2` remain, `P7G.2`
-  (rollup + observation checkpoint) is a heavier deterministic slice, and
-  `P7A.2`/`P7F.2`/`P7F.3` stay deferred (Phase-9-coupled — see notes).
-- Last completed task: `P7I.2` — `working_papers.generated` now runs through the
-  scheduler's domain-neutral deterministic execution path; its `_working_papers`
-  batch handler was removed and generation extracted to
-  `executors/reporting.py::generate_working_paper`.
+- Current task: `P7G.2` (rollup + observation checkpoint) is the remaining —
+  and heavier — deterministic slice; the model-backed `P7C.2`/`P7D.2`/`P7E.2`/
+  `P7E.3`/`P7H.2`/`P7K.2` remain, and `P7A.2`/`P7F.2`/`P7F.3` stay deferred
+  (Phase-9-coupled — see notes).
+- Last completed task: `P7J.2` — `dashboard.curated` now runs through the
+  scheduler's domain-neutral deterministic execution path; its `_dashboard` batch
+  handler was removed, curation extracted to
+  `executors/reporting.py::curate_dashboard`, and `dashboard.curate_rcm_tiles`
+  gained an RCM-parent compare-and-swap guard it previously lacked.
 - Done: the readiness + unit-expansion declarations for **all 12** audit
   capabilities are now locally owned in the grouped `capabilities` modules and
   golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
@@ -50,12 +51,14 @@ no historical reader or resume adapter is retained.
   (`P7B.2`) is the first capability whose live execution runs through the
   scheduler's native `pipeline_binder` path rather than a transitional batch
   handler. `audit.verified` (`P7L.2`) is the first capability on the scheduler's
-  deterministic (no-model) execution path, and `working_papers.generated`
-  (`P7I.2`) is the second — the first deterministic slice that mutates
-  (renders + commits per-RCM working papers) rather than being read-only.
+  deterministic (no-model) execution path; `working_papers.generated` (`P7I.2`)
+  is the second — the first deterministic slice that mutates (renders + commits
+  per-RCM working papers) rather than being read-only; and `dashboard.curated`
+  (`P7J.2`) is the third, which additionally closed a conflict-safety gap by
+  adding an RCM-parent compare-and-swap guard the prior handler lacked.
 - Active blockers: the `.2` execution writer-switches (workers/executors/handler
   removal) remain for the RCM, planned-tests, definitions, fieldwork execution,
-  rollup, findings, dashboard, and report families.
+  rollup, findings, and report families.
   `P7A.2`'s remaining pieces (context-synthesis worker + context declaration +
   pipeline switch + `_planning_basis` removal) are the Phase-9-coupled part
   deferred per the `P7A.2` note; its `planning.context` commit executor is
@@ -79,7 +82,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7J.2` (deterministic slices) |
+| 7 | In progress | `P7G.2` (rollup + observation checkpoint) |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -1093,6 +1096,49 @@ status notes below.
   suites; the full backend suite passed `693` tests. No API or frontend contract
   changed (no frontend consumer reads working-paper unit refs), so a frontend
   build was not required. The exact next task is `P7J.2`.
+- `P7J.2` completed on 2026-07-23. `dashboard.curated` is now the third
+  capability on the scheduler's deterministic execution path. The transitional
+  `AuditWorkflowExecution._dashboard` batch method was deleted and replaced by a
+  thin `_bind_dashboard` deterministic binder returning `DeterministicUnitResult`;
+  because the generic deterministic path emits no domain events, the binder
+  itself emits the `workspace_changed` `{"kind":"dashboard","id":"curation",
+  "action":"updated"}` signal the old handler produced. Curation itself was
+  extracted to `executors/reporting.py::curate_dashboard` (a
+  `Workspace, run_id -> [tile:<id>, ...]` function that delegates to the
+  unchanged `dashboard.curate_rcm_tiles` and owns the stable `tile:<id>`
+  reference via a new `dashboard_tile_ref` helper). This slice's one real design
+  decision was closing the conflict-awareness gap the task description called
+  out: `curate_rcm_tiles` computed a `workflow_parent_sha1` over the RCM but
+  never enforced it, so a concurrent RCM edit could pin tiles selected against a
+  stale matrix without any conflict surfacing. `dashboard.py::curate_rcm_tiles`
+  now wraps tile creation and the curation-record write in a single
+  `workspace_transactions.mutate` whose callback re-checks the RCM's material
+  hash against the value captured before scoring and raises `WorkspaceConflict`
+  on a mismatch; `sync_workspace` merges the committed result back into the
+  caller's in-memory instance, matching the `generate_rcm`/`sync_workspace`
+  precedent from `P7I.2`. The binder catches `WorkspaceConflict` and folds it to
+  a `conflict` unit status, mirroring `_bind_working_papers`. `_AUDIT_HANDLER_NAMES`
+  lost `dashboard.curated` and `_DETERMINISTIC_BINDERS` gained it; the unused
+  `dashboard` module import was dropped from `audit_execution.py` (the adapter
+  now reaches curation only through the extracted executor). The tile shape,
+  file layout, and readiness are unchanged for the non-conflict path, so this is
+  a dispatch move plus a genuine conflict-safety fix, not a behavior change to
+  the happy path. New focused tests: two in `test_agent_reporting_executor.py`
+  (`curate_dashboard` commits tiles and returns stable `tile:<id>` refs; a
+  concurrent RCM edit raises `WorkspaceConflict`) and one in `test_workflow_v2.py`
+  (`test_dashboard_curated_through_deterministic_scheduler_path`) that drives the
+  `dashboard.curated` stage through the scheduler's deterministic path
+  (`build_audit_workflow_runner(...)._refresh()` then `_run_stage(stage)`),
+  asserting the pinned tile, a succeeded unit with the `tile:<id>` ref, and zero
+  LLM turns. Focused verification passed `24` reporting-executor/dashboard/
+  scheduler-path tests and `143` across workflow/scheduler-golden/command-agent/
+  definition/e2e suites; the full backend suite passed `696` tests in `109.34s`.
+  No API or frontend contract changed (no frontend consumer reads dashboard-tile
+  unit refs), so a frontend build was not required. The exact next task is
+  `P7G.2` (rollup + observation checkpoint), the remaining deterministic slice;
+  it additionally moves the observation/disposition interaction to a declared
+  checkpoint and must prove pause/resume/auditor-edit, so it should be scoped
+  and flagged before starting rather than picked up as a routine continuation.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1814,7 +1860,7 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7J.1` Move dashboard readiness and unit expansion into the reporting
   capability module (curation inputs and deterministic selection or declared
   curation context migrate with `P7J.2`).
-- [ ] `P7J.2` Switch tile commits to a conflict-aware executor and remove the
+- [x] `P7J.2` Switch tile commits to a conflict-aware executor and remove the
   old dashboard handler.
 - [x] `P7K.1` Move report readiness and unit expansion into the reporting module
   (bounded context, reconciliation policy, prompt, schema validation, and source

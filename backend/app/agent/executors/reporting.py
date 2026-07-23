@@ -2,19 +2,21 @@
 
 These executors perform no model calls. ``verify_audit`` is a pure, read-only
 computation of the audit-verification outcome; ``generate_working_paper`` renders
-and commits one RCM working paper. Both bind through the scheduler's
-deterministic execution path — ``audit.verified`` (read-only) and
-``working_papers.generated`` (per-RCM commit).
+and commits one RCM working paper; ``curate_dashboard`` pins RCM-linked result
+tiles. All bind through the scheduler's deterministic execution path —
+``audit.verified`` (read-only), ``working_papers.generated`` (per-RCM commit),
+and ``dashboard.curated`` (RCM-parent-guarded curation).
 """
 
 from __future__ import annotations
 
 from .. import audit_capabilities
-from ... import doc_tests, findings, rcm_execution, report, working_papers
+from ... import dashboard, doc_tests, findings, rcm_execution, report, working_papers
 from ...workspaces import Workspace
 
 VERIFICATION_REF = "audit:verification"
 WORKING_PAPER_REF_PREFIX = "working_paper"
+DASHBOARD_TILE_REF_PREFIX = "tile"
 
 
 def working_paper_ref(rcm_id: str) -> str:
@@ -35,6 +37,26 @@ def generate_working_paper(workspace: Workspace, rcm_id: str) -> str:
 
     working_papers.generate_rcm(workspace, rcm_id)
     return working_paper_ref(rcm_id)
+
+
+def dashboard_tile_ref(tile_id: str) -> str:
+    """The stable artifact reference for one curated dashboard tile."""
+
+    return f"{DASHBOARD_TILE_REF_PREFIX}:{tile_id}"
+
+
+def curate_dashboard(workspace: Workspace, run_id: str | None = None) -> list[str]:
+    """Curate RCM dashboard tiles; return their stable artifact references.
+
+    Deterministic and self-committing: ``dashboard.curate_rcm_tiles`` scores the
+    current RCM-linked results and pins the strongest under a commit guarded on
+    the RCM's material hash, so a changed RCM basis surfaces as a
+    :class:`WorkspaceConflict` instead of pinning against a stale matrix. No model
+    call is involved.
+    """
+
+    result = dashboard.curate_rcm_tiles(workspace, run_id=run_id)
+    return [dashboard_tile_ref(tile["id"]) for tile in result["tiles"]]
 
 # The output capabilities whose structural readiness gates audit completion.
 _OUTPUT_CAPABILITIES = (
@@ -142,8 +164,11 @@ def verify_audit(workspace: Workspace) -> dict:
 
 
 __all__ = [
+    "DASHBOARD_TILE_REF_PREFIX",
     "VERIFICATION_REF",
     "WORKING_PAPER_REF_PREFIX",
+    "curate_dashboard",
+    "dashboard_tile_ref",
     "generate_working_paper",
     "output_issues",
     "verify_audit",

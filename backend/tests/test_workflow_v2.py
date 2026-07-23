@@ -873,6 +873,85 @@ def test_working_papers_generate_through_deterministic_scheduler_path():
     assert run["usage"]["llm_turns"] == 0
 
 
+def test_dashboard_curated_through_deterministic_scheduler_path(workspace_with_data):
+    ws = workspace_with_data
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nAccounts payable.",
+        }
+    )
+    row = ws.add_rcm(
+        {
+            "process": "Procurement",
+            "risk": "Vendor approval risk",
+            "control": "Vendor master control",
+            "risk_rating": "high",
+        }
+    )
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Vendor integrity test",
+            "objective": "Assess vendor and approval integrity.",
+            "method": "data_analytics",
+            "steps": ["Scan the amount population."],
+        },
+    )
+    data_test = data_tests.create(
+        ws,
+        {
+            "title": "Vendor integrity result",
+            "objective": "Identify management-relevant vendor integrity signals.",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "rcm_id": row["id"],
+            "planned_test_id": planned["id"],
+            "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
+        },
+    )
+    data_tests.run(ws, data_test["id"])
+
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Curate the dashboard",
+            "requested_outcomes": ["dashboard.curated"],
+            "generation_mode": "force",
+        },
+    )
+    assert initialize_known_workflow(ws, run) is True
+    run = store.load_run(ws, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "dashboard.curated"
+    )
+    command = build_audit_workflow_runner(
+        ws, run, runner.RunHandle(ws.id, run["id"])
+    )
+
+    # execute() refreshes the subject from disk before each stage; mirror that
+    # here so the stage runs against a disk-consistent workspace.
+    command._refresh()
+    command._run_stage(stage)
+
+    tile_id = f"rcm-{data_test['id'].casefold()}"
+    # The deterministic path pinned the tile and folded a succeeded unit whose
+    # ref is the stable ``tile:<id>``.
+    unit = stage["units"][0]
+    assert unit["status"] == "succeeded"
+    assert unit["result_refs"] == [f"tile:{tile_id}"]
+    assert stage["status"] == "succeeded"
+    reloaded = workspaces.load_workspace(ws.id)
+    assert reloaded.planning["dashboard_curation"]["created_count"] == 1
+    assert [tile["id"] for tile in reloaded.tiles] == [tile_id]
+    # Deterministic execution makes no provider call.
+    assert run["usage"]["llm_turns"] == 0
+
+
 def _apm_only_runner(workspace, *, context_resolver=None):
     run = store.new_command_run(
         workspace,

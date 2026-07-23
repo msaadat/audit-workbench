@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from . import analytics, data_tests, debug_store, doc_tests, explore, llm, rcm_execution, report, sandbox, validation
 from .agent.prompts import parse_json_object, validate_json_shape
-from .workspaces import Workspace, sync_workspace
+from .workspaces import Workspace, WorkspaceConflict, sync_workspace
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
 PHASE_TABS = {"planning": "planning", "fieldwork": "doc-tests", "report": "report"}
@@ -468,7 +468,14 @@ def curate_rcm_tiles(workspace: Workspace, *, run_id: str | None = None) -> dict
 
     Existing user/agent tiles are preserved. A Data Test is never pinned twice,
     and an invalid or review-required execution is never promoted to the dashboard.
+
+    Curation is a projection of the whole RCM, so the tile writes and the curation
+    record are committed under a compare-and-swap guarded on the RCM's material
+    hash: a concurrent RCM edit surfaces as a :class:`WorkspaceConflict` instead
+    of pinning tiles selected against a stale matrix.
     """
+    from .workspace_transactions import canonical_sha1, material_projection, mutate
+
     existing_ids = {item.get("data_test_id") for item in workspace.tiles if item.get("data_test_id")}
     candidates = []
     rejected = []
@@ -491,56 +498,63 @@ def curate_rcm_tiles(workspace: Workspace, *, run_id: str | None = None) -> dict
     )
     available = max(0, CURATED_TILE_MAX - len(workspace.tiles))
     selected = candidates[:available]
-    created = []
-    for candidate in selected:
-        item, result = candidate["item"], candidate["result"]
-        kind = {"polars": "python", "analytics": "analytics", "validation": "validation"}[item["engine"]]
-        spec = dict(item["spec"])
-        if kind == "analytics":
-            spec = {"test": spec["test_id"], "params": spec.get("params") or {}}
-        tile = workspace.add_tile(
-            {
-                "id": f"rcm-{item['id'].casefold()}",
-                "kind": kind,
-                "table": item["table_refs"][0] if item.get("table_refs") else None,
-                "title": item["title"],
-                "note": "RCM-curated: " + "; ".join(candidate["reasons"]),
-                "spec": spec,
-                "viz": dict(result.get("viz") or {"type": "table"}),
-                "data_test_id": item["id"],
-                "rcm_id": item["rcm_id"],
-                "planned_test_id": item["planned_test_id"],
-                "result_ref": f"datatest:{item['id']}:{result['id']}",
-                "agent_run_id": run_id,
-            }
-        )
-        created.append(tile)
     actionable = len(candidates)
-    reason = None
-    if not created:
-        reason = (
-            "No semantically valid, non-duplicate RCM-linked result scored above the curation threshold."
-            if not actionable else "Relevant results are already pinned or the dashboard is at its six-tile curation cap."
-        )
-    from .workspace_transactions import canonical_sha1, material_projection
+    # The whole RCM is the curation basis; commit only if it is unchanged.
+    expected_rcm_sha1 = canonical_sha1({"rcm": material_projection(workspace.rcm)})
 
-    curation = {
-        "completed_at": _now(),
-        "run_id": run_id,
-        "candidate_count": actionable,
-        "created_count": len(created),
-        "tile_ids": [item["id"] for item in created],
-        "no_tile_reason": reason,
-        "coverage_ok": bool(created or reason or not actionable),
-        "below_recommended_minimum": bool(actionable >= CURATED_TILE_MIN and len(workspace.tiles) < CURATED_TILE_MIN),
-        "rejected": rejected[:20],
-        "workflow_parent_sha1": canonical_sha1(
-            {"rcm": material_projection(workspace.rcm)}
-        ),
-    }
-    workspace.planning["dashboard_curation"] = curation
-    workspace.save()
-    return {"tiles": created, "curation": curation}
+    def commit(fresh: Workspace) -> dict:
+        current_rcm_sha1 = canonical_sha1({"rcm": material_projection(fresh.rcm)})
+        if current_rcm_sha1 != expected_rcm_sha1:
+            raise WorkspaceConflict(fresh.revision, fresh.revision)
+        created = []
+        for candidate in selected:
+            item, result = candidate["item"], candidate["result"]
+            kind = {"polars": "python", "analytics": "analytics", "validation": "validation"}[item["engine"]]
+            spec = dict(item["spec"])
+            if kind == "analytics":
+                spec = {"test": spec["test_id"], "params": spec.get("params") or {}}
+            tile = fresh.add_tile(
+                {
+                    "id": f"rcm-{item['id'].casefold()}",
+                    "kind": kind,
+                    "table": item["table_refs"][0] if item.get("table_refs") else None,
+                    "title": item["title"],
+                    "note": "RCM-curated: " + "; ".join(candidate["reasons"]),
+                    "spec": spec,
+                    "viz": dict(result.get("viz") or {"type": "table"}),
+                    "data_test_id": item["id"],
+                    "rcm_id": item["rcm_id"],
+                    "planned_test_id": item["planned_test_id"],
+                    "result_ref": f"datatest:{item['id']}:{result['id']}",
+                    "agent_run_id": run_id,
+                }
+            )
+            created.append(tile)
+        reason = None
+        if not created:
+            reason = (
+                "No semantically valid, non-duplicate RCM-linked result scored above the curation threshold."
+                if not actionable else "Relevant results are already pinned or the dashboard is at its six-tile curation cap."
+            )
+        curation = {
+            "completed_at": _now(),
+            "run_id": run_id,
+            "candidate_count": actionable,
+            "created_count": len(created),
+            "tile_ids": [item["id"] for item in created],
+            "no_tile_reason": reason,
+            "coverage_ok": bool(created or reason or not actionable),
+            "below_recommended_minimum": bool(actionable >= CURATED_TILE_MIN and len(fresh.tiles) < CURATED_TILE_MIN),
+            "rejected": rejected[:20],
+            "workflow_parent_sha1": expected_rcm_sha1,
+        }
+        fresh.planning["dashboard_curation"] = curation
+        fresh.save()
+        return {"tiles": created, "curation": curation}
+
+    result = mutate(workspace, commit)
+    sync_workspace(workspace, result.workspace)
+    return result.value
 
 
 def dashboard_payload(workspace: Workspace) -> dict:

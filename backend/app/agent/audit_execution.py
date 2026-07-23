@@ -8,7 +8,6 @@ import json
 import uuid
 
 from .. import (
-    dashboard,
     data_tests,
     doc_tests,
     documents,
@@ -37,6 +36,7 @@ from .executors.planning import (
 )
 from .executors.reporting import (
     VERIFICATION_REF,
+    curate_dashboard,
     generate_working_paper,
     output_issues,
     verify_audit,
@@ -946,15 +946,32 @@ class AuditWorkflowExecution(ActionRunner):
             return DeterministicUnitResult("conflict", error=str(error))
         return DeterministicUnitResult("succeeded", (ref,))
 
-    def _dashboard(self, stage: dict, units: list[dict]) -> None:
-        unit = units[0]
-        self._set_unit(stage, unit, "running")
+    def _bind_dashboard(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``dashboard.curated``.
+
+        Curation scores the current RCM-linked results and pins the strongest
+        tiles under a commit guarded on the RCM's material hash, so a changed RCM
+        basis surfaces as a conflict rather than pinning against a stale matrix.
+        On success the binder emits the ``workspace_changed`` dashboard signal the
+        generic deterministic path does not. No model call or approval is involved.
+        """
+        self.ws = subject
         try:
-            result = dashboard.curate_rcm_tiles(self.ws, run_id=self.run["id"])
-            self._set_unit(stage, unit, "succeeded", result_refs=[f"tile:{item['id']}" for item in result["tiles"]])
-            self.emit("workspace_changed", {"kind": "dashboard", "id": "curation", "action": "updated"})
-        except Exception as error:
-            self._set_unit(stage, unit, "failed", error=str(error))
+            refs = curate_dashboard(self.ws, run_id=self.run["id"])
+        except WorkspaceConflict as error:
+            return DeterministicUnitResult("conflict", error=str(error))
+        self.emit(
+            "workspace_changed",
+            {"kind": "dashboard", "id": "curation", "action": "updated"},
+        )
+        return DeterministicUnitResult("succeeded", tuple(refs))
 
     def _report(self, stage: dict, units: list[dict]) -> None:
         unit = units[0]
@@ -1162,7 +1179,6 @@ _AUDIT_HANDLER_NAMES = {
     "fieldwork.executed": "_executions",
     "results.rolled_up": "_rollup",
     "findings.drafted": "_finding_drafts",
-    "dashboard.curated": "_dashboard",
     "report.working_draft": "_report",
 }
 
@@ -1218,6 +1234,10 @@ def build_audit_workflow_runner(
         "working_papers.generated": (
             adapter._bind_working_papers,
             {"deterministic": "reporting.working_paper"},
+        ),
+        "dashboard.curated": (
+            adapter._bind_dashboard,
+            {"deterministic": "reporting.dashboard"},
         ),
         "audit.verified": (
             adapter._bind_verify,

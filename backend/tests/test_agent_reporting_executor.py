@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 
-from app import workspaces
+import pytest
+
+from app import data_tests, workspaces
 from app.agent.executors.reporting import (
     VERIFICATION_REF,
+    curate_dashboard,
+    dashboard_tile_ref,
     generate_working_paper,
     output_issues,
     verify_audit,
     working_paper_ref,
 )
+from app.workspaces import WorkspaceConflict
 
 
 _OUTPUT_CAPABILITIES = {
@@ -84,3 +89,61 @@ def test_generate_working_paper_is_deterministic_over_unchanged_state():
     # unchanged RCM/execution state; only the wall-clock stamp differs.
     assert second["markdown"] == first["markdown"]
     assert second["source_sha1"] == first["source_sha1"]
+
+
+def test_curate_dashboard_commits_tiles_and_returns_stable_refs(workspace_with_data):
+    ws = workspace_with_data
+    row = ws.add_rcm(
+        {
+            "process": "Procurement",
+            "risk": "Vendor approval risk",
+            "control": "Vendor master control",
+            "risk_rating": "high",
+        }
+    )
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Vendor integrity test",
+            "objective": "Assess vendor and approval integrity.",
+            "method": "data_analytics",
+            "steps": ["Scan the amount population."],
+        },
+    )
+    data_test = data_tests.create(
+        ws,
+        {
+            "title": "Vendor integrity result",
+            "objective": "Identify management-relevant vendor integrity signals.",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "rcm_id": row["id"],
+            "planned_test_id": planned["id"],
+            "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
+        },
+    )
+    data_tests.run(ws, data_test["id"])
+
+    refs = curate_dashboard(ws, run_id="RUN-exec")
+
+    # The executor owns the stable ``tile:<id>`` reference for each pinned tile.
+    assert refs == [dashboard_tile_ref(tile["id"]) for tile in ws.tiles]
+    assert refs == [dashboard_tile_ref(f"rcm-{data_test['id'].casefold()}")]
+    assert ws.planning["dashboard_curation"]["created_count"] == 1
+    assert ws.planning["dashboard_curation"]["run_id"] == "RUN-exec"
+
+
+def test_curate_dashboard_conflicts_when_rcm_parent_changed():
+    ws = workspaces.create_workspace("Dashboard curation conflict")
+    ws.add_rcm(
+        {"process": "AP", "risk": "Duplicate payments", "control": "Duplicate check"}
+    )
+
+    # A concurrent writer changes the RCM basis on disk after this handle read it.
+    concurrent = workspaces.load_workspace(ws.id)
+    concurrent.update_rcm(concurrent.rcm[0]["id"], {"control": "Changed control"})
+
+    # ``ws`` still reflects the pre-change RCM, so the curation commit must
+    # conflict rather than pin tiles selected against a stale matrix.
+    with pytest.raises(WorkspaceConflict):
+        curate_dashboard(ws, run_id="RUN-conflict")
