@@ -12,14 +12,14 @@ from ..workspaces import Workspace, WorkspaceError
 
 CHARACTER_BUDGETS = {
     "command_router": 6_000,
-    "rcm": 45_000,
-    "planned_test_generation": 20_000,
+    "rcm": 80_000,
+    "planned_test_generation": 60_000,
     "data_test_spec": 22_000,
     "document_test_spec": 22_000,
     "document_qa_execution": 30_000,
     "finding_draft": 16_000,
     "finding_report_section": 12_000,
-    "report": 30_000,
+    "report": 80_000,
 }
 
 
