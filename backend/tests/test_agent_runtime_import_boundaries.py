@@ -27,7 +27,9 @@ FORBIDDEN_DOMAIN_PREFIXES = (
     "app.agent.audit_capabilities",
     "app.agent.audit_execution",
     "app.agent.audit_workers",
+    "app.agent.capabilities",
     "app.agent.context_bundles",
+    "app.agent.workflows",
 )
 
 

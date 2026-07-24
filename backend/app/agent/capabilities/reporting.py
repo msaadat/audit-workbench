@@ -4,13 +4,11 @@ Owns the post-roll-up outcomes of the authoritative audit graph:
 ``findings.drafted``, ``working_papers.generated``, ``dashboard.curated``,
 ``report.working_draft``, and ``audit.verified``.
 
-As with :mod:`planning` and :mod:`fieldwork`, each Phase 7 slice moves a
-capability's readiness and unit expansion into this module (constructed locally
-instead of selected from the transitional ``audit_capabilities`` registry) while
-keeping the IDs, ordering, and normalized definition hashes stable. The ``.1``
-declaration moves here only populate the parallel grouped ``capabilities``
-package; the live dispatch path still runs on ``audit_capabilities.REGISTRY`` and
-the ``audit_execution`` handlers until ``P7.3``.
+Each capability is declared here: its readiness (existence and structural
+usability only), its semantic unit expansion, the registry keys for its declared
+context, and — for ``findings.drafted`` — the auditor-judgment checkpoint that
+gates it. The dependency edges come from the authoritative graph in
+:mod:`agent.workflows.audit`; this module never restates them.
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from ... import findings, rcm_execution, report
 from ...workspaces import Workspace
 from ..workflow import (
     Capability,
-    CapabilityRegistry,
     Readiness,
     UnitSpec,
     semantic_unit_id,
@@ -39,15 +36,6 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "audit.verified",
 )
 
-LOCALLY_OWNED: frozenset[str] = frozenset(
-    {
-        "findings.drafted",
-        "working_papers.generated",
-        "dashboard.curated",
-        "report.working_draft",
-        "audit.verified",
-    }
-)
 
 # Declared auditor-judgment checkpoint. Observation disposition is authoritative
 # auditor judgment that gates finding creation, so it is declared here at the
@@ -132,6 +120,7 @@ def _findings_drafted() -> Capability:
         audit_workflow.dependencies("findings.drafted"),
         _findings_ready,
         _finding_units,
+        context="reporting.finding_draft",
         invalidate_on=("observation",),
     )
 
@@ -308,22 +297,7 @@ _BUILDERS = {
 }
 
 
-def capabilities(source: CapabilityRegistry | None = None) -> tuple[Capability, ...]:
+def capabilities() -> tuple[Capability, ...]:
     """Return this group's capability declarations in authoritative order."""
 
-    resolved: list[Capability] = []
-    registry: CapabilityRegistry | None = None
-    for capability_id in CAPABILITY_IDS:
-        builder = _BUILDERS.get(capability_id)
-        if builder is not None:
-            resolved.append(builder())
-            continue
-        if registry is None:
-            if source is not None:
-                registry = source
-            else:
-                from .. import audit_capabilities
-
-                registry = audit_capabilities.build_registry()
-        resolved.append(registry.get(capability_id))
-    return tuple(resolved)
+    return tuple(_BUILDERS[capability_id]() for capability_id in CAPABILITY_IDS)

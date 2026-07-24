@@ -7,9 +7,8 @@ readiness, unit expansion, context, workers, and executors to the capability IDs
 declared here; they do not redefine the edges.
 
 The generic ``WorkflowRunner`` never imports this module — it receives a
-capability registry by composition. Only audit-domain composition
-(``audit_capabilities`` today, the grouped capability modules after Phase 7)
-reads the graph.
+capability registry by composition. Only the audit-domain composition in the
+grouped ``capabilities`` package reads the graph.
 """
 
 from __future__ import annotations

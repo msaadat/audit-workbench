@@ -5,22 +5,33 @@ This package composes the audit capability registry from the grouped
 composition matches the authoritative dependency graph in
 :mod:`agent.workflows.audit` before any writer relies on it.
 
-During Phase 7 the grouped modules still *select* their declarations from the
-transitional :mod:`agent.audit_capabilities` registry; the composition and
-validation here are the target structure that each capability-family slice fills
-in. ``AUDIT_REGISTRY`` below is validated at import (startup validation), so an
-inconsistent grouping, a graph mismatch, an undeclared context preset, or a
-dependency cycle fails fast rather than at run time.
+``AUDIT_REGISTRY`` is the live registry for routing and audit dispatch. It is
+built and validated at import (startup validation), so an inconsistent grouping,
+a graph mismatch, an undeclared context preset, or a dependency cycle fails fast
+rather than at run time. The audit artifact hashes the executors stamp and
+reconcile against are re-exported here from :mod:`._shared`.
 """
 
 from __future__ import annotations
 
-from .. import audit_capabilities
 from ..context import PRESETS
 from ..runtime import CapabilityExecutionRegistry
-from ..workflow import Capability, CapabilityRegistry
+from ..workflow import CapabilityRegistry
 from ..workflows import audit as audit_workflow
 from . import fieldwork, planning, reporting
+from ._shared import (
+    apm_sha1,
+    planned_test_sha1,
+    planning_basis_sha1,
+    rcm_row_sha1,
+)
+
+# The audit dependency graph and outcome sets are authoritative in
+# ``workflows.audit``; these re-exports keep routing call sites reading from one
+# audit-domain package.
+FULL_AUDIT_OUTCOMES = audit_workflow.FULL_AUDIT_OUTCOMES
+TEMPLATE_OUTCOMES = audit_workflow.TEMPLATE_OUTCOMES
+outcomes_for_template = audit_workflow.outcomes_for_template
 
 # Grouped capability modules in authoritative order. Each module owns a disjoint
 # slice of the audit graph and exposes ``CAPABILITY_IDS`` plus ``capabilities()``.
@@ -41,17 +52,12 @@ def grouped_capability_ids() -> tuple[str, ...]:
     )
 
 
-def build_audit_registry(source: CapabilityRegistry | None = None) -> CapabilityRegistry:
-    """Compose the audit capability registry from the grouped modules.
+def build_audit_registry() -> CapabilityRegistry:
+    """Compose the audit capability registry from the grouped modules."""
 
-    ``source`` supplies the declaration bodies while Phase 7 slices are still in
-    flight; it defaults to the transitional ``audit_capabilities`` registry.
-    """
-
-    resolved_source = source if source is not None else audit_capabilities.build_registry()
     registry = CapabilityRegistry()
     for group in CAPABILITY_GROUPS:
-        for capability in group.capabilities(resolved_source):
+        for capability in group.capabilities():
             registry.register(capability)
     return registry
 
@@ -131,13 +137,30 @@ def validate_audit_composition(
 
 # Startup validation: build and validate the grouped composition at import time.
 AUDIT_REGISTRY = validate_audit_composition(build_audit_registry())
+# The live registry name used by routing and audit dispatch.
+REGISTRY = AUDIT_REGISTRY
+
+
+def workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
+    """Deterministic readiness projection for every audit capability."""
+
+    return REGISTRY.workflow_state(workspace, scope)
 
 
 __all__ = [
     "AUDIT_REGISTRY",
     "AuditCompositionError",
     "CAPABILITY_GROUPS",
+    "FULL_AUDIT_OUTCOMES",
+    "REGISTRY",
+    "TEMPLATE_OUTCOMES",
+    "apm_sha1",
     "build_audit_registry",
     "grouped_capability_ids",
+    "outcomes_for_template",
+    "planned_test_sha1",
+    "planning_basis_sha1",
+    "rcm_row_sha1",
     "validate_audit_composition",
+    "workflow_state",
 ]

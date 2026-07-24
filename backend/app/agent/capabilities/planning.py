@@ -4,20 +4,10 @@ Owns the planning outcomes of the authoritative audit graph:
 ``planning.context_ready``, ``planning.apm_ready``, ``planning.rcm_ready``, and
 ``planning.planned_tests_ready``.
 
-During Phase 7 each slice moves one capability's declaration into this module.
-A capability listed in ``LOCALLY_OWNED`` is constructed here from readiness and
-unit-expansion bodies that live in this module; any remaining capability is still
-*selected* from the transitional ``audit_capabilities`` registry until its slice
-lands. The capability IDs, ordering, grouping, and normalized definition hashes
-are stable across that migration — the golden identity tests pin them to the
-authoritative live registry. This transitional duplication with
-``audit_capabilities`` is removed at ``P7.3`` when that module is deleted and the
-grouped registry goes live.
-
-The ``.1`` declaration moves here (readiness + unit expansion) are independent of
-the ``.2`` execution writer-switches: they populate only the parallel grouped
-``capabilities`` package, while the live dispatch path still runs on
-``audit_capabilities.REGISTRY`` and the ``audit_execution`` handlers.
+Each capability is declared here: its readiness (existence and structural
+usability only), its semantic unit expansion, and the registry keys for its
+declared context. The dependency edges come from the authoritative graph in
+:mod:`agent.workflows.audit`; this module never restates them.
 """
 
 from __future__ import annotations
@@ -26,7 +16,6 @@ from ... import rcm_execution
 from ...workspaces import Workspace
 from ..workflow import (
     Capability,
-    CapabilityRegistry,
     Readiness,
     UnitSpec,
     semantic_unit_id,
@@ -40,19 +29,6 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "planning.apm_ready",
     "planning.rcm_ready",
     "planning.planned_tests_ready",
-)
-
-# Capabilities whose declaration is constructed locally in this module rather
-# than selected from the transitional ``audit_capabilities`` registry. Each
-# Phase 7A–7D slice adds one ID here as it moves its readiness and unit
-# expansion into this module.
-LOCALLY_OWNED: frozenset[str] = frozenset(
-    {
-        "planning.context_ready",
-        "planning.apm_ready",
-        "planning.rcm_ready",
-        "planning.planned_tests_ready",
-    }
 )
 
 
@@ -225,6 +201,7 @@ def _planning_planned_tests_ready() -> Capability:
         audit_workflow.dependencies("planning.planned_tests_ready"),
         _planned_ready,
         _planned_units,
+        context="planning.planned_tests",
         invalidate_on=("rcm",),
     )
 
@@ -238,27 +215,7 @@ _BUILDERS = {
 }
 
 
-def capabilities(source: CapabilityRegistry | None = None) -> tuple[Capability, ...]:
-    """Return this group's capability declarations in authoritative order.
+def capabilities() -> tuple[Capability, ...]:
+    """Return this group's capability declarations in authoritative order."""
 
-    Locally-owned capabilities are constructed from this module's readiness and
-    unit-expansion bodies; the rest are selected from ``source`` (the
-    transitional ``audit_capabilities`` registry) until their slice migrates.
-    """
-
-    resolved: list[Capability] = []
-    registry: CapabilityRegistry | None = None
-    for capability_id in CAPABILITY_IDS:
-        builder = _BUILDERS.get(capability_id)
-        if builder is not None:
-            resolved.append(builder())
-            continue
-        if registry is None:
-            if source is not None:
-                registry = source
-            else:
-                from .. import audit_capabilities
-
-                registry = audit_capabilities.build_registry()
-        resolved.append(registry.get(capability_id))
-    return tuple(resolved)
+    return tuple(_BUILDERS[capability_id]() for capability_id in CAPABILITY_IDS)

@@ -4,17 +4,20 @@ import json
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 import httpx
 import polars as pl
 import pytest
 
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
-from app.agent import action_runner, audit_capabilities, audit_workers, context_bundles, runner, store, workflow
+from app.agent import action_runner, context_bundles, runner, store, workflow
+from app.agent import capabilities as audit_capabilities
 from app.agent.audit_execution import (
     AuditWorkflowExecution,
     build_audit_workflow_runner,
 )
+import app.agent.context.adapters as context_adapters
 from app.agent.executors import planning as planning_executor
 from app.agent.runtime import UnitSidecarStore, WorkflowRunner
 from app.agent.workers import planning as planning_worker
@@ -493,42 +496,6 @@ def test_workflow_planned_test_repair_reports_all_contract_errors(monkeypatch):
     }
 
 
-def test_planned_test_validator_rejects_noncanonical_sampling_fields():
-    with pytest.raises(ValueError, match=r"planned_tests\[0\]\.sampling\.sample_size is not supported"):
-        audit_workers.validate_planned_tests(
-            {
-                "planned_tests": [{
-                    "operation": "create",
-                    "stable_slug": "duplicates",
-                    "title": "Test duplicates",
-                    "objective": "Identify duplicates",
-                    "criteria": "Identifiers are unique.",
-                    "steps": ["Identify repeated identifiers."],
-                    "method": "data_analytics",
-                    "expected_evidence": "Duplicate listing",
-                    "sampling": {"sample_size": 10},
-                }]
-            },
-            "RCM-TEST",
-        )
-
-
-def test_document_test_validator_rejects_non_object_spec():
-    ws = _planning_workspace("Document spec validation")
-    with pytest.raises(ValueError, match="document_test spec must be an object"):
-        audit_workers.validate_document_test(
-            {
-                "document_test": {
-                    "title": "Review policy",
-                    "kind": "review",
-                    "spec": "Review the policy",
-                    "items": [{"label": "Policy", "summary": "Review"}],
-                }
-            },
-            ws,
-        )
-
-
 def test_router_bundle_is_small_and_excludes_domain_catalogs():
     state = {
         capability.id: capability.readiness(workspaces.create_workspace(f"Router {index}"), {}).payload()
@@ -549,7 +516,7 @@ def test_router_bundle_is_small_and_excludes_domain_catalogs():
     assert "artifact_index" not in serialized
 
 
-def test_data_test_context_contains_schema_metadata_but_no_table_rows():
+def test_data_test_definition_context_has_schema_metadata_but_no_table_rows():
     ws = workspaces.create_workspace("Row privacy boundary")
     ws.add_table(
         "private_ledger.csv",
@@ -578,14 +545,29 @@ def test_data_test_context_contains_schema_metadata_but_no_table_rows():
         },
     )
 
-    bundle = context_bundles.data_test_spec(ws, row, planned)
-    serialized = bundle.serialized()
+    capability = audit_capabilities.REGISTRY.get("fieldwork.definitions_ready")
+    manifest, bundle = ContextResolver().resolve(
+        ws,
+        capability,
+        SimpleNamespace(id="data_test_spec:pt"),
+        context_adapters.data_test_spec_scope(ws, row["id"], planned["id"]),
+    )
+    serialized = bundle.to_json()
 
     assert "private_ledger" in serialized
     assert "invoice_id" in serialized
     assert "ROW_SECRET_NEVER_SEND_7F4C" not in serialized
-    assert bundle.total_characters <= bundle.character_budget
-    assert set(bundle.sections["table_schemas"][0]) == {"table", "rows", "columns"}
+    # The manifest records what was supplied without carrying any content.
+    assert "ROW_SECRET_NEVER_SEND_7F4C" not in manifest.to_json()
+    assert {selection.source_id for selection in manifest.selections} >= {
+        "rcm_row",
+        "planned_test",
+        "table_metadata",
+    }
+    # A Data Test unit declares but does not supply the document sources.
+    assert not [
+        item for item in bundle.items if item.source_id == "current_document_tests"
+    ]
 
 
 def test_transaction_merges_unrelated_revision_and_rejects_parent_change():
@@ -1330,7 +1312,6 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
         "gateway",
         "attempt",
     ]
-    assert not hasattr(audit_workers, "apm")
     assert not hasattr(action_runner.ActionRunner, "stage_apm")
     assert not hasattr(action_runner.ActionRunner, "_apm_quality")
 
@@ -1485,6 +1466,159 @@ def test_rcm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
         event["type"] for event in store.read_events(ws, resumed.run["id"])
     }
     assert len(workspaces.load_workspace(ws.id).rcm) == 1
+
+
+def _planned_tests_only_runner(workspace):
+    run = store.new_command_run(
+        workspace,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Draft the planned tests",
+            "requested_outcomes": ["planning.planned_tests_ready"],
+            "generation_mode": "force",
+        },
+    )
+    assert initialize_known_workflow(workspace, run) is True
+    run = store.load_run(workspace, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "planning.planned_tests_ready"
+    )
+    command = build_audit_workflow_runner(
+        workspace,
+        run,
+        runner.RunHandle(workspace.id, run["id"]),
+    )
+    # ``execute()`` refreshes the subject from disk before every stage; the
+    # in-memory workspace diverges during materialization (readiness populates
+    # each row's rollup projection), so a stage-driving test must do the same.
+    command._refresh()
+    return command, stage, stage["units"][0]
+
+
+_PLANNED_TEST_RESPONSE = {
+    "planned_tests": [
+        {
+            "operation": "create",
+            "stable_slug": "duplicate-payments",
+            "title": "Test duplicate payments",
+            "objective": "Determine whether duplicate payments occurred",
+            "criteria": "Each invoice is paid once.",
+            "steps": ["Identify repeated invoice identifiers."],
+            "method": "data_analytics",
+            "expected_evidence": "Duplicate listing",
+        }
+    ]
+}
+
+
+def test_live_planned_tests_capability_commits_through_pipeline_binding(monkeypatch):
+    ws = _planning_workspace("Live planned-test binding")
+    sentinel = "ROW_SECRET_NEVER_SEND_P7D2"
+    ws.add_table(
+        "private-ledger.csv",
+        pl.DataFrame(
+            {"invoice_id": [sentinel, "INV-2"], "amount": [100.0, 200.0]}
+        ).write_csv().encode(),
+    )
+    methodology.save_pack(
+        ws,
+        "Firm AP Guide",
+        "# Duplicate payments\nProcedures should address duplicate-payment risk.",
+    )
+    command, stage, unit = _planned_tests_only_runner(ws)
+    captured = {}
+
+    def draft(user):
+        captured["user"] = user
+        return _PLANNED_TEST_RESPONSE
+
+    fake = FakeAgentLLM({"agent:work_program": draft})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command._run_stage(stage)
+
+    assert unit["status"] == "succeeded"
+    assert stage["status"] == "succeeded"
+    reloaded = workspaces.load_workspace(ws.id)
+    rcm_id = reloaded.rcm[0]["id"]
+    planned = reloaded.rcm[0]["planned_tests"]
+    assert [item["title"] for item in planned] == ["Test duplicate payments"]
+    assert planned[0]["created_by"] == "agent"
+    assert planned[0]["semantic_id"] == f"planned-test:{rcm_id}:duplicate-payments"
+    assert planned[0]["workflow_parent_sha1"]
+    # Methodology citations come from the declared context, not a run-scoped basis.
+    assert planned[0]["methodology_refs"][0]["pack_name"] == "Firm AP Guide"
+    assert unit["result_refs"] == [f"planned_test:{planned[0]['id']}"]
+    assert command.run["planning_changes"]["planned_test_created"] == 1
+    # Row-level table values never reach the provider or the durable provenance.
+    assert sentinel not in captured["user"]
+    assert sentinel not in json.dumps(command.run.get("provenance") or [])
+    # The pipeline persisted content-free manifest, proposal, and receipt sidecars.
+    assert unit["proposal_sidecar"]["unit_id"] == unit["id"]
+    assert unit["receipt_sidecar"]["unit_id"] == unit["id"]
+    assert (
+        store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
+    ).is_file()
+    # The planned-test path is a native pipeline binding: the binder inlines no
+    # bundle builder, model worker, or workspace mutation.
+    binder_source = inspect.getsource(AuditWorkflowExecution._bind_planned_tests)
+    assert "context_bundles" not in binder_source
+    assert "llm_json" not in binder_source
+    assert "mutate(" not in binder_source
+    assert not hasattr(AuditWorkflowExecution, "_planned_tests")
+    assert not hasattr(AuditWorkflowExecution, "_commit_planned_test")
+    assert not hasattr(action_runner.ActionRunner, "stage_work_program")
+    assert not hasattr(action_runner.ActionRunner, "_match_planned_test_revision")
+
+
+def test_planned_test_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
+    ws = _planning_workspace("Planned-test proposal no rebilling")
+    fake = FakeAgentLLM({"agent:work_program": _PLANNED_TEST_RESPONSE})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command, stage, unit = _planned_tests_only_runner(ws)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            planning_executor,
+            "mutate",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            command._run_stage(stage)
+
+    run_root = store.run_dir(ws, command.run["id"])
+    assert [call["tag"] for call in fake.calls] == ["agent:work_program"]
+    assert (run_root / unit["proposal_sidecar"]["path"]).is_file()
+
+    workflow.recovery(command.run["workflow"])
+    resumed = build_audit_workflow_runner(
+        ws,
+        command.run,
+        runner.RunHandle(ws.id, command.run["id"]),
+    )
+    resumed._refresh()
+    resumed._run_stage(stage)
+
+    # Resume reused the durable proposal; no second provider call was billed.
+    assert [call["tag"] for call in fake.calls] == ["agent:work_program"]
+    assert unit["status"] == "succeeded"
+    assert (run_root / unit["receipt_sidecar"]["path"]).is_file()
+    assert "proposal_reused" in {
+        event["type"] for event in store.read_events(ws, resumed.run["id"])
+    }
+    assert len(workspaces.load_workspace(ws.id).rcm[0]["planned_tests"]) == 1
 
 
 def test_data_test_compute_is_pure_and_commit_is_revisioned():
@@ -1834,10 +1968,10 @@ def test_data_test_definition_repairs_unknown_analytics_id(monkeypatch):
         if attempts == 1:
             test_id = planned["id"]
         elif attempts == 2:
-            assert "Unknown analytics test" in user
+            assert "is not a registry ID" in user
             test_id = "still-not-a-test"
         else:
-            assert "Unknown analytics test" in user
+            assert "is not a registry ID" in user
             test_id = "duplicates"
         return {
             "data_test": {
@@ -1872,12 +2006,16 @@ def test_data_test_definition_repairs_unknown_analytics_id(monkeypatch):
         value for value in completed["workflow"]["stages"]
         if value["capability"] == "fieldwork.definitions_ready"
     )
-    proposal = store.read_sidecar(current, completed["id"], stage["units"][0]["proposal_sidecar"])
+    unit = stage["units"][0]
+    persisted = UnitSidecarStore(current, completed["id"]).load_proposal(
+        unit["id"], unit["proposal_sidecar"]
+    )
 
     assert completed["status"] == "completed"
     assert attempts == 3
     assert current.data_tests[0]["spec"]["test_id"] == "duplicates"
-    assert proposal["spec"]["test_id"] == "duplicates"
+    # The durable proposal carries the repaired definition, not the first draft.
+    assert persisted["proposal"]["data_test"]["spec"]["test_id"] == "duplicates"
 
 
 def test_data_test_definition_repairs_sql_like_validation_rule(monkeypatch):
@@ -1909,7 +2047,7 @@ def test_data_test_definition_repairs_sql_like_validation_rule(monkeypatch):
             else [{"check": "required", "column": "invoice", "params": {}}]
         )
         if attempts == 2:
-            assert "Unknown check" in user
+            assert "check is not a validation registry ID" in user
         return {
             "data_test": {
                 "title": "Required invoice identifiers",
@@ -2009,6 +2147,35 @@ def test_document_test_definition_repairs_comparison_method(monkeypatch):
     assert completed["status"] == "completed"
     assert attempts == 2
     assert test["items"][0]["checks"][0]["method"] == "normalized"
+
+
+def test_execution_definitions_run_through_the_native_pipeline_binding():
+    # Both unit kinds are one capability, so the binding selects its worker and
+    # executor pair from the unit kind; the runner-era handler is gone.
+    binder_source = inspect.getsource(AuditWorkflowExecution._bind_definitions)
+    assert "context_bundles" not in binder_source
+    assert "llm_json" not in binder_source
+    assert "mutate(" not in binder_source
+    assert "fieldwork.data_test_spec" in binder_source
+    assert "fieldwork.document_test_spec" in binder_source
+    assert not hasattr(AuditWorkflowExecution, "_definitions")
+    assert not hasattr(AuditWorkflowExecution, "_commit_definition")
+    assert not hasattr(context_bundles, "data_test_spec")
+    assert not hasattr(context_bundles, "document_test_spec")
+
+
+def test_finding_and_report_capabilities_left_the_transitional_adapter():
+    finding_source = inspect.getsource(AuditWorkflowExecution._bind_finding)
+    assert "context_bundles" not in finding_source
+    assert "llm_json" not in finding_source
+    # Evidence linkage and support validation belong to the executor.
+    assert "anchor_from_ref" not in finding_source
+    assert "support_issues" not in finding_source
+    report_source = inspect.getsource(AuditWorkflowExecution._bind_report)
+    assert "report.generate" not in report_source
+    assert not hasattr(AuditWorkflowExecution, "_finding_drafts")
+    assert not hasattr(AuditWorkflowExecution, "_report")
+    assert not hasattr(context_bundles, "finding")
 
 
 def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):

@@ -33,14 +33,29 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7D.2` (planned-test generation/commit) — the next of the
-  remaining model-backed `.2` writer-switches (`P7D.2`/`P7E.2`/`P7E.3`/`P7H.2`/
-  `P7K.2`); `P7A.2`/`P7F.2`/`P7F.3` stay deferred (Phase-9-coupled — see notes).
-  All four deterministic (no-model) slices and `P7B.2`/`P7C.2` are now landed, so
-  the two planning model-backed capabilities (`planning.apm_ready`,
-  `planning.rcm_ready`) both run through the scheduler's native `pipeline_binder`
-  path.
-- Last completed task: `P7C.2` — `planning.rcm_ready` is the second model-backed
+- Current task: `P7.4` (phase gate) — its proof artifacts are landed and green,
+  but the task is deliberately left unchecked because the gate still whitelists
+  two capabilities on the transitional batch adapter. The only remaining Phase 7
+  work is the two Phase-9-coupled deferrals, `P7A.2` (planning-context
+  synthesis) and `P7F.2`/`P7F.3` (fieldwork execution), so
+  `_AUDIT_HANDLER_NAMES` still holds exactly `planning.context_ready` and
+  `fieldwork.executed`. Ten of the twelve audit capabilities now run on a native
+  scheduler path: five through `pipeline_binder` (`planning.apm_ready`,
+  `planning.rcm_ready`, `planning.planned_tests_ready`,
+  `fieldwork.definitions_ready`, `findings.drafted`) and five through
+  `deterministic_executor` (`results.rolled_up`, `working_papers.generated`,
+  `dashboard.curated`, `report.working_draft`, `audit.verified`).
+- Last completed task: `P7.3` — `audit_capabilities.py` and `audit_workers.py`
+  are deleted and the grouped `capabilities` package is now the live registry
+  rather than a parallel composition validated against one; the workflow router
+  moved to `routing.py`, its only caller. No compatibility shim was left behind.
+- Prior tasks: `P7H.2` and `P7K.2` — see their notes below; `P7K.2`
+  deliberately took the deterministic path because the live report handler never
+  called the model. Before those: `P7E.2`+`P7E.3` (one slice — a capability carries one execution
+  binding and definitions fan out into two unit kinds) and `P7D.2` (the first
+  fan-out capability, with the recorded per-unit-approval and serialized-generation
+  changes).
+- Earlier task: `P7C.2` — `planning.rcm_ready` is the second model-backed
   capability (after APM) on the scheduler's native `pipeline_binder` path. The
   transitional `AuditWorkflowExecution._rcm` batch method — which built a bundle,
   called the model with an inline quality gate, and drove per-row `mutate`
@@ -82,13 +97,18 @@ no historical reader or resume adapter is retained.
   `results.rolled_up` (`P7G.2`) is the fourth and last deterministic slice, which
   additionally moved the observation/disposition interaction to a declared
   checkpoint gating `findings.drafted`.
-- Active blockers: the `.2` execution writer-switches (workers/executors/handler
-  removal) remain for the planned-tests, definitions, fieldwork execution,
-  findings, and report families.
-  `P7A.2`'s remaining pieces (context-synthesis worker + context declaration +
-  pipeline switch + `_planning_basis` removal) are the Phase-9-coupled part
-  deferred per the `P7A.2` note; its `planning.context` commit executor is
-  already landed.
+- Active blockers: the two Phase-9-coupled deferrals are now the *only*
+  remaining Phase 7 work — `P7A.2` (planning-context synthesis worker/pipeline
+  switch and `_planning_basis` removal) and `P7F.2`/`P7F.3` (fieldwork
+  execution, whose document QA path runs through the document-analysis subsystem
+  Phase 9 replaces). Both keep a transitional batch handler alive, so `P7.4`
+  stays unchecked: its gate pins `_AUDIT_HANDLER_NAMES` against a two-entry
+  whitelist, which prevents the list growing but is not the empty set the phase
+  objective requires. `P7A.2`'s remaining pieces (context-synthesis worker +
+  context declaration + pipeline switch + `_planning_basis` removal) are the
+  Phase-9-coupled part deferred per the `P7A.2` note; its `planning.context`
+  commit executor is already landed. Phase 8 is gated on Phase 7, so this
+  blocker is on the critical path.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -108,7 +128,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7D.2` (planned-test generation/commit) |
+| 7 | In progress | `P7A.2` / `P7F.2`+`P7F.3` (Phase-9-coupled), then close `P7.4` |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -1285,6 +1305,263 @@ status notes below.
   this slice). No API or frontend contract changed (no frontend consumer reads
   RCM unit refs or `planning.rcm` payloads), so a frontend build was not required.
   The exact next task is `P7D.2` (planned-test generation/commit).
+- `P7D.2` completed on 2026-07-24. `planning.planned_tests_ready` is the third
+  model-backed capability on the scheduler's native `pipeline_binder` path, and
+  the first *fan-out* capability to move (one unit per RCM row rather than one
+  unit per run). Four parts:
+  (1) **Planned-test worker.** `workers.planning` gained the registered
+  `planning.planned_tests` worker: it owns the `[agent:work_program]` prompt
+  (moved verbatim from `audit_workers.PLANNED_TEST_SYSTEM`), the
+  bundle-to-message transformation, a JSON `planned_tests`-array response schema
+  that still accepts the legacy `procedures` key, and the former
+  `validate_planned_tests` engagement gate as a semantic validator. The gate
+  collects *every* contract violation across every proposed test so one bounded
+  repair turn corrects them together (`max_repair_attempts=2`, preserving the
+  runner-era three-attempt envelope). The durable `rcm_id`/`rcm_refs` link comes
+  from the one supplied target-row context item, not from the model, and
+  `methodology_refs` are projected from the supplied methodology excerpts.
+  (2) **Planned-test executor.** `executors.planning` gained the registered
+  `planning.planned_tests` executor + `PlannedTestExecutorTarget`. It commits one
+  RCM row's accepted tests in a single `mutate` under that row's parent-hash CAS,
+  reusing the durable-id-then-semantic-id matching, auditor-edit preservation
+  (unless permission mode), the stable `PT-<sha1>` id, and the
+  `workflow_parent_sha1` stamp. Unlike the runner-era commit it writes only the
+  declared planned-test fields, so a proposal cannot smuggle execution state
+  (`status`, `conclusion`, `execution_refs`, counts) into the record — which also
+  keeps every write inside the loop well formed.
+  (3) **Context declaration.** A normalized `planning.planned_tests` preset and
+  `context.adapters:planned_test_scope` supply the row-scoped model-facing inputs
+  as data-only candidates: planning context, the one target RCM row (with its
+  current planned tests, but no rollup or evidence refs), the other rows as a
+  bounded duplicate-avoidance index, table metadata, documents, and methodology.
+  Two intended deviations from the runner-era bundle: documents arrive as bounded
+  `summary` content rather than an inventory list (the RCM precedent, and the
+  declared-context model has no metadata-only representation), and methodology
+  excerpts are supplied as citation-carrying objects
+  (`planned_test_methodology_candidates`) because a committed planned test must
+  persist `methodology_refs` and the bundle does not expose candidate metadata.
+  Table profiles are deliberately not declared — the old bundle supplied schema
+  only — so the preset denies `allow_table_profiles` and `allow_table_rows`.
+  (4) **Dispatch switch + deletions.** `_bind_planned_tests` replaced the
+  transitional `_planned_tests`/`_commit_planned_test` pair; `_PIPELINE_BINDERS`
+  gained `planning.planned_tests_ready` and `_AUDIT_HANDLER_NAMES` lost it; both
+  capability declarations now carry `context="planning.planned_tests"` (an
+  intended identity change, matching APM/RCM). Post-commit planning-change
+  accounting and `record_artifact` moved to the binder's `on_committed`. Deleted:
+  runner-era `stage_work_program`, `_program_quality`,
+  `_match_planned_test_revision`, `_quality_draft`, `_words`/`_similarity` in
+  `action_runner.py`; `prompts.WORK_PROGRAM_SYSTEM`/`work_program_user`;
+  `audit_workers.PLANNED_TEST_SYSTEM`/`validate_planned_tests`/`planned_tests`
+  (and the now-unused `_strings`/`_contract_error` helpers); and
+  `context_bundles.planned_test` (+ its budget entry and `_planning_scope`).
+  Two deliberate behavior changes are recorded here rather than hidden: approval
+  is now **per unit** (one `planned_tests` batch per RCM row) instead of one batch
+  across every row, because the target architecture approves a unit's proposal at
+  its own durability boundary; and model generation is now **serialized** across
+  units by the scheduler's pipeline path rather than fanned out through
+  `_parallel_candidates`. `readiness_provider` is deliberately `None` for this
+  binding: a fan-out capability's readiness is only satisfied once every row's
+  unit has committed, so it is evaluated by the stage fold, not per unit. New
+  focused tests: `test_agent_planning_planned_test_worker.py` (7 — bundle-only
+  use, methodology citations, legacy `procedures` key, all-errors-in-one-repair,
+  sampling/update-id rejection, single-target-row contract);
+  `test_agent_planning_executor.py` (+8 planned-test cases — parent-hash commit +
+  receipt postcondition, one transaction for several tests, declared-fields-only
+  writes, matched update, auditor preserve/replace, RCM parent conflict,
+  interrupted-commit reconcile + later-edit conflict);
+  `test_agent_context_adapters.py` (+2 — preset source/privacy shape, row-scoped
+  candidate supply); and `test_workflow_v2.py` (+2 —
+  `test_live_planned_tests_capability_commits_through_pipeline_binding` drives the
+  stage through the native binding asserting the committed test, unit ref,
+  sidecars, methodology citation, row-value exclusion, and the absence of the old
+  handlers; `test_planned_test_resume_reuses_durable_proposal_without_rebilling`
+  proves an interrupted commit resumes from the durable proposal without a second
+  provider call). Both stage-driving tests call `_refresh()` first, mirroring
+  `execute()`'s pre-stage refresh, because the in-memory subject diverges from
+  disk during materialization. The pre-existing end-to-end
+  `test_workflow_planned_test_repair_reports_all_contract_errors` passes
+  unchanged through the new path. Focused verification: the full backend suite
+  passed `732` tests in `112.06s`. No API or frontend contract changed (no
+  frontend consumer reads planned-test unit refs), so a frontend build was not
+  required.
+- `P7E.2` and `P7E.3` completed together on 2026-07-24. `fieldwork.definitions_ready`
+  is the fourth capability on the scheduler's native `pipeline_binder` path. They
+  landed as one slice because a capability carries exactly one execution binding:
+  the capability fans out into two unit kinds (`data_test_spec`,
+  `document_test_spec`), so `_bind_definitions` selects the worker/executor pair
+  from `unit["kind"]` and the old `_definitions` handler could only be deleted
+  once both kinds had a registered pair. Parts:
+  (1) **Definition workers.** The new `workers/fieldwork.py` registers
+  `fieldwork.data_test_spec` and `fieldwork.document_test_spec`, each owning its
+  verbatim prompt (moved from `audit_workers`), bundle-to-message transformation,
+  JSON response schema, and a bounded two-repair semantic gate. **Recorded
+  design decision:** the runner-era validators called
+  `data_tests._table_refs`/`_validate_spec` with the *workspace*, canonicalizing
+  analytics parameters and validation rules against real Polars frames — a worker
+  cannot do that and stay bundle-only. The contract was therefore split: the
+  worker decides everything the supplied context can decide (shape, engine/kind
+  enums, registry IDs, exact table/column spellings, supplied document IDs,
+  comparison methods, and the planned test's required validation engine), and the
+  *executor* performs the authoritative frame-dependent validation through the
+  unchanged `data_tests.create/update`. The narrowing is deliberate: a
+  frame-level error that the old loop could repair now surfaces as a durable unit
+  failure that the auditor regenerates with `force`. The `analytics`/`validation`
+  registry payloads and `doc_tests.METHODS` are imported by the worker rather
+  than declared as context sources — they are application catalogs, not
+  engagement content, so they belong to the response contract; a "registries"
+  source type would have required a new representation kind and privacy field.
+  (2) **Definition executors.** `executors/fieldwork.py` registers
+  `fieldwork.data_test` and `fieldwork.document_test` with their targets. Both
+  commit under the `planned_test:<id>` parent-hash CAS, reuse the stable
+  `DAT-`/`DT-` ids and `datatest:`/`doctest:` semantic ids, preserve auditor-owned
+  definitions unless permission mode, and stamp `workflow_parent_sha1`. The
+  document executor keeps the linked write intact: the test body lands in its own
+  sidecar while blocked items register `evidence_requests` carrying
+  `blocked_unit_id = request.unit_id`, so a later import still unblocks the exact
+  workflow unit. Both commits change their guarded projection (a Data Test links
+  itself into the planned test's `execution_refs`), so each reconciler treats an
+  unchanged parent as proof the commit never landed and a changed parent as
+  reconcilable only when the matched definition already carries this run's values.
+  (3) **Context declaration.** One preset, `fieldwork.execution_definitions`,
+  serves both unit kinds: `rcm_row` and `planned_test` are required, and
+  `table_metadata`/`documents`/`current_data_tests`/`current_document_tests` are
+  optional, so a Data Test unit supplies the table sources and a Document Test
+  unit the document sources while the unsupplied optional sources are recorded as
+  absent in that unit's manifest. This keeps one declaration per capability, which
+  is what `ContextResolver` reads from `capability.context`. New adapters
+  `data_test_spec_scope` and `document_test_spec_scope` share the parent
+  projections; `document_test_document_candidates` supplies every document
+  (including un-analyzed ones, which an item must still be able to attach) with
+  identity and bounded citations, composed through `document_context`, not a
+  second analysis reader.
+  (4) **Framework addition + deletions.** `workspace_transactions.artifact_projection`
+  gained a `doctest:<id>` projection (the workspace-indexed summary) so a Document
+  Test receipt can carry a real postcondition hash; the import is local because
+  `doc_tests` depends on that module for its linked writes. Deleted:
+  `audit_execution._definitions`/`_commit_definition`,
+  `audit_workers.DATA_TEST_SPEC_SYSTEM`/`DOCUMENT_TEST_SPEC_SYSTEM`/
+  `validate_data_test`/`validate_document_test`/`data_test_spec`/`document_test_spec`
+  (leaving only the router), and `context_bundles.data_test_spec`/`document_test_spec`
+  (+ their budgets and the now-unused `_terms`/`_select_metadata` helpers).
+  As in `P7D.2`, approval is now per unit and generation is serialized across
+  units, and `readiness_provider` is `None` because a fan-out capability's
+  readiness only holds once every unit has committed. New focused tests:
+  `test_agent_fieldwork_definition_worker.py` (9 — bundle-only use for both
+  workers, unknown table/analytics id/validation check rejection, the
+  validation-engine rule, one bounded repair, unsupplied document and unknown
+  comparison-method rejection, and the static no-workspace boundary);
+  `test_agent_fieldwork_executor.py` (+6 — parent-guarded commit with receipt
+  postcondition, the authoritative frame validation rejecting an impossible
+  column, auditor preservation, interrupted-commit reconcile, and the document
+  executor's blocked/evidence-request path and reconcile);
+  `test_agent_context_adapters.py` (+2 — the shared preset shape, per-unit-kind
+  scope supply); and `test_workflow_v2.py` (rewrote the row-privacy test against
+  the declared context, added a native-binding/deletion test, and repointed the
+  repair tests at the new guidance text and the pipeline proposal sidecar). The
+  three pre-existing end-to-end definition tests pass through the new path
+  unchanged in behavior. Focused verification: the full backend suite passed
+  `748` tests in `112.57s`. No API or frontend contract changed, so a frontend
+  build was not required.
+- `P7H.2` completed on 2026-07-24. `findings.drafted` is the fifth capability on
+  the scheduler's native `pipeline_binder` path. The new `workers/reporting.py`
+  registers `reporting.finding` (the verbatim `[agent:finding]` prompt from
+  `audit_workers`, the bundle-to-message transformation, a JSON `finding` response
+  schema, and the former `validate_finding` checks as a bounded one-repair
+  semantic validator). `executors/reporting.py` gained the registered
+  `reporting.finding` executor + `FindingExecutorTarget`, which commits under an
+  `observation:<id>` parent-hash CAS the runner-era handler did not have at all —
+  it called `findings.add` directly. **The executor derives every reference from
+  the current observation** (RCM row, planned test, execution ref, and the
+  immutable evidence anchor) and only accepts the proposal's narrative fields, so
+  a proposal cannot smuggle links or claim `auditor_confirmed`; deterministic
+  `findings.support_issues` validation still runs before the write. The finding id
+  is now derived from the observation (`F-<sha1 of finding:observation:<id>>`)
+  rather than random, which makes a repeated commit idempotent and lets the
+  reconciler prove an interrupted commit — necessary because writing a finding does
+  not change the guarded observation. A normalized `reporting.finding_draft` preset
+  plus `context.adapters:finding_draft_scope` supply the observation, RCM row,
+  planned test, and the immutable execution result/evidence anchor; no document or
+  table content is declared. `_bind_finding` replaced `_finding_drafts`, and
+  `audit_workers.FINDING_SYSTEM`/`validate_finding`/`finding` and
+  `context_bundles.finding` (+ its budget) were deleted — `audit_workers` now
+  holds only the router. New focused tests: `test_agent_reporting_finding.py`
+  (6 — bundle-only worker use, one bounded repair, severity rejection,
+  observation-derived references with a smuggled ref ignored, support-validation
+  refusal, and idempotent reconcile). The existing permission-mode end-to-end
+  finding tests pass through the new binding unchanged.
+- `P7K.2` completed on 2026-07-24. `report.working_draft` is the fifth capability
+  on the scheduler's **deterministic** execution path, not the pipeline path: the
+  live workflow handler always called `report.generate(..., use_model=False)`, so
+  per the phase's own rule ("do not call the model merely to fit a uniform
+  shape") this capability has no worker and no context declaration. Assembly moved
+  to `executors/reporting.py::generate_report_draft`, a
+  `Workspace -> (ref, requires_reconcile)` function delegating to the unchanged
+  `report.generate`; `_bind_report` is a thin deterministic binder that emits the
+  `workspace_changed` report signal the generic path does not and maps
+  `requires_reconcile` to the existing `awaiting_confirmation` unit status with its
+  existing message. The auditor-edit reconciliation semantics
+  (`generated_markdown` vs `markdown`) are unchanged, and no new CAS was added:
+  `report.generate` still hydrates the current draft immediately before writing,
+  so the narrow "edit lands during generation" race is pre-existing and unchanged
+  rather than newly claimed safe. `_AUDIT_HANDLER_NAMES` now contains only
+  `planning.context_ready` (`P7A.2`, deferred) and `fieldwork.executed`
+  (`P7F.2`/`P7F.3`, deferred). New focused tests:
+  `test_agent_reporting_executor.py` (+2 — commit with no reconciliation needed,
+  and auditor-edit preservation reporting `requires_reconcile`); plus a
+  `test_workflow_v2.py` deletion/boundary test covering both slices. Focused
+  verification for `P7H.2`+`P7K.2`: the full backend suite passed `760` tests in
+  `114.14s`. No API or frontend contract changed, so a frontend build was not
+  required.
+- `P7.3` completed on 2026-07-24. `audit_capabilities.py` and `audit_workers.py`
+  are deleted; the grouped `capabilities` package is now the **live** registry
+  (`capabilities.REGISTRY is capabilities.AUDIT_REGISTRY`), not a parallel
+  composition validated against a live one. Consequences of that inversion:
+  `build_audit_registry()` lost its `source` parameter, the grouped modules lost
+  their `LOCALLY_OWNED` markers, and each now exposes
+  `capabilities() -> tuple[Capability, ...]`; the four sha1 helpers the deleted
+  module owned (`planning_basis_sha1`, `apm_sha1`, `rcm_row_sha1`,
+  `planned_test_sha1`) moved to `capabilities/_shared.py` and are re-exported
+  from the package. The workflow router (`ROUTER_SYSTEM`, `validate_route`,
+  `_resolve_command`) moved into `routing.py`, its only caller, rather than into
+  a grouped capability module — it routes *to* capabilities and is not one. The
+  golden composition tests could no longer compare a rebuilt registry against a
+  live one (the two are now the same object), so they were rewritten to pin the
+  declaration fields directly: a `_DECLARED` table fixes each capability's
+  `stage_id`, `worker_kind`, declared `context` preset, and `invalidate_on`, and
+  separate tests pin build determinism and readiness/expansion stability. A
+  deletion gate (`test_the_retired_audit_modules_have_no_module_alias_or_reexport`)
+  asserts both modules are unimportable, absent from disk, and that no `compat*`
+  shim was left behind — the plan forbids dual writers, and a re-export would be
+  one. Five test modules that imported the deleted modules were repointed. No
+  compatibility alias, deprecation shim, or transitional re-export exists.
+- `P7.4` is **partially landed** as of 2026-07-24 and deliberately left
+  unchecked. All five proof obligations now have gates and all are green
+  (`tests/test_workflow_phase7_gate.py`, 6 tests):
+  authoritative-graph uniqueness (an AST scan asserting no module outside
+  `workflows/audit.py` assigns `DEPENDENCIES`, `FULL_AUDIT_OUTCOMES`, or
+  `TEMPLATE_OUTCOMES`, ignoring `ast.Attribute` re-exports); import boundaries
+  (`app.agent.capabilities` and `app.agent.workflows` added to
+  `FORBIDDEN_DOMAIN_PREFIXES` in `test_agent_runtime_import_boundaries.py`, so
+  the generic runtime cannot import a grouped audit module); full-workflow
+  closure (the full-audit closure equals the declared graph and is topological);
+  the binding inventory (every capability carries exactly one execution binding,
+  with the pipeline/deterministic/transitional split pinned by name); and
+  frontend projections (the required fields of `AgentWorkflow`, `WorkflowStage`,
+  and `WorkflowUnit` are parsed out of `frontend/src/types.ts` and asserted
+  present on a real staged full-audit run — checked one direction, since extra
+  backend keys are structurally fine for TypeScript).
+  What holds the task open is the phase objective rather than any missing proof:
+  the gate encodes `_DEFERRED_BATCH_CAPABILITIES` as a **whitelist** of the two
+  capabilities still executed by the transitional batch adapter
+  (`planning.context_ready` -> `_planning_basis`, `fieldwork.executed` ->
+  `_executions`). Pinning it by equality means the list cannot silently grow,
+  but a whitelist is not an empty set. `P7.4` converts to checked, and Phase 7
+  to complete, when `P7A.2` and `P7F.2`/`P7F.3` land and
+  `_AUDIT_HANDLER_NAMES == {}` — at which point the whitelist and the deferral
+  paragraph in this gate's docstring are deleted rather than edited. Verification
+  for `P7.3`+`P7.4`: the full backend suite passed `778` tests in `116.58s`, and
+  the frontend build passed (`vite build`, clean) because the projection gate
+  reads a frontend source file.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1972,13 +2249,13 @@ the remaining v3 handlers to declarations, workers, and executors.
   and receipts; switch the writer and delete the old RCM handler.
 - [x] `P7D.1` Move `planning.planned_tests_ready` readiness and per-RCM unit
   expansion with stable unit and matching tests.
-- [ ] `P7D.2` Extract planned-test generation, validation, commit, rollback,
+- [x] `P7D.2` Extract planned-test generation, validation, commit, rollback,
   and receipts; switch the writer and delete the old handler.
 - [x] `P7E.1` Move fieldwork-definition readiness and unit expansion while
   preserving required execution-engine and planned-test linkage rules.
-- [ ] `P7E.2` Migrate data-test definition workers and linked-write executors,
+- [x] `P7E.2` Migrate data-test definition workers and linked-write executors,
   switch their writer, and prove rollback and recovery.
-- [ ] `P7E.3` Migrate document-test definition workers and linked-write
+- [x] `P7E.3` Migrate document-test definition workers and linked-write
   executors, switch their writer, and prove attachment/linkage parity.
 - [x] `P7F.1` Move fieldwork-execution readiness and data/document semantic units
   into the grouped module (execution attempt limits stay in the execution handler
@@ -1997,7 +2274,7 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7H.1` Move finding readiness and eligible-observation units into the
   reporting module (context, evidence rules, and proposal validation migrate with
   the finding worker in `P7H.2`).
-- [ ] `P7H.2` Extract evidence-preserving finding commits and receipts, switch
+- [x] `P7H.2` Extract evidence-preserving finding commits and receipts, switch
   the writer, and remove the old finding handler.
 - [x] `P7I.1` Move working-paper readiness and semantic units into the
   reporting capability module.
@@ -2011,7 +2288,7 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7K.1` Move report readiness and unit expansion into the reporting module
   (bounded context, reconciliation policy, prompt, schema validation, and source
   rules migrate with the report worker in `P7K.2`).
-- [ ] `P7K.2` Extract report commit and reconciliation receipts, switch the
+- [x] `P7K.2` Extract report commit and reconciliation receipts, switch the
   writer, and remove the old report handler.
 - [x] `P7L.1` Move audit-verification readiness and quality checks into the
   reporting capability module (the deterministic verification executor migrates
@@ -2019,11 +2296,13 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7L.2` Extract the deterministic verification executor, switch
   verification, preserve completion projections, and remove the final
   audit-specific scheduler handler.
-- [ ] `P7.3` Replace `audit_capabilities.py` and `audit_workers.py` with
+- [x] `P7.3` Replace `audit_capabilities.py` and `audit_workers.py` with
   grouped modules at all live imports, then delete both old modules in the same
   task.
 - [ ] `P7.4` Prove the phase gate, authoritative graph uniqueness, import
   boundaries, full workflow closure, frontend projections, and status update.
+  (Proof artifacts landed and green; held open by `P7A.2` and `P7F.2`/`P7F.3` —
+  see the `P7.4` note.)
 
 **Work:**
 

@@ -20,6 +20,9 @@ from .planning import (
     APM_WORKER,
     APM_WORKER_ID,
 )
+# Importing the grouped worker modules is what registers them in ``WORKERS``.
+from . import fieldwork as fieldwork  # noqa: F401
+from . import reporting as reporting  # noqa: F401
 
 __all__ = [
     "MAX_REPAIR_ATTEMPTS",

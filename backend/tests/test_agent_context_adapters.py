@@ -260,3 +260,140 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     assert "profiler" not in adapter_source
     assert "document_analysis" not in adapter_source
     assert "document_search" not in adapter_source
+
+
+def test_planning_planned_tests_preset_declares_the_row_scoped_sources():
+    spec = PRESETS.compile("planning.planned_tests")
+
+    assert [source.id for source in spec.sources] == [
+        "planning_context",
+        "rcm_row",
+        "other_rcm_rows",
+        "table_metadata",
+        "documents",
+        "methodology",
+    ]
+    # The one target row is required; the duplicate-avoidance index is not.
+    assert [source.required for source in spec.sources] == [
+        True, True, False, False, False, False,
+    ]
+    # Planned-test drafting reads schema metadata, never row values or profiles.
+    assert spec.privacy.allow_table_metadata is True
+    assert spec.privacy.allow_table_profiles is False
+    assert spec.privacy.allow_table_rows is False
+
+
+def test_planned_test_scope_supplies_one_target_row_and_citable_methodology():
+    workspace = workspaces.create_workspace("Planned test scope")
+    workspace.update_planning(
+        {"context": {"objective": "Assess payments", "scope": "Accounts payable"}}
+    )
+    workspace.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate payments are processed",
+            "control": "Duplicate invoice validation",
+            "risk_rating": "high",
+        }
+    )
+    workspace.add_rcm(
+        {"process": "Payroll", "risk": "Ghost employees", "control": "Headcount review"}
+    )
+    target_id = workspace.rcm[0]["id"]
+    other_id = workspace.rcm[1]["id"]
+    workspace.add_planned_test(
+        target_id,
+        {"title": "Existing", "objective": "Existing objective", "method": "inquiry"},
+    )
+    methodology.save_pack(
+        workspace,
+        "Firm AP Guide",
+        "# Duplicate payments\nProcedures should address duplicate-payment risk.",
+    )
+
+    scope = context_adapters.planned_test_scope(workspace, target_id)
+
+    rows = scope.candidates["rcm_row"]
+    assert [candidate.source_ref for candidate in rows] == [f"rcm:{target_id}"]
+    # The existing planned tests travel with the row so an update can name one.
+    assert rows[0].source["planned_tests"][0]["objective"] == "Existing objective"
+    # Execution state stays out of the drafting context.
+    assert "execution_rollup" not in rows[0].source
+    assert [candidate.source_ref for candidate in scope.candidates["other_rcm_rows"]] == [
+        f"rcm:{other_id}"
+    ]
+    assert set(scope.candidates["other_rcm_rows"][0].source) == {
+        "id", "semantic_id", "risk",
+    }
+    section = scope.candidates["methodology"][0].representations["excerpt"]
+    assert section["pack_name"] == "Firm AP Guide"
+    assert section["citation"].startswith("Firm AP Guide v")
+    assert "duplicate-payment risk" in section["text"]
+    assert "Duplicate payments are processed" in scope.selector_context["planned_test_query"]
+
+
+def test_fieldwork_execution_definitions_preset_serves_both_unit_kinds():
+    spec = PRESETS.compile("fieldwork.execution_definitions")
+
+    assert [source.id for source in spec.sources] == [
+        "rcm_row",
+        "planned_test",
+        "table_metadata",
+        "documents",
+        "current_data_tests",
+        "current_document_tests",
+    ]
+    # Only the two shared parents are required; each unit kind supplies its own
+    # optional sources and the rest are recorded as absent in that manifest.
+    assert [source.id for source in spec.sources if source.required] == [
+        "rcm_row",
+        "planned_test",
+    ]
+    assert spec.privacy.allow_table_metadata is True
+    assert spec.privacy.allow_table_rows is False
+    assert spec.privacy.allow_table_profiles is False
+
+
+def test_definition_scopes_supply_only_their_own_unit_kind_sources():
+    workspace = workspaces.create_workspace("Definition scopes")
+    workspace.add_table(
+        "transactions.csv",
+        pl.DataFrame({"invoice": [1, 1, 2]}).write_csv().encode(),
+    )
+    documents.add_document(workspace, "Approval.txt", b"Management approved.")
+    row = workspace.add_rcm(
+        {"process": "AP", "risk": "Duplicate payments", "control": "Duplicate check"}
+    )
+    planned = workspace.add_planned_test(
+        row["id"],
+        {
+            "title": "Test duplicates",
+            "objective": "Identify duplicates",
+            "method": "data_analytics",
+            "steps": ["Identify repeated invoice identifiers."],
+        },
+    )
+
+    data_scope = context_adapters.data_test_spec_scope(
+        workspace, row["id"], planned["id"]
+    )
+    document_scope = context_adapters.document_test_spec_scope(
+        workspace, row["id"], planned["id"]
+    )
+
+    assert set(data_scope.candidates) == {
+        "rcm_row",
+        "planned_test",
+        "table_metadata",
+        "current_data_tests",
+    }
+    assert set(document_scope.candidates) == {
+        "rcm_row",
+        "planned_test",
+        "documents",
+        "current_document_tests",
+    }
+    # A document with no analysis is still selectable evidence for an item.
+    supplied = document_scope.candidates["documents"][0].representations["summary"]
+    assert supplied["summary"] == ""
+    assert supplied["id"]

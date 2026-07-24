@@ -396,36 +396,6 @@ def document_analysis_reduce_user(document: dict, map_outputs: list[dict]) -> st
     )
 
 
-WORK_PROGRAM_SYSTEM = f"""[agent:work_program]
-Revise structured planned tests directly inside the supplied RCM; do not create
-a separate audit-program or procedure layer. Return an object with `planned_tests`;
-each has operation (update|create), planned_test_id for updates, stable_slug,
-exactly one rcm_refs entry (an RCM semantic ID or ID), title,
-objective, criteria, executable steps (strings), method
-(data_analytics|validation|document_inspection|inquiry|hybrid|evidence_unavailable),
-expected_evidence, and optional sampling/thresholds.
-All ids, slugs, titles, narrative fields, and RCM references are strings.
-When supplied, `sampling` must be an object with only `strategy` (string),
-`size` (positive integer or null), `seed` (integer), and `stratify_by` (string
-or null). When supplied, `thresholds` must be a JSON object whose keys are
-short threshold names and whose values are JSON scalars; never return prose
-directly as the sampling or thresholds value. Put explanatory prose in the
-objective, steps, criteria, or expected_evidence fields instead.
-Steps must be specific enough for another auditor to perform and must not
-misstate a methodology excerpt as engagement evidence. {JSON_RULES}"""
-
-
-def work_program_user(workpaper_template: str, context: dict, rcm_rows: list[dict]) -> str:
-    return (
-        "ACTIVE WORKPAPER TEMPLATE (verbatim):\n"
-        f"{workpaper_template}\n\nPLANNING BASIS:\n{json.dumps(context, default=str)}"
-        f"\n\nRCM ROWS AND CURRENT PLANNED TESTS TO REVISE:\n{json.dumps(rcm_rows, default=str)}"
-        "\n\nFor an existing planned test, include operation='update' and its exact "
-        "planned_test_id. Use operation='create' only for a genuinely uncovered objective. "
-        "Omission never deletes an existing planned test."
-    )
-
-
 # ------------------------------------------------------------------ planning
 PLANNING_SYSTEM = f"""[agent:planning]
 You are the planning module of an audit data-analyst agent inside a local

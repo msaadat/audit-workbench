@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
-from .. import audit_capabilities
+from ..capabilities import _shared as audit_hashes
 from ..artifact_index import canonical_id
 from .model import (
     EXECUTORS,
@@ -109,7 +109,7 @@ def execute_apm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                 "apm_markdown": markdown,
                 "created_by": "agent",
                 "agent_run_id": target.run_id,
-                "workflow_basis_sha1": audit_capabilities.planning_basis_sha1(
+                "workflow_basis_sha1": audit_hashes.planning_basis_sha1(
                     fresh
                 ),
             },
@@ -156,7 +156,7 @@ def reconcile_apm(
         and current.planning.get("created_by") == "agent"
         and current.planning.get("agent_run_id") == target.run_id
         and current.planning.get("workflow_basis_sha1")
-        == audit_capabilities.planning_basis_sha1(current)
+        == audit_hashes.planning_basis_sha1(current)
     ):
         if current.revision <= request.expected_revision:
             return ExecutorReconciliation(
@@ -511,7 +511,7 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
 
     def commit(fresh: Workspace) -> list[dict]:
         state["revision_before"] = fresh.revision
-        parent_sha1 = audit_capabilities.apm_sha1(fresh)
+        parent_sha1 = audit_hashes.apm_sha1(fresh)
         outcomes: list[dict] = []
         for spec in rows:
             existing, ambiguous = match_rcm_revision(fresh, spec, spec["semantic_id"])
@@ -609,7 +609,7 @@ def reconcile_rcm(
                 )
             ),
         )
-    parent_sha1 = audit_capabilities.apm_sha1(current)
+    parent_sha1 = audit_hashes.apm_sha1(current)
     outcomes: list[dict] = []
     for spec in rows:
         existing, ambiguous = match_rcm_revision(current, spec, spec["semantic_id"])
@@ -682,6 +682,358 @@ RCM_EXECUTOR = ExecutorDefinition(
 EXECUTORS.register(RCM_EXECUTOR)
 
 
+# --------------------------------------------------------------------------- #
+# planning.planned_tests executor (P7D)
+# --------------------------------------------------------------------------- #
+PLANNED_TEST_EXECUTOR_ID = "planning.planned_tests"
+# The revision fields an accepted proposal may write onto a matched planned test.
+PLANNED_TEST_FIELDS = (
+    "title",
+    "objective",
+    "criteria",
+    "steps",
+    "method",
+    "expected_evidence",
+    "sampling",
+    "thresholds",
+    "methodology_refs",
+)
+
+
+@dataclass
+class PlannedTestExecutorTarget:
+    """Mutable target for one RCM row's deterministic planned-test commit."""
+
+    workspace: Workspace
+    run_id: str
+    rcm_id: str
+    allow_auditor_overwrite: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("Planned-test executor target requires a Workspace.")
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("Planned-test executor target requires a run_id.")
+        self.rcm_id = str(self.rcm_id or "").strip()
+        if not self.rcm_id:
+            raise ValueError("Planned-test executor target requires an rcm_id.")
+        if not isinstance(self.allow_auditor_overwrite, bool):
+            raise ValueError("allow_auditor_overwrite must be a boolean.")
+
+
+def planned_test_semantic_id(rcm_id: str, spec: Mapping[str, object]) -> str:
+    return str(
+        spec.get("semantic_id")
+        or f"planned-test:{rcm_id}:"
+        f"{slugify(str(spec.get('stable_slug') or spec.get('objective') or ''))}"
+    )
+
+
+def planned_test_stable_id(semantic: str) -> str:
+    return "PT-" + hashlib.sha1(semantic.encode()).hexdigest()[:10].upper()
+
+
+def match_planned_test_revision(
+    row: Mapping[str, object],
+    spec: Mapping[str, object],
+    semantic: str,
+) -> dict | None:
+    """Match one proposed revision to an existing planned test on ``row``.
+
+    The durable ``planned_test_id`` wins; otherwise the stable semantic id
+    identifies the same test across regenerations. Unmatched specs are created,
+    which is what the runner-era commit did.
+    """
+    explicit = canonical_id(
+        spec.get("planned_test_id") or spec.get("id"), "planned_test"
+    )
+    planned_tests = row.get("planned_tests") or []
+    if explicit:
+        matched = next(
+            (item for item in planned_tests if item.get("id") == explicit), None
+        )
+        if matched is not None:
+            return matched
+    return next(
+        (item for item in planned_tests if item.get("semantic_id") == semantic), None
+    )
+
+
+def _validated_planned_tests(
+    request: ExecutorRequest,
+    target: object,
+) -> tuple[PlannedTestExecutorTarget, list[dict]]:
+    if not isinstance(target, PlannedTestExecutorTarget):
+        raise WorkspaceError(
+            "Planned-test executor requires a PlannedTestExecutorTarget."
+        )
+    parent_ref = f"rcm:{target.rcm_id}"
+    if set(request.expected_parents) != {parent_ref}:
+        raise WorkspaceError(
+            "Planned-test executor requires exactly its RCM row parent hash."
+        )
+    raw = request.proposal.get("planned_tests")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise WorkspaceError("The accepted planned-test proposal has no tests.")
+    specs: list[dict] = []
+    for value in raw:
+        if not isinstance(value, Mapping):
+            raise WorkspaceError("Each accepted planned test must be an object.")
+        spec = _plain_json(value)
+        if not str(spec.get("objective") or "").strip():
+            raise WorkspaceError("An accepted planned test is missing its objective.")
+        spec["rcm_id"] = target.rcm_id
+        spec["rcm_refs"] = [target.rcm_id]
+        spec["title"] = str(spec.get("title") or spec["objective"])
+        spec["semantic_id"] = planned_test_semantic_id(target.rcm_id, spec)
+        specs.append(spec)
+    return target, specs
+
+
+def _planned_test_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    outcomes: list[dict],
+) -> ExecutorResult:
+    changed = [item for item in outcomes if item["action"] != "preserved"]
+    # Preserved tests enter the receipt refs only when nothing changed, so the
+    # receipt always has a verifiable postcondition set.
+    refs = list(
+        dict.fromkeys(f"planned_test:{item['id']}" for item in (changed or outcomes))
+    )
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, refs),
+        output={"status": "updated", "planned_tests": outcomes},
+    )
+
+
+def _current_row(workspace: Workspace, rcm_id: str) -> dict:
+    row = next(
+        (item for item in workspace.rcm if str(item.get("id")) == rcm_id), None
+    )
+    if row is None:
+        raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
+    return row
+
+
+def execute_planned_tests(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorResult:
+    """Commit one RCM row's accepted planned tests under its parent-hash guard.
+
+    Matching, auditor-edit preservation, updates, and creations run inside one
+    locked transaction guarded on the RCM row, so a concurrent row change is a
+    conflict rather than a silent overwrite. Only the declared planned-test
+    fields are written: a proposal cannot smuggle workspace state (status,
+    conclusions, execution or evidence links) into the committed record, which
+    also keeps every write in the loop well formed.
+    """
+    target, specs = _validated_planned_tests(request, raw_target)
+    state: dict[str, int] = {}
+
+    def commit(fresh: Workspace) -> list[dict]:
+        state["revision_before"] = fresh.revision
+        # ``row`` is the live record, so a test added earlier in this loop is
+        # visible to the next spec's match and cannot be duplicated.
+        row = _current_row(fresh, target.rcm_id)
+        parent_sha1 = audit_hashes.rcm_row_sha1(row)
+        outcomes: list[dict] = []
+        for spec in specs:
+            semantic = str(spec["semantic_id"])
+            existing = match_planned_test_revision(row, spec, semantic)
+            if (
+                existing
+                and existing.get("created_by") != "agent"
+                and not target.allow_auditor_overwrite
+            ):
+                outcomes.append(
+                    {
+                        "id": existing["id"],
+                        "semantic_id": existing.get("semantic_id") or semantic,
+                        "action": "preserved",
+                    }
+                )
+                continue
+            payload = {
+                **{key: spec[key] for key in PLANNED_TEST_FIELDS if key in spec},
+                "semantic_id": semantic,
+                "workflow_parent_sha1": parent_sha1,
+            }
+            if existing:
+                item = fresh.update_planned_test(
+                    target.rcm_id,
+                    existing["id"],
+                    {
+                        key: payload[key]
+                        for key in (*PLANNED_TEST_FIELDS, "workflow_parent_sha1")
+                        if key in payload
+                    },
+                    agent=True,
+                )
+                outcomes.append(
+                    {
+                        "id": item["id"],
+                        "semantic_id": item.get("semantic_id") or semantic,
+                        "action": "updated",
+                    }
+                )
+                continue
+            item = fresh.add_planned_test(
+                target.rcm_id,
+                {
+                    **payload,
+                    "id": planned_test_stable_id(semantic),
+                    "agent_run_id": target.run_id,
+                },
+            )
+            outcomes.append(
+                {
+                    "id": item["id"],
+                    "semantic_id": item.get("semantic_id") or semantic,
+                    "action": "created",
+                }
+            )
+        return outcomes
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _planned_test_result(
+        request,
+        committed.workspace,
+        revision_before=state["revision_before"],
+        outcomes=committed.value,
+    )
+
+
+def reconcile_planned_tests(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted planned-test commit without mutating state.
+
+    Committing planned tests changes the guarded ``rcm:<id>`` projection, so an
+    unchanged parent proves the commit never landed. When the parent has moved,
+    each accepted test is re-matched against the current row: the commit is
+    proven applied only when every non-preserved test already carries the
+    accepted values under the row's current material hash.
+    """
+    target, specs = _validated_planned_tests(request, raw_target)
+    parent_ref = f"rcm:{target.rcm_id}"
+    current = Workspace(target.workspace.root)
+    current_parent = parent_hashes(current, [parent_ref])[parent_ref]
+    expected_parent = request.expected_parents[parent_ref]
+    if current_parent == expected_parent:
+        # The guarded row is unchanged: nothing was committed, so an ordinary
+        # execution under the same guard is safe.
+        return ExecutorReconciliation("not_applied")
+    row = next(
+        (item for item in current.rcm if str(item.get("id")) == target.rcm_id), None
+    )
+    if row is None:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=str(
+                ParentConflict(
+                    parent_ref, expected_parent, current_parent, current.revision
+                )
+            ),
+        )
+    parent_sha1 = audit_hashes.rcm_row_sha1(row)
+    outcomes: list[dict] = []
+    for spec in specs:
+        semantic = str(spec["semantic_id"])
+        existing = match_planned_test_revision(row, spec, semantic)
+        if (
+            existing
+            and existing.get("created_by") != "agent"
+            and not target.allow_auditor_overwrite
+        ):
+            outcomes.append(
+                {
+                    "id": existing["id"],
+                    "semantic_id": existing.get("semantic_id") or semantic,
+                    "action": "preserved",
+                }
+            )
+            continue
+        applied = (
+            existing is not None
+            and all(
+                str(existing.get(key) or "") == str(spec.get(key) or "")
+                for key in PLANNED_TEST_FIELDS
+                if key in spec
+            )
+            and existing.get("workflow_parent_sha1") == parent_sha1
+        )
+        if not applied:
+            return ExecutorReconciliation(
+                "conflict",
+                reason=(
+                    "The RCM row changed before the interrupted planned-test "
+                    "commit was reconciled."
+                ),
+            )
+        action = (
+            "created"
+            if existing.get("agent_run_id") == target.run_id
+            else "updated"
+        )
+        outcomes.append(
+            {
+                "id": existing["id"],
+                "semantic_id": existing.get("semantic_id") or semantic,
+                "action": action,
+            }
+        )
+    changed = [item for item in outcomes if item["action"] != "preserved"]
+    if not changed or current.revision <= request.expected_revision:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=(
+                "The RCM row changed before the interrupted planned-test commit "
+                "was reconciled."
+            ),
+        )
+    target.workspace = current
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_planned_test_result(
+            request,
+            current,
+            revision_before=max(request.expected_revision, current.revision - 1),
+            outcomes=outcomes,
+        ),
+        reason="The accepted planned tests already hold.",
+    )
+
+
+PLANNED_TEST_EXECUTOR = ExecutorDefinition(
+    executor_id=PLANNED_TEST_EXECUTOR_ID,
+    implementation_hash=_sha256_text(inspect.getsource(execute_planned_tests)),
+    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_planned_tests)),
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_planned_tests,
+    reconciler=reconcile_planned_tests,
+)
+
+EXECUTORS.register(PLANNED_TEST_EXECUTOR)
+
+
 __all__ = [
     "APM_EXECUTOR",
     "APM_EXECUTOR_ID",
@@ -692,6 +1044,10 @@ __all__ = [
     "PLANNING_CONTEXT_EXECUTOR_ID",
     "PLANNING_CONTEXT_FIELDS",
     "PLANNING_CONTEXT_REF",
+    "PLANNED_TEST_EXECUTOR",
+    "PLANNED_TEST_EXECUTOR_ID",
+    "PLANNED_TEST_FIELDS",
+    "PlannedTestExecutorTarget",
     "PlanningContextExecutorTarget",
     "RCM_EXECUTOR",
     "RCM_EXECUTOR_ID",
@@ -699,11 +1055,16 @@ __all__ = [
     "RCM_ROW_FIELDS",
     "RcmExecutorTarget",
     "execute_apm",
+    "execute_planned_tests",
     "execute_planning_context",
     "execute_rcm",
+    "match_planned_test_revision",
     "match_rcm_revision",
+    "planned_test_semantic_id",
+    "planned_test_stable_id",
     "rcm_semantic_id",
     "reconcile_apm",
+    "reconcile_planned_tests",
     "reconcile_planning_context",
     "reconcile_rcm",
 ]

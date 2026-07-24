@@ -6,7 +6,7 @@ import inspect
 import pytest
 
 from app import workspaces
-from app.agent import audit_capabilities
+from app.agent import capabilities as audit_capabilities
 from app.agent.executors import EXECUTORS, ExecutorRequest
 from app.agent.executors.planning import (
     APM_EXECUTOR,
@@ -14,8 +14,10 @@ from app.agent.executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmEditPreserved,
     ApmExecutorTarget,
+    PLANNED_TEST_EXECUTOR,
     PLANNING_CONTEXT_EXECUTOR,
     PLANNING_CONTEXT_REF,
+    PlannedTestExecutorTarget,
     PlanningContextExecutorTarget,
     RCM_EXECUTOR,
     RCM_PARENT_REF,
@@ -384,6 +386,217 @@ def test_rcm_executor_reconciles_interrupted_commit_and_detects_later_edit():
     target.workspace.update_rcm(committed_id, {"control": "Auditor edit"})
     # The auditor edit is not an agent write, so it is now preserved, not applied.
     assert RCM_EXECUTOR.reconciler(request, target).disposition == "not_applied"
+
+
+# --------------------------------------------------------------------------- #
+# planning.planned_tests executor (P7D.2)
+# --------------------------------------------------------------------------- #
+def _planned_test_workspace(name="Planned-test executor"):
+    workspace = _rcm_workspace(name)
+    workspace.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate payments are processed",
+            "control": "Duplicate invoice validation",
+            "risk_rating": "high",
+        }
+    )
+    return workspace, workspace.rcm[0]["id"]
+
+
+def _planned_test(**overrides):
+    value = {
+        "operation": "create",
+        "stable_slug": "duplicate-payments",
+        "title": "Test duplicate payments",
+        "objective": "Determine whether duplicate payments occurred",
+        "criteria": "Each invoice is paid once.",
+        "steps": ["Identify repeated invoice identifiers."],
+        "method": "data_analytics",
+        "expected_evidence": "Duplicate listing",
+    }
+    value.update(overrides)
+    return value
+
+
+def _planned_test_request(workspace, rcm_id, tests):
+    return ExecutorRequest(
+        executor_id="planning.planned_tests",
+        capability_id="planning.planned_tests_ready",
+        unit_id=f"planned_test:{rcm_id.lower()}",
+        proposal={"planned_tests": tests},
+        expected_revision=workspace.revision,
+        expected_parents=parent_hashes(workspace, [f"rcm:{rcm_id}"]),
+        activity={"artifact_refs": [f"rcm:{rcm_id}"]},
+    )
+
+
+def test_planned_test_executor_commits_with_parent_hash_and_postcondition():
+    workspace, rcm_id = _planned_test_workspace()
+    request = _planned_test_request(workspace, rcm_id, [_planned_test()])
+    target = PlannedTestExecutorTarget(workspace, "run-pt", rcm_id)
+
+    receipt = EXECUTORS.execute(request, target)
+
+    committed = target.workspace.rcm[0]["planned_tests"]
+    assert [item["title"] for item in committed] == ["Test duplicate payments"]
+    assert committed[0]["semantic_id"] == f"planned-test:{rcm_id}:duplicate-payments"
+    assert committed[0]["created_by"] == "agent"
+    assert committed[0]["agent_run_id"] == "run-pt"
+    assert committed[0]["workflow_parent_sha1"] == (
+        audit_capabilities.rcm_row_sha1(target.workspace.rcm[0])
+    )
+    assert receipt.artifact_refs == (f"planned_test:{committed[0]['id']}",)
+    assert receipt.postcondition_hashes == parent_hashes(
+        target.workspace, [f"planned_test:{committed[0]['id']}"]
+    )
+    assert receipt.output["planned_tests"][0]["action"] == "created"
+
+
+def test_planned_test_executor_commits_every_test_in_one_transaction():
+    workspace, rcm_id = _planned_test_workspace("Planned-test atomic")
+    request = _planned_test_request(
+        workspace,
+        rcm_id,
+        [
+            _planned_test(),
+            _planned_test(stable_slug="cut-off", title="Test cut-off", objective="Test cut-off"),
+        ],
+    )
+    target = PlannedTestExecutorTarget(workspace, "run-atomic", rcm_id)
+    before = workspace.revision
+
+    receipt = EXECUTORS.execute(request, target)
+
+    assert len(target.workspace.rcm[0]["planned_tests"]) == 2
+    # One transaction: both tests share the single committed revision.
+    assert receipt.workspace_revision_before == before
+    assert len(receipt.artifact_refs) == 2
+
+
+def test_planned_test_executor_writes_only_declared_fields():
+    workspace, rcm_id = _planned_test_workspace("Planned-test fields")
+    request = _planned_test_request(
+        workspace,
+        rcm_id,
+        [
+            _planned_test(
+                status="completed_no_exception",
+                conclusion="The control operated",
+                execution_refs=["datatest:DAT-SMUGGLED"],
+                exception_count=7,
+            )
+        ],
+    )
+    target = PlannedTestExecutorTarget(workspace, "run-fields", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    committed = target.workspace.rcm[0]["planned_tests"][0]
+    # A proposal cannot smuggle execution state into the committed record.
+    assert committed["status"] == "not_ready"
+    assert committed["conclusion"] == ""
+    assert committed["execution_refs"] == []
+    assert committed["exception_count"] == 0
+
+
+def test_planned_test_executor_updates_a_matched_test_and_preserves_its_id():
+    workspace, rcm_id = _planned_test_workspace("Planned-test update")
+    first = _planned_test_request(workspace, rcm_id, [_planned_test()])
+    target = PlannedTestExecutorTarget(workspace, "run-update", rcm_id)
+    EXECUTORS.execute(first, target)
+    committed_id = target.workspace.rcm[0]["planned_tests"][0]["id"]
+
+    second = _planned_test_request(
+        target.workspace,
+        rcm_id,
+        [_planned_test(operation="update", objective="Revised objective")],
+    )
+    receipt = EXECUTORS.execute(second, target)
+
+    planned = target.workspace.rcm[0]["planned_tests"]
+    assert len(planned) == 1
+    assert planned[0]["id"] == committed_id
+    assert planned[0]["objective"] == "Revised objective"
+    assert receipt.output["planned_tests"][0]["action"] == "updated"
+
+
+def test_planned_test_executor_preserves_auditor_owned_test_without_permission():
+    workspace, rcm_id = _planned_test_workspace("Planned-test preserve")
+    workspace.add_planned_test(
+        rcm_id,
+        {
+            "title": "Auditor test",
+            "objective": "Auditor objective",
+            "method": "inquiry",
+            "semantic_id": f"planned-test:{rcm_id}:duplicate-payments",
+        },
+    )
+    request = _planned_test_request(workspace, rcm_id, [_planned_test()])
+    target = PlannedTestExecutorTarget(workspace, "run-preserve", rcm_id)
+
+    receipt = EXECUTORS.execute(request, target)
+
+    planned = target.workspace.rcm[0]["planned_tests"]
+    assert planned[0]["objective"] == "Auditor objective"
+    assert receipt.output["planned_tests"][0]["action"] == "preserved"
+
+
+def test_planned_test_executor_replaces_auditor_test_with_permission():
+    workspace, rcm_id = _planned_test_workspace("Planned-test permission")
+    workspace.add_planned_test(
+        rcm_id,
+        {
+            "title": "Auditor test",
+            "objective": "Auditor objective",
+            "method": "inquiry",
+            "semantic_id": f"planned-test:{rcm_id}:duplicate-payments",
+        },
+    )
+    request = _planned_test_request(workspace, rcm_id, [_planned_test()])
+    target = PlannedTestExecutorTarget(
+        workspace, "run-permission", rcm_id, allow_auditor_overwrite=True
+    )
+
+    receipt = EXECUTORS.execute(request, target)
+
+    planned = target.workspace.rcm[0]["planned_tests"]
+    assert planned[0]["objective"] == "Determine whether duplicate payments occurred"
+    assert receipt.output["planned_tests"][0]["action"] == "updated"
+
+
+def test_planned_test_executor_parent_hash_rejects_concurrent_rcm_change():
+    workspace, rcm_id = _planned_test_workspace("Planned-test parent")
+    request = _planned_test_request(workspace, rcm_id, [_planned_test()])
+    workspace.update_rcm(rcm_id, {"control": "Auditor rewrote the control"})
+    target = PlannedTestExecutorTarget(workspace, "run-parent", rcm_id)
+
+    with pytest.raises(ParentConflict):
+        PLANNED_TEST_EXECUTOR.implementation(request, target)
+
+
+def test_planned_test_executor_reconciles_interrupted_commit_and_detects_later_edit():
+    workspace, rcm_id = _planned_test_workspace("Planned-test reconcile")
+    request = _planned_test_request(workspace, rcm_id, [_planned_test()])
+    target = PlannedTestExecutorTarget(workspace, "run-reconcile", rcm_id)
+
+    # Before the commit lands the guarded row is unchanged: safe to (re)execute.
+    assert PLANNED_TEST_EXECUTOR.reconciler(request, target).disposition == "not_applied"
+
+    PLANNED_TEST_EXECUTOR.implementation(request, target)
+    committed_id = target.workspace.rcm[0]["planned_tests"][0]["id"]
+
+    recovered = PLANNED_TEST_EXECUTOR.reconciler(request, target)
+    assert recovered.disposition == "already_applied"
+    assert recovered.result.postcondition_hashes == parent_hashes(
+        target.workspace, [f"planned_test:{committed_id}"]
+    )
+
+    target.workspace.update_planned_test(
+        rcm_id, committed_id, {"objective": "Auditor rewrote the objective"}
+    )
+    later = PLANNED_TEST_EXECUTOR.reconciler(request, target)
+    assert later.disposition == "conflict"
 
 
 def test_planning_executor_has_no_gateway_worker_or_provider_dependency():

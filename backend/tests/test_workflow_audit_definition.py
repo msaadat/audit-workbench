@@ -18,7 +18,7 @@ asserted here.
 
 from __future__ import annotations
 
-from app.agent import audit_capabilities
+from app.agent import capabilities as audit_capabilities
 from app.agent.workflows import audit
 
 
@@ -51,14 +51,14 @@ def test_authoritative_graph_matches_baseline_edges():
 
 
 def test_registry_derives_every_edge_from_the_authoritative_graph():
-    registry = audit_capabilities.build_registry()
+    registry = audit_capabilities.build_audit_registry()
     assert {
         capability.id: capability.depends_on for capability in registry.all()
     } == audit.DEPENDENCIES
 
 
 def test_full_audit_closure_is_topological():
-    registry = audit_capabilities.build_registry()
+    registry = audit_capabilities.build_audit_registry()
     resolved = registry.closure(audit.FULL_AUDIT_OUTCOMES)
 
     assert resolved == [
@@ -93,11 +93,11 @@ def test_rollup_fans_out_into_parallel_branches():
 
 
 def test_template_outcomes_reference_declared_capabilities():
-    registry = audit_capabilities.build_registry()
+    registry = audit_capabilities.build_audit_registry()
     declared = {capability.id for capability in registry.all()}
     for outcomes in audit.TEMPLATE_OUTCOMES.values():
         assert set(outcomes) <= declared
-    # The audit_capabilities re-exports are the same authoritative objects.
+    # The capabilities-package re-exports are the same authoritative objects.
     assert audit_capabilities.FULL_AUDIT_OUTCOMES == audit.FULL_AUDIT_OUTCOMES
     assert audit_capabilities.outcomes_for_template("apm_only") == ["planning.apm_ready"]
     assert audit_capabilities.outcomes_for_template("unknown-template") is None

@@ -177,6 +177,16 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
             return None
     if kind == "datatest":
         return next((item for item in workspace.data_tests if item.get("id") == item_id), None)
+    if kind == "doctest":
+        # Document tests live in their own sidecars, so the projection is the
+        # summary the workspace itself indexes; the import is local because
+        # ``doc_tests`` depends on this module for its linked writes.
+        from .doc_tests import list_tests
+
+        return next(
+            (item for item in list_tests(workspace) if item.get("id") == item_id),
+            None,
+        )
     if kind == "observation":
         return next((item for item in workspace.observations if item.get("id") == item_id), None)
     if kind == "finding":

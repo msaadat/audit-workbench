@@ -3,9 +3,10 @@
 The grouped ``capabilities`` package composes the audit capability registry from
 the ``planning``, ``fieldwork``, and ``reporting`` modules and validates the
 composition against the authoritative dependency graph in ``workflows.audit``
-before any writer relies on it. These tests prove the grouping faithfully
-partitions the live registry and that startup validation rejects inconsistent
-compositions.
+before any writer relies on it. Since ``P7.3`` this composed registry *is* the
+live registry, so these tests pin the declarations themselves — the grouping,
+ordering, and hash-relevant fields — and prove that startup validation rejects
+inconsistent compositions.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import hashlib
 
 import pytest
 
-from app.agent import audit_capabilities, capabilities
+from app.agent import capabilities
 from app.agent.capabilities import planning
 from app.agent.runtime import CapabilityExecution, CapabilityExecutionRegistry
 from app.agent.workflow import Capability, CapabilityRegistry
@@ -62,34 +63,71 @@ def _declaration_fields(capability: Capability) -> dict:
     }
 
 
-def _locally_owned_ids() -> frozenset[str]:
-    owned: set[str] = set()
-    for group in capabilities.CAPABILITY_GROUPS:
-        owned |= set(getattr(group, "LOCALLY_OWNED", frozenset()))
-    return frozenset(owned)
+def test_build_audit_registry_is_deterministic_and_matches_the_startup_registry():
+    rebuilt = capabilities.build_audit_registry()
+
+    assert [capability.id for capability in rebuilt.all()] == list(
+        capabilities.grouped_capability_ids()
+    )
+    assert [
+        _declaration_fields(capability) for capability in rebuilt.all()
+    ] == [
+        _declaration_fields(capability)
+        for capability in capabilities.AUDIT_REGISTRY.all()
+    ]
+    # ``REGISTRY`` is the live alias used by routing and audit dispatch.
+    assert capabilities.REGISTRY is capabilities.AUDIT_REGISTRY
 
 
-_ALL_LOCALLY_OWNED = sorted(_locally_owned_ids())
+# The declaration fields that participate in a capability's normalized identity.
+# Pinning them here is the golden test that a later refactor cannot silently
+# change a stage id, worker kind, declared context preset, or invalidation set.
+_DECLARED = {
+    "planning.context_ready": ("planning_context", "planning_context", None, ("sources",)),
+    "planning.apm_ready": ("apm", "apm", "planning.apm", ("planning:context",)),
+    "planning.rcm_ready": ("rcm", "rcm", "planning.rcm", ("planning:apm",)),
+    "planning.planned_tests_ready": (
+        "planned_tests",
+        "planned_test_generation",
+        "planning.planned_tests",
+        ("rcm",),
+    ),
+    "fieldwork.definitions_ready": (
+        "execution_definitions",
+        "execution_spec",
+        "fieldwork.execution_definitions",
+        ("planned_test",),
+    ),
+    "fieldwork.executed": ("execution", "mixed_execution", None, ("definition", "evidence")),
+    "results.rolled_up": ("rollup", "rollup", None, ("execution",)),
+    "findings.drafted": (
+        "findings",
+        "finding_draft",
+        "reporting.finding_draft",
+        ("observation",),
+    ),
+    "working_papers.generated": ("working_papers", "working_paper", None, ("rollup",)),
+    "dashboard.curated": ("dashboard", "dashboard", None, ("rollup",)),
+    "report.working_draft": (
+        "report",
+        "report",
+        None,
+        ("planning:apm", "rollup", "findings"),
+    ),
+    "audit.verified": ("verify", "verify", None, ("outputs",)),
+}
 
 
-def test_composition_from_live_source_selects_or_owns_matching_declarations():
-    live = audit_capabilities.REGISTRY
-    composed = capabilities.build_audit_registry(source=live)
-    composed_ids = [capability.id for capability in composed.all()]
-    owned = _locally_owned_ids()
+@pytest.mark.parametrize("capability_id", sorted(_DECLARED))
+def test_declared_capability_identity_fields_are_pinned(capability_id):
+    stage_id, worker_kind, context, invalidate_on = _DECLARED[capability_id]
+    capability = capabilities.AUDIT_REGISTRY.get(capability_id)
 
-    assert composed_ids == list(capabilities.grouped_capability_ids())
-    for cid in composed_ids:
-        if cid in owned:
-            # A migrated slice constructs its declaration locally; it is no
-            # longer the same object but stays declaration-identical to live.
-            assert composed.get(cid) is not live.get(cid)
-            assert _declaration_fields(composed.get(cid)) == _declaration_fields(
-                live.get(cid)
-            )
-        else:
-            # Unmigrated capabilities are still selected as the exact live object.
-            assert composed.get(cid) is live.get(cid)
+    assert capability.stage_id == stage_id
+    assert capability.worker_kind == worker_kind
+    assert capability.context == context
+    assert tuple(capability.invalidate_on) == invalidate_on
+    assert tuple(capability.depends_on) == audit_workflow.dependencies(capability_id)
 
 
 class _StubWorkspace:
@@ -132,43 +170,43 @@ _PLANNING_STATES = (
 )
 
 
-@pytest.mark.parametrize("capability_id", sorted(planning.LOCALLY_OWNED))
-def test_locally_owned_planning_declaration_matches_live_across_stub_states(capability_id):
-    owned = capabilities.AUDIT_REGISTRY.get(capability_id)
-    live = audit_capabilities.REGISTRY.get(capability_id)
+@pytest.mark.parametrize("capability_id", sorted(planning.CAPABILITY_IDS))
+def test_planning_readiness_and_units_are_stable_across_representative_states(
+    capability_id,
+):
+    """Planning readiness and expansion stay deterministic across the branches
+    they were characterized on: absent inputs, satisfied context + structured
+    APM, valid RCM rows with executable planned tests, and an invalid RCM row."""
+    capability = capabilities.AUDIT_REGISTRY.get(capability_id)
 
-    # Golden identity: the moved declaration is hash-relevant identical to live.
-    assert capability_id in _locally_owned_ids()
-    assert _declaration_fields(owned) == _declaration_fields(live)
-
-    # Golden behavior: readiness and unit expansion match live across the
-    # planning branches (absent, satisfied, valid rows, invalid row).
     for stub in _PLANNING_STATES:
-        assert owned.readiness(stub, {}).payload() == live.readiness(stub, {}).payload()
-        assert owned.expand_units(stub, {}) == live.expand_units(stub, {})
+        first = capability.readiness(stub, {}).payload()
+        assert first == capability.readiness(stub, {}).payload()
+        assert first["state"] in {
+            "satisfied",
+            "missing",
+            "review_required",
+            "blocked",
+        }
+        assert capability.expand_units(stub, {}) == capability.expand_units(stub, {})
 
 
-@pytest.mark.parametrize("capability_id", _ALL_LOCALLY_OWNED)
-def test_locally_owned_declaration_matches_live_on_real_workspace(
+@pytest.mark.parametrize(
+    "capability_id", sorted(capabilities.grouped_capability_ids())
+)
+def test_every_declaration_is_deterministic_on_a_real_workspace(
     capability_id, workspace_with_data
 ):
-    """Every migrated declaration matches the live registry field-for-field and
-    behaves identically (readiness + expansion) against a real workspace.
-
-    Fieldwork and reporting readiness read RCM execution manifests, document
+    """Fieldwork and reporting readiness read RCM execution manifests, document
     tests, working papers, findings, and report state, so a real workspace — not
-    a stub — is required to exercise them without diverging from live."""
-    owned = capabilities.AUDIT_REGISTRY.get(capability_id)
-    live = audit_capabilities.REGISTRY.get(capability_id)
+    a stub — is required to exercise them."""
+    capability = capabilities.AUDIT_REGISTRY.get(capability_id)
 
-    assert _declaration_fields(owned) == _declaration_fields(live)
-    assert (
-        owned.readiness(workspace_with_data, {}).payload()
-        == live.readiness(workspace_with_data, {}).payload()
-    )
-    assert owned.expand_units(workspace_with_data, {}) == live.expand_units(
-        workspace_with_data, {}
-    )
+    readiness = capability.readiness(workspace_with_data, {}).payload()
+    assert readiness == capability.readiness(workspace_with_data, {}).payload()
+    units = capability.expand_units(workspace_with_data, {})
+    assert units == capability.expand_units(workspace_with_data, {})
+    assert len({unit.id for unit in units}) == len(units)
 
 
 def test_startup_registry_matches_authoritative_graph():
@@ -200,7 +238,7 @@ def test_validation_rejects_missing_execution_binding():
 
 
 def test_validation_rejects_a_changed_edge():
-    live = audit_capabilities.REGISTRY
+    live = capabilities.AUDIT_REGISTRY
     tampered = [
         dataclasses.replace(capability, depends_on=("planning.context_ready",))
         if capability.id == "planning.rcm_ready"
@@ -212,7 +250,7 @@ def test_validation_rejects_a_changed_edge():
 
 
 def test_validation_rejects_a_missing_capability():
-    live = audit_capabilities.REGISTRY
+    live = capabilities.AUDIT_REGISTRY
     partial = [
         capability for capability in live.all() if capability.id != "audit.verified"
     ]
@@ -221,7 +259,7 @@ def test_validation_rejects_a_missing_capability():
 
 
 def test_validation_rejects_an_unregistered_context_preset():
-    live = audit_capabilities.REGISTRY
+    live = capabilities.AUDIT_REGISTRY
     tampered = [
         dataclasses.replace(capability, context="does.not.exist")
         if capability.id == "planning.apm_ready"
@@ -239,3 +277,26 @@ def test_declared_context_presets_are_registered():
     for capability in capabilities.AUDIT_REGISTRY.all():
         if capability.context is not None:
             assert str(capability.context) in known
+
+
+def test_the_retired_audit_modules_have_no_module_alias_or_reexport():
+    """`P7.3` deletion gate: the grouped package is the only audit registry."""
+    import importlib
+    import pathlib
+
+    import app.agent as agent_package
+
+    for name in ("audit_capabilities", "audit_workers"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"app.agent.{name}")
+        assert not hasattr(agent_package, name)
+
+    agent_dir = pathlib.Path(agent_package.__file__).parent
+    assert not (agent_dir / "audit_capabilities.py").exists()
+    assert not (agent_dir / "audit_workers.py").exists()
+    assert not list(agent_dir.glob("compat*"))
+    # The router moved to routing.py, its only caller.
+    from app.agent import routing
+
+    assert routing.ROUTER_SYSTEM.startswith("[agent:workflow_router]")
+    assert callable(routing.validate_route)

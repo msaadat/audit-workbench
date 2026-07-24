@@ -6,7 +6,8 @@ import uuid
 
 from .. import doc_tests
 from ..workspaces import Workspace, WorkspaceError, load_workspace
-from . import audit_capabilities, audit_workers, context_bundles, store, workflow
+from . import capabilities as audit_capabilities
+from . import context_bundles, prompts, store, workflow
 from .base import BaseRunner, LimitExceeded
 from .workflows import audit as audit_workflow
 
@@ -15,6 +16,56 @@ ELIGIBLE_DISPOSITIONS = {
     "confirmed_control_exception",
     "draft_finding_candidate",
 }
+
+
+# --------------------------------------------------------------------------- #
+# Bounded router worker
+#
+# The router is a single-turn classifier over the command and the current
+# capability readiness projection. It proposes no actions, workers, or
+# dependencies, and it only ever names registered outcome IDs.
+# --------------------------------------------------------------------------- #
+ROUTER_SYSTEM = f"""[agent:workflow_router]
+Classify one audit-assistant command. You are a router, not a planner. Return
+route (workflow|generic_action|question|unsupported), requested_outcomes (only
+supported outcome IDs), objective, target_refs, generation_mode
+(reuse_existing|force), action_intent (null or a short normalized operation),
+constraints, needs_clarification, and clarification. Never propose actions,
+workers, dependencies, tests, columns, or execution steps. {prompts.JSON_RULES}"""
+
+def validate_route(payload: dict, supported: set[str]) -> dict:
+    route = str(payload.get("route") or "")
+    if route not in {"workflow", "generic_action", "question", "unsupported"}:
+        raise ValueError("route is unsupported")
+    outcomes = payload.get("requested_outcomes") or []
+    if not isinstance(outcomes, list) or any(str(item) not in supported for item in outcomes):
+        raise ValueError("requested_outcomes contains an unsupported capability")
+    generation_mode = str(payload.get("generation_mode") or "reuse_existing")
+    if generation_mode not in {"reuse_existing", "force"}:
+        raise ValueError("generation_mode is unsupported")
+    needs = bool(payload.get("needs_clarification"))
+    if route == "workflow" and not outcomes and not needs:
+        raise ValueError("a workflow route needs at least one requested outcome")
+    return {
+        "route": route,
+        "requested_outcomes": [str(item) for item in outcomes],
+        "objective": str(payload.get("objective") or "").strip(),
+        "target_refs": [str(item) for item in payload.get("target_refs") or []],
+        "generation_mode": generation_mode,
+        "action_intent": str(payload.get("action_intent") or "").strip() or None,
+        "constraints": [str(item) for item in payload.get("constraints") or []],
+        "needs_clarification": needs,
+        "clarification": str(payload.get("clarification") or "").strip() or None,
+    }
+
+
+def _resolve_command(runner, bundle: context_bundles.ContextBundle, supported: set[str]) -> dict:
+    return runner.llm_json(
+        ROUTER_SYSTEM,
+        bundle.serialized(),
+        activity={"context_metrics": bundle.metrics()},
+        validator=lambda payload: validate_route(payload, supported),
+    )
 
 
 def local_resolution(command: dict) -> dict | None:
@@ -334,7 +385,7 @@ class CommandRouter(BaseRunner):
             sorted(supported),
             permission_mode=self.run["mode"],
         )
-        resolution = audit_workers.resolve_command(self, bundle, supported)
+        resolution = _resolve_command(self, bundle, supported)
         self.run["partial_resolution"] = resolution
         self.save()
         if resolution.get("needs_clarification"):
@@ -355,7 +406,7 @@ class CommandRouter(BaseRunner):
                 sorted(supported),
                 permission_mode=self.run["mode"],
             )
-            resolution = audit_workers.resolve_command(self, bundle, supported)
+            resolution = _resolve_command(self, bundle, supported)
             if resolution.get("needs_clarification"):
                 raise WorkspaceError(
                     "The command still needs clarification after the supplied answer."

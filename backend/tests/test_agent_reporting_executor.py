@@ -6,11 +6,13 @@ import json
 
 import pytest
 
-from app import data_tests, workspaces
+from app import data_tests, report, workspaces
 from app.agent.executors.reporting import (
+    REPORT_DRAFT_REF,
     VERIFICATION_REF,
     curate_dashboard,
     dashboard_tile_ref,
+    generate_report_draft,
     generate_working_paper,
     output_issues,
     verify_audit,
@@ -147,3 +149,46 @@ def test_curate_dashboard_conflicts_when_rcm_parent_changed():
     # conflict rather than pin tiles selected against a stale matrix.
     with pytest.raises(WorkspaceConflict):
         curate_dashboard(ws, run_id="RUN-conflict")
+
+
+# --------------------------------------------------------------------------- #
+# report.working_draft deterministic executor (P7K.2)
+# --------------------------------------------------------------------------- #
+def test_generate_report_draft_commits_and_reports_no_reconciliation(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nPayments.",
+        }
+    )
+
+    ref, requires_reconcile = generate_report_draft(ws, run_id="run-report")
+
+    assert ref == REPORT_DRAFT_REF
+    assert requires_reconcile is False
+    committed = workspaces.load_workspace(ws.id).report
+    assert committed["generated_markdown"]
+    assert committed["markdown"] == committed["generated_markdown"]
+    assert committed["generated_by_run"] == "run-report"
+    assert committed["edited"] is False
+
+
+def test_generate_report_draft_preserves_an_auditor_edit_for_reconciliation(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    ws.update_planning({"context": {"objective": "Assess payments"}})
+    generate_report_draft(ws, run_id="run-first")
+    report.update(ws, {"markdown": "# Auditor rewrote the report"})
+
+    ref, requires_reconcile = generate_report_draft(ws, run_id="run-second")
+
+    assert ref == REPORT_DRAFT_REF
+    # The auditor's draft stays authoritative; the candidate waits for review.
+    assert requires_reconcile is True
+    committed = workspaces.load_workspace(ws.id).report
+    assert committed["markdown"] == "# Auditor rewrote the report"
+    assert committed["generated_markdown"] != committed["markdown"]

@@ -11,11 +11,9 @@ from .. import (
     data_tests,
     doc_tests,
     documents,
-    findings,
     rcm_execution,
-    report,
 )
-from ..workspace_transactions import canonical_sha1, mutate, parent_hashes
+from ..workspace_transactions import mutate, parent_hashes
 from ..workspaces import (
     OBSERVATION_DISPOSITIONS,
     Workspace,
@@ -24,24 +22,40 @@ from ..workspaces import (
     load_workspace,
     slugify,
 )
-from . import audit_capabilities, audit_workers, context_bundles, store, workflow
+from . import capabilities as audit_capabilities
+from . import context_bundles, store, workflow
 from .base import Cancelled, LimitExceeded
 from .action_runner import ActionRunner
 from .capabilities.reporting import (
     OBSERVATION_DISPOSITION_CHECKPOINT,
     STAGE_CHECKPOINTS,
 )
-from .context import ContextResolver, apm_document_methodology_scope, rcm_scope
+from .context import (
+    ContextResolver,
+    apm_document_methodology_scope,
+    data_test_spec_scope,
+    document_test_spec_scope,
+    finding_draft_scope,
+    planned_test_scope,
+    rcm_scope,
+)
 from .executors import EXECUTORS
-from .executors.fieldwork import roll_up_results
+from .executors.fieldwork import (
+    DataTestExecutorTarget,
+    DocumentTestExecutorTarget,
+    roll_up_results,
+)
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
+    PlannedTestExecutorTarget,
     RcmExecutorTarget,
 )
 from .executors.reporting import (
     VERIFICATION_REF,
+    FindingExecutorTarget,
     curate_dashboard,
+    generate_report_draft,
     generate_working_paper,
     output_issues,
     verify_audit,
@@ -430,245 +444,252 @@ class AuditWorkflowExecution(ActionRunner):
             on_committed=on_committed,
         )
 
-    def _planned_tests(self, stage: dict, units: list[dict]) -> None:
-        candidates = self._parallel_candidates(
-            stage, units,
-            lambda unit: audit_workers.planned_tests(
-                self,
-                context_bundles.planned_test(
-                    self.ws,
-                    next(row for row in self.ws.rcm if row["id"] == unit["parent_refs"][0].split(":", 1)[1]),
-                    self.run.get("planning_basis"),
-                ),
-                unit["parent_refs"][0].split(":", 1)[1],
-            ),
+    def _bind_planned_tests(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind one RCM row's planned-test unit to the shared ``UnitPipeline``.
+
+        The domain-neutral scheduler owns manifest/proposal/receipt persistence,
+        proposal reuse, approval, and readiness reevaluation. This binding
+        supplies only the row-scoped declared context, the planned-test commit
+        target, per-test approval items, and the post-commit bookkeeping that
+        translates receipt actions into planning-change accounting.
+        """
+        self.ws = subject
+        rcm_id = unit["parent_refs"][0].split(":", 1)[1]
+        expected_row = parent_hashes(self.ws, [f"rcm:{rcm_id}"])
+        basis = self.run.get("planning_basis") or {"planning": self.ws.planning}
+        selected_document_ids = [
+            str(item.get("document_id"))
+            for item in basis.get("document_analyses") or []
+            if item.get("document_id")
+        ]
+        target = PlannedTestExecutorTarget(
+            self.ws,
+            self.run["id"],
+            rcm_id,
+            allow_auditor_overwrite=self.run["mode"] == "permission",
         )
-        proposals = []
-        for unit, value in candidates:
-            for spec in value:
-                spec.setdefault(
-                    "methodology_refs",
-                    [
-                        {
-                            key: item[key]
-                            for key in (
-                                "pack_id", "pack_name", "version", "sha1",
-                                "section", "citation",
-                            )
-                            if key in item
-                        }
-                        for item in (self.run.get("planning_basis") or {}).get("methodology") or []
-                    ],
-                )
-                proposals.append(self.proposal_item(spec["title"], f"Planned test for {spec['rcm_id']}.", {**spec, "_unit_id": unit["id"]}))
         task = self.add_task("work_program", "workflow:planned_tests", "RCM planned tests")
-        accepted = self.request_approval("planned_tests", task, proposals) if self.run["mode"] == "permission" else proposals
-        accepted_units = set()
-        for proposal in accepted:
-            self.checkpoint()
-            spec = dict(proposal["spec"])
-            unit_id = spec.pop("_unit_id")
-            unit = self._unit(stage, unit_id)
-            try:
-                item = self._commit_planned_test(spec)
-                accepted_units.add(unit_id)
-                refs = list(unit.get("result_refs") or []) + [f"planned_test:{item['id']}"]
-                self._set_unit(stage, unit, "succeeded", result_refs=refs)
-            except WorkspaceConflict as error:
-                self._set_unit(stage, unit, "conflict", error=str(error))
-            except Exception as error:
-                self._set_unit(stage, unit, "failed", error=str(error))
-        for unit, _value in candidates:
-            if unit["id"] not in accepted_units and unit["status"] == "running":
-                self._set_unit(stage, unit, "blocked", error="No planned-test proposal was approved.")
 
-    def _commit_planned_test(self, spec: dict) -> dict:
-        rcm_id = str(spec["rcm_id"])
-        semantic = f"planned-test:{rcm_id}:{slugify(spec.get('stable_slug') or spec['objective'])}"
-        spec["semantic_id"] = semantic
-        row = next(item for item in self.ws.rcm if item["id"] == rcm_id)
-        spec["workflow_parent_sha1"] = audit_capabilities.rcm_row_sha1(row)
-        fields = (
-            "title", "objective", "criteria", "steps", "method",
-            "expected_evidence", "sampling", "thresholds", "methodology_refs",
-            "workflow_parent_sha1",
-        )
-        expected = parent_hashes(self.ws, [f"rcm:{rcm_id}"])
-
-        def commit(fresh: Workspace):
-            row = next(item for item in fresh.rcm if item["id"] == rcm_id)
-            existing = next((item for item in row.get("planned_tests") or [] if item.get("id") == spec.get("planned_test_id") or item.get("semantic_id") == semantic), None)
-            if existing and existing.get("created_by") != "agent" and self.run["mode"] != "permission":
-                return existing, "preserved"
-            if existing:
-                return (
-                    fresh.update_planned_test(
-                        rcm_id,
-                        existing["id"],
-                        {key: spec.get(key) for key in fields if key in spec},
-                        agent=True,
-                    ),
-                    "updated",
-                )
-            stable_id = "PT-" + hashlib.sha1(semantic.encode()).hexdigest()[:10].upper()
-            return (
-                fresh.add_planned_test(
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                planned_test_scope(
+                    self.ws,
                     rcm_id,
-                    {**spec, "id": stable_id, "agent_run_id": self.run["id"]},
+                    planning_context=(basis.get("planning") or {}).get("context") or {},
+                    document_ids=(
+                        selected_document_ids
+                        if "document_analyses" in basis
+                        else None
+                    ),
                 ),
-                "created",
             )
 
-        result = mutate(self.ws, commit, expected_parents=expected)
-        self.ws = result.workspace
-        item, action = result.value
-        self.run["planning_changes"][f"planned_test_{action}"] += 1
-        self.record_artifact("planned_test", item["id"], semantic, action, None)
-        return item
+        def approval_provider(proposal):
+            proposed = [
+                self.proposal_item(
+                    str(spec.get("title") or spec.get("objective")),
+                    f"Planned test for {rcm_id}.",
+                    dict(spec),
+                )
+                for spec in proposal.get("planned_tests") or []
+            ]
+            accepted = self.request_approval("planned_tests", task, proposed)
+            tests = [dict(item["spec"]) for item in accepted]
+            return {"planned_tests": tests} if tests else None
 
-    def _definitions(self, stage: dict, units: list[dict]) -> None:
-        def worker(unit: dict):
-            planned_id = next(ref.split(":", 1)[1] for ref in unit["parent_refs"] if ref.startswith("planned_test:"))
-            row, planned = self.ws.planned_test(planned_id)
-            if unit["kind"] == "data_test_spec":
-                bundle = context_bundles.data_test_spec(self.ws, row, planned)
-                candidate = audit_workers.data_test_spec(self, bundle, unit["parent_refs"])
-                if planned.get("method") == "validation" and candidate.get("engine") != "validation":
-                    raise WorkspaceError(
-                        "A validation planned test requires a validation-engine Data Test."
-                    )
-                return candidate
-            bundle = context_bundles.document_test_spec(self.ws, row, planned)
-            return audit_workers.document_test_spec(self, bundle, unit["parent_refs"])
-
-        candidates = self._parallel_candidates(stage, units, worker)
-        proposals = [
-            self.proposal_item(unit["title"], "Executable definition derived from a required kind.", {**value, "_unit_id": unit["id"]})
-            for unit, value in candidates
-        ]
-        task = self.add_task("execution_definitions", "workflow:definitions", "Execution definitions")
-        accepted = self.request_approval("execution_definitions", task, proposals) if self.run["mode"] == "permission" else proposals
-        accepted_ids = set()
-        for proposal in accepted:
-            self.checkpoint()
-            candidate = dict(proposal["spec"])
-            unit_id = candidate.pop("_unit_id")
-            unit = self._unit(stage, unit_id)
-            try:
-                ref = self._commit_definition(unit, candidate)
-                accepted_ids.add(unit_id)
-                self._set_unit(stage, unit, "succeeded", result_refs=[ref])
-            except WorkspaceConflict as error:
-                self._set_unit(stage, unit, "conflict", error=str(error))
-            except Exception as error:
-                self._set_unit(stage, unit, "failed", error=str(error))
-        for unit, _value in candidates:
-            if unit["id"] not in accepted_ids and unit["status"] == "running":
-                self._set_unit(stage, unit, "blocked", error="The execution definition was not approved.")
-
-    def _commit_definition(self, unit: dict, candidate: dict) -> str:
-        planned_id = next(ref.split(":", 1)[1] for ref in unit["parent_refs"] if ref.startswith("planned_test:"))
-        rcm_id = next(ref.split(":", 1)[1] for ref in unit["parent_refs"] if ref.startswith("rcm:"))
-        expected = parent_hashes(self.ws, [f"planned_test:{planned_id}"])
-        stable_slug = slugify(candidate.get("title") or planned_id)
-        required_kind = "datatest" if unit["kind"] == "data_test_spec" else "doctest"
-        semantic = f"{required_kind}:{rcm_id}:{planned_id}:{stable_slug}"
-
-        def commit(fresh: Workspace):
-            payload = {
-                **candidate, "rcm_id": rcm_id, "planned_test_id": planned_id,
-                "semantic_id": semantic, "agent_run_id": self.run["id"],
-                "workflow_parent_sha1": audit_capabilities.planned_test_sha1(
-                    fresh.planned_test(planned_id)[1]
-                ),
-            }
-            if required_kind == "datatest":
-                payload["id"] = "DAT-" + hashlib.sha1(semantic.encode()).hexdigest()[:10].upper()
-                existing = next(
-                    (
-                        item
-                        for item in fresh.data_tests
-                        if item.get("planned_test_id") == planned_id
-                        and (
-                            item.get("semantic_id") == semantic
-                            or item.get("id") == payload["id"]
-                        )
-                    ),
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            for item in (
+                (outcome.receipt.output.get("planned_tests") or [])
+                if outcome.receipt
+                else []
+            ):
+                action = str(item.get("action"))
+                self.run["planning_changes"][f"planned_test_{action}"] += 1
+                self.record_artifact(
+                    "planned_test",
+                    str(item["id"]),
+                    str(item["semantic_id"]),
+                    action,
                     None,
                 )
-                if existing:
-                    if existing.get("created_by") != "agent" and self.run["mode"] != "permission":
-                        return existing, "preserved"
-                    updated = data_tests.update(
-                        fresh,
-                        existing["id"],
-                        {
-                            key: payload[key]
-                            for key in (
-                                "title", "objective", "engine", "table_refs", "spec",
-                                "rcm_id", "planned_test_id", "workflow_parent_sha1",
-                            )
-                        },
-                        agent=True,
-                    )
-                    return updated, "updated"
-                return data_tests.create(fresh, payload), "created"
-            payload["id"] = "DT-" + hashlib.sha1(semantic.encode()).hexdigest()[:8].upper()
-            payload["rcm_refs"] = [rcm_id]
-            existing_summary = next(
-                (
-                    item
-                    for item in doc_tests.list_tests(fresh)
-                    if item.get("planned_test_id") == planned_id
-                    and (
-                        item.get("semantic_id") == semantic
-                        or item.get("id") == payload["id"]
-                    )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.planned_tests",
+                executor_id="planning.planned_tests",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": [f"rcm:{rcm_id}"],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_row,
+                capability_definition_hash=_capability_definition_hash(capability),
+                approval_kind=(
+                    "planned_tests" if self.run["mode"] == "permission" else None
                 ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            # Unlike the single-unit APM/RCM capabilities, planned tests fan out
+            # one unit per RCM row, so this capability's readiness is only
+            # satisfied once every row's unit has committed. Post-commit
+            # readiness is therefore evaluated by the stage fold, not per unit.
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
+
+    def _bind_definitions(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind one execution-definition unit to the shared ``UnitPipeline``.
+
+        The capability fans out into two unit kinds, so the binding selects the
+        Data Test or Document Test worker/executor pair from ``unit["kind"]``.
+        Everything else is common: the planned-test parent guard, the declared
+        row-scoped context, one approval item, and the post-commit artifact
+        record.
+        """
+        self.ws = subject
+        planned_id = next(
+            ref.split(":", 1)[1]
+            for ref in unit["parent_refs"]
+            if ref.startswith("planned_test:")
+        )
+        rcm_id = next(
+            ref.split(":", 1)[1]
+            for ref in unit["parent_refs"]
+            if ref.startswith("rcm:")
+        )
+        data_test = unit["kind"] == "data_test_spec"
+        artifact_kind = "datatest" if data_test else "doctest"
+        expected_planned = parent_hashes(self.ws, [f"planned_test:{planned_id}"])
+        target_type = (
+            DataTestExecutorTarget if data_test else DocumentTestExecutorTarget
+        )
+        target = target_type(
+            self.ws,
+            self.run["id"],
+            rcm_id,
+            planned_id,
+            allow_auditor_overwrite=self.run["mode"] == "permission",
+        )
+        scope_builder = data_test_spec_scope if data_test else document_test_spec_scope
+        proposal_key = "data_test" if data_test else "document_test"
+        task = self.add_task(
+            "execution_definitions", "workflow:definitions", "Execution definitions"
+        )
+
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                scope_builder(self.ws, rcm_id, planned_id),
+            )
+
+        def approval_provider(proposal):
+            accepted = self.request_approval(
+                "execution_definitions",
+                task,
+                [
+                    self.proposal_item(
+                        unit["title"],
+                        "Executable definition derived from a required kind.",
+                        dict(proposal.get(proposal_key) or {}),
+                    )
+                ],
+            )
+            return {proposal_key: dict(accepted[0]["spec"])} if accepted else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            if outcome.receipt is None:
+                return
+            output = outcome.receipt.output
+            self.record_artifact(
+                artifact_kind,
+                str(output["id"]),
+                str(output["semantic_id"]),
+                str(output["action"]),
                 None,
             )
-            if existing_summary and existing_summary.get("created_by") != "agent" and self.run["mode"] != "permission":
-                return doc_tests.load_test(fresh, existing_summary["id"]), "preserved"
-            if existing_summary:
-                payload["id"] = existing_summary["id"]
-                payload["created"] = existing_summary.get("created")
-            test = doc_tests.create_test(fresh, payload)
-            action = "updated" if existing_summary else "created"
-            missing = dict(candidate.get("missing_evidence") or {})
-            no_documents = any(not item.get("document_ids") for item in test.get("items") or [])
-            if missing or no_documents:
-                test["status"] = "blocked"
-                test["scope_limitations"] = str(missing.get("rationale") or "Required evidence is not yet available.")
-                evidence_hash = canonical_sha1([
-                    {key: item.get(key) for key in ("id", "sha1", "category", "title")}
-                    for item in fresh.documents
-                ])
-                for item in test.get("items") or []:
-                    if item.get("document_ids"):
-                        continue
-                    request = {
-                        "id": f"ER-{uuid.uuid4().hex[:10].upper()}",
-                        "rcm_id": rcm_id, "planned_test_id": planned_id,
-                        "document_test_id": test["id"], "item_id": item["id"],
-                        "transaction_identifier": str(missing.get("identifiers") or item.get("label") or ""),
-                        "missing_document_types": list(missing.get("document_types") or ["supporting_evidence"]),
-                        "status": "open", "reason": test["scope_limitations"],
-                        "next_action": "Import or attach matching evidence, then continue the audit.",
-                        "blocked_unit_id": unit["id"],
-                        "evidence_availability_sha1": evidence_hash,
-                        "created": fresh._updated_now(), "updated": fresh._updated_now(),
-                    }
-                    fresh.evidence_requests.append(request)
-                    item.setdefault("evidence_request_ids", []).append(request["id"])
-                doc_tests.save_test(fresh, test)
-                fresh.save()
-            return test, action
 
-        result = mutate(self.ws, commit, expected_parents=expected)
-        self.ws = result.workspace
-        item, action = result.value
-        self.record_artifact(required_kind, item["id"], semantic, action, None)
-        return f"{required_kind}:{item['id']}"
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id=(
+                    "fieldwork.data_test_spec"
+                    if data_test
+                    else "fieldwork.document_test_spec"
+                ),
+                executor_id=(
+                    "fieldwork.data_test" if data_test else "fieldwork.document_test"
+                ),
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": list(unit.get("parent_refs") or []),
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_planned,
+                capability_definition_hash=_capability_definition_hash(capability),
+                approval_kind=(
+                    "execution_definitions"
+                    if self.run["mode"] == "permission"
+                    else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            # Definitions fan out per required execution kind, so this
+            # capability's readiness only holds once every unit has committed.
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
 
     def _executions(self, stage: dict, units: list[dict]) -> None:
         """Execute every fieldwork unit and record the outcome as a status.
@@ -879,56 +900,99 @@ class AuditWorkflowExecution(ActionRunner):
         self._resolve_interaction_record(interaction, response)
         self.emit("checkpoint_resolved", {"interaction_id": interaction["id"], "count": len(result.value)})
 
-    def _finding_drafts(self, stage: dict, units: list[dict]) -> None:
-        candidates = self._parallel_candidates(
-            stage, units,
-            lambda unit: audit_workers.finding(
-                self,
-                context_bundles.finding(
-                    self.ws,
-                    next(item for item in self.ws.observations if item["id"] == unit["parent_refs"][0].split(":", 1)[1]),
-                ),
-                unit["parent_refs"],
-            ),
-        )
-        proposals = [self.proposal_item(unit["title"], "Draft from an auditor-dispositioned observation.", {**value, "_unit_id": unit["id"]}) for unit, value in candidates]
+    def _bind_finding(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind one eligible observation's finding-draft unit to the pipeline.
+
+        The binding supplies only the observation-scoped declared context, the
+        finding commit target, the approval item, and the post-commit workspace
+        signal. Evidence linkage and support validation live in the executor,
+        where they run against the committed workspace state.
+        """
+        self.ws = subject
+        observation_id = unit["parent_refs"][0].split(":", 1)[1]
+        expected_observation = parent_hashes(self.ws, [f"observation:{observation_id}"])
+        target = FindingExecutorTarget(self.ws, self.run["id"], observation_id)
         task = self.add_task("findings", "workflow:findings", "Eligible finding drafts")
-        accepted = self.request_approval("finding_drafts", task, proposals) if self.run["mode"] == "permission" else proposals
-        accepted_ids = set()
-        for proposal in accepted:
-            self.checkpoint()
-            spec = dict(proposal["spec"])
-            unit_id = spec.pop("_unit_id")
-            unit = self._unit(stage, unit_id)
-            observation_id = unit["parent_refs"][0].split(":", 1)[1]
-            observation = next(item for item in self.ws.observations if item["id"] == observation_id)
-            try:
-                execution_ref = str(observation["execution_ref"])
-                anchor = findings.anchor_from_ref(self.ws, execution_ref, run_id=self.run["id"])
-                draft = {
-                    **spec, "semantic_id": f"finding:observation:{observation_id}",
-                    "agent_run_id": self.run["id"], "source_observation_id": observation_id,
-                    "rcm_refs": [observation["rcm_id"]],
-                    "procedure_refs": [],
-                    "planned_test_refs": [observation["planned_test_id"]],
-                    "execution_refs": [execution_ref],
-                    "evidence_refs": [anchor] if anchor else [],
-                    "auditor_confirmed": False,
-                }
-                issues = findings.support_issues(self.ws, draft)
-                if issues:
-                    raise WorkspaceError("Finding draft failed support validation: " + "; ".join(issues))
-                item = findings.add(self.ws, draft, source="agent")
-                accepted_ids.add(unit_id)
-                self._set_unit(stage, unit, "succeeded", result_refs=[f"finding:{item['id']}"])
-                self.emit("workspace_changed", {"kind": "finding", "id": item["id"], "action": "created"})
-            except WorkspaceConflict as error:
-                self._set_unit(stage, unit, "conflict", error=str(error))
-            except Exception as error:
-                self._set_unit(stage, unit, "failed", error=str(error))
-        for unit, _value in candidates:
-            if unit["id"] not in accepted_ids and unit["status"] == "running":
-                self._set_unit(stage, unit, "blocked", error="The finding draft was not approved.")
+
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                finding_draft_scope(self.ws, observation_id),
+            )
+
+        def approval_provider(proposal):
+            accepted = self.request_approval(
+                "finding_drafts",
+                task,
+                [
+                    self.proposal_item(
+                        unit["title"],
+                        "Draft from an auditor-dispositioned observation.",
+                        dict(proposal.get("finding") or {}),
+                    )
+                ],
+            )
+            return {"finding": dict(accepted[0]["spec"])} if accepted else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            if outcome.receipt is None:
+                return
+            self.emit(
+                "workspace_changed",
+                {
+                    "kind": "finding",
+                    "id": str(outcome.receipt.output["id"]),
+                    "action": "created",
+                },
+            )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="reporting.finding",
+                executor_id="reporting.finding",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": list(unit.get("parent_refs") or []),
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_observation,
+                capability_definition_hash=_capability_definition_hash(capability),
+                approval_kind=(
+                    "finding_drafts" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            # Findings fan out one unit per eligible observation, so this
+            # capability's readiness only holds once every unit has committed.
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
 
     def _bind_working_papers(
         self,
@@ -980,23 +1044,39 @@ class AuditWorkflowExecution(ActionRunner):
         )
         return DeterministicUnitResult("succeeded", tuple(refs))
 
-    def _report(self, stage: dict, units: list[dict]) -> None:
-        unit = units[0]
-        self._set_unit(stage, unit, "running")
-        try:
-            result = report.generate(
-                self.ws,
-                use_model=False,
-                run_id=self.run["id"],
-                workflow=self.run.get("workflow"),
+    def _bind_report(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``report.working_draft``.
+
+        The workflow assembles the draft from current planning, results, and
+        findings without a model call, so this capability has no worker. An
+        auditor-edited draft is preserved and its regenerated candidate is left
+        for reconciliation, which is what ``awaiting_confirmation`` records. On
+        success the binder emits the ``workspace_changed`` report signal the
+        generic deterministic path does not.
+        """
+        self.ws = subject
+        ref, requires_reconcile = generate_report_draft(
+            self.ws,
+            run_id=self.run["id"],
+            workflow=self.run.get("workflow"),
+        )
+        self.emit(
+            "workspace_changed", {"kind": "report", "id": "draft", "action": "updated"}
+        )
+        if requires_reconcile:
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (ref,),
+                "Auditor-edited report preserved; reconcile the generated candidate.",
             )
-            if result.get("requires_reconcile"):
-                self._set_unit(stage, unit, "awaiting_confirmation", error="Auditor-edited report preserved; reconcile the generated candidate.", result_refs=["report:draft"])
-            else:
-                self._set_unit(stage, unit, "succeeded", result_refs=["report:draft"])
-            self.emit("workspace_changed", {"kind": "report", "id": "draft", "action": "updated"})
-        except Exception as error:
-            self._set_unit(stage, unit, "failed", error=str(error))
+        return DeterministicUnitResult("succeeded", (ref,))
 
     def _bind_verify(
         self,
@@ -1180,11 +1260,7 @@ class AuditWorkflowExecution(ActionRunner):
 # intentionally absent from this map.
 _AUDIT_HANDLER_NAMES = {
     "planning.context_ready": "_planning_basis",
-    "planning.planned_tests_ready": "_planned_tests",
-    "fieldwork.definitions_ready": "_definitions",
     "fieldwork.executed": "_executions",
-    "findings.drafted": "_finding_drafts",
-    "report.working_draft": "_report",
 }
 
 _PARTIAL_DEPENDENCIES = {
@@ -1236,6 +1312,24 @@ def build_audit_workflow_runner(
             adapter._bind_rcm,
             {"worker": "planning.rcm", "executor": "planning.rcm"},
         ),
+        "planning.planned_tests_ready": (
+            adapter._bind_planned_tests,
+            {
+                "worker": "planning.planned_tests",
+                "executor": "planning.planned_tests",
+            },
+        ),
+        "fieldwork.definitions_ready": (
+            adapter._bind_definitions,
+            {
+                "worker": "fieldwork.data_test_spec|fieldwork.document_test_spec",
+                "executor": "fieldwork.data_test|fieldwork.document_test",
+            },
+        ),
+        "findings.drafted": (
+            adapter._bind_finding,
+            {"worker": "reporting.finding", "executor": "reporting.finding"},
+        ),
     }
     # Deterministic (no-model) capabilities bound through the scheduler's
     # deterministic execution path instead of the transitional batch adapter.
@@ -1251,6 +1345,10 @@ def build_audit_workflow_runner(
         "dashboard.curated": (
             adapter._bind_dashboard,
             {"deterministic": "reporting.dashboard"},
+        ),
+        "report.working_draft": (
+            adapter._bind_report,
+            {"deterministic": "reporting.report_draft"},
         ),
         "audit.verified": (
             adapter._bind_verify,

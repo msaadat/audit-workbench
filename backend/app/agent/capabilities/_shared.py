@@ -1,16 +1,85 @@
-"""Shared deterministic selectors for the grouped audit capability modules.
+"""Shared selectors and artifact hashes for the grouped audit capability modules.
 
-These helpers are transitional copies of the RCM-scope and observation selectors
-that ``audit_capabilities`` uses for readiness and unit expansion. The planning,
-fieldwork, and reporting capability groups all narrow the RCM by requested scope
-and select eligible observations, so the logic lives here once rather than being
-duplicated per group. Consolidated (with ``audit_capabilities``) at ``P7.3``.
+The planning, fieldwork, and reporting capability groups all narrow the RCM by
+requested scope and select eligible observations, so that logic lives here once
+rather than being duplicated per group.
+
+The material artifact hashes below are the audit domain's provenance identities.
+Registered executors stamp them on committed artifacts (``workflow_parent_sha1``,
+``workflow_basis_sha1``) and compare them during interrupted-commit
+reconciliation. They deliberately do **not** drive readiness or scheduling:
+readiness is existence and structural usability only, and the auditor decides
+when to regenerate.
 """
 
 from __future__ import annotations
 
+from ... import methodology
 from ...workspaces import Workspace
-from ..workflow import UnitSpec
+from ..workflow import UnitSpec, canonical_sha1
+
+
+def planning_basis_sha1(workspace: Workspace) -> str:
+    table_signatures = {}
+    for name in workspace.table_names():
+        try:
+            table_signatures[name] = workspace._table_signature(name)
+        except Exception as error:
+            # Broken/missing sources still participate deterministically in
+            # invalidation; readiness checks must not crash the scheduler.
+            table_signatures[name] = {"unavailable": type(error).__name__, "message": str(error)}
+    return canonical_sha1(
+        {
+            "context": workspace.planning.get("context") or {},
+            "tables": table_signatures,
+            "documents": [
+                {
+                    key: item.get(key)
+                    for key in ("id", "sha1", "title", "category", "text_state")
+                }
+                for item in workspace.documents
+            ],
+            "methodology": [
+                {key: item.get(key) for key in ("id", "scope", "version", "sha1")}
+                for item in methodology.list_packs(workspace)
+            ],
+        }
+    )
+
+
+def apm_sha1(workspace: Workspace) -> str:
+    return canonical_sha1(
+        {
+            "markdown": workspace.planning.get("apm_markdown") or "",
+            "basis": workspace.planning.get("workflow_basis_sha1"),
+        }
+    )
+
+
+def rcm_row_sha1(row: dict) -> str:
+    return canonical_sha1(
+        {
+            key: row.get(key)
+            for key in (
+                "id", "process", "risk", "risk_rating", "assertion", "control",
+                "control_type", "control_owner", "criteria", "criteria_refs",
+                "test_procedure", "evidence_refs", "review_status",
+            )
+        }
+    )
+
+
+def planned_test_sha1(planned: dict) -> str:
+    return canonical_sha1(
+        {
+            key: planned.get(key)
+            for key in (
+                "id", "title", "objective", "criteria", "method", "steps",
+                "expected_evidence", "sampling", "thresholds", "methodology_refs",
+            )
+        }
+    )
+
 
 # Dispositions that make an observation eligible to become a finding draft.
 ELIGIBLE_DISPOSITIONS = frozenset(

@@ -6,7 +6,8 @@ import polars as pl
 import pytest
 
 from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, workspaces
-from app.agent import action_runner, actions, artifact_index, audit_capabilities, ledger, prompts, runner, store
+from app.agent import action_runner, actions, artifact_index, ledger, prompts, runner, store
+from app.agent import capabilities as audit_capabilities
 from conftest import FakeAgentLLM, wait_run
 
 
