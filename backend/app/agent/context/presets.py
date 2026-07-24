@@ -575,6 +575,95 @@ PRESETS.register(
         ),
     )
 )
+PRESETS.register(
+    ContextPreset(
+        preset_id="planning.rcm",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="planning_context",
+                    source_type="planning",
+                    required=True,
+                    selector=ContextSelector(selector_id="planning.current"),
+                    representations=(ContextRepresentation("planning_context"),),
+                    budget=ContextBudget(max_items=1, max_characters=10_000),
+                ),
+                ContextSource(
+                    id="rcm_template",
+                    source_type="templates",
+                    required=True,
+                    selector=ContextSelector(selector_id="templates.current"),
+                    representations=(ContextRepresentation("artifact_template"),),
+                    budget=ContextBudget(max_items=1, max_characters=16_000),
+                ),
+                ContextSource(
+                    id="current_apm",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=24_000),
+                ),
+                ContextSource(
+                    id="current_rcm",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=200, max_characters=40_000),
+                ),
+                ContextSource(
+                    id="table_metadata",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=12, max_characters=8_000),
+                ),
+                ContextSource(
+                    id="table_profiles",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_profile"),),
+                    budget=ContextBudget(max_items=12, max_characters=16_000),
+                ),
+                ContextSource(
+                    id="documents",
+                    source_type="documents",
+                    required=False,
+                    selector=AutoSelect(
+                        selector_id="documents.lexical",
+                        item_limit=12,
+                        configuration={"query_fields": ["rcm_query"]},
+                    ),
+                    representations=(ContextRepresentation("summary"),),
+                    budget=ContextBudget(max_items=12, max_characters=40_000),
+                ),
+                ContextSource(
+                    id="methodology",
+                    source_type="methodology",
+                    required=False,
+                    selector=AutoSelect(
+                        selector_id="methodology.lexical",
+                        item_limit=5,
+                        configuration={"query_fields": ["rcm_query"]},
+                    ),
+                    representations=(ContextRepresentation("excerpt"),),
+                    budget=ContextBudget(max_items=5, max_characters=8_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=244, max_characters=100_000),
+            privacy=ContextPrivacy(
+                allow_planning_context=True,
+                allow_template_text=True,
+                allow_document_text=True,
+                allow_table_metadata=True,
+                allow_table_profiles=True,
+            ),
+        ),
+    )
+)
 
 
 __all__ = [

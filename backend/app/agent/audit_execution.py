@@ -14,7 +14,6 @@ from .. import (
     findings,
     rcm_execution,
     report,
-    templates_store,
 )
 from ..workspace_transactions import canonical_sha1, mutate, parent_hashes
 from ..workspaces import (
@@ -32,12 +31,13 @@ from .capabilities.reporting import (
     OBSERVATION_DISPOSITION_CHECKPOINT,
     STAGE_CHECKPOINTS,
 )
-from .context import ContextResolver, apm_document_methodology_scope
+from .context import ContextResolver, apm_document_methodology_scope, rcm_scope
 from .executors import EXECUTORS
 from .executors.fieldwork import roll_up_results
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
+    RcmExecutorTarget,
 )
 from .executors.reporting import (
     VERIFICATION_REF,
@@ -319,125 +319,116 @@ class AuditWorkflowExecution(ActionRunner):
             conflict_handler=conflict_handler,
         )
 
-    def _rcm(self, stage: dict, units: list[dict]) -> None:
-        unit = units[0]
-        self._set_unit(stage, unit, "running")
-        try:
-            expected_apm = parent_hashes(self.ws, ["planning:apm"])
-            basis = self.run.get("planning_basis") or {"planning": self.ws.planning}
-            template = templates_store.get_template(self.ws, "rcm")["markdown"]
-            cached = None
-            if unit.get("proposal_sidecar"):
-                cached = store.read_sidecar(
-                    self.ws, self.run["id"], unit["proposal_sidecar"]
-                )
-                self.emit(
-                    "proposal_reused",
-                    {"stage_id": stage["id"], "unit_id": unit["id"], "sidecar": unit["proposal_sidecar"]},
-                )
-            if isinstance(cached, dict) and isinstance(cached.get("rows"), list):
-                payload = cached
-            else:
-                bundle = context_bundles.rcm(
-                    basis, template=template,
-                    apm_markdown=str(self.ws.planning.get("apm_markdown") or ""),
-                    current_rows=self.ws.rcm,
-                )
-                payload = self.llm_json(
-                    audit_workers.prompts.RCM_SYSTEM,
-                    bundle.serialized(),
-                    activity={"artifact_refs": ["planning:apm"], "context_metrics": bundle.metrics()},
-                )
-                error = self._rcm_quality(payload, {str(row.get("id")) for row in self.ws.rcm})
-                if error:
-                    payload = self.llm_json(
-                        audit_workers.prompts.RCM_SYSTEM,
-                        bundle.serialized() + f"\n\nCorrect this quality error: {error}",
-                        activity={"artifact_refs": ["planning:apm"], "context_metrics": bundle.metrics()},
-                    )
-                    error = self._rcm_quality(payload, {str(row.get("id")) for row in self.ws.rcm})
-                    if error:
-                        raise WorkspaceError(f"The RCM draft failed the quality gate: {error}")
-                unit["proposal_sidecar"] = store.write_sidecar(
-                    self.ws, self.run["id"], payload
-                )
-                self.save()
-            proposed = []
-            for raw in payload.get("rows") or []:
-                spec = dict(raw)
-                spec["semantic_id"] = f"rcm:{slugify(spec.get('process'))}:{slugify(spec.get('risk'))}"
-                proposed.append(self.proposal_item(str(spec.get("risk")), "Risk/control matrix revision.", spec))
-            task = self.add_task("rcm", "workflow:rcm", "Risk and control matrix")
-            accepted = self.request_approval("rcm", task, proposed) if self.run["mode"] == "permission" else proposed
-            refs = []
-            for proposal in accepted:
-                self.checkpoint()
-                spec = proposal["spec"]
-                def commit(fresh: Workspace):
-                    existing, ambiguous = self._match_rcm_revision(
-                        spec,
-                        spec["semantic_id"],
-                        workspace=fresh,
-                    )
-                    if ambiguous:
-                        raise WorkspaceError(
-                            f"Ambiguous RCM revision for '{spec.get('risk')}'."
-                        )
-                    if (
-                        existing
-                        and existing.get("created_by") != "agent"
-                        and self.run["mode"] != "permission"
-                    ):
-                        return existing, "preserved"
-                    if existing:
-                        return (
-                            fresh.update_rcm(
-                                existing["id"],
-                                {
-                                    **{
-                                        key: spec.get(key)
-                                        for key in (
-                                            "process", "risk", "risk_rating", "assertion",
-                                            "control", "control_type", "test_procedure",
-                                        )
-                                    },
-                                    "workflow_parent_sha1": audit_capabilities.apm_sha1(fresh),
-                                },
-                                agent=True,
-                            ),
-                            "updated",
-                        )
-                    return (
-                        fresh.add_rcm(
-                            {
-                                **spec,
-                                "agent_run_id": self.run["id"],
-                                "workflow_parent_sha1": audit_capabilities.apm_sha1(fresh),
-                            }
-                        ),
-                        "created",
-                    )
+    def _bind_rcm(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind the RCM capability to the shared ``UnitPipeline``.
 
-                committed = mutate(
+        The domain-neutral scheduler owns manifest/proposal/receipt persistence,
+        proposal reuse, approval, and readiness reevaluation. This binding
+        supplies only the RCM-specific declared context, the row-commit executor
+        target, per-row approval items, and the post-commit bookkeeping callback
+        that translates receipt row actions into planning-change accounting.
+        """
+        self.ws = subject
+        expected_apm = parent_hashes(self.ws, ["planning:apm"])
+        basis = self.run.get("planning_basis") or {"planning": self.ws.planning}
+        selected_document_ids = [
+            str(item.get("document_id"))
+            for item in basis.get("document_analyses") or []
+            if item.get("document_id")
+        ]
+        target = RcmExecutorTarget(
+            self.ws,
+            self.run["id"],
+            allow_auditor_overwrite=self.run["mode"] == "permission",
+        )
+        task = self.add_task("rcm", "workflow:rcm", "Risk and control matrix")
+
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                rcm_scope(
                     self.ws,
-                    commit,
-                    expected_parents=expected_apm,
+                    planning_context=(basis.get("planning") or {}).get("context") or {},
+                    document_ids=(
+                        selected_document_ids
+                        if "document_analyses" in basis
+                        else None
+                    ),
+                ),
+            )
+
+        def approval_provider(proposal):
+            proposed = []
+            for raw in proposal.get("rows") or []:
+                spec = dict(raw)
+                spec["semantic_id"] = str(
+                    spec.get("semantic_id")
+                    or f"rcm:{slugify(str(spec.get('process') or ''))}:{slugify(str(spec.get('risk') or ''))}"
                 )
-                self.ws = committed.workspace
-                item, action = committed.value
+                proposed.append(
+                    self.proposal_item(
+                        str(spec.get("risk")), "Risk/control matrix revision.", spec
+                    )
+                )
+            accepted = self.request_approval("rcm", task, proposed)
+            rows = [dict(item["spec"]) for item in accepted]
+            return {"rows": rows} if rows else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            for row in (outcome.receipt.output.get("rows") or []) if outcome.receipt else []:
+                action = str(row.get("action"))
                 if action == "preserved":
-                    self.warn(f"Preserved auditor-owned RCM row '{item['id']}'.")
+                    self.warn(f"Preserved auditor-owned RCM row '{row['id']}'.")
                     self.run["planning_changes"]["rcm_preserved"] += 1
                     continue
                 self.run["planning_changes"][f"rcm_{action}"] += 1
-                refs.append(self.record_artifact("rcm", item["id"], item["semantic_id"], action, task))
-            self._set_unit(stage, unit, "succeeded", result_refs=refs)
-        except (Cancelled, LimitExceeded):
-            raise
-        except WorkspaceConflict as error:
-            self._set_unit(stage, unit, "conflict", error=str(error))
-        except Exception as error:
-            self._set_unit(stage, unit, "failed", error=str(error))
+                self.record_artifact(
+                    "rcm", str(row["id"]), str(row["semantic_id"]), action, task
+                )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.rcm",
+                executor_id="planning.rcm",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": ["planning:apm"],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_apm,
+                capability_definition_hash=_capability_definition_hash(capability),
+                approval_kind=("rcm" if self.run["mode"] == "permission" else None),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=lambda: capability.readiness(target.workspace, {}),
+            on_committed=on_committed,
+        )
 
     def _planned_tests(self, stage: dict, units: list[dict]) -> None:
         candidates = self._parallel_candidates(
@@ -1189,7 +1180,6 @@ class AuditWorkflowExecution(ActionRunner):
 # intentionally absent from this map.
 _AUDIT_HANDLER_NAMES = {
     "planning.context_ready": "_planning_basis",
-    "planning.rcm_ready": "_rcm",
     "planning.planned_tests_ready": "_planned_tests",
     "fieldwork.definitions_ready": "_definitions",
     "fieldwork.executed": "_executions",
@@ -1241,6 +1231,10 @@ def build_audit_workflow_runner(
         "planning.apm_ready": (
             adapter._bind_apm,
             {"worker": "planning.apm", "executor": "planning.apm"},
+        ),
+        "planning.rcm_ready": (
+            adapter._bind_rcm,
+            {"worker": "planning.rcm", "executor": "planning.rcm"},
         ),
     }
     # Deterministic (no-model) capabilities bound through the scheduler's

@@ -17,6 +17,9 @@ from app.agent.executors.planning import (
     PLANNING_CONTEXT_EXECUTOR,
     PLANNING_CONTEXT_REF,
     PlanningContextExecutorTarget,
+    RCM_EXECUTOR,
+    RCM_PARENT_REF,
+    RcmExecutorTarget,
 )
 from app.workspace_transactions import ParentConflict, parent_hashes
 
@@ -209,6 +212,178 @@ def test_planning_context_executor_rejects_empty_accepted_context():
         PLANNING_CONTEXT_EXECUTOR.implementation(
             request, PlanningContextExecutorTarget(workspace, "run-empty")
         )
+
+
+def _rcm_workspace(name="RCM executor"):
+    workspace = workspaces.create_workspace(name)
+    workspace.update_planning(
+        {
+            "context": {"objective": "Assess procurement approvals", "scope": "Purchasing"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nPurchasing.",
+        }
+    )
+    return workspace
+
+
+def _rcm_row(**overrides):
+    row = {
+        "operation": "create",
+        "process": "Accounts payable",
+        "risk": "Duplicate payments are processed",
+        "risk_rating": "high",
+        "assertion": "Occurrence",
+        "control": "Duplicate invoice validation",
+        "control_type": "Automated preventive",
+        "test_procedure": "Test invoice and amount duplicates.",
+    }
+    row.update(overrides)
+    return row
+
+
+def _rcm_request(workspace, rows):
+    return ExecutorRequest(
+        executor_id="planning.rcm",
+        capability_id="planning.rcm_ready",
+        unit_id="rcm",
+        proposal={"rows": rows},
+        expected_revision=workspace.revision,
+        expected_parents=parent_hashes(workspace, [RCM_PARENT_REF]),
+        activity={"artifact_refs": ["planning:apm"]},
+    )
+
+
+def test_rcm_executor_creates_rows_with_parent_hash_and_receipt_postcondition():
+    workspace = _rcm_workspace()
+    request = _rcm_request(workspace, [_rcm_row()])
+    target = RcmExecutorTarget(workspace, "run-rcm")
+
+    receipt = EXECUTORS.execute(request, target)
+
+    rows = target.workspace.rcm
+    assert len(rows) == 1
+    created = rows[0]
+    assert created["created_by"] == "agent"
+    assert created["agent_run_id"] == "run-rcm"
+    assert created["workflow_parent_sha1"] == audit_capabilities.apm_sha1(target.workspace)
+    assert receipt.artifact_refs == (f"rcm:{created['id']}",)
+    assert receipt.postcondition_hashes == parent_hashes(
+        target.workspace, [f"rcm:{created['id']}"]
+    )
+    assert receipt.workspace_revision_after > receipt.workspace_revision_before
+
+
+def test_rcm_executor_updates_a_matched_row_and_preserves_the_id():
+    workspace = _rcm_workspace("RCM update")
+    existing = workspace.add_rcm(
+        {"process": "Accounts payable", "risk": "Duplicate payments are processed",
+         "control": "Manual review", "risk_rating": "medium", "agent_run_id": "prior"}
+    )
+    request = _rcm_request(
+        workspace,
+        [_rcm_row(operation="update", rcm_id=existing["id"], risk_rating="critical",
+                  control="Duplicate invoice validation")],
+    )
+    target = RcmExecutorTarget(workspace, "run-update")
+
+    receipt = EXECUTORS.execute(request, target)
+
+    rows = target.workspace.rcm
+    assert len(rows) == 1
+    assert rows[0]["id"] == existing["id"]
+    assert rows[0]["risk_rating"] == "critical"
+    assert rows[0]["control"] == "Duplicate invoice validation"
+    assert receipt.output["rows"][0]["action"] == "updated"
+
+
+def test_rcm_executor_preserves_auditor_owned_row_without_permission():
+    workspace = _rcm_workspace("RCM preserve")
+    existing = workspace.add_rcm(
+        {"process": "Accounts payable", "risk": "Duplicate payments are processed",
+         "control": "Auditor manual control", "risk_rating": "medium"}
+    )
+    assert existing["created_by"] == "user"
+    request = _rcm_request(
+        workspace,
+        [_rcm_row(operation="update", rcm_id=existing["id"], control="Agent override")],
+    )
+    target = RcmExecutorTarget(workspace, "run-preserve")
+
+    receipt = EXECUTORS.execute(request, target)
+
+    reloaded = workspaces.load_workspace(workspace.id)
+    assert reloaded.rcm[0]["control"] == "Auditor manual control"
+    assert receipt.output["rows"][0]["action"] == "preserved"
+
+
+def test_rcm_executor_can_replace_auditor_row_with_permission():
+    workspace = _rcm_workspace("RCM replace")
+    existing = workspace.add_rcm(
+        {"process": "Accounts payable", "risk": "Duplicate payments are processed",
+         "control": "Auditor manual control", "risk_rating": "medium"}
+    )
+    request = _rcm_request(
+        workspace,
+        [_rcm_row(operation="update", rcm_id=existing["id"], control="Agent override")],
+    )
+    target = RcmExecutorTarget(workspace, "run-replace", allow_auditor_overwrite=True)
+
+    EXECUTORS.execute(request, target)
+
+    assert target.workspace.rcm[0]["control"] == "Agent override"
+
+
+def test_rcm_executor_parent_hash_rejects_concurrent_apm_change():
+    workspace = _rcm_workspace("RCM guard")
+    request = _rcm_request(workspace, [_rcm_row()])
+    workspace.update_planning({"apm_markdown": "# Changed APM\n\n## Scope\nNew."})
+
+    with pytest.raises(ParentConflict):
+        RCM_EXECUTOR.implementation(request, RcmExecutorTarget(workspace, "run-guard"))
+    assert workspaces.load_workspace(workspace.id).rcm == []
+
+
+def test_rcm_executor_fails_on_ambiguous_narrative_match():
+    # Two existing rows with distinct semantic ids but near-identical narratives,
+    # and a proposed row that matches neither exactly, so narrative ranking runs
+    # and the top two candidates are within the ambiguity margin.
+    workspace = _rcm_workspace("RCM ambiguous")
+    workspace.add_rcm(
+        {"process": "Payments", "risk": "Duplicate payment risk exists here",
+         "control": "Control A", "risk_rating": "medium", "agent_run_id": "a"}
+    )
+    workspace.add_rcm(
+        {"process": "Payments", "risk": "Duplicate payment risk exists now",
+         "control": "Control B", "risk_rating": "medium", "agent_run_id": "b"}
+    )
+    request = _rcm_request(
+        workspace,
+        [_rcm_row(process="Payments", risk="Duplicate payment risk exists today")],
+    )
+
+    with pytest.raises(workspaces.WorkspaceError, match="Ambiguous"):
+        RCM_EXECUTOR.implementation(request, RcmExecutorTarget(workspace, "run-amb"))
+
+
+def test_rcm_executor_reconciles_interrupted_commit_and_detects_later_edit():
+    workspace = _rcm_workspace("RCM reconcile")
+    request = _rcm_request(workspace, [_rcm_row()])
+    target = RcmExecutorTarget(workspace, "run-reconcile")
+
+    # Before the commit lands, the guard still matches: safe to (re)execute.
+    assert RCM_EXECUTOR.reconciler(request, target).disposition == "not_applied"
+
+    RCM_EXECUTOR.implementation(request, target)
+    committed_id = target.workspace.rcm[0]["id"]
+
+    recovered = RCM_EXECUTOR.reconciler(request, target)
+    assert recovered.disposition == "already_applied"
+    assert recovered.result.postcondition_hashes == parent_hashes(
+        target.workspace, [f"rcm:{committed_id}"]
+    )
+
+    target.workspace.update_rcm(committed_id, {"control": "Auditor edit"})
+    # The auditor edit is not an agent write, so it is now preserved, not applied.
+    assert RCM_EXECUTOR.reconciler(request, target).disposition == "not_applied"
 
 
 def test_planning_executor_has_no_gateway_worker_or_provider_dependency():

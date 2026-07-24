@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
-from ...workspaces import Workspace, WorkspaceError
+from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import audit_capabilities
+from ..artifact_index import canonical_id
 from .model import (
     EXECUTORS,
     ExecutorConcurrency,
@@ -349,6 +352,336 @@ PLANNING_CONTEXT_EXECUTOR = ExecutorDefinition(
 EXECUTORS.register(PLANNING_CONTEXT_EXECUTOR)
 
 
+# --------------------------------------------------------------------------- #
+# planning.rcm executor (P7C)
+# --------------------------------------------------------------------------- #
+RCM_EXECUTOR_ID = "planning.rcm"
+RCM_PARENT_REF = "planning:apm"
+# The revision fields an accepted proposal may write onto a matched row.
+RCM_ROW_FIELDS = (
+    "process",
+    "risk",
+    "risk_rating",
+    "assertion",
+    "control",
+    "control_type",
+    "test_procedure",
+)
+
+
+@dataclass
+class RcmExecutorTarget:
+    """Mutable target for the deterministic RCM row commit."""
+
+    workspace: Workspace
+    run_id: str
+    allow_auditor_overwrite: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Workspace):
+            raise ValueError("RCM executor target requires a Workspace.")
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("RCM executor target requires a run_id.")
+        if not isinstance(self.allow_auditor_overwrite, bool):
+            raise ValueError("allow_auditor_overwrite must be a boolean.")
+
+
+def rcm_semantic_id(spec: Mapping[str, object]) -> str:
+    return str(
+        spec.get("semantic_id")
+        or f"rcm:{slugify(str(spec.get('process') or ''))}:{slugify(str(spec.get('risk') or ''))}"
+    )
+
+
+def _words(value: object) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+
+def _similarity(left: object, right: object) -> float:
+    left_text = " ".join(sorted(_words(left)))
+    right_text = " ".join(sorted(_words(right)))
+    left_words, right_words = _words(left), _words(right)
+    overlap = len(left_words & right_words) / max(1, len(left_words | right_words))
+    return max(overlap, SequenceMatcher(None, left_text, right_text).ratio())
+
+
+def match_rcm_revision(
+    workspace: Workspace,
+    spec: Mapping[str, object],
+    semantic: str,
+) -> tuple[dict | None, bool]:
+    """Match one proposed revision to an existing row: exact id, semantic id,
+    then bounded narrative similarity with an explicit ambiguity outcome."""
+    explicit = canonical_id(spec.get("rcm_id") or spec.get("id"), "rcm")
+    if explicit:
+        return (
+            next((row for row in workspace.rcm if row.get("id") == explicit), None),
+            False,
+        )
+    exact = workspace.find_semantic("rcm", semantic)
+    if exact:
+        return exact, False
+    narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
+    ranked = sorted(
+        (
+            (
+                _similarity(
+                    narrative, f"{row.get('process', '')} {row.get('risk', '')}"
+                ),
+                row,
+            )
+            for row in workspace.rcm
+        ),
+        key=lambda item: (-item[0], str(item[1].get("id"))),
+    )
+    if not ranked or ranked[0][0] < 0.72:
+        return None, False
+    ambiguous = len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08
+    return (None, True) if ambiguous else (ranked[0][1], False)
+
+
+def _plain_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(item) for item in value]
+    return value
+
+
+def _validated_rcm(
+    request: ExecutorRequest,
+    target: object,
+) -> tuple[RcmExecutorTarget, list[dict]]:
+    if not isinstance(target, RcmExecutorTarget):
+        raise WorkspaceError("RCM executor requires an RcmExecutorTarget.")
+    if set(request.expected_parents) != {RCM_PARENT_REF}:
+        raise WorkspaceError("RCM executor requires exactly the APM parent hash.")
+    raw = request.proposal.get("rows")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise WorkspaceError("The accepted RCM proposal has no rows.")
+    rows: list[dict] = []
+    for value in raw:
+        if not isinstance(value, Mapping):
+            raise WorkspaceError("Each accepted RCM row must be an object.")
+        spec = _plain_json(value)
+        if not str(spec.get("risk") or "").strip():
+            raise WorkspaceError("An accepted RCM row is missing its risk.")
+        spec["risk_rating"] = str(spec.get("risk_rating") or "").lower()
+        spec["semantic_id"] = rcm_semantic_id(spec)
+        rows.append(spec)
+    return target, rows
+
+
+def _rcm_result(
+    request: ExecutorRequest,
+    workspace: Workspace,
+    *,
+    revision_before: int,
+    outcomes: list[dict],
+) -> ExecutorResult:
+    changed = [item for item in outcomes if item["action"] != "preserved"]
+    # Preserved rows enter the receipt refs only when nothing changed, so the
+    # receipt always has a verifiable postcondition set.
+    refs = list(
+        dict.fromkeys(f"rcm:{item['id']}" for item in (changed or outcomes))
+    )
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=revision_before,
+        workspace_revision_after=workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(workspace, refs),
+        output={"status": "updated", "rows": outcomes},
+    )
+
+
+def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
+    """Commit accepted RCM row revisions under the APM parent-hash guard.
+
+    Row matching, auditor-edit preservation, updates, and creations happen in
+    one atomic transaction; a changed APM parent is a conflict rather than a
+    silent overwrite, and an ambiguous narrative match fails the commit.
+    """
+    target, rows = _validated_rcm(request, raw_target)
+    state: dict[str, int] = {}
+
+    def commit(fresh: Workspace) -> list[dict]:
+        state["revision_before"] = fresh.revision
+        parent_sha1 = audit_capabilities.apm_sha1(fresh)
+        outcomes: list[dict] = []
+        for spec in rows:
+            existing, ambiguous = match_rcm_revision(fresh, spec, spec["semantic_id"])
+            if ambiguous:
+                raise WorkspaceError(
+                    f"Ambiguous RCM revision for '{spec.get('risk')}'."
+                )
+            if (
+                existing
+                and existing.get("created_by") != "agent"
+                and not target.allow_auditor_overwrite
+            ):
+                outcomes.append(
+                    {
+                        "id": existing["id"],
+                        "semantic_id": existing.get("semantic_id")
+                        or spec["semantic_id"],
+                        "action": "preserved",
+                    }
+                )
+                continue
+            if existing:
+                item = fresh.update_rcm(
+                    existing["id"],
+                    {
+                        **{key: spec.get(key) for key in RCM_ROW_FIELDS},
+                        "workflow_parent_sha1": parent_sha1,
+                    },
+                    agent=True,
+                )
+                outcomes.append(
+                    {
+                        "id": item["id"],
+                        "semantic_id": item.get("semantic_id") or spec["semantic_id"],
+                        "action": "updated",
+                    }
+                )
+                continue
+            item = fresh.add_rcm(
+                {
+                    **spec,
+                    "agent_run_id": target.run_id,
+                    "workflow_parent_sha1": parent_sha1,
+                }
+            )
+            outcomes.append(
+                {
+                    "id": item["id"],
+                    "semantic_id": item["semantic_id"],
+                    "action": "created",
+                }
+            )
+        return outcomes
+
+    committed = mutate(
+        target.workspace,
+        commit,
+        expected_parents=request.expected_parents,
+    )
+    target.workspace = committed.workspace
+    return _rcm_result(
+        request,
+        committed.workspace,
+        revision_before=state["revision_before"],
+        outcomes=committed.value,
+    )
+
+
+def reconcile_rcm(
+    request: ExecutorRequest,
+    raw_target: object,
+) -> ExecutorReconciliation:
+    """Classify an interrupted RCM commit without changing workspace state.
+
+    The commit itself does not change the APM parent, so parent equality cannot
+    prove the commit never ran. Instead each accepted row is re-matched against
+    the current workspace: when every non-preserved row already carries the
+    accepted values under the current APM hash and the revision advanced, the
+    commit is proven applied. Any unapplied row returns ``not_applied`` — the
+    commit is idempotent per row, so re-execution is always safe.
+    """
+    target, rows = _validated_rcm(request, raw_target)
+    current = Workspace(target.workspace.root)
+    current_parent = parent_hashes(current, [RCM_PARENT_REF])[RCM_PARENT_REF]
+    expected_parent = request.expected_parents[RCM_PARENT_REF]
+    if current_parent != expected_parent:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=str(
+                ParentConflict(
+                    RCM_PARENT_REF,
+                    expected_parent,
+                    current_parent,
+                    current.revision,
+                )
+            ),
+        )
+    parent_sha1 = audit_capabilities.apm_sha1(current)
+    outcomes: list[dict] = []
+    for spec in rows:
+        existing, ambiguous = match_rcm_revision(current, spec, spec["semantic_id"])
+        if ambiguous:
+            # Execution will surface the ambiguity as a durable unit failure.
+            return ExecutorReconciliation("not_applied")
+        if (
+            existing
+            and existing.get("created_by") != "agent"
+            and not target.allow_auditor_overwrite
+        ):
+            outcomes.append(
+                {
+                    "id": existing["id"],
+                    "semantic_id": existing.get("semantic_id") or spec["semantic_id"],
+                    "action": "preserved",
+                }
+            )
+            continue
+        applied = (
+            existing is not None
+            and all(
+                str(existing.get(key) or "") == str(spec.get(key) or "")
+                for key in RCM_ROW_FIELDS
+            )
+            and existing.get("workflow_parent_sha1") == parent_sha1
+        )
+        if not applied:
+            return ExecutorReconciliation("not_applied")
+        action = (
+            "created"
+            if existing.get("created_by") == "agent"
+            and existing.get("agent_run_id") == target.run_id
+            else "updated"
+        )
+        outcomes.append(
+            {
+                "id": existing["id"],
+                "semantic_id": existing.get("semantic_id") or spec["semantic_id"],
+                "action": action,
+            }
+        )
+    changed = [item for item in outcomes if item["action"] != "preserved"]
+    if not changed or current.revision <= request.expected_revision:
+        # Preservation-only outcomes and unadvanced revisions cannot prove an
+        # interrupted commit; idempotent re-execution is the safe path.
+        return ExecutorReconciliation("not_applied")
+    target.workspace = current
+    return ExecutorReconciliation(
+        "already_applied",
+        result=_rcm_result(
+            request,
+            current,
+            revision_before=max(request.expected_revision, current.revision - 1),
+            outcomes=outcomes,
+        ),
+        reason="The accepted RCM revisions already hold.",
+    )
+
+
+RCM_EXECUTOR = ExecutorDefinition(
+    executor_id=RCM_EXECUTOR_ID,
+    implementation_hash=_sha256_text(inspect.getsource(execute_rcm)),
+    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_rcm)),
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_rcm,
+    reconciler=reconcile_rcm,
+)
+
+EXECUTORS.register(RCM_EXECUTOR)
+
+
 __all__ = [
     "APM_EXECUTOR",
     "APM_EXECUTOR_ID",
@@ -360,8 +693,17 @@ __all__ = [
     "PLANNING_CONTEXT_FIELDS",
     "PLANNING_CONTEXT_REF",
     "PlanningContextExecutorTarget",
+    "RCM_EXECUTOR",
+    "RCM_EXECUTOR_ID",
+    "RCM_PARENT_REF",
+    "RCM_ROW_FIELDS",
+    "RcmExecutorTarget",
     "execute_apm",
     "execute_planning_context",
+    "execute_rcm",
+    "match_rcm_revision",
+    "rcm_semantic_id",
     "reconcile_apm",
     "reconcile_planning_context",
+    "reconcile_rcm",
 ]

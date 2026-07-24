@@ -12,7 +12,6 @@ from ..workspaces import Workspace, WorkspaceError
 
 CHARACTER_BUDGETS = {
     "command_router": 6_000,
-    "rcm": 80_000,
     "planned_test_generation": 60_000,
     "data_test_spec": 22_000,
     "document_test_spec": 22_000,
@@ -109,24 +108,6 @@ def planning_basis_projection(basis: dict) -> dict:
             for item in basis.get("document_analyses") or []
         ],
     }
-
-
-def rcm(basis: dict, *, template: str, apm_markdown: str, current_rows: list[dict]) -> ContextBundle:
-    projection = planning_basis_projection(basis)
-    sections = {
-        "template": template,
-        "apm": apm_markdown,
-        "planning_basis": projection,
-        "CURRENT RCM TO REVISE": current_rows,
-    }
-    try:
-        return _bundle("rcm", sections)
-    except WorkspaceError:
-        projection["tables"] = [
-            {"table": item.get("table"), "rows": item.get("rows"), "columns": [column.get("name") for column in item.get("columns") or []]}
-            for item in projection.get("tables") or []
-        ]
-        return _bundle("rcm", sections, reducer_ran=True)
 
 
 def _planning_scope(workspace: Workspace) -> dict:

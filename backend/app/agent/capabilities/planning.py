@@ -166,6 +166,7 @@ def _planning_rcm_ready() -> Capability:
         audit_workflow.dependencies("planning.rcm_ready"),
         _rcm_ready,
         _single("rcm", "Draft risk and control matrix", "planning:apm"),
+        context="planning.rcm",
         invalidate_on=("planning:apm",),
     )
 

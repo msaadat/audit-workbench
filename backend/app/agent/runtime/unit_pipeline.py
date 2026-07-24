@@ -65,6 +65,14 @@ def _require_hash(value: object, field_name: str) -> str:
     return text
 
 
+def _mapping_default(value: object) -> object:
+    # Frozen proposals wrap nested objects in MappingProxyType; unwrap them for
+    # canonical serialization while still rejecting non-JSON values.
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _canonical_json(value: object) -> str:
     try:
         return json.dumps(
@@ -73,6 +81,7 @@ def _canonical_json(value: object) -> str:
             separators=(",", ":"),
             ensure_ascii=False,
             allow_nan=False,
+            default=_mapping_default,
         )
     except (TypeError, ValueError) as error:
         raise ValueError("Unit sidecar payload must be JSON-compatible.") from error

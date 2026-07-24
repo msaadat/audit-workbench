@@ -27,24 +27,44 @@ no historical reader or resume adapter is retained.
 
 ## Implementation Status And Session Handoff
 
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-24
 
 **Current position:**
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7C.2` (RCM row commit) — the first of the remaining model-backed
-  `.2` writer-switches (`P7C.2`/`P7D.2`/`P7E.2`/`P7E.3`/`P7H.2`/`P7K.2`);
-  `P7A.2`/`P7F.2`/`P7F.3` stay deferred (Phase-9-coupled — see notes). All four
-  deterministic (no-model) slices are now landed.
-- Last completed task: `P7G.2` — `results.rolled_up` now runs through the
-  scheduler's domain-neutral deterministic execution path; its `_rollup` batch
-  handler was removed, roll-up extracted to
-  `executors/fieldwork.py::roll_up_results` (stable `rcm:<id>` result refs and
-  `execution_ref`-keyed observation identities), and the observation/disposition
-  interaction is now a declared checkpoint (`capabilities/reporting.py::STAGE_CHECKPOINTS`)
-  that gates `findings.drafted` — removed from the (now deterministic) roll-up
-  and single-sourced at the rollup→findings boundary.
+- Current task: `P7D.2` (planned-test generation/commit) — the next of the
+  remaining model-backed `.2` writer-switches (`P7D.2`/`P7E.2`/`P7E.3`/`P7H.2`/
+  `P7K.2`); `P7A.2`/`P7F.2`/`P7F.3` stay deferred (Phase-9-coupled — see notes).
+  All four deterministic (no-model) slices and `P7B.2`/`P7C.2` are now landed, so
+  the two planning model-backed capabilities (`planning.apm_ready`,
+  `planning.rcm_ready`) both run through the scheduler's native `pipeline_binder`
+  path.
+- Last completed task: `P7C.2` — `planning.rcm_ready` is the second model-backed
+  capability (after APM) on the scheduler's native `pipeline_binder` path. The
+  transitional `AuditWorkflowExecution._rcm` batch method — which built a bundle,
+  called the model with an inline quality gate, and drove per-row `mutate`
+  commits inside the adapter — was deleted and replaced by a thin `_bind_rcm`
+  returning a `BoundUnitPipeline`. Row generation moved to a registered
+  `workers.planning:planning.rcm` worker (owns the RCM prompt, JSON response
+  schema, and the durable-id-aware engagement quality gate as a bounded
+  one-repair semantic validator); row commit moved to a registered
+  `executors.planning:planning.rcm` executor (owns APM-parent-hash CAS,
+  exact-id/semantic/narrative row matching with the ambiguity outcome,
+  auditor-edit preservation, updates/creates in one transaction, receipts, and
+  interrupted-commit reconciliation). A normalized `planning.rcm` context preset
+  + `context.adapters:rcm_scope` supply the model-facing inputs (planning
+  context, RCM template, current APM, bounded current-row projections, table
+  metadata/profiles, documents, methodology) with `table_rows` structurally
+  excluded. Post-commit planning-change accounting and per-row artifact recording
+  moved to the binder's `on_committed` callback, keeping the scheduler
+  domain-neutral. The dead runner-era `stage_rcm`, `_rcm_quality`,
+  `_match_rcm_revision`, `prompts.RCM_SYSTEM`/`rcm_user`, and `context_bundles.rcm`
+  were removed. A latent bug was fixed along the way: canonical JSON serialization
+  in `workers/model.py`, `executors/model.py`, and `runtime/unit_pipeline.py`
+  now unwraps `MappingProxyType` (frozen proposal) nodes via a `default` hook, so
+  a proposal carrying nested objects (RCM rows) no longer fails serialization the
+  way the single-level APM proposal never exercised.
 - Done: the readiness + unit-expansion declarations for **all 12** audit
   capabilities are now locally owned in the grouped `capabilities` modules and
   golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
@@ -63,7 +83,7 @@ no historical reader or resume adapter is retained.
   additionally moved the observation/disposition interaction to a declared
   checkpoint gating `findings.drafted`.
 - Active blockers: the `.2` execution writer-switches (workers/executors/handler
-  removal) remain for the RCM, planned-tests, definitions, fieldwork execution,
+  removal) remain for the planned-tests, definitions, fieldwork execution,
   findings, and report families.
   `P7A.2`'s remaining pieces (context-synthesis worker + context declaration +
   pipeline switch + `_planning_basis` removal) are the Phase-9-coupled part
@@ -88,7 +108,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7C.2` (RCM row commit) |
+| 7 | In progress | `P7D.2` (planned-test generation/commit) |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -1196,6 +1216,75 @@ status notes below.
   frontend contract changed (no frontend consumer reads roll-up unit refs), so a
   frontend build was not required. The exact next task is `P7C.2` (RCM row commit),
   the first model-backed writer-switch.
+- `P7C.2` completed on 2026-07-24. `planning.rcm_ready` is the second model-backed
+  capability on the scheduler's native `pipeline_binder` path, and the first
+  model-backed writer-switch outside APM. Four parts:
+  (1) **RCM worker.** `workers.planning` gained the registered `planning.rcm`
+  worker: it owns the `[agent:rcm]` prompt (moved verbatim from `prompts.RCM_SYSTEM`),
+  the bundle-to-message transformation (template + current APM + current-row
+  projections + resolved context), a JSON `rows`-array response schema, and the
+  RCM engagement quality gate — the former `_rcm_quality` logic — expressed as a
+  bounded one-repair semantic validator that checks required string fields,
+  risk-rating enum, operation enum, `update` rows against the durable ids
+  supplied in the `current_rcm` bundle source, and `new_risk_reason` for creates.
+  (2) **RCM executor.** `executors.planning` gained the registered `planning.rcm`
+  executor + `RcmExecutorTarget`. It commits all accepted rows in one
+  `mutate` transaction under the `planning:apm` parent-hash CAS (so a concurrent
+  APM change is a `ParentConflict`, not an overwrite), reusing the runner-era
+  matching (exact `rcm_id`/semantic id, then bounded narrative similarity with
+  the explicit ambiguity failure) now lifted to a module-level
+  `match_rcm_revision`. It preserves auditor-owned rows unless
+  `allow_auditor_overwrite` (permission mode), stamps `workflow_parent_sha1`, and
+  returns a receipt whose refs/postconditions cover the changed rows. Its
+  reconciler proves an interrupted commit already applied by re-matching each
+  accepted row against current state under the current APM hash (parent equality
+  cannot prove it because the RCM commit does not change the APM), and returns
+  `not_applied` otherwise since per-row commit is idempotent.
+  (3) **Context declaration.** A normalized `planning.rcm` preset (in
+  `context/presets.py`) and `context.adapters:rcm_scope` supply the model-facing
+  inputs as data-only candidates: planning context, RCM template, current APM,
+  bounded per-row projections (`rcm_current_row_candidates`, narrative/ownership
+  fields only — no planned tests, rollups, or evidence refs), table
+  metadata/profiles (reusing the APM adapters), documents, and methodology.
+  `table_rows` stays structurally excluded and profiles omit category literals.
+  (4) **Dispatch switch + deletions.** `_bind_rcm` replaced the transitional
+  `_rcm` batch handler; `_PIPELINE_BINDERS` gained `planning.rcm_ready` and
+  `_AUDIT_HANDLER_NAMES` lost it; `capabilities/planning.py` and
+  `audit_capabilities.py` now declare `context="planning.rcm"` on the capability
+  (identity change is intended — the capability now declares context like APM).
+  Post-commit planning-change accounting and per-row `record_artifact` moved to
+  the binder's `on_committed`, keeping the scheduler domain-neutral. Deleted:
+  runner-era `stage_rcm`/`_rcm_quality`/`_match_rcm_revision` in `action_runner.py`,
+  `prompts.RCM_SYSTEM`/`rcm_user`, and `context_bundles.rcm` (+ its budget entry).
+  A latent serialization bug was fixed: `_canonical_json` in `workers/model.py`,
+  `executors/model.py`, and `runtime/unit_pipeline.py` now unwraps
+  `MappingProxyType` (frozen proposal) nodes via a `default` hook, so a proposal
+  carrying nested objects (RCM rows) serializes; the single-level APM proposal
+  never exercised this path. New focused tests:
+  `test_agent_planning_rcm_worker.py` (6 — bundle-only use, JSON fence, one
+  bounded repair with specific guidance, update-to-unknown-id rejection,
+  update-matching-current-row acceptance, no workspace/store/resolver/scheduler
+  imports); `test_agent_planning_executor.py` (+7 RCM cases — create with
+  parent-hash + receipt postcondition, matched update, auditor-preserve without
+  permission, replace with permission, APM parent-hash conflict, ambiguous
+  narrative failure, interrupted-commit reconcile + later-edit detection); and
+  `test_workflow_v2.py` (+2 — `test_live_rcm_capability_commits_through_pipeline_binding`
+  drives the stage through the native binding asserting the committed row, unit
+  ref, content-free manifest/proposal/receipt sidecars, row-value exclusion from
+  prompt + provenance, and the absence of `_rcm`/`_rcm_quality`/`_match_rcm_revision`;
+  `test_rcm_resume_reuses_durable_proposal_without_rebilling` proves an
+  interrupted commit resumes from the durable proposal without a second provider
+  call). Focused verification: `234 passed` across the RCM worker/executor,
+  planning worker/executor, workflow-v2, scheduler-golden, import-boundaries,
+  capability-composition, audit-definition, unit-pipeline, worker/executor
+  contract, and context model/resolver/adapter suites; `test_planning.py`
+  `22 passed`; command-agent/planning/rcm-e2e/runner/runtime-contracts
+  `154 passed` with the one pre-existing
+  `test_command_agent.py::test_full_audit_command_uses_documents_and_planning_templates`
+  `wait_run` 15s-timeout slowness (passes in isolation, `16.11s`, unrelated to
+  this slice). No API or frontend contract changed (no frontend consumer reads
+  RCM unit refs or `planning.rcm` payloads), so a frontend build was not required.
+  The exact next task is `P7D.2` (planned-test generation/commit).
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1879,7 +1968,7 @@ the remaining v3 handlers to declarations, workers, and executors.
   Phase 5 behavior through the authoritative audit workflow.
 - [x] `P7C.1` Move `planning.rcm_ready` readiness and semantic units into grouped
   declarations (context, matching, and worker/validation migrate in `P7C.2`).
-- [ ] `P7C.2` Extract row-level commit, edit preservation, CAS, reconciliation,
+- [x] `P7C.2` Extract row-level commit, edit preservation, CAS, reconciliation,
   and receipts; switch the writer and delete the old RCM handler.
 - [x] `P7D.1` Move `planning.planned_tests_ready` readiness and per-RCM unit
   expansion with stable unit and matching tests.

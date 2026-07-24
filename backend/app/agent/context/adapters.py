@@ -229,6 +229,111 @@ def apm_document_methodology_scope(
     )
 
 
+RCM_PLANNING_SOURCE_ID = "planning_context"
+RCM_TEMPLATE_SOURCE_ID = "rcm_template"
+RCM_CURRENT_APM_SOURCE_ID = "current_apm"
+RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
+RCM_DOCUMENT_SOURCE_ID = "documents"
+RCM_METHODOLOGY_SOURCE_ID = "methodology"
+RCM_TABLE_METADATA_SOURCE_ID = "table_metadata"
+RCM_TABLE_PROFILE_SOURCE_ID = "table_profiles"
+
+# The bounded identification and matching fields supplied per current RCM row.
+# Planned tests, roll-ups, and evidence references stay out of the provider
+# context; row revision only needs the narrative and ownership fields.
+_RCM_ROW_CONTEXT_FIELDS = (
+    "id",
+    "semantic_id",
+    "process",
+    "risk",
+    "risk_rating",
+    "assertion",
+    "control",
+    "control_type",
+    "control_owner",
+    "criteria",
+    "test_procedure",
+    "review_status",
+    "created_by",
+)
+
+
+def rcm_current_row_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Expose each current RCM row as one bounded revision candidate."""
+    candidates = []
+    for row in workspace.rcm:
+        projection = {key: row.get(key) for key in _RCM_ROW_CONTEXT_FIELDS}
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"rcm:{row['id']}",
+                source=projection,
+                representations={"current_artifact": projection},
+                metadata={"rcm_id": str(row["id"])},
+            )
+        )
+    return tuple(candidates)
+
+
+def rcm_scope(
+    workspace: Workspace,
+    *,
+    planning_context: Mapping[str, object] | None = None,
+    document_ids: Iterable[str] | None = None,
+) -> ContextScope:
+    """Build the complete local candidate scope for the live RCM capability."""
+    context = dict(planning_context or workspace.planning.get("context") or {})
+    rcm_query = " ".join(
+        str(context.get(key) or "")
+        for key in ("objective", "scope", "background_notes", "entity", "period")
+    ).strip() or "internal audit risk controls procedures"
+    planning_content = {
+        "context": context,
+        "ownership": {
+            key: workspace.planning.get(key)
+            for key in ("created_by", "agent_run_id", "updated")
+        },
+    }
+    template = templates_store.get_template(workspace, "rcm")["markdown"]
+    current_apm = str(workspace.planning.get("apm_markdown") or "")
+    return ContextScope(
+        candidates={
+            RCM_PLANNING_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:context",
+                    source=planning_content,
+                    representations={"planning_context": planning_content},
+                    metadata={"artifact": "planning_context"},
+                ),
+            ),
+            RCM_TEMPLATE_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="template:rcm",
+                    source=template,
+                    representations={"artifact_template": template},
+                    metadata={"template": "rcm"},
+                ),
+            ),
+            RCM_CURRENT_APM_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:apm",
+                    source=current_apm,
+                    representations={"current_artifact": current_apm},
+                    metadata={"artifact": "apm"},
+                ),
+            ),
+            RCM_CURRENT_ROWS_SOURCE_ID: rcm_current_row_candidates(workspace),
+            RCM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
+            RCM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
+            RCM_DOCUMENT_SOURCE_ID: apm_document_candidates(
+                workspace,
+                document_ids=document_ids,
+            ),
+            RCM_METHODOLOGY_SOURCE_ID: apm_methodology_candidates(workspace),
+        },
+        selector_context={**context, "rcm_query": rcm_query},
+    )
+
+
 __all__ = [
     "APM_DOCUMENT_SOURCE_ID",
     "APM_METHODOLOGY_SOURCE_ID",
@@ -237,9 +342,19 @@ __all__ = [
     "APM_PLANNING_SOURCE_ID",
     "APM_TEMPLATE_SOURCE_ID",
     "APM_CURRENT_ARTIFACT_SOURCE_ID",
+    "RCM_CURRENT_APM_SOURCE_ID",
+    "RCM_CURRENT_ROWS_SOURCE_ID",
+    "RCM_DOCUMENT_SOURCE_ID",
+    "RCM_METHODOLOGY_SOURCE_ID",
+    "RCM_PLANNING_SOURCE_ID",
+    "RCM_TABLE_METADATA_SOURCE_ID",
+    "RCM_TABLE_PROFILE_SOURCE_ID",
+    "RCM_TEMPLATE_SOURCE_ID",
     "apm_document_candidates",
     "apm_document_methodology_scope",
     "apm_methodology_candidates",
     "apm_table_metadata_candidates",
     "apm_table_profile_candidates",
+    "rcm_current_row_candidates",
+    "rcm_scope",
 ]

@@ -794,42 +794,6 @@ class ActionRunner(BaseRunner):
         return payload
 
     @staticmethod
-    def _rcm_quality(payload: dict, existing_ids: set[str] | None = None) -> str | None:
-        rows = payload.get("rows") or []
-        if not isinstance(rows, list) or not rows:
-            return "no RCM rows were proposed"
-        required = (
-            "process", "risk", "risk_rating", "assertion", "control",
-            "control_type", "test_procedure",
-        )
-        for index, row in enumerate(rows, start=1):
-            if not isinstance(row, dict):
-                return f"RCM row {index} is not an object"
-            missing = [key for key in required if not str(row.get(key) or "").strip()]
-            if missing:
-                return f"RCM row {index} is missing {missing[0]}"
-            non_string = [key for key in required if not isinstance(row.get(key), str)]
-            if non_string:
-                return f"RCM row {index} field {non_string[0]} must be a string"
-            if str(row.get("risk_rating")).casefold() not in {"low", "medium", "high", "critical"}:
-                return f"RCM row {index} has an unsupported risk rating"
-            operation = str(row.get("operation") or "").strip().lower()
-            if operation not in {"update", "create"}:
-                return f"RCM row {index} has an unsupported operation"
-            if operation == "update":
-                try:
-                    row_id = artifact_index.canonical_id(row.get("rcm_id"), "rcm")
-                except ValueError:
-                    return f"RCM row {index} has an invalid rcm_id"
-                if not row_id or existing_ids is not None and row_id not in existing_ids:
-                    return f"RCM row {index} does not identify an existing RCM row"
-            if operation == "create" and not str(row.get("new_risk_reason") or "").strip():
-                return f"RCM row {index} does not explain why the risk is new"
-            if operation == "create" and not isinstance(row.get("new_risk_reason"), str):
-                return f"RCM row {index} new_risk_reason must be a string"
-        return None
-
-    @staticmethod
     def _words(value: object) -> set[str]:
         return set(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
 
@@ -840,35 +804,6 @@ class ActionRunner(BaseRunner):
         left_words, right_words = cls._words(left), cls._words(right)
         overlap = len(left_words & right_words) / max(1, len(left_words | right_words))
         return max(overlap, SequenceMatcher(None, left_text, right_text).ratio())
-
-    def _match_rcm_revision(
-        self,
-        spec: dict,
-        semantic: str,
-        *,
-        workspace: Workspace | None = None,
-    ) -> tuple[dict | None, bool]:
-        current = workspace or self.ws
-        explicit = artifact_index.canonical_id(
-            spec.get("rcm_id") or spec.get("id"), "rcm"
-        )
-        if explicit:
-            return next((row for row in current.rcm if row.get("id") == explicit), None), False
-        exact = current.find_semantic("rcm", semantic)
-        if exact:
-            return exact, False
-        narrative = f"{spec.get('process', '')} {spec.get('risk', '')}"
-        ranked = sorted(
-            (
-                (self._similarity(narrative, f"{row.get('process', '')} {row.get('risk', '')}"), row)
-                for row in current.rcm
-            ),
-            key=lambda item: (-item[0], str(item[1].get("id"))),
-        )
-        if not ranked or ranked[0][0] < 0.72:
-            return None, False
-        ambiguous = len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08
-        return (None, True) if ambiguous else (ranked[0][1], False)
 
     def _match_planned_test_revision(
         self, rcm_id: str, spec: dict, semantic: str,
@@ -975,95 +910,6 @@ class ActionRunner(BaseRunner):
             ):
                 return f"planned test {index} threshold values must be JSON scalars"
         return None
-
-    def stage_rcm(self, basis: dict, apm: str) -> list[dict]:
-        self.run.setdefault("planning_changes", {
-            "apm_updated": 0, "apm_proposed": 0,
-            "rcm_created": 0, "rcm_updated": 0, "rcm_preserved": 0,
-            "planned_test_created": 0, "planned_test_updated": 0,
-            "planned_test_preserved": 0,
-        })
-        task = self.add_task("rcm", "planning:rcm", "Draft the risk and control matrix")
-        if task["status"] == "completed":
-            return self.ws.rcm
-        self.task_status(task, "running")
-        existing_count = len(self.ws.rcm)
-        self.task_detail(
-            task,
-            f"Drafting RCM revisions against {existing_count} existing risk"
-            f"{'s' if existing_count != 1 else ''}…",
-        )
-        template = templates_store.get_template(self.ws, "rcm")["markdown"]
-        payload = self._quality_draft(
-            prompts.RCM_SYSTEM,
-            prompts.rcm_user(
-                template, self._downstream_planning_basis(basis, "rcm"), apm,
-                self.ws.rcm,
-            ),
-            lambda value: self._rcm_quality(
-                value, {str(row.get("id")) for row in self.ws.rcm}
-            ),
-            "RCM",
-            task=task,
-        )
-        proposals = []
-        for row in payload.get("rows") or []:
-            if not isinstance(row, dict) or not str(row.get("risk") or "").strip():
-                continue
-            spec = dict(row)
-            spec["semantic_id"] = f"rcm:{slugify(spec.get('process', ''))}:{slugify(spec['risk'])}"
-            proposals.append(
-                self.proposal_item(
-                    str(spec["risk"]), "Proposed planning risk and response.", spec
-                )
-            )
-        accepted_specs = self._accepted_specs("rcm", task, proposals)
-        for index, spec in enumerate(accepted_specs, start=1):
-            self.set_activity(
-                "planning.rcm.apply", "Applying RCM revisions",
-                detail=str(spec.get("risk") or "Risk revision"),
-                current=index, total=len(accepted_specs), task_id=task["id"],
-            )
-            if not str(spec.get("risk") or "").strip():
-                raise WorkspaceError("An approved RCM row is missing its risk.")
-            semantic = str(
-                spec.get("semantic_id")
-                or f"rcm:{slugify(spec.get('process', ''))}:{slugify(spec['risk'])}"
-            )
-            spec["semantic_id"] = semantic
-            existing, ambiguous = self._match_rcm_revision(spec, semantic)
-            operation = str(spec.get("operation") or "").strip().lower()
-            if operation == "update" and existing is None and not ambiguous:
-                raise WorkspaceError(
-                    f"RCM revision target '{spec.get('rcm_id')}' was not found."
-                )
-            if ambiguous:
-                self.warn(
-                    f"Skipped ambiguous RCM revision '{spec['risk']}'; choose the durable RCM id."
-                )
-                continue
-            if existing and existing.get("created_by") != "agent" and self.run["mode"] != "permission":
-                self.warn(f"Preserved auditor-edited RCM row '{existing['id']}'.")
-                self.run["planning_changes"]["rcm_preserved"] += 1
-                continue
-            if existing:
-                changes = {
-                    key: spec.get(key)
-                    for key in (
-                        "process", "risk", "risk_rating", "assertion", "control",
-                        "control_type", "test_procedure",
-                    )
-                }
-                item = self.ws.update_rcm(existing["id"], changes, agent=True)
-                action = "updated"
-                self.run["planning_changes"]["rcm_updated"] += 1
-            else:
-                item = self.ws.add_rcm({**spec, "agent_run_id": self.run["id"]})
-                action = "created"
-                self.run["planning_changes"]["rcm_created"] += 1
-            self.record_artifact("rcm", item["id"], semantic, action, task)
-        self.task_status(task, "completed")
-        return self.ws.rcm
 
     def stage_work_program(self, basis: dict, rcm_rows: list[dict]) -> None:
         self.run.setdefault("planning_changes", {
@@ -1183,20 +1029,11 @@ class ActionRunner(BaseRunner):
     @staticmethod
     def _downstream_planning_basis(basis: dict, stage: str) -> dict:
         """Prevent broad document analysis from cascading into later prompts."""
-        common = {
+        del stage
+        return {
             "planning": basis.get("planning"), "tables": basis.get("tables"),
             "documents": basis.get("documents"), "methodology": basis.get("methodology"),
         }
-        if stage == "rcm":
-            common["document_sources"] = [
-                {
-                    "document_id": item.get("document_id"), "title": item.get("title"),
-                    "source_sha1": item.get("source_sha1"), "analysis_id": item.get("analysis_id"),
-                    "coverage": item.get("coverage"), "citations": item.get("citations"),
-                }
-                for item in basis.get("document_analyses") or []
-            ]
-        return common
 
     def _resolve_rcm_refs(self, refs: list) -> list[str]:
         resolved = []

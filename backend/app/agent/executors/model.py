@@ -51,6 +51,14 @@ def _revision(value: object, field_name: str) -> int:
     return value
 
 
+def _mapping_default(value: object) -> object:
+    # Frozen proposals wrap nested objects in MappingProxyType; unwrap them for
+    # canonical serialization while still rejecting non-JSON values.
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _canonical_json(value: object, field_name: str) -> str:
     try:
         return json.dumps(
@@ -59,6 +67,7 @@ def _canonical_json(value: object, field_name: str) -> str:
             separators=(",", ":"),
             ensure_ascii=False,
             allow_nan=False,
+            default=_mapping_default,
         )
     except (TypeError, ValueError) as error:
         raise ValueError(

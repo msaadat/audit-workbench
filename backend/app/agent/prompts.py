@@ -396,31 +396,6 @@ def document_analysis_reduce_user(document: dict, map_outputs: list[dict]) -> st
     )
 
 
-RCM_SYSTEM = f"""[agent:rcm]
-Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
-row containing operation (update|create), rcm_id for updates, process, risk,
-risk_rating (low|medium|high|critical), assertion, control, control_type, and
-test_procedure. All ids and narrative fields are strings. New rows also include
-new_risk_reason as a string. Do not invent control
-operation as fact when evidence is absent. {JSON_RULES}"""
-
-
-def rcm_user(
-    template: str, context: dict, apm_markdown: str,
-    current_rows: list[dict] | None = None,
-) -> str:
-    return (
-        "ACTIVE RCM TEMPLATE (verbatim):\n"
-        f"{template}\n\nPLANNING BASIS:\n{json.dumps(context, default=str)}"
-        f"\n\nREVISED APM:\n{apm_markdown}"
-        "\n\nCURRENT RCM TO REVISE:\n"
-        f"{json.dumps(current_rows or [], default=str)}"
-        "\n\nReturn the full set of proposed revisions. For an existing risk, include "
-        "operation='update' and its exact rcm_id. Use operation='create' only for a genuinely "
-        "uncovered risk and include new_risk_reason. Omission never deletes an existing row."
-    )
-
-
 WORK_PROGRAM_SYSTEM = f"""[agent:work_program]
 Revise structured planned tests directly inside the supplied RCM; do not create
 a separate audit-program or procedure layer. Return an object with `planned_tests`;

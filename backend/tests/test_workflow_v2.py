@@ -1335,6 +1335,158 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
     assert not hasattr(action_runner.ActionRunner, "_apm_quality")
 
 
+def _rcm_only_runner(workspace):
+    run = store.new_command_run(
+        workspace,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Draft the RCM",
+            "requested_outcomes": ["planning.rcm_ready"],
+            "generation_mode": "force",
+        },
+    )
+    assert initialize_known_workflow(workspace, run) is True
+    run = store.load_run(workspace, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "planning.rcm_ready"
+    )
+    command = build_audit_workflow_runner(
+        workspace,
+        run,
+        runner.RunHandle(workspace.id, run["id"]),
+    )
+    return command, stage, stage["units"][0]
+
+
+_RCM_RESPONSE = {
+    "rows": [
+        {
+            "operation": "create",
+            "process": "Accounts payable",
+            "risk": "Duplicate payments are processed",
+            "risk_rating": "high",
+            "assertion": "Occurrence",
+            "control": "Duplicate invoice validation",
+            "control_type": "Automated preventive",
+            "test_procedure": "Test invoice and amount duplicates.",
+            "new_risk_reason": "No existing RCM row covers duplicate payments.",
+        }
+    ]
+}
+
+
+def test_live_rcm_capability_commits_through_pipeline_binding(monkeypatch):
+    ws = workspaces.create_workspace("Live RCM binding")
+    sentinel = "ROW_SECRET_NEVER_SEND_P7C2"
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess procurement approvals", "scope": "Purchasing"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nPurchasing.",
+        }
+    )
+    ws.add_table(
+        "private-ledger.csv",
+        pl.DataFrame(
+            {"invoice_id": [sentinel, "INV-2"], "amount": [100.0, 200.0]}
+        ).write_csv().encode(),
+    )
+    command, stage, unit = _rcm_only_runner(ws)
+    captured = {}
+
+    def draft(user):
+        captured["user"] = user
+        return _RCM_RESPONSE
+
+    fake = FakeAgentLLM({"agent:rcm": draft})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command._run_stage(stage)
+
+    assert unit["status"] == "succeeded"
+    assert stage["status"] == "succeeded"
+    reloaded = workspaces.load_workspace(ws.id)
+    assert len(reloaded.rcm) == 1
+    created = reloaded.rcm[0]
+    assert created["risk"] == "Duplicate payments are processed"
+    assert created["created_by"] == "agent"
+    assert unit["result_refs"] == [f"rcm:{created['id']}"]
+    assert command.run["planning_changes"]["rcm_created"] == 1
+    # Row-level table values never reach the provider or the durable provenance.
+    assert sentinel not in captured["user"]
+    assert sentinel not in json.dumps(command.run.get("provenance") or [])
+    # The pipeline persisted content-free manifest, proposal, and receipt sidecars.
+    assert unit["proposal_sidecar"]["path"] == "proposals/rcm.json"
+    assert unit["receipt_sidecar"]["path"] == "receipts/rcm.json"
+    assert (
+        store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
+    ).is_file()
+    # The RCM path is a native pipeline binding: the binder inlines no bundle
+    # builder, model worker, or workspace mutation.
+    binder_source = inspect.getsource(AuditWorkflowExecution._bind_rcm)
+    assert "context_bundles.rcm" not in binder_source
+    assert "llm_json" not in binder_source
+    assert "mutate(" not in binder_source
+    assert not hasattr(AuditWorkflowExecution, "_rcm")
+    assert not hasattr(action_runner.ActionRunner, "_rcm_quality")
+    assert not hasattr(action_runner.ActionRunner, "_match_rcm_revision")
+
+
+def test_rcm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
+    ws = workspaces.create_workspace("RCM proposal no rebilling")
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess procurement approvals", "scope": "Purchasing"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nPurchasing.",
+        }
+    )
+    fake = FakeAgentLLM({"agent:rcm": _RCM_RESPONSE})
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command, stage, unit = _rcm_only_runner(ws)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            planning_executor,
+            "mutate",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            command._run_stage(stage)
+
+    run_root = store.run_dir(ws, command.run["id"])
+    assert [call["tag"] for call in fake.calls] == ["agent:rcm"]
+    assert (run_root / unit["proposal_sidecar"]["path"]).is_file()
+    assert not (run_root / "receipts" / "rcm.json").exists()
+
+    workflow.recovery(command.run["workflow"])
+    resumed = build_audit_workflow_runner(
+        ws,
+        command.run,
+        runner.RunHandle(ws.id, command.run["id"]),
+    )
+    resumed._run_stage(stage)
+
+    # Resume reused the durable proposal; no second provider call was billed.
+    assert [call["tag"] for call in fake.calls] == ["agent:rcm"]
+    assert unit["status"] == "succeeded"
+    assert (run_root / unit["receipt_sidecar"]["path"]).is_file()
+    assert "proposal_reused" in {
+        event["type"] for event in store.read_events(ws, resumed.run["id"])
+    }
+    assert len(workspaces.load_workspace(ws.id).rcm) == 1
+
+
 def test_data_test_compute_is_pure_and_commit_is_revisioned():
     ws = workspaces.create_workspace("Pure Data Test")
     ws.add_table(
