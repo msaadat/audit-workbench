@@ -251,6 +251,7 @@ button, input, textarea, select { font: inherit; }
   background: rgb(255 255 255 / 55%);
 }
 .empty-state-icon { display: grid; place-items: center; width: 3rem; height: 3rem; margin-bottom: 0.75rem; border-radius: var(--aw-radius-sm); background: var(--aw-teal-soft); color: var(--aw-teal); font-size: 1.25rem; }
+.empty-state-icon i { position: relative; top: -0.03em; left: -0.01em; }
 .empty-state h3 { margin: 0; font-size: var(--aw-text-lg); }
 .empty-state p { max-width: 32rem; margin: 0.4rem 0 1rem; color: var(--aw-muted); }
 
