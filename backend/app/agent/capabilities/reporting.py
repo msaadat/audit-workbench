@@ -49,6 +49,18 @@ LOCALLY_OWNED: frozenset[str] = frozenset(
     }
 )
 
+# Declared auditor-judgment checkpoint. Observation disposition is authoritative
+# auditor judgment that gates finding creation, so it is declared here at the
+# rollup -> findings boundary rather than being embedded inside the (now
+# deterministic) roll-up executor. ``STAGE_CHECKPOINTS`` maps the capability whose
+# units the checkpoint gates to the checkpoint name; the audit execution
+# composition resolves that name to the concrete blocking handler and only runs it
+# in permission mode.
+OBSERVATION_DISPOSITION_CHECKPOINT = "observation_disposition"
+STAGE_CHECKPOINTS: dict[str, str] = {
+    "findings.drafted": OBSERVATION_DISPOSITION_CHECKPOINT,
+}
+
 
 # --------------------------------------------------------------------------- #
 # findings.drafted (P7H)

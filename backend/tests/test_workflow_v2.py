@@ -834,6 +834,91 @@ def test_parallel_candidate_reuses_durable_sidecar_without_model_rebilling():
     }
 
 
+def test_results_rolled_up_through_deterministic_scheduler_path(workspace_with_data):
+    ws = workspace_with_data
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nAccounts payable.",
+        }
+    )
+    row = ws.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate invoices may be paid",
+            "control": "Duplicate invoice validation",
+            "risk_rating": "high",
+        }
+    )
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Duplicate invoices",
+            "objective": "Identify repeated invoice identifiers.",
+            "method": "data_analytics",
+            "steps": ["Identify repeated invoice identifiers."],
+        },
+    )
+    data_test = data_tests.create(
+        ws,
+        {
+            "title": "Duplicate invoices",
+            "objective": "Identify repeated invoice identifiers.",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "rcm_id": row["id"],
+            "planned_test_id": planned["id"],
+            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+        },
+    )
+    data_tests.run(ws, data_test["id"])
+
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Roll up the results",
+            "requested_outcomes": ["results.rolled_up"],
+            "generation_mode": "force",
+        },
+    )
+    assert initialize_known_workflow(ws, run) is True
+    run = store.load_run(ws, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "results.rolled_up"
+    )
+    command = build_audit_workflow_runner(
+        ws, run, runner.RunHandle(ws.id, run["id"])
+    )
+
+    # execute() refreshes the subject from disk before each stage; mirror that
+    # here so the stage runs against a disk-consistent workspace.
+    command._refresh()
+    command._run_stage(stage)
+
+    # The deterministic path recomputed the roll-up and folded a succeeded unit
+    # whose ref is the stable ``rcm:<id>`` result reference.
+    unit = stage["units"][0]
+    assert unit["status"] == "succeeded"
+    assert unit["result_refs"] == [f"rcm:{row['id']}"]
+    assert stage["status"] == "succeeded"
+    reloaded = workspaces.load_workspace(ws.id)
+    assert reloaded.rcm[0]["execution_rollup"]["planned_tests"] == 1
+    assert reloaded.observations  # the exception raised an observation
+    # The binder emits the roll-up ``workspace_changed`` signal the generic
+    # deterministic path does not.
+    assert {
+        (event["data"].get("kind"), event["data"].get("id"))
+        for event in store.read_events(ws, run["id"])
+        if event["type"] == "workspace_changed"
+    } >= {("rcm", "rollup")}
+    # Deterministic execution makes no provider call.
+    assert run["usage"]["llm_turns"] == 0
+
+
 def test_working_papers_generate_through_deterministic_scheduler_path():
     ws = _planning_workspace("Working paper stage")
     run = store.new_command_run(
@@ -1981,6 +2066,153 @@ def test_permission_mode_dispositions_resume_into_finding_batch(monkeypatch):
     assert refreshed.observations[0]["status"] == "disposed"
     assert refreshed.findings[0]["source_observation_id"] == observation["id"]
     assert refreshed.findings[0]["auditor_confirmed"] is False
+
+
+def test_observation_checkpoint_pauses_and_resumes_before_findings(monkeypatch):
+    """The declared observation-disposition checkpoint blocks before finding
+    creation, survives a pause/resume, and then applies the auditor disposition.
+
+    This is the declared checkpoint that replaced the roll-up-embedded interaction
+    in P7G.2: it gates ``findings.drafted`` (see ``STAGE_CHECKPOINTS``) and its
+    blocking wait is pause/resume-safe."""
+    ws = _planning_workspace("Checkpoint pause/resume")
+    ws.add_table(
+        "transactions.csv",
+        pl.DataFrame({"invoice": [1, 1], "amount": [10.0, 10.0]}).write_csv().encode(),
+    )
+    row = ws.rcm[0]
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Test duplicate invoices",
+            "objective": "Identify duplicate invoices",
+            "criteria": "Invoices are unique.",
+            "steps": ["Run duplicate analysis."],
+            "method": "data_analytics",
+            "expected_evidence": "Duplicate listing",
+        },
+    )
+    test = data_tests.create(
+        ws,
+        {
+            "title": "Duplicate invoices",
+            "objective": "Identify duplicates",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice"]}},
+            "rcm_id": row["id"],
+            "planned_test_id": planned["id"],
+        },
+    )
+    data_tests.run(ws, test["id"])
+    rcm_execution.rollup(ws)
+    observation = ws.observations[0]
+    fake = FakeAgentLLM(
+        {
+            "agent:finding": {
+                "finding": {
+                    "title": "Duplicate invoice processing",
+                    "severity": "medium",
+                    "condition": "A duplicate invoice identifier was processed.",
+                    "criteria": "Invoice identifiers should be unique.",
+                    "cause_pending": True,
+                    "effect": "Duplicate payment risk.",
+                    "recommendation": "Prevent duplicate invoice identifiers.",
+                    "severity_rationale": "The exception can cause financial loss.",
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
+    )
+
+    started = runner.start_command_run(
+        ws,
+        "permission",
+        {
+            "source": "tab_button",
+            "text": "Draft eligible findings",
+            "requested_outcomes": ["findings.drafted"],
+        },
+    )
+
+    def _await(predicate, *, timeout=5.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            current = store.load_run(ws, started["id"])
+            if predicate(current):
+                return current
+            time.sleep(0.02)
+        raise AssertionError("Timed out waiting on run condition.")
+
+    # The declared checkpoint blocks (awaiting_input) before any finding exists.
+    blocked = _await(
+        lambda run: run.get("status") == "awaiting_input"
+        and any(
+            item.get("type") == "observation_disposition"
+            and item.get("status") == "pending"
+            for item in run.get("interactions") or []
+        )
+    )
+    interaction = next(
+        item
+        for item in blocked["interactions"]
+        if item.get("type") == "observation_disposition"
+    )
+    assert not workspaces.load_workspace(ws.id).findings
+
+    # Pause holds the checkpoint...
+    runner.pause_run(ws, started["id"])
+    _await(lambda run: run.get("status") == "paused")
+    assert not workspaces.load_workspace(ws.id).findings
+
+    # ...and resume releases it back to the same blocking wait.
+    runner.resume_run(ws, started["id"])
+    _await(lambda run: run.get("status") == "awaiting_input")
+
+    # The auditor disposition is applied and the finding batch proceeds.
+    runner.resolve_interaction(
+        ws,
+        started["id"],
+        interaction["id"],
+        {
+            "decisions": [
+                {
+                    "observation_id": observation["id"],
+                    "disposition": "draft_finding_candidate",
+                    "auditor_note": "Draft for review.",
+                }
+            ]
+        },
+    )
+    resolved = _await(
+        lambda run: any(
+            item.get("kind") == "finding_drafts" and item.get("status") == "pending"
+            for item in run.get("approvals") or []
+        )
+    )
+    approval = next(
+        item
+        for item in resolved["approvals"]
+        if item.get("kind") == "finding_drafts" and item.get("status") == "pending"
+    )
+    runner.resolve_approval(
+        ws,
+        started["id"],
+        approval["id"],
+        [{"item_id": item["id"], "action": "approve"} for item in approval["items"]],
+    )
+    completed = wait_run(ws, started["id"])
+    refreshed = workspaces.load_workspace(ws.id)
+
+    assert completed["status"] == "completed"
+    assert refreshed.observations[0]["status"] == "disposed"
+    assert refreshed.observations[0]["disposition"] == "draft_finding_candidate"
+    assert refreshed.findings[0]["source_observation_id"] == observation["id"]
 
 
 def test_full_workflow_runs_capability_closure_and_stops_for_auditor_judgment(monkeypatch):

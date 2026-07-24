@@ -33,15 +33,18 @@ no historical reader or resume adapter is retained.
 
 - Overall migration: in progress.
 - Current phase: Phase 7 (in progress).
-- Current task: `P7G.2` (rollup + observation checkpoint) is the remaining —
-  and heavier — deterministic slice; the model-backed `P7C.2`/`P7D.2`/`P7E.2`/
-  `P7E.3`/`P7H.2`/`P7K.2` remain, and `P7A.2`/`P7F.2`/`P7F.3` stay deferred
-  (Phase-9-coupled — see notes).
-- Last completed task: `P7J.2` — `dashboard.curated` now runs through the
-  scheduler's domain-neutral deterministic execution path; its `_dashboard` batch
-  handler was removed, curation extracted to
-  `executors/reporting.py::curate_dashboard`, and `dashboard.curate_rcm_tiles`
-  gained an RCM-parent compare-and-swap guard it previously lacked.
+- Current task: `P7C.2` (RCM row commit) — the first of the remaining model-backed
+  `.2` writer-switches (`P7C.2`/`P7D.2`/`P7E.2`/`P7E.3`/`P7H.2`/`P7K.2`);
+  `P7A.2`/`P7F.2`/`P7F.3` stay deferred (Phase-9-coupled — see notes). All four
+  deterministic (no-model) slices are now landed.
+- Last completed task: `P7G.2` — `results.rolled_up` now runs through the
+  scheduler's domain-neutral deterministic execution path; its `_rollup` batch
+  handler was removed, roll-up extracted to
+  `executors/fieldwork.py::roll_up_results` (stable `rcm:<id>` result refs and
+  `execution_ref`-keyed observation identities), and the observation/disposition
+  interaction is now a declared checkpoint (`capabilities/reporting.py::STAGE_CHECKPOINTS`)
+  that gates `findings.drafted` — removed from the (now deterministic) roll-up
+  and single-sourced at the rollup→findings boundary.
 - Done: the readiness + unit-expansion declarations for **all 12** audit
   capabilities are now locally owned in the grouped `capabilities` modules and
   golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
@@ -53,12 +56,15 @@ no historical reader or resume adapter is retained.
   handler. `audit.verified` (`P7L.2`) is the first capability on the scheduler's
   deterministic (no-model) execution path; `working_papers.generated` (`P7I.2`)
   is the second — the first deterministic slice that mutates (renders + commits
-  per-RCM working papers) rather than being read-only; and `dashboard.curated`
+  per-RCM working papers) rather than being read-only; `dashboard.curated`
   (`P7J.2`) is the third, which additionally closed a conflict-safety gap by
-  adding an RCM-parent compare-and-swap guard the prior handler lacked.
+  adding an RCM-parent compare-and-swap guard the prior handler lacked; and
+  `results.rolled_up` (`P7G.2`) is the fourth and last deterministic slice, which
+  additionally moved the observation/disposition interaction to a declared
+  checkpoint gating `findings.drafted`.
 - Active blockers: the `.2` execution writer-switches (workers/executors/handler
   removal) remain for the RCM, planned-tests, definitions, fieldwork execution,
-  rollup, findings, and report families.
+  findings, and report families.
   `P7A.2`'s remaining pieces (context-synthesis worker + context declaration +
   pipeline switch + `_planning_basis` removal) are the Phase-9-coupled part
   deferred per the `P7A.2` note; its `planning.context` commit executor is
@@ -82,7 +88,7 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7G.2` (rollup + observation checkpoint) |
+| 7 | In progress | `P7C.2` (RCM row commit) |
 | 8 | Pending Phase 7 gate | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
@@ -1139,6 +1145,57 @@ status notes below.
   it additionally moves the observation/disposition interaction to a declared
   checkpoint and must prove pause/resume/auditor-edit, so it should be scoped
   and flagged before starting rather than picked up as a routine continuation.
+- `P7G.2` completed on 2026-07-24. `results.rolled_up` is the fourth and final
+  capability on the scheduler's deterministic execution path, and the last
+  deterministic slice of Phase 7. Two parts:
+  (1) **Deterministic roll-up executor.** The transitional
+  `AuditWorkflowExecution._rollup` batch method was deleted and replaced by a thin
+  `_bind_rollup` deterministic binder returning `DeterministicUnitResult`; because
+  the generic deterministic path emits no domain events, the binder emits the
+  `workspace_changed` `{"kind":"rcm","id":"rollup","action":"updated"}` signal the
+  old handler produced. Roll-up itself was extracted to a new
+  `executors/fieldwork.py::roll_up_results` (a `Workspace -> [rcm:<id>, ...]`
+  function delegating to the unchanged `rcm_execution.rollup`, with a
+  `result_ref` helper). "Stable result/observation identities" is preserved
+  rather than changed: result refs stay `rcm:<rcm_id>` per row, and observations
+  remain keyed on `execution_ref` inside `rcm_execution.rollup`, so a repeated
+  roll-up reuses the same observation rows instead of duplicating them. Roll-up is
+  a pure recomputation of derived state from current execution artifacts and is
+  self-committing (persists only material changes) — unlike dashboard curation it
+  reads and rewrites the same derived state, so no new CAS/parent guard was added
+  (and the task did not call one out). `_AUDIT_HANDLER_NAMES` lost
+  `results.rolled_up` and `_DETERMINISTIC_BINDERS` gained it (`fieldwork.rollup`).
+  (2) **Declared observation-disposition checkpoint.** The interaction previously
+  ran in *two* places (inside `_rollup` after success, and in `before_stage`
+  before `findings.drafted`), both permission-mode only and idempotent via
+  pending-interaction reuse. Since the deterministic path cannot block, the
+  rollup-embedded call is gone and the checkpoint is single-sourced at the
+  rollup→findings boundary. It is now *declared*: `capabilities/reporting.py`
+  exposes `STAGE_CHECKPOINTS = {"findings.drafted": "observation_disposition"}`
+  (the target home for `findings.drafted`), and `audit_execution`'s `before_stage`
+  resolves that declaration to the concrete blocking handler
+  (`adapter._observation_checkpoint`, which still owns the interaction because it
+  needs the live run/runtime) instead of an inline `if capability.id == ...`
+  branch. The interaction shape, permission-mode gating, and pause/resume/offline
+  behavior (via `runtime.wait_for_interaction`) are unchanged. New focused tests:
+  three in `test_agent_fieldwork_executor.py` (`roll_up_results` commits + returns
+  stable row refs, reuses stable observation identities across repeated roll-ups,
+  and is stable with no executions) and two in `test_workflow_v2.py`
+  (`test_results_rolled_up_through_deterministic_scheduler_path` drives the stage
+  through the deterministic scheduler path asserting the succeeded unit,
+  `rcm:<id>` ref, the emitted `workspace_changed`, and zero LLM turns;
+  `test_observation_checkpoint_pauses_and_resumes_before_findings` proves the
+  declared checkpoint blocks before any finding exists, survives a
+  pause→resume, and then applies the auditor disposition). Focused verification:
+  `test_workflow_v2.py` `60 passed`; `test_agent_fieldwork_executor.py` `3 passed`;
+  reporting-executor/composition/import-boundaries/scheduler-golden/audit-definition/
+  rcm_execution `68 passed`; recovery/command-agent/runtime-contracts `131 passed`
+  (the one failure, `test_command_agent.py::test_full_audit_command_uses_documents_and_planning_templates`,
+  is a pre-existing `wait_run` 15s-timeout slowness on this machine — it fails
+  identically on the pre-change base and is unrelated to this slice). No API or
+  frontend contract changed (no frontend consumer reads roll-up unit refs), so a
+  frontend build was not required. The exact next task is `P7C.2` (RCM row commit),
+  the first model-backed writer-switch.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -1844,7 +1901,7 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7G.1` Move rollup readiness and unit expansion into the grouped module
   (the deterministic rollup executor with stable result/observation identities
   migrates in `P7G.2`).
-- [ ] `P7G.2` Migrate deterministic rollup execution into a local executor with
+- [x] `P7G.2` Migrate deterministic rollup execution into a local executor with
   stable result/observation identities and the observation/disposition
   interaction to a declared checkpoint; prove pause, resume, and auditor-edit
   behavior.

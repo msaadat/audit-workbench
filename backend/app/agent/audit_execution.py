@@ -28,8 +28,13 @@ from ..workspaces import (
 from . import audit_capabilities, audit_workers, context_bundles, store, workflow
 from .base import Cancelled, LimitExceeded
 from .action_runner import ActionRunner
+from .capabilities.reporting import (
+    OBSERVATION_DISPOSITION_CHECKPOINT,
+    STAGE_CHECKPOINTS,
+)
 from .context import ContextResolver, apm_document_methodology_scope
 from .executors import EXECUTORS
+from .executors.fieldwork import roll_up_results
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
@@ -803,23 +808,34 @@ class AuditWorkflowExecution(ActionRunner):
         )
         return {"content": content}
 
-    def _rollup(self, stage: dict, units: list[dict]) -> None:
-        unit = units[0]
-        self._set_unit(stage, unit, "running")
+    def _bind_rollup(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``results.rolled_up``.
+
+        Roll-up recomputes each RCM row's derived result and its observations from
+        the current execution artifacts and persists only material changes.
+        Observation identities are keyed on ``execution_ref``, so a repeated
+        roll-up reuses the same observation rows rather than creating duplicates.
+        On success the binder emits the ``workspace_changed`` roll-up signal the
+        generic deterministic path does not. No model call or approval is involved;
+        the auditor's observation disposition runs as a declared checkpoint before
+        finding creation (see ``STAGE_CHECKPOINTS``), not here.
+        """
+        self.ws = subject
         try:
-            self._refresh_workspace()
-            result = rcm_execution.rollup(self.ws)
-            refs = [f"rcm:{item['rcm_id']}" for item in result["rows"]]
-            self._set_unit(stage, unit, "succeeded", result_refs=refs)
-            self.emit("workspace_changed", {"kind": "rcm", "id": "rollup", "action": "updated"})
-            if self.run["mode"] == "permission":
-                self._observation_checkpoint()
-        except (Cancelled, LimitExceeded):
-            raise
+            refs = roll_up_results(self.ws)
         except WorkspaceConflict as error:
-            self._set_unit(stage, unit, "conflict", error=str(error))
-        except Exception as error:
-            self._set_unit(stage, unit, "failed", error=str(error))
+            return DeterministicUnitResult("conflict", error=str(error))
+        self.emit(
+            "workspace_changed", {"kind": "rcm", "id": "rollup", "action": "updated"}
+        )
+        return DeterministicUnitResult("succeeded", tuple(refs))
 
     def _observation_checkpoint(self) -> None:
         open_items = [item for item in self.ws.observations if item.get("status") != "disposed"]
@@ -1177,7 +1193,6 @@ _AUDIT_HANDLER_NAMES = {
     "planning.planned_tests_ready": "_planned_tests",
     "fieldwork.definitions_ready": "_definitions",
     "fieldwork.executed": "_executions",
-    "results.rolled_up": "_rollup",
     "findings.drafted": "_finding_drafts",
     "report.working_draft": "_report",
 }
@@ -1231,6 +1246,10 @@ def build_audit_workflow_runner(
     # Deterministic (no-model) capabilities bound through the scheduler's
     # deterministic execution path instead of the transitional batch adapter.
     _DETERMINISTIC_BINDERS = {
+        "results.rolled_up": (
+            adapter._bind_rollup,
+            {"deterministic": "fieldwork.rollup"},
+        ),
         "working_papers.generated": (
             adapter._bind_working_papers,
             {"deterministic": "reporting.working_paper"},
@@ -1304,14 +1323,25 @@ def build_audit_workflow_runner(
     ) -> bool:
         return dependency_id in _PARTIAL_DEPENDENCIES.get(capability_id, set())
 
+    # Declared auditor-judgment checkpoints resolved to their blocking handlers.
+    # The capability -> checkpoint-name declaration lives with the audit
+    # capability group (``STAGE_CHECKPOINTS``); the composition owns the concrete
+    # handler here because it needs the live run/runtime (interaction wait,
+    # persistence, and events). The checkpoint gates its capability's units and
+    # runs only in permission mode.
+    checkpoint_handlers = {
+        OBSERVATION_DISPOSITION_CHECKPOINT: adapter._observation_checkpoint,
+    }
+
     def before_stage(
         subject: Workspace,
         capability: workflow.Capability,
         _stage: dict,
     ) -> None:
         adapter.ws = subject
-        if capability.id == "findings.drafted" and run.get("mode") == "permission":
-            adapter._observation_checkpoint()
+        checkpoint = STAGE_CHECKPOINTS.get(capability.id)
+        if checkpoint is not None and run.get("mode") == "permission":
+            checkpoint_handlers[checkpoint]()
 
     scheduler = WorkflowRunner(
         subject=workspace,
