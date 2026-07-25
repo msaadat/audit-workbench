@@ -27,88 +27,35 @@ no historical reader or resume adapter is retained.
 
 ## Implementation Status And Session Handoff
 
-**Last updated:** 2026-07-24
+**Last updated:** 2026-07-25
 
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 7 (in progress).
-- Current task: `P7.4` (phase gate) — its proof artifacts are landed and green,
-  but the task is deliberately left unchecked because the gate still whitelists
-  two capabilities on the transitional batch adapter. The only remaining Phase 7
-  work is the two Phase-9-coupled deferrals, `P7A.2` (planning-context
-  synthesis) and `P7F.2`/`P7F.3` (fieldwork execution), so
-  `_AUDIT_HANDLER_NAMES` still holds exactly `planning.context_ready` and
-  `fieldwork.executed`. Ten of the twelve audit capabilities now run on a native
-  scheduler path: five through `pipeline_binder` (`planning.apm_ready`,
+- Current phase: Phase 7 (complete).
+- Current task: `P8.1` — Phase 7 is closed. Every one of the twelve audit
+  capabilities executes on a native scheduler path: seven through
+  `pipeline_binder` (`planning.context_ready`, `planning.apm_ready`,
   `planning.rcm_ready`, `planning.planned_tests_ready`,
-  `fieldwork.definitions_ready`, `findings.drafted`) and five through
-  `deterministic_executor` (`results.rolled_up`, `working_papers.generated`,
-  `dashboard.curated`, `report.working_draft`, `audit.verified`).
-- Last completed task: `P7.3` — `audit_capabilities.py` and `audit_workers.py`
-  are deleted and the grouped `capabilities` package is now the live registry
-  rather than a parallel composition validated against one; the workflow router
-  moved to `routing.py`, its only caller. No compatibility shim was left behind.
-- Prior tasks: `P7H.2` and `P7K.2` — see their notes below; `P7K.2`
-  deliberately took the deterministic path because the live report handler never
-  called the model. Before those: `P7E.2`+`P7E.3` (one slice — a capability carries one execution
-  binding and definitions fan out into two unit kinds) and `P7D.2` (the first
-  fan-out capability, with the recorded per-unit-approval and serialized-generation
-  changes).
-- Earlier task: `P7C.2` — `planning.rcm_ready` is the second model-backed
-  capability (after APM) on the scheduler's native `pipeline_binder` path. The
-  transitional `AuditWorkflowExecution._rcm` batch method — which built a bundle,
-  called the model with an inline quality gate, and drove per-row `mutate`
-  commits inside the adapter — was deleted and replaced by a thin `_bind_rcm`
-  returning a `BoundUnitPipeline`. Row generation moved to a registered
-  `workers.planning:planning.rcm` worker (owns the RCM prompt, JSON response
-  schema, and the durable-id-aware engagement quality gate as a bounded
-  one-repair semantic validator); row commit moved to a registered
-  `executors.planning:planning.rcm` executor (owns APM-parent-hash CAS,
-  exact-id/semantic/narrative row matching with the ambiguity outcome,
-  auditor-edit preservation, updates/creates in one transaction, receipts, and
-  interrupted-commit reconciliation). A normalized `planning.rcm` context preset
-  + `context.adapters:rcm_scope` supply the model-facing inputs (planning
-  context, RCM template, current APM, bounded current-row projections, table
-  metadata/profiles, documents, methodology) with `table_rows` structurally
-  excluded. Post-commit planning-change accounting and per-row artifact recording
-  moved to the binder's `on_committed` callback, keeping the scheduler
-  domain-neutral. The dead runner-era `stage_rcm`, `_rcm_quality`,
-  `_match_rcm_revision`, `prompts.RCM_SYSTEM`/`rcm_user`, and `context_bundles.rcm`
-  were removed. A latent bug was fixed along the way: canonical JSON serialization
-  in `workers/model.py`, `executors/model.py`, and `runtime/unit_pipeline.py`
-  now unwraps `MappingProxyType` (frozen proposal) nodes via a `default` hook, so
-  a proposal carrying nested objects (RCM rows) no longer fails serialization the
-  way the single-level APM proposal never exercised.
-- Done: the readiness + unit-expansion declarations for **all 12** audit
-  capabilities are now locally owned in the grouped `capabilities` modules and
-  golden-tested against the live registry (`P7A.1`, `P7B.1`, `P7C.1`, `P7D.1`,
-  `P7E.1`, `P7I.1` fully; the readiness/units portion of `P7F.1`, `P7G.1`,
-  `P7H.1`, `P7J.1`, `P7K.1`, `P7L.1` too). The registered `planning.context`
-  executor (commit + reconcile) is landed and unit-tested. `planning.apm_ready`
-  (`P7B.2`) is the first capability whose live execution runs through the
-  scheduler's native `pipeline_binder` path rather than a transitional batch
-  handler. `audit.verified` (`P7L.2`) is the first capability on the scheduler's
-  deterministic (no-model) execution path; `working_papers.generated` (`P7I.2`)
-  is the second — the first deterministic slice that mutates (renders + commits
-  per-RCM working papers) rather than being read-only; `dashboard.curated`
-  (`P7J.2`) is the third, which additionally closed a conflict-safety gap by
-  adding an RCM-parent compare-and-swap guard the prior handler lacked; and
-  `results.rolled_up` (`P7G.2`) is the fourth and last deterministic slice, which
-  additionally moved the observation/disposition interaction to a declared
-  checkpoint gating `findings.drafted`.
-- Active blockers: the two Phase-9-coupled deferrals are now the *only*
-  remaining Phase 7 work — `P7A.2` (planning-context synthesis worker/pipeline
-  switch and `_planning_basis` removal) and `P7F.2`/`P7F.3` (fieldwork
-  execution, whose document QA path runs through the document-analysis subsystem
-  Phase 9 replaces). Both keep a transitional batch handler alive, so `P7.4`
-  stays unchecked: its gate pins `_AUDIT_HANDLER_NAMES` against a two-entry
-  whitelist, which prevents the list growing but is not the empty set the phase
-  objective requires. `P7A.2`'s remaining pieces (context-synthesis worker +
-  context declaration + pipeline switch + `_planning_basis` removal) are the
-  Phase-9-coupled part deferred per the `P7A.2` note; its `planning.context`
-  commit executor is already landed. Phase 8 is gated on Phase 7, so this
-  blocker is on the critical path.
+  `fieldwork.definitions_ready`, `fieldwork.executed`, `findings.drafted`) and
+  five through `deterministic_executor` (`results.rolled_up`,
+  `working_papers.generated`, `dashboard.curated`, `report.working_draft`,
+  `audit.verified`). The transitional batch binding kind is deleted from the
+  scheduler, not merely unused.
+- Last completed task: `P7.4` — the phase gate is green with no deferral
+  whitelist. See the `P7A.2`, `P7F.2`/`P7F.3`, and `P7.4` notes below for the two
+  slices that closed it and the two behavior changes they carry.
+- Prior tasks: `P7F.2`+`P7F.3` (fieldwork execution: deterministic data/document
+  test execution extracted to `executors/fieldwork.py`, document Q&A moved to a
+  registered worker/executor pair, and the `_executions` batch handler deleted)
+  and `P7A.2` (planning-context synthesis moved to a registered worker with a
+  declared `planning.context` preset, `_planning_basis`/`stage_context` deleted,
+  and the run-scoped `planning_basis` snapshot removed).
+- Active blockers: none for Phase 7. Two follow-ups belong to Phase 9 and are
+  recorded in the `P7A.2` note: on-demand document-analysis generation no longer
+  happens as a side effect of planning, and the Phase 9
+  `documents.analysis_generated` capability should become a scoped dependency of
+  `planning.context_ready` when it lands.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -128,8 +75,8 @@ status notes below.
 | 4 | Complete | — |
 | 5 | Complete | — |
 | 6 | Complete | — |
-| 7 | In progress | `P7A.2` / `P7F.2`+`P7F.3` (Phase-9-coupled), then close `P7.4` |
-| 8 | Pending Phase 7 gate | `P8.1` |
+| 7 | Complete | — |
+| 8 | Ready | `P8.1` |
 | 9 | Pending Phase 8 gate | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
 | 11 | Pending required workflow migrations | `P11.1` |
@@ -960,24 +907,13 @@ status notes below.
   and `test_workflow_v2.py`; `app.main` and the grouped `capabilities` package
   import cleanly. No API or frontend payload changed, so a frontend build was not
   required. The exact next task is `P7A.2`.
-- `P7A.2` blocker (2026-07-22, not started): unlike `P7A.1`, the
-  `planning.context_ready` *execution* handler (`audit_execution._planning_basis`
-  → `ActionRunner.stage_context`) is a large, cross-phase-entangled slice, not a
-  clean self-contained increment. `stage_context` selects planning documents
-  (model-backed), runs the document-analysis map/reduce subsystem
-  (`_ensure_planning_analysis` — confirmed to be the exact
-  extraction/chunk-map/reduce/persist duplication the Phase 1 handoff and Phase 9
-  charter say must be unified into shared document-analysis capabilities),
-  synthesizes planning context through a model call with validator/repair/
-  fallback, commits `planning.context` to the workspace, and assembles the
-  run-scoped `planning_basis` snapshot that the APM, RCM, and planned-tests
-  stages consume from `run["planning_basis"]`. A faithful `P7A.2` that removes the
-  old handler would have to either rebuild the document-analysis machinery Phase 9
-  will replace, or keep it inline transitionally, and must decide how the pipeline
-  carries the run-scoped basis. It is therefore deferred to its own focused effort
-  (recommend sequencing after or alongside Phase 9) rather than folded into a
-  larger uncommitted batch. The `.1` declaration moves below are independent of
-  this execution switch and proceed first.
+- `P7A.2` blocker (2026-07-22) is **resolved**; see the `P7A.2` completion note
+  at the end of this section for how the entanglement was decomposed rather than
+  rebuilt. The original assessment stands as history: the handler selected
+  planning documents with a model call, ran the document-analysis map/reduce
+  subsystem inline, synthesized planning context, committed it, and assembled the
+  run-scoped `planning_basis` the APM/RCM/planned-test stages consumed. The
+  resolution split those four concerns instead of moving them together.
 - `P7B.1`/`P7C.1`/`P7D.1` were taken before `P7A.2` deliberately: the `.1`
   declaration moves only affect the parallel grouped `capabilities` package (not
   the live `audit_capabilities` dispatch path) and are independent of the `.2`
@@ -1534,34 +1470,153 @@ status notes below.
   shim was left behind — the plan forbids dual writers, and a re-export would be
   one. Five test modules that imported the deleted modules were repointed. No
   compatibility alias, deprecation shim, or transitional re-export exists.
-- `P7.4` is **partially landed** as of 2026-07-24 and deliberately left
-  unchecked. All five proof obligations now have gates and all are green
-  (`tests/test_workflow_phase7_gate.py`, 6 tests):
-  authoritative-graph uniqueness (an AST scan asserting no module outside
-  `workflows/audit.py` assigns `DEPENDENCIES`, `FULL_AUDIT_OUTCOMES`, or
-  `TEMPLATE_OUTCOMES`, ignoring `ast.Attribute` re-exports); import boundaries
-  (`app.agent.capabilities` and `app.agent.workflows` added to
-  `FORBIDDEN_DOMAIN_PREFIXES` in `test_agent_runtime_import_boundaries.py`, so
-  the generic runtime cannot import a grouped audit module); full-workflow
-  closure (the full-audit closure equals the declared graph and is topological);
-  the binding inventory (every capability carries exactly one execution binding,
-  with the pipeline/deterministic/transitional split pinned by name); and
-  frontend projections (the required fields of `AgentWorkflow`, `WorkflowStage`,
-  and `WorkflowUnit` are parsed out of `frontend/src/types.ts` and asserted
-  present on a real staged full-audit run — checked one direction, since extra
-  backend keys are structurally fine for TypeScript).
-  What holds the task open is the phase objective rather than any missing proof:
-  the gate encodes `_DEFERRED_BATCH_CAPABILITIES` as a **whitelist** of the two
-  capabilities still executed by the transitional batch adapter
-  (`planning.context_ready` -> `_planning_basis`, `fieldwork.executed` ->
-  `_executions`). Pinning it by equality means the list cannot silently grow,
-  but a whitelist is not an empty set. `P7.4` converts to checked, and Phase 7
-  to complete, when `P7A.2` and `P7F.2`/`P7F.3` land and
-  `_AUDIT_HANDLER_NAMES == {}` — at which point the whitelist and the deferral
-  paragraph in this gate's docstring are deleted rather than edited. Verification
-  for `P7.3`+`P7.4`: the full backend suite passed `778` tests in `116.58s`, and
-  the frontend build passed (`vite build`, clean) because the projection gate
-  reads a frontend source file.
+- `P7F.2` and `P7F.3` completed together on 2026-07-25. `fieldwork.executed` is
+  the sixth capability on the scheduler's native `pipeline_binder` path and the
+  first with **mixed unit kinds**. They landed as one slice because a capability
+  carries exactly one execution binding and the old `_executions` handler could
+  only be deleted once every kind had a native path. Parts:
+  (1) **Framework generalization.** A `pipeline_binder` may now return either a
+  `BoundUnitPipeline` or a `DeterministicUnitResult`, so a capability whose units
+  are of mixed kinds binds each unit at its own boundary instead of needing two
+  bindings. Symmetrically, `BoundUnitPipeline.on_committed` may now return a
+  `DeterministicUnitResult` to replace the default `succeeded` fold when the
+  domain owns a unit's terminal meaning. Both are domain-neutral: the scheduler
+  supplies the mechanism and the binding supplies the meaning.
+  (2) **Deterministic execution (`P7F.2`).** `executors/fieldwork.py` gained
+  `run_data_test` (local Polars computation through the unchanged
+  `data_tests.run`, whose own parent guard still makes a changed definition a
+  conflict; a structurally computed result failing its semantic contract is
+  `blocked`, not `failed`) and `run_document_test` (the local comparison loop,
+  the evidence-blocked branch, and `_register_blocked_unit`, which records the
+  blocking unit on open evidence requests so a later import unblocks the exact
+  unit). Both return an `ExecutionOutcome` whose `executed` flag tells the binder
+  whether to emit a `workspace_changed` signal — the evidence-blocked branch ran
+  nothing, so it emits nothing, exactly as before. **Recorded tightening:**
+  `run_document_test` now *refuses* a Q&A test that is not waiting on evidence.
+  Such a test expands into `document_qa_execution` units, so reaching the local
+  path would have meant an unbudgeted provider call through
+  `doc_tests.run_item`'s optional adapter; it is now a durable unit failure
+  instead of a silent bypass of the gateway.
+  (3) **Document Q&A (`P7F.3`).** `workers/fieldwork.py` registers
+  `fieldwork.document_qa`: the verbatim `[agent:document_qa]` prompt, the
+  page-block message transformation, an `{answer, citations}` response schema, and
+  a bounded one-repair semantic validator that binds every citation to a page the
+  worker was actually supplied (an unsupplied page is dropped, and a non-verbatim
+  excerpt is normalized to the exact supplied text). `executors/fieldwork.py`
+  registers `fieldwork.document_qa` + `DocumentQaExecutorTarget`, which commits
+  through the unchanged `doc_tests.commit_qa_answer` under a `doctest:<id>`
+  parent-hash CAS the old handler did not have at all, and **builds the evidence
+  anchors itself from the document as it exists at commit time**, so a proposal
+  cannot introduce a citation to a document or hash it never saw. Because the
+  commit rewrites the guarded Document Test summary, its reconciler treats an
+  unchanged parent as proof the commit never landed and a changed parent as
+  reconcilable only when this exact answer is already durable. A new
+  `fieldwork.document_qa` context preset plus `context.adapters:document_qa_scope`
+  supply the question item and one candidate per included page (scoped pages as
+  `raw_pages`, an unscoped question's retrieved passages as `excerpt`), with page
+  numbers zero-padded in the source reference so the deterministic tie-break is
+  page order. **Recorded deviation:** the old inline path *refused* a question
+  whose pages exceeded a 30,000-character budget; the declared resolver instead
+  omits the pages that do not fit and records the omission, and the worker binds
+  citations to what it was supplied, so a bounded answer stays grounded rather
+  than failing the unit. Approval stays absent even in permission mode — a cited
+  answer is a candidate for auditor disposition, not an artifact to pre-approve —
+  and `on_committed` folds the unit to `awaiting_confirmation` with the unchanged
+  `doctest:<test>:item:<item>:document:<doc>` result ref. Deleted:
+  `AuditWorkflowExecution._executions` and `_document_qa_adapter`. New focused
+  tests: `test_agent_fieldwork_execution.py` (12) and three in
+  `test_workflow_v2.py` (the data-test unit through the mixed binding with zero
+  turns, the Q&A unit through the native binding with sidecars and a fabricated
+  citation dropped, and a resume that reuses the durable proposal without
+  rebilling).
+- `P7A.2` completed on 2026-07-25, resolving the recorded Phase-9 coupling by
+  **decomposing** the old handler rather than moving or rebuilding it. The four
+  concerns `stage_context` combined were separated:
+  (1) **Document selection is now declared, not modelled.** The
+  `[agent:document_selection]` turn and its approval batch are deleted. A new
+  deterministic `documents.planning_relevant` selector matches a
+  `planning_relevant` metadata flag that the adapters compute from the category
+  vocabulary intake already suggests planning documents from (`background`,
+  `policy`, `regulation`, `contract`, `minutes`, `prior_report`,
+  `correspondence`, plus uncategorized). This encodes the old prompt's own rule
+  ("skip transaction vouchers, raw evidence") as provider-free policy, and the
+  same constraint was added to the `planning.apm`, `planning.rcm`, and
+  `planning.planned_tests` document sources — which previously relied on the
+  run-scoped selection to keep vouchers out. Explicit auditor `document_ids`
+  curation overrides the rule everywhere.
+  (2) **Synthesis is a registered worker.** `workers/planning.py` registers
+  `planning.context` with the verbatim `[agent:document_context]` prompt, a
+  `{context}` response schema that also normalizes the flattened-wrapper drift,
+  and a semantic validator that keeps only declared non-empty fields. A new
+  `planning.context` preset plus `context.adapters:planning_context_scope` supply
+  the current context and bounded document material. **Recorded deviation:** the
+  labelled-fact recovery moved into the validator, so a valid-but-empty synthesis
+  now recovers the labelled facts already present in the supplied summaries
+  instead of paying for a second turn first; the outcome and the warning are the
+  same, one provider call cheaper. The registered `planning.context` executor
+  (landed earlier under this task) commits under the planning-context parent
+  guard and now records on its receipt whether the fields were recovered, so the
+  binder can surface that without re-reading the proposal.
+  (3) **Document-analysis generation left the planning path.** This is the
+  recorded behavior change: `_ensure_planning_analysis` — the extraction,
+  chunk-map, reduce, and persist duplication the Phase 1 handoff and the Phase 9
+  charter both say must be unified — is deleted, along with its concurrency and
+  task-detail projections. Every capability now *consumes* whatever document
+  material exists and none generates a durable analysis, which is the uniform
+  shape the target architecture wants. To keep the chain grounded without it,
+  `apm_document_candidates` gained an `excerpt` fallback (locally retrieved
+  passages for a document with no current analysis) and the planning-context
+  adapter falls back to bounded leading `raw_pages` instead — deliberately not to
+  query-matched excerpts, because this capability is what *produces* the objective
+  and scope a retrieval query would need. **Follow-up for Phase 9:** on-demand
+  analysis generation must return as the scoped `documents.analysis_generated`
+  capability, and `planning.context_ready` should declare it as a dependency then
+  (the graph note in `P7.1A` already anticipates that hash change). Until it
+  lands, a fresh workspace's full-audit run grounds planning in raw document text
+  rather than in generated analyses, and durable analyses are produced only from
+  the Documents surface.
+  (4) **The run-scoped basis is gone.** `run["planning_basis"]`,
+  `run["planning_basis_projection"]`, and `context_bundles.planning_basis_projection`
+  are deleted. The APM/RCM/planned-test binders read the committed workspace
+  context and `self.context["document_ids"]` directly, so auditor curation lives
+  on the run rather than in a derived snapshot. Provenance was preserved by
+  deriving it from the manifest instead: `context.adapters:supplied_source_provenance`
+  maps a manifest's content-free selections back to their document and
+  methodology-pack identities, which is strictly more faithful than the old
+  ledger — it records what the resolver actually supplied rather than what was
+  analyzed. Deleted from `action_runner.py`: `stage_context`, `_bounded_dossier`,
+  `_ensure_planning_analysis`, `_select_planning_documents`, `_planning_context`,
+  `_context_fallback`, `_validate_context_payload`, `_accepted_specs`, the dead
+  `_downstream_planning_basis`, and the planning-source constants; from
+  `prompts.py`: `DOCUMENT_SELECTION_SYSTEM`/`document_selection_user` (the
+  document-analysis prompts stay — `document_analysis_runner.py` still uses them).
+  New focused tests: `test_agent_planning_context_worker.py` (7) and two in
+  `test_workflow_v2.py` (the native binding with sidecars and provenance, and the
+  no-material short-circuit that settles with zero turns). Six `test_planning.py`
+  tests were rewritten to the new behavior and one replaced by
+  `test_planning_does_not_generate_document_analyses`, which pins the recorded
+  change explicitly rather than letting it pass silently.
+- `P7.4` completed on 2026-07-25. With `P7A.2` and `P7F.2`/`P7F.3` landed,
+  `_AUDIT_HANDLER_NAMES` and the whole transitional batch path are **deleted**
+  rather than emptied: `CapabilityExecution.transitional_batch_executor` and its
+  `BatchExecutor` alias are gone from the domain-neutral scheduler, which now
+  accepts exactly one pipeline or deterministic binding, and the dead
+  `_parallel_candidates`/`_set_unit`/`_unit` batch helpers were removed from the
+  audit adapter. `tests/test_workflow_phase7_gate.py` replaced its deferral
+  whitelist with `test_no_capability_is_executed_by_a_transitional_batch_handler`,
+  which asserts the map, the binding kind, and both old handlers are absent, and
+  its binding inventory now pins seven pipeline-backed and five
+  deterministic-backed capabilities with no third category. The synthetic
+  scheduler harness was repointed from batch bindings to per-unit deterministic
+  ones so it exercises the shape production uses; the parallel-commit-order test
+  became a focused `stable_all_settled` test, since no capability fans out model
+  generation through a binding any more. `agent/context_bundles.py` is reduced to
+  the command-router bundle, its retired worker budgets deleted. Verification:
+  the full backend suite passed `802` tests in `112.70s`, the frontend
+  type-check and production build passed (the projection gate reads
+  `frontend/src/types.ts`), and an API smoke check confirmed the app boots and
+  serves the planning, dashboard, coverage, and run surfaces. Phase 7 is
+  complete; the exact next task is `P8.1`, and no Phase 8 work has started.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -2232,13 +2287,8 @@ the remaining v3 handlers to declarations, workers, and executors.
   projections.
 - [x] `P7A.1` Move `planning.context_ready` readiness and unit
   expansion into the planning capability module with golden identity tests.
-- [ ] `P7A.2` Extract context synthesis and planning-context commit behavior,
+- [x] `P7A.2` Extract context synthesis and planning-context commit behavior,
   switch the capability to the registered pipeline, and remove its old handler.
-  (Partially landed: the registered `planning.context` commit executor
-  `execute_planning_context`/`reconcile_planning_context` is done and unit-tested;
-  the context-synthesis worker, `planning.context` context declaration, pipeline
-  switch, and `_planning_basis` removal remain and are Phase-9-coupled — see the
-  `P7A.2` blocker note.)
 - [x] `P7B.1` Move the completed `planning.apm_ready` declaration and registry
   wiring into the grouped planning modules without changing identity.
 - [x] `P7B.2` Remove the temporary APM vertical-slice adapter and prove the
@@ -2260,9 +2310,9 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7F.1` Move fieldwork-execution readiness and data/document semantic units
   into the grouped module (execution attempt limits stay in the execution handler
   and migrate with `P7F.2`/`P7F.3`).
-- [ ] `P7F.2` Migrate deterministic and data-test execution paths with local
+- [x] `P7F.2` Migrate deterministic and data-test execution paths with local
   Polars computation, receipts, and recovery.
-- [ ] `P7F.3` Migrate model-backed document QA through the injected gateway and
+- [x] `P7F.3` Migrate model-backed document QA through the injected gateway and
   declared context, then remove the old execution handler.
 - [x] `P7G.1` Move rollup readiness and unit expansion into the grouped module
   (the deterministic rollup executor with stable result/observation identities
@@ -2299,10 +2349,8 @@ the remaining v3 handlers to declarations, workers, and executors.
 - [x] `P7.3` Replace `audit_capabilities.py` and `audit_workers.py` with
   grouped modules at all live imports, then delete both old modules in the same
   task.
-- [ ] `P7.4` Prove the phase gate, authoritative graph uniqueness, import
+- [x] `P7.4` Prove the phase gate, authoritative graph uniqueness, import
   boundaries, full workflow closure, frontend projections, and status update.
-  (Proof artifacts landed and green; held open by `P7A.2` and `P7F.2`/`P7F.3` —
-  see the `P7.4` note.)
 
 **Work:**
 
@@ -2330,6 +2378,9 @@ Working papers, dashboard curation, and finding/report work therefore branch
 after rollup; the workflow is not a linear chain. Phase 9 may change the workflow
 definition hash with scoped `documents.analysis_generated` edges where
 declared, but must not make document analysis a universal audit prerequisite.
+Phase 7 removed on-demand analysis generation from the planning path (see the
+`P7A.2` note), so `planning.context_ready` is the first capability that should
+declare that scoped edge when Phase 9 lands.
 - Move readiness and unit expansion from `audit_capabilities.py` into grouped
   capability modules without changing their semantic IDs.
 - Replace new-scheduler stale decisions with existence and structural-usability

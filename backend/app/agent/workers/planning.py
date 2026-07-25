@@ -693,6 +693,204 @@ PLANNED_TEST_WORKER = WorkerDefinition(
 WORKERS.register(PLANNED_TEST_WORKER)
 
 
+# --------------------------------------------------------------------------- #
+# planning.context worker (P7A.2)
+# --------------------------------------------------------------------------- #
+PLANNING_CONTEXT_WORKER_ID = "planning.context"
+PLANNING_CONTEXT_SYSTEM = f"""[agent:document_context]
+Extract planning facts only from the included engagement documents.
+Return an object with `context`, containing only supported fields that are
+grounded in the documents: objective, entity, period, scope, materiality,
+key_contacts, and background_notes. Every supplied context value must be a
+string; format multiple key contacts as one newline-separated string. Omit fields that the documents do not
+support; do not turn policy requirements into claims about actual control
+operation. {JSON_RULES}"""
+
+PLANNING_CONTEXT_CURRENT_SOURCE_ID = "current_planning_context"
+PLANNING_CONTEXT_DOCUMENT_SOURCE_ID = "planning_documents"
+PLANNING_CONTEXT_FIELDS = (
+    "objective",
+    "entity",
+    "period",
+    "scope",
+    "materiality",
+    "key_contacts",
+    "background_notes",
+)
+# The labelled facts the document-analysis contract emits, mapped to the
+# planning fields they populate. Recovery is deliberately narrow: only these
+# exact labels are accepted, never inferred from prose.
+_PLANNING_CONTEXT_LABELS = {
+    "objective": "objective",
+    "entity": "entity",
+    "period": "period",
+    "scope": "scope",
+    "materiality": "materiality",
+    "key contacts": "key_contacts",
+    "background notes": "background_notes",
+}
+_LABELLED_FACT = re.compile(r"^\s*[-*]?\s*\*\*([^*]+?):\*\*\s*(.+?)\s*$")
+
+
+def _supplied_items(request: WorkerRequest, source_id: str) -> tuple[object, ...]:
+    return tuple(
+        item.content for item in request.context.items if item.source_id == source_id
+    )
+
+
+def _planning_context_response_schema(response: str) -> Mapping[str, Any]:
+    value = str(response or "").strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?\s*\n?(.*?)\n?```",
+        value,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if fenced:
+        value = fenced.group(1).strip()
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        raise WorkerResponseValidationError("the response is not a valid JSON object")
+    if not isinstance(payload, dict):
+        raise WorkerResponseValidationError("the response must be a JSON object")
+    context = payload.get("context")
+    if context is None:
+        # Some providers flatten the requested object wrapper while still
+        # returning correctly grounded fields. Normalize that harmless shape
+        # drift instead of discarding useful planning context.
+        context = {
+            key: value
+            for key, value in payload.items()
+            if key in PLANNING_CONTEXT_FIELDS and isinstance(value, str)
+        }
+    if not isinstance(context, dict):
+        raise WorkerResponseValidationError("`context` must be an object")
+    for key, value in context.items():
+        if key in PLANNING_CONTEXT_FIELDS and not isinstance(value, str):
+            raise WorkerResponseValidationError(f"context.{key} must be a string")
+    return {"context": context}
+
+
+def _recovered_labelled_facts(request: WorkerRequest) -> dict[str, str]:
+    """Recover labelled planning facts from the supplied document material.
+
+    Deliberately narrow: only the labelled fields the document-analysis contract
+    emits are accepted, and prose is never interpreted. This protects the
+    planning chain when synthesis returns valid JSON with an empty context.
+    """
+    recovered: dict[str, str] = {}
+    for content in _supplied_items(request, PLANNING_CONTEXT_DOCUMENT_SOURCE_ID):
+        for line in str(content or "").splitlines():
+            match = _LABELLED_FACT.match(line)
+            if not match:
+                continue
+            label = re.sub(r"\s+", " ", match.group(1).strip().casefold())
+            key = _PLANNING_CONTEXT_LABELS.get(label)
+            value = match.group(2).strip()
+            if key and value and key not in recovered:
+                recovered[key] = value
+    return recovered
+
+
+def validate_planning_context_proposal(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Keep only grounded, non-empty declared fields; recover labelled facts.
+
+    A syntactically valid response with no usable field is not repaired by asking
+    again: the labelled facts already present in the supplied summaries are the
+    better answer and cost nothing. Only when neither the model nor those labels
+    yield a field is this a contract violation the model can be told to fix.
+    """
+    raw = proposal.get("context")
+    if not isinstance(raw, Mapping):
+        raise WorkerResponseValidationError("context must be an object")
+    context = {
+        key: str(value).strip()
+        for key, value in raw.items()
+        if key in PLANNING_CONTEXT_FIELDS and str(value or "").strip()
+    }
+    if context:
+        return {"context": context}
+    recovered = _recovered_labelled_facts(request)
+    if recovered:
+        return {"context": recovered, "recovered_from_labelled_facts": True}
+    raise WorkerResponseValidationError(
+        "context must contain at least one field grounded in the supplied "
+        f"documents; supported fields are {', '.join(PLANNING_CONTEXT_FIELDS)}"
+    )
+
+
+def run_planning_context_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Transform only the supplied bundle into one budgeted model request."""
+    current = _supplied_items(request, PLANNING_CONTEXT_CURRENT_SOURCE_ID)
+    documents = _supplied_items(request, PLANNING_CONTEXT_DOCUMENT_SOURCE_ID)
+    if not documents:
+        raise WorkerContractError(
+            "Planning-context synthesis requires at least one supplied document."
+        )
+    user = (
+        "CURRENT PLANNING CONTEXT:\n"
+        f"{json.dumps(current[0] if current else {}, default=str)}\n\n"
+        "INCLUDED DOCUMENT CONTENT:\n"
+        f"{json.dumps(list(documents), default=str)}"
+    )
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a corrected object with a non-empty `context` grounded "
+            "only in the supplied documents."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "planning_context",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(
+        PLANNING_CONTEXT_SYSTEM,
+        user,
+        activity,
+        attempt=attempt.number,
+    )
+
+
+PLANNING_CONTEXT_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="planning.context.response",
+    schema_hash=_sha256_text("planning-context-response:json-object-with-context"),
+    validator=_planning_context_response_schema,
+)
+PLANNING_CONTEXT_WORKER = WorkerDefinition(
+    worker_id=PLANNING_CONTEXT_WORKER_ID,
+    implementation_hash=_sha256_text(inspect.getsource(run_planning_context_worker)),
+    prompt_hash=_sha256_text(PLANNING_CONTEXT_SYSTEM),
+    response_schema=PLANNING_CONTEXT_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair planning-context synthesis against the supplied documents."
+        ),
+    ),
+    implementation=run_planning_context_worker,
+    semantic_validation_hash=_sha256_text(
+        inspect.getsource(validate_planning_context_proposal)
+    ),
+    semantic_validator=validate_planning_context_proposal,
+)
+
+WORKERS.register(PLANNING_CONTEXT_WORKER)
+
+
 __all__ = [
     "APM_RESPONSE_SCHEMA",
     "APM_SYSTEM",
@@ -702,14 +900,21 @@ __all__ = [
     "PLANNED_TEST_SYSTEM",
     "PLANNED_TEST_WORKER",
     "PLANNED_TEST_WORKER_ID",
+    "PLANNING_CONTEXT_FIELDS",
+    "PLANNING_CONTEXT_RESPONSE_SCHEMA",
+    "PLANNING_CONTEXT_SYSTEM",
+    "PLANNING_CONTEXT_WORKER",
+    "PLANNING_CONTEXT_WORKER_ID",
     "RCM_RESPONSE_SCHEMA",
     "RCM_SYSTEM",
     "RCM_WORKER",
     "RCM_WORKER_ID",
     "run_apm_worker",
     "run_planned_test_worker",
+    "run_planning_context_worker",
     "run_rcm_worker",
     "validate_apm_proposal",
     "validate_planned_test_proposal",
+    "validate_planning_context_proposal",
     "validate_rcm_proposal",
 ]

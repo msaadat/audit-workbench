@@ -8,8 +8,16 @@ enforce context policy, call a model, or duplicate domain retrieval logic.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 
-from ... import assistant, doc_tests, document_context, methodology, templates_store
+from ... import (
+    assistant,
+    doc_tests,
+    document_context,
+    intake,
+    methodology,
+    templates_store,
+)
 from ...workspaces import Workspace, WorkspaceError
 from .resolver import ContextCandidate, ContextScope
 
@@ -39,29 +47,83 @@ def _normalized_document_ids(
     return requested
 
 
+def _planning_relevant(document: Mapping[str, object], curated: bool) -> bool:
+    """Whether a document is planning material under the declared category rule.
+
+    The vocabulary is the one intake already suggests planning documents from:
+    background, policy, regulation, contract, minutes, prior reports, and
+    correspondence, plus anything uncategorized. Explicit auditor curation is
+    authoritative over the rule.
+    """
+    category = str(document.get("category") or "")
+    return bool(
+        curated or not category or category in intake.PLANNING_DOCUMENT_CATEGORIES
+    )
+
+
+def _document_excerpts(
+    workspace: Workspace,
+    document_id: str,
+    query: str,
+    *,
+    purpose: str,
+) -> str:
+    """Locally retrieved passages for a document with no current analysis."""
+    excerpts = document_context.get_document_context(
+        workspace,
+        document_id,
+        "search_excerpts",
+        query=query,
+        purpose=purpose,
+        stage=purpose,
+        record_activity=False,
+    )
+    return str(excerpts.get("content") or "")
+
+
 def apm_document_candidates(
     workspace: Workspace,
     *,
     document_ids: Iterable[str] | None = None,
+    excerpt_query: str | None = None,
 ) -> tuple[ContextCandidate, ...]:
-    """Expose current bounded document analyses as APM candidates."""
+    """Expose bounded document material as planning candidates.
+
+    A document with a current analysis contributes that analysis' bounded
+    ``summary``. When ``excerpt_query`` is supplied, one without a current
+    analysis is still a candidate through locally retrieved ``excerpt`` passages,
+    so an imported document informs planning without a durable analysis having
+    been generated first. Nothing here generates one.
+
+    Each candidate also carries the ``planning_relevant`` flag the planning
+    presets constrain their selectors on, so a transaction voucher or raw
+    evidence file is not offered as planning material even though it is a valid
+    engagement document. Explicit auditor curation overrides the rule.
+    """
+    curated = document_ids is not None
     documents_by_id = {str(item.get("id")): item for item in workspace.documents}
     candidates = []
     for document_id in _normalized_document_ids(workspace, document_ids):
         document = documents_by_id[document_id]
         context = document_context.apm_document_context(workspace, document_id)
-        representations = (
-            {"summary": context["content"]}
-            if context.get("outcome") == "supplied" and context.get("content")
-            else {}
-        )
+        representations: dict[str, object] = {}
+        if context.get("outcome") == "supplied" and context.get("content"):
+            representations = {"summary": context["content"]}
+        elif excerpt_query:
+            excerpt = _document_excerpts(
+                workspace, document_id, excerpt_query, purpose="apm_context"
+            )
+            if excerpt:
+                representations = {"excerpt": excerpt}
+        category = str(document.get("category") or "")
         metadata = {
             "document_id": document_id,
             "title": document.get("title") or document.get("source") or document_id,
             "source": document.get("source") or "",
-            "category": document.get("category") or "",
+            "category": category,
             "text_state": document.get("text_state") or "",
             "analysis_id": context.get("analysis_id"),
+            "planning_relevant": _planning_relevant(document, curated),
         }
         candidates.append(
             ContextCandidate(
@@ -79,7 +141,7 @@ def apm_document_candidates(
                         metadata["title"],
                         metadata["source"],
                         metadata["category"],
-                        context.get("content"),
+                        *representations.values(),
                     )
                 ),
             )
@@ -123,6 +185,61 @@ def apm_methodology_candidates(workspace: Workspace) -> tuple[ContextCandidate, 
             )
         )
     return tuple(candidates)
+
+
+def supplied_source_provenance(
+    workspace: Workspace,
+    manifest: object,
+) -> tuple[dict[str, object], ...]:
+    """Derive document and methodology-pack provenance from one manifest.
+
+    Manifest selections are content-free, so they carry a source reference and a
+    content hash but not the document or pack identity a provenance ledger
+    records. This resolves each selected reference against the same deterministic
+    inventories the candidates came from, so a model turn's recorded sources are
+    exactly what the resolver supplied to it.
+    """
+    sections = {
+        (
+            f"methodology:{section['scope']}:{section['pack_id']}:"
+            f"{int(section['section_index'])}"
+        ): section
+        for section in methodology.context_sections(workspace)
+    }
+    documents_by_id = {str(item.get("id")): item for item in workspace.documents}
+    entries: dict[str, dict[str, object]] = {}
+    for selection in getattr(manifest, "selections", ()) or ():
+        source_type = getattr(selection, "source_type", "")
+        source_ref = getattr(selection, "source_ref", "")
+        if source_type == "methodology":
+            section = sections.get(source_ref)
+            if section is None:
+                continue
+            pack_ref = f"pack:{section['scope']}:{section['pack_id']}"
+            entries.setdefault(
+                pack_ref,
+                {
+                    "source_ref": pack_ref,
+                    "document_id": None,
+                    "source_sha1": section["sha1"],
+                    "pages": [],
+                },
+            )
+        elif source_type == "documents":
+            document_id = str(source_ref).split(":")[1] if ":" in source_ref else ""
+            document = documents_by_id.get(document_id)
+            if document is None:
+                continue
+            entries.setdefault(
+                document_id,
+                {
+                    "source_ref": document_id,
+                    "document_id": document_id,
+                    "source_sha1": document.get("sha1"),
+                    "pages": [],
+                },
+            )
+    return tuple(entries[key] for key in sorted(entries))
 
 
 def apm_table_metadata_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
@@ -222,10 +339,108 @@ def apm_document_methodology_scope(
             APM_DOCUMENT_SOURCE_ID: apm_document_candidates(
                 workspace,
                 document_ids=document_ids,
+                excerpt_query=apm_query,
             ),
             APM_METHODOLOGY_SOURCE_ID: apm_methodology_candidates(workspace),
         },
         selector_context={**context, "apm_query": apm_query},
+    )
+
+
+PLANNING_CONTEXT_CURRENT_SOURCE_ID = "current_planning_context"
+PLANNING_CONTEXT_DOCUMENT_SOURCE_ID = "planning_documents"
+# Per-document share of the declared planning-document character budget, so one
+# long document cannot consume the whole synthesis context.
+MAX_PLANNING_CONTEXT_DOCUMENT_CHARACTERS = 5_000
+
+
+def planning_context_document_candidates(
+    workspace: Workspace,
+    *,
+    document_ids: Iterable[str] | None = None,
+) -> tuple[ContextCandidate, ...]:
+    """Expose bounded document material for planning-context synthesis.
+
+    A document with a current analysis contributes that analysis' bounded
+    ``summary``. One without falls back to its bounded leading ``raw_pages``
+    rather than to query-matched excerpts: this capability *produces* the
+    objective and scope, so at this point there is no meaningful query to
+    retrieve against. Nothing here generates a document analysis.
+
+    Each candidate carries the ``planning_relevant`` flag the declared selector
+    matches on — a category rule over the same planning vocabulary intake
+    suggests from. An explicitly curated document is always relevant, because the
+    auditor's curation is authoritative over the rule.
+    """
+    curated = document_ids is not None
+    documents_by_id = {str(item.get("id")): item for item in workspace.documents}
+    candidates = []
+    for document_id in _normalized_document_ids(workspace, document_ids):
+        document = documents_by_id[document_id]
+        analysis = document_context.apm_document_context(workspace, document_id)
+        if analysis.get("outcome") == "supplied" and analysis.get("content"):
+            representations: dict[str, object] = {"summary": analysis["content"]}
+        else:
+            pages = document_context.get_document_context(
+                workspace,
+                document_id,
+                "pages",
+                max_characters=MAX_PLANNING_CONTEXT_DOCUMENT_CHARACTERS,
+                purpose="planning_context",
+                stage="planning_context",
+                record_activity=False,
+            )
+            content = str(pages.get("content") or "")
+            representations = {"raw_pages": content} if content else {}
+        if not representations:
+            continue
+        category = str(document.get("category") or "")
+        metadata = {
+            "document_id": document_id,
+            "title": document.get("title") or document.get("source") or document_id,
+            "category": category,
+            "text_state": document.get("text_state") or "",
+            "analysis_id": analysis.get("analysis_id"),
+            "planning_relevant": _planning_relevant(document, curated),
+        }
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"document:{document_id}",
+                source={**metadata, "source_sha1": document.get("sha1")},
+                representations=representations,
+                metadata=metadata,
+                lexical_text="\n".join(
+                    str(value or "")
+                    for value in (metadata["title"], category, *representations.values())
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def planning_context_scope(
+    workspace: Workspace,
+    *,
+    document_ids: Iterable[str] | None = None,
+) -> ContextScope:
+    """Build the local candidate scope for the planning-context synthesis unit."""
+    context = dict(workspace.planning.get("context") or {})
+    return ContextScope(
+        candidates={
+            PLANNING_CONTEXT_CURRENT_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="planning:context",
+                    source=context,
+                    representations={"planning_context": context},
+                    metadata={"artifact": "planning_context"},
+                ),
+            ),
+            PLANNING_CONTEXT_DOCUMENT_SOURCE_ID: planning_context_document_candidates(
+                workspace,
+                document_ids=document_ids,
+            ),
+        },
+        selector_context=dict(context),
     )
 
 
@@ -327,6 +542,7 @@ def rcm_scope(
             RCM_DOCUMENT_SOURCE_ID: apm_document_candidates(
                 workspace,
                 document_ids=document_ids,
+                excerpt_query=rcm_query,
             ),
             RCM_METHODOLOGY_SOURCE_ID: apm_methodology_candidates(workspace),
         },
@@ -528,6 +744,7 @@ def planned_test_scope(
             PLANNED_TEST_DOCUMENT_SOURCE_ID: apm_document_candidates(
                 workspace,
                 document_ids=document_ids,
+                excerpt_query=planned_test_query,
             ),
             PLANNED_TEST_METHODOLOGY_SOURCE_ID: planned_test_methodology_candidates(
                 workspace
@@ -788,6 +1005,128 @@ def document_test_spec_scope(
     )
 
 
+DOCUMENT_QA_ITEM_SOURCE_ID = "qa_item"
+DOCUMENT_QA_PAGE_SOURCE_ID = "document_pages"
+
+# The item fields a Q&A answer is derived from. Auditor dispositions, existing
+# answers, and evidence anchors are deliberately excluded: the worker answers the
+# question from the supplied pages and nothing else.
+_DOCUMENT_QA_ITEM_FIELDS = ("id", "label", "question", "pages")
+
+
+def document_qa_page_candidates(
+    workspace: Workspace,
+    document_id: str,
+    *,
+    question: str,
+    pages: Iterable[int] | None = None,
+) -> tuple[ContextCandidate, ...]:
+    """Expose one candidate per included document page.
+
+    Content is composed through :func:`document_context.get_document_context`,
+    the single model-facing document boundary: scoped pages resolve as
+    ``raw_pages`` and an unscoped question as locally retrieved ``excerpt``
+    passages. Page numbers are zero-padded in the source reference so the
+    deterministic ascending tie-break is page order, which is also the order a
+    budget truncation should keep.
+    """
+    scoped = [int(value) for value in pages or []]
+    mode = "pages" if scoped else "search_excerpts"
+    context = document_context.get_document_context(
+        workspace,
+        str(document_id),
+        mode,
+        query=None if scoped else str(question),
+        pages=scoped or None,
+        purpose="document_qa",
+        stage="document_qa",
+        record_activity=False,
+    )
+    if scoped:
+        included = [
+            {"page": int(page["page"]), "text": str(page.get("text") or "")}
+            for page in context.get("page_items") or []
+        ]
+        representation = "raw_pages"
+    else:
+        included = [
+            {
+                "page": int(citation["page"]),
+                "text": str(citation.get("excerpt") or ""),
+            }
+            for citation in context.get("citations") or []
+        ]
+        representation = "excerpt"
+    return tuple(
+        ContextCandidate(
+            source_ref=f"document:{document_id}:page:{page['page']:05d}",
+            source=page,
+            representations={representation: page},
+            metadata={
+                "document_id": str(document_id),
+                "page": page["page"],
+                "source_sha1": context.get("source_sha1") or "",
+            },
+        )
+        for page in included
+        if page["text"]
+    )
+
+
+def document_qa_scope(
+    workspace: Workspace,
+    test_id: str,
+    item_id: str,
+    document_id: str,
+) -> ContextScope:
+    """Build the local candidate scope for one document Q&A unit."""
+    test = doc_tests.load_test(workspace, str(test_id))
+    item = next(
+        (
+            value
+            for value in test.get("items") or []
+            if str(value.get("id")) == str(item_id)
+        ),
+        None,
+    )
+    if item is None:
+        raise WorkspaceError(
+            f"Document Test '{test_id}' has no item '{item_id}'."
+        )
+    if str(document_id) not in [str(value) for value in item.get("document_ids") or []]:
+        raise WorkspaceError(
+            f"Document '{document_id}' is not attached to Document Test item "
+            f"'{item_id}'."
+        )
+    question = str(item.get("question") or "").strip()
+    if not question:
+        raise WorkspaceError(f"Document Test item '{item_id}' has no question.")
+    projection = {
+        **{key: item.get(key) for key in _DOCUMENT_QA_ITEM_FIELDS},
+        "document_test_id": str(test_id),
+        "document_id": str(document_id),
+    }
+    return ContextScope(
+        candidates={
+            DOCUMENT_QA_ITEM_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=f"docitem:{item_id}",
+                    source=projection,
+                    representations={"current_artifact": projection},
+                    metadata={"document_test_id": str(test_id), "item_id": str(item_id)},
+                ),
+            ),
+            DOCUMENT_QA_PAGE_SOURCE_ID: document_qa_page_candidates(
+                workspace,
+                str(document_id),
+                question=question,
+                pages=item.get("pages"),
+            ),
+        },
+        selector_context={"document_qa_query": question},
+    )
+
+
 FINDING_OBSERVATION_SOURCE_ID = "observation"
 FINDING_ROW_SOURCE_ID = "rcm_row"
 FINDING_PLANNED_SOURCE_ID = "planned_test"
@@ -940,6 +1279,8 @@ __all__ = [
     "DATA_TEST_PLANNED_SOURCE_ID",
     "DATA_TEST_ROW_SOURCE_ID",
     "DATA_TEST_TABLE_METADATA_SOURCE_ID",
+    "DOCUMENT_QA_ITEM_SOURCE_ID",
+    "DOCUMENT_QA_PAGE_SOURCE_ID",
     "DOCUMENT_TEST_CURRENT_SOURCE_ID",
     "DOCUMENT_TEST_DOCUMENT_SOURCE_ID",
     "DOCUMENT_TEST_PLANNED_SOURCE_ID",
@@ -948,6 +1289,8 @@ __all__ = [
     "FINDING_OBSERVATION_SOURCE_ID",
     "FINDING_PLANNED_SOURCE_ID",
     "FINDING_ROW_SOURCE_ID",
+    "PLANNING_CONTEXT_CURRENT_SOURCE_ID",
+    "PLANNING_CONTEXT_DOCUMENT_SOURCE_ID",
     "PLANNED_TEST_DOCUMENT_SOURCE_ID",
     "PLANNED_TEST_METHODOLOGY_SOURCE_ID",
     "PLANNED_TEST_OTHER_ROWS_SOURCE_ID",
@@ -965,14 +1308,19 @@ __all__ = [
     "apm_document_candidates",
     "apm_document_methodology_scope",
     "apm_methodology_candidates",
+    "supplied_source_provenance",
     "apm_table_metadata_candidates",
     "apm_table_profile_candidates",
     "current_data_test_candidates",
     "current_document_test_candidates",
     "data_test_spec_scope",
+    "document_qa_page_candidates",
+    "document_qa_scope",
     "document_test_document_candidates",
     "document_test_spec_scope",
     "finding_draft_scope",
+    "planning_context_document_candidates",
+    "planning_context_scope",
     "planned_test_methodology_candidates",
     "planned_test_other_row_candidates",
     "planned_test_row_candidates",

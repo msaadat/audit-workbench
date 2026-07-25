@@ -427,6 +427,27 @@ _register_selectors(
             required_configuration_keys=("category",),
         ),
         SelectorDefinition(
+            selector_id="documents.planning_relevant",
+            selector_kind="deterministic",
+            supported_source_types=("documents",),
+            implementation_hash=_implementation_hash(
+                "documents.planning_relevant:metadata-flag-equality:"
+                "source-ref-ascending"
+            ),
+            strategy="metadata",
+            configuration_keys=("planning_relevant",),
+            required_configuration_keys=("planning_relevant",),
+        ),
+        SelectorDefinition(
+            selector_id="documents.all",
+            selector_kind="deterministic",
+            supported_source_types=("documents",),
+            implementation_hash=_implementation_hash(
+                "documents.all:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
+        ),
+        SelectorDefinition(
             selector_id="documents.lexical",
             selector_kind="auto",
             supported_source_types=("documents",),
@@ -434,7 +455,7 @@ _register_selectors(
                 "documents.lexical:stable-local-lexical-score:source-ref-ascending"
             ),
             strategy="lexical",
-            configuration_keys=("category", "query_fields"),
+            configuration_keys=("category", "planning_relevant", "query_fields"),
         ),
         SelectorDefinition(
             selector_id="methodology.explicit_refs",
@@ -496,6 +517,51 @@ PRESETS.register(
 )
 PRESETS.register(
     ContextPreset(
+        preset_id="planning.context",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="current_planning_context",
+                    source_type="planning",
+                    required=False,
+                    selector=ContextSelector(selector_id="planning.current"),
+                    representations=(ContextRepresentation("planning_context"),),
+                    budget=ContextBudget(max_items=1, max_characters=10_000),
+                ),
+                ContextSource(
+                    id="planning_documents",
+                    source_type="documents",
+                    required=True,
+                    # Planning relevance is a deterministic category rule, not a
+                    # model judgment and not a lexical score: at this point there
+                    # is no stated objective or scope to score against, which is
+                    # exactly the context this capability produces. Explicit
+                    # auditor curation overrides the rule in the adapter.
+                    selector=ContextSelector(
+                        selector_id="documents.planning_relevant",
+                        configuration={"planning_relevant": True},
+                    ),
+                    # A document with a current analysis contributes its bounded
+                    # ``summary``; one without contributes its bounded leading
+                    # ``raw_pages``, because this capability is what produces the
+                    # objective and scope a retrieval query would need.
+                    representations=(
+                        ContextRepresentation("summary"),
+                        ContextRepresentation("raw_pages"),
+                    ),
+                    budget=ContextBudget(max_items=8, max_characters=40_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=9, max_characters=50_000),
+            privacy=ContextPrivacy(
+                allow_planning_context=True,
+                allow_document_text=True,
+            ),
+        ),
+    )
+)
+PRESETS.register(
+    ContextPreset(
         preset_id="planning.apm",
         spec=ContextSpec(
             sources=(
@@ -546,9 +612,21 @@ PRESETS.register(
                     selector=AutoSelect(
                         selector_id="documents.lexical",
                         item_limit=12,
-                        configuration={"query_fields": ["apm_query"]},
+                        # Planning material only: the same declared category rule
+                        # the planning-context capability uses keeps transaction
+                        # vouchers and raw evidence out of a planning turn.
+                        configuration={
+                            "query_fields": ["apm_query"],
+                            "planning_relevant": True,
+                        },
                     ),
-                    representations=(ContextRepresentation("summary"),),
+                    # A current analysis contributes ``summary``; a document
+                    # without one still grounds the turn through locally
+                    # retrieved ``excerpt`` passages.
+                    representations=(
+                        ContextRepresentation("summary"),
+                        ContextRepresentation("excerpt"),
+                    ),
                     budget=ContextBudget(max_items=12, max_characters=40_000),
                 ),
                 ContextSource(
@@ -635,9 +713,21 @@ PRESETS.register(
                     selector=AutoSelect(
                         selector_id="documents.lexical",
                         item_limit=12,
-                        configuration={"query_fields": ["rcm_query"]},
+                        # Planning material only: the same declared category rule
+                        # the planning-context capability uses keeps transaction
+                        # vouchers and raw evidence out of a planning turn.
+                        configuration={
+                            "query_fields": ["rcm_query"],
+                            "planning_relevant": True,
+                        },
                     ),
-                    representations=(ContextRepresentation("summary"),),
+                    # A current analysis contributes ``summary``; a document
+                    # without one still grounds the turn through locally
+                    # retrieved ``excerpt`` passages.
+                    representations=(
+                        ContextRepresentation("summary"),
+                        ContextRepresentation("excerpt"),
+                    ),
                     budget=ContextBudget(max_items=12, max_characters=40_000),
                 ),
                 ContextSource(
@@ -710,9 +800,21 @@ PRESETS.register(
                     selector=AutoSelect(
                         selector_id="documents.lexical",
                         item_limit=12,
-                        configuration={"query_fields": ["planned_test_query"]},
+                        # Planning material only: the same declared category rule
+                        # the planning-context capability uses keeps transaction
+                        # vouchers and raw evidence out of a planning turn.
+                        configuration={
+                            "query_fields": ["planned_test_query"],
+                            "planning_relevant": True,
+                        },
                     ),
-                    representations=(ContextRepresentation("summary"),),
+                    # A current analysis contributes ``summary``; a document
+                    # without one still grounds the turn through locally
+                    # retrieved ``excerpt`` passages.
+                    representations=(
+                        ContextRepresentation("summary"),
+                        ContextRepresentation("excerpt"),
+                    ),
                     budget=ContextBudget(max_items=12, max_characters=24_000),
                 ),
                 ContextSource(
@@ -777,7 +879,13 @@ PRESETS.register(
                         item_limit=12,
                         configuration={"query_fields": ["definition_query"]},
                     ),
-                    representations=(ContextRepresentation("summary"),),
+                    # A current analysis contributes ``summary``; a document
+                    # without one still grounds the turn through locally
+                    # retrieved ``excerpt`` passages.
+                    representations=(
+                        ContextRepresentation("summary"),
+                        ContextRepresentation("excerpt"),
+                    ),
                     budget=ContextBudget(max_items=12, max_characters=24_000),
                 ),
                 ContextSource(
@@ -807,6 +915,46 @@ PRESETS.register(
                 allow_document_text=True,
                 allow_table_metadata=True,
             ),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="fieldwork.document_qa",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="qa_item",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=4_000),
+                ),
+                ContextSource(
+                    id="document_pages",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # One page per item, so the pages an auditor scoped are
+                    # ``raw_pages`` and an unscoped question's retrieved passages
+                    # are ``excerpt``. The declaration is the same either way.
+                    representations=(
+                        ContextRepresentation("raw_pages"),
+                        ContextRepresentation("excerpt"),
+                    ),
+                    budget=ContextBudget(max_items=60, max_characters=26_000),
+                ),
+            ),
+            # The former inline path refused a question whose pages exceeded a
+            # 30,000-character workflow budget. The declared resolver instead
+            # omits the pages that do not fit and records the omission, and the
+            # worker binds every citation to a page it was actually supplied, so
+            # a bounded answer stays grounded rather than failing the unit.
+            budget=ContextBudget(max_items=61, max_characters=30_000),
+            privacy=ContextPrivacy(allow_document_text=True),
         ),
     )
 )

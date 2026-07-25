@@ -1,4 +1,10 @@
-"""Intentional, budgeted context builders for audit workflow workers."""
+"""Bounded context builder for the workflow command router.
+
+Capability workers now receive declared context resolved by
+:mod:`agent.context`; this module retains only the router bundle, which is not a
+capability and has no declaration. Phase 12 folds routing's remaining budget
+here into the same contract.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +15,7 @@ from typing import Any
 
 from ..workspaces import Workspace, WorkspaceError
 
-CHARACTER_BUDGETS = {
-    "command_router": 6_000,
-    "document_qa_execution": 30_000,
-    "finding_report_section": 12_000,
-    "report": 80_000,
-}
+CHARACTER_BUDGETS = {"command_router": 6_000}
 
 
 @dataclass(frozen=True)
@@ -83,23 +84,3 @@ def command_router(
             "permission_mode": permission_mode,
         },
     )
-
-
-def planning_basis_projection(basis: dict) -> dict:
-    return {
-        "planning": basis.get("planning") or {},
-        "tables": basis.get("tables") or [],
-        "documents": basis.get("documents") or [],
-        "methodology": basis.get("methodology") or [],
-        "document_sources": [
-            {
-                "document_id": item.get("document_id"),
-                "title": item.get("title"),
-                "source_sha1": item.get("source_sha1"),
-                "analysis_id": item.get("analysis_id"),
-                "coverage": item.get("coverage"),
-                "citations": item.get("citations"),
-            }
-            for item in basis.get("document_analyses") or []
-        ],
-    }

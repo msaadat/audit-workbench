@@ -213,14 +213,21 @@ def synthetic_executions(
     registry: workflow.CapabilityRegistry,
     executor,
 ) -> CapabilityExecutionRegistry:
+    """Bind every synthetic capability to one per-unit deterministic executor.
+
+    ``executor(stage, unit)`` returns the unit's :class:`DeterministicUnitResult`,
+    which is the same binding shape production deterministic capabilities use.
+    """
     executions = CapabilityExecutionRegistry()
     for capability in registry.all():
         executions.register(
             CapabilityExecution(
                 capability_id=capability.id,
                 implementation_hash="sha256:" + "1" * 64,
-                transitional_batch_executor=(
-                    lambda _runner, stage, units, execute=executor: execute(stage, units)
+                deterministic_executor=(
+                    lambda _subject, _run, _capability, stage, unit, execute=executor: (
+                        execute(stage, unit)
+                    )
                 ),
             )
         )
@@ -504,15 +511,10 @@ def test_extracted_scheduler_materializes_transitions_and_finishes_generically()
     runtime = SyntheticRuntime(run)
     runner: WorkflowRunner
 
-    def complete(stage: dict, units: list[dict]) -> None:
-        for unit in units:
-            runner.set_unit(stage, unit, "running")
-            runner.set_unit(
-                stage,
-                unit,
-                "succeeded",
-                result_refs=[f"synthetic:{unit['id']}"],
-            )
+    def complete(_stage: dict, unit: dict) -> DeterministicUnitResult:
+        return DeterministicUnitResult(
+            "succeeded", (f"synthetic:{unit['id']}",)
+        )
 
     registry = synthetic_registry()
     runner = WorkflowRunner(
@@ -564,13 +566,10 @@ def test_extracted_scheduler_blocks_dependencies_and_folds_partial_failure():
     runtime = SyntheticRuntime(run)
     runner: WorkflowRunner
 
-    def complete_or_fail(stage: dict, units: list[dict]) -> None:
-        for unit in units:
-            runner.set_unit(stage, unit, "running")
-            if unit["id"] == "catalog-record:beta":
-                runner.set_unit(stage, unit, "failed", error="invalid record")
-            else:
-                runner.set_unit(stage, unit, "succeeded")
+    def complete_or_fail(_stage: dict, unit: dict) -> DeterministicUnitResult:
+        if unit["id"] == "catalog-record:beta":
+            return DeterministicUnitResult("failed", error="invalid record")
+        return DeterministicUnitResult("succeeded")
 
     registry = synthetic_registry()
     runner = WorkflowRunner(
@@ -612,15 +611,13 @@ def test_extracted_scheduler_reexpands_downstream_units_after_upstream_change():
     runtime = SyntheticRuntime(run)
     runner: WorkflowRunner
 
-    def complete(stage: dict, units: list[dict]) -> None:
+    def complete(stage: dict, _unit: dict) -> DeterministicUnitResult:
         if stage["capability"] == SOURCES_READY:
             current["catalog"] = SyntheticCatalog(
                 ready_outcomes=frozenset({SOURCES_READY}),
                 records=(("delta", 40), ("epsilon", 50)),
             )
-        for unit in units:
-            runner.set_unit(stage, unit, "running")
-            runner.set_unit(stage, unit, "succeeded")
+        return DeterministicUnitResult("succeeded")
 
     registry = synthetic_registry()
     runner = WorkflowRunner(
@@ -647,7 +644,13 @@ def test_extracted_scheduler_reexpands_downstream_units_after_upstream_change():
     assert run["status"] == "completed"
 
 
-def test_extracted_scheduler_settles_in_parallel_and_commits_in_semantic_order():
+def test_all_settled_fans_out_in_parallel_and_returns_semantic_order():
+    """Generation may complete in any order; results come back unit-ID ordered.
+
+    This is the scheduler affordance a capability uses when independent model
+    work is worth fanning out: the expensive half runs concurrently and the
+    ordering-sensitive half still sees a deterministic sequence.
+    """
     catalog = SyntheticCatalog(ready_outcomes=frozenset({SOURCES_READY}))
     run = {
         "id": "run_commit_order",
@@ -660,51 +663,38 @@ def test_extracted_scheduler_settles_in_parallel_and_commits_in_semantic_order()
     }
     runtime = SyntheticRuntime(run)
     completion_order: list[str] = []
-    commit_order: list[str] = []
-    runner: WorkflowRunner
-
-    def complete(stage: dict, units: list[dict]) -> None:
-        if stage["capability"] != RECORDS_READY:
-            for unit in units:
-                runner.set_unit(stage, unit, "running")
-                runner.set_unit(stage, unit, "succeeded")
-            return
-
-        def generate(unit: dict) -> str:
-            delay = {
-                "catalog-record:alpha": 0.03,
-                "catalog-record:beta": 0.01,
-                "catalog-record:gamma": 0.0,
-            }[unit["id"]]
-            time.sleep(delay)
-            completion_order.append(unit["id"])
-            return unit["id"]
-
-        for unit, proposal, error in runner.stable_all_settled(units, generate):
-            assert error is None
-            assert proposal == unit["id"]
-            commit_order.append(unit["id"])
-            runner.set_unit(stage, unit, "running")
-            runner.set_unit(stage, unit, "succeeded")
-
     registry = synthetic_registry()
     runner = WorkflowRunner(
         subject=catalog,
         run=run,
         runtime=runtime,
         registry=registry,
-        executions=synthetic_executions(registry, complete),
+        executions=synthetic_executions(
+            registry, lambda _stage, _unit: DeterministicUnitResult("succeeded")
+        ),
     )
-    runner.materialize([PUBLISHED])
-    runner.execute()
+    delays = {
+        "catalog-record:alpha": 0.03,
+        "catalog-record:beta": 0.01,
+        "catalog-record:gamma": 0.0,
+    }
+    units = [{"id": unit_id} for unit_id in sorted(delays)]
 
+    def generate(unit: dict) -> str:
+        time.sleep(delays[unit["id"]])
+        completion_order.append(unit["id"])
+        return unit["id"]
+
+    settled = runner.stable_all_settled(units, generate)
+
+    # The quickest unit finished first, but the results are semantic-ID ordered.
     assert completion_order[0] == "catalog-record:gamma"
-    assert commit_order == [
+    assert [unit["id"] for unit, _value, _error in settled] == [
         "catalog-record:alpha",
         "catalog-record:beta",
         "catalog-record:gamma",
     ]
-    assert run["status"] == "completed"
+    assert all(error is None for _unit, _value, error in settled)
 
 
 def test_extracted_scheduler_preserves_domain_projected_next_outcomes():
@@ -717,10 +707,8 @@ def test_extracted_scheduler_preserves_domain_projected_next_outcomes():
     runtime = SyntheticRuntime(run)
     runner: WorkflowRunner
 
-    def complete(stage: dict, units: list[dict]) -> None:
-        for unit in units:
-            runner.set_unit(stage, unit, "running")
-            runner.set_unit(stage, unit, "succeeded")
+    def complete(_stage: dict, _unit: dict) -> DeterministicUnitResult:
+        return DeterministicUnitResult("succeeded")
 
     registry = synthetic_registry()
     runner = WorkflowRunner(
@@ -902,7 +890,7 @@ def test_capability_execution_requires_exactly_one_binding():
             "deterministic_executor": lambda *_a: DeterministicUnitResult(
                 "succeeded"
             ),
-            "transitional_batch_executor": lambda _r, _s, _u: None,
+            "pipeline_binder": lambda *_a: None,
         },
     ):
         try:
@@ -919,14 +907,18 @@ def test_capability_execution_requires_exactly_one_binding():
 
 def test_capability_execution_registry_rejects_duplicates_and_mismatched_graphs():
     registry = synthetic_registry()
-    executions = synthetic_executions(registry, lambda _stage, _units: None)
+    executions = synthetic_executions(
+        registry, lambda _stage, _unit: DeterministicUnitResult("succeeded")
+    )
 
     try:
         executions.register(
             CapabilityExecution(
                 capability_id=PUBLISHED,
                 implementation_hash="sha256:" + "2" * 64,
-                transitional_batch_executor=lambda _runner, _stage, _units: None,
+                deterministic_executor=lambda *_args: DeterministicUnitResult(
+                    "succeeded"
+                ),
             )
         )
     except ValueError as error:
@@ -939,7 +931,9 @@ def test_capability_execution_registry_rejects_duplicates_and_mismatched_graphs(
         CapabilityExecution(
             capability_id=PUBLISHED,
             implementation_hash="sha256:" + "3" * 64,
-            transitional_batch_executor=lambda _runner, _stage, _units: None,
+            deterministic_executor=lambda *_args: DeterministicUnitResult(
+                "succeeded"
+            ),
         )
     )
     try:

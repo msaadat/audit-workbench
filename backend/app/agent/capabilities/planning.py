@@ -72,6 +72,7 @@ def _planning_context_ready() -> Capability:
         audit_workflow.dependencies("planning.context_ready"),
         _context_ready,
         _context_units,
+        context="planning.context",
         invalidate_on=("sources",),
     )
 

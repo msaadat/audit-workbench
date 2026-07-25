@@ -1,9 +1,8 @@
 """Domain-neutral capability workflow scheduling.
 
 This module owns the generic durable scheduler mechanics.  Domain packages
-provide capability definitions and, during the Phase 6 transition, injected
-stage handlers.  Active production dispatch moves here only after the
-remaining routing and registry boundaries are in place.
+provide capability declarations and one validated execution binding per
+capability; the scheduler itself knows nothing about any domain.
 """
 
 from __future__ import annotations
@@ -45,8 +44,18 @@ FinishEvaluator = Callable[
 ]
 
 
+@dataclass(frozen=True)
+class DeterministicUnitResult:
+    """Outcome of one deterministic (no-model) unit execution."""
+
+    status: str
+    result_refs: tuple[str, ...] = ()
+    error: str | None = None
+
+
 OutcomeHandler = Callable[
-    [dict[str, Any], dict[str, Any], UnitPipelineOutcome], None
+    [dict[str, Any], dict[str, Any], UnitPipelineOutcome],
+    DeterministicUnitResult | None,
 ]
 ConflictHandler = Callable[
     [dict[str, Any], dict[str, Any], UnitPipelineConflict],
@@ -66,28 +75,23 @@ class BoundUnitPipeline:
     readiness_provider: Callable[[], object] | None = None
     # Optional domain callbacks. These keep the scheduler domain-neutral: the
     # binding supplies them, the scheduler merely invokes them. ``on_committed``
-    # runs after a successful commit and before the unit is marked succeeded;
+    # runs after a successful commit and before the unit is marked succeeded, and
+    # may return a ``DeterministicUnitResult`` to replace the default
+    # ``succeeded`` fold when the domain owns the unit's terminal meaning (for
+    # example an answer that only an auditor may disposition);
     # ``conflict_handler`` may translate a domain-recognized ``UnitPipelineConflict``
     # into a ``(status, error)`` override instead of the default ``conflict``.
     on_committed: OutcomeHandler | None = None
     conflict_handler: ConflictHandler | None = None
 
 
-@dataclass(frozen=True)
-class DeterministicUnitResult:
-    """Outcome of one deterministic (no-model) unit execution."""
-
-    status: str
-    result_refs: tuple[str, ...] = ()
-    error: str | None = None
-
-
+# A binder returns a bound pipeline for a unit that needs a model proposal, or a
+# ``DeterministicUnitResult`` for a unit of the same capability that does not.
+# Capabilities carry exactly one execution binding, so this is how a capability
+# whose units are of mixed kinds binds each unit at its own boundary.
 PipelineBinder = Callable[
     [Any, dict[str, Any], workflow.Capability, dict[str, Any], dict[str, Any]],
-    BoundUnitPipeline,
-]
-BatchExecutor = Callable[
-    ["WorkflowRunner", dict[str, Any], list[dict[str, Any]]], None
+    "BoundUnitPipeline | DeterministicUnitResult",
 ]
 DeterministicExecutor = Callable[
     [Any, dict[str, Any], workflow.Capability, dict[str, Any], dict[str, Any]],
@@ -99,16 +103,15 @@ DeterministicExecutor = Callable[
 class CapabilityExecution:
     """Hash-identified execution binding for one capability declaration.
 
-    Exactly one binding kind is supplied: a ``pipeline_binder`` (model
-    worker + executor through :class:`UnitPipeline`), a ``deterministic_executor``
-    (a no-model per-unit computation/commit), or a transitional batch executor
-    retained for capability families still awaiting their Phase 7 migration.
+    Exactly one binding kind is supplied: a ``pipeline_binder``, whose units go
+    through :class:`UnitPipeline` (or settle locally when a unit of a mixed-kind
+    capability needs no model), or a ``deterministic_executor``, a no-model
+    per-unit computation and commit.
     """
 
     capability_id: str
     implementation_hash: str
     pipeline_binder: PipelineBinder | None = None
-    transitional_batch_executor: BatchExecutor | None = None
     deterministic_executor: DeterministicExecutor | None = None
 
     def __post_init__(self) -> None:
@@ -122,16 +125,12 @@ class CapabilityExecution:
             )
         bindings = sum(
             value is not None
-            for value in (
-                self.pipeline_binder,
-                self.transitional_batch_executor,
-                self.deterministic_executor,
-            )
+            for value in (self.pipeline_binder, self.deterministic_executor)
         )
         if bindings != 1:
             raise ValueError(
-                "Capability execution requires exactly one pipeline, deterministic, "
-                "or transitional binding."
+                "Capability execution requires exactly one pipeline or "
+                "deterministic binding."
             )
         object.__setattr__(self, "capability_id", capability_id)
         object.__setattr__(self, "implementation_hash", implementation_hash)
@@ -187,10 +186,10 @@ class WorkflowRunner:
 
     The scheduler has no workspace or audit imports.  ``subject`` is the local
     object assessed by capability readiness functions; applications may
-    refresh it between stages through ``refresh_subject``.  Stage behavior is
-    temporarily injected as handlers so the generic mechanics can be verified
-    before active dispatch changes. Pipeline-backed execution resolves declared
-    context and delegates worker/executor lookup to :class:`UnitPipeline`.
+    refresh it between stages through ``refresh_subject``.  Unit behavior comes
+    from the capability's registered execution binding: pipeline-backed units
+    resolve declared context and delegate worker/executor lookup to
+    :class:`UnitPipeline`, deterministic units return their own outcome.
     """
 
     def __init__(
@@ -492,11 +491,8 @@ class WorkflowRunner:
         execution = self.executions.get(capability.id)
         if execution.pipeline_backed:
             self._run_pipeline_units(execution, capability, stage, units)
-        elif execution.deterministic_backed:
-            self._run_deterministic_units(execution, capability, stage, units)
         else:
-            assert execution.transitional_batch_executor is not None
-            execution.transitional_batch_executor(self, stage, units)
+            self._run_deterministic_units(execution, capability, stage, units)
         final = self._fold_stage(units)
         self._set_stage(stage, final)
         self.runtime.emit(
@@ -527,17 +523,23 @@ class WorkflowRunner:
             self.set_unit(stage, unit, "running")
             bound: BoundUnitPipeline | None = None
             try:
-                bound = execution.pipeline_binder(
+                binding = execution.pipeline_binder(
                     self.subject,
                     self.run,
                     capability,
                     stage,
                     unit,
                 )
-                if not isinstance(bound, BoundUnitPipeline):
+                if isinstance(binding, DeterministicUnitResult):
+                    # A unit of this capability that needs no model proposal.
+                    self._set_deterministic_unit(stage, unit, binding)
+                    continue
+                if not isinstance(binding, BoundUnitPipeline):
                     raise ValueError(
-                        "Pipeline binder must return BoundUnitPipeline."
+                        "Pipeline binder must return BoundUnitPipeline or "
+                        "DeterministicUnitResult."
                     )
+                bound = binding
 
                 def record(field: str):
                     def persist(reference: Mapping[str, str]) -> None:
@@ -600,17 +602,25 @@ class WorkflowRunner:
                     raise ValueError(
                         "Deterministic executor must return DeterministicUnitResult."
                     )
-                self.set_unit(
-                    stage,
-                    unit,
-                    result.status,
-                    error=result.error,
-                    result_refs=list(result.result_refs),
-                )
+                self._set_deterministic_unit(stage, unit, result)
             except (Cancelled, LimitExceeded):
                 raise
             except Exception as error:
                 self.set_unit(stage, unit, "failed", error=str(error))
+
+    def _set_deterministic_unit(
+        self,
+        stage: dict[str, Any],
+        unit: dict[str, Any],
+        result: DeterministicUnitResult,
+    ) -> None:
+        self.set_unit(
+            stage,
+            unit,
+            result.status,
+            error=result.error,
+            result_refs=list(result.result_refs),
+        )
 
     def _fold_pipeline_outcome(
         self,
@@ -645,8 +655,18 @@ class WorkflowRunner:
                 error="The capability proposal was not approved.",
             )
             return
-        if bound.on_committed is not None:
+        override = (
             bound.on_committed(stage, unit, outcome)
+            if bound.on_committed is not None
+            else None
+        )
+        if override is not None:
+            if not isinstance(override, DeterministicUnitResult):
+                raise ValueError(
+                    "A committed-unit override must be a DeterministicUnitResult."
+                )
+            self._set_deterministic_unit(stage, unit, override)
+            return
         result_refs = (
             list(outcome.receipt.artifact_refs) if outcome.receipt is not None else []
         )

@@ -266,6 +266,10 @@ def _fieldwork_executed() -> Capability:
         audit_workflow.dependencies("fieldwork.executed"),
         _execution_ready,
         _execution_units,
+        # Only the document Q&A unit kind calls the model, so this is the one
+        # declaration the capability needs; the other kinds are deterministic
+        # local computation with no model-facing context at all.
+        context="fieldwork.document_qa",
         invalidate_on=("definition", "evidence"),
     )
 

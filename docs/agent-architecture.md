@@ -573,14 +573,12 @@ before the action interpreter runs, and `ActionRunner` retains a defensive
 fail-closed guard for malformed records and bounded-router misses.
 
 The audit lifecycle was encoded in two places at the Phase 1 boundary:
-
-- `ledger.AUDIT_LIFECYCLE_STAGES`.
-- `audit_capabilities.build_registry()`.
-
-`build_registry()` is the current authoritative implementation. The action
-ledger no longer accepts or invokes lifecycle normalization, and its obsolete
-lifecycle constants and enforcement helper have been deleted. The target later
-moves the authoritative declaration to `workflows/audit.py`.
+`ledger.AUDIT_LIFECYCLE_STAGES` and the audit capability registry. Both are
+resolved. The action ledger no longer accepts or invokes lifecycle
+normalization, and its lifecycle constants and enforcement helper are deleted;
+`workflows/audit.py` is now the single authoritative declaration of the audit
+dependency graph, composed into the live registry by the grouped
+`capabilities` package.
 
 The Phase 2 exit gate also moved catalog-specific result-significance and
 created-artifact reference rules out of `ledger.py`. Those rules live with the
@@ -588,11 +586,15 @@ registered action definitions and catalog helpers in `actions.py`; the ledger
 only constructs records, validates and transitions the DAG, delegates reference
 normalization, and maintains generic projections.
 
-There is also concrete document-analysis duplication. Both
-`DocumentAnalysisRunner` and `ActionRunner._ensure_planning_analysis` implement
-document extraction, chunk map calls, reduction, validation, and persistence.
-The replacement must have one implementation expressed as document-analysis
-capabilities, workers, and executors.
+The concrete document-analysis duplication is half resolved. Phase 7 deleted
+`ActionRunner._ensure_planning_analysis`, so `DocumentAnalysisRunner` is the only
+remaining implementation of document extraction, chunk map calls, reduction,
+validation, and persistence — but it is still a leaf runner rather than a
+declared capability. Removing it in favour of one implementation expressed as
+document-analysis capabilities, workers, and executors is Phase 9's work, and
+`planning.context_ready` should declare the resulting
+`documents.analysis_generated` outcome as a scoped dependency so planning regains
+generated analyses rather than falling back to raw document text.
 
 ### Decisions From The Architecture Discussion
 

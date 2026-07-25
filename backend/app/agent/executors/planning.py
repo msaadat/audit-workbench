@@ -234,7 +234,7 @@ class PlanningContextExecutorTarget:
 def _validated_context(
     request: ExecutorRequest,
     target: object,
-) -> tuple[PlanningContextExecutorTarget, dict[str, str]]:
+) -> tuple[PlanningContextExecutorTarget, dict[str, str], bool]:
     if not isinstance(target, PlanningContextExecutorTarget):
         raise WorkspaceError(
             "Planning-context executor requires a PlanningContextExecutorTarget."
@@ -253,7 +253,10 @@ def _validated_context(
     }
     if not context:
         raise WorkspaceError("The accepted planning context is empty.")
-    return target, context
+    # How the accepted fields were derived is recorded on the receipt so the
+    # caller can surface a recovered synthesis without re-reading the proposal.
+    recovered = bool(request.proposal.get("recovered_from_labelled_facts"))
+    return target, context, recovered
 
 
 def _context_result(
@@ -262,6 +265,7 @@ def _context_result(
     *,
     revision_before: int,
     context: dict[str, str],
+    recovered: bool = False,
 ) -> ExecutorResult:
     return ExecutorResult(
         executor_id=request.executor_id,
@@ -272,7 +276,11 @@ def _context_result(
         artifact_refs=[PLANNING_CONTEXT_REF],
         applied_parents=dict(request.expected_parents),
         postcondition_hashes=parent_hashes(workspace, [PLANNING_CONTEXT_REF]),
-        output={"status": "updated", "fields": sorted(context)},
+        output={
+            "status": "updated",
+            "fields": sorted(context),
+            "recovered_from_labelled_facts": recovered,
+        },
     )
 
 
@@ -284,7 +292,7 @@ def execute_planning_context(request: ExecutorRequest, raw_target: object) -> Ex
     planning-context parent hash so a concurrent context change is a conflict
     rather than a silent overwrite.
     """
-    target, context = _validated_context(request, raw_target)
+    target, context, recovered = _validated_context(request, raw_target)
 
     def commit(fresh: Workspace) -> None:
         fresh.update_planning({"context": context}, agent=True)
@@ -300,6 +308,7 @@ def execute_planning_context(request: ExecutorRequest, raw_target: object) -> Ex
         committed.workspace,
         revision_before=committed.revision - 1,
         context=context,
+        recovered=recovered,
     )
 
 
@@ -308,7 +317,7 @@ def reconcile_planning_context(
     raw_target: object,
 ) -> ExecutorReconciliation:
     """Classify an interrupted planning-context commit without mutating state."""
-    target, context = _validated_context(request, raw_target)
+    target, context, recovered = _validated_context(request, raw_target)
     current = Workspace(target.workspace.root)
     current_parent = parent_hashes(current, [PLANNING_CONTEXT_REF])[PLANNING_CONTEXT_REF]
     expected_parent = request.expected_parents[PLANNING_CONTEXT_REF]
@@ -331,6 +340,7 @@ def reconcile_planning_context(
                 current,
                 revision_before=max(request.expected_revision, current.revision - 1),
                 context=context,
+                recovered=recovered,
             ),
             reason="The accepted planning context already holds.",
         )

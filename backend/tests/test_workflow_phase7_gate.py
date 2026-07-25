@@ -2,37 +2,36 @@
 
 The phase objective is that the audit dependency graph appears only in
 ``workflows/audit.py``, that every capability's declaration lives in a grouped
-``capabilities`` module, and that the generic runtime imports no audit module.
-Two capabilities (`planning.context_ready`, `fieldwork.executed`) still run on
-the transitional batch adapter; those are the recorded Phase-9-coupled
-deferrals (`P7A.2`, `P7F.2`/`P7F.3`) and this gate pins them explicitly so the
-list cannot silently grow.
+``capabilities`` module, that every capability executes on a native scheduler
+path, and that the generic runtime imports no audit module. No capability uses
+the transitional batch adapter any more, and this gate proves that binding kind
+is gone rather than merely unused.
 """
 
 from __future__ import annotations
 
 import ast
+import inspect
 import pathlib
 import re
 
 import app.agent as agent_package
-from app.agent import capabilities
-from app.agent.audit_execution import _AUDIT_HANDLER_NAMES, build_audit_workflow_runner
+from app.agent import audit_execution, capabilities
+from app.agent.audit_execution import build_audit_workflow_runner
 from app.agent.executors import EXECUTORS
 from app.agent.workers import WORKERS
 from app.agent.workflows import audit as audit_workflow
 
 
-# The capability families still executed by the transitional batch adapter.
-# Both are blocked on the Phase 9 document-analysis unification.
-_DEFERRED_BATCH_CAPABILITIES = {
-    "planning.context_ready": "_planning_basis",
-    "fieldwork.executed": "_executions",
-}
+def test_no_capability_is_executed_by_a_transitional_batch_handler():
+    source = inspect.getsource(audit_execution)
 
-
-def test_only_the_recorded_deferrals_still_use_the_transitional_adapter():
-    assert _AUDIT_HANDLER_NAMES == _DEFERRED_BATCH_CAPABILITIES
+    # The whitelist of deferred capabilities, its handler map, and the
+    # batch-binding branch are deleted, not merely empty.
+    assert not hasattr(audit_execution, "_AUDIT_HANDLER_NAMES")
+    assert "transitional_batch_executor" not in source
+    assert not hasattr(audit_execution.AuditWorkflowExecution, "_planning_basis")
+    assert not hasattr(audit_execution.AuditWorkflowExecution, "_executions")
 
 
 def test_every_capability_has_exactly_one_execution_binding(workspace_with_data):
@@ -53,18 +52,20 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
     kinds: dict[str, str] = {}
     for capability_id in declared:
         execution = scheduler.executions.get(capability_id)
-        if execution.pipeline_backed:
-            kinds[capability_id] = "pipeline"
-        elif execution.deterministic_backed:
-            kinds[capability_id] = "deterministic"
-        else:
-            kinds[capability_id] = "transitional"
+        assert execution.pipeline_backed or execution.deterministic_backed
+        kinds[capability_id] = (
+            "pipeline" if execution.pipeline_backed else "deterministic"
+        )
 
     assert {cid for cid, kind in kinds.items() if kind == "pipeline"} == {
+        "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
         "planning.planned_tests_ready",
         "fieldwork.definitions_ready",
+        # Mixed units: the document Q&A kind is model-backed and the rest are
+        # deterministic, so the capability binds each unit through one binder.
+        "fieldwork.executed",
         "findings.drafted",
     }
     assert {cid for cid, kind in kinds.items() if kind == "deterministic"} == {
@@ -74,9 +75,6 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
         "report.working_draft",
         "audit.verified",
     }
-    assert {cid for cid, kind in kinds.items() if kind == "transitional"} == set(
-        _DEFERRED_BATCH_CAPABILITIES
-    )
 
 
 def test_every_declared_worker_and_executor_key_is_registered():
@@ -85,10 +83,12 @@ def test_every_declared_worker_and_executor_key_is_registered():
 
     assert {
         "planning.apm",
+        "planning.context",
         "planning.rcm",
         "planning.planned_tests",
         "fieldwork.data_test_spec",
         "fieldwork.document_test_spec",
+        "fieldwork.document_qa",
         "reporting.finding",
     } <= workers
     assert {
@@ -98,6 +98,7 @@ def test_every_declared_worker_and_executor_key_is_registered():
         "planning.planned_tests",
         "fieldwork.data_test",
         "fieldwork.document_test",
+        "fieldwork.document_qa",
         "reporting.finding",
     } <= executors
 

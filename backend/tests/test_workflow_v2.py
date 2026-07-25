@@ -18,6 +18,7 @@ from app.agent.audit_execution import (
     build_audit_workflow_runner,
 )
 import app.agent.context.adapters as context_adapters
+from app.agent.executors import fieldwork as fieldwork_executor
 from app.agent.executors import planning as planning_executor
 from app.agent.runtime import UnitSidecarStore, WorkflowRunner
 from app.agent.workers import planning as planning_worker
@@ -767,55 +768,6 @@ def test_all_settled_is_bounded_failure_isolated_and_stably_ordered():
     ]
 
 
-def test_parallel_candidate_reuses_durable_sidecar_without_model_rebilling():
-    ws = _planning_workspace("Proposal sidecar reuse")
-    run = store.new_command_run(
-        ws, "auto", {"source": "chat", "text": "generate planned tests"}
-    )
-    proposal = {"planned_tests": [{"title": "Cached proposal"}]}
-    unit = {
-        "id": "unit:cached",
-        "kind": "planned_tests",
-        "title": "Cached planned-test proposal",
-        "capability": "planning.planned_tests_ready",
-        "parent_refs": [],
-        "status": "queued",
-        "attempts": 0,
-        "input_sha1": "input-sha1",
-        "proposal_sidecar": store.write_sidecar(ws, run["id"], proposal),
-        "result_refs": [],
-        "error": None,
-        "started_at": None,
-        "finished_at": None,
-    }
-    stage = {
-        "id": "stage:planned-tests",
-        "capability": "planning.planned_tests_ready",
-        "units": [unit],
-    }
-    run["schema_version"] = 3
-    run["workflow"] = {"stages": [stage]}
-    store.save_run(ws, run)
-    worker_calls = 0
-
-    def worker(_unit):
-        nonlocal worker_calls
-        worker_calls += 1
-        raise AssertionError("a valid proposal sidecar must bypass the model worker")
-
-    command = AuditWorkflowExecution(ws, run, runner.RunHandle(ws.id, run["id"]))
-    before_turns = run["usage"]["llm_turns"]
-    candidates = command._parallel_candidates(stage, stage["units"], worker)
-
-    assert candidates == [(unit, proposal)]
-    assert worker_calls == 0
-    assert run["usage"]["llm_turns"] == before_turns
-    assert unit["status"] == "running"
-    assert "proposal_reused" in {
-        event["type"] for event in store.read_events(ws, run["id"])
-    }
-
-
 def test_results_rolled_up_through_deterministic_scheduler_path(workspace_with_data):
     ws = workspace_with_data
     ws.update_planning(
@@ -899,6 +851,380 @@ def test_results_rolled_up_through_deterministic_scheduler_path(workspace_with_d
     } >= {("rcm", "rollup")}
     # Deterministic execution makes no provider call.
     assert run["usage"]["llm_turns"] == 0
+
+
+def _planning_context_stage_runner(ws):
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": "Assemble the planning context",
+            "requested_outcomes": ["planning.context_ready"],
+            "generation_mode": "force",
+        },
+    )
+    assert initialize_known_workflow(ws, run) is True
+    run = store.load_run(ws, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "planning.context_ready"
+    )
+    command = build_audit_workflow_runner(
+        ws, run, runner.RunHandle(ws.id, run["id"])
+    )
+    command._refresh()
+    return command, stage, stage["units"][0]
+
+
+def test_live_planning_context_commits_through_pipeline_binding(monkeypatch):
+    # P7A.2: planning-context synthesis runs on the scheduler's native pipeline
+    # path — declared context in, registered worker, registered executor commit.
+    ws = workspaces.create_workspace("Live planning-context binding")
+    policy = documents.add_document(
+        ws,
+        "Procurement Policy.txt",
+        b"Procurement Policy: purchases require documented approval before commitment.",
+        category="policy",
+    )
+    captured = {}
+
+    def synthesize(user):
+        captured["user"] = user
+        return {
+            "context": {
+                "objective": "Assess procurement approvals",
+                "scope": "Requisition through payment",
+            }
+        }
+
+    monkeypatch.setattr(
+        llm, "chat", FakeAgentLLM({"agent:document_context": synthesize})
+    )
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command, stage, unit = _planning_context_stage_runner(ws)
+
+    command._run_stage(stage)
+
+    assert unit["status"] == "succeeded"
+    assert stage["status"] == "succeeded"
+    assert unit["result_refs"] == ["planning:context"]
+    reloaded = workspaces.load_workspace(ws.id)
+    assert reloaded.planning["context"]["objective"] == "Assess procurement approvals"
+    assert reloaded.planning["context"]["scope"] == "Requisition through payment"
+    # The declared context supplied the document material, and provenance records
+    # the document that was actually supplied.
+    assert "purchases require documented approval" in captured["user"]
+    assert any(
+        item["stage"] == "agent:document_context"
+        and policy["id"] in item["document_ids"]
+        for item in documents.activities(reloaded, limit=250)["items"]
+    )
+    # The pipeline persisted content-free manifest, proposal, and receipt sidecars.
+    assert unit["context_manifest"]["unit_id"] == unit["id"]
+    assert unit["proposal_sidecar"]["unit_id"] == unit["id"]
+    assert unit["receipt_sidecar"]["unit_id"] == unit["id"]
+    assert (
+        store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
+    ).is_file()
+    # The run-scoped planning basis and every runner-era helper behind it are gone.
+    assert "planning_basis" not in command.run
+    assert not hasattr(AuditWorkflowExecution, "_planning_basis")
+    assert not hasattr(action_runner.ActionRunner, "stage_context")
+    assert not hasattr(action_runner.ActionRunner, "_ensure_planning_analysis")
+    assert not hasattr(action_runner.ActionRunner, "_select_planning_documents")
+    binder_source = inspect.getsource(AuditWorkflowExecution._bind_planning_context)
+    assert "llm_json" not in binder_source
+    assert "mutate(" not in binder_source
+
+
+def test_planning_context_settles_without_a_model_call_when_no_document_material():
+    # There is nothing to synthesize from, so the unit settles locally and the
+    # existing context stands rather than the stage failing.
+    ws = workspaces.create_workspace("Planning context with no documents")
+    ws.add_table(
+        "transactions.csv",
+        pl.DataFrame({"invoice_id": ["INV-1"], "amount": [10.0]})
+        .write_csv()
+        .encode(),
+    )
+    command, stage, unit = _planning_context_stage_runner(ws)
+
+    command._run_stage(stage)
+
+    assert unit["status"] == "succeeded"
+    assert unit["result_refs"] == ["planning:context"]
+    assert command.run["usage"]["llm_turns"] == 0
+    assert any(
+        "No document material is available" in warning
+        for warning in command.run.get("warnings") or []
+    )
+
+
+def _executed_stage_runner(ws, text="Execute the fieldwork"):
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {
+            "source": "follow_up",
+            "text": text,
+            "requested_outcomes": ["fieldwork.executed"],
+            "generation_mode": "force",
+        },
+    )
+    assert initialize_known_workflow(ws, run) is True
+    run = store.load_run(ws, run["id"])
+    stage = next(
+        item
+        for item in run["workflow"]["stages"]
+        if item["capability"] == "fieldwork.executed"
+    )
+    command = build_audit_workflow_runner(
+        ws, run, runner.RunHandle(ws.id, run["id"])
+    )
+    # ``execute()`` refreshes the subject from disk before every stage; mirror
+    # that so the stage runs against a disk-consistent workspace.
+    command._refresh()
+    return command, stage
+
+
+def test_data_test_execution_runs_through_the_mixed_execution_binding(
+    workspace_with_data,
+):
+    # P7F.2: a data-test unit of ``fieldwork.executed`` is deterministic — the
+    # binder computes locally through the extracted executor and folds a
+    # succeeded unit whose ref names the immutable result, with no model call.
+    ws = workspace_with_data
+    ws.update_planning(
+        {
+            "context": {"objective": "Assess payments", "scope": "Accounts payable"},
+            "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nAccounts payable.",
+        }
+    )
+    row = ws.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate invoices may be paid",
+            "control": "Duplicate invoice validation",
+            "risk_rating": "high",
+        }
+    )
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Duplicate invoices",
+            "objective": "Identify repeated invoice identifiers.",
+            "method": "data_analytics",
+            "steps": ["Identify repeated invoice identifiers."],
+        },
+    )
+    data_test = data_tests.create(
+        ws,
+        {
+            "title": "Duplicate invoices",
+            "objective": "Identify repeated invoice identifiers.",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "rcm_id": row["id"],
+            "planned_test_id": planned["id"],
+            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+        },
+    )
+    command, stage = _executed_stage_runner(ws)
+
+    command._run_stage(stage)
+
+    unit = stage["units"][0]
+    assert unit["kind"] == "data_test_execution"
+    assert unit["status"] == "succeeded"
+    reloaded = workspaces.load_workspace(ws.id)
+    committed = reloaded.data_tests[0]
+    assert committed["last_run"]
+    assert unit["result_refs"] == [
+        f"datatest:{data_test['id']}:{committed['last_run']['id']}"
+    ]
+    assert {
+        (event["data"].get("kind"), event["data"].get("action"))
+        for event in store.read_events(ws, command.run["id"])
+        if event["type"] == "workspace_changed"
+    } >= {("datatest", "executed")}
+    # A deterministic unit of a pipeline-bound capability still bills nothing.
+    assert command.run["usage"]["llm_turns"] == 0
+    # The old batch handler and its inline model adapter are gone.
+    assert not hasattr(AuditWorkflowExecution, "_executions")
+    assert not hasattr(AuditWorkflowExecution, "_document_qa_adapter")
+
+
+def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch):
+    # P7F.3: the one model-backed unit kind of ``fieldwork.executed`` runs
+    # through the registered worker on the injected gateway and the registered
+    # executor, and folds to auditor disposition rather than to succeeded.
+    ws = _planning_workspace("Live document Q&A binding")
+    row = ws.rcm[0]
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Read approval evidence",
+            "objective": "Determine whether approvals were documented",
+            "criteria": "Approval is present.",
+            "steps": ["Ask the evidence question."],
+            "method": "inquiry",
+            "expected_evidence": "Approval records",
+        },
+    )
+    document = documents.add_document(
+        ws,
+        "Approval.txt",
+        b"The purchase order was approved by the controller on 3 March.",
+    )
+    test = doc_tests.create_test(
+        ws,
+        {
+            "title": "Approval Q&A",
+            "kind": "qa",
+            "rcm_id": row["id"],
+            "planned_test_id": planned["id"],
+            "items": [
+                {
+                    "label": "Who approved the order?",
+                    "question": "Who approved the purchase order?",
+                    "document_ids": [document["id"]],
+                    "pages": [1],
+                }
+            ],
+        },
+    )
+    item_id = test["items"][0]["id"]
+    captured = {}
+
+    def answer(user):
+        captured["user"] = user
+        return {
+            "answer": "The controller approved it.",
+            "citations": [
+                {"page": 1, "excerpt": "approved by the controller"},
+                {"page": 42, "excerpt": "a page that was never supplied"},
+            ],
+        }
+
+    monkeypatch.setattr(llm, "chat", FakeAgentLLM({"agent:document_qa": answer}))
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command, stage = _executed_stage_runner(ws, text="Answer the document questions")
+
+    command._run_stage(stage)
+
+    unit = stage["units"][0]
+    assert unit["kind"] == "document_qa_execution"
+    # A cited answer is a candidate for auditor judgment, not a conclusion.
+    assert unit["status"] == "awaiting_confirmation"
+    assert unit["result_refs"] == [
+        f"doctest:{test['id']}:item:{item_id}:document:{document['id']}"
+    ]
+    assert stage["status"] == "review_required"
+    committed = doc_tests.load_test(workspaces.load_workspace(ws.id), test["id"])
+    stored = committed["items"][0]["qa_answers"][document["id"]]
+    assert stored["answer"] == "The controller approved it."
+    # The worker bound citations to supplied pages; the fabricated one is gone.
+    assert [anchor["page"] for anchor in stored["citations"]] == [1]
+    assert "Who approved the purchase order?" in captured["user"]
+    # The pipeline persisted content-free manifest, proposal, and receipt sidecars.
+    assert unit["context_manifest"]["unit_id"] == unit["id"]
+    assert unit["proposal_sidecar"]["unit_id"] == unit["id"]
+    assert unit["receipt_sidecar"]["unit_id"] == unit["id"]
+    assert (
+        store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
+    ).is_file()
+    assert {
+        (event["data"].get("kind"), event["data"].get("action"))
+        for event in store.read_events(ws, command.run["id"])
+        if event["type"] == "workspace_changed"
+    } >= {("doctest", "qa_answered")}
+    # The binding inlines no bundle builder, model caller, or mutation.
+    binder_source = inspect.getsource(AuditWorkflowExecution._bind_document_qa)
+    assert "document_chat" not in binder_source
+    assert "llm_json" not in binder_source
+    assert "mutate(" not in binder_source
+
+
+def test_document_qa_resume_reuses_the_durable_proposal_without_rebilling(monkeypatch):
+    ws = _planning_workspace("Document Q&A proposal no rebilling")
+    row = ws.rcm[0]
+    planned = ws.add_planned_test(
+        row["id"],
+        {
+            "title": "Read approval evidence",
+            "objective": "Determine whether approvals were documented",
+            "criteria": "Approval is present.",
+            "steps": ["Ask the evidence question."],
+            "method": "inquiry",
+            "expected_evidence": "Approval records",
+        },
+    )
+    document = documents.add_document(
+        ws, "Approval.txt", b"The controller approved the purchase order."
+    )
+    doc_tests.create_test(
+        ws,
+        {
+            "title": "Approval Q&A",
+            "kind": "qa",
+            "rcm_id": row["id"],
+            "planned_test_id": planned["id"],
+            "items": [
+                {
+                    "label": "Who approved the order?",
+                    "question": "Who approved the purchase order?",
+                    "document_ids": [document["id"]],
+                    "pages": [1],
+                }
+            ],
+        },
+    )
+    fake = FakeAgentLLM(
+        {
+            "agent:document_qa": {
+                "answer": "The controller approved it.",
+                "citations": [{"page": 1, "excerpt": "The controller approved"}],
+            }
+        }
+    )
+    monkeypatch.setattr(llm, "chat", fake)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "backend": "fake", "model": "fake"},
+    )
+    command, stage = _executed_stage_runner(ws)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(
+            fieldwork_executor,
+            "mutate",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            command._run_stage(stage)
+
+    unit = stage["units"][0]
+    assert unit["proposal_sidecar"]
+    turns_after_generation = command.run["usage"]["llm_turns"]
+    assert turns_after_generation == 1
+
+    # The proposal is durable, so the resumed unit commits from the sidecar.
+    command._refresh()
+    command._run_stage(stage)
+
+    assert unit["status"] == "awaiting_confirmation"
+    assert command.run["usage"]["llm_turns"] == turns_after_generation
 
 
 def test_working_papers_generate_through_deterministic_scheduler_path():

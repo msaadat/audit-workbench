@@ -4,7 +4,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agent import action_runner, runner, store
+from app.agent import runner, store
+from app.agent.workers import planning as planning_worker
 from app.main import create_app
 from app import document_analysis, documents, llm, methodology, templates_store, workspaces
 
@@ -374,68 +375,66 @@ def test_planned_test_crud_rejects_non_object_structured_fields(field):
         ws.add_planned_test(row["id"], payload)
 
 
-def test_planning_context_requires_string_field_values():
+def test_planning_context_response_schema_requires_string_field_values():
+    # The response contract moved from the runner to the registered
+    # ``planning.context`` worker's response schema (P7A.2).
     with pytest.raises(ValueError, match="context.key_contacts must be a string"):
-        action_runner._validate_context_payload({
-            "context": {"key_contacts": ["CFO", "Head of Procurement"]}
-        })
+        planning_worker._planning_context_response_schema(
+            '{"context": {"key_contacts": ["CFO", "Head of Procurement"]}}'
+        )
 
 
-def test_planning_context_normalizes_flat_provider_payload():
-    normalized = action_runner._validate_context_payload({
-        "objective": "Review procurement controls",
-        "scope": "Requisitions through payment",
-        "entity": "Example Bank",
-    })
+def test_planning_context_response_schema_normalizes_flat_provider_payload():
+    normalized = planning_worker._planning_context_response_schema(
+        '{"objective": "Review procurement controls",'
+        ' "scope": "Requisitions through payment", "entity": "Example Bank"}'
+    )
 
     assert normalized["context"] == {
         "objective": "Review procurement controls",
         "scope": "Requisitions through payment",
         "entity": "Example Bank",
     }
-    assert action_runner.ActionRunner._planning_context(normalized)["scope"] == (
-        "Requisitions through payment"
-    )
 
 
-def test_auto_planning_selects_relevant_documents(monkeypatch):
+def test_auto_planning_selects_planning_relevant_documents_deterministically(
+    monkeypatch,
+):
+    # P7A.2: which documents ground planning context is a declared deterministic
+    # category rule, not a model turn. The synthesis worker then sees the bounded
+    # document material and only that.
     ws = workspaces.create_workspace("Auto document selection")
     policy_text = b"Procurement Policy: purchases require documented approval before commitment."
     policy = documents.add_document(ws, "Procurement Policy.txt", policy_text, category="policy")
+    voucher = documents.add_document(
+        ws,
+        "Invoice 42.txt",
+        b"Invoice 42 was paid on 3 March for stationery supplied by Acme Limited.",
+        category="voucher",
+    )
 
-    def select(user):
-        assert policy["id"] in user
-        return {"selected": [{"id": policy["id"], "reason": "Governs procurement approvals."}]}
-
-    fake = configure_planning_llm(monkeypatch, {"agent:document_selection": select})
-    # No document_ids in the run context: the agent must select them itself.
+    fake = configure_planning_llm(monkeypatch)
     started = start_planning(ws)
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
     assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
-    analysis_call = next(call for call in fake.calls if call["tag"] == "agent:document_analysis_map")
+    # No model turn selects documents any more, and none generates an analysis.
+    call_tags = [call["tag"] for call in fake.calls]
+    assert "agent:document_selection" not in call_tags
+    assert "agent:document_analysis_map" not in call_tags
+    assert document_analysis.compact_artifact(reloaded, policy["id"]) is None
+    # The planning-relevant policy grounds synthesis; the voucher is excluded by
+    # the declared category rule.
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
-    assert policy_text.decode() in analysis_call["messages"][-1]["content"]
-    assert "RAW SOURCE CHUNK:" not in context_call["messages"][-1]["content"]
-    assert "The document describes requirements and responsibilities" in context_call["messages"][-1]["content"]
-    persisted = document_analysis.compact_artifact(reloaded, policy["id"])
-    assert persisted["audit_notes_markdown"]
-    assert persisted["citations"]
+    supplied = context_call["messages"][-1]["content"]
+    assert policy_text.decode() in supplied
+    assert "Invoice 42 was paid" not in supplied
+    # Provenance records the document that was actually supplied.
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(policy["id"] in item.get("document_ids", []) for item in activity)
-    assert completed["planning_basis"]["document_content_included"] is True
-    context_details = [
-        event["data"]["task"]["detail"]
-        for event in store.read_events(ws, started["id"])
-        if event["type"] == "task_update"
-        and event["data"]["task"]["id"] == "planning:context"
-        and event["data"]["task"].get("detail")
-    ]
-    assert "Selecting relevant documents for audit planning…" in context_details
-    assert "Analyzing document 1 of 1: Procurement Policy.txt" in context_details
-    assert "Synthesizing planning context from 1 document…" in context_details
+    assert not any(voucher["id"] in item.get("document_ids", []) for item in activity)
 
 
 def test_planning_recovers_labelled_context_when_synthesis_returns_empty(monkeypatch):
@@ -471,13 +470,17 @@ def test_planning_recovers_labelled_context_when_synthesis_returns_empty(monkeyp
     assert completed["status"] == "completed"
     assert reloaded.planning["context"]["objective"] == "Review procurement approvals"
     assert reloaded.planning["context"]["scope"] == "Procurement authorization controls"
-    assert completed["planning_basis"]["planning"]["context"]["objective"] == "Review procurement approvals"
-    assert [call["tag"] for call in fake.calls].count("agent:document_context") == 2
+    # The labelled facts already in the supplied summary are the better answer, so
+    # the worker recovers them instead of paying for a second synthesis turn.
+    assert [call["tag"] for call in fake.calls].count("agent:document_context") == 1
     assert any("recovered labelled facts" in warning for warning in completed["warnings"])
 
 
-def test_planning_analyzes_independent_documents_concurrently(monkeypatch):
-    ws = workspaces.create_workspace("Parallel planning documents")
+def test_planning_does_not_generate_document_analyses(monkeypatch):
+    # P7A.2 recorded behavior change: planning-context synthesis consumes whatever
+    # document material exists and never runs the document-analysis map/reduce
+    # itself. Generating durable analyses is the documents subsystem's own work.
+    ws = workspaces.create_workspace("Planning without analysis")
     selected = [
         documents.add_document(
             ws,
@@ -488,31 +491,8 @@ def test_planning_analyzes_independent_documents_concurrently(monkeypatch):
         )
         for index in range(1, 4)
     ]
-    barrier = threading.Barrier(len(selected))
-    state = {"active": 0, "max_active": 0}
-    state_lock = threading.Lock()
+    fake = configure_planning_llm(monkeypatch)
 
-    def document_analysis_map(user):
-        source = user.split("RAW SOURCE CHUNK:\n", 1)[1].strip()
-        page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
-        with state_lock:
-            state["active"] += 1
-            state["max_active"] = max(state["max_active"], state["active"])
-        try:
-            barrier.wait(timeout=3)
-            time.sleep(0.03)
-            return {
-                "summary_markdown": "- Procurement requires documented approval.",
-                "audit_notes_markdown": "Obtain evidence that approval operated.",
-                "citations": [{"id": "C1", "page": page, "excerpt": source}],
-            }
-        finally:
-            with state_lock:
-                state["active"] -= 1
-
-    configure_planning_llm(
-        monkeypatch, {"agent:document_analysis_map": document_analysis_map}
-    )
     completed = wait_run(
         ws,
         start_planning(
@@ -522,16 +502,18 @@ def test_planning_analyzes_independent_documents_concurrently(monkeypatch):
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
-    assert state["max_active"] == len(selected)
+    assert [call["tag"] for call in fake.calls].count("agent:document_analysis_map") == 0
     assert all(
-        document_analysis.compact_artifact(reloaded, item["id"]) is not None
+        document_analysis.compact_artifact(reloaded, item["id"]) is None
         for item in selected
     )
-    assert any(
-        "documents concurrently" in event["data"]["task"].get("detail", "")
-        for event in store.read_events(ws, completed["id"])
-        if event["type"] == "task_update"
+    # Synthesis still happened, grounded in every supplied document.
+    context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
+    assert all(
+        f"Policy {index}: documented approval" in context_call["messages"][-1]["content"]
+        for index in range(1, 4)
     )
+    assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
 
 
 def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
@@ -611,17 +593,13 @@ def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
     assert "_[prior audit findings - context not available]_" in apm
 
 
-def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
-    ws = workspaces.create_workspace("Permission document selection")
+def test_permission_planning_confirms_the_synthesized_planning_context(monkeypatch):
+    ws = workspaces.create_workspace("Permission planning context")
     policy = documents.add_document(
         ws, "Procurement Policy.txt",
         b"Procurement Policy: purchases require documented approval.", category="policy",
     )
-    configure_planning_llm(monkeypatch, {
-        "agent:document_selection": {
-            "selected": [{"id": policy["id"], "reason": "Governs procurement approvals."}]
-        },
-    })
+    configure_planning_llm(monkeypatch)
     started = start_planning(ws, "permission")
     kinds, seen = [], []
     deadline = time.monotonic() + 60
@@ -642,8 +620,10 @@ def test_permission_planning_confirms_agent_selected_documents(monkeypatch):
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
     assert completed["status"] == "completed"
-    # The auditor confirms the agent's document choice before any content is used.
-    assert kinds[0] == "documents"
+    # Documents are chosen by a declared deterministic rule, so the first thing
+    # the auditor approves is the synthesized context itself.
+    assert kinds[0] == "context"
+    assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
     assert any(policy["id"] in item.get("document_ids", []) for item in documents.activities(reloaded, limit=250)["items"])
 
 
@@ -711,4 +691,3 @@ def test_planning_update_includes_selected_imported_documents(monkeypatch):
     assert policy_text.decode() in context_call["messages"][-1]["content"]
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(policy["id"] in item.get("document_ids", []) for item in activity)
-    assert completed["planning_basis"]["document_content_included"] is True

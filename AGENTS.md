@@ -111,10 +111,9 @@ backend/app/
    |                             recovery, pause/resume/cancel/retry/continue
    |- action_runner.py         - action-graph runner for isolated mutations
    |- workflow.py              - generic capability graph primitives
-   |- audit_execution.py       - temporary audit capability execution adapters
-   |- audit_capabilities.py    - audit capability registry and readiness rules
-   |- audit_workers.py         - single-turn model workers with validators
-   |- context_bundles.py       - hard-budgeted agent prompt context builders
+   |- audit_execution.py       - audit-side composition: one execution binding
+   |                             per capability plus audit projections
+   |- context_bundles.py       - bounded command-router context bundle
    |- actions.py               - registered action catalog and executors
    |- ledger.py                - domain-neutral action graph validation
    |- artifact_index.py        - artifact selectors and canonical resolution
@@ -199,7 +198,7 @@ BaseRunner
 |- DocTestRunner            one document test
 |- DocumentAnalysisRunner   document analysis map/reduce
 |- ActionRunner             action graph
-`- AuditWorkflowExecution  temporary audit execution adapter
+`- AuditWorkflowExecution  audit execution bindings and projections
 
 WorkflowRunner             domain-neutral capability graph scheduler
 ```
@@ -208,8 +207,14 @@ WorkflowRunner             domain-neutral capability graph scheduler
   graphs.
 - `WorkflowRunner` is the main audit scheduler. It receives a materialized
   route and registered capability executions, fans outcomes into units, and
-  records `next_outcomes` for `Continue audit`. Temporary audit handlers are
-  composed from `audit_execution.py` pending their Phase 7 registry moves.
+  records `next_outcomes` for `Continue audit`. Every audit capability carries
+  exactly one binding: a per-unit pipeline binding (registered worker plus
+  registered executor) or a per-unit deterministic computation. A capability
+  whose units are of mixed kinds — `fieldwork.executed` — binds each unit at its
+  own boundary through the same binder. `audit_execution.py` owns only the
+  audit-shaped glue: which worker/executor and declared context a unit uses,
+  approval items, post-commit bookkeeping, checkpoint handlers, and the audit
+  completion projection.
 - Local routing in `routing.local_resolution(...)` is important. It
   catches common phrases and goal templates before any model call. If routing
   misses, a bounded router worker may still resolve the command.
@@ -322,11 +327,24 @@ WorkflowRunner             domain-neutral capability graph scheduler
 - Phase 6 completed with `runtime.WorkflowRunner` as the only active capability
   scheduler. It is domain-neutral, composed with `RunRuntime` and validated
   capability executions, and has no `ActionRunner` inheritance or audit-stage
-  methods. Routing lives in `agent/routing.py`; active audit dispatch composes
-  temporary handlers from `audit_execution.py` until their Phase 7 registry
-  migrations. The former `agent/workflow_runner.py`, legacy adoption, and
-  run-shape translation were deleted. Runtime import-boundary tests reject
-  planning, RCM, document, finding, report, and audit-domain imports.
+  methods. Routing lives in `agent/routing.py`. The former
+  `agent/workflow_runner.py`, legacy adoption, and run-shape translation were
+  deleted. Runtime import-boundary tests reject planning, RCM, document,
+  finding, report, and audit-domain imports.
+- Phase 7 completed with the audit lifecycle declared in exactly one place. The
+  dependency graph lives in `agent/workflows/audit.py`; the twelve capability
+  declarations live in the grouped `agent/capabilities/` package, which is the
+  live registry; and each capability's execution is a registered worker/executor
+  pair or a deterministic local computation under `agent/workers/` and
+  `agent/executors/`, with declared context presets in `agent/context/`. Every
+  model-facing input is resolved from a declared preset, so no capability builds
+  an ad-hoc prompt bundle. The transitional batch binding kind and every batch
+  stage handler are deleted, not merely unused. Two recorded behavior changes:
+  planning documents are chosen by a declared deterministic category rule rather
+  than a model turn, and planning no longer generates document analyses as a side
+  effect — every capability consumes the document material that exists, and
+  Phase 9's `documents.analysis_generated` capability restores on-demand
+  generation as a declared dependency.
 
 ### Known duplication
 
@@ -336,8 +354,8 @@ WorkflowRunner             domain-neutral capability graph scheduler
 - The action ledger is domain-neutral: its audit-lifecycle switch, constants,
   enforcement helper, and catalog-specific artifact mappings have been removed.
   Action-specific reference rules live in the action catalog, while
-  `audit_capabilities.build_registry` is the active authoritative audit graph
-  until its Phase 7 move.
+  `workflows/audit.py` is the authoritative audit graph and
+  `capabilities.REGISTRY` its live composition.
 
 ### Events and live UI
 

@@ -41,7 +41,7 @@ def _executions_for(capability_ids) -> CapabilityExecutionRegistry:
             CapabilityExecution(
                 capability_id=capability_id,
                 implementation_hash=_sha256(),
-                transitional_batch_executor=lambda *_args, **_kwargs: None,
+                deterministic_executor=lambda *_args, **_kwargs: None,
             )
         )
     return executions
@@ -83,7 +83,12 @@ def test_build_audit_registry_is_deterministic_and_matches_the_startup_registry(
 # Pinning them here is the golden test that a later refactor cannot silently
 # change a stage id, worker kind, declared context preset, or invalidation set.
 _DECLARED = {
-    "planning.context_ready": ("planning_context", "planning_context", None, ("sources",)),
+    "planning.context_ready": (
+        "planning_context",
+        "planning_context",
+        "planning.context",
+        ("sources",),
+    ),
     "planning.apm_ready": ("apm", "apm", "planning.apm", ("planning:context",)),
     "planning.rcm_ready": ("rcm", "rcm", "planning.rcm", ("planning:apm",)),
     "planning.planned_tests_ready": (
@@ -98,7 +103,12 @@ _DECLARED = {
         "fieldwork.execution_definitions",
         ("planned_test",),
     ),
-    "fieldwork.executed": ("execution", "mixed_execution", None, ("definition", "evidence")),
+    "fieldwork.executed": (
+        "execution",
+        "mixed_execution",
+        "fieldwork.document_qa",
+        ("definition", "evidence"),
+    ),
     "results.rolled_up": ("rollup", "rollup", None, ("execution",)),
     "findings.drafted": (
         "findings",

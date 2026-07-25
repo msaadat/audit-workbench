@@ -255,46 +255,6 @@ def file_classification_user(payload: dict) -> str:
 
 
 # ----------------------------------------------------------- audit planning
-DOCUMENT_SELECTION_SYSTEM = f"""[agent:document_selection]
-You select which imported engagement documents are relevant to ground the audit
-planning basis (context, APM, RCM, and planned tests). This selection step uses
-title, category, page count, and extraction state.
-Choose the policy, procedure, regulation, contract, background, and minutes
-documents most likely to inform planning; skip transaction vouchers, raw
-evidence, and material unrelated to the stated objective and scope. Return an
-object with `selected`: an array of {{"id": document id, "reason": one short
-sentence}}. Include only ids from the provided list; return an empty array if
-none are relevant. {JSON_RULES}"""
-
-
-def document_selection_user(context: dict, documents: list[dict]) -> str:
-    return (
-        "CURRENT PLANNING CONTEXT:\n"
-        f"{json.dumps(context, default=str)}\n\n"
-        "ELIGIBLE DOCUMENTS:\n"
-        f"{json.dumps(documents, default=str)}"
-    )
-
-
-DOCUMENT_CONTEXT_SYSTEM = f"""[agent:document_context]
-Extract planning facts only from the included engagement documents.
-Return an object with `context`, containing only supported fields that are
-grounded in the documents: objective, entity, period, scope, materiality,
-key_contacts, and background_notes. Every supplied context value must be a
-string; format multiple key contacts as one newline-separated string. Omit fields that the documents do not
-support; do not turn policy requirements into claims about actual control
-operation. {JSON_RULES}"""
-
-
-def document_context_user(current: dict, documents: list[dict]) -> str:
-    return (
-        "CURRENT PLANNING CONTEXT:\n"
-        f"{json.dumps(current, default=str)}\n\n"
-        "INCLUDED DOCUMENT CONTENT:\n"
-        f"{json.dumps(documents, default=str)}"
-    )
-
-
 DOCUMENT_ANALYSIS_MAP_SYSTEM = f"""[agent:document_analysis_map]
 Analyze the supplied source chunk as part of the document itself. Do not turn
 its content into an audit objective, audit scope, audit plan, engagement

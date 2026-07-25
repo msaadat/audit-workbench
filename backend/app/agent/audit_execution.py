@@ -1,18 +1,25 @@
-"""Temporary audit capability execution adapters for the runtime scheduler."""
+"""Audit-side composition of the domain-neutral capability scheduler.
+
+Every audit capability is bound to a native scheduler path here: a per-unit
+pipeline binding for the model-backed ones and a per-unit deterministic
+computation for the rest. This module owns only the audit-shaped glue the
+scheduler must not know about — which worker and executor a unit uses, the
+declared context scope it resolves, the approval items an auditor sees, the
+post-commit bookkeeping, the declared checkpoint handlers, and the audit
+completion projection.
+
+The class still inherits ``ActionRunner`` for the shared task, artifact, and
+approval helpers that Phase 12 consolidates; it no longer implements any stage
+handler.
+"""
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import uuid
 
-from .. import (
-    data_tests,
-    doc_tests,
-    documents,
-    rcm_execution,
-)
+from .. import doc_tests, rcm_execution
 from ..workspace_transactions import mutate, parent_hashes
 from ..workspaces import (
     OBSERVATION_DISPOSITIONS,
@@ -23,8 +30,7 @@ from ..workspaces import (
     slugify,
 )
 from . import capabilities as audit_capabilities
-from . import context_bundles, store, workflow
-from .base import Cancelled, LimitExceeded
+from . import store, workflow
 from .action_runner import ActionRunner
 from .capabilities.reporting import (
     OBSERVATION_DISPOSITION_CHECKPOINT,
@@ -34,21 +40,31 @@ from .context import (
     ContextResolver,
     apm_document_methodology_scope,
     data_test_spec_scope,
+    document_qa_scope,
     document_test_spec_scope,
     finding_draft_scope,
     planned_test_scope,
+    planning_context_scope,
     rcm_scope,
+    supplied_source_provenance,
 )
 from .executors import EXECUTORS
 from .executors.fieldwork import (
+    DOCUMENT_QA_DISPOSITION_REQUIRED,
+    DOCUMENT_REVIEW_REQUIRED,
     DataTestExecutorTarget,
+    DocumentQaExecutorTarget,
     DocumentTestExecutorTarget,
+    document_qa_answer_ref,
     roll_up_results,
+    run_data_test,
+    run_document_test,
 )
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
     PlannedTestExecutorTarget,
+    PlanningContextExecutorTarget,
     RcmExecutorTarget,
 )
 from .executors.reporting import (
@@ -107,7 +123,7 @@ def _capability_definition_hash(capability: workflow.Capability) -> str:
 
 
 class AuditWorkflowExecution(ActionRunner):
-    """Audit execution behavior awaiting grouped Phase 7 registrations."""
+    """Per-unit audit execution bindings and projections for the scheduler."""
 
     def __init__(
         self,
@@ -118,11 +134,11 @@ class AuditWorkflowExecution(ActionRunner):
         runtime: RunRuntime | None = None,
         context_resolver: ContextResolver | None = None,
     ):
-        """Create a workflow scheduler with an injectable per-run runtime.
+        """Create the audit execution adapter with an injectable per-run runtime.
 
-        The optional dependency preserves the existing three-argument
-        construction API while the current audit-specific stage handlers and
-        temporary ``ActionRunner`` inheritance remain unchanged.
+        The optional dependencies preserve the existing three-argument
+        construction API while letting a caller supply its own runtime or context
+        resolver.
         """
         super().__init__(workspace, run, handle, runtime=runtime)
         self.context_resolver = context_resolver or ContextResolver()
@@ -168,56 +184,158 @@ class AuditWorkflowExecution(ActionRunner):
             grow_only=True,
         )
 
-    def _unit(self, stage: dict, unit_id: str) -> dict:
-        return next(item for item in stage.get("units") or [] if item["id"] == unit_id)
+    def _resolve_context(
+        self,
+        capability: workflow.Capability,
+        unit: dict,
+        scope,
+    ):
+        """Resolve declared context and record its methodology provenance.
 
-    def _set_unit(self, stage: dict, unit: dict, status: str, *, error: str | None = None, result_refs: list[str] | None = None) -> None:
-        if self.scheduler is not None:
-            self.scheduler.set_unit(
-                stage,
-                unit,
-                status,
-                error=error,
-                result_refs=result_refs,
-            )
-            return
-        was_attempted = int(unit.get("attempts") or 0)
-        maximum_attempts = int(
-            (self.run.get("limits") or {}).get("max_execution_attempts") or 2
+        Which methodology packs informed a turn is durable provenance, so it is
+        derived from the manifest the resolver actually produced rather than from
+        a run-scoped snapshot assembled before the call.
+        """
+        manifest, bundle = self.context_resolver.resolve(
+            self.ws, capability, unit, scope
         )
-        if status == "running" and was_attempted >= maximum_attempts:
-            message = (
-                f"Unit '{unit['id']}' reached its {maximum_attempts}-attempt limit."
-            )
-            workflow.transition_unit(unit, "failed", error=message)
-            self.save()
-            self.emit("unit_update", {"stage_id": stage["id"], "unit": copy.deepcopy(unit)})
-            raise LimitExceeded(message)
-        workflow.transition_unit(unit, status, error=error, result_refs=result_refs)
-        self.save()
-        self.emit("unit_update", {"stage_id": stage["id"], "unit": copy.deepcopy(unit)})
-        if status == "running" and was_attempted:
-            self.emit(
-                "unit_retry",
-                {"stage_id": stage["id"], "unit_id": unit["id"], "attempt": unit["attempts"]},
-            )
+        for source in supplied_source_provenance(self.ws, manifest):
+            self.record_model_source(source)
+        return manifest, bundle
 
-    def _planning_basis(self, stage: dict, units: list[dict]) -> None:
-        unit = units[0]
-        self._set_unit(stage, unit, "running")
-        try:
-            basis = self.stage_context()
-            projection = context_bundles.planning_basis_projection(basis)
-            sidecar = store.write_sidecar(self.ws, self.run["id"], projection)
-            self.run["planning_basis"] = basis
-            self.run["planning_basis_projection"] = sidecar
-            self._set_unit(stage, unit, "succeeded", result_refs=["planning:context"])
-        except (Cancelled, LimitExceeded):
-            raise
-        except WorkspaceConflict as error:
-            self._set_unit(stage, unit, "conflict", error=str(error))
-        except Exception as error:
-            self._set_unit(stage, unit, "failed", error=str(error))
+    def _curated_document_ids(self) -> list[str] | None:
+        """The auditor's explicit planning-document curation, if any.
+
+        Curation lives on the run, not in a derived snapshot: when the auditor
+        named documents, every model-backed planning capability is restricted to
+        exactly those. Otherwise each capability's declared bounded selector
+        decides which documents are relevant.
+        """
+        curated = [
+            str(value).strip()
+            for value in (self.context.get("document_ids") or [])
+            if str(value).strip()
+        ]
+        return curated or None
+
+    def _bind_planning_context(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Bind planning-context synthesis to the shared ``UnitPipeline``.
+
+        Synthesis reads only the declared context — the current planning context
+        and bounded material from the selected documents — and the registered
+        ``planning.context`` executor merges the accepted fields under the
+        planning-context parent guard, preserving auditor-entered fields.
+
+        When no document supplies usable material there is nothing to synthesize
+        from, so the unit settles without a model call and the existing context
+        stands. Producing durable document analyses is the documents subsystem's
+        own capability, not a side effect of planning.
+        """
+        self.ws = subject
+        document_ids = self._curated_document_ids()
+        scope = planning_context_scope(self.ws, document_ids=document_ids)
+        supplied = scope.candidates.get("planning_documents") or ()
+        task = self.add_task(
+            "context",
+            "planning:context",
+            "Assemble planning context",
+            "Reviewing workspace data and available documents…",
+        )
+        if not supplied:
+            self.warn(
+                "No document material is available to synthesize planning context; "
+                "the current context stands."
+            )
+            self.task_status(task, "completed")
+            return DeterministicUnitResult("succeeded", ("planning:context",))
+        expected_context = parent_hashes(self.ws, ["planning:context"])
+        target = PlanningContextExecutorTarget(self.ws, self.run["id"])
+        self.task_detail(
+            task,
+            f"Synthesizing planning context from {len(supplied)} "
+            f"document{'s' if len(supplied) != 1 else ''}…",
+        )
+
+        def context_provider():
+            return self._resolve_context(capability, unit, scope)
+
+        def approval_provider(proposal):
+            accepted = self.request_approval(
+                "context",
+                task,
+                [
+                    self.proposal_item(
+                        "Planning context from imported documents",
+                        "Grounded facts extracted from the selected engagement "
+                        "material.",
+                        {"context": dict(proposal.get("context") or {})},
+                        {"document_ids": list(document_ids or [])},
+                    )
+                ],
+            )
+            return {"context": dict(accepted[0]["spec"]["context"])} if accepted else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            if outcome.receipt is not None and dict(outcome.receipt.output).get(
+                "recovered_from_labelled_facts"
+            ):
+                self.warn(
+                    "Planning-context synthesis returned no usable fields; "
+                    "recovered labelled facts from the supplied documents."
+                )
+            self.record_artifact(
+                "planning", "context", "planning:context", "updated", task
+            )
+            self.task_status(task, "completed")
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="planning.context",
+                executor_id="planning.context",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": ["planning:context"],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_context,
+                capability_definition_hash=_capability_definition_hash(capability),
+                approval_kind=(
+                    "context" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            # Deliberately not a post-commit postcondition: this capability's
+            # readiness requires a stated objective and scope, and documents alone
+            # may not supply both. A committed synthesis is a real outcome even
+            # when the auditor still has to state the objective, so the commit is
+            # not failed for it.
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
 
     def _bind_apm(
         self,
@@ -238,14 +356,6 @@ class AuditWorkflowExecution(ActionRunner):
         """
         self.ws = subject
         expected_context = parent_hashes(self.ws, ["planning:context"])
-        basis = self.run.get("planning_basis") or {
-            "planning": self.ws.planning, "tables": [], "documents": [], "methodology": []
-        }
-        selected_document_ids = [
-            str(item.get("document_id"))
-            for item in basis.get("document_analyses") or []
-            if item.get("document_id")
-        ]
         target = ApmExecutorTarget(
             self.ws,
             self.run["id"],
@@ -254,18 +364,12 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("apm", "workflow:apm", "Audit planning memorandum")
 
         def context_provider():
-            return self.context_resolver.resolve(
-                self.ws,
+            return self._resolve_context(
                 capability,
                 unit,
                 apm_document_methodology_scope(
                     self.ws,
-                    planning_context=(basis.get("planning") or {}).get("context") or {},
-                    document_ids=(
-                        selected_document_ids
-                        if "document_analyses" in basis
-                        else None
-                    ),
+                    document_ids=self._curated_document_ids(),
                 ),
             )
 
@@ -351,12 +455,6 @@ class AuditWorkflowExecution(ActionRunner):
         """
         self.ws = subject
         expected_apm = parent_hashes(self.ws, ["planning:apm"])
-        basis = self.run.get("planning_basis") or {"planning": self.ws.planning}
-        selected_document_ids = [
-            str(item.get("document_id"))
-            for item in basis.get("document_analyses") or []
-            if item.get("document_id")
-        ]
         target = RcmExecutorTarget(
             self.ws,
             self.run["id"],
@@ -365,18 +463,12 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("rcm", "workflow:rcm", "Risk and control matrix")
 
         def context_provider():
-            return self.context_resolver.resolve(
-                self.ws,
+            return self._resolve_context(
                 capability,
                 unit,
                 rcm_scope(
                     self.ws,
-                    planning_context=(basis.get("planning") or {}).get("context") or {},
-                    document_ids=(
-                        selected_document_ids
-                        if "document_analyses" in basis
-                        else None
-                    ),
+                    document_ids=self._curated_document_ids(),
                 ),
             )
 
@@ -463,12 +555,6 @@ class AuditWorkflowExecution(ActionRunner):
         self.ws = subject
         rcm_id = unit["parent_refs"][0].split(":", 1)[1]
         expected_row = parent_hashes(self.ws, [f"rcm:{rcm_id}"])
-        basis = self.run.get("planning_basis") or {"planning": self.ws.planning}
-        selected_document_ids = [
-            str(item.get("document_id"))
-            for item in basis.get("document_analyses") or []
-            if item.get("document_id")
-        ]
         target = PlannedTestExecutorTarget(
             self.ws,
             self.run["id"],
@@ -478,19 +564,13 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("work_program", "workflow:planned_tests", "RCM planned tests")
 
         def context_provider():
-            return self.context_resolver.resolve(
-                self.ws,
+            return self._resolve_context(
                 capability,
                 unit,
                 planned_test_scope(
                     self.ws,
                     rcm_id,
-                    planning_context=(basis.get("planning") or {}).get("context") or {},
-                    document_ids=(
-                        selected_document_ids
-                        if "document_analyses" in basis
-                        else None
-                    ),
+                    document_ids=self._curated_document_ids(),
                 ),
             )
 
@@ -611,8 +691,7 @@ class AuditWorkflowExecution(ActionRunner):
         )
 
         def context_provider():
-            return self.context_resolver.resolve(
-                self.ws,
+            return self._resolve_context(
                 capability,
                 unit,
                 scope_builder(self.ws, rcm_id, planned_id),
@@ -691,134 +770,144 @@ class AuditWorkflowExecution(ActionRunner):
             on_committed=on_committed,
         )
 
-    def _executions(self, stage: dict, units: list[dict]) -> None:
-        """Execute every fieldwork unit and record the outcome as a status.
+    def _bind_execution(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Bind one fieldwork-execution unit to the execution it actually needs.
+
+        This capability fans out into four unit kinds and only one of them —
+        document Q&A — asks the model anything. The binding therefore returns a
+        ``BoundUnitPipeline`` for that kind and a ``DeterministicUnitResult`` for
+        the local ones, which is how a capability with mixed units keeps exactly
+        one execution binding.
 
         The status vocabulary carries audit meaning, not just success/failure:
-        `awaiting_confirmation` means the agent produced an answer that only an
-        auditor may disposition, and `blocked` means evidence is missing —
+        ``awaiting_confirmation`` means the agent produced something only an
+        auditor may disposition, and ``blocked`` means evidence is missing —
         which registers the unit against its evidence request so uploading the
         document can unblock it later.
         """
-        # Existing services still combine compute and mutation, so execution is
-        # deliberately serial. Model planning/spec calls above are safe to fan out.
-        for unit in sorted(units, key=lambda item: item["id"]):
-            if unit["status"] in {"succeeded", "skipped"}:
-                continue
-            self.checkpoint()
-            self._set_unit(stage, unit, "running")
-            try:
-                if unit["kind"] == "document_test_review":
-                    artifact_ref = next(
-                        ref for ref in unit["parent_refs"] if ref.startswith("doctest:")
-                    )
-                    self._set_unit(
-                        stage, unit, "awaiting_confirmation",
-                        error="Auditor review or disposition is required.",
-                        result_refs=[artifact_ref],
-                    )
-                    continue
-                if unit["kind"] == "document_qa_execution":
-                    test_id = next(
-                        ref.split(":", 1)[1]
-                        for ref in unit["parent_refs"] if ref.startswith("doctest:")
-                    )
-                    item_id = next(
-                        ref.split(":", 1)[1]
-                        for ref in unit["parent_refs"] if ref.startswith("docitem:")
-                    )
-                    document_id = next(
-                        ref.split(":", 1)[1]
-                        for ref in unit["parent_refs"] if ref.startswith("document:")
-                    )
-                    self._refresh_workspace()
-                    test = doc_tests.load_test(self.ws, test_id)
-                    test_item = next(
-                        item for item in test.get("items") or [] if item["id"] == item_id
-                    )
-                    self._model_context.unit_id = unit["id"]
-                    self._model_context.parent_refs = tuple(unit.get("parent_refs") or [])
-                    try:
-                        answer = documents.document_chat(
-                            self.ws, document_id, str(test_item.get("question") or ""),
-                            test_item.get("pages"), run_id=self.run["id"],
-                            model_adapter=self._document_qa_adapter,
-                        )
-                    finally:
-                        self._model_context.unit_id = None
-                        self._model_context.parent_refs = None
-                    doc_tests.commit_qa_answer(
-                        self.ws, test_id, item_id, document_id, answer
-                    )
-                    self._set_unit(
-                        stage, unit, "awaiting_confirmation",
-                        error="The cited answer requires auditor disposition.",
-                        result_refs=[f"doctest:{test_id}:item:{item_id}:document:{document_id}"],
-                    )
-                    self.emit(
-                        "workspace_changed",
-                        {"kind": "doctest", "id": test_id, "action": "qa_answered"},
-                    )
-                    continue
-                artifact_ref = unit["parent_refs"][-1]
-                kind, item_id = artifact_ref.split(":", 1)
-                self._refresh_workspace()
-                if kind == "datatest":
-                    result = data_tests.run(self.ws, item_id)
-                    ref = f"datatest:{item_id}:{result['id']}"
-                    status = "succeeded" if result.get("semantic_valid") else "blocked"
-                    self._set_unit(stage, unit, status, error=None if status == "succeeded" else "; ".join(result.get("semantic_issues") or []), result_refs=[ref])
-                else:
-                    test = doc_tests.load_test(self.ws, item_id)
-                    if doc_tests.evidence_blocked(test):
-                        changed_request = False
-                        for request in self.ws.evidence_requests:
-                            if (
-                                request.get("document_test_id") == item_id
-                                and request.get("status") == "open"
-                            ):
-                                request["blocked_unit_id"] = unit["id"]
-                                request["updated"] = self.ws._updated_now()
-                                changed_request = True
-                        if changed_request:
-                            self.ws.save()
-                        self._set_unit(stage, unit, "blocked", error=test.get("scope_limitations") or "Evidence is unavailable.", result_refs=[artifact_ref])
-                        continue
-                    for test_item in test.get("items") or []:
-                        if test_item.get("state") in {"confirmed", "exception"}:
-                            continue
-                        doc_tests.run_item(
-                            self.ws, item_id, test_item["id"], run_id=self.run["id"],
-                            model_adapter=self._document_qa_adapter,
-                        )
-                    test = doc_tests.load_test(self.ws, item_id)
-                    rollup = doc_tests.result_rollup(test)
-                    if rollup["pending"] or rollup["manual_review"]:
-                        test["status"] = "review_required"
-                        status = "awaiting_confirmation"
-                    else:
-                        test["status"] = "completed"
-                        status = "succeeded"
-                    doc_tests.save_test(self.ws, test)
-                    self._set_unit(stage, unit, status, error="Auditor review or disposition is required." if status != "succeeded" else None, result_refs=[artifact_ref])
-                self.emit("workspace_changed", {"kind": kind, "id": item_id, "action": "executed"})
-            except (Cancelled, LimitExceeded):
-                raise
-            except WorkspaceConflict as error:
-                self._set_unit(stage, unit, "conflict", error=str(error))
-            except Exception as error:
-                self._set_unit(stage, unit, "failed", error=str(error))
-
-    def _document_qa_adapter(self, messages: list[dict], activity: dict) -> dict:
-        activity = dict(activity or {})
-        attempt = int(activity.pop("retry_number", 1) or 1)
-        content = self._llm_content(
-            str(messages[0].get("content") or ""),
-            str(messages[1].get("content") or ""),
-            activity,
-            attempt=attempt,
+        self.ws = subject
+        if unit["kind"] == "document_test_review":
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (self._unit_ref(unit, "doctest:"),),
+                DOCUMENT_REVIEW_REQUIRED,
+            )
+        # Existing execution services combine compute and mutation and check the
+        # revision they were handed, so each unit runs against a freshly loaded
+        # workspace rather than the subject the stage started with.
+        self._refresh_workspace()
+        if unit["kind"] == "document_qa_execution":
+            return self._bind_document_qa(capability, stage, unit)
+        artifact_ref = unit["parent_refs"][-1]
+        kind, item_id = artifact_ref.split(":", 1)
+        try:
+            if kind == "datatest":
+                outcome = run_data_test(self.ws, item_id)
+            else:
+                outcome = run_document_test(
+                    self.ws, item_id, unit_id=unit["id"], run_id=self.run["id"]
+                )
+        except WorkspaceConflict as error:
+            return DeterministicUnitResult("conflict", error=str(error))
+        if outcome.executed:
+            self.emit(
+                "workspace_changed",
+                {"kind": kind, "id": item_id, "action": "executed"},
+            )
+        return DeterministicUnitResult(
+            outcome.status, (outcome.artifact_ref,), outcome.error
         )
-        return {"content": content}
+
+    @staticmethod
+    def _unit_ref(unit: dict, prefix: str) -> str:
+        return next(ref for ref in unit["parent_refs"] if ref.startswith(prefix))
+
+    def _bind_document_qa(
+        self,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind one item/document Q&A unit to the shared ``UnitPipeline``.
+
+        The answer now comes from the registered ``fieldwork.document_qa`` worker
+        through the injected gateway and the declared page context, and the
+        registered executor owns the guarded merge into the Document Test. The
+        answer is never a finished conclusion, so the post-commit callback folds
+        the unit to ``awaiting_confirmation`` instead of ``succeeded``.
+        """
+        test_id = self._unit_ref(unit, "doctest:").split(":", 1)[1]
+        item_id = self._unit_ref(unit, "docitem:").split(":", 1)[1]
+        document_id = self._unit_ref(unit, "document:").split(":", 1)[1]
+        expected_test = parent_hashes(self.ws, [f"doctest:{test_id}"])
+        target = DocumentQaExecutorTarget(
+            self.ws, self.run["id"], test_id, item_id, document_id
+        )
+        task = self.add_task("execution", "workflow:execution", "Fieldwork execution")
+
+        def context_provider():
+            return self._resolve_context(
+                capability,
+                unit,
+                document_qa_scope(self.ws, test_id, item_id, document_id),
+            )
+
+        def on_committed(_stage, _unit, outcome) -> DeterministicUnitResult:
+            self.ws = target.workspace
+            self.emit(
+                "workspace_changed",
+                {"kind": "doctest", "id": test_id, "action": "qa_answered"},
+            )
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (document_qa_answer_ref(test_id, item_id, document_id),),
+                DOCUMENT_QA_DISPOSITION_REQUIRED,
+            )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="fieldwork.document_qa",
+                executor_id="fieldwork.document_qa",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": list(unit.get("parent_refs") or []),
+                    "document_ids": [document_id],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected_test,
+                capability_definition_hash=_capability_definition_hash(capability),
+                # A cited answer is a candidate for auditor disposition, not an
+                # artifact the auditor pre-approves, so no approval batch is
+                # requested even in permission mode.
+                approval_kind=None,
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=None,
+            # Execution fans out one unit per artifact, question, and document, so
+            # this capability's readiness only holds once every unit has settled.
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
 
     def _bind_rollup(
         self,
@@ -922,8 +1011,7 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("findings", "workflow:findings", "Eligible finding drafts")
 
         def context_provider():
-            return self.context_resolver.resolve(
-                self.ws,
+            return self._resolve_context(
                 capability,
                 unit,
                 finding_draft_scope(self.ws, observation_id),
@@ -1105,77 +1193,6 @@ class AuditWorkflowExecution(ActionRunner):
         )
         return DeterministicUnitResult("blocked", (VERIFICATION_REF,), error)
 
-    # --------------------------------------------------------- concurrency
-    def _parallel_candidates(self, stage: dict, units: list[dict], worker_fn):
-        """Generate one model proposal per unit, concurrently, then hand back
-        deterministic (unit, candidate) pairs for serialized commit.
-
-        Generation is the expensive, parallelizable half; commit is the
-        ordering-sensitive half and stays with the caller. A unit whose
-        proposal was already generated in an earlier attempt is restored from
-        its sidecar instead of being re-billed to the model.
-        """
-        pending = []
-        candidates = []
-        for unit in units:
-            if unit.get("status") in {"succeeded", "skipped"}:
-                continue
-            sidecar = unit.get("proposal_sidecar")
-            if sidecar:
-                try:
-                    value = store.read_sidecar(self.ws, self.run["id"], sidecar)
-                    self._set_unit(stage, unit, "running")
-                    candidates.append((unit, value))
-                    self.emit(
-                        "proposal_reused",
-                        {"stage_id": stage["id"], "unit_id": unit["id"], "sidecar": sidecar},
-                    )
-                    continue
-                except (OSError, ValueError, WorkspaceError):
-                    unit["proposal_sidecar"] = None
-            pending.append(unit)
-        for unit in pending:
-            self.checkpoint()
-            self._set_unit(stage, unit, "running")
-
-        # Thread-local correlation: _llm_content reads these to attribute
-        # concurrent provider calls to the right unit in the provenance ledger.
-        def correlated_worker(unit: dict):
-            self._model_context.unit_id = unit["id"]
-            self._model_context.parent_refs = tuple(unit.get("parent_refs") or [])
-            try:
-                return worker_fn(unit)
-            finally:
-                self._model_context.unit_id = None
-                self._model_context.parent_refs = None
-
-        # Persist each proposal as it settles, before any commit runs. A crash
-        # between generation and commit then resumes from the sidecar rather
-        # than paying for the same completion twice.
-        def persist_proposal(unit: dict, value, error) -> None:
-            if error is not None:
-                return
-            unit["proposal_sidecar"] = store.write_sidecar(
-                self.ws, self.run["id"], value
-            )
-            self.save()
-
-        settled = workflow.stable_all_settled(
-            pending, correlated_worker,
-            max_workers=int((self.run.get("limits") or {}).get("max_llm_concurrency") or 4),
-            on_settled=persist_proposal,
-        )
-        # Per-unit failures are absorbed so siblings still commit; cancellation
-        # and budget exhaustion are run-level and must propagate.
-        for unit, value, error in settled:
-            if error is not None:
-                if isinstance(error, (Cancelled, LimitExceeded)):
-                    raise error
-                self._set_unit(stage, unit, "failed", error=str(error))
-                continue
-            candidates.append((unit, value))
-        return sorted(candidates, key=lambda item: item[0]["id"])
-
     # --------------------------------------------------------- interactions
     def _wait_interaction_response(self, interaction: dict) -> dict:
         return self.runtime.wait_for_interaction(interaction)
@@ -1255,14 +1272,6 @@ class AuditWorkflowExecution(ActionRunner):
         )
 
 
-# Capabilities still executed by the transitional batch adapter. Migrated
-# capabilities (native pipeline bindings) are handled explicitly below and are
-# intentionally absent from this map.
-_AUDIT_HANDLER_NAMES = {
-    "planning.context_ready": "_planning_basis",
-    "fieldwork.executed": "_executions",
-}
-
 _PARTIAL_DEPENDENCIES = {
     "fieldwork.definitions_ready": {"planning.planned_tests_ready"},
     "fieldwork.executed": {"fieldwork.definitions_ready"},
@@ -1300,10 +1309,16 @@ def build_audit_workflow_runner(
         executors=EXECUTORS,
         sidecars=UnitSidecarStore(workspace, run["id"]),
     )
-    # Capabilities that have completed their Phase 7 execution migration are
-    # registered as native pipeline bindings; the domain-neutral scheduler drives
-    # their UnitPipeline. Everything else still uses the transitional batch adapter.
+    # Every audit capability is bound to a native scheduler path. A
+    # pipeline-backed capability supplies a per-unit binding the domain-neutral
+    # scheduler drives through ``UnitPipeline``; a deterministic one supplies a
+    # per-unit computation with no model call. There is no transitional batch
+    # handler left.
     _PIPELINE_BINDERS = {
+        "planning.context_ready": (
+            adapter._bind_planning_context,
+            {"worker": "planning.context", "executor": "planning.context"},
+        ),
         "planning.apm_ready": (
             adapter._bind_apm,
             {"worker": "planning.apm", "executor": "planning.apm"},
@@ -1326,13 +1341,24 @@ def build_audit_workflow_runner(
                 "executor": "fieldwork.data_test|fieldwork.document_test",
             },
         ),
+        "fieldwork.executed": (
+            adapter._bind_execution,
+            {
+                "worker": "fieldwork.document_qa",
+                "executor": "fieldwork.document_qa",
+                "deterministic": (
+                    "fieldwork.data_test_run|fieldwork.document_test_run|"
+                    "fieldwork.document_test_review"
+                ),
+            },
+        ),
         "findings.drafted": (
             adapter._bind_finding,
             {"worker": "reporting.finding", "executor": "reporting.finding"},
         ),
     }
-    # Deterministic (no-model) capabilities bound through the scheduler's
-    # deterministic execution path instead of the transitional batch adapter.
+    # Capabilities whose every unit is deterministic, bound through the
+    # scheduler's deterministic execution path.
     _DETERMINISTIC_BINDERS = {
         "results.rolled_up": (
             adapter._bind_rollup,
@@ -1370,41 +1396,14 @@ def build_audit_workflow_runner(
                 )
             )
             continue
-        deterministic_binding = _DETERMINISTIC_BINDERS.get(capability.id)
-        if deterministic_binding is not None:
-            binder, identity = deterministic_binding
-            executions.register(
-                CapabilityExecution(
-                    capability_id=capability.id,
-                    implementation_hash=_sha256_json(
-                        {"capability": capability.id, **identity}
-                    ),
-                    deterministic_executor=binder,
-                )
-            )
-            continue
-        handler_name = _AUDIT_HANDLER_NAMES[capability.id]
-        handler = getattr(adapter, handler_name)
-
-        def execute_batch(
-            _scheduler: WorkflowRunner,
-            stage: dict,
-            units: list[dict],
-            *,
-            _handler=handler,
-        ) -> None:
-            _handler(stage, units)
-
+        binder, identity = _DETERMINISTIC_BINDERS[capability.id]
         executions.register(
             CapabilityExecution(
                 capability_id=capability.id,
                 implementation_hash=_sha256_json(
-                    {
-                        "capability": capability.id,
-                        "adapter": handler_name,
-                    }
+                    {"capability": capability.id, **identity}
                 ),
-                transitional_batch_executor=execute_batch,
+                deterministic_executor=binder,
             )
         )
 
