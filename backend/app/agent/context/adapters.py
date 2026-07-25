@@ -1267,7 +1267,269 @@ def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextSco
     )
 
 
+# --------------------------------------------------------------------------- #
+# analysis.definitions (P8.6)
+# --------------------------------------------------------------------------- #
+ANALYSIS_TARGET_SCHEMA_SOURCE_ID = "target_schema"
+ANALYSIS_TARGET_PROFILE_SOURCE_ID = "target_profile"
+ANALYSIS_TARGET_AGGREGATE_SOURCE_ID = "target_aggregates"
+ANALYSIS_RELATED_FRAMES_SOURCE_ID = "related_frames"
+ANALYSIS_RELATIONSHIP_SOURCE_ID = "relationship_evidence"
+ANALYSIS_REGISTRY_SOURCE_ID = "analytics_registry"
+ANALYSIS_CURRENT_SOURCE_ID = "current_analyses"
+
+# Aggregate columns are bounded so a wide table cannot consume the declaration's
+# whole character budget before the resolver even sees it.
+MAX_AGGREGATE_COLUMNS = 24
+
+# Profiler fields that are literal values drawn from rows. Text ``min``/``max``
+# and ``top_values`` are exactly the category literals the planning presets
+# already withhold, so the aggregate projection drops them; numeric and date
+# summaries stay, matching the established table-profile policy.
+_LITERAL_PROFILE_FIELDS = ("top_values",)
+
+
+def _aggregate_column(profile: Mapping[str, object]) -> dict[str, object]:
+    """One value-free column aggregate derived from the cached profile."""
+    inferred = str(profile.get("inferred_type") or "")
+    aggregate: dict[str, object] = {
+        "column": profile.get("name"),
+        "dtype": profile.get("dtype"),
+        "inferred_type": inferred,
+        "rows": profile.get("total"),
+        "blank_count": profile.get("blank_count"),
+        "blank_pct": profile.get("blank_pct"),
+        "distinct_count": profile.get("distinct_count"),
+        "distinct_pct": profile.get("distinct_pct"),
+    }
+    if inferred in {"numeric", "date"}:
+        aggregate.update(
+            minimum=profile.get("min"),
+            maximum=profile.get("max"),
+            mean=profile.get("mean"),
+        )
+    return aggregate
+
+
+def analysis_aggregate_candidates(
+    workspace: Workspace,
+    target: str,
+) -> tuple[ContextCandidate, ...]:
+    """Bounded, value-free aggregates for one analysis target frame.
+
+    Derived from the workspace's cached profile rather than a fresh Polars pass,
+    so this adapter reuses the existing deterministic service instead of
+    duplicating it. Category literals and top-value samples are dropped: an
+    aggregate describes shape and distribution, never the population's values.
+    """
+    try:
+        profile = workspace.get_profile(target)
+    except (OSError, WorkspaceError):
+        return ()
+    columns = list(profile.get("column_profiles") or [])[:MAX_AGGREGATE_COLUMNS]
+    overview = {
+        "table": target,
+        "scope": "table",
+        "rows": profile.get("rows"),
+        "columns": profile.get("columns"),
+        "duplicate_rows": profile.get("duplicate_rows"),
+        "sampled": profile.get("sampled"),
+        "profiled_columns": len(columns),
+    }
+    candidates = [
+        ContextCandidate(
+            source_ref=f"aggregate:{target}",
+            source=overview,
+            representations={"table_aggregate": overview},
+            metadata={"table": target, "scope": "table"},
+            lexical_text=target,
+        )
+    ]
+    for column_profile in columns:
+        if any(field in column_profile for field in _LITERAL_PROFILE_FIELDS):
+            column_profile = {
+                key: value
+                for key, value in column_profile.items()
+                if key not in _LITERAL_PROFILE_FIELDS
+            }
+        aggregate = {"table": target, "scope": "column", **_aggregate_column(column_profile)}
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"aggregate:{target}:{aggregate['column']}",
+                source=aggregate,
+                representations={"table_aggregate": aggregate},
+                metadata={"table": target, "column": aggregate["column"]},
+                lexical_text=f"{target} {aggregate['column']}",
+            )
+        )
+    return tuple(candidates)
+
+
+def analysis_relationship_candidates(
+    workspace: Workspace,
+    target: str,
+    relationships: Iterable[Mapping[str, object]] | None = None,
+) -> tuple[ContextCandidate, ...]:
+    """Deterministic join evidence involving the target frame.
+
+    ``relationships`` are the diagnostics the relationship capability already
+    recorded on the run. Nothing is re-derived here and no relationship fact is
+    ever asked of the model; this only exposes the aggregate evidence for the
+    joins the target participates in.
+    """
+    candidates = []
+    for record in relationships or ():
+        left = str(record.get("left") or "")
+        right = str(record.get("right") or "")
+        if target not in {left, right}:
+            continue
+        evidence = {
+            "scope": "relationship",
+            "left": left,
+            "right": right,
+            "left_on": list(record.get("left_on") or []),
+            "right_on": list(record.get("right_on") or []),
+            "how": record.get("how"),
+            "strength": record.get("strength"),
+            "materialized_join": record.get("join"),
+            "diagnostics": dict(record.get("diagnostics") or {}),
+        }
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"relationship:{left}:{right}:"
+                f"{'-'.join(evidence['left_on'])}:{'-'.join(evidence['right_on'])}",
+                source=evidence,
+                representations={"table_aggregate": evidence},
+                metadata={"left": left, "right": right},
+                lexical_text=f"{left} {right}",
+            )
+        )
+    return tuple(candidates)
+
+
+def analysis_definition_scope(
+    workspace: Workspace,
+    target: str,
+    *,
+    related: Iterable[str] = (),
+    relationships: Iterable[Mapping[str, object]] | None = None,
+    analytics_registry: object = None,
+) -> ContextScope:
+    """Build the local candidate scope for one analysis-definition unit.
+
+    Every model-facing input is metadata, a bounded statistical profile, or a
+    value-free aggregate. ``table_rows`` is never produced, and the declaration
+    denies the permission as well, so row-level data cannot reach the worker
+    even if an adapter regressed.
+    """
+    from ... import analytics as analytics_module
+
+    if target not in workspace.table_names():
+        raise WorkspaceError(f"Unknown table '{target}'.")
+    schema = next(
+        (
+            item
+            for item in assistant.schema_brief(workspace)
+            if str(item.get("table") or "") == target and not item.get("error")
+        ),
+        None,
+    )
+    if schema is None:
+        raise WorkspaceError(f"Table '{target}' has no readable schema.")
+    profile_candidates = tuple(
+        candidate
+        for candidate in apm_table_profile_candidates(workspace)
+        if candidate.metadata.get("table") == target
+    )
+    related_names = [
+        name
+        for name in dict.fromkeys(str(value) for value in related)
+        if name != target and name in workspace.table_names()
+    ]
+    related_candidates = tuple(
+        candidate
+        for candidate in apm_table_metadata_candidates(workspace)
+        if candidate.metadata.get("table") in set(related_names)
+    )
+    # A compact projection of the analytics catalog: enough for the worker to
+    # name a real test with real parameters, without spending the declaration's
+    # character budget on prose descriptions.
+    registry = (
+        analytics_registry
+        if analytics_registry is not None
+        else [
+            {
+                "id": item["id"],
+                "label": item.get("label"),
+                "params": [
+                    {"name": parameter.get("name"), "kind": parameter.get("kind")}
+                    for parameter in item.get("params") or []
+                ],
+            }
+            for item in analytics_module.registry_payload()
+        ]
+    )
+    current = [
+        {
+            key: item.get(key)
+            for key in ("id", "title", "kind", "table", "spec", "semantic_id", "created_by")
+        }
+        for item in workspace.analyses
+        if str(item.get("table") or "") == target
+    ]
+    return ContextScope(
+        candidates={
+            ANALYSIS_TARGET_SCHEMA_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=f"table:{target}",
+                    source=schema,
+                    representations={"table_metadata": schema},
+                    metadata={"table": target},
+                    lexical_text=target,
+                ),
+            ),
+            ANALYSIS_TARGET_PROFILE_SOURCE_ID: profile_candidates,
+            ANALYSIS_TARGET_AGGREGATE_SOURCE_ID: analysis_aggregate_candidates(
+                workspace, target
+            ),
+            ANALYSIS_RELATED_FRAMES_SOURCE_ID: related_candidates,
+            ANALYSIS_RELATIONSHIP_SOURCE_ID: analysis_relationship_candidates(
+                workspace, target, relationships
+            ),
+            ANALYSIS_REGISTRY_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="registry:analytics",
+                    source=registry,
+                    representations={"current_artifact": registry},
+                    metadata={"registry": "analytics"},
+                ),
+            ),
+            ANALYSIS_CURRENT_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=f"analysis:{item['id']}",
+                    source=item,
+                    representations={"current_artifact": item},
+                    metadata={"analysis_id": str(item["id"])},
+                )
+                for item in current
+            ),
+        },
+        selector_context={"analysis_query": target},
+    )
+
+
 __all__ = [
+    "ANALYSIS_CURRENT_SOURCE_ID",
+    "ANALYSIS_REGISTRY_SOURCE_ID",
+    "ANALYSIS_RELATED_FRAMES_SOURCE_ID",
+    "ANALYSIS_RELATIONSHIP_SOURCE_ID",
+    "ANALYSIS_TARGET_AGGREGATE_SOURCE_ID",
+    "ANALYSIS_TARGET_PROFILE_SOURCE_ID",
+    "ANALYSIS_TARGET_SCHEMA_SOURCE_ID",
+    "MAX_AGGREGATE_COLUMNS",
+    "analysis_aggregate_candidates",
+    "analysis_definition_scope",
+    "analysis_relationship_candidates",
     "APM_DOCUMENT_SOURCE_ID",
     "APM_METHODOLOGY_SOURCE_ID",
     "APM_TABLE_METADATA_SOURCE_ID",

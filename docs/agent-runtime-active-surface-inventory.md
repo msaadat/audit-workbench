@@ -150,12 +150,23 @@ from its explicit `engine`:
 | `engine="intake"` | `IntakeRunner` |
 | `engine="doc_test"` | `DocTestRunner` |
 | `engine="document_analysis"` | `DocumentAnalysisRunner` |
-| `engine="workflow"` | runtime `WorkflowRunner` composed by `audit_execution.build_audit_workflow_runner(...)` |
+| `engine="workflow"` | runtime `WorkflowRunner` composed by `workflow_dispatch.build_workflow_runner(...)` |
 | `engine="action"` | `ActionRunner` |
 | `engine="analysis"` | legacy `_Runner` analysis pipeline |
 
 Missing or unsupported engines fail closed. No engine is inferred from `kind` or
 `schema_version` while loading, resuming, or dispatching a run.
+
+A workflow run additionally persists the authoritative workflow definition ID
+routing resolved, so `workflow_dispatch.build_workflow_runner(...)` selects the
+composition by lookup rather than inference:
+
+| Persisted `workflow.definition` | Composition |
+|---|---|
+| `audit_workflow_v2` | `audit_execution.build_audit_workflow_runner(...)` |
+| `analysis_workflow_v1` | `analysis_execution.build_analysis_workflow_runner(...)` |
+
+A missing or unsupported definition fails closed the same way.
 
 The four protocol values are explicit migration scaffolding for live schedulers,
 not compatibility aliases. Document analysis migrates in Phase 9; Phase 10

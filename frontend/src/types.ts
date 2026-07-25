@@ -1283,11 +1283,15 @@ export interface WorkflowStage {
 }
 
 export interface AgentWorkflow {
-  definition: 'audit_workflow_v2' | string
+  definition: 'audit_workflow_v2' | 'analysis_workflow_v1' | string
+  definition_hash?: string
   revision: number
   route: 'workflow'
   requested_outcomes: string[]
   target_refs: string[]
+  // Normalized scope the run resolved (target refs plus any workflow-specific
+  // selection, such as the tables an analysis run covers).
+  scope?: Record<string, unknown>
   generation_mode: 'reuse_existing' | 'force'
   workflow_explanation: string
   next_outcomes: string[]

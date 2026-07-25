@@ -99,7 +99,9 @@ def test_full_template_materializes_locally_without_command_interpreter():
         ),
         ("apm_only", "workflow", ["planning.apm_ready"]),
         ("report", "workflow", ["report.working_draft", "audit.verified"]),
-        ("data_analysis", "generic_action", []),
+        # Phase 8 made data analysis a declared workflow goal; document testing
+        # remains an isolated ActionRunner operation.
+        ("data_analysis", "workflow", ["analysis.executed"]),
         ("document_testing", "generic_action", []),
     ],
 )
@@ -134,8 +136,8 @@ def test_known_isolated_action_is_persisted_as_action_before_launch(workspace_wi
         "auto",
         {
             "source": "goal_template",
-            "text": "Analyze the available data",
-            "goal_template": "data_analysis",
+            "text": "Test the signed policy document",
+            "goal_template": "document_testing",
         },
     )
 

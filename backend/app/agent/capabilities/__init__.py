@@ -1,15 +1,17 @@
-"""Grouped audit capability composition and startup validation.
+"""Grouped capability composition and startup validation.
 
-This package composes the audit capability registry from the grouped
-``planning``, ``fieldwork``, and ``reporting`` modules, and validates that the
-composition matches the authoritative dependency graph in
-:mod:`agent.workflows.audit` before any writer relies on it.
+This package composes each workflow's capability registry from its grouped
+modules and validates the composition against the authoritative dependency graph
+that owns it — :mod:`agent.workflows.audit` for the audit lifecycle and
+:mod:`agent.workflows.analysis` for the exploratory data-analysis workflow —
+before any writer relies on it.
 
-``AUDIT_REGISTRY`` is the live registry for routing and audit dispatch. It is
-built and validated at import (startup validation), so an inconsistent grouping,
-a graph mismatch, an undeclared context preset, or a dependency cycle fails fast
-rather than at run time. The audit artifact hashes the executors stamp and
-reconcile against are re-exported here from :mod:`._shared`.
+``AUDIT_REGISTRY`` and ``ANALYSIS_REGISTRY`` are the live registries for routing
+and dispatch. Both are built and validated at import (startup validation), so an
+inconsistent grouping, a graph mismatch, an undeclared context preset, or a
+dependency cycle fails fast rather than at run time. The audit artifact hashes
+the executors stamp and reconcile against are re-exported here from
+:mod:`._shared`.
 """
 
 from __future__ import annotations
@@ -17,8 +19,9 @@ from __future__ import annotations
 from ..context import PRESETS
 from ..runtime import CapabilityExecutionRegistry
 from ..workflow import CapabilityRegistry
+from ..workflows import analysis as analysis_workflow
 from ..workflows import audit as audit_workflow
-from . import fieldwork, planning, reporting
+from . import analysis, fieldwork, planning, reporting
 from ._shared import (
     apm_sha1,
     planned_test_sha1,
@@ -33,56 +36,83 @@ FULL_AUDIT_OUTCOMES = audit_workflow.FULL_AUDIT_OUTCOMES
 TEMPLATE_OUTCOMES = audit_workflow.TEMPLATE_OUTCOMES
 outcomes_for_template = audit_workflow.outcomes_for_template
 
+FULL_ANALYSIS_OUTCOMES = analysis_workflow.FULL_ANALYSIS_OUTCOMES
+ANALYSIS_TEMPLATE_OUTCOMES = analysis_workflow.TEMPLATE_OUTCOMES
+analysis_outcomes_for_template = analysis_workflow.outcomes_for_template
+
 # Grouped capability modules in authoritative order. Each module owns a disjoint
-# slice of the audit graph and exposes ``CAPABILITY_IDS`` plus ``capabilities()``.
+# slice of its workflow graph and exposes ``CAPABILITY_IDS`` plus
+# ``capabilities()``.
 CAPABILITY_GROUPS = (planning, fieldwork, reporting)
+ANALYSIS_CAPABILITY_GROUPS = (analysis,)
 
 
 class AuditCompositionError(ValueError):
-    """Raised when the grouped audit composition is internally inconsistent."""
+    """Raised when a grouped capability composition is internally inconsistent."""
+
+
+def _group_ids(groups: tuple) -> tuple[str, ...]:
+    return tuple(
+        capability_id for group in groups for capability_id in group.CAPABILITY_IDS
+    )
 
 
 def grouped_capability_ids() -> tuple[str, ...]:
-    """Every capability ID contributed by the grouped modules, in order."""
+    """Every capability ID contributed by the audit groups, in order."""
 
-    return tuple(
-        capability_id
-        for group in CAPABILITY_GROUPS
-        for capability_id in group.CAPABILITY_IDS
-    )
+    return _group_ids(CAPABILITY_GROUPS)
+
+
+def grouped_analysis_capability_ids() -> tuple[str, ...]:
+    """Every capability ID contributed by the analysis groups, in order."""
+
+    return _group_ids(ANALYSIS_CAPABILITY_GROUPS)
+
+
+def _build_registry(groups: tuple) -> CapabilityRegistry:
+    registry = CapabilityRegistry()
+    for group in groups:
+        for capability in group.capabilities():
+            registry.register(capability)
+    return registry
 
 
 def build_audit_registry() -> CapabilityRegistry:
     """Compose the audit capability registry from the grouped modules."""
 
-    registry = CapabilityRegistry()
-    for group in CAPABILITY_GROUPS:
-        for capability in group.capabilities():
-            registry.register(capability)
-    return registry
+    return _build_registry(CAPABILITY_GROUPS)
+
+
+def build_analysis_registry() -> CapabilityRegistry:
+    """Compose the analysis capability registry from the grouped modules."""
+
+    return _build_registry(ANALYSIS_CAPABILITY_GROUPS)
 
 
 def _registered_preset_ids() -> frozenset[str]:
     return frozenset(preset.preset_id for preset in PRESETS.all())
 
 
-def validate_audit_composition(
+def validate_composition(
     registry: CapabilityRegistry,
     *,
+    dependencies: dict[str, tuple[str, ...]],
+    groups: tuple,
+    label: str,
     executions: CapabilityExecutionRegistry | None = None,
 ) -> CapabilityRegistry:
-    """Validate the composed registry against the authoritative audit graph.
+    """Validate a composed registry against its authoritative dependency graph.
 
-    Checks that the grouped modules partition the audit graph exactly once, that
-    the composed registry declares precisely the authoritative capabilities with
-    the authoritative edges, that the dependency closure is acyclic, that every
+    Checks that the grouped modules partition the graph exactly once, that the
+    composed registry declares precisely the authoritative capabilities with the
+    authoritative edges, that the dependency closure is acyclic, that every
     declared context preset is registered, and — when supplied — that an
     execution binding exists for each capability.
     """
 
-    authoritative_ids = frozenset(audit_workflow.DEPENDENCIES)
+    authoritative_ids = frozenset(dependencies)
 
-    grouped = grouped_capability_ids()
+    grouped = _group_ids(groups)
     duplicates = sorted({cid for cid in grouped if grouped.count(cid) > 1})
     if duplicates:
         raise AuditCompositionError(
@@ -93,7 +123,7 @@ def validate_audit_composition(
         missing = sorted(authoritative_ids - grouped_set)
         extra = sorted(grouped_set - authoritative_ids)
         raise AuditCompositionError(
-            "Grouped capability partition does not cover the audit graph "
+            f"Grouped capability partition does not cover the {label} graph "
             f"(missing: {missing}; extra: {extra})."
         )
 
@@ -103,12 +133,12 @@ def validate_audit_composition(
         missing = sorted(authoritative_ids - declared_set)
         extra = sorted(declared_set - authoritative_ids)
         raise AuditCompositionError(
-            "Composed registry does not match the authoritative audit graph "
+            f"Composed registry does not match the authoritative {label} graph "
             f"(missing: {missing}; extra: {extra})."
         )
 
     for capability in registry.all():
-        expected = audit_workflow.dependencies(capability.id)
+        expected = dependencies[capability.id]
         if tuple(capability.depends_on) != expected:
             raise AuditCompositionError(
                 f"Capability '{capability.id}' declares dependencies "
@@ -135,10 +165,67 @@ def validate_audit_composition(
     return registry
 
 
-# Startup validation: build and validate the grouped composition at import time.
+def validate_audit_composition(
+    registry: CapabilityRegistry,
+    *,
+    executions: CapabilityExecutionRegistry | None = None,
+) -> CapabilityRegistry:
+    """Validate the composed registry against the authoritative audit graph."""
+
+    return validate_composition(
+        registry,
+        dependencies=audit_workflow.DEPENDENCIES,
+        groups=CAPABILITY_GROUPS,
+        label="audit",
+        executions=executions,
+    )
+
+
+def validate_analysis_composition(
+    registry: CapabilityRegistry,
+    *,
+    executions: CapabilityExecutionRegistry | None = None,
+) -> CapabilityRegistry:
+    """Validate the composed registry against the authoritative analysis graph."""
+
+    return validate_composition(
+        registry,
+        dependencies=analysis_workflow.DEPENDENCIES,
+        groups=ANALYSIS_CAPABILITY_GROUPS,
+        label="analysis",
+        executions=executions,
+    )
+
+
+# Startup validation: build and validate each grouped composition at import time.
 AUDIT_REGISTRY = validate_audit_composition(build_audit_registry())
+ANALYSIS_REGISTRY = validate_analysis_composition(build_analysis_registry())
 # The live registry name used by routing and audit dispatch.
 REGISTRY = AUDIT_REGISTRY
+
+# Every registry a workflow run may be scheduled against, keyed by the
+# authoritative workflow definition ID persisted on the run.
+REGISTRY_BY_WORKFLOW = {
+    audit_workflow.WORKFLOW_ID: AUDIT_REGISTRY,
+    analysis_workflow.WORKFLOW_ID: ANALYSIS_REGISTRY,
+}
+
+
+def workflow_for_outcomes(outcomes) -> str | None:
+    """The workflow definition ID that declares every requested outcome.
+
+    Returns ``None`` when the outcomes are unknown or span two workflows, so a
+    caller fails closed instead of materializing a mixed closure.
+    """
+
+    requested = [str(value) for value in outcomes or []]
+    if not requested:
+        return None
+    for workflow_id, registry in REGISTRY_BY_WORKFLOW.items():
+        declared = {capability.id for capability in registry.all()}
+        if set(requested) <= declared:
+            return workflow_id
+    return None
 
 
 def workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
@@ -147,20 +234,38 @@ def workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
     return REGISTRY.workflow_state(workspace, scope)
 
 
+def analysis_workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
+    """Deterministic readiness projection for every analysis capability."""
+
+    return ANALYSIS_REGISTRY.workflow_state(workspace, scope)
+
+
 __all__ = [
+    "ANALYSIS_CAPABILITY_GROUPS",
+    "ANALYSIS_REGISTRY",
+    "ANALYSIS_TEMPLATE_OUTCOMES",
     "AUDIT_REGISTRY",
     "AuditCompositionError",
     "CAPABILITY_GROUPS",
+    "FULL_ANALYSIS_OUTCOMES",
     "FULL_AUDIT_OUTCOMES",
     "REGISTRY",
+    "REGISTRY_BY_WORKFLOW",
     "TEMPLATE_OUTCOMES",
+    "analysis_outcomes_for_template",
+    "analysis_workflow_state",
     "apm_sha1",
+    "build_analysis_registry",
     "build_audit_registry",
+    "grouped_analysis_capability_ids",
     "grouped_capability_ids",
     "outcomes_for_template",
     "planned_test_sha1",
     "planning_basis_sha1",
     "rcm_row_sha1",
+    "validate_analysis_composition",
     "validate_audit_composition",
+    "validate_composition",
+    "workflow_for_outcomes",
     "workflow_state",
 ]

@@ -44,6 +44,16 @@ from .resolver import (
     RESOLVER_HASH,
 )
 from .adapters import (
+    ANALYSIS_CURRENT_SOURCE_ID,
+    ANALYSIS_REGISTRY_SOURCE_ID,
+    ANALYSIS_RELATED_FRAMES_SOURCE_ID,
+    ANALYSIS_RELATIONSHIP_SOURCE_ID,
+    ANALYSIS_TARGET_AGGREGATE_SOURCE_ID,
+    ANALYSIS_TARGET_PROFILE_SOURCE_ID,
+    ANALYSIS_TARGET_SCHEMA_SOURCE_ID,
+    analysis_aggregate_candidates,
+    analysis_definition_scope,
+    analysis_relationship_candidates,
     APM_DOCUMENT_SOURCE_ID,
     APM_METHODOLOGY_SOURCE_ID,
     APM_TABLE_METADATA_SOURCE_ID,
@@ -106,6 +116,16 @@ from .adapters import (
 )
 
 __all__ = [
+    "ANALYSIS_CURRENT_SOURCE_ID",
+    "ANALYSIS_REGISTRY_SOURCE_ID",
+    "ANALYSIS_RELATED_FRAMES_SOURCE_ID",
+    "ANALYSIS_RELATIONSHIP_SOURCE_ID",
+    "ANALYSIS_TARGET_AGGREGATE_SOURCE_ID",
+    "ANALYSIS_TARGET_PROFILE_SOURCE_ID",
+    "ANALYSIS_TARGET_SCHEMA_SOURCE_ID",
+    "analysis_aggregate_candidates",
+    "analysis_definition_scope",
+    "analysis_relationship_candidates",
     "AutoSelect",
     "APM_DOCUMENT_SOURCE_ID",
     "APM_METHODOLOGY_SOURCE_ID",

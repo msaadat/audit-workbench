@@ -284,6 +284,22 @@ def resume_run(workspace: Workspace, run_id: str) -> dict:
     return run
 
 
+def _carried_target_refs(workflow_state: dict) -> list[str]:
+    """Target refs a linked run must inherit, including a resolved table scope.
+
+    A workflow scope resolved during the run — an analysis run's answered scope
+    checkpoint, for example — is part of what "the same request" means, and the
+    durable command only carries target refs, so scoped tables travel as
+    ``table:<name>`` refs.
+    """
+    refs = [str(value) for value in workflow_state.get("target_refs") or []]
+    refs.extend(
+        f"table:{value}"
+        for value in (workflow_state.get("scope") or {}).get("tables") or []
+    )
+    return list(dict.fromkeys(refs))
+
+
 def retry_run(workspace: Workspace, run_id: str) -> dict:
     """Start a fresh linked attempt without rewriting the failed run ledger."""
     previous = store.load_run(workspace, run_id)
@@ -303,7 +319,7 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
         "context_refs": list(original.get("context_refs") or []),
         "planning_basis_run_id": previous.get("planning_basis_run_id"),
         "requested_outcomes": list(previous_workflow.get("requested_outcomes") or []),
-        "target_refs": list(previous_workflow.get("target_refs") or []),
+        "target_refs": _carried_target_refs(previous_workflow),
         # Structural readiness keeps successful siblings; carrying a prior
         # ``force`` mode into retry would unnecessarily repeat them.
         "generation_mode": "reuse_existing",
@@ -335,7 +351,8 @@ def continue_audit(workspace: Workspace, run_id: str) -> dict:
             "source": "follow_up",
             "text": "Continue the open audit work from the linked run.",
             "requested_outcomes": outcomes,
-            "target_refs": list(workflow_state.get("target_refs") or ["workspace:current"]),
+            "target_refs": _carried_target_refs(workflow_state)
+            or ["workspace:current"],
             "generation_mode": "reuse_existing",
             "parent_command_id": (previous.get("command") or {}).get("id"),
             "chat_id": previous.get("chat_id"),
@@ -686,9 +703,9 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
 
                     DocumentAnalysisRunner(workspace, run, handle).execute()
                 elif engine == store.WORKFLOW_ENGINE:
-                    from .audit_execution import build_audit_workflow_runner
+                    from .workflow_dispatch import build_workflow_runner
 
-                    build_audit_workflow_runner(workspace, run, handle).execute()
+                    build_workflow_runner(workspace, run, handle).execute()
                 elif engine == store.ACTION_ENGINE:
                     from .action_runner import ActionRunner
 

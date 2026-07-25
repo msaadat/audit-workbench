@@ -208,7 +208,7 @@ def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
         workspace_with_data, "auto",
         {
             "source": "goal_template", "text": "Start data analysis",
-            "goal_template": "data_analysis",
+            "goal_template": "document_testing",
         },
     )
     completed = wait_run(workspace_with_data, started["id"])
@@ -303,7 +303,7 @@ def test_command_interpreter_reports_all_unsupported_analytics_and_repairs(
         workspace_with_data, "auto",
         {
             "source": "goal_template", "text": "Analyze data",
-            "goal_template": "data_analysis",
+            "goal_template": "document_testing",
         },
     )
     completed = wait_run(workspace_with_data, started["id"])
@@ -354,7 +354,7 @@ def test_command_interpreter_repairs_unsafe_custom_analysis_contract(
     fake = configured(monkeypatch, interpret)
     started = runner.start_command_run(
         workspace_with_data, "auto",
-        {"source": "goal_template", "text": "Analyze data", "goal_template": "data_analysis"},
+        {"source": "goal_template", "text": "Analyze data", "goal_template": "document_testing"},
     )
     completed = wait_run(workspace_with_data, started["id"])
 
@@ -395,7 +395,7 @@ def test_failed_custom_analysis_gets_repaired_code_before_retry(
 
     started = runner.start_command_run(
         workspace_with_data, "auto",
-        {"source": "goal_template", "text": "Analyze data", "goal_template": "data_analysis"},
+        {"source": "goal_template", "text": "Analyze data", "goal_template": "document_testing"},
     )
     completed = wait_run(workspace_with_data, started["id"])
 
@@ -746,7 +746,7 @@ def test_failed_command_retry_preserves_context_and_links_fresh_run(
         "permission",
         {
             "source": "goal_template", "text": "Start data analysis",
-            "goal_template": "data_analysis", "chat_id": "chat-1",
+            "goal_template": "document_testing", "chat_id": "chat-1",
             "source_message_id": "msg-1",
             "context_refs": [{"kind": "document", "id": "doc-1"}],
             "planning_basis_run_id": "planning-run-123",
@@ -770,7 +770,7 @@ def test_failed_command_retry_preserves_context_and_links_fresh_run(
     assert completed["parent_run_id"] == failed["id"]
     assert completed["planning_basis_run_id"] == "planning-run-123"
     assert completed["mode"] == "permission"
-    assert completed["command"]["goal_template"] == "data_analysis"
+    assert completed["command"]["goal_template"] == "document_testing"
     assert completed["command"]["source_message_id"] == "msg-1"
     assert completed["command"]["context_refs"] == [{"kind": "document", "id": "doc-1"}]
     assert completed["context"] == {"document_ids": ["doc-1"]}

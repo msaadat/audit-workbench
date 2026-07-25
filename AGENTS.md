@@ -99,11 +99,13 @@ backend/app/
    |- executors/               - deterministic mutation/reconciliation
    |                             contracts, registry, receipts, and APM executor
    |- workflows/               - authoritative workflow definitions; audit.py
-   |                             owns the audit dependency graph, workflow id,
-   |                             and hash-identified definition metadata
-   |- capabilities/            - grouped audit capability composition
-   |                             (planning/fieldwork/reporting) with startup
-   |                             validation against the authoritative graph
+   |                             owns the audit dependency graph and analysis.py
+   |                             the exploratory data-analysis graph, each with
+   |                             its workflow id and hash-identified metadata
+   |- capabilities/            - grouped capability composition
+   |                             (planning/fieldwork/reporting for audit,
+   |                             analysis for data analysis) with startup
+   |                             validation against the authoritative graphs
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners
@@ -111,8 +113,12 @@ backend/app/
    |                             recovery, pause/resume/cancel/retry/continue
    |- action_runner.py         - action-graph runner for isolated mutations
    |- workflow.py              - generic capability graph primitives
+   |- workflow_dispatch.py     - selects a workflow composition from the run's
+   |                             persisted workflow definition id
    |- audit_execution.py       - audit-side composition: one execution binding
    |                             per capability plus audit projections
+   |- analysis_execution.py    - analysis-side composition: relationship,
+   |                             join, definition, and execution bindings
    |- context_bundles.py       - bounded command-router context bundle
    |- actions.py               - registered action catalog and executors
    |- ledger.py                - domain-neutral action graph validation
@@ -205,8 +211,13 @@ WorkflowRunner             domain-neutral capability graph scheduler
 
 - `ActionRunner` is still used for isolated mutations and repairable action
   graphs.
-- `WorkflowRunner` is the main audit scheduler. It receives a materialized
-  route and registered capability executions, fans outcomes into units, and
+- `WorkflowRunner` is the main capability scheduler and now serves two declared
+  workflows: the RCM audit lifecycle (`audit_workflow_v2`) and the exploratory
+  data-analysis workflow (`analysis_workflow_v1`, which infers table
+  relationships, materializes only evidence-supported joins, proposes rerunnable
+  analysis definitions, and executes them locally). `workflow_dispatch.py`
+  selects the composition from the definition id the run persists. It receives a
+  materialized route and registered capability executions, fans outcomes into units, and
   records `next_outcomes` for `Continue audit`. Every audit capability carries
   exactly one binding: a per-unit pipeline binding (registered worker plus
   registered executor) or a per-unit deterministic computation. A capability
@@ -345,6 +356,18 @@ WorkflowRunner             domain-neutral capability graph scheduler
   effect — every capability consumes the document material that exists, and
   Phase 9's `documents.analysis_generated` capability restores on-demand
   generation as a declared dependency.
+- Phase 8 added the exploratory data-analysis workflow on the same scheduler:
+  `data.relationships_inferred` → `data.joins_ready` →
+  `analysis.definitions_ready` → `analysis.executed`. It introduces no workspace
+  collection — relationship evidence is run-durable, joins land in
+  `workspace.joins`, definitions in `workspace.analyses`, and each execution
+  records a bounded `last_result` (shape, verdict, and the analytics service's
+  own statistics) rather than result data. Relationship facts are never
+  model-generated: they come from the deterministic diagnostics in
+  `agent/joins.py`, and a join is applied automatically only on a single strong
+  candidate. Requests such as "perform relevant joins and data analysis" and the
+  `data_analysis` goal template now route to this workflow; "run this saved
+  analysis" and "pin this result" stay with `ActionRunner`.
 
 ### Known duplication
 

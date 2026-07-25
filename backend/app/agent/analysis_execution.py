@@ -1,0 +1,923 @@
+"""Analysis-side composition of the domain-neutral capability scheduler.
+
+Every analysis capability is bound to a native scheduler path: a per-unit
+pipeline binding for the one model-backed capability (analysis definitions) and
+a per-unit deterministic computation for the three that need no model. This
+module owns only the analysis-shaped glue the scheduler must not know about —
+which worker and executor a unit uses, the declared context scope it resolves,
+the approval items an auditor sees, the scope-clarification checkpoint, the
+post-commit bookkeeping, and the completion projection.
+
+The deterministic capabilities here differ from the audit workflow's in one
+respect: ``data.joins_ready`` and ``analysis.executed`` commit through
+*registered* executors and persist a receipt, because both mutate durable
+workspace state under a compare-and-swap guard and must be replayable after an
+interruption. The scheduler still drives them through its deterministic path;
+the binder owns the executor call and the receipt sidecar, exactly as the
+pipeline path would.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+
+from ..workspace_transactions import parent_hashes
+from ..workspaces import Workspace, WorkspaceConflict, load_workspace
+from . import store, workflow
+from .base import BaseRunner
+from .capabilities.analysis import (
+    ANALYSIS_SCOPE_CHECKPOINT,
+    STAGE_CHECKPOINTS,
+    MAX_SCOPE_TABLES,
+    TableScope,
+    agent_analyses,
+    pair_join,
+    resolve_table_scope,
+)
+from .capabilities import ANALYSIS_REGISTRY
+from .context import ContextResolver, analysis_definition_scope
+from .executors import EXECUTORS, ExecutorReceipt, ExecutorRequest
+from .executors.analysis import (
+    AMBIGUOUS_RELATIONSHIP,
+    AUDITOR_ANALYSIS_PRESERVED,
+    NO_SAFE_RELATIONSHIP,
+    AnalysisDefinitionExecutorTarget,
+    AnalysisExecutionExecutorTarget,
+    JoinExecutorTarget,
+    analysis_ref,
+    infer_relationship,
+    join_ref,
+    relationship_ref,
+    run_analysis,
+)
+from .runtime import (
+    BoundUnitPipeline,
+    CapabilityExecution,
+    CapabilityExecutionRegistry,
+    DeterministicUnitResult,
+    FinishProjection,
+    RunRuntime,
+    UnitPipeline,
+    UnitPipelineRequest,
+    UnitSidecarStore,
+    WorkflowRunner,
+)
+from .workers import WORKERS
+
+
+def _sha256_json(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+class DeterministicCommitConflict(WorkspaceConflict):
+    """A deterministic commit was reconciled to a conflict rather than repeated."""
+
+    def __init__(self, reason: str, revision: int):
+        super().__init__(revision, revision)
+        self.args = (reason,)
+
+
+def _capability_definition_hash(capability: workflow.Capability) -> str:
+    return _sha256_json(
+        {
+            "id": capability.id,
+            "stage_id": capability.stage_id,
+            "title": capability.title,
+            "worker_kind": capability.worker_kind,
+            "depends_on": list(capability.depends_on),
+            "context": capability.context,
+            "barrier": capability.barrier,
+            "commit_policy": capability.commit_policy,
+            "approval_policy": capability.approval_policy,
+            "invalidate_on": list(capability.invalidate_on),
+        }
+    )
+
+
+class AnalysisWorkflowExecution(BaseRunner):
+    """Per-unit analysis execution bindings and projections for the scheduler."""
+
+    stage_titles = {
+        "relationships": "Table relationships",
+        "joins": "Materialized joins",
+        "analysis_definitions": "Analysis definitions",
+        "analysis_execution": "Analysis results",
+    }
+
+    def __init__(
+        self,
+        workspace: Workspace,
+        run: dict,
+        handle,
+        *,
+        runtime: RunRuntime | None = None,
+        context_resolver: ContextResolver | None = None,
+    ):
+        super().__init__(workspace, run, handle, runtime=runtime)
+        self.context_resolver = context_resolver or ContextResolver()
+        self.sidecars = UnitSidecarStore(workspace, run["id"])
+        self.scheduler: WorkflowRunner | None = None
+
+    # ------------------------------------------------------------- scheduling
+    def _refresh_workspace(self) -> Workspace:
+        state = self.run.setdefault("workflow", {})
+        previous = int(state.get("workspace_revision") or 0)
+        self.ws = load_workspace(self.ws.id)
+        state["workspace_revision"] = self.ws.revision
+        if self.ws.revision != previous:
+            self.emit(
+                "workspace_revision",
+                {"previous_revision": previous, "workspace_revision": self.ws.revision},
+            )
+        return self.ws
+
+    def _refresh_dynamic_limits(self) -> None:
+        """Size the model budget from the frames actually in scope.
+
+        Only one analysis capability is model-backed and it runs one turn per
+        target frame, so the budget follows the resolved scope rather than a
+        fixed constant.
+        """
+        table_scope = self.scope()
+        targets = max(1, len(table_scope.targets))
+        calculated = 10 + 2 * targets
+        self.update_limits(
+            {
+                "max_model_turns": calculated,
+                "max_estimated_prompt_tokens": calculated * 10_000,
+                "max_completion_tokens": calculated * 4_000,
+            },
+            grow_only=True,
+        )
+
+    def workflow_scope(self) -> dict:
+        state = self.run.get("workflow") or {}
+        scope = dict(state.get("scope") or {})
+        scope.setdefault("target_refs", list(state.get("target_refs") or []))
+        scope.setdefault(
+            "generation_mode", state.get("generation_mode") or "reuse_existing"
+        )
+        return scope
+
+    def scope(self) -> TableScope:
+        return resolve_table_scope(self.ws, self.workflow_scope())
+
+    # ------------------------------------------------------------- provenance
+    def _analysis_record(self) -> dict:
+        return self.run.setdefault("analysis", {"relationships": []})
+
+    def relationship_records(self) -> list[dict]:
+        """The relationship evidence this run diagnosed, in pair order."""
+
+        return list(self._analysis_record().get("relationships") or [])
+
+    def _record_relationships(self, record: dict) -> None:
+        """Persist one pair's diagnosis on the durable run record.
+
+        Relationship evidence is deliberately not a workspace collection: it is
+        a recomputable diagnostic about tables rather than an engagement
+        artifact, and adding a collection for it would change the workspace
+        schema. The run record is the durable, auditable home the framework
+        already provides.
+        """
+        pair = (record["left"], record["right"])
+        relationships = [
+            item
+            for item in self.relationship_records()
+            if (item.get("left"), item.get("right")) != pair
+        ]
+        relationships.append(record)
+        relationships.sort(key=lambda item: (str(item.get("left")), str(item.get("right"))))
+        self._analysis_record()["relationships"] = relationships
+        self.save()
+
+    def _pair_record(self, left: str, right: str) -> dict:
+        """This run's evidence for a pair, diagnosing it now if it has none.
+
+        A run that reused ``data.relationships_inferred`` (every scoped pair was
+        already joined) never scheduled the diagnosis, so a later capability
+        that still needs the evidence recomputes it. The computation is
+        deterministic and read-only, so recomputing is a cost, never a
+        divergence.
+        """
+        wanted = {left, right}
+        for item in self.relationship_records():
+            if {str(item.get("left")), str(item.get("right"))} == wanted:
+                return item
+        record = infer_relationship(self.ws, left, right)
+        self._record_relationships(record)
+        return record
+
+    @staticmethod
+    def _parent(unit: dict, prefix: str) -> str:
+        return next(
+            ref.split(":", 1)[1]
+            for ref in unit["parent_refs"]
+            if ref.startswith(f"{prefix}:")
+        )
+
+    # --------------------------------------------------- deterministic commits
+    def _commit_with_receipt(
+        self,
+        *,
+        capability: workflow.Capability,
+        unit: dict,
+        executor_id: str,
+        proposal: dict,
+        target: object,
+        expected_parents: dict[str, str],
+    ) -> ExecutorReceipt:
+        """Run one registered executor and persist its durable receipt.
+
+        Deterministic units still get the pipeline's durability guarantees: the
+        locally derived proposal is persisted before the commit, an interrupted
+        commit is reconciled rather than repeated, and the receipt is written
+        atomically to the same ``receipts/<unit_id>.json`` sidecar the
+        model-backed path uses.
+        """
+        request = ExecutorRequest(
+            executor_id=executor_id,
+            capability_id=capability.id,
+            unit_id=unit["id"],
+            proposal=proposal,
+            expected_revision=self.ws.revision,
+            expected_parents=expected_parents,
+            activity={"artifact_refs": list(unit.get("parent_refs") or [])},
+        )
+        unit["proposal_sidecar"] = dict(
+            self.sidecars.persist_proposal(
+                unit["id"],
+                {
+                    "capability_id": capability.id,
+                    "unit_id": unit["id"],
+                    "status": "accepted",
+                    "origin": "deterministic",
+                    "proposal_hash": request.proposal_hash,
+                    "proposal": proposal,
+                },
+            )
+        )
+        self.save()
+        reconciliation = EXECUTORS.reconcile(request, target)
+        if reconciliation.disposition == "conflict":
+            raise DeterministicCommitConflict(
+                reconciliation.reason or "Executor reconciliation found a conflict.",
+                self.ws.revision,
+            )
+        if reconciliation.disposition == "already_applied":
+            receipt = EXECUTORS.receipt_for_reconciliation(request, reconciliation)
+        else:
+            receipt = EXECUTORS.execute(request, target)
+        unit["receipt_sidecar"] = dict(
+            self.sidecars.persist_receipt(unit["id"], receipt)
+        )
+        self.save()
+        return receipt
+
+    # ------------------------------------------- data.relationships_inferred
+    def _bind_relationships(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``data.relationships_inferred``.
+
+        One unit diagnoses one table pair with local Polars evidence and records
+        the aggregate metrics on the run. No model is consulted, no relationship
+        fact is generated, and nothing is committed to the workspace — the
+        materialization decision belongs to ``data.joins_ready``.
+        """
+        self.ws = subject
+        left = unit["parent_refs"][0].split(":", 1)[1]
+        right = unit["parent_refs"][1].split(":", 1)[1]
+        task = self.add_task(
+            "relationships", "workflow:relationships", "Table relationships"
+        )
+        self.task_status(task, "running")
+        record = infer_relationship(self.ws, left, right)
+        self._record_relationships(record)
+        refs = tuple(str(item["ref"]) for item in record["candidates"])
+        self.emit(
+            "relationship_evidence",
+            {
+                "left": left,
+                "right": right,
+                "candidates": len(record["candidates"]),
+                "strong": len(record["strong"]),
+                "moderate": len(record["moderate"]),
+            },
+        )
+        self.task_detail(
+            task,
+            f"{left} ↔ {right}: {len(record['strong'])} strong, "
+            f"{len(record['moderate'])} moderate candidate(s).",
+        )
+        self.task_status(task, "completed")
+        if not record["candidates"] and record["join"] is None:
+            self.warn(f"No plausible key relates '{left}' and '{right}'.")
+            return DeterministicUnitResult("succeeded", refs, NO_SAFE_RELATIONSHIP)
+        return DeterministicUnitResult("succeeded", refs)
+
+    # ------------------------------------------------------ data.joins_ready
+    def _bind_join(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``data.joins_ready``.
+
+        A join is created automatically only when exactly one *strong* candidate
+        exists for the pair — unique right key, near-total match rate, and no row
+        multiplication. Weaker or competing evidence is reported (permission mode
+        asks) rather than silently applied, which is the whole reason
+        relationship inference and join materialization are separate outcomes.
+        """
+        self.ws = subject
+        left = unit["parent_refs"][0].split(":", 1)[1]
+        right = unit["parent_refs"][1].split(":", 1)[1]
+        existing = pair_join(self.ws, left, right)
+        if existing is not None:
+            return DeterministicUnitResult(
+                "succeeded", (join_ref(str(existing["name"])),)
+            )
+        task = self.add_task("joins", "workflow:joins", "Materialized joins")
+        self.task_status(task, "running")
+        record = self._pair_record(left, right)
+        strong = list(record["strong"])
+        moderate = list(record["moderate"])
+        if not strong and not moderate:
+            self.task_detail(task, f"No safe join evidence for {left} ↔ {right}.")
+            self.task_status(task, "skipped")
+            return DeterministicUnitResult("skipped", (), NO_SAFE_RELATIONSHIP)
+
+        candidate = None
+        if len(strong) == 1:
+            candidate = strong[0]
+        elif self.run.get("mode") == "permission":
+            candidate = self._approve_join(task, left, right, strong or moderate)
+        if candidate is None:
+            reported = strong or moderate
+            self.warn(
+                f"{len(reported)} join candidate(s) for '{left}' and '{right}' need "
+                "confirmation; none was applied."
+            )
+            self.task_status(task, "skipped")
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                tuple(str(item["ref"]) for item in reported),
+                AMBIGUOUS_RELATIONSHIP,
+            )
+
+        expected = parent_hashes(self.ws, [f"table:{left}", f"table:{right}"])
+        target = JoinExecutorTarget(self.ws, self.run["id"], left, right)
+        try:
+            receipt = self._commit_with_receipt(
+                capability=capability,
+                unit=unit,
+                executor_id="analysis.join",
+                proposal={
+                    "join": {
+                        key: candidate[key]
+                        for key in ("left", "right", "how", "left_on", "right_on")
+                    }
+                },
+                target=target,
+                expected_parents=expected,
+            )
+        except WorkspaceConflict as error:
+            return DeterministicUnitResult("conflict", error=str(error))
+        self.ws = target.workspace
+        name = str(receipt.output["name"])
+        self._record_relationships({**record, "join": name})
+        self.record_artifact(
+            "join", name, relationship_ref(candidate), "created", task
+        )
+        self.task_status(task, "completed")
+        return DeterministicUnitResult("succeeded", tuple(receipt.artifact_refs))
+
+    def _approve_join(
+        self,
+        task: dict,
+        left: str,
+        right: str,
+        candidates: list[dict],
+    ) -> dict | None:
+        """Ask the auditor which diagnosed relationship to materialize."""
+
+        accepted = self.request_approval(
+            "joins",
+            task,
+            [
+                self.proposal_item(
+                    f"{item['left']}.{item['left_on'][0]} → "
+                    f"{item['right']}.{item['right_on'][0]}",
+                    f"{item['strength']} evidence: "
+                    f"{item['diagnostics']['match_rate']:.0%} match rate, "
+                    f"row multiplication {item['diagnostics']['row_multiplication']}.",
+                    {
+                        key: item[key]
+                        for key in ("left", "right", "how", "left_on", "right_on")
+                    },
+                    {"diagnostics": dict(item["diagnostics"])},
+                )
+                for item in candidates
+            ],
+        )
+        if not accepted:
+            return None
+        spec = dict(accepted[0]["spec"])
+        return next(
+            (
+                item
+                for item in candidates
+                if item["left"] == spec.get("left")
+                and item["right"] == spec.get("right")
+                and list(item["left_on"]) == list(spec.get("left_on") or [])
+                and list(item["right_on"]) == list(spec.get("right_on") or [])
+            ),
+            None,
+        )
+
+    # -------------------------------------------- analysis.definitions_ready
+    def _bind_definitions(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Bind one frame's analysis-definition unit to the shared pipeline.
+
+        The domain-neutral scheduler owns manifest/proposal/receipt persistence,
+        proposal reuse, approval, and readiness reevaluation. This binding
+        supplies only the frame-scoped declared context, the definition commit
+        target, per-analysis approval items, and the post-commit bookkeeping.
+        """
+        self.ws = subject
+        parent_ref = str(unit["parent_refs"][0])
+        target_frame = parent_ref.split(":", 1)[1]
+        table_scope = self.scope()
+        existing = [
+            item
+            for item in agent_analyses(self.ws, table_scope)
+            if str(item.get("table") or "") == target_frame
+        ]
+        if existing and self.workflow_scope().get("generation_mode") != "force":
+            # The frame already carries workflow-authored definitions. Units are
+            # durable once materialized, so a stage re-run must not spend a
+            # provider turn re-deriving what already exists; only an explicit
+            # regeneration does that.
+            return DeterministicUnitResult(
+                "succeeded",
+                tuple(analysis_ref(str(item["id"])) for item in existing),
+            )
+        expected = parent_hashes(self.ws, [parent_ref])
+        target = AnalysisDefinitionExecutorTarget(
+            self.ws,
+            self.run["id"],
+            target_frame,
+            parent_ref,
+            allow_auditor_overwrite=self.run["mode"] == "permission",
+        )
+        task = self.add_task(
+            "analysis_definitions", "workflow:analysis_definitions", "Analysis definitions"
+        )
+
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                analysis_definition_scope(
+                    self.ws,
+                    target_frame,
+                    related=[
+                        name for name in table_scope.targets if name != target_frame
+                    ],
+                    relationships=self.relationship_records(),
+                ),
+            )
+
+        def approval_provider(proposal):
+            proposed = [
+                self.proposal_item(
+                    str(item.get("title")),
+                    f"Rerunnable {item.get('kind')} analysis for {target_frame}.",
+                    dict(item),
+                )
+                for item in proposal.get("analyses") or []
+            ]
+            accepted = self.request_approval("analysis_definitions", task, proposed)
+            analyses = [dict(item["spec"]) for item in accepted]
+            return {"analyses": analyses} if analyses else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            if outcome.receipt is None:
+                return
+            output = outcome.receipt.output
+            for item in output.get("analyses") or []:
+                self.record_artifact(
+                    "analysis",
+                    str(item["id"]),
+                    str(item.get("semantic_id") or ""),
+                    str(item.get("action") or "created"),
+                    task,
+                )
+            for preserved in output.get("preserved") or []:
+                self.warn(f"Preserved auditor-owned analysis '{preserved}'.")
+            self.task_status(task, "completed")
+
+        def conflict_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            if str(error) != AUDITOR_ANALYSIS_PRESERVED:
+                return None
+            return (
+                "awaiting_confirmation",
+                "Auditor-owned analysis definitions were preserved.",
+            )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="analysis.definitions",
+                executor_id="analysis.definitions",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": [parent_ref],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected,
+                capability_definition_hash=_capability_definition_hash(capability),
+                approval_kind=(
+                    "analysis_definitions"
+                    if self.run["mode"] == "permission"
+                    else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            # Definitions fan out one unit per scoped frame, so this capability's
+            # readiness only holds once every unit has committed.
+            readiness_provider=None,
+            on_committed=on_committed,
+            conflict_handler=conflict_handler,
+        )
+
+    # ----------------------------------------------------- analysis.executed
+    def _bind_execution(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Deterministic execution for ``analysis.executed``.
+
+        The saved spec is recomputed locally through the same service the
+        Analysis tab uses — analytics through the registry, Polars through the
+        guarded sandbox — and only the bounded result contract is committed. A
+        spec that errors is not a run failure: it is a definition the auditor
+        needs to look at, so the unit settles as ``awaiting_confirmation`` with
+        the error durably recorded on the analysis.
+        """
+        self.ws = subject
+        analysis_id = self._parent(unit, "analysis")
+        analysis = next(
+            (item for item in self.ws.analyses if str(item.get("id")) == analysis_id),
+            None,
+        )
+        if analysis is None:
+            return DeterministicUnitResult(
+                "failed", error=f"Analysis '{analysis_id}' no longer exists."
+            )
+        task = self.add_task(
+            "analysis_execution", "workflow:analysis_execution", "Analysis results"
+        )
+        self.task_status(task, "running")
+        result = run_analysis(self.ws, analysis, run_id=self.run["id"])
+        expected = parent_hashes(self.ws, [analysis_ref(analysis_id)])
+        target = AnalysisExecutionExecutorTarget(self.ws, self.run["id"], analysis_id)
+        try:
+            receipt = self._commit_with_receipt(
+                capability=capability,
+                unit=unit,
+                executor_id="analysis.execution",
+                proposal={"result": result},
+                target=target,
+                expected_parents=expected,
+            )
+        except WorkspaceConflict as error:
+            return DeterministicUnitResult("conflict", error=str(error))
+        self.ws = target.workspace
+        self.emit(
+            "workspace_changed",
+            {"kind": "analysis", "id": analysis_id, "action": "executed"},
+        )
+        refs = tuple(receipt.artifact_refs)
+        title = analysis.get("title") or analysis_id
+        if result["status"] != "ok":
+            self.warn(f"Analysis '{title}' did not run: {result['error']}")
+            self.task_detail(task, f"{title}: {result['error']}")
+            self.task_status(task, "completed")
+            return DeterministicUnitResult(
+                "awaiting_confirmation", refs, str(result["error"])
+            )
+        self.task_detail(task, f"{title}: {result['row_count']} row(s).")
+        self.task_status(task, "completed")
+        return DeterministicUnitResult("succeeded", refs)
+
+    # ------------------------------------------------------------ checkpoint
+    def _scope_checkpoint(self) -> None:
+        """Settle an ambiguous table scope before any capability fans out.
+
+        The scope is ambiguous only when the request named nothing and the
+        workspace holds more tables than the bounded fallback analyses. In
+        permission mode that is a question for the auditor; in auto mode the
+        bounded deterministic selection stands and is reported as a warning, so
+        the run never silently analyses an arbitrary subset.
+
+        The checkpoint is declared on two capabilities but settles the scope once
+        per run, so a workflow that reuses its first outcome still asks before
+        the frames it will spend model turns on are chosen.
+        """
+        record = self._analysis_record()
+        if record.get("scope_settled"):
+            return
+        table_scope = self.scope()
+        if table_scope.ambiguity is None:
+            return
+        record["scope_settled"] = True
+        if self.run.get("mode") != "permission":
+            self.warn(table_scope.ambiguity)
+            self.save()
+            return
+        interaction = next(
+            (
+                item
+                for item in self.run.get("interactions") or []
+                if item.get("type") == "analysis_scope"
+                and item.get("status") == "pending"
+            ),
+            None,
+        )
+        eligible = sorted(str(item.get("name")) for item in self.ws.tables)
+        if interaction is None:
+            interaction = {
+                "id": f"int_{uuid.uuid4().hex[:12]}",
+                "action_id": "workflow:analysis_scope",
+                "type": "analysis_scope",
+                "prompt": (
+                    "Which tables should the analysis cover? "
+                    f"Choose up to {MAX_SCOPE_TABLES}."
+                ),
+                "options": eligible,
+                "payload": {
+                    "eligible_tables": eligible,
+                    "default_tables": list(table_scope.tables),
+                    "max_tables": MAX_SCOPE_TABLES,
+                    "reason": table_scope.ambiguity,
+                },
+                "policy_reason": (
+                    "The requested scope is ambiguous and materially changes the "
+                    "analysis."
+                ),
+                "status": "pending",
+                "response": None,
+                "actor": None,
+                "created_at": store.utcnow(),
+                "resolved_at": None,
+            }
+            self.run.setdefault("interactions", []).append(interaction)
+            self.run["workflow"]["pending_checkpoint"] = interaction["id"]
+            self.save()
+            self.emit("checkpoint_request", {"interaction": interaction})
+        response = self.runtime.wait_for_interaction(interaction)
+        chosen = [
+            str(value).strip()
+            for value in (response.get("tables") or response.get("options") or [])
+            if str(value).strip() in set(eligible)
+        ]
+        if not chosen:
+            text = str(response.get("text") or "")
+            chosen = [name for name in eligible if name in text]
+        if chosen:
+            scope = dict((self.run["workflow"].get("scope") or {}))
+            scope["tables"] = chosen[:MAX_SCOPE_TABLES]
+            self.run["workflow"]["scope"] = scope
+        else:
+            self.warn(table_scope.ambiguity)
+        self.run["workflow"]["pending_checkpoint"] = None
+        self.runtime.resolve_interaction(interaction, response)
+        self.emit(
+            "checkpoint_resolved",
+            {"interaction_id": interaction["id"], "count": len(chosen)},
+        )
+
+    # ---------------------------------------------------------------- finish
+    def _finish_projection(
+        self,
+        subject: Workspace,
+        _workflow_state: dict,
+        stages: tuple[dict, ...],
+    ) -> FinishProjection:
+        """Close the run on real analysis outcomes, not on unit bookkeeping."""
+
+        self.ws = subject
+        table_scope = self.scope()
+        units = [unit for stage in stages for unit in stage.get("units") or []]
+        failed = sum(unit.get("status") in {"failed", "conflict"} for unit in units)
+        open_units = sum(
+            unit.get("status")
+            in {"blocked", "awaiting_input", "awaiting_confirmation"}
+            for unit in units
+        )
+        analyses = agent_analyses(subject, table_scope)
+        executed = [item for item in analyses if item.get("last_result")]
+        next_outcomes = [
+            str(stage["capability"])
+            for stage in stages
+            if stage.get("status") in {"failed", "blocked", "review_required"}
+        ]
+        self.run["workflow"]["workspace_revision"] = subject.revision
+        if failed:
+            terminal = "failed"
+            errors = [
+                str(unit.get("error"))
+                for unit in units
+                if unit.get("status") in {"failed", "conflict"} and unit.get("error")
+            ]
+            self.run["error"] = errors[0] if errors else "One or more analysis units failed."
+        else:
+            terminal = "completed" if not open_units else "completed_with_open_items"
+        summary = (
+            "# Data analysis summary\n\n"
+            f"- Tables analysed: {', '.join(table_scope.tables) or 'none'}\n"
+            f"- Joins available: {len(table_scope.joins)}\n"
+            f"- Analysis definitions: {len(analyses)}\n"
+            f"- Analyses executed: {len(executed)}\n"
+            f"- Failed/conflict units: {failed}\n"
+            f"- Open workflow units: {open_units}\n"
+        )
+        return FinishProjection(
+            next_outcomes=tuple(dict.fromkeys(next_outcomes)),
+            summary_markdown=summary,
+            terminal_status=terminal,
+        )
+
+
+_PARTIAL_DEPENDENCIES = {
+    "data.joins_ready": {"data.relationships_inferred"},
+    "analysis.definitions_ready": {"data.joins_ready"},
+    "analysis.executed": {"analysis.definitions_ready"},
+}
+
+
+def build_analysis_workflow_runner(
+    workspace: Workspace,
+    run: dict,
+    handle,
+    *,
+    runtime: RunRuntime | None = None,
+    context_resolver: ContextResolver | None = None,
+) -> WorkflowRunner:
+    """Compose the domain-neutral scheduler with the analysis bindings."""
+
+    adapter = AnalysisWorkflowExecution(
+        workspace,
+        run,
+        handle,
+        runtime=runtime,
+        context_resolver=context_resolver,
+    )
+    unit_pipeline = UnitPipeline(
+        runtime=adapter.runtime,
+        gateway=adapter.model_gateway,
+        workers=WORKERS,
+        executors=EXECUTORS,
+        sidecars=adapter.sidecars,
+    )
+    _PIPELINE_BINDERS = {
+        "analysis.definitions_ready": (
+            adapter._bind_definitions,
+            {"worker": "analysis.definitions", "executor": "analysis.definitions"},
+        ),
+    }
+    _DETERMINISTIC_BINDERS = {
+        "data.relationships_inferred": (
+            adapter._bind_relationships,
+            {"deterministic": "analysis.relationships"},
+        ),
+        "data.joins_ready": (
+            adapter._bind_join,
+            {"deterministic": "analysis.join"},
+        ),
+        "analysis.executed": (
+            adapter._bind_execution,
+            {"deterministic": "analysis.execution"},
+        ),
+    }
+    executions = CapabilityExecutionRegistry()
+    for capability in ANALYSIS_REGISTRY.all():
+        pipeline_binding = _PIPELINE_BINDERS.get(capability.id)
+        if pipeline_binding is not None:
+            binder, identity = pipeline_binding
+            executions.register(
+                CapabilityExecution(
+                    capability_id=capability.id,
+                    implementation_hash=_sha256_json(
+                        {"capability": capability.id, **identity}
+                    ),
+                    pipeline_binder=binder,
+                )
+            )
+            continue
+        binder, identity = _DETERMINISTIC_BINDERS[capability.id]
+        executions.register(
+            CapabilityExecution(
+                capability_id=capability.id,
+                implementation_hash=_sha256_json(
+                    {"capability": capability.id, **identity}
+                ),
+                deterministic_executor=binder,
+            )
+        )
+
+    checkpoint_handlers = {
+        ANALYSIS_SCOPE_CHECKPOINT: adapter._scope_checkpoint,
+    }
+
+    def before_stage(
+        subject: Workspace,
+        capability: workflow.Capability,
+        _stage: dict,
+    ) -> None:
+        adapter.ws = subject
+        checkpoint = STAGE_CHECKPOINTS.get(capability.id)
+        if checkpoint is not None:
+            checkpoint_handlers[checkpoint]()
+
+    def dependency_policy(
+        capability_id: str,
+        dependency_id: str,
+        _dependency_status: str,
+    ) -> bool:
+        # Every edge in this graph is partial. A pair with no safe join, an
+        # ambiguous relationship left for confirmation, or one frame whose
+        # definitions could not be produced must not stop the analysis the other
+        # frames still support: each later capability re-expands against what
+        # the earlier one actually committed.
+        return dependency_id in _PARTIAL_DEPENDENCIES.get(capability_id, set())
+
+    scheduler = WorkflowRunner(
+        subject=workspace,
+        run=run,
+        runtime=adapter.runtime,
+        registry=ANALYSIS_REGISTRY,
+        executions=executions,
+        unit_pipeline=unit_pipeline,
+        refresh_subject=adapter._refresh_workspace,
+        refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
+        dependency_policy=dependency_policy,
+        before_stage=before_stage,
+        finish_evaluator=adapter._finish_projection,
+    )
+    adapter.scheduler = scheduler
+    scheduler.execution_adapter = adapter
+    return scheduler
+
+
+__all__ = [
+    "AnalysisWorkflowExecution",
+    "build_analysis_workflow_runner",
+]

@@ -9,8 +9,14 @@ from ..workspaces import Workspace, WorkspaceError, load_workspace
 from . import capabilities as audit_capabilities
 from . import context_bundles, prompts, store, workflow
 from .base import BaseRunner, LimitExceeded
+from .workflows import analysis as analysis_workflow
 from .workflows import audit as audit_workflow
 
+
+WORKFLOW_MODULES = {
+    audit_workflow.WORKFLOW_ID: audit_workflow,
+    analysis_workflow.WORKFLOW_ID: analysis_workflow,
+}
 
 ELIGIBLE_DISPOSITIONS = {
     "confirmed_control_exception",
@@ -68,15 +74,68 @@ def _resolve_command(runner, bundle: context_bundles.ContextBundle, supported: s
     )
 
 
+# Phrases that keep an "analysis" request an isolated ActionRunner operation.
+# Running or pinning an existing saved analysis is a single mutation, not a
+# request to derive relationships, joins, and new definitions.
+ISOLATED_ANALYSIS_MARKERS = (
+    "pin ",
+    "rerun ",
+    "re-run ",
+    "run this",
+    "run the saved",
+    "run the existing",
+    "delete ",
+    "remove ",
+    "rename ",
+    "undo ",
+)
+
+# Deterministic phrases for the exploratory data-analysis workflow. These are
+# checked before the generic-action markers so "join the tables and analyse
+# them" becomes a declared workflow rather than an action DAG.
+ANALYSIS_PHRASES = (
+    "relevant joins",
+    "perform relevant joins",
+    "joins and data analysis",
+    "join the tables",
+    "join these tables",
+    "relationships between tables",
+    "relationships between the tables",
+    "relate the tables",
+    "data analysis",
+    "analyse the data",
+    "analyze the data",
+    "analyse the tables",
+    "analyze the tables",
+    "analyse these tables",
+    "analyze these tables",
+    "analyse the two tables",
+    "analyze the two tables",
+    "explore the data",
+    "explore the tables",
+)
+
+
+def _workflow_definition_for(outcomes: list[str]) -> str:
+    definition = audit_capabilities.workflow_for_outcomes(outcomes)
+    if definition is None:
+        raise WorkspaceError(
+            "The requested outcomes do not belong to one registered workflow."
+        )
+    return definition
+
+
 def local_resolution(command: dict) -> dict | None:
     """Resolve known outcomes and isolated actions without a provider call."""
 
     direct = command.get("requested_outcomes")
     if isinstance(direct, list) and direct:
         requested = [str(item) for item in direct]
-        audit_capabilities.REGISTRY.closure(requested)
+        definition = _workflow_definition_for(requested)
+        audit_capabilities.REGISTRY_BY_WORKFLOW[definition].closure(requested)
         return {
             "route": "workflow",
+            "workflow_definition": definition,
             "requested_outcomes": requested,
             "objective": str(
                 command.get("text") or "Continue the requested audit outcomes."
@@ -92,7 +151,7 @@ def local_resolution(command: dict) -> dict | None:
             "clarification": None,
         }
     template = str(command.get("goal_template") or "")
-    if template in {"data_analysis", "document_testing"}:
+    if template == "document_testing":
         return {
             "route": "generic_action",
             "requested_outcomes": [],
@@ -104,15 +163,21 @@ def local_resolution(command: dict) -> dict | None:
             "needs_clarification": False,
             "clarification": None,
         }
-    outcomes = audit_capabilities.outcomes_for_template(template)
+    outcomes = audit_capabilities.outcomes_for_template(
+        template
+    ) or audit_capabilities.analysis_outcomes_for_template(template)
     if outcomes is not None:
         return {
             "route": "workflow",
+            "workflow_definition": _workflow_definition_for(outcomes),
             "requested_outcomes": outcomes,
             "objective": str(
                 command.get("text") or template.replace("_", " ")
             ).strip(),
-            "target_refs": ["workspace:current"],
+            "target_refs": [
+                str(item)
+                for item in command.get("target_refs") or ["workspace:current"]
+            ],
             "generation_mode": workflow.command_generation_mode(command),
             "action_intent": None,
             "constraints": [],
@@ -120,6 +185,24 @@ def local_resolution(command: dict) -> dict | None:
             "clarification": None,
         }
     text = str(command.get("text") or "").casefold()
+    if not any(marker in text for marker in ISOLATED_ANALYSIS_MARKERS) and any(
+        phrase in text for phrase in ANALYSIS_PHRASES
+    ):
+        return {
+            "route": "workflow",
+            "workflow_definition": analysis_workflow.WORKFLOW_ID,
+            "requested_outcomes": list(analysis_workflow.FULL_ANALYSIS_OUTCOMES),
+            "objective": str(command.get("text") or "").strip(),
+            "target_refs": [
+                str(item)
+                for item in command.get("target_refs") or ["workspace:current"]
+            ],
+            "generation_mode": workflow.command_generation_mode(command),
+            "action_intent": None,
+            "constraints": [],
+            "needs_clarification": False,
+            "clarification": None,
+        }
     mappings = [
         (
             ("full audit", "complete the audit", "end-to-end audit", "end to end audit"),
@@ -163,6 +246,7 @@ def local_resolution(command: dict) -> dict | None:
                 continue
             return {
                 "route": "workflow",
+                "workflow_definition": audit_workflow.WORKFLOW_ID,
                 "requested_outcomes": list(requested),
                 "objective": str(command.get("text") or "").strip(),
                 "target_refs": ["workspace:current"],
@@ -233,19 +317,72 @@ def _explanation(
     return " ".join(parts)
 
 
+def _audit_model_turns(workspace: Workspace) -> int:
+    """Size the audit model budget from real RCM, planned-test, and Q&A counts."""
+
+    planned_count = sum(len(row.get("planned_tests") or []) for row in workspace.rcm)
+    qa_pairs = sum(
+        len(item.get("document_ids") or [])
+        for summary in doc_tests.list_tests(workspace)
+        for item in doc_tests.load_test(workspace, summary["id"]).get("items") or []
+        if summary.get("kind") == "qa"
+    )
+    eligible_findings = sum(
+        item.get("status") == "disposed"
+        and item.get("disposition") in ELIGIBLE_DISPOSITIONS
+        for item in workspace.observations
+    )
+    return (
+        20
+        + 4 * len(workspace.rcm)
+        + 4 * planned_count
+        + 2 * qa_pairs
+        + 2 * eligible_findings
+    )
+
+
+def _analysis_model_turns(workspace: Workspace, scope: dict) -> int:
+    """Size the analysis model budget from the frames actually in scope.
+
+    Only ``analysis.definitions_ready`` calls the model, once per target frame,
+    so the budget follows the resolved scope rather than the whole workspace.
+    """
+
+    from .capabilities.analysis import resolve_table_scope
+
+    table_scope = resolve_table_scope(workspace, scope)
+    return 10 + 2 * max(1, len(table_scope.targets))
+
+
 def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> None:
     """Materialize a validated workflow route on the durable run."""
 
-    scope = {
-        "target_refs": list(resolution.get("target_refs") or ["workspace:current"]),
-        "permission_mode": run.get("mode") == "permission",
-    }
+    definition_id = str(
+        resolution.get("workflow_definition")
+        or _workflow_definition_for(list(resolution.get("requested_outcomes") or []))
+    )
+    if definition_id not in WORKFLOW_MODULES:
+        raise WorkspaceError(f"Unsupported workflow definition '{definition_id}'.")
+    definition = WORKFLOW_MODULES[definition_id]
+    registry = audit_capabilities.REGISTRY_BY_WORKFLOW[definition_id]
+    analysis_route = definition_id == analysis_workflow.WORKFLOW_ID
     generation_mode = workflow.normalize_generation_mode(
         resolution.get("generation_mode") or "reuse_existing"
     )
+    scope = {
+        "target_refs": list(resolution.get("target_refs") or ["workspace:current"]),
+        "permission_mode": run.get("mode") == "permission",
+        "generation_mode": generation_mode,
+    }
+    if analysis_route:
+        # A resolved table scope is durable on the workflow record, so a
+        # checkpoint answer or a router-supplied selection survives a resume.
+        # Explicitly named tables normally arrive as ``table:<name>`` target
+        # refs, which the scope resolver reads directly.
+        scope["tables"] = [str(value) for value in resolution.get("tables") or []]
     requested = list(resolution.get("requested_outcomes") or [])
     resolved, stages, reused = workflow.materialize(
-        audit_capabilities.REGISTRY,
+        registry,
         workspace,
         requested,
         scope,
@@ -263,24 +400,10 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         )
     explanation = _explanation(resolved, stages, reused, requested)
     run["schema_version"] = 3
-    planned_count = sum(len(row.get("planned_tests") or []) for row in workspace.rcm)
-    qa_pairs = sum(
-        len(item.get("document_ids") or [])
-        for summary in doc_tests.list_tests(workspace)
-        for item in doc_tests.load_test(workspace, summary["id"]).get("items") or []
-        if summary.get("kind") == "qa"
-    )
-    eligible_findings = sum(
-        item.get("status") == "disposed"
-        and item.get("disposition") in ELIGIBLE_DISPOSITIONS
-        for item in workspace.observations
-    )
     calculated_model_turns = (
-        20
-        + 4 * len(workspace.rcm)
-        + 4 * planned_count
-        + 2 * qa_pairs
-        + 2 * eligible_findings
+        _analysis_model_turns(workspace, scope)
+        if analysis_route
+        else _audit_model_turns(workspace)
     )
     run.setdefault("limits", {}).update(
         max_llm_concurrency=int(
@@ -309,12 +432,13 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         "completion_criteria": requested,
     }
     run["workflow"] = {
-        "definition": audit_workflow.WORKFLOW_ID,
-        "definition_hash": audit_workflow.definition_hash(),
+        "definition": definition.WORKFLOW_ID,
+        "definition_hash": definition.definition_hash(),
         "revision": 1,
         "route": "workflow",
         "requested_outcomes": requested,
         "target_refs": scope["target_refs"],
+        "scope": scope,
         "generation_mode": generation_mode,
         "workflow_explanation": explanation,
         "next_outcomes": [],
@@ -329,12 +453,15 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
             for capability_id in reused
         ],
         "workspace_revision": workspace.revision,
-        "state_at_resolution": audit_capabilities.workflow_state(workspace, scope),
+        "state_at_resolution": registry.workflow_state(workspace, scope),
         "stages": stages,
         "legacy_adoptions": [],
     }
     run["workflow_explanation"] = explanation
     run["command"]["status"] = "resolved"
+    if analysis_route:
+        run.setdefault("analysis", {"relationships": []})
+        return
     run.setdefault(
         "planning_changes",
         {
@@ -377,8 +504,18 @@ class CommandRouter(BaseRunner):
         if local is not None:
             return local
         self.set_status("interpreting")
-        state = audit_capabilities.workflow_state(self.ws)
-        supported = {item.id for item in audit_capabilities.REGISTRY.all()}
+        # The router classifies against every registered workflow, so an
+        # unresolved data-analysis request can name an analysis outcome instead
+        # of falling through to the generic action interpreter.
+        state = {
+            **audit_capabilities.workflow_state(self.ws),
+            **audit_capabilities.analysis_workflow_state(self.ws),
+        }
+        supported = {
+            capability.id
+            for registry in audit_capabilities.REGISTRY_BY_WORKFLOW.values()
+            for capability in registry.all()
+        }
         bundle = context_bundles.command_router(
             self.run.get("command") or {},
             state,
@@ -399,7 +536,11 @@ class CommandRouter(BaseRunner):
             command["text"] = (
                 f"{command.get('text') or ''}\n\nClarification: {answer}".strip()
             )
-            state = audit_capabilities.workflow_state(load_workspace(self.ws.id))
+            fresh = load_workspace(self.ws.id)
+            state = {
+                **audit_capabilities.workflow_state(fresh),
+                **audit_capabilities.analysis_workflow_state(fresh),
+            }
             bundle = context_bundles.command_router(
                 command,
                 state,

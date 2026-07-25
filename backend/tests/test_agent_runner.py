@@ -11,13 +11,13 @@ import app.agent as agent_package
 from app import documents, llm, workspaces
 from app.agent import (
     action_runner,
-    audit_execution,
     doc_test_runner,
     document_analysis_runner,
     intake_runner,
     ledger,
     runner,
     store,
+    workflow_dispatch,
 )
 from conftest import wait_run
 
@@ -575,8 +575,8 @@ def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
     [
         (
             store.WORKFLOW_ENGINE,
-            audit_execution,
-            "build_audit_workflow_runner",
+            workflow_dispatch,
+            "build_workflow_runner",
             "workflow",
         ),
         (store.ACTION_ENGINE, action_runner, "ActionRunner", "action"),

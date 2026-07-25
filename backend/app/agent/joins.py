@@ -185,6 +185,59 @@ def classify(diagnostics: dict) -> str:
     return "weak"
 
 
+def pair_candidates(workspace: Workspace, left: str, right: str) -> list[dict]:
+    """Diagnosed join candidates for one unordered table pair, best first.
+
+    Both directions are diagnosed because which side is the fact table is not
+    known up front; the ordering rule is the same one :func:`find_candidates`
+    applies globally (strongest evidence, then highest match rate). Every value
+    in the result is an aggregate metric — no row values leave this module.
+
+    Unlike :func:`find_candidates` this keeps every direction and key pair for
+    the requested tables, so a caller can report ambiguity instead of silently
+    taking the first candidate.
+    """
+    frames: dict[str, pl.DataFrame] = {}
+    for name in (left, right):
+        try:
+            frames[name] = workspace.get_frame(name)
+        except Exception:
+            return []
+
+    existing = {
+        (j["left"], j["right"], tuple(j["left_on"]), tuple(j["right_on"]))
+        for j in workspace.joins
+    }
+
+    candidates = []
+    for fact, dimension in ((left, right), (right, left)):
+        for left_on, right_on, _ in candidate_keys(
+            frames[fact], frames[dimension], dimension
+        ):
+            if (fact, dimension, (left_on,), (right_on,)) in existing:
+                continue
+            diagnostics = diagnose(frames[fact], frames[dimension], left_on, right_on)
+            strength = classify(diagnostics)
+            if strength == "weak" and diagnostics["match_rate"] < 0.5:
+                continue  # noise, not a candidate worth surfacing
+            candidates.append(
+                {
+                    "left": fact,
+                    "right": dimension,
+                    "left_on": [left_on],
+                    "right_on": [right_on],
+                    "how": "left",
+                    "strength": strength,
+                    "diagnostics": diagnostics,
+                }
+            )
+    order = {"strong": 0, "moderate": 1, "weak": 2}
+    candidates.sort(
+        key=lambda c: (order[c["strength"]], -c["diagnostics"]["match_rate"])
+    )
+    return candidates
+
+
 def find_candidates(workspace: Workspace) -> list[dict]:
     """Diagnosed join candidates across every pair of base tables, best first.
 

@@ -32,30 +32,33 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 7 (complete).
-- Current task: `P8.1` — Phase 7 is closed. Every one of the twelve audit
-  capabilities executes on a native scheduler path: seven through
-  `pipeline_binder` (`planning.context_ready`, `planning.apm_ready`,
-  `planning.rcm_ready`, `planning.planned_tests_ready`,
-  `fieldwork.definitions_ready`, `fieldwork.executed`, `findings.drafted`) and
-  five through `deterministic_executor` (`results.rolled_up`,
-  `working_papers.generated`, `dashboard.curated`, `report.working_draft`,
-  `audit.verified`). The transitional batch binding kind is deleted from the
-  scheduler, not merely unused.
-- Last completed task: `P7.4` — the phase gate is green with no deferral
-  whitelist. See the `P7A.2`, `P7F.2`/`P7F.3`, and `P7.4` notes below for the two
-  slices that closed it and the two behavior changes they carry.
-- Prior tasks: `P7F.2`+`P7F.3` (fieldwork execution: deterministic data/document
-  test execution extracted to `executors/fieldwork.py`, document Q&A moved to a
-  registered worker/executor pair, and the `_executions` batch handler deleted)
-  and `P7A.2` (planning-context synthesis moved to a registered worker with a
-  declared `planning.context` preset, `_planning_basis`/`stage_context` deleted,
-  and the run-scoped `planning_basis` snapshot removed).
-- Active blockers: none for Phase 7. Two follow-ups belong to Phase 9 and are
-  recorded in the `P7A.2` note: on-demand document-analysis generation no longer
-  happens as a side effect of planning, and the Phase 9
-  `documents.analysis_generated` capability should become a scoped dependency of
-  `planning.context_ready` when it lands.
+- Current phase: Phase 8 (complete).
+- Current task: `P9.1` — Phase 8 is closed. `WorkflowRunner` now schedules two
+  declared workflows: the audit lifecycle (`audit_workflow_v2`) and the new
+  exploratory data-analysis workflow (`analysis_workflow_v1`). Routing resolves
+  which one a command belongs to, the run persists the definition ID, and
+  `workflow_dispatch.build_workflow_runner(...)` selects the composition by
+  lookup. Requests such as "see the two tables, perform relevant joins and data
+  analysis" and the `data_analysis` goal template are durable outcome workflows;
+  "run this saved analysis" and "pin this result" remain `ActionRunner`
+  operations.
+- Last completed task: `P8.11` — the phase gate is green. See the Phase 8 note
+  below for the persisted-artifact decision, the evidence gate on automatic join
+  creation, and the two recorded deviations.
+- Prior tasks: Phase 7 closed with every one of the twelve audit capabilities on
+  a native scheduler path — seven through `pipeline_binder`
+  (`planning.context_ready`, `planning.apm_ready`, `planning.rcm_ready`,
+  `planning.planned_tests_ready`, `fieldwork.definitions_ready`,
+  `fieldwork.executed`, `findings.drafted`) and five through
+  `deterministic_executor` (`results.rolled_up`, `working_papers.generated`,
+  `dashboard.curated`, `report.working_draft`, `audit.verified`). The
+  transitional batch binding kind is deleted from the scheduler, not merely
+  unused.
+- Active blockers: none. Two follow-ups belong to Phase 9 and are recorded in the
+  `P7A.2` note: on-demand document-analysis generation no longer happens as a
+  side effect of planning, and the Phase 9 `documents.analysis_generated`
+  capability should become a scoped dependency of `planning.context_ready` when
+  it lands.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -76,8 +79,8 @@ status notes below.
 | 5 | Complete | — |
 | 6 | Complete | — |
 | 7 | Complete | — |
-| 8 | Ready | `P8.1` |
-| 9 | Pending Phase 8 gate | `P9.1` |
+| 8 | Complete | — |
+| 9 | Ready | `P9.1` |
 | 10 | Pending Phase 9 gate | `P10.1` |
 | 11 | Pending required workflow migrations | `P11.1` |
 | 12 | Pending routing consolidation | `P12.1` |
@@ -1617,6 +1620,95 @@ status notes below.
   `frontend/src/types.ts`), and an API smoke check confirmed the app boots and
   serves the planning, dashboard, coverage, and run surfaces. Phase 7 is
   complete; the exact next task is `P8.1`, and no Phase 8 work has started.
+- Phase 8 (`P8.1`–`P8.11`) completed on 2026-07-25. The exploratory
+  data-analysis workflow is live on the same domain-neutral scheduler as the
+  audit lifecycle, with a different declared outcome set.
+  (1) **`P8.1` persisted-artifact and readiness decision.** The workflow adds
+  **no workspace collection**. Materialized joins go to `workspace.joins`,
+  analysis definitions to `workspace.analyses` (kinds `analytics` and `python`),
+  and each execution records a bounded `last_result` on its analysis record —
+  an additive field inside an existing free-form collection, following the
+  `data_tests` `last_run` precedent, not a definition-schema change. Inferred
+  relationships are deliberately **not** a workspace artifact: they are a
+  recomputable diagnostic about tables rather than an engagement record, so they
+  live on the durable run (`run["analysis"]["relationships"]`) and in unit
+  `result_refs`; a collection for them would have been an unapproved
+  domain-schema change. `workspace_transactions.artifact_projection` gained
+  `table:`, `join:`, and `analysis:` parent projections (a table's projection
+  includes its loader signature, so a replaced source is a parent change) —
+  additive, and required for these executors' CAS. Every readiness function
+  reports existence and structural usability only, per `P7.2A`: relationships
+  and joins are satisfied when every scoped table pair is already connected
+  (or there are fewer than two scoped tables), definitions when every scoped
+  frame carries a workflow-authored analysis, and execution when every one of
+  those carries a result. Readiness is satisfied exactly when unit expansion is
+  empty, so reuse and scheduling never disagree.
+  (2) **`P8.2`–`P8.3` graph, composition, and scope.** `workflows/analysis.py`
+  owns `WORKFLOW_ID = "analysis_workflow_v1"`, the linear `DEPENDENCIES` graph,
+  a hash-identified `definition_hash()`, and the `data_analysis` /
+  `table_relationships` goal templates. `capabilities/analysis.py` declares all
+  four capabilities and owns scope resolution: explicitly named tables, then the
+  base tables behind a selected join or saved analysis, then a bounded fallback
+  (`MAX_SCOPE_TABLES = 6`, since pair-wise diagnosis is quadratic) that reports
+  its own ambiguity. The grouped `capabilities` package now composes and
+  validates two registries at import; `validate_audit_composition` became a thin
+  wrapper over a shared `validate_composition`, and `workflow_for_outcomes`
+  fails closed on a closure that would span both workflows. Ambiguity resolves
+  through a declared `STAGE_CHECKPOINTS` entry: permission mode asks the auditor
+  and persists the answer on `workflow.scope.tables`; auto mode warns and
+  proceeds with the bounded deterministic selection.
+  (3) **`P8.4`–`P8.5` deterministic relationships and evidence-gated joins.**
+  `agent/joins.py` gained `pair_candidates(...)`, a pair-scoped reuse of its
+  existing `candidate_keys`/`diagnose`/`classify` primitives that keeps both
+  directions and every key pair so ambiguity can be reported rather than
+  silently resolved. `executors/analysis.py::infer_relationship` is read-only
+  and produces aggregate metrics only — no relationship fact is ever
+  model-generated. A join is created automatically only when exactly one
+  *strong* candidate exists (unique right key, ≥98% match rate, no row
+  multiplication); competing or merely good evidence becomes an approval batch
+  in permission mode and otherwise settles `awaiting_confirmation`, and an
+  unrelatable pair is `skipped`.
+  (4) **`P8.6`–`P8.9` context, worker, and executors.** The normalized
+  `analysis.definitions` preset declares schema, bounded profile, value-free
+  aggregates, related-frame schemas, the relationship evidence, a compact
+  analytics catalog, and the current analyses; it denies `allow_table_rows`,
+  which the resolver also rejects structurally. The aggregate projection is
+  derived from the workspace's cached profile (no second Polars pass) and drops
+  `top_values` and text min/max, so category literals stay local. The registered
+  `analysis.definitions` worker owns the prompt, the bundle-to-message
+  transformation, and every contract the supplied context can decide — kind
+  enum, registry-ID membership, exact column spelling, the static
+  `sandbox.validate` Polars contract, and de-duplication against the analyses it
+  was shown — collecting all violations so one bounded repair turn corrects them
+  together. Three registered executors (`analysis.join`, `analysis.definitions`,
+  `analysis.execution`) own parent-hash CAS, auditor-edit preservation, and
+  interrupted-commit reconciliation.
+  (5) **`P8.10` routing and dispatch.** `local_resolution` gained the analysis
+  phrase set, checked before the generic-action markers and guarded by
+  `ISOLATED_ANALYSIS_MARKERS` so "pin this result" and "rerun the saved
+  analysis" stay `ActionRunner` requests. `install_resolution` now selects the
+  registry, definition, limits, and projections from the resolved workflow, and
+  the bounded router worker classifies against both registries. `runner._execute`
+  dispatches through the new `workflow_dispatch.build_workflow_runner(...)`.
+  Three recorded deviations. **(a)** `P8.7` names "validations and query specs"
+  as analysis definitions; `Workspace.add_analysis` accepts only `analytics` and
+  `python`, and the Analysis tab renders editors for exactly those two, so
+  adding kinds would be a workspace-and-UI change outside this phase's approval.
+  Validation and query logic remains expressible as a `python` analysis, and the
+  worker validates analytics IDs/params and Polars code. **(b)** The two
+  mutating deterministic capabilities (`data.joins_ready`, `analysis.executed`)
+  commit through *registered* executors and persist a receipt via the same
+  `UnitSidecarStore` the pipeline uses, because `P8.5`/`P8.8` require CAS and
+  receipts and `UnitPipeline` requires a worker. The scheduler still drives them
+  through its deterministic path; the binder owns the executor call. **(c)** The
+  `data_analysis` goal template moved from `generic_action` to the workflow, so
+  the affected characterization tests were updated to `document_testing` where
+  their intent was "an isolated action run". Verification: the new
+  `tests/test_workflow_analysis.py` passed `31` tests, and the full backend suite
+  passed `833` tests in `134.91s`; the frontend type-check and production build
+  passed (`AgentWorkflow` gained the new definition id, `definition_hash`, and
+  the optional `scope`). Phase 8 is complete; the exact next task is `P9.1`, and
+  no Phase 9 work has started.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -2449,29 +2541,29 @@ joins and data analysis" as a durable outcome workflow.
 
 **Tasks:**
 
-- [ ] `P8.1` Decide and document the persisted artifact and readiness contract
+- [x] `P8.1` Decide and document the persisted artifact and readiness contract
   for inferred relationships, materialized joins, analysis definitions, and
   bounded results without silently changing workspace schemas.
-- [ ] `P8.2` Define `workflows/analysis.py`, capability identities,
+- [x] `P8.2` Define `workflows/analysis.py`, capability identities,
   dependencies, scope limits, and deterministic routing outcomes.
-- [ ] `P8.3` Implement table scope resolution for explicit targets, selected UI
+- [x] `P8.3` Implement table scope resolution for explicit targets, selected UI
   artifacts, and bounded eligible-workspace fallback, including clarification
   for ambiguous scope.
-- [ ] `P8.4` Implement `data.relationships_inferred` from deterministic local
+- [x] `P8.4` Implement `data.relationships_inferred` from deterministic local
   diagnostics, with stable evidence and no model-generated relationship facts.
-- [ ] `P8.5` Implement `data.joins_ready` with ambiguity handling,
+- [x] `P8.5` Implement `data.joins_ready` with ambiguity handling,
   materialization preconditions, idempotence, CAS, and receipts.
-- [ ] `P8.6` Add declared schema/profile/aggregate context with structural
+- [x] `P8.6` Add declared schema/profile/aggregate context with structural
   table-row exclusion and privacy tests.
-- [ ] `P8.7` Implement the analysis-definition worker, bounded repair, and
+- [x] `P8.7` Implement the analysis-definition worker, bounded repair, and
   validation for analytics, validations, query specs, and safe Polars code.
-- [ ] `P8.8` Implement deterministic persistence of rerunnable analysis
+- [x] `P8.8` Implement deterministic persistence of rerunnable analysis
   definitions with deduplication and receipts.
-- [ ] `P8.9` Implement `analysis.executed` through existing local services and
+- [x] `P8.9` Implement `analysis.executed` through existing local services and
   persist only the approved bounded result contract.
-- [ ] `P8.10` Route data-analysis requests to the workflow while preserving
+- [x] `P8.10` Route data-analysis requests to the workflow while preserving
   isolated run/pin operations in `ActionRunner`.
-- [ ] `P8.11` Prove repeat-run reuse, unsafe-join behavior, privacy, local-only
+- [x] `P8.11` Prove repeat-run reuse, unsafe-join behavior, privacy, local-only
   execution, full integration tests, and the phase gate.
 
 **Workflow:**

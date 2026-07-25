@@ -1008,6 +1008,91 @@ PRESETS.register(
 )
 
 
+PRESETS.register(
+    ContextPreset(
+        preset_id="analysis.definitions",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="target_schema",
+                    source_type="tables",
+                    required=True,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                ),
+                ContextSource(
+                    id="target_profile",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_profile"),),
+                    budget=ContextBudget(max_items=1, max_characters=16_000),
+                ),
+                ContextSource(
+                    id="target_aggregates",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # Bounded local aggregates — group counts and numeric totals
+                    # over low-cardinality columns. Aggregates are the only
+                    # value-derived class this preset permits, and never a row.
+                    representations=(ContextRepresentation("table_aggregate"),),
+                    budget=ContextBudget(max_items=8, max_characters=12_000),
+                ),
+                ContextSource(
+                    id="related_frames",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=8, max_characters=8_000),
+                ),
+                ContextSource(
+                    id="relationship_evidence",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # The deterministic join diagnostics for frames related to
+                    # the target: match rates, key uniqueness, and row-count
+                    # effects. Aggregate metrics only — this is the same evidence
+                    # the relationship capability recorded, not a re-derivation
+                    # the model is asked to make.
+                    representations=(ContextRepresentation("table_aggregate"),),
+                    budget=ContextBudget(max_items=8, max_characters=8_000),
+                ),
+                ContextSource(
+                    id="analytics_registry",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=20_000),
+                ),
+                ContextSource(
+                    id="current_analyses",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=20, max_characters=12_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=47, max_characters=60_000),
+            # Row-level table data is structurally impossible here: the
+            # permission is denied and ``table_rows`` is rejected by the
+            # resolver boundary before a candidate can become a bundle item.
+            privacy=ContextPrivacy(
+                allow_document_text=True,
+                allow_table_metadata=True,
+                allow_table_profiles=True,
+                allow_table_aggregates=True,
+            ),
+        ),
+    )
+)
+
+
 __all__ = [
     "ContextPreset",
     "PRESETS",

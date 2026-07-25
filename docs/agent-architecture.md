@@ -255,7 +255,54 @@ data.relationships_inferred
 
 This workflow handles requests such as "review these two tables, infer relevant
 joins, and perform useful analysis." It uses the same scheduler as the audit
-workflow but a different requested outcome set.
+workflow but a different requested outcome set. The authoritative graph lives in
+`workflows/analysis.py`; the grouped declarations live in
+`capabilities/analysis.py`.
+
+**Scope.** Every capability in the group is scoped the same way, in this order:
+explicitly named tables, the base tables behind a selected join or saved
+analysis, then a bounded fallback over the eligible workspace tables. The
+fallback is capped (pair-wise diagnosis is quadratic) and reports its own
+ambiguity rather than silently analysing an arbitrary subset: permission mode
+asks the auditor through a declared scope checkpoint, and auto mode records a
+warning and proceeds with the bounded, deterministic selection.
+
+**Persisted artifacts and readiness.** The workflow adds no workspace
+collection. Each outcome maps to an existing durable home, and every readiness
+function reports existence and structural usability only — never currency:
+
+| Outcome | Persisted artifact | Readiness satisfied when |
+|---|---|---|
+| `data.relationships_inferred` | Run-durable evidence on `run["analysis"]["relationships"]`; unit result refs are `relationship:<left>:<right>:<left_on>:<right_on>` | Fewer than two scoped tables, or every scoped pair is already connected by a join |
+| `data.joins_ready` | `workspace.joins` via `Workspace.add_join`, agent-provenanced | Same predicate — a materialized join is what "resolved" means for a pair |
+| `analysis.definitions_ready` | `workspace.analyses` (kinds `analytics` and `python`), keyed by a semantic id derived from the canonical spec | Every scoped frame has at least one workflow-authored analysis |
+| `analysis.executed` | A bounded `last_result` record on the analysis, following the `data_tests` `last_run` precedent | Every scoped workflow-authored analysis carries a result |
+
+Relationship evidence is deliberately *not* a workspace artifact: it is a
+recomputable diagnostic about tables rather than an engagement record, and a
+collection for it would be an unapproved domain-schema change. A capability that
+still needs the evidence after inference was reused recomputes it, which is a
+cost rather than a divergence because the computation is deterministic and
+read-only.
+
+**Evidence gates materialization.** Relationship inference produces no
+model-generated facts: it reuses the deterministic diagnostics in `agent/joins.py`
+(datatype compatibility, key uniqueness, match rate, unmatched populations, and
+the row-count effect of the join). A join is created automatically only when
+exactly one *strong* candidate exists for the pair. Competing or merely good
+evidence is reported — permission mode asks — and never silently applied;
+unrelatable pairs are skipped.
+
+**Bounded results.** `analysis.executed` recomputes each saved spec through the
+same local services the Analysis tab uses (the analytics registry and the
+guarded Polars sandbox) and persists only shape, verdict, and the bounded
+label/value statistics the service produced. No frame, row, or captured stdout
+becomes durable: a saved analysis is a rerunnable spec, and re-running it is how
+the data is seen. A spec that errors records its error and settles as
+`awaiting_confirmation` rather than failing the run.
+
+Isolated "run this saved analysis" and "pin this result" operations remain
+`ActionRunner` requests.
 
 ### Document Analysis Workflow
 

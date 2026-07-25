@@ -163,6 +163,31 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
                 "created_by": workspace.planning.get("created_by"),
                 "updated": workspace.planning.get("updated"),
             }
+    # Data-workbench artifacts. The exploratory analysis workflow guards its
+    # commits on the tables it read, the joins it materialized, and the analysis
+    # definitions it executed, so those need material parent projections too.
+    # A table's projection is its durable entry plus the loader signature, so a
+    # replaced or re-imported source is a parent change rather than a silent
+    # basis swap.
+    if kind == "table":
+        entry = next(
+            (item for item in workspace.tables if item.get("name") == item_id), None
+        )
+        if entry is None:
+            return None
+        try:
+            signature = list(workspace._table_signature(item_id))
+        except Exception as error:
+            signature = [type(error).__name__, str(error)]
+        return material_projection({"table": entry, "signature": signature})
+    if kind == "join":
+        return material_projection(
+            next((item for item in workspace.joins if item.get("name") == item_id), None)
+        )
+    if kind == "analysis":
+        return material_projection(
+            next((item for item in workspace.analyses if item.get("id") == item_id), None)
+        )
     if kind == "rcm":
         return material_projection(
             next((item for item in workspace.rcm if item.get("id") == item_id), None)
