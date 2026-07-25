@@ -158,7 +158,7 @@ def test_the_run_projection_still_carries_every_field_the_frontend_requires():
 
     from app import workspaces
     from app.agent import store
-    from app.agent.routing import initialize_known_workflow
+    from app.agent.routing import resolve_route
 
     types_ts = (
         pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" / "types.ts"
@@ -170,7 +170,7 @@ def test_the_run_projection_still_carries_every_field_the_frontend_requires():
         "auto",
         {"source": "goal_template", "text": "Do the full audit"},
     )
-    assert initialize_known_workflow(workspace, run) is True
+    assert resolve_route(workspace, run) == "workflow"
     workflow = store.load_run(workspace, run["id"])["workflow"]
 
     assert _required_interface_fields(types_ts, "AgentWorkflow") <= set(workflow)

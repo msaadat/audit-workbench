@@ -1834,8 +1834,80 @@ status notes below.
   tests; the full backend suite passed `887` tests in `152.60s`; the frontend
   type-check and production build passed (`AgentRun.engine` and `AgentRun.kind`
   lost `doc_test`, and `AgentWorkflow.definition` gained the two newer definition
-  ids). Phase 10 is complete; the exact next task is `P11.1`, and no Phase 11 work
-  has started.
+  ids). Phase 10 is complete.
+- **Phase 11 complete (2026-07-26).** A request is now classified exactly once,
+  by `agent/routing.py`, before its worker thread launches.
+  **(1) `P11.1` — the engine set is final.** `store.RUN_ENGINES` is
+  `{workflow, action, intake, analysis}`, matching the Phase 10 decision table.
+  `ENGINE_BY_RUN_KIND` was renamed `PROTOCOL_ENGINE_BY_RUN_KIND` to say what it
+  is: a *creation-time* contract read only by `start_run(kind=...)`, never a
+  dispatch fallback. `routing.dispatch_engine(...)` raises for a record whose
+  engine is absent or outside the set, and `_execute` no longer reads `kind`,
+  `schema_version`, or the presence of a workflow record.
+  **(2) `P11.2`/`P11.2A` — one deterministic classifier.** `GOAL_TEMPLATES` and
+  every phrase table moved out of `action_runner.py` into pure functions in
+  `routing.py`, ordered by the architecture's precedence: explicit outcomes,
+  registered template, lifecycle-wide completion, workflow-owned
+  generation/refresh, target-specific operation, scope-wide execution, then a
+  weak isolated-operation fallback before the bounded router. `ActionRunner`'s
+  guard is now `routing.workflow_owned_request(...)` — the same classification —
+  so the guard and the persisted route cannot disagree. Compound requests split
+  on *strong* separators only (`; `, `. `, ` then `, ` and then `, ` also `,
+  newline): a bare "and" keeps "join the tables and analyse them" one scope-wide
+  analysis request, while "Regenerate the APM. Then pin the revenue tile."
+  resolves to `clarification`. Eight workflow-owned generators left the action
+  catalog: `generate_apm`, `infer_relationships`, `run_document_test`,
+  `rollup_rcm_results`, `generate_all_rcm_working_papers`, `generate_report`,
+  `curate_dashboard`, and `verify_audit_completion`. Target-specific operations
+  on the same artifact families stayed (`edit_apm`, `create_join`,
+  `run_data_test`, `generate_rcm_working_paper`, `pin_dashboard_tile`,
+  `edit_report`, `reconcile_report`).
+  **Decision on the Phase 10 overlap: the action is removed, not narrowed.**
+  Executing a Document Test worklist is a fan-out of per-item units, which is
+  what `doc_tests.executed` already schedules through one binder shared with the
+  audit graph; keeping the action meant a second execution implementation. It
+  also closed a real hole rather than a stylistic one: the action called
+  `doc_tests.run_item` with no model adapter, so a Q&A worklist reached
+  `documents.document_chat` outside the registered `fieldwork.document_qa`
+  worker, its declared page context, and the run's model budget.
+  **(3) Recorded behavior change: the `document_testing` goal template is
+  gone.** It meant two different things — "prepare the Document Tests the RCM
+  planned tests require" and "run this Document Test" — and both are
+  workflow-owned. It is replaced by `document_test_preparation`
+  (`fieldwork.definitions_ready`) and `document_test_execution`
+  (`doc_tests.executed`), and `DocTestsTab.vue`'s Prepare and Run buttons now
+  send those. The Run button passes the named test as run context, so
+  `assistant_chats` validates run context against
+  `routing.TEMPLATE_RUN_CONTEXT_KEYS` — a per-template scope allowlist — instead
+  of a hard-coded `planning` special case. Every registered template now
+  resolves to a declared workflow outcome set; no template routes to the action
+  catalog.
+  **(4) `P11.3`/`P11.4` — one schema, one persisted route.** The bounded router
+  returns `workflow | action | clarification | unsupported` (the former
+  `generic_action`/`question` pair and the separate `needs_clarification` flag
+  are gone), with outcomes validated against the registered workflows and
+  `action_intent` validated against the action registry. `new_command_run`
+  persists `engine: None` and `route: None`; `runner.start_command_run` calls
+  `routing.resolve_route(...)`, which persists the normalized `run["route"]`,
+  the selected engine, and — for a workflow — the materialized graph, before the
+  thread starts. A command the deterministic pass cannot classify launches with
+  `route.status == "pending"`, and only then does the router spend a turn.
+  `run_summary` projects `route`, and `AgentRun`/`AgentRunSummary` gained the
+  matching `AgentRoute` type.
+  **(5) `P11.6` — command-ness is a record shape, not an engine.** Because a
+  pending-route run has no engine yet, `steer`, `retry_run`, and the queued
+  FIFO launcher now ask `store.is_command_run(run)` rather than testing
+  membership in `COMMAND_ENGINES`. `initialize_known_workflow`,
+  `route_unresolved_run`, `local_resolution`, `validate_route`, and the
+  `partial_resolution`/`command_route`/`legacy_adoptions` run fields were
+  deleted rather than aliased.
+  **(6) `P11.7` verification.** New `tests/test_agent_routing.py` passed `46`
+  tests covering the routing matrix, purity, catalog boundary, router schema,
+  route persistence, engine-only dispatch, single classification, the
+  one-live-run rule, the global concurrency cap, queued FIFO after a terminal
+  crash, and retry/continue parent links. The full backend suite passed `939`
+  tests in `156.05s`, and the frontend type-check and production build passed.
+  The exact next task is `P12.1`, and no Phase 12 work has started.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -2910,12 +2982,12 @@ explicit.
 
 **Tasks:**
 
-- [ ] `P11.1` Finalize the explicit current engine values from Phase 1 and any
+- [x] `P11.1` Finalize the explicit current engine values from Phase 1 and any
   protocol-specific Phase 10 decision; reject records without a supported
   engine and retain no schema inference.
-- [ ] `P11.2` Move deterministic templates, phrases, outcome validation, and
+- [x] `P11.2` Move deterministic templates, phrases, outcome validation, and
   action-intent validation into pure `agent/routing.py` functions.
-- [ ] `P11.2A` Implement deterministic routing precedence for registered
+- [x] `P11.2A` Implement deterministic routing precedence for registered
   outcomes, workflow-owned generation/refresh, target-specific operations,
   scope-wide execution, and compound cross-engine requests; remove
   workflow-owned generation actions from the canonical action catalog. Phase 10
@@ -2926,15 +2998,15 @@ explicit.
   survives — and, if the action does, narrowing it so it cannot execute a Q&A
   worklist outside the registered worker — is `P11.2A` work, not a Phase 10
   routing change.
-- [ ] `P11.3` Define and validate the bounded router-worker result schema for
+- [x] `P11.3` Define and validate the bounded router-worker result schema for
   workflow, action, clarification, and unsupported outcomes.
-- [ ] `P11.4` Persist one normalized route and selected engine before thread
+- [x] `P11.4` Persist one normalized route and selected engine before thread
   launch, updating the active API projections directly.
-- [ ] `P11.5` Dispatch every supported run only by explicit engine and remove
+- [x] `P11.5` Dispatch every supported run only by explicit engine and remove
   all `kind`-based and inferred dispatch.
-- [ ] `P11.6` Remove local resolution and cross-scheduler fallback from both
+- [x] `P11.6` Remove local resolution and cross-scheduler fallback from both
   schedulers, preserving deterministic no-model routing for common requests.
-- [ ] `P11.7` Prove the routing matrix, one-live-run rule, global concurrency,
+- [x] `P11.7` Prove the routing matrix, one-live-run rule, global concurrency,
   queued FIFO, retry/continue links, terminal crash guarantees, and phase gate.
 
 **Work:**

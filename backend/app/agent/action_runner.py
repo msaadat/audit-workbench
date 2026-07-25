@@ -7,69 +7,14 @@ import time
 
 from .. import analytics, assistant, debug_store, llm, sandbox, validation
 from ..workspaces import Workspace, WorkspaceError
-from . import actions, artifact_index, ledger, prompts, store
+from . import actions, artifact_index, ledger, prompts, routing, store
 from .base import BaseRunner, Cancelled, LimitExceeded
 from .runtime import RunRuntime
 
-GOAL_TEMPLATES = {
-    "full_audit_working_draft": {
-        "objective": "Execute RCM-linked planned tests through an evidence-linked report working draft.",
-        "constraints": ["Do not assert a formal audit opinion.", "Preserve auditor edits."],
-    },
-    "planning": {"objective": "Prepare or improve engagement planning and structured RCM planned tests."},
-    "apm_only": {"objective": "Prepare or revise only the audit planning memorandum."},
-    "data_analysis": {"objective": "Analyze available structured data and preserve useful validated work."},
-    "document_testing": {"objective": "Prepare and execute relevant document tests and working papers."},
-    "report": {"objective": "Prepare evidence-linked audit report working content and run quality checks."},
-}
-
-_WORKFLOW_ONLY_ACTION_TEMPLATES = frozenset({
-    "full_audit_working_draft",
-    "planning",
-    "apm_only",
-})
-_WORKFLOW_ONLY_ACTION_PHRASES = (
-    "full audit",
-    "complete the audit",
-    "complete audit",
-    "entire audit",
-    "end-to-end audit",
-    "end to end audit",
-    "prepare engagement planning",
-    "prepare the engagement planning",
-    "prepare planning",
-    "plan the audit",
-    "draft the apm",
-    "update the apm",
-    "generate apm",
-    "generate the apm",
-    "audit planning memorandum",
-    "generate the rcm",
-    "draft the rcm",
-    "update the rcm",
-    "risk and control matrix",
-    "testing procedures",
-    "planned procedures",
-    "planned tests",
-)
-_ISOLATED_PLANNING_EDIT_VERBS = (
-    "replace",
-    "edit",
-    "rename",
-    "remove",
-    "delete",
-    "attach",
-    "detach",
-)
-_ISOLATED_PLANNING_TARGET_MARKERS = (
-    "paragraph",
-    "sentence",
-    "section",
-    "field",
-    "row",
-    "title",
-    "item",
-)
+# Goal templates, deterministic phrase tables, and the workflow-ownership rule
+# all live in `agent/routing.py`. The action scheduler classifies nothing; it
+# only re-asks routing whether a record it was handed is one it may plan.
+GOAL_TEMPLATES = routing.GOAL_TEMPLATES
 
 SEMANTIC_PROPOSAL_ATTEMPTS = 2
 
@@ -153,25 +98,12 @@ class ActionRunner(BaseRunner):
 
         Routing normally selects ``WorkflowRunner`` before launch. This is the
         defensive boundary for a malformed record or a bounded-router miss: a
-        broad audit or planning request must fail without invoking the action
-        interpreter or executing a pre-populated action graph.
+        request for a workflow-owned deliverable must fail without invoking the
+        action interpreter or executing a pre-populated action graph. The rule
+        is the routing module's own classification, so the guard and the
+        persisted route can never disagree.
         """
-        command = self.run.get("command") or {}
-        requested_outcomes = command.get("requested_outcomes")
-        template = str(command.get("goal_template") or "")
-        text = str(command.get("text") or "").casefold()
-        specific_artifact_operation = (
-            any(verb in text for verb in _ISOLATED_PLANNING_EDIT_VERBS)
-            and any(marker in text for marker in _ISOLATED_PLANNING_TARGET_MARKERS)
-        )
-        if (
-            (isinstance(requested_outcomes, list) and bool(requested_outcomes))
-            or template in _WORKFLOW_ONLY_ACTION_TEMPLATES
-            or (
-                not specific_artifact_operation
-                and any(phrase in text for phrase in _WORKFLOW_ONLY_ACTION_PHRASES)
-            )
-        ):
+        if routing.workflow_owned_request(self.run.get("command") or {}):
             raise WorkspaceError(
                 "Broad audit and planning requests must use workflow routing; "
                 "the action runner accepts only isolated artifact operations."
@@ -473,7 +405,7 @@ class ActionRunner(BaseRunner):
                 )
                 generated_report = (
                     target_kind == "report" and target_id == "working"
-                    and dependency["type"] in {"generate_report", "edit_report"}
+                    and dependency["type"] == "edit_report"
                 )
                 if exact_match or child_match or generated_report:
                     return dependency

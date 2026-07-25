@@ -86,6 +86,9 @@ TEMPLATE_OUTCOMES: dict[str, list[str]] = {
         "planning.planned_tests_ready",
     ],
     "apm_only": ["planning.apm_ready"],
+    # Preparing the Document Tests an RCM planned test requires is the
+    # ``fieldwork.definitions_ready`` deliverable, not a document-test run.
+    "document_test_preparation": ["fieldwork.definitions_ready"],
     "report": ["report.working_draft", "audit.verified"],
 }
 

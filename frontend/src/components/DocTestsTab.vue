@@ -169,7 +169,7 @@ async function runTest() {
   if (!current.value) return
   running.value = true
   try {
-    await assistantChat.send(`Run document test ${current.value.id} and preserve its results.`, 'act', launchMode.value, { goalTemplate: 'document_testing', source: 'tab_button' })
+    await assistantChat.send(`Run document test ${current.value.id} and preserve its results.`, 'act', launchMode.value, { goalTemplate: 'document_test_execution', source: 'tab_button', runContext: { test_id: current.value.id } })
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant drawer.', life: 3000 })
   } catch (error) { fail('Could not start document test', error) }
   finally { running.value = false }
@@ -184,7 +184,7 @@ async function prepareTests() {
     return
   }
   try {
-    await assistantChat.send('Prepare the next required Document Tests from the RCM planned tests, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.', 'act', launchMode.value, { goalTemplate: 'document_testing', source: 'tab_button' })
+    await assistantChat.send('Prepare the next required Document Tests from the RCM planned tests, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.', 'act', launchMode.value, { goalTemplate: 'document_test_preparation', source: 'tab_button' })
     toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress and any required decisions in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start document test preparation', error) }
 }

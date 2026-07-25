@@ -183,6 +183,7 @@ def test_continue_endpoint_creates_linked_run_from_next_outcomes(
         {"source": "chat", "text": "run the audit"},
     )
     previous["schema_version"] = 3
+    previous["engine"] = store.WORKFLOW_ENGINE
     previous["status"] = "completed_with_open_items"
     previous["finished"] = store.utcnow()
     previous["workflow"] = {

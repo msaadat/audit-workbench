@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 
 from app import dashboard, data_tests, doc_tests, document_analysis, documents, llm, methodology, rcm_execution, report, working_papers, workspaces
-from app.agent import action_runner, context_bundles, runner, store, workflow
+from app.agent import action_runner, context_bundles, routing, runner, store, workflow
 from app.agent import capabilities as audit_capabilities
 from app.agent.audit_execution import (
     AuditWorkflowExecution,
@@ -32,8 +32,8 @@ from app.agent.context import (
     SelectorRegistry,
 )
 from app.agent.routing import (
-    initialize_known_workflow,
-    local_resolution as _local_resolution,
+    classify_command as _classify_command,
+    resolve_route,
 )
 from app.main import create_app
 from app.workspace_transactions import (
@@ -77,7 +77,7 @@ def test_full_template_materializes_locally_without_command_interpreter():
         },
     )
 
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     persisted = store.load_run(ws, run["id"])
     assert persisted["engine"] == store.WORKFLOW_ENGINE
     assert persisted["schema_version"] == 3
@@ -100,25 +100,34 @@ def test_full_template_materializes_locally_without_command_interpreter():
         ),
         ("apm_only", "workflow", ["planning.apm_ready"]),
         ("report", "workflow", ["report.working_draft", "audit.verified"]),
-        # Phase 8 made data analysis a declared workflow goal; document testing
-        # remains an isolated ActionRunner operation.
+        # Phase 8 made data analysis a declared workflow goal; Phase 11 did the
+        # same for both halves of the former ``document_testing`` template.
         ("data_analysis", "workflow", ["analysis.executed"]),
-        ("document_testing", "generic_action", []),
+        ("table_relationships", "workflow", ["data.joins_ready"]),
+        ("document_analysis", "workflow", ["documents.analysis_generated"]),
+        ("document_test_preparation", "workflow", ["fieldwork.definitions_ready"]),
+        ("document_test_execution", "workflow", ["doc_tests.executed"]),
     ],
 )
 def test_every_registered_goal_template_has_a_deterministic_local_route(
     template, route, outcomes
 ):
-    assert set(action_runner.GOAL_TEMPLATES) == {
+    # Every registered template resolves to a declared workflow outcome set.
+    # There is no template that routes to the action catalog: an isolated
+    # artifact operation is described by its own text, not by a lifecycle goal.
+    assert set(routing.GOAL_TEMPLATES) == {
         "full_audit_working_draft",
         "planning",
         "apm_only",
         "data_analysis",
-        "document_testing",
+        "table_relationships",
+        "document_analysis",
+        "document_test_preparation",
+        "document_test_execution",
         "report",
     }
 
-    resolution = _local_resolution(
+    resolution = _classify_command(
         {
             "source": "goal_template",
             "text": f"Run {template}",
@@ -135,17 +144,29 @@ def test_known_isolated_action_is_persisted_as_action_before_launch(workspace_wi
     run = store.new_command_run(
         workspace_with_data,
         "auto",
-        {
-            "source": "goal_template",
-            "text": "Test the signed policy document",
-            "goal_template": "document_testing",
-        },
+        {"source": "chat", "text": "Attach the signed policy document to DT-1"},
     )
 
-    assert initialize_known_workflow(workspace_with_data, run) is False
+    assert resolve_route(workspace_with_data, run) == store.ACTION_ENGINE
     persisted = store.load_run(workspace_with_data, run["id"])
     assert persisted["engine"] == store.ACTION_ENGINE
-    assert persisted["command_route"]["route"] == "generic_action"
+    assert persisted["route"]["status"] == "resolved"
+    assert persisted["route"]["route"] == "action"
+    assert persisted["route"]["action_intent"] == "isolated_mutation"
+
+
+def test_unclassifiable_command_launches_with_a_pending_route(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "Please handle the outstanding work appropriately"},
+    )
+
+    assert resolve_route(workspace_with_data, run) is None
+    persisted = store.load_run(workspace_with_data, run["id"])
+    assert persisted["engine"] is None
+    assert persisted["route"]["status"] == "pending"
+    assert persisted["route"]["route"] is None
 
 
 @pytest.mark.parametrize(
@@ -153,7 +174,13 @@ def test_known_isolated_action_is_persisted_as_action_before_launch(workspace_wi
     [
         ("Do a full audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
         ("Complete the audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
+        ("Perform the entire audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
         ("Run an end-to-end audit", audit_capabilities.FULL_AUDIT_OUTCOMES),
+        ("Plan the audit", [
+            "planning.apm_ready",
+            "planning.rcm_ready",
+            "planning.planned_tests_ready",
+        ]),
         ("Draft the audit planning memorandum", ["planning.apm_ready"]),
         ("Generate the risk and control matrix", ["planning.rcm_ready"]),
         ("Create the planned procedures", ["planning.planned_tests_ready"]),
@@ -164,7 +191,7 @@ def test_known_isolated_action_is_persisted_as_action_before_launch(workspace_wi
     ],
 )
 def test_common_broad_audit_phrases_fail_closed_to_workflow(text, outcomes):
-    resolution = _local_resolution({"source": "chat", "text": text})
+    resolution = _classify_command({"source": "chat", "text": text})
 
     assert resolution is not None
     assert resolution["route"] == "workflow"
@@ -173,8 +200,8 @@ def test_common_broad_audit_phrases_fail_closed_to_workflow(text, outcomes):
 
 
 def test_workflow_routes_use_normalized_generation_modes():
-    ordinary = _local_resolution({"source": "chat", "text": "Draft the APM"})
-    forced = _local_resolution(
+    ordinary = _classify_command({"source": "chat", "text": "Draft the APM"})
+    forced = _classify_command(
         {"source": "chat", "text": "Regenerate the APM"}
     )
 
@@ -192,8 +219,9 @@ def test_workflow_scheduler_receives_persisted_route_without_action_fallback():
     assert "def _resolve(" not in source
     assert "def _clarification(" not in source
     assert "ActionRunner.execute" not in source
-    assert "local_resolution" not in source
-    assert "route_unresolved_run" not in source
+    assert "classify_command" not in source
+    assert "resolve_pending_route" not in source
+    assert "dispatch_engine" not in source
 
 
 def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
@@ -214,14 +242,13 @@ def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
     fake = FakeAgentLLM(
         {
             "agent:workflow_router": {
-                "route": "generic_action",
+                "route": "action",
                 "requested_outcomes": [],
                 "objective": "Check the report quality",
                 "target_refs": [],
                 "generation_mode": "reuse_existing",
-                "action_intent": "quality_check",
+                "action_intent": "run_report_quality",
                 "constraints": [],
-                "needs_clarification": False,
                 "clarification": None,
             },
             "agent:command_interpreter": interpret,
@@ -244,7 +271,8 @@ def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
     assert completed["status"] in {"completed", "completed_with_issues"}
     assert completed["schema_version"] == 2
     assert completed["engine"] == store.ACTION_ENGINE
-    assert completed["command_route"]["route"] == "generic_action"
+    assert completed["route"]["route"] == "action"
+    assert completed["route"]["decided_by"] == "router_worker"
     assert [call["tag"] for call in fake.calls] == [
         "agent:workflow_router",
         "agent:command_interpreter",
@@ -254,43 +282,35 @@ def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
     ]
 
 
-def test_bounded_router_cannot_send_broad_audit_into_action_planner(
-    monkeypatch, workspace_with_data,
-):
-    fake = FakeAgentLLM(
-        {
-            "agent:workflow_router": {
-                "route": "generic_action",
-                "requested_outcomes": [],
-                "objective": "Perform the entire audit",
-                "target_refs": [],
-                "generation_mode": "reuse_existing",
-                "action_intent": "generic",
-                "constraints": [],
-                "needs_clarification": False,
-                "clarification": None,
-            },
-        }
-    )
-    monkeypatch.setattr(llm, "chat", fake)
-    monkeypatch.setattr(
-        llm,
-        "agent_status",
-        lambda: {"configured": True, "backend": "fake", "model": "fake"},
-    )
+def test_action_runner_rejects_a_workflow_owned_record(monkeypatch, workspace_with_data):
+    """The scheduler's defensive boundary, not a second classification.
 
-    started = runner.start_command_run(
+    Routing never persists this shape. If a malformed record still reaches the
+    action scheduler carrying a workflow-owned request, it fails before the
+    action interpreter is invoked and without spending a model turn.
+    """
+    fake = FakeAgentLLM({})
+    monkeypatch.setattr(llm, "chat", fake)
+
+    run = store.new_command_run(
         workspace_with_data,
         "auto",
         {"source": "chat", "text": "Perform the entire audit"},
     )
-    completed = wait_run(workspace_with_data, started["id"])
+    run["engine"] = store.ACTION_ENGINE
+    run["route"] = routing.normalize_route(
+        "action", decided_by="malformed_record_fixture"
+    )
+    store.save_run(workspace_with_data, run)
 
-    assert completed["engine"] == store.ACTION_ENGINE
+    handle = runner.RunHandle(workspace_with_data.id, run["id"])
+    action_runner.ActionRunner(workspace_with_data, run, handle).execute()
+
+    completed = store.load_run(workspace_with_data, run["id"])
     assert completed["status"] == "failed"
     assert "must use workflow routing" in completed["error"]
     assert completed["actions"] == []
-    assert [call["tag"] for call in fake.calls] == ["agent:workflow_router"]
+    assert fake.calls == []
 
 
 def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
@@ -304,7 +324,7 @@ def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
         },
     )
 
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     persisted = store.load_run(ws, run["id"])
     assert persisted["workflow"]["requested_outcomes"] == ["planning.apm_ready"]
     assert [
@@ -833,7 +853,7 @@ def test_results_rolled_up_through_deterministic_scheduler_path(workspace_with_d
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     run = store.load_run(ws, run["id"])
     stage = next(
         item
@@ -880,7 +900,7 @@ def _planning_context_stage_runner(ws):
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     run = store.load_run(ws, run["id"])
     stage = next(
         item
@@ -993,7 +1013,7 @@ def _executed_stage_runner(ws, text="Execute the fieldwork"):
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     run = store.load_run(ws, run["id"])
     stage = next(
         item
@@ -1260,7 +1280,7 @@ def test_working_papers_generate_through_deterministic_scheduler_path():
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     run = store.load_run(ws, run["id"])
     stage = next(
         item
@@ -1336,7 +1356,7 @@ def test_dashboard_curated_through_deterministic_scheduler_path(workspace_with_d
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     run = store.load_run(ws, run["id"])
     stage = next(
         item
@@ -1377,7 +1397,7 @@ def _apm_only_runner(workspace, *, context_resolver=None):
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(workspace, run) is True
+    assert resolve_route(workspace, run) == "workflow"
     run = store.load_run(workspace, run["id"])
     stage = next(
         item
@@ -1434,7 +1454,7 @@ def test_reused_apm_artifact_does_not_run_context_selection():
             "generation_mode": "reuse_existing",
         },
     )
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     run = store.load_run(ws, run["id"])
     command = build_audit_workflow_runner(
         ws,
@@ -1674,7 +1694,7 @@ def _rcm_only_runner(workspace):
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(workspace, run) is True
+    assert resolve_route(workspace, run) == "workflow"
     run = store.load_run(workspace, run["id"])
     stage = next(
         item
@@ -1826,7 +1846,7 @@ def _planned_tests_only_runner(workspace):
             "generation_mode": "force",
         },
     )
-    assert initialize_known_workflow(workspace, run) is True
+    assert resolve_route(workspace, run) == "workflow"
     run = store.load_run(workspace, run["id"])
     stage = next(
         item

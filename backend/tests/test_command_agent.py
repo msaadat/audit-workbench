@@ -5,7 +5,7 @@ import time
 import polars as pl
 import pytest
 
-from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, workspaces
+from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, report, workspaces
 from app.agent import action_runner, actions, artifact_index, ledger, prompts, runner, store
 from app.agent import capabilities as audit_capabilities
 from conftest import FakeAgentLLM, wait_run
@@ -29,7 +29,13 @@ def test_schema_v2_round_trip_and_legacy_projection(workspace_with_data):
 
 
 def test_registry_and_graph_reject_invalid_contracts(workspace_with_data):
-    assert {item.type for item in actions.REGISTRY.all()} >= {"edit_finding", "delete_finding", "generate_report"}
+    assert {item.type for item in actions.REGISTRY.all()} >= {"edit_finding", "delete_finding", "edit_report"}
+    # Generation of a workflow-owned deliverable is not an action (P11.2A).
+    assert {item.type for item in actions.REGISTRY.all()}.isdisjoint({
+        "generate_apm", "generate_report", "curate_dashboard", "rollup_rcm_results",
+        "verify_audit_completion", "infer_relationships", "run_document_test",
+        "generate_all_rcm_working_papers",
+    })
     run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "test"})
     with pytest.raises(workspaces.WorkspaceError, match="Unknown agent action"):
         ledger.append_actions(run, [{"type": "write_json", "args": {}}])
@@ -58,9 +64,9 @@ def test_action_graph_rejects_duplicate_intent_even_with_distinct_ids(
 
 
 def test_singleton_target_kind_is_normalized_before_validation(workspace_with_data):
-    run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "run the document test"})
+    run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "delete the document test"})
     action = ledger.append_actions(run, [{
-        "id": "run-test", "type": "run_document_test", "args": {},
+        "id": "delete-test", "type": "delete_document_test", "args": {},
         "target": {"resolved_id": "DT-EXISTING"},
     }])[0]
 
@@ -79,7 +85,7 @@ def test_command_interpreter_repairs_semantically_invalid_action_graph(monkeypat
             return {
                 **common,
                 "actions": [{
-                    "id": "bad-target", "type": "run_document_test", "args": {},
+                    "id": "bad-target", "type": "delete_document_test", "args": {},
                     "target": {"kind": "document_test", "resolved_id": "DT-1"},
                 }],
             }
@@ -207,8 +213,7 @@ def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
     started = runner.start_command_run(
         workspace_with_data, "auto",
         {
-            "source": "goal_template", "text": "Start data analysis",
-            "goal_template": "document_testing",
+            "source": "chat", "text": "Create validation rules for transactions",
         },
     )
     completed = wait_run(workspace_with_data, started["id"])
@@ -302,8 +307,7 @@ def test_command_interpreter_reports_all_unsupported_analytics_and_repairs(
     started = runner.start_command_run(
         workspace_with_data, "auto",
         {
-            "source": "goal_template", "text": "Analyze data",
-            "goal_template": "document_testing",
+            "source": "chat", "text": "Analyze data",
         },
     )
     completed = wait_run(workspace_with_data, started["id"])
@@ -354,7 +358,7 @@ def test_command_interpreter_repairs_unsafe_custom_analysis_contract(
     fake = configured(monkeypatch, interpret)
     started = runner.start_command_run(
         workspace_with_data, "auto",
-        {"source": "goal_template", "text": "Analyze data", "goal_template": "document_testing"},
+        {"source": "chat", "text": "Analyze data"},
     )
     completed = wait_run(workspace_with_data, started["id"])
 
@@ -395,7 +399,7 @@ def test_failed_custom_analysis_gets_repaired_code_before_retry(
 
     started = runner.start_command_run(
         workspace_with_data, "auto",
-        {"source": "goal_template", "text": "Analyze data", "goal_template": "document_testing"},
+        {"source": "chat", "text": "Analyze data"},
     )
     completed = wait_run(workspace_with_data, started["id"])
 
@@ -535,7 +539,7 @@ def test_create_action_references_resolve_to_allocated_artifact_ids(workspace_wi
             "target": {"selector": "test_id:create-test"},
         },
         {
-            "id": "run-test", "type": "run_document_test", "args": {},
+            "id": "delete-test", "type": "delete_document_test", "args": {},
             "target": {"resolved_id": "create-test"},
         },
     ])
@@ -543,17 +547,21 @@ def test_create_action_references_resolve_to_allocated_artifact_ids(workspace_wi
 
     assert by_id["paper"]["target"]["resolved_id"] == by_id["procedure"]["args"]["id"]
     assert "procedure" in by_id["paper"]["depends_on"]
-    assert by_id["run-test"]["target"]["resolved_id"] == by_id["create-test"]["args"]["id"]
-    assert "create-test" in by_id["run-test"]["depends_on"]
+    assert by_id["delete-test"]["target"]["resolved_id"] == by_id["create-test"]["args"]["id"]
+    assert "create-test" in by_id["delete-test"]["depends_on"]
     item_id = by_id["create-test"]["args"]["items"][0]["id"]
     assert by_id["attach"]["target"]["resolved_id"] == f"{by_id['create-test']['args']['id']}:{item_id}"
     assert by_id["attach"]["target"]["selector"] is None
 
 
-def test_generated_report_action_reference_resolves_to_working_report(workspace_with_data):
+def test_report_producer_action_reference_resolves_to_working_report(workspace_with_data):
     run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "prepare report"})
     created = ledger.append_actions(run, [
-        {"id": "generate", "type": "generate_report", "args": {"use_model": False}},
+        {
+            "id": "generate", "type": "edit_report",
+            "args": {"changes": {"markdown": "# Draft"}},
+            "target": {"kind": "report", "resolved_id": "working"},
+        },
         {
             "id": "reconcile", "type": "reconcile_report", "args": {"action": "keep"},
             "target": {"kind": "report", "resolved_id": "generate"},
@@ -745,8 +753,8 @@ def test_failed_command_retry_preserves_context_and_links_fresh_run(
         workspace_with_data,
         "permission",
         {
-            "source": "goal_template", "text": "Start data analysis",
-            "goal_template": "document_testing", "chat_id": "chat-1",
+            "source": "chat", "text": "Create validation rules for transactions",
+            "chat_id": "chat-1",
             "source_message_id": "msg-1",
             "context_refs": [{"kind": "document", "id": "doc-1"}],
             "planning_basis_run_id": "planning-run-123",
@@ -770,7 +778,7 @@ def test_failed_command_retry_preserves_context_and_links_fresh_run(
     assert completed["parent_run_id"] == failed["id"]
     assert completed["planning_basis_run_id"] == "planning-run-123"
     assert completed["mode"] == "permission"
-    assert completed["command"]["goal_template"] == "document_testing"
+    assert completed["command"]["goal_template"] is None
     assert completed["command"]["source_message_id"] == "msg-1"
     assert completed["command"]["context_refs"] == [{"kind": "document", "id": "doc-1"}]
     assert completed["context"] == {"document_ids": ["doc-1"]}
@@ -1010,7 +1018,11 @@ def test_auto_mode_waits_for_graph_created_document_test_item(monkeypatch, works
     configured(monkeypatch, response)
 
     started = runner.start_command_run(
-        workspace_with_data, "auto", {"source": "chat", "text": "create and run the document test"}
+        workspace_with_data,
+        "auto",
+        # Executing a Document Test is workflow-owned since P11.2A; creating one
+        # and attaching evidence to it stays an isolated action graph.
+        {"source": "chat", "text": "create a document test and attach the invoice"},
     )
     completed = wait_run(workspace_with_data, started["id"])
     created = next(item for item in completed["actions"] if item["id"] == "create-test")
@@ -1063,10 +1075,17 @@ def test_stale_graph_target_clarification_is_dismissed(workspace_with_data):
     assert test["items"][0]["document_ids"] == [document["id"]]
 
 
-def test_stale_generated_report_clarification_is_dismissed(workspace_with_data):
+def test_stale_report_producer_clarification_is_dismissed(workspace_with_data):
+    # Report *generation* is a workflow outcome since P11.2A, so the action DAG
+    # starts from a report the workflow already produced and only edits it.
+    report.update(workspace_with_data, {"markdown": "# Generated report"})
     run = store.new_command_run(workspace_with_data, "auto", {"source": "chat", "text": "prepare report"})
     created = ledger.append_actions(run, [
-        {"id": "generate", "type": "generate_report", "args": {"use_model": False}},
+        {
+            "id": "generate", "type": "edit_report",
+            "args": {"changes": {"markdown": "# Draft"}},
+            "target": {"kind": "report", "resolved_id": "working"},
+        },
         {
             "id": "reconcile", "type": "reconcile_report", "args": {"action": "keep"},
             "target": {"kind": "report", "resolved_id": "generate"},
@@ -1074,7 +1093,6 @@ def test_stale_generated_report_clarification_is_dismissed(workspace_with_data):
         },
     ])
     by_id = {item["id"]: item for item in created}
-    ledger.transition(by_id["generate"], "ready")
     # Recreate the target and interaction shape persisted by the pre-fix run.
     by_id["reconcile"]["target"]["resolved_id"] = "generate"
     ledger.transition(by_id["reconcile"], "awaiting_input")
@@ -1101,7 +1119,11 @@ def test_general_chat_queues_follow_up_without_altering_graph(monkeypatch, works
         return {
             "objective": command, "constraints": [], "completion_criteria": [],
             "actions": [] if "review the APM" in command else [
-                {"id": "rewrite", "type": "generate_report", "args": {"use_model": False}}
+                {
+                    "id": "rewrite", "type": "edit_report",
+                    "args": {"changes": {"markdown": "# Draft"}},
+                    "target": {"kind": "report", "resolved_id": "working"},
+                }
             ],
         }
     configured(monkeypatch, response)
@@ -1120,7 +1142,7 @@ def test_general_chat_queues_follow_up_without_altering_graph(monkeypatch, works
         if state["pending_commands"]:
             break
         time.sleep(0.02)
-    assert [item["type"] for item in state["actions"]] == ["generate_report"]
+    assert [item["type"] for item in state["actions"]] == ["edit_report"]
     assert state["pending_commands"][0]["text"] == "then review the APM"
     runner.cancel_run(workspace_with_data, started["id"])
     wait_run(workspace_with_data, started["id"])

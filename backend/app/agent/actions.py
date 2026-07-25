@@ -2,6 +2,31 @@
 
 The registry is executable policy: persisted actions pin a definition version,
 while only these local functions may mutate engagement artifacts.
+
+**Catalog boundary (P11.2A).** The catalog holds target-specific operations:
+CRUD, attachments, pins, manual edits, and the rerun of one identified existing
+artifact. It may not generate or refresh an artifact family a registered
+workflow outcome owns, because that would give one request two engines. The
+generators removed for that reason, and the outcome that now owns each of
+them, are:
+
+===============================  ==================================
+Removed action                   Owning workflow outcome
+===============================  ==================================
+``generate_apm``                 ``planning.apm_ready``
+``infer_relationships``          ``data.relationships_inferred``
+``run_document_test``            ``doc_tests.executed``
+``rollup_rcm_results``           ``results.rolled_up``
+``generate_all_rcm_working_papers``  ``working_papers.generated``
+``generate_report``              ``report.working_draft``
+``curate_dashboard``             ``dashboard.curated``
+``verify_audit_completion``      ``audit.verified``
+===============================  ==================================
+
+``run_document_test`` is the one removal that also closed a privacy and budget
+hole: it called ``doc_tests.run_item`` with no model adapter, so a Q&A worklist
+reached the provider outside the registered ``fieldwork.document_qa`` worker,
+its declared page context, and the run's model budget.
 """
 
 from __future__ import annotations
@@ -12,7 +37,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .. import (
-    analytics, dashboard, data_tests, doc_tests, explore, findings, intake, model_context,
+    analytics, data_tests, doc_tests, explore, findings, intake, model_context,
     rcm_execution, report, sandbox, validation, working_papers,
 )
 from ..field_names import resolve_columns
@@ -20,7 +45,7 @@ from ..workspaces import (
     JOIN_TYPES, OBSERVATION_DISPOSITIONS, PLANNED_TEST_METHODS,
     Workspace, WorkspaceError, slugify,
 )
-from . import artifact_index, joins
+from . import artifact_index
 
 RISKS = {"read", "compute", "create", "reversible_mutation", "broad_rewrite", "destructive"}
 MODEL_USAGES = {"none", "plan", "draft", "interpret_result"}
@@ -202,7 +227,6 @@ CREATE_TARGET_KINDS = {
 # id in their arguments. The action catalog owns these domain-specific producer
 # contracts; the ledger only asks the catalog to normalize references.
 FIXED_ACTION_TARGETS = {
-    "generate_report": ("report", "working"),
     "edit_report": ("report", "working"),
 }
 
@@ -355,7 +379,7 @@ def expected_postcondition(action: dict) -> dict:
         return {"kind": create_kinds[type_], "id": item_id, "fields": {k: v for k, v in args.items() if k not in ignored}}
     if type_ == "update_planning_context":
         return {"fields": {"context": args.get("changes") or {}}}
-    if type_ in {"generate_apm", "edit_apm"}:
+    if type_ == "edit_apm":
         return {"fields": {"apm_markdown": args.get("apm_markdown")}}
     if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "update_test_disposition", "edit_rcm_planned_test", "edit_data_test"}:
         return {"fields": dict(args.get("changes") or {})}
@@ -580,7 +604,7 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "update_planning_context":
         item = workspace.update_planning({"context": args["changes"], "agent_run_id": run["id"], "created_by": "agent"}, agent=True)
         return _receipt(action, item, refs=["planning:apm"])
-    if type_ in {"generate_apm", "edit_apm"}:
+    if type_ == "edit_apm":
         item = workspace.update_planning({"apm_markdown": args["apm_markdown"], "agent_run_id": run["id"], "created_by": "agent"}, agent=True)
         return _receipt(action, item, refs=["planning:apm"])
     if type_ == "create_rcm_row":
@@ -676,9 +700,6 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "promote_agent_finding":
         item = findings.promote(workspace, args["run_id"], args["finding_id"])
         return _receipt(action, item, refs=[f"finding:{item['id']}"])
-    if type_ == "infer_relationships":
-        result = joins.find_candidates(workspace)
-        return _receipt(action, result={"candidates": result})
     if type_ == "create_join":
         item = workspace.add_join({**args, "agent_run_id": run["id"]})
         return _receipt(action, item, refs=[f"table:{item['name']}"])
@@ -786,49 +807,6 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         elif type_ == "update_test_comparisons": item = doc_tests.update_comparisons(workspace, test_id, item_id, args["checks"])
         else: item = doc_tests.update_item(workspace, test_id, item_id, args["changes"])
         return _receipt(action, item, refs=[f"doctest:{test_id}", f"doctest_item:{target_id}"])
-    if type_ == "run_document_test":
-        test = doc_tests.load_test(workspace, target_id)
-        issues = doc_tests.execution_issues(test)
-        if issues:
-            if doc_tests.evidence_blocked(test):
-                semantic_status = (
-                    "review_required"
-                    if test.get("status") == "review_required" else "blocked"
-                )
-                return _receipt(
-                    action, test, refs=[f"doctest:{target_id}"],
-                    result={
-                        "rollup": doc_tests.result_rollup(test), "items_run": 0,
-                        "semantic_status": semantic_status, "satisfies_planned_test": False,
-                        "blocking_issues": issues,
-                    },
-                )
-            raise WorkspaceError(
-                "Document Test is not executable: " + "; ".join(issues) + "."
-            )
-        results = [doc_tests.run_item(workspace, target_id, item["id"], run_id=run["id"]) for item in test.get("items") or []]
-        refreshed = doc_tests.load_test(workspace, target_id)
-        rollup = doc_tests.result_rollup(refreshed)
-        if rollup["manual_review"] or rollup["pending"]:
-            refreshed["status"] = "review_required"
-        elif refreshed.get("items"):
-            refreshed["status"] = "completed"
-        else:
-            refreshed["status"] = "blocked"
-        doc_tests.save_test(workspace, refreshed)
-        semantic_status = (
-            "review_required" if refreshed["status"] == "review_required"
-            else "completed" if refreshed["status"] == "completed"
-            else "blocked"
-        )
-        test_result = {
-            "rollup": rollup, "items_run": len(results),
-            "semantic_status": semantic_status,
-            "satisfies_planned_test": semantic_status == "completed",
-        }
-        return _receipt(action, refreshed, refs=[f"doctest:{target_id}"], result=test_result)
-    if type_ == "rollup_rcm_results":
-        return _receipt(action, result=rcm_execution.rollup(workspace))
     if type_ == "disposition_observation":
         item = rcm_execution.disposition(
             workspace, target_id, args["disposition"], args.get("auditor_note") or ""
@@ -840,25 +818,10 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
             action, item, refs=[f"rcm:{target_id}"],
             result={key: item[key] for key in ("rcm_id", "generated_at", "source_sha1")},
         )
-    if type_ == "generate_all_rcm_working_papers":
-        generated = [working_papers.generate_rcm(workspace, row["id"]) for row in workspace.rcm]
-        return _receipt(
-            action,
-            refs=[f"rcm:{item['rcm_id']}" for item in generated],
-            result={"generated": len(generated), "rcm_ids": [item["rcm_id"] for item in generated]},
-        )
-    if type_ == "curate_dashboard":
-        result = dashboard.curate_rcm_tiles(workspace, run_id=run["id"])
-        return _receipt(
-            action, refs=[f"tile:{item['id']}" for item in result["tiles"]], result=result
-        )
     if type_ == "generate_working_paper":
         item = working_papers.draft_results(workspace, target_id)
         rendered = working_papers.render(workspace, target_id)
         return _receipt(action, item, refs=[f"procedure:{target_id}"], result={k: rendered[k] for k in ("generated_at", "source_sha1", "procedure_id")})
-    if type_ == "generate_report":
-        result = report.generate(workspace, use_model=args.get("use_model") is not False, run_id=run["id"])
-        return _receipt(action, report.hydrate(workspace), refs=["report:working"], result={"requires_reconcile": result.get("requires_reconcile"), "used_model": result.get("used_model")})
     if type_ == "edit_report":
         item = report.update(workspace, args["changes"])
         return _receipt(action, report.hydrate(workspace), refs=["report:working"], result={"edited": item.get("edited")})
@@ -868,28 +831,6 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "run_report_quality":
         result = report.quality_checks(workspace)
         return _receipt(action, result={"ok": result["ok"], "issues": result["issues"]})
-    if type_ == "verify_audit_completion":
-        result = rcm_execution.completion(workspace)
-        quality = report.quality_checks(workspace)
-        mandatory = result.setdefault("mandatory_stage_issues", [])
-        if not (workspace.planning.get("dashboard_curation") or {}).get("completed_at"):
-            mandatory.append("Dashboard curation has not completed.")
-        if not report.hydrate(workspace).get("markdown"):
-            mandatory.append("Report generation has not completed.")
-        missing_papers = [
-            row["id"] for row in workspace.rcm
-            if not (workspace.root / "WorkingPapers" / f"{row['id']}.json").exists()
-        ]
-        if missing_papers:
-            mandatory.append(
-                f"{len(missing_papers)} RCM working paper(s) have not been generated."
-            )
-        if not quality["ok"]:
-            mandatory.append("Report traceability or quality checks failed.")
-        if mandatory and result["status"] == "completed":
-            result["status"] = "completed_with_open_items"
-        result["report_quality"] = {"ok": quality["ok"], "counts": quality["counts"]}
-        return _receipt(action, result=result)
     if type_ == "classify_import_batch":
         batch = intake.load_batch(workspace, args["batch_id"])
         missing = [item for item in batch.get("items") or [] if not item.get("classification")]
@@ -1043,7 +984,6 @@ def _register(
 
 
 _register("update_planning_context", "Update engagement planning context", "reversible_mutation", ("planning",), ("changes",), {"changes": OBJ})
-_register("generate_apm", "Generate APM working content", "broad_rewrite", ("planning",), ("apm_markdown",), {"apm_markdown": STR}, model="draft")
 _register("edit_apm", "Edit APM content", "reversible_mutation", ("planning",), ("apm_markdown",), {"apm_markdown": STR}, model="draft")
 _register(
     "create_rcm_row", "Create one complete RCM row", "create", required=("risk",),
@@ -1075,7 +1015,6 @@ _register(
 )
 _register("edit_procedure", "Legacy compatibility: edit an audit procedure", "reversible_mutation", ("procedure",), ("changes",), {"changes": OBJ})
 _register("delete_procedure", "Legacy compatibility: delete an audit procedure", "destructive", ("procedure",))
-_register("infer_relationships", "Infer table relationships locally", "compute")
 _register(
     "create_join", "Create a validated table join", "create",
     required=("name", "left", "right", "left_on", "right_on"),
@@ -1147,30 +1086,14 @@ _register("edit_document_test", "Edit a document test", "reversible_mutation", (
 _register("delete_document_test", "Delete a document test", "destructive", ("doctest",))
 _register("attach_document_to_test", "Attach a document to a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
 _register("detach_document_from_test", "Detach a document from a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
-_register(
-    "run_document_test",
-    "Run all items in a document test",
-    "compute",
-    ("doctest",),
-    model="interpret_result",
-    planning_significant=True,
-)
 _register("update_test_comparisons", "Update document-test comparisons", "reversible_mutation", ("doctest_item",), ("checks",), {"checks": ARR})
 _register("update_test_disposition", "Update a test-item disposition", "reversible_mutation", ("doctest_item",), ("changes",), {"changes": OBJ})
-_register(
-    "rollup_rcm_results",
-    "Roll execution results and observations into RCM outcomes",
-    "broad_rewrite",
-    model="interpret_result",
-    planning_significant=True,
-)
 _register(
     "disposition_observation", "Record the auditor disposition for an execution observation",
     "reversible_mutation", ("observation",), ("disposition",),
     {"disposition": {"type": "string", "enum": sorted(OBSERVATION_DISPOSITIONS)}, "auditor_note": STR},
 )
 _register("generate_rcm_working_paper", "Generate an RCM-linked working paper", "compute", ("rcm",))
-_register("generate_all_rcm_working_papers", "Generate all RCM-linked working papers", "compute")
 _register("generate_working_paper", "Legacy compatibility: generate a procedure working paper", "reversible_mutation", ("procedure",))
 FINDING_PROPERTIES = {
     "title": STR,
@@ -1195,12 +1118,9 @@ _register(
 _register("edit_finding", "Edit one finding", "reversible_mutation", ("finding",), ("changes",), {"changes": OBJ}, model="draft")
 _register("delete_finding", "Delete one finding", "destructive", ("finding",))
 _register("promote_agent_finding", "Promote an agent observation", "create", required=("run_id", "finding_id"))
-_register("generate_report", "Generate report working content", "broad_rewrite", model="draft")
 _register("edit_report", "Edit report working content", "reversible_mutation", ("report",), ("changes",), {"changes": OBJ}, model="draft")
 _register("reconcile_report", "Reconcile generated and edited report content", "broad_rewrite", ("report",), ("action",), {"action": {"type": "string", "enum": ["keep", "replace"]}})
 _register("run_report_quality", "Run deterministic report quality checks", "compute")
-_register("curate_dashboard", "Score and pin useful RCM-linked result tiles", "broad_rewrite")
-_register("verify_audit_completion", "Verify deterministic audit coverage and terminal-state gates", "compute")
 _register("classify_import_batch", "Classify a staged import batch", "compute", required=("batch_id",), properties={"batch_id": STR}, model="plan")
 _register("apply_import_batch", "Apply a classified import batch", "create", required=("batch_id",), properties={"batch_id": STR})
 _register("undo_action", "Undo an eligible reversible action", "reversible_mutation", required=("action_id",), properties={"action_id": STR, "run_id": STR})

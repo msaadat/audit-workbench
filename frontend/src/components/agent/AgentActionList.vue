@@ -37,9 +37,6 @@ function semanticStatus(action: AgentAction) {
   if (!result) return ''
   if (typeof result.semantic_status === 'string') return result.semantic_status.replaceAll('_', ' ')
   if (action.type === 'run_report_quality' && result.ok === false) return 'quality failed'
-  if (action.type === 'verify_audit_completion' && typeof result.status === 'string') {
-    return result.status.replaceAll('_', ' ')
-  }
   return ''
 }
 </script>

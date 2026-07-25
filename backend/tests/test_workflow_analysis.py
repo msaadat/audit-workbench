@@ -26,7 +26,7 @@ from app.agent.capabilities import analysis as analysis_capabilities
 from app.agent.context import PRESETS, ContextResolver, analysis_definition_scope
 from app.agent.executors import ExecutorRequest
 from app.agent.executors import analysis as analysis_executors
-from app.agent.routing import initialize_known_workflow, local_resolution
+from app.agent.routing import classify_command, resolve_route
 from app.agent.workers import analysis as analysis_worker
 from app.agent.workflow_dispatch import build_workflow_runner
 from app.agent.workflows import analysis as analysis_workflow
@@ -84,7 +84,7 @@ def _analysis_run(workspace, *, mode="auto", text=None, command=None) -> dict:
             "text": text or "See the two tables, perform relevant joins and data analysis",
         },
     )
-    assert initialize_known_workflow(workspace, run) is True
+    assert resolve_route(workspace, run) == "workflow"
     return store.load_run(workspace, run["id"])
 
 
@@ -845,7 +845,7 @@ def test_a_broken_definition_records_its_error_without_failing_the_run(
     ],
 )
 def test_data_analysis_requests_route_to_the_analysis_workflow(text):
-    resolution = local_resolution({"source": "chat", "text": text})
+    resolution = classify_command({"source": "chat", "text": text})
     assert resolution is not None
     assert resolution["route"] == "workflow"
     assert resolution["workflow_definition"] == analysis_workflow.WORKFLOW_ID
@@ -861,9 +861,9 @@ def test_data_analysis_requests_route_to_the_analysis_workflow(text):
     ],
 )
 def test_isolated_analysis_operations_still_route_to_the_action_runner(text):
-    resolution = local_resolution({"source": "chat", "text": text})
+    resolution = classify_command({"source": "chat", "text": text})
     assert resolution is not None
-    assert resolution["route"] == "generic_action"
+    assert resolution["route"] == "action"
     assert resolution["requested_outcomes"] == []
 
 
@@ -959,7 +959,7 @@ def test_analysis_and_audit_requests_use_one_scheduler_with_different_outcomes(
             "goal_template": "apm_only",
         },
     )
-    assert initialize_known_workflow(ws, audit_run) is True
+    assert resolve_route(ws, audit_run) == "workflow"
     audit_run = store.load_run(ws, audit_run["id"])
 
     analysis_scheduler = build_workflow_runner(

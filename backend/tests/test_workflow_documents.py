@@ -27,7 +27,7 @@ from app.agent.context import PRESETS
 from app.agent.documents_execution import build_documents_workflow_runner
 from app.agent.executors import EXECUTORS, ExecutorRequest
 from app.agent.executors import documents as document_executors
-from app.agent.routing import initialize_known_workflow, local_resolution
+from app.agent.routing import classify_command, resolve_route
 from app.agent.workers import WORKERS
 from app.agent.workers import documents as document_workers
 from app.agent.workflow_dispatch import build_workflow_runner
@@ -92,7 +92,7 @@ def _document_run(workspace, document_ids, *, action="analyze", mode="auto") -> 
         },
         context={"document_ids": list(document_ids), "action": action},
     )
-    assert initialize_known_workflow(workspace, run) is True
+    assert resolve_route(workspace, run) == "workflow"
     return store.load_run(workspace, run["id"])
 
 
@@ -193,14 +193,14 @@ def test_document_requests_route_to_the_narrowest_declaring_workflow():
         == audit_workflow.WORKFLOW_ID
     )
 
-    resolved = local_resolution({"source": "chat", "text": "analyse these documents"})
+    resolved = classify_command({"source": "chat", "text": "analyse these documents"})
     assert resolved["route"] == "workflow"
     assert resolved["workflow_definition"] == documents_workflow.WORKFLOW_ID
     assert resolved["requested_outcomes"] == ["documents.analysis_generated"]
 
     # Isolated document operations stay ActionRunner requests.
-    attached = local_resolution({"source": "chat", "text": "attach this file to DT-1"})
-    assert attached["route"] == "generic_action"
+    attached = classify_command({"source": "chat", "text": "attach this file to DT-1"})
+    assert attached["route"] == "action"
 
 
 def test_declared_context_presets_are_registered_and_document_scoped():
@@ -677,7 +677,7 @@ def test_no_document_analysis_runner_or_engine_remains():
     package = Path(store.__file__).parent
     assert not (package / "document_analysis_runner.py").exists()
     assert not hasattr(store, "DOCUMENT_ANALYSIS_ENGINE")
-    assert "document_analysis" not in store.ENGINE_BY_RUN_KIND
+    assert "document_analysis" not in store.PROTOCOL_ENGINE_BY_RUN_KIND
     with pytest.raises(workspaces.WorkspaceError):
         store.new_run(
             workspaces.create_workspace("Rejected kind"),
@@ -749,7 +749,7 @@ def test_an_audit_without_documents_expands_no_document_unit(fake_agent_llm):
     run = store.new_command_run(
         ws, "auto", {"source": "goal_template", "goal_template": "apm_only"}
     )
-    assert initialize_known_workflow(ws, run) is True
+    assert resolve_route(ws, run) == "workflow"
     reloaded = store.load_run(ws, run["id"])
 
     scheduled = {stage["capability"] for stage in reloaded["workflow"]["stages"]}

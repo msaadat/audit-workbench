@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import assistant, debug_store, llm
-from .agent import action_runner, runner, store
+from .agent import routing, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 CHATS_DIRNAME = "AssistantChats"
@@ -508,7 +508,7 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
         raise WorkspaceError("Message mode must be auto or permission.")
     request_id = _validate(str(payload.get("request_id") or ""), REQUEST_ID_RE, "request id")
     goal_template = str(payload.get("goal_template") or "").strip() or None
-    if goal_template and (requested != "act" or goal_template not in action_runner.GOAL_TEMPLATES):
+    if goal_template and (requested != "act" or goal_template not in routing.GOAL_TEMPLATES):
         raise WorkspaceError("goal_template requires act intent and a registered template.")
 
     path = _chat_path(workspace, chat_id)
@@ -550,8 +550,15 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                 raise WorkspaceError("Run context must be an object.")
             if run_kind and (source != "folder_intake" or requested != "act" or run_kind != "intake" or not isinstance(run_context, dict)):
                 raise WorkspaceError("Specialized run context is only accepted for folder intake actions.")
-            if run_context and not run_kind and (requested != "act" or goal_template != "planning"):
-                raise WorkspaceError("Command run context is only accepted for planning actions.")
+            if run_context and not run_kind:
+                # Run context is scope, never a routing override: a template
+                # accepts only the scope keys routing declares for it.
+                allowed = routing.TEMPLATE_RUN_CONTEXT_KEYS.get(goal_template or "")
+                if requested != "act" or allowed is None or not set(run_context) <= allowed:
+                    raise WorkspaceError(
+                        "Command run context is only accepted for a registered "
+                        "goal template's declared scope keys."
+                    )
             outcome = _process_message(workspace, chat_id, user, record, mode, goal_template, run_kind, run_context)
             return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
         except Exception as error:

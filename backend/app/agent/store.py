@@ -42,6 +42,8 @@ LEGACY_ANALYSIS_ENGINE = "analysis"
 INTAKE_ENGINE = "intake"
 
 COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE})
+# The finalized supported engine set (P11.1). Dispatch accepts exactly these
+# values; a record whose engine is missing or outside this set fails closed.
 RUN_ENGINES = frozenset(
     {
         *COMMAND_ENGINES,
@@ -49,10 +51,25 @@ RUN_ENGINES = frozenset(
         INTAKE_ENGINE,
     }
 )
-ENGINE_BY_RUN_KIND = {
+# ``start_run`` selects a protocol engine from its explicit ``kind`` argument at
+# *creation* time and persists it. This mapping is a creation-time contract, not
+# a dispatch fallback: nothing reads it while loading, resuming, or dispatching.
+PROTOCOL_ENGINE_BY_RUN_KIND = {
     "analysis": LEGACY_ANALYSIS_ENGINE,
     "intake": INTAKE_ENGINE,
 }
+
+
+def is_command_run(run: dict) -> bool:
+    """True for a run created by ``new_command_run``.
+
+    Command-ness is a durable record shape — the presence of the command record
+    — and never an engine inference: a command run whose route is still pending
+    has no engine yet, but can already queue follow-up commands.
+    """
+
+    command = run.get("command")
+    return isinstance(command, dict) and bool(command.get("id"))
 # Statuses that mean "a worker thread should be driving this run".
 ACTIVE_STATUSES = (
     "queued",
@@ -137,7 +154,8 @@ def new_run(
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     run = {
         "schema_version": 1,
-        "engine": ENGINE_BY_RUN_KIND[kind],
+        "engine": PROTOCOL_ENGINE_BY_RUN_KIND[kind],
+        "route": None,
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
@@ -197,9 +215,13 @@ def new_command_run(
         )
     run = {
         "schema_version": 2,
-        # Unresolved commands enter the workflow router. Deterministic local
-        # action routing changes this to ACTION_ENGINE before thread launch.
-        "engine": WORKFLOW_ENGINE,
+        # No engine is chosen at creation. ``routing.resolve_route`` classifies
+        # the command and persists both the normalized route and the selected
+        # engine before the worker thread launches; a command the deterministic
+        # pass cannot classify keeps ``route.status == "pending"`` until the
+        # bounded router worker decides on the thread.
+        "engine": None,
+        "route": None,
         "id": run_id,
         "workspace_id": workspace.id,
         "parent_run_id": parent_run_id,
@@ -290,6 +312,7 @@ def _hydrate_run(run: dict) -> None:
     """Read-compatible defaults; schema-v1 history is never rewritten."""
     run.setdefault("schema_version", 1)
     run.setdefault("kind", "analysis")
+    run.setdefault("route", None)
     run.setdefault("chat_id", None)
     run.setdefault("source_message_id", None)
     run.setdefault("activity", None)
@@ -405,6 +428,7 @@ def run_summary(run: dict) -> dict:
         "chat_id": run.get("chat_id"),
         "source_message_id": run.get("source_message_id"),
         "engine": run.get("engine"),
+        "route": run.get("route"),
         "kind": run.get("kind", "analysis"),
         "mode": run["mode"],
         "status": run["status"],

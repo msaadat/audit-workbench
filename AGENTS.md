@@ -114,6 +114,9 @@ backend/app/
    |                             document analysis, doc_tests for document tests)
    |                             with startup validation against the
    |                             authoritative graphs
+   |- routing.py               - the only classifier: pure deterministic
+   |                             precedence, the bounded router worker, and
+   |                             route/engine persistence
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners
@@ -248,20 +251,38 @@ WorkflowRunner             domain-neutral capability graph scheduler
   audit-shaped glue: which worker/executor and declared context a unit uses,
   approval items, post-commit bookkeeping, checkpoint handlers, and the audit
   completion projection.
-- Local routing in `routing.local_resolution(...)` is important. It
-  catches common phrases and goal templates before any model call. If routing
-  misses, a bounded router worker may still resolve the command.
+- `routing.classify_command(...)` is the deterministic pass and it is pure: it
+  reads the command dict only, and never loads a workspace, executes an action,
+  or mutates state. It applies one precedence order — explicit outcomes, a
+  registered goal template, a lifecycle-wide phrase, workflow-owned
+  generation/refresh, a target-specific operation, scope-wide execution, then a
+  weak isolated-operation marker. If it matches nothing, a bounded router worker
+  resolves the command on the worker thread.
 
 ### From command to execution
 
 - `assistant_chats._process_message` resolves intent. An `act` intent calls
   `runner.start_command_run`, which enforces one live run per workspace
   (`AgentBusyError`; `AGENT_MAX_CONCURRENT` caps the process), creates the run
-  document, tries `initialize_known_workflow`, then launches a daemon thread.
-- `runner._execute` dispatches on the explicit `run["engine"]`, guarantees the run reaches a
-  terminal status even on a crash, and in its `finally` starts the next
-  `pending_commands` entry. Control flows through a `RunHandle` (cancel, pause,
-  resume, inbox, interaction responses) held in the `_HANDLES` registry.
+  document, calls `routing.resolve_route(...)`, then launches a daemon thread.
+- A request is classified exactly once. `resolve_route` persists the normalized
+  `run["route"]` and the selected `run["engine"]` before the thread starts, and
+  installs the materialized graph for a workflow route. A `clarification` or
+  `unsupported` route selects no engine and finishes the run without mutation. A
+  command the deterministic pass cannot classify launches with
+  `route.status == "pending"`; `routing.resolve_pending_route(...)` then spends
+  one bounded router turn — the only routing path that calls the provider — and
+  it never repeats the deterministic pass.
+- `runner._execute` calls `routing.dispatch_engine(...)` and then dispatches on
+  the explicit `run["engine"]`. Nothing infers an engine from `kind`,
+  `schema_version`, or record contents; a missing or unsupported engine fails
+  closed. `_execute` guarantees the run reaches a terminal status even on a
+  crash, and in its `finally` starts the next `pending_commands` entry. Control
+  flows through a `RunHandle` (cancel, pause, resume, inbox, interaction
+  responses) held in the `_HANDLES` registry.
+- Because a pending-route command run has no engine yet, "is this a command
+  run?" is `store.is_command_run(run)` — a record-shape test — in `steer`,
+  `retry_run`, and the queued-command launcher.
 - v3 derives its plan from the registry, not the model.
   `workflow.materialize(...)` takes the transitive `depends_on` closure over
   `audit_capabilities.REGISTRY`, skips any capability whose deterministic
@@ -433,6 +454,26 @@ WorkflowRunner             domain-neutral capability graph scheduler
   under the deny-by-default `allow_file_metadata` permission), and a
   proposal-only `UnitPipeline` unit, so its one model call is manifested,
   budgeted, and resumable without re-billing.
+- Phase 11 gave every request one route and one engine. `agent/routing.py` is
+  the only classifier: the goal templates and phrase tables moved out of
+  `action_runner.py` into pure functions, `ActionRunner`'s defensive guard is
+  now `routing.workflow_owned_request(...)` (the same classification, so the
+  guard and the persisted route cannot disagree), and the bounded router returns
+  exactly `workflow | action | clarification | unsupported` with outcomes
+  validated against the registered workflows and `action_intent` against the
+  action registry. `store.RUN_ENGINES` is final at
+  `{workflow, action, intake, analysis}`. Eight workflow-owned generators left
+  the action catalog — `generate_apm`, `infer_relationships`,
+  `run_document_test`, `rollup_rcm_results`, `generate_all_rcm_working_papers`,
+  `generate_report`, `curate_dashboard`, `verify_audit_completion` — so no
+  request is claimed by both engines; target-specific operations on the same
+  families stayed. Removing `run_document_test` also closed the last path by
+  which a Q&A worklist could reach the provider outside the registered
+  `fieldwork.document_qa` worker and the run's budget. The `document_testing`
+  goal template is replaced by `document_test_preparation`
+  (`fieldwork.definitions_ready`) and `document_test_execution`
+  (`doc_tests.executed`). A compound request that genuinely needs both engines
+  resolves to `clarification` rather than being split by a scheduler.
 
 ### Known duplication
 
@@ -517,10 +558,12 @@ npm run build
   still calls `/documents/analysis-runs`, but that endpoint now starts a
   `documents_workflow_v1` command run.
 - Document-test execution is likewise a declared workflow.
-  `POST /doc-tests/{test_id}/run` now starts a `doc_tests_workflow_v1` command
-  run naming that test as a workflow target; the DocTests tab's own Run and
-  Prepare buttons still send `document_testing` command actions through assistant
-  chat, which remain `ActionRunner` requests until Phase 11 consolidates routing.
+  `POST /doc-tests/{test_id}/run` starts a `doc_tests_workflow_v1` command run
+  naming that test as a workflow target, and since Phase 11 the DocTests tab's
+  own Run and Prepare buttons send the `document_test_execution` and
+  `document_test_preparation` workflow templates through assistant chat. Run
+  context is a per-template scope allowlist (`routing.TEMPLATE_RUN_CONTEXT_KEYS`),
+  so the Run button can name its test without widening the route.
 - The debug console is a first-class local diagnostics surface, not just test
   scaffolding.
 - PrimeVue `Select` still needs the full pointer event sequence in UI-driving

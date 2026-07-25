@@ -44,8 +44,9 @@ findings before local test results support them. Document-test definitions must 
 use the vouching table builder, review document_id builder, Q&A document_ids/questions builder,
 or explicit kind-specific items (vouching checks, attributes, review page/excerpt/summary, or a
 Q&A question). A label or description by itself is not executable.
-Generated reports are the exception to create-action references: reconcile_report must target
-{kind: "report", resolved_id: "working"} and depend on the generate_report action.
+Report actions are the exception to create-action references: edit_report and reconcile_report
+must target {kind: "report", resolved_id: "working"}. Report generation itself is a workflow
+outcome, not an action; never propose an action that generates or refreshes it.
 The supplied table_schemas and table_profiles are authoritative. Copy table and column identifiers exactly in
 declarative specs and Polars code; never invent, lowercase, normalize, or infer a field name.
 Ground validation ranges, categories, and conditional trigger values in table_profiles. Never

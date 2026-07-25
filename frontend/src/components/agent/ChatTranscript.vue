@@ -24,7 +24,7 @@ const anchor = ref<EvidenceRef | null>(null)
 const anchorOpen = ref(false)
 const shortcuts = [
   ['Full audit', 'full_audit_working_draft'], ['Planning', 'planning'],
-  ['Data analysis', 'data_analysis'], ['Document testing', 'document_testing'], ['Report', 'report'],
+  ['Data analysis', 'data_analysis'], ['Document tests', 'document_test_preparation'], ['Report', 'report'],
 ]
 // Transcript covers stored messages, run projections, and the optimistic
 // pending message, so it is the single source of truth for emptiness.

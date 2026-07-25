@@ -309,4 +309,4 @@ def test_the_retired_audit_modules_have_no_module_alias_or_reexport():
     from app.agent import routing
 
     assert routing.ROUTER_SYSTEM.startswith("[agent:workflow_router]")
-    assert callable(routing.validate_route)
+    assert callable(routing.validate_router_result)

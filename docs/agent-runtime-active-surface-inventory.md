@@ -19,7 +19,7 @@ All new durable agent runs are created under
 | Writer | Current record | Direct production caller |
 |---|---|---|
 | `store.new_run(...)` | Explicit-engine `analysis` or `intake` protocol run | `runner.start_run(...)` |
-| `store.new_command_run(...)` | Explicit-engine `workflow` command run, optionally routed to `action` before or during execution | `runner.start_command_run(...)` |
+| `store.new_command_run(...)` | Command run with **no** engine; `routing.resolve_route(...)` persists the normalized route and the selected engine before thread launch | `runner.start_command_run(...)` |
 
 No route, chat service, or frontend component calls these writers directly.
 They enter through the control surface in `backend/app/agent/runner.py`.
@@ -89,11 +89,13 @@ durable transcript and shared live-run state.
 | Single-document analysis | `POST /api/workspaces/{workspace_id}/documents/{doc_id}/analysis-runs` | `runner.start_command_run(...)` requesting `documents.analysis_generated` | runtime `WorkflowRunner` (`documents_workflow_v1`) |
 
 The current `DocTestsTab.vue` does not call the specialized document-test
-endpoint. Its Run and Prepare buttons send `document_testing` command actions
-through assistant chat, which remain `ActionRunner` requests until Phase 11
-consolidates routing. The endpoint itself remains an active API surface with
-direct integration tests; since Phase 10 it starts a `doc_tests_workflow_v1`
-command run rather than a leaf runner.
+endpoint. Since Phase 11 its Run button sends the `document_test_execution`
+template (naming the test through run context) and its Prepare button sends
+`document_test_preparation`; both are workflow requests, and the
+`document_testing` template and the `run_document_test` action are deleted. The
+endpoint itself remains an active API surface with direct integration tests;
+since Phase 10 it starts a `doc_tests_workflow_v1` command run rather than a
+leaf runner.
 
 ### Control-surface run creators
 
@@ -127,25 +129,35 @@ run routing.
 ### Command routing
 
 `runner.start_command_run(...)` creates the command record and calls
-`routing.initialize_known_workflow(...)` before launching it.
-`routing.local_resolution(...)` resolves, in order:
+`routing.resolve_route(...)` before launching it. `routing.classify_command(...)`
+is pure and resolves, in precedence order:
 
 1. Explicit `requested_outcomes`.
-2. Known goal templates.
-3. Recognized audit phrases.
-4. Recognized isolated-action markers.
+2. A registered goal template.
+3. A lifecycle-wide completion phrase.
+4. Generation or refresh of a workflow-owned deliverable.
+5. A target-specific operation (CRUD, attach/detach, pin, manual edit, or the
+   rerun of one identified existing artifact).
+6. Scope-wide declared execution.
+7. A weak isolated-operation marker.
 
-A locally recognized workflow is promoted to the schema-v3 capability graph
-before the UI receives the new run. An unresolved command is handled after
-launch by the bounded workflow router. A `generic_action` result delegates to
-`ActionRunner`; workflow outcomes remain in `WorkflowRunner`; question or
-unsupported results complete without mutation. `ActionRunner` invokes its
-registered action interpreter when a generic action still needs a DAG.
+A recognized workflow is promoted to the schema-v3 capability graph before the
+UI receives the new run. A `clarification` or `unsupported` result finishes the
+run with no engine and no mutation. A command that matches nothing launches with
+`route.status == "pending"`, and `routing.resolve_pending_route(...)` spends one
+bounded router turn on the worker thread; that is the only routing path that
+calls the provider, and it never repeats the deterministic pass. The router
+worker returns `workflow | action | clarification | unsupported`, with outcomes
+validated against the registered workflows and `action_intent` validated against
+the action registry. `ActionRunner` invokes its registered action interpreter
+when an action route still needs a DAG.
 
 ### Worker-thread dispatch
 
-`runner._execute(...)` loads the durable run and selects the current runner only
-from its explicit `engine`:
+`runner._execute(...)` loads the durable run, calls
+`routing.dispatch_engine(...)` — which finalizes a pending route, finishes a run
+whose route selects no engine, or fails closed for an absent/unsupported
+engine — and then selects the current runner only from that explicit `engine`:
 
 | Persisted discriminator | Runner |
 |---|---|
@@ -154,8 +166,12 @@ from its explicit `engine`:
 | `engine="action"` | `ActionRunner` |
 | `engine="analysis"` | legacy `_Runner` analysis pipeline |
 
-Missing or unsupported engines fail closed. No engine is inferred from `kind` or
-`schema_version` while loading, resuming, or dispatching a run.
+Missing or unsupported engines fail closed. No engine is inferred from `kind`,
+`schema_version`, or record contents while loading, resuming, or dispatching a
+run. Because a pending-route command run has no engine yet, "is this a command
+run?" is answered by the record shape (`store.is_command_run(...)`) rather than
+by engine membership — that is what `steer(...)`, `retry_run(...)`, and the
+queued-command launcher now test.
 
 A workflow run additionally persists the authoritative workflow definition ID
 routing resolved, so `workflow_dispatch.build_workflow_runner(...)` selects the
@@ -257,7 +273,7 @@ analysis run association.
 | `ChatTranscript.vue` / `ChatRunCard.vue` | Render chat run projections; load full records; pause/resume/cancel, retry, continue, approve, and respond |
 | `PlanningTab.vue` | Sends the `planning` goal template through assistant chat |
 | `PostImportPlanningOffer.vue` | Sends planning with imported document IDs as run context |
-| `DocTestsTab.vue` | Sends `document_testing` command actions through assistant chat |
+| `DocTestsTab.vue` | Sends the `document_test_preparation` and `document_test_execution` workflow templates through assistant chat |
 | `ImportDialog.vue` | Sends the validated folder-intake special action; edits and approves classification proposals |
 | `DocumentsTab.vue` | Starts single/batch document-analysis workflow runs through the documents endpoints and polls the shared run record |
 | `DashboardTab.vue`, `AnalysisTab.vue`, `PlanningTab.vue`, `DocTestsTab.vue`, `ImportDialog.vue`, `DocumentsTab.vue`, and `validation/ValidationTab.vue` | Share `useAgentRun`; relevant tabs subscribe to `workspace_changed` events and refresh affected data |
@@ -334,5 +350,16 @@ The boundary is intentionally strict:
   justified protocol runner and converted onto `RunRuntime`, the registered
   `intake.classification` worker, the declared `intake.classification` context
   preset, and a proposal-only `UnitPipeline` unit.
+- Phase 11 consolidated routing and dispatch. A request is classified once, in
+  `agent/routing.py`, and the normalized route plus the selected engine are
+  persisted before thread launch and projected by `store.run_summary(...)` as
+  `route`. `initialize_known_workflow`, `route_unresolved_run`,
+  `local_resolution`, `validate_route`, and the
+  `partial_resolution`/`command_route`/`legacy_adoptions` run fields are
+  deleted, not aliased. Eight workflow-owned generators left the action catalog,
+  so no request can be claimed by both engines; the removal of
+  `run_document_test` also closed the last unbudgeted document Q&A path.
+  Compound cross-engine requests resolve to `clarification` instead of being
+  split by a scheduler.
 - Final cleanup must update the debug, findings, action-source, evidence-event,
   SSE, and workspace-path consumers as well as the visible drawer.

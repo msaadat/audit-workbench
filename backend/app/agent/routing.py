@@ -1,12 +1,51 @@
-"""Command routing before workflow or action scheduler dispatch."""
+"""Command routing: one classification, one persisted route, one engine.
+
+This module is the only place a request is turned into an execution decision.
+It has two halves and a strict boundary between them:
+
+* **Deterministic classification** (:func:`classify_command` and the pure
+  helpers above it) reads only the durable command dict. It never loads a
+  workspace, executes an action, gathers domain context, or mutates anything.
+  It returns a normalized route or ``None`` — ``None`` means "the bounded
+  router worker has to decide".
+* **Route installation** (:func:`resolve_route`, :func:`resolve_pending_route`,
+  :func:`install_resolution`) persists exactly one normalized route and the
+  selected engine on the durable run. ``resolve_route`` runs synchronously in
+  ``runner.start_command_run`` before the worker thread launches;
+  ``resolve_pending_route`` runs on the worker thread and is the *only* path
+  that spends a model turn on routing.
+
+A request is classified once. Deterministic classification happens in
+``start_command_run``; the bounded router runs only when it returned ``None``,
+and it never re-runs the deterministic pass. Neither scheduler classifies, and
+neither scheduler calls the other.
+
+Routing precedence (``agent-architecture.md`` §Routing):
+
+1. Explicit registered outcomes.
+2. A registered goal template.
+3. A lifecycle-wide completion request.
+4. Generation or refresh of a workflow-owned deliverable.
+5. A target-specific operation — CRUD, attach/detach, pin, manual edit, or a
+   rerun of one identified existing artifact.
+6. Scope-wide declared execution.
+7. A weak isolated-operation marker (the last deterministic fallback).
+8. Otherwise the bounded router worker.
+
+A compound request whose segments genuinely need both engines is never split
+by a scheduler: it resolves to ``clarification`` so the auditor restates it as
+separate runs.
+"""
 
 from __future__ import annotations
 
 import os
+import re
 import uuid
 
 from .. import doc_tests
 from ..workspaces import Workspace, WorkspaceError, load_workspace
+from . import actions as action_catalog
 from . import capabilities as audit_capabilities
 from . import context_bundles, prompts, store, workflow
 from .base import BaseRunner, LimitExceeded
@@ -28,61 +67,256 @@ ELIGIBLE_DISPOSITIONS = {
     "draft_finding_candidate",
 }
 
+# The four normalized routing results. ``workflow`` and ``action`` select an
+# engine; ``clarification`` and ``unsupported`` finish the run without one.
+ROUTE_WORKFLOW = "workflow"
+ROUTE_ACTION = "action"
+ROUTE_CLARIFICATION = "clarification"
+ROUTE_UNSUPPORTED = "unsupported"
+ROUTES = (ROUTE_WORKFLOW, ROUTE_ACTION, ROUTE_CLARIFICATION, ROUTE_UNSUPPORTED)
+TERMINAL_ROUTES = frozenset({ROUTE_CLARIFICATION, ROUTE_UNSUPPORTED})
+ENGINE_BY_ROUTE = {
+    ROUTE_WORKFLOW: store.WORKFLOW_ENGINE,
+    ROUTE_ACTION: store.ACTION_ENGINE,
+    ROUTE_CLARIFICATION: None,
+    ROUTE_UNSUPPORTED: None,
+}
+
+# The deterministic intent an action route carries when no single registered
+# action type names the request. The action interpreter still plans the DAG;
+# this is the routing-level assertion that the request is an isolated mutation.
+ISOLATED_ACTION_INTENT = "isolated_mutation"
+
 
 # --------------------------------------------------------------------------- #
-# Bounded router worker
+# Registered goal templates
 #
-# The router is a single-turn classifier over the command and the current
-# capability readiness projection. It proposes no actions, workers, or
-# dependencies, and it only ever names registered outcome IDs.
+# A goal template is a caller-supplied routing shortcut. Every registered
+# template resolves to a declared workflow outcome set; there is no template
+# that routes to the action catalog, because an isolated artifact operation is
+# described by its own text, not by a lifecycle goal.
 # --------------------------------------------------------------------------- #
-ROUTER_SYSTEM = f"""[agent:workflow_router]
-Classify one audit-assistant command. You are a router, not a planner. Return
-route (workflow|generic_action|question|unsupported), requested_outcomes (only
-supported outcome IDs), objective, target_refs, generation_mode
-(reuse_existing|force), action_intent (null or a short normalized operation),
-constraints, needs_clarification, and clarification. Never propose actions,
-workers, dependencies, tests, columns, or execution steps. {prompts.JSON_RULES}"""
+GOAL_TEMPLATES: dict[str, dict] = {
+    "full_audit_working_draft": {
+        "objective": (
+            "Execute RCM-linked planned tests through an evidence-linked report "
+            "working draft."
+        ),
+        "constraints": [
+            "Do not assert a formal audit opinion.",
+            "Preserve auditor edits.",
+        ],
+    },
+    "planning": {
+        "objective": (
+            "Prepare or improve engagement planning and structured RCM planned "
+            "tests."
+        ),
+    },
+    "apm_only": {"objective": "Prepare or revise only the audit planning memorandum."},
+    "report": {
+        "objective": (
+            "Prepare evidence-linked audit report working content and run "
+            "quality checks."
+        ),
+    },
+    "data_analysis": {
+        "objective": "Analyze available structured data and preserve useful validated work.",
+    },
+    "table_relationships": {
+        "objective": "Infer table relationships and materialize supported joins.",
+    },
+    "document_analysis": {"objective": "Analyze the documents in scope."},
+    "document_test_preparation": {
+        "objective": "Translate RCM planned tests into executable test definitions.",
+    },
+    "document_test_execution": {"objective": "Execute the Document Tests in scope."},
+}
 
-def validate_route(payload: dict, supported: set[str]) -> dict:
-    route = str(payload.get("route") or "")
-    if route not in {"workflow", "generic_action", "question", "unsupported"}:
-        raise ValueError("route is unsupported")
-    outcomes = payload.get("requested_outcomes") or []
-    if not isinstance(outcomes, list) or any(str(item) not in supported for item in outcomes):
-        raise ValueError("requested_outcomes contains an unsupported capability")
-    generation_mode = str(payload.get("generation_mode") or "reuse_existing")
-    if generation_mode not in {"reuse_existing", "force"}:
-        raise ValueError("generation_mode is unsupported")
-    needs = bool(payload.get("needs_clarification"))
-    if route == "workflow" and not outcomes and not needs:
-        raise ValueError("a workflow route needs at least one requested outcome")
-    return {
-        "route": route,
-        "requested_outcomes": [str(item) for item in outcomes],
-        "objective": str(payload.get("objective") or "").strip(),
-        "target_refs": [str(item) for item in payload.get("target_refs") or []],
-        "generation_mode": generation_mode,
-        "action_intent": str(payload.get("action_intent") or "").strip() or None,
-        "constraints": [str(item) for item in payload.get("constraints") or []],
-        "needs_clarification": needs,
-        "clarification": str(payload.get("clarification") or "").strip() or None,
-    }
+# Run-context keys a template may carry from a caller. Anything else is
+# rejected: run context is scope, never a routing override.
+TEMPLATE_RUN_CONTEXT_KEYS: dict[str, frozenset[str]] = {
+    "planning": frozenset({"document_ids"}),
+    "document_analysis": frozenset({"document_ids", "action"}),
+    "document_test_preparation": frozenset(),
+    "document_test_execution": frozenset({"test_id", "test_ids"}),
+}
 
 
-def _resolve_command(runner, bundle: context_bundles.ContextBundle, supported: set[str]) -> dict:
-    return runner.llm_json(
-        ROUTER_SYSTEM,
-        bundle.serialized(),
-        activity={"context_metrics": bundle.metrics()},
-        validator=lambda payload: validate_route(payload, supported),
+def template_outcomes(template: str) -> list[str] | None:
+    """Registered outcome set for a goal template, or ``None`` if unknown."""
+
+    return (
+        audit_capabilities.outcomes_for_template(template)
+        or audit_capabilities.analysis_outcomes_for_template(template)
+        or audit_capabilities.document_outcomes_for_template(template)
+        or audit_capabilities.doc_test_outcomes_for_template(template)
     )
 
 
-# Phrases that keep an "analysis" request an isolated ActionRunner operation.
-# Running or pinning an existing saved analysis is a single mutation, not a
-# request to derive relationships, joins, and new definitions.
-ISOLATED_ANALYSIS_MARKERS = (
+# --------------------------------------------------------------------------- #
+# Deterministic phrase tables
+# --------------------------------------------------------------------------- #
+
+# 3. Lifecycle-wide completion.
+LIFECYCLE_PHRASES = (
+    "full audit",
+    "complete the audit",
+    "complete audit",
+    "entire audit",
+    "end-to-end audit",
+    "end to end audit",
+)
+
+# 4. Generation or refresh of a workflow-owned deliverable. Ordered: the first
+# matching rule wins, so a narrower deliverable is declared before a broader
+# phrase that would also match it.
+GENERATION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
+    (
+        (
+            "draft the apm",
+            "update the apm",
+            "generate apm",
+            "generate the apm",
+            "regenerate the apm",
+            "refresh the apm",
+            "improve the apm",
+            "audit planning memorandum",
+        ),
+        audit_workflow.WORKFLOW_ID,
+        ["planning.apm_ready"],
+    ),
+    (
+        (
+            "generate the rcm",
+            "draft the rcm",
+            "update the rcm",
+            "regenerate the rcm",
+            "refresh the rcm",
+            "risk and control matrix",
+        ),
+        audit_workflow.WORKFLOW_ID,
+        ["planning.rcm_ready"],
+    ),
+    (
+        (
+            "prepare engagement planning",
+            "prepare the engagement planning",
+            "prepare planning",
+            "plan the audit",
+        ),
+        audit_workflow.WORKFLOW_ID,
+        [
+            "planning.apm_ready",
+            "planning.rcm_ready",
+            "planning.planned_tests_ready",
+        ],
+    ),
+    # Declared before the planned-test rule: "prepare the next required Document
+    # Tests from the RCM planned tests" is a request for executable definitions,
+    # not for the planned tests those definitions come from.
+    (
+        (
+            "translate planned",
+            "executable tests",
+            "execution definitions",
+            "prepare document tests",
+            "prepare the document tests",
+            "prepare the next required document tests",
+            "required document tests",
+        ),
+        audit_workflow.WORKFLOW_ID,
+        ["fieldwork.definitions_ready"],
+    ),
+    (
+        ("testing procedures", "planned procedures", "planned tests"),
+        audit_workflow.WORKFLOW_ID,
+        ["planning.planned_tests_ready"],
+    ),
+    (
+        ("draft eligible findings", "draft findings"),
+        audit_workflow.WORKFLOW_ID,
+        ["findings.drafted"],
+    ),
+    (
+        ("generate the report", "draft the report", "audit report"),
+        audit_workflow.WORKFLOW_ID,
+        ["report.working_draft"],
+    ),
+    # Document analysis is workflow-owned generation. "Attach", "upload", and
+    # "delete" a document stay isolated operations and are deliberately absent.
+    (
+        (
+            "analyse the documents",
+            "analyze the documents",
+            "analyse these documents",
+            "analyze these documents",
+            "analyse the selected documents",
+            "analyze the selected documents",
+            "analyse this document",
+            "analyze this document",
+            "document analysis",
+            "analyse the policies",
+            "analyze the policies",
+            "summarise the documents",
+            "summarize the documents",
+            "read the documents",
+        ),
+        documents_workflow.WORKFLOW_ID,
+        list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
+    ),
+    # Executing a named Document Test is workflow-owned: the worklist fans out
+    # into declared units, and a Q&A item reaches the provider only through the
+    # registered ``fieldwork.document_qa`` worker. The action catalog no longer
+    # registers ``run_document_test`` (P11.2A), so these phrases must be
+    # declared above the target-specific "rerun"/"run this" markers.
+    (
+        (
+            "run document test",
+            "run the document test",
+            "run this document test",
+            "run these document tests",
+            "rerun document test",
+            "rerun the document test",
+            "re-run the document test",
+            "execute document test",
+            "execute the document test",
+            "run the document tests",
+            "execute the document tests",
+        ),
+        doc_tests_workflow.WORKFLOW_ID,
+        list(doc_tests_workflow.FULL_DOC_TEST_OUTCOMES),
+    ),
+)
+
+# A generation phrase is vetoed when the request names one concrete part of the
+# artifact: "replace this APM paragraph" is a target-specific edit even though
+# it mentions the APM.
+SPECIFIC_EDIT_VERBS = (
+    "replace",
+    "edit",
+    "rename",
+    "remove",
+    "delete",
+    "attach",
+    "detach",
+)
+SPECIFIC_TARGET_MARKERS = (
+    "paragraph",
+    "sentence",
+    "section",
+    "field",
+    "row",
+    "title",
+    "item",
+)
+
+# "Prepare the planned tests" is generation; "run the planned tests" is
+# execution and belongs to the scope-wide rule below.
+EXECUTION_VERBS = ("run ", "execute ")
+
+# 5. Target-specific operations on one identified artifact.
+TARGET_OPERATION_MARKERS = (
     "pin ",
     "rerun ",
     "re-run ",
@@ -95,251 +329,412 @@ ISOLATED_ANALYSIS_MARKERS = (
     "undo ",
 )
 
-# Deterministic phrases for the exploratory data-analysis workflow. These are
-# checked before the generic-action markers so "join the tables and analyse
-# them" becomes a declared workflow rather than an action DAG.
-ANALYSIS_PHRASES = (
-    "relevant joins",
-    "perform relevant joins",
-    "joins and data analysis",
-    "join the tables",
-    "join these tables",
-    "relationships between tables",
-    "relationships between the tables",
-    "relate the tables",
-    "data analysis",
-    "analyse the data",
-    "analyze the data",
-    "analyse the tables",
-    "analyze the tables",
-    "analyse these tables",
-    "analyze these tables",
-    "analyse the two tables",
-    "analyze the two tables",
-    "explore the data",
-    "explore the tables",
+# 6. Scope-wide declared execution.
+SCOPE_EXECUTION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
+    (
+        (
+            "run the rcm tests",
+            "execute the rcm tests",
+            "run rcm tests",
+            "execute planned tests",
+            "run the planned tests",
+        ),
+        audit_workflow.WORKFLOW_ID,
+        ["fieldwork.executed", "results.rolled_up"],
+    ),
+    (
+        (
+            "relevant joins",
+            "perform relevant joins",
+            "joins and data analysis",
+            "join the tables",
+            "join these tables",
+            "relationships between tables",
+            "relationships between the tables",
+            "relate the tables",
+            "data analysis",
+            "analyse the data",
+            "analyze the data",
+            "analyse the tables",
+            "analyze the tables",
+            "analyse these tables",
+            "analyze these tables",
+            "analyse the two tables",
+            "analyze the two tables",
+            "explore the data",
+            "explore the tables",
+        ),
+        analysis_workflow.WORKFLOW_ID,
+        list(analysis_workflow.FULL_ANALYSIS_OUTCOMES),
+    ),
 )
 
-# Deterministic phrases for the document-analysis workflow. Checked before the
-# generic-action markers so "analyse these documents" becomes a declared workflow
-# rather than an action DAG. "Attach", "upload", and "delete" a document stay
-# isolated ActionRunner operations and are deliberately absent.
-DOCUMENT_ANALYSIS_PHRASES = (
-    "analyse the documents",
-    "analyze the documents",
-    "analyse these documents",
-    "analyze these documents",
-    "analyse the selected documents",
-    "analyze the selected documents",
-    "analyse this document",
-    "analyze this document",
-    "document analysis",
-    "analyse the policies",
-    "analyze the policies",
-    "summarise the documents",
-    "summarize the documents",
-    "read the documents",
+# 7. The weak fallback: recognizable isolated-operation vocabulary that has not
+# matched anything stronger. Everything here is an artifact operation the action
+# catalog can plan; a miss here falls through to the bounded router worker.
+ISOLATED_OPERATION_MARKERS = (
+    "join ",
+    "add a finding",
+    "create a finding",
+    "validate ",
+    "validation",
+    "check report quality",
+    "analyze ",
+    "analyse ",
+    "analysis",
+    "upload ",
+    "attach ",
+    "detach ",
+    "document test",
+    "prepare report",
+    "finding",
+    " undo ",
+    "review the apm",
+)
+
+# Strong separators for a compound request. A bare " and " is deliberately not
+# one: "join the tables and analyse them" is a single scope-wide analysis
+# request, not two runs.
+COMPOUND_SEPARATORS = re.compile(
+    r"(?:\s+and\s+then\s+|\s+then\s+|\s*;\s*|\s+also\s+|\.\s+|\n)"
 )
 
 
-def _workflow_definition_for(outcomes: list[str]) -> str:
-    definition = audit_capabilities.workflow_for_outcomes(outcomes)
+# --------------------------------------------------------------------------- #
+# Pure validation
+# --------------------------------------------------------------------------- #
+def supported_outcomes() -> set[str]:
+    """Every capability ID declared by a registered workflow."""
+
+    return {
+        capability.id
+        for registry in audit_capabilities.REGISTRY_BY_WORKFLOW.values()
+        for capability in registry.all()
+    }
+
+
+def validate_requested_outcomes(outcomes: list[str]) -> str:
+    """Return the one registered workflow that owns every requested outcome."""
+
+    requested = [str(item) for item in outcomes]
+    if not requested:
+        raise WorkspaceError("A workflow route needs at least one requested outcome.")
+    unknown = sorted(set(requested) - supported_outcomes())
+    if unknown:
+        raise WorkspaceError(
+            "Unknown workflow outcome(s): " + ", ".join(unknown) + "."
+        )
+    definition = audit_capabilities.workflow_for_outcomes(requested)
     if definition is None:
         raise WorkspaceError(
             "The requested outcomes do not belong to one registered workflow."
         )
+    # Reject an outcome set the owning workflow cannot close over.
+    audit_capabilities.REGISTRY_BY_WORKFLOW[definition].closure(requested)
     return definition
 
 
-def local_resolution(command: dict) -> dict | None:
-    """Resolve known outcomes and isolated actions without a provider call."""
+def validate_action_intent(intent: object) -> str:
+    """Normalize an action intent against the registered action catalog.
 
-    direct = command.get("requested_outcomes")
-    if isinstance(direct, list) and direct:
-        requested = [str(item) for item in direct]
-        definition = _workflow_definition_for(requested)
-        audit_capabilities.REGISTRY_BY_WORKFLOW[definition].closure(requested)
-        return {
-            "route": "workflow",
-            "workflow_definition": definition,
-            "requested_outcomes": requested,
-            "objective": str(
-                command.get("text") or "Continue the requested audit outcomes."
-            ).strip(),
-            "target_refs": [
-                str(item)
-                for item in command.get("target_refs") or ["workspace:current"]
-            ],
-            "generation_mode": workflow.command_generation_mode(command),
-            "action_intent": None,
-            "constraints": [str(item) for item in command.get("constraints") or []],
-            "needs_clarification": False,
-            "clarification": None,
-        }
-    template = str(command.get("goal_template") or "")
-    if template == "document_testing":
-        return {
-            "route": "generic_action",
-            "requested_outcomes": [],
-            "objective": str(command.get("text") or "").strip(),
-            "target_refs": [],
-            "generation_mode": "reuse_existing",
-            "action_intent": template,
-            "constraints": [],
-            "needs_clarification": False,
-            "clarification": None,
-        }
-    outcomes = (
-        audit_capabilities.outcomes_for_template(template)
-        or audit_capabilities.analysis_outcomes_for_template(template)
-        or audit_capabilities.document_outcomes_for_template(template)
-        or audit_capabilities.doc_test_outcomes_for_template(template)
+    A router-proposed intent must name a registered action type. The
+    deterministic classifier does not choose a type — it asserts only that the
+    request is an isolated mutation — so the generic sentinel is accepted too.
+    """
+
+    value = str(intent or "").strip() or ISOLATED_ACTION_INTENT
+    if value == ISOLATED_ACTION_INTENT:
+        return value
+    if value not in {definition.type for definition in action_catalog.REGISTRY.all()}:
+        raise WorkspaceError(f"Unknown action intent '{value}'.")
+    return value
+
+
+def normalize_route(
+    route: str,
+    *,
+    decided_by: str,
+    workflow_definition: str | None = None,
+    requested_outcomes: list[str] | None = None,
+    objective: str = "",
+    target_refs: list[str] | None = None,
+    generation_mode: str = "reuse_existing",
+    action_intent: object = None,
+    constraints: list[str] | None = None,
+    clarification: str | None = None,
+) -> dict:
+    """Validate and normalize one routing result into its persisted shape."""
+
+    if route not in ROUTES:
+        raise WorkspaceError(f"Unsupported command route '{route}'.")
+    outcomes = [str(item) for item in requested_outcomes or []]
+    definition = str(workflow_definition or "") or None
+    intent = None
+    if route == ROUTE_WORKFLOW:
+        owner = validate_requested_outcomes(outcomes)
+        if definition is not None and definition != owner:
+            raise WorkspaceError(
+                f"Requested outcomes belong to '{owner}', not '{definition}'."
+            )
+        definition = owner
+    else:
+        definition = None
+        outcomes = []
+    if route == ROUTE_ACTION:
+        intent = validate_action_intent(action_intent)
+    text = str(clarification or "").strip() or None
+    if route == ROUTE_CLARIFICATION and not text:
+        raise WorkspaceError("A clarification route needs a clarification question.")
+    return {
+        "status": "resolved",
+        "route": route,
+        "engine": ENGINE_BY_ROUTE[route],
+        "decided_by": str(decided_by),
+        "workflow_definition": definition,
+        "requested_outcomes": outcomes,
+        "objective": str(objective or "").strip(),
+        "target_refs": [str(item) for item in target_refs or []],
+        "generation_mode": workflow.normalize_generation_mode(generation_mode),
+        "action_intent": intent,
+        "constraints": [str(item) for item in constraints or []],
+        "clarification": text,
+    }
+
+
+def pending_route() -> dict:
+    """The persisted shape of a run whose route the bounded router still owns."""
+
+    return {
+        "status": "pending",
+        "route": None,
+        "engine": None,
+        "decided_by": None,
+        "workflow_definition": None,
+        "requested_outcomes": [],
+        "objective": "",
+        "target_refs": [],
+        "generation_mode": "reuse_existing",
+        "action_intent": None,
+        "constraints": [],
+        "clarification": None,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic classification (pure)
+# --------------------------------------------------------------------------- #
+def _target_refs(command: dict) -> list[str]:
+    return [str(item) for item in command.get("target_refs") or ["workspace:current"]]
+
+
+def _specific_artifact_operation(text: str) -> bool:
+    return any(verb in text for verb in SPECIFIC_EDIT_VERBS) and any(
+        marker in text for marker in SPECIFIC_TARGET_MARKERS
     )
-    if outcomes is not None:
-        return {
-            "route": "workflow",
-            "workflow_definition": _workflow_definition_for(outcomes),
-            "requested_outcomes": outcomes,
-            "objective": str(
-                command.get("text") or template.replace("_", " ")
-            ).strip(),
-            "target_refs": [
-                str(item)
-                for item in command.get("target_refs") or ["workspace:current"]
-            ],
-            "generation_mode": workflow.command_generation_mode(command),
-            "action_intent": None,
-            "constraints": [],
-            "needs_clarification": False,
-            "clarification": None,
-        }
-    text = str(command.get("text") or "").casefold()
-    if any(phrase in text for phrase in DOCUMENT_ANALYSIS_PHRASES):
-        return {
-            "route": "workflow",
-            "workflow_definition": documents_workflow.WORKFLOW_ID,
-            "requested_outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
-            "objective": str(command.get("text") or "").strip(),
-            "target_refs": [
-                str(item)
-                for item in command.get("target_refs") or ["workspace:current"]
-            ],
-            "generation_mode": workflow.command_generation_mode(command),
-            "action_intent": None,
-            "constraints": [],
-            "needs_clarification": False,
-            "clarification": None,
-        }
-    if not any(marker in text for marker in ISOLATED_ANALYSIS_MARKERS) and any(
-        phrase in text for phrase in ANALYSIS_PHRASES
-    ):
-        return {
-            "route": "workflow",
-            "workflow_definition": analysis_workflow.WORKFLOW_ID,
-            "requested_outcomes": list(analysis_workflow.FULL_ANALYSIS_OUTCOMES),
-            "objective": str(command.get("text") or "").strip(),
-            "target_refs": [
-                str(item)
-                for item in command.get("target_refs") or ["workspace:current"]
-            ],
-            "generation_mode": workflow.command_generation_mode(command),
-            "action_intent": None,
-            "constraints": [],
-            "needs_clarification": False,
-            "clarification": None,
-        }
-    mappings = [
-        (
-            ("full audit", "complete the audit", "end-to-end audit", "end to end audit"),
-            audit_capabilities.FULL_AUDIT_OUTCOMES,
-        ),
-        (
-            (
-                "draft the apm",
-                "update the apm",
-                "generate apm",
-                "generate the apm",
-                "regenerate the apm",
-                "refresh the apm",
-                "improve the apm",
-                "audit planning memorandum",
-            ),
-            ["planning.apm_ready"],
-        ),
-        (
-            (
-                "generate the rcm",
-                "draft the rcm",
-                "update the rcm",
-                "regenerate the rcm",
-                "refresh the rcm",
-                "risk and control matrix",
-            ),
-            ["planning.rcm_ready"],
-        ),
-        (("testing procedures", "planned procedures", "planned tests"), ["planning.planned_tests_ready"]),
-        (("translate planned", "executable tests", "execution definitions"), ["fieldwork.definitions_ready"]),
-        (("run the rcm tests", "execute the rcm tests", "run rcm tests", "execute planned tests"), ["fieldwork.executed", "results.rolled_up"]),
-        (("draft eligible findings", "draft findings"), ["findings.drafted"]),
-        (("generate the report", "draft the report", "audit report"), ["report.working_draft"]),
-    ]
-    for phrases, requested in mappings:
-        if any(phrase in text for phrase in phrases):
-            if requested == ["planning.planned_tests_ready"] and any(
-                word in text for word in ("run ", "execute ")
+
+
+def _workflow_route(
+    command: dict,
+    definition: str,
+    outcomes: list[str],
+    decided_by: str,
+    *,
+    default_objective: str = "",
+) -> dict:
+    return normalize_route(
+        ROUTE_WORKFLOW,
+        decided_by=decided_by,
+        workflow_definition=definition,
+        requested_outcomes=list(outcomes),
+        objective=str(command.get("text") or default_objective),
+        target_refs=_target_refs(command),
+        generation_mode=workflow.command_generation_mode(command),
+        constraints=list(command.get("constraints") or []),
+    )
+
+
+def _action_route(command: dict, decided_by: str) -> dict:
+    return normalize_route(
+        ROUTE_ACTION,
+        decided_by=decided_by,
+        objective=str(command.get("text") or ""),
+        action_intent=ISOLATED_ACTION_INTENT,
+    )
+
+
+def _single_intent(text: str, command: dict) -> dict | None:
+    """Classify one request segment through precedence steps 3-7."""
+
+    if any(phrase in text for phrase in LIFECYCLE_PHRASES):
+        return _workflow_route(
+            command,
+            audit_workflow.WORKFLOW_ID,
+            list(audit_capabilities.FULL_AUDIT_OUTCOMES),
+            "lifecycle_completion",
+        )
+    specific = _specific_artifact_operation(text)
+    if not specific:
+        for phrases, definition, outcomes in GENERATION_RULES:
+            if not any(phrase in text for phrase in phrases):
+                continue
+            # "Run the planned tests" is execution, not generation.
+            if outcomes == ["planning.planned_tests_ready"] and any(
+                verb in text for verb in EXECUTION_VERBS
             ):
                 continue
-            return {
-                "route": "workflow",
-                "workflow_definition": audit_workflow.WORKFLOW_ID,
-                "requested_outcomes": list(requested),
-                "objective": str(command.get("text") or "").strip(),
-                "target_refs": ["workspace:current"],
-                "generation_mode": workflow.command_generation_mode(command),
-                "action_intent": None,
-                "constraints": [],
-                "needs_clarification": False,
-                "clarification": None,
-            }
-    generic_markers = (
-        "join ",
-        "rename ",
-        "remove ",
-        "delete ",
-        "add a finding",
-        "create a finding",
-        "validate ",
-        "validation",
-        "check report quality",
-        "pin ",
-        "rerun ",
-        "analyze ",
-        "analyse ",
-        "analysis",
-        "upload ",
-        "attach ",
-        "detach ",
-        "document test",
-        "prepare report",
-        "finding",
-        " undo ",
-        "review the apm",
-    )
-    if any(marker in text for marker in generic_markers):
-        return {
-            "route": "generic_action",
-            "requested_outcomes": [],
-            "objective": str(command.get("text") or "").strip(),
-            "target_refs": [],
-            "generation_mode": "reuse_existing",
-            "action_intent": "isolated_mutation",
-            "constraints": [],
-            "needs_clarification": False,
-            "clarification": None,
-        }
+            return _workflow_route(
+                command, definition, outcomes, "workflow_generation"
+            )
+    # A named part of an artifact — "replace this APM paragraph" — is a manual
+    # edit, which is why the same test also vetoes the generation rules above.
+    if specific or any(marker in text for marker in TARGET_OPERATION_MARKERS):
+        return _action_route(command, "target_operation")
+    for phrases, definition, outcomes in SCOPE_EXECUTION_RULES:
+        if any(phrase in text for phrase in phrases):
+            return _workflow_route(command, definition, outcomes, "scope_execution")
+    if any(marker in text for marker in ISOLATED_OPERATION_MARKERS):
+        return _action_route(command, "isolated_operation")
     return None
 
 
+def _segments(text: str) -> list[str]:
+    return [segment.strip() for segment in COMPOUND_SEPARATORS.split(text) if segment.strip()]
+
+
+def classify_command(command: dict) -> dict | None:
+    """Deterministically classify one command, or ``None`` for the router.
+
+    Pure: reads the command dict only. It never loads a workspace, executes an
+    action, or mutates state.
+    """
+
+    direct = command.get("requested_outcomes")
+    if isinstance(direct, list) and direct:
+        return _workflow_route(
+            command,
+            validate_requested_outcomes([str(item) for item in direct]),
+            [str(item) for item in direct],
+            "explicit_outcomes",
+            default_objective="Continue the requested audit outcomes.",
+        )
+    template = str(command.get("goal_template") or "").strip()
+    if template:
+        outcomes = template_outcomes(template)
+        if outcomes is None:
+            raise WorkspaceError(f"Unknown goal template '{template}'.")
+        return _workflow_route(
+            command,
+            validate_requested_outcomes(outcomes),
+            outcomes,
+            "goal_template",
+            default_objective=template.replace("_", " "),
+        )
+    text = str(command.get("text") or "").casefold()
+    segments = _segments(text)
+    if len(segments) > 1:
+        routed = [
+            result
+            for result in (_single_intent(segment, command) for segment in segments)
+            if result is not None
+        ]
+        engines = {result["route"] for result in routed}
+        if ROUTE_WORKFLOW in engines and ROUTE_ACTION in engines:
+            return normalize_route(
+                ROUTE_CLARIFICATION,
+                decided_by="compound_request",
+                objective=str(command.get("text") or ""),
+                clarification=(
+                    "This request combines declared workflow outcomes with an "
+                    "isolated artifact operation. Send them as two requests so "
+                    "each runs as its own durable run."
+                ),
+            )
+    return _single_intent(text, command)
+
+
+def workflow_owned_request(command: dict) -> bool:
+    """True when a command must not be planned as an isolated action graph.
+
+    The action scheduler calls this as its defensive boundary. It is the same
+    deterministic classification the router uses, so the guard and the route can
+    never disagree.
+    """
+
+    if isinstance(command.get("requested_outcomes"), list) and command["requested_outcomes"]:
+        return True
+    template = str(command.get("goal_template") or "").strip()
+    if template and template_outcomes(template) is not None:
+        return True
+    try:
+        route = classify_command({**command, "goal_template": None})
+    except WorkspaceError:
+        return False
+    return bool(route and route["route"] == ROUTE_WORKFLOW)
+
+
+# --------------------------------------------------------------------------- #
+# Bounded router worker
+#
+# Single-turn classifier over the command and the current capability readiness
+# projection. It proposes no actions, workers, or dependencies, and it only ever
+# names registered outcome IDs or registered action types.
+# --------------------------------------------------------------------------- #
+ROUTER_SYSTEM = f"""[agent:workflow_router]
+Classify one audit-assistant command. You are a router, not a planner. Return
+route (workflow|action|clarification|unsupported), requested_outcomes (only
+supported outcome IDs, required and non-empty when route is workflow),
+objective, target_refs, generation_mode (reuse_existing|force), action_intent
+(a registered action type, or null), constraints, and clarification (required
+when route is clarification). Never propose actions, workers, dependencies,
+tests, columns, or execution steps. {prompts.JSON_RULES}"""
+
+
+def validate_router_result(payload: dict, supported: set[str]) -> dict:
+    """Validate one bounded router-worker result into a normalized route."""
+
+    route = str(payload.get("route") or "")
+    if route not in ROUTES:
+        raise ValueError("route is unsupported")
+    outcomes = payload.get("requested_outcomes") or []
+    if not isinstance(outcomes, list) or any(
+        str(item) not in supported for item in outcomes
+    ):
+        raise ValueError("requested_outcomes contains an unsupported capability")
+    generation_mode = str(payload.get("generation_mode") or "reuse_existing")
+    if generation_mode not in store.GENERATION_MODES:
+        raise ValueError("generation_mode is unsupported")
+    if route == ROUTE_WORKFLOW and not outcomes:
+        raise ValueError("a workflow route needs at least one requested outcome")
+    if route == ROUTE_CLARIFICATION and not str(payload.get("clarification") or "").strip():
+        raise ValueError("a clarification route needs a clarification question")
+    try:
+        return normalize_route(
+            route,
+            decided_by="router_worker",
+            requested_outcomes=[str(item) for item in outcomes],
+            objective=str(payload.get("objective") or ""),
+            target_refs=[str(item) for item in payload.get("target_refs") or []],
+            generation_mode=generation_mode,
+            action_intent=payload.get("action_intent"),
+            constraints=[str(item) for item in payload.get("constraints") or []],
+            clarification=payload.get("clarification"),
+        )
+    except WorkspaceError as error:
+        raise ValueError(str(error)) from error
+
+
+def _resolve_command(runner, bundle: context_bundles.ContextBundle, supported: set[str]) -> dict:
+    return runner.llm_json(
+        ROUTER_SYSTEM,
+        bundle.serialized(),
+        activity={"context_metrics": bundle.metrics()},
+        validator=lambda payload: validate_router_result(payload, supported),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Route installation
+# --------------------------------------------------------------------------- #
 def _explanation(
     resolved: list[str],
     stages: list[dict],
@@ -454,7 +849,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
 
     definition_id = str(
         resolution.get("workflow_definition")
-        or _workflow_definition_for(list(resolution.get("requested_outcomes") or []))
+        or validate_requested_outcomes(list(resolution.get("requested_outcomes") or []))
     )
     if definition_id not in WORKFLOW_MODULES:
         raise WorkspaceError(f"Unsupported workflow definition '{definition_id}'.")
@@ -571,7 +966,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         "definition": definition.WORKFLOW_ID,
         "definition_hash": definition.definition_hash(),
         "revision": 1,
-        "route": "workflow",
+        "route": ROUTE_WORKFLOW,
         "requested_outcomes": requested,
         "target_refs": scope["target_refs"],
         "scope": scope,
@@ -591,7 +986,6 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         "workspace_revision": workspace.revision,
         "state_at_resolution": registry.workflow_state(workspace, scope),
         "stages": stages,
-        "legacy_adoptions": [],
     }
     run["workflow_explanation"] = explanation
     run["command"]["status"] = "resolved"
@@ -628,47 +1022,38 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     )
 
 
-def initialize_known_workflow(workspace: Workspace, run: dict) -> bool:
-    """Persist a deterministic route before the worker thread starts."""
+def resolve_route(workspace: Workspace, run: dict) -> str | None:
+    """Classify once and persist the route and engine before thread launch.
 
-    resolution = local_resolution(run.get("command") or {})
-    if resolution is None:
-        return False
-    if resolution.get("route") == "generic_action":
-        run["engine"] = store.ACTION_ENGINE
-        run["command_route"] = resolution
+    Returns the selected engine, or ``None`` when the deterministic pass could
+    not decide (the bounded router owns the run) or decided the request needs a
+    clarification instead of an engine.
+    """
+
+    route = classify_command(run.get("command") or {})
+    if route is None:
+        run["route"] = pending_route()
+        run["engine"] = None
         store.save_run(workspace, run)
-        return False
-    if resolution.get("route") != "workflow":
-        return False
-    run["engine"] = store.WORKFLOW_ENGINE
-    install_resolution(workspace, run, resolution)
+        return None
+    run["route"] = route
+    run["engine"] = route["engine"]
+    if route["route"] == ROUTE_WORKFLOW:
+        install_resolution(workspace, run, route)
     store.save_run(workspace, run)
-    return True
+    return route["engine"]
 
 
 class CommandRouter(BaseRunner):
     """Bounded pre-dispatch router using the shared runtime and gateway."""
 
     def resolve(self) -> dict:
-        local = local_resolution(self.run.get("command") or {})
-        if local is not None:
-            return local
         self.set_status("interpreting")
         # The router classifies against every registered workflow, so an
         # unresolved data-analysis request can name an analysis outcome instead
         # of falling through to the generic action interpreter.
-        state = {
-            **audit_capabilities.workflow_state(self.ws),
-            **audit_capabilities.analysis_workflow_state(self.ws),
-            **audit_capabilities.documents_workflow_state(self.ws),
-            **audit_capabilities.doc_tests_workflow_state(self.ws),
-        }
-        supported = {
-            capability.id
-            for registry in audit_capabilities.REGISTRY_BY_WORKFLOW.values()
-            for capability in registry.all()
-        }
+        supported = supported_outcomes()
+        state = self._state(self.ws)
         bundle = context_bundles.command_router(
             self.run.get("command") or {},
             state,
@@ -676,38 +1061,34 @@ class CommandRouter(BaseRunner):
             permission_mode=self.run["mode"],
         )
         resolution = _resolve_command(self, bundle, supported)
-        self.run["partial_resolution"] = resolution
-        self.save()
-        if resolution.get("needs_clarification"):
-            answer = self._clarification(
-                str(
-                    resolution.get("clarification")
-                    or "Please clarify the intended audit outcome."
-                )
-            )
+        if resolution["route"] == ROUTE_CLARIFICATION:
+            answer = self._clarification(str(resolution["clarification"]))
             command = dict(self.run.get("command") or {})
             command["text"] = (
                 f"{command.get('text') or ''}\n\nClarification: {answer}".strip()
             )
             fresh = load_workspace(self.ws.id)
-            state = {
-                **audit_capabilities.workflow_state(fresh),
-                **audit_capabilities.analysis_workflow_state(fresh),
-                **audit_capabilities.documents_workflow_state(fresh),
-                **audit_capabilities.doc_tests_workflow_state(fresh),
-            }
             bundle = context_bundles.command_router(
                 command,
-                state,
+                self._state(fresh),
                 sorted(supported),
                 permission_mode=self.run["mode"],
             )
             resolution = _resolve_command(self, bundle, supported)
-            if resolution.get("needs_clarification"):
+            if resolution["route"] == ROUTE_CLARIFICATION:
                 raise WorkspaceError(
                     "The command still needs clarification after the supplied answer."
                 )
         return resolution
+
+    @staticmethod
+    def _state(workspace: Workspace) -> dict:
+        return {
+            **audit_capabilities.workflow_state(workspace),
+            **audit_capabilities.analysis_workflow_state(workspace),
+            **audit_capabilities.documents_workflow_state(workspace),
+            **audit_capabilities.doc_tests_workflow_state(workspace),
+        }
 
     def _clarification(self, prompt: str) -> str:
         interaction = next(
@@ -748,47 +1129,85 @@ class CommandRouter(BaseRunner):
         self.runtime.resolve_interaction(interaction, response)
         return text
 
+    def finish_without_engine(self, route: dict) -> None:
+        """Complete a run whose route selects no engine."""
 
-def route_unresolved_run(
-    workspace: Workspace,
-    run: dict,
-    handle: object,
-) -> str | None:
-    """Persist one route before scheduler selection and return its engine."""
+        if not self.run.get("started"):
+            self.mark_started()
+        self.run["summary_markdown"] = route.get("clarification") or (
+            "This request is not available as an audit workflow."
+        )
+        self.run["command"]["status"] = "completed"
+        self.mark_finished()
+        self.set_status("completed_with_open_items")
+
+
+def resolve_pending_route(workspace: Workspace, run: dict, handle: object) -> str | None:
+    """Spend one bounded router turn, persist the route, and return its engine.
+
+    This is the only routing path that calls the provider, and it runs only for
+    a command the deterministic pass could not classify. It does not repeat the
+    deterministic pass.
+    """
 
     router = CommandRouter(workspace, run, handle)
     if not run.get("started"):
         router.mark_started()
-    resolution = router.resolve()
-    route = resolution.get("route")
-    run["command_route"] = resolution
-    if route == "generic_action":
-        run["engine"] = store.ACTION_ENGINE
-        run["schema_version"] = 2
-        router.save()
-        return store.ACTION_ENGINE
-    if route in {"question", "unsupported"}:
-        run["summary_markdown"] = resolution.get("clarification") or (
-            "This request is not available as an audit workflow."
-        )
-        run["command"]["status"] = "completed"
-        router.mark_finished()
-        router.set_status("completed_with_open_items")
+    route = router.resolve()
+    run["route"] = route
+    run["engine"] = route["engine"]
+    if route["route"] in TERMINAL_ROUTES:
+        router.finish_without_engine(route)
         return None
-    if route != "workflow":
-        raise WorkspaceError(f"Unsupported command route '{route}'.")
-    run["engine"] = store.WORKFLOW_ENGINE
-    install_resolution(workspace, run, resolution)
+    if route["route"] == ROUTE_WORKFLOW:
+        install_resolution(workspace, run, route)
+        router.save()
+        router.emit("workflow_resolved", {"workflow": run["workflow"]})
+        router.emit("workflow_explanation", {"text": run["workflow_explanation"]})
+        return store.WORKFLOW_ENGINE
+    run["schema_version"] = 2
     router.save()
-    router.emit("workflow_resolved", {"workflow": run["workflow"]})
-    router.emit("workflow_explanation", {"text": run["workflow_explanation"]})
-    return store.WORKFLOW_ENGINE
+    return store.ACTION_ENGINE
+
+
+def dispatch_engine(workspace: Workspace, run: dict, handle: object) -> str | None:
+    """Return the engine a loaded run must be dispatched to, or ``None``.
+
+    ``None`` means the run needs no scheduler: it was finished here because its
+    route selects no engine. The engine is never inferred from ``kind``,
+    ``schema_version``, or the presence of a workflow record, and a record whose
+    engine is absent or outside the supported set fails closed.
+    """
+
+    route = run.get("route")
+    if isinstance(route, dict):
+        if route.get("status") == "pending":
+            return resolve_pending_route(workspace, run, handle)
+        if route.get("route") in TERMINAL_ROUTES:
+            CommandRouter(workspace, run, handle).finish_without_engine(route)
+            return None
+    engine = run.get("engine")
+    if engine not in store.RUN_ENGINES:
+        label = "missing" if engine is None else repr(engine)
+        raise WorkspaceError(f"Agent run engine is {label} or unsupported.")
+    return engine
 
 
 __all__ = [
     "CommandRouter",
-    "initialize_known_workflow",
+    "GOAL_TEMPLATES",
+    "ROUTES",
+    "TEMPLATE_RUN_CONTEXT_KEYS",
+    "classify_command",
+    "dispatch_engine",
     "install_resolution",
-    "local_resolution",
-    "route_unresolved_run",
+    "normalize_route",
+    "pending_route",
+    "resolve_pending_route",
+    "resolve_route",
+    "template_outcomes",
+    "validate_action_intent",
+    "validate_requested_outcomes",
+    "validate_router_result",
+    "workflow_owned_request",
 ]

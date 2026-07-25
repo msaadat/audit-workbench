@@ -1308,6 +1308,25 @@ export interface AgentWorkflow {
   stages: WorkflowStage[]
 }
 
+// The one normalized route a command run persists before its worker thread
+// launches. `status: 'pending'` means the deterministic pass could not classify
+// the command and the bounded router worker decides on the thread; every other
+// record carries a resolved route and, for workflow/action, a selected engine.
+export interface AgentRoute {
+  status: 'pending' | 'resolved'
+  route: 'workflow' | 'action' | 'clarification' | 'unsupported' | null
+  engine: 'workflow' | 'action' | null
+  decided_by: string | null
+  workflow_definition: string | null
+  requested_outcomes: string[]
+  objective: string
+  target_refs: string[]
+  generation_mode: 'reuse_existing' | 'force'
+  action_intent: string | null
+  constraints: string[]
+  clarification: string | null
+}
+
 export interface AgentApprovalItem {
   id: string
   title: string
@@ -1398,7 +1417,10 @@ export interface AgentAuditOutcome {
 
 export interface AgentRun {
   schema_version?: number
-  engine: 'workflow' | 'action' | 'analysis' | 'intake'
+  // Null only while a command run's route is still pending; dispatch requires a
+  // supported value and fails closed without one.
+  engine: 'workflow' | 'action' | 'analysis' | 'intake' | null
+  route?: AgentRoute | null
   id: string
   workspace_id: string
   parent_run_id: string | null
@@ -1487,6 +1509,7 @@ export interface AgentRun {
 export interface AgentRunSummary {
   id: string
   engine: AgentRun['engine']
+  route?: AgentRoute | null
   workspace_id: string
   parent_run_id: string | null
   planning_basis_run_id?: string | null

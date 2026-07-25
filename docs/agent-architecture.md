@@ -430,8 +430,12 @@ receipts. It contains no audit lifecycle policy.
 
 ## Routing
 
-Routing first uses deterministic templates and phrase mappings. A bounded
-router worker handles unresolved commands without performing any work.
+Routing lives entirely in `agent/routing.py` and classifies a request exactly
+once. `runner.start_command_run` runs the deterministic pass before the worker
+thread launches and persists one normalized route plus the selected engine on
+the run. Only a command the deterministic pass cannot classify launches with
+`route.status == "pending"`, and only that case spends a bounded router turn.
+Neither scheduler classifies, and neither calls the other.
 
 | Request | Route |
 |---|---|
@@ -464,9 +468,27 @@ Apply that rule using this precedence:
 
 An artifact name alone does not decide the engine: "regenerate the APM" is a
 workflow request, while "replace this APM paragraph" is an action. The action
-catalog may contain bounded model-backed operations such as running one named
-document test, but it cannot generate or refresh an artifact family owned by a
-registered workflow outcome.
+catalog may contain bounded model-backed operations, but it cannot generate or
+refresh an artifact family owned by a registered workflow outcome. Applying that
+rule removed eight generators from the catalog — `generate_apm`,
+`infer_relationships`, `run_document_test`, `rollup_rcm_results`,
+`generate_all_rcm_working_papers`, `generate_report`, `curate_dashboard`, and
+`verify_audit_completion` — while the target-specific operations on the same
+families stayed. Running one named Document Test is *not* an exception: its
+worklist fans out into declared units, so it belongs to `doc_tests.executed`,
+and removing the action also closed the last path by which a Q&A item could
+reach the provider outside the registered `fieldwork.document_qa` worker.
+
+A goal template is a caller-supplied routing shortcut, and every registered
+template names a declared workflow outcome set. No template routes to the action
+catalog: an isolated artifact operation is described by its own text, not by a
+lifecycle goal. A template may declare which run-context keys it accepts, and
+run context is scope only — it can never widen or override a route.
+
+Compound detection splits a request only on strong separators (`; `, `. `,
+` then `, ` and then `, ` also `, newline). A bare "and" does not split, so
+"join the tables and analyse them" stays one scope-wide analysis request, while
+"Regenerate the APM. Then pin the revenue tile." resolves to `clarification`.
 
 ## Persistence And Recovery
 
@@ -719,9 +741,12 @@ The v2 full-audit orchestration has been deleted from
 
 This machinery existed to force a model-generated action graph through a safe
 audit lifecycle. V3 replaced that responsibility with deterministic capability
-dependencies. Local routing catches known full-audit phrases and goal templates
-before the action interpreter runs, and `ActionRunner` retains a defensive
-fail-closed guard for malformed records and bounded-router misses.
+dependencies. Deterministic routing catches known full-audit phrases and goal
+templates before the action interpreter runs, and `ActionRunner` retains a
+defensive fail-closed guard for malformed records and bounded-router misses.
+Since Phase 11 that guard is `routing.workflow_owned_request(...)` — the same
+classification the router uses — so the guard and the persisted route cannot
+disagree.
 
 The audit lifecycle was encoded in two places at the Phase 1 boundary:
 `ledger.AUDIT_LIFECYCLE_STAGES` and the audit capability registry. Both are

@@ -112,10 +112,16 @@ def test_new_run_persists_explicit_engine_for_each_live_protocol(
     assert store.load_run(workspace_with_data, run["id"])["engine"] == engine
 
 
-def test_new_command_run_starts_with_explicit_workflow_engine(workspace_with_data):
+def test_new_command_run_chooses_no_engine_before_routing(workspace_with_data):
+    """Creation persists no engine; routing selects one before thread launch."""
     run = store.new_command_run(
         workspace_with_data, "auto", {"source": "chat", "text": "route this command"}
     )
 
-    assert run["engine"] == store.WORKFLOW_ENGINE
-    assert store.run_summary(run)["engine"] == store.WORKFLOW_ENGINE
+    assert run["engine"] is None
+    assert run["route"] is None
+    assert store.run_summary(run)["engine"] is None
+    assert store.is_command_run(run) is True
+    assert store.is_command_run(
+        store.new_run(workspace_with_data, "auto", None, kind="analysis")
+    ) is False

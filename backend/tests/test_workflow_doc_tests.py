@@ -20,7 +20,7 @@ from app import doc_tests, documents, workspaces
 from app.agent import audit_execution, doc_tests_execution, runner, store
 from app.agent import capabilities as capability_registries
 from app.agent.capabilities import doc_tests as doc_test_capabilities
-from app.agent.routing import local_resolution
+from app.agent.routing import classify_command
 from app.agent.workflow_dispatch import build_workflow_runner
 from app.agent.workflows import doc_tests as doc_tests_workflow
 from conftest import wait_run
@@ -107,7 +107,7 @@ def test_the_document_test_graph_is_declared_once_and_hash_identified():
 
 
 def test_execution_outcomes_route_to_the_document_test_workflow():
-    resolution = local_resolution(
+    resolution = classify_command(
         {
             "text": "Run the document test.",
             "requested_outcomes": ["doc_tests.executed"],
@@ -424,7 +424,7 @@ def test_the_document_test_leaf_runner_and_engine_are_gone():
     assert not hasattr(agent_package, "doc_test_runner")
     assert not hasattr(store, "DOC_TEST_ENGINE")
     assert "doc_test" not in store.RUN_ENGINES
-    assert "doc_test" not in store.ENGINE_BY_RUN_KIND
+    assert "doc_test" not in store.PROTOCOL_ENGINE_BY_RUN_KIND
     with pytest.raises(Exception):
         store.new_run(_workspace("Retired kind"), "auto", kind="doc_test")
 

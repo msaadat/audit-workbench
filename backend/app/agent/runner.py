@@ -215,10 +215,13 @@ def start_command_run(
 ) -> dict:
     """Start the unified engagement command runner.
 
-    Creates a schema-v2 run; `initialize_known_workflow` may immediately
-    promote it to v3 by installing a capability graph. Doing that routing here,
-    before the thread starts, means a recognized command reaches the UI with
-    its full stage list already visible and without spending a model turn.
+    Creates a schema-v2 run and classifies it exactly once, here, before the
+    worker thread starts: `routing.resolve_route` persists one normalized route
+    and the selected engine, promoting the record to schema-v3 when the route is
+    a workflow. A recognized command therefore reaches the UI with its full
+    stage list already visible and without spending a model turn; a command the
+    deterministic pass cannot classify launches with `route.status == "pending"`
+    and the bounded router worker decides on the thread.
     """
     recover_workspace(workspace)
     if not llm.agent_status()["configured"]:
@@ -245,8 +248,9 @@ def start_command_run(
     run = store.new_command_run(
         workspace, mode, command, parent_run_id=parent_run_id, context=context
     )
-    from .routing import initialize_known_workflow
-    initialize_known_workflow(workspace, run)
+    from .routing import resolve_route
+
+    resolve_route(workspace, run)
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
     _launch(workspace.id, run["id"])
     return run
@@ -288,7 +292,9 @@ def retry_run(workspace: Workspace, run_id: str) -> dict:
     previous = store.load_run(workspace, run_id)
     if previous.get("status") != "failed":
         raise WorkspaceError("Only a failed run can be retried.")
-    if previous.get("engine") not in store.COMMAND_ENGINES:
+    # Command-ness, not engine: a run that failed while its route was still
+    # pending has no engine yet and is still retryable as the same command.
+    if not store.is_command_run(previous):
         raise WorkspaceError("This run type cannot be retried as a command.")
     original = previous.get("command") or {}
     previous_workflow = previous.get("workflow") or {}
@@ -555,7 +561,7 @@ def steer(
         raise WorkspaceError("Say what the agent should do.")
     run = store.load_run(workspace, run_id)
 
-    if run.get("engine") in store.COMMAND_ENGINES and run["status"] in store.TERMINAL_STATUSES:
+    if store.is_command_run(run) and run["status"] in store.TERMINAL_STATUSES:
         follow_up = start_command_run(
             workspace, run["mode"],
             {"source": "follow_up", "text": content, "goal_template": goal_template,
@@ -567,7 +573,7 @@ def steer(
         )
         return {"handled": "follow_up_run", "run": follow_up}
 
-    if run.get("engine") in store.COMMAND_ENGINES:
+    if store.is_command_run(run):
         command = {
             "id": f"cmd_{__import__('uuid').uuid4().hex[:12]}", "source": "follow_up",
             "text": content, "goal_template": goal_template, "submitted_at": store.utcnow(),
@@ -662,17 +668,15 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
         ):
             debug_store.capture_structural_state(workspace, trigger="run_start", run_id=run_id)
             try:
-                engine = run.get("engine")
-                if (
-                    engine == store.WORKFLOW_ENGINE
-                    and not run.get("workflow")
-                    and isinstance(run.get("command"), dict)
-                ):
-                    from .routing import route_unresolved_run
+                from .routing import dispatch_engine
 
-                    engine = route_unresolved_run(workspace, run, handle)
-                    if engine is None:
-                        return
+                # One classification per run: `dispatch_engine` only finalizes a
+                # pending route or finishes a run whose route selects no engine.
+                # It never infers an engine from `kind`, `schema_version`, or
+                # the presence of a workflow record.
+                engine = dispatch_engine(workspace, run, handle)
+                if engine is None:
+                    return  # the route selected no engine; the run is finished
                 if engine == store.INTAKE_ENGINE:
                     from .intake_runner import IntakeRunner
 
@@ -688,8 +692,9 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
                 elif engine == store.LEGACY_ANALYSIS_ENGINE:
                     _Runner(workspace, run, handle).execute()
                 else:
-                    label = "missing" if engine is None else repr(engine)
-                    raise WorkspaceError(f"Agent run engine is {label} or unsupported.")
+                    raise WorkspaceError(
+                        f"Agent run engine is {engine!r} or unsupported."
+                    )
             finally:
                 debug_store.capture_structural_state(workspace, trigger="run_completion", run_id=run_id)
     except Exception as error:  # last-resort: never leave a run stuck 'active'
@@ -715,7 +720,7 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
         try:
             workspace = load_workspace(workspace_id)
             finished = store.load_run(workspace, run_id)
-            if finished.get("engine") in store.COMMAND_ENGINES and finished["status"] in store.TERMINAL_STATUSES:
+            if store.is_command_run(finished) and finished["status"] in store.TERMINAL_STATUSES:
                 _launch_next_command(workspace, finished)
         except Exception:
             pass

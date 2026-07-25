@@ -203,16 +203,30 @@ workflow's finish projection and rendered into `summary_markdown`; the per-test
 `status` transition that `doc_tests.result_rollup(...)` drives is unchanged and
 still owned by `run_document_test`.
 
-### One overlap left open for Phase 11
+### The overlap left open here — settled by `P11.2A`
 
-The action catalog still registers `run_document_test` ("Run all items in a
-document test"), and `doc_tests.executed` now declares the same outcome. The
-endpoint uses the workflow; the DocTests tab's `document_testing` chat requests
-still reach the action. That is exactly the "workflow and action engines both
-claim an artifact request" case `P11.2A` is chartered to settle, so it is left
-open rather than resolved here — resolving it means either removing the action or
-narrowing it so it cannot execute a Q&A worklist outside the registered worker,
-and both are routing decisions.
+Phase 10 left the registered `run_document_test` action alongside the declared
+`doc_tests.executed` outcome, because choosing between them is a routing
+decision. `P11.2A` **removed the action** rather than narrowing it, for two
+reasons:
+
+- Executing a Document Test is a fan-out of per-item units, which is exactly
+  what `doc_tests.executed` schedules through `bind_document_test_unit`. Keeping
+  the action would have kept a second execution implementation of work the
+  scheduler already does — the same argument that decided the migration above.
+- Narrowing it to non-Q&A tests would still have left a duplicate deterministic
+  comparison path, and the Q&A hole was not hypothetical: the action called
+  `doc_tests.run_item` with no model adapter, so a Q&A worklist reached
+  `documents.document_chat` outside the registered `fieldwork.document_qa`
+  worker, its declared page context, and the run's model budget.
+
+The `document_testing` goal template went with it. It conflated two
+workflow-owned requests and is replaced by `document_test_preparation`
+(`fieldwork.definitions_ready`) and `document_test_execution`
+(`doc_tests.executed`); `DocTestsTab.vue` sends those, and the Run button names
+the test through run context. Target-specific Document Test operations — create,
+edit, delete, attach, detach, update comparisons, record a disposition — remain
+registered actions.
 
 ## Consequences For The Target Schema
 
@@ -224,4 +238,10 @@ and both are routing decisions.
 | `doc_test` | **Deleted** |
 | `analysis` | Still scheduled for deletion in Phase 12 |
 
-`P11.1` finalizes the supported engine set against this table.
+`P11.1` finalized the supported engine set against this table:
+`store.RUN_ENGINES == {workflow, action, intake, analysis}`. A record whose
+engine is absent or outside that set fails closed in
+`routing.dispatch_engine(...)`, and nothing infers an engine from `kind`,
+`schema_version`, or record contents. A command run created before routing has
+no engine at all; it carries `route.status == "pending"` until
+`routing.resolve_pending_route(...)` selects one.
