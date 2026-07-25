@@ -204,6 +204,12 @@ class ContextPrivacy(_JSONModel):
     allow_planning_context: bool = False
     allow_template_text: bool = False
     allow_document_text: bool = False
+    # Technical metadata about a locally staged file — its relative path, size,
+    # timestamp, MIME type, and local parser verdict. Deliberately its own
+    # permission: a staged file's *content* (spreadsheet cells, rows, previews,
+    # formulas, comments, extracted document text) is a different content class
+    # with no representation registered at all.
+    allow_file_metadata: bool = False
     allow_table_metadata: bool = False
     allow_table_profiles: bool = False
     allow_table_aggregates: bool = False
@@ -214,6 +220,7 @@ class ContextPrivacy(_JSONModel):
         "allow_planning_context",
         "allow_template_text",
         "allow_document_text",
+        "allow_file_metadata",
         "allow_table_metadata",
         "allow_table_profiles",
         "allow_table_aggregates",

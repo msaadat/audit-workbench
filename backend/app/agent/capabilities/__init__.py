@@ -22,8 +22,9 @@ from ..workflow import CapabilityRegistry
 from ..workflow import Capability
 from ..workflows import analysis as analysis_workflow
 from ..workflows import audit as audit_workflow
+from ..workflows import doc_tests as doc_tests_workflow
 from ..workflows import documents as documents_workflow
-from . import analysis, documents, fieldwork, planning, reporting
+from . import analysis, doc_tests, documents, fieldwork, planning, reporting
 from ._shared import (
     apm_sha1,
     planned_test_sha1,
@@ -74,6 +75,10 @@ FULL_DOCUMENT_OUTCOMES = documents_workflow.FULL_DOCUMENT_OUTCOMES
 DOCUMENT_TEMPLATE_OUTCOMES = documents_workflow.TEMPLATE_OUTCOMES
 document_outcomes_for_template = documents_workflow.outcomes_for_template
 
+FULL_DOC_TEST_OUTCOMES = doc_tests_workflow.FULL_DOC_TEST_OUTCOMES
+DOC_TEST_TEMPLATE_OUTCOMES = doc_tests_workflow.TEMPLATE_OUTCOMES
+doc_test_outcomes_for_template = doc_tests_workflow.outcomes_for_template
+
 # Grouped capability modules in authoritative order. Each module owns a disjoint
 # slice of its workflow graph and exposes ``CAPABILITY_IDS`` plus
 # ``capabilities()``. Order matters: a group's dependencies must be registered
@@ -84,6 +89,7 @@ AUDIT_DOCUMENT_GROUP = CapabilityGroupView(documents, documents.AUDIT_CAPABILITY
 CAPABILITY_GROUPS = (AUDIT_DOCUMENT_GROUP, planning, fieldwork, reporting)
 ANALYSIS_CAPABILITY_GROUPS = (analysis,)
 DOCUMENT_CAPABILITY_GROUPS = (documents,)
+DOC_TEST_CAPABILITY_GROUPS = (doc_tests,)
 
 
 class AuditCompositionError(ValueError):
@@ -114,6 +120,12 @@ def grouped_document_capability_ids() -> tuple[str, ...]:
     return _group_ids(DOCUMENT_CAPABILITY_GROUPS)
 
 
+def grouped_doc_test_capability_ids() -> tuple[str, ...]:
+    """Every capability ID contributed by the document-test groups, in order."""
+
+    return _group_ids(DOC_TEST_CAPABILITY_GROUPS)
+
+
 def _build_registry(groups: tuple) -> CapabilityRegistry:
     registry = CapabilityRegistry()
     for group in groups:
@@ -138,6 +150,12 @@ def build_documents_registry() -> CapabilityRegistry:
     """Compose the document capability registry from the grouped modules."""
 
     return _build_registry(DOCUMENT_CAPABILITY_GROUPS)
+
+
+def build_doc_tests_registry() -> CapabilityRegistry:
+    """Compose the document-test capability registry from the grouped modules."""
+
+    return _build_registry(DOC_TEST_CAPABILITY_GROUPS)
 
 
 def _registered_preset_ids() -> frozenset[str]:
@@ -264,10 +282,27 @@ def validate_documents_composition(
     )
 
 
+def validate_doc_tests_composition(
+    registry: CapabilityRegistry,
+    *,
+    executions: CapabilityExecutionRegistry | None = None,
+) -> CapabilityRegistry:
+    """Validate the composed registry against the authoritative doc-test graph."""
+
+    return validate_composition(
+        registry,
+        dependencies=doc_tests_workflow.DEPENDENCIES,
+        groups=DOC_TEST_CAPABILITY_GROUPS,
+        label="document tests",
+        executions=executions,
+    )
+
+
 # Startup validation: build and validate each grouped composition at import time.
 AUDIT_REGISTRY = validate_audit_composition(build_audit_registry())
 ANALYSIS_REGISTRY = validate_analysis_composition(build_analysis_registry())
 DOCUMENTS_REGISTRY = validate_documents_composition(build_documents_registry())
+DOC_TESTS_REGISTRY = validate_doc_tests_composition(build_doc_tests_registry())
 # The live registry name used by routing and audit dispatch.
 REGISTRY = AUDIT_REGISTRY
 
@@ -277,6 +312,7 @@ REGISTRY_BY_WORKFLOW = {
     audit_workflow.WORKFLOW_ID: AUDIT_REGISTRY,
     analysis_workflow.WORKFLOW_ID: ANALYSIS_REGISTRY,
     documents_workflow.WORKFLOW_ID: DOCUMENTS_REGISTRY,
+    doc_tests_workflow.WORKFLOW_ID: DOC_TESTS_REGISTRY,
 }
 
 
@@ -325,6 +361,12 @@ def documents_workflow_state(workspace, scope: dict | None = None) -> dict[str, 
     return DOCUMENTS_REGISTRY.workflow_state(workspace, scope)
 
 
+def doc_tests_workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
+    """Deterministic readiness projection for every document-test capability."""
+
+    return DOC_TESTS_REGISTRY.workflow_state(workspace, scope)
+
+
 __all__ = [
     "ANALYSIS_CAPABILITY_GROUPS",
     "ANALYSIS_REGISTRY",
@@ -334,10 +376,14 @@ __all__ = [
     "AuditCompositionError",
     "CAPABILITY_GROUPS",
     "CapabilityGroupView",
+    "DOC_TESTS_REGISTRY",
+    "DOC_TEST_CAPABILITY_GROUPS",
+    "DOC_TEST_TEMPLATE_OUTCOMES",
     "DOCUMENT_CAPABILITY_GROUPS",
     "DOCUMENT_TEMPLATE_OUTCOMES",
     "DOCUMENTS_REGISTRY",
     "FULL_ANALYSIS_OUTCOMES",
+    "FULL_DOC_TEST_OUTCOMES",
     "FULL_AUDIT_OUTCOMES",
     "FULL_DOCUMENT_OUTCOMES",
     "REGISTRY",
@@ -348,11 +394,15 @@ __all__ = [
     "apm_sha1",
     "build_analysis_registry",
     "build_audit_registry",
+    "build_doc_tests_registry",
     "build_documents_registry",
+    "doc_test_outcomes_for_template",
+    "doc_tests_workflow_state",
     "document_outcomes_for_template",
     "documents_workflow_state",
     "grouped_analysis_capability_ids",
     "grouped_capability_ids",
+    "grouped_doc_test_capability_ids",
     "grouped_document_capability_ids",
     "outcomes_for_template",
     "planned_test_sha1",
@@ -361,6 +411,7 @@ __all__ = [
     "validate_analysis_composition",
     "validate_audit_composition",
     "validate_composition",
+    "validate_doc_tests_composition",
     "validate_documents_composition",
     "workflow_for_outcomes",
     "workflow_state",

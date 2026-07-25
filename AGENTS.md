@@ -96,21 +96,24 @@ backend/app/
    |                             models, and validated preset/selector registries
    |- workers/                 - immutable model-worker contracts, registry,
    |                             bounded validation/repair, and the registered
-   |                             planning/fieldwork/reporting/analysis/document
-   |                             workers
+   |                             planning/fieldwork/reporting/analysis/document/
+   |                             intake workers
    |- executors/               - deterministic mutation/reconciliation
    |                             contracts, registry, receipts, and the
    |                             registered domain executors
    |- workflows/               - authoritative workflow definitions; audit.py
    |                             owns the audit dependency graph, analysis.py
-   |                             the exploratory data-analysis graph, and
-   |                             documents.py the document-analysis graph, each
-   |                             with its workflow id and hash-identified metadata
+   |                             the exploratory data-analysis graph,
+   |                             documents.py the document-analysis graph, and
+   |                             doc_tests.py the standalone document-test graph,
+   |                             each with its workflow id and hash-identified
+   |                             metadata
    |- capabilities/            - grouped capability composition
    |                             (documents/planning/fieldwork/reporting for
    |                             audit, analysis for data analysis, documents for
-   |                             document analysis) with startup validation
-   |                             against the authoritative graphs
+   |                             document analysis, doc_tests for document tests)
+   |                             with startup validation against the
+   |                             authoritative graphs
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners
@@ -127,6 +130,9 @@ backend/app/
    |- documents_execution.py   - document-side composition: extraction, chunk,
    |                             reduction, and review bindings, shared with the
    |                             audit composition
+   |- doc_tests_execution.py   - the one Document Test unit binder plus the
+   |                             standalone document-test composition, both
+   |                             shared with the audit composition
    |- context_bundles.py       - bounded command-router context bundle
    |- actions.py               - registered action catalog and executors
    |- ledger.py                - domain-neutral action graph validation
@@ -135,8 +141,9 @@ backend/app/
    |- suggest.py               - deterministic validation rule suggestions
    |- prompts.py               - bounded prompts keyed by [agent:<stage>] tags
    |- summary.py               - finding validation and fallback markdown
-   |- intake_runner.py         - intake batch runner
-   |- doc_test_runner.py       - resumable document-test execution
+   `- intake_runner.py         - retained single-unit folder-intake protocol
+                                 runner (RunRuntime, registered worker, declared
+                                 context, proposal-only pipeline unit)
 
 frontend/src/
 |- api.ts                      - fetch wrapper, uploads, downloads, error model
@@ -207,24 +214,30 @@ One durable run store supports multiple runner styles:
 ```text
 BaseRunner
 |- _Runner                  legacy v1 fixed analysis pipeline
-|- IntakeRunner             one import batch
-|- DocTestRunner            one document test
+|- IntakeRunner             one staged import batch (retained protocol runner)
 |- ActionRunner             action graph
 |- AuditWorkflowExecution   audit execution bindings and projections
-`- DocumentWorkflowExecution document execution bindings and projections
+|- DocumentWorkflowExecution document execution bindings and projections
+`- DocTestWorkflowExecution document-test execution bindings and projections
 
 WorkflowRunner             domain-neutral capability graph scheduler
 ```
 
 - `ActionRunner` is still used for isolated mutations and repairable action
-  graphs.
-- `WorkflowRunner` is the main capability scheduler and now serves three declared
+  graphs. `IntakeRunner` is the one retained protocol runner: folder intake is a
+  single-unit protocol over a staged batch whose authoritative state lives under
+  `Imports/`, not a capability graph over the workspace. The decision, and the
+  document-test migration that deleted `DocTestRunner`, are recorded in
+  `docs/agent-protocol-runner-decisions.md`.
+- `WorkflowRunner` is the main capability scheduler and now serves four declared
   workflows: the RCM audit lifecycle (`audit_workflow_v2`), the exploratory
   data-analysis workflow (`analysis_workflow_v1`, which infers table
   relationships, materializes only evidence-supported joins, proposes rerunnable
-  analysis definitions, and executes them locally), and the document-analysis
+  analysis definitions, and executes them locally), the document-analysis
   workflow (`documents_workflow_v1`: extract, map each bounded source chunk,
-  reduce, and separately await auditor review). `workflow_dispatch.py`
+  reduce, and separately await auditor review), and the standalone document-test
+  workflow (`doc_tests_workflow_v1`: definition readiness, item execution, and
+  separately the auditor's own disposition). `workflow_dispatch.py`
   selects the composition from the definition id the run persists. It receives a
   materialized route and registered capability executions, fans outcomes into units, and
   records `next_outcomes` for `Continue audit`. Every audit capability carries
@@ -302,9 +315,12 @@ WorkflowRunner             domain-neutral capability graph scheduler
   `WorkflowRunner` receives `RunRuntime` and all scheduler dependencies by
   composition; the temporary audit execution adapter still uses `BaseRunner`
   hooks until its Phase 7 capability-family migrations.
-- Services outside `agent/` (`documents.document_chat`, `doc_tests.run_item`)
-  accept an injected `model_adapter` so their calls are charged to the same
-  budget and provenance ledger.
+- `documents.document_chat` accepts an injected `model_adapter` so its calls are
+  charged to the same budget and provenance ledger. `doc_tests.run_item` still
+  accepts one for the same reason, but no agent path supplies it any more: since
+  Phase 10 a Q&A worklist reaches the provider only through the registered
+  `fieldwork.document_qa` worker, and `executors.fieldwork.run_document_test`
+  raises rather than making an unbudgeted call.
 - The Phase 3 gate exercises runtime budgets and controls across both graph
   runners and every active leaf runner, preserves queued follow-ups after a
   terminal crash, and statically confines direct agent provider calls to
@@ -396,6 +412,27 @@ WorkflowRunner             domain-neutral capability graph scheduler
   scope every document capability is satisfied and no unit expands. Generated and
   auditor-reviewed remain distinct outcomes: nothing the agent does satisfies
   `documents.analysis_reviewed`.
+- Phase 10 settled the two remaining leaf runners with an explicit decision
+  record, [docs/agent-protocol-runner-decisions.md](docs/agent-protocol-runner-decisions.md).
+  **Document tests migrated:** the standalone `doc_tests_workflow_v1` graph
+  (`doc_tests.definitions_ready` → `doc_tests.executed` →
+  `doc_tests.dispositioned`) replaced `DocTestRunner`, and the `doc_test` engine
+  and run kind are deleted. Both graphs bind Document Test units through one
+  function, `doc_tests_execution.bind_document_test_unit`, and expand them
+  through one function, `capabilities.doc_tests.document_test_units`, so a
+  worklist behaves identically whether an audit run or a standalone request
+  scheduled it. A Q&A test therefore reaches the provider only through the
+  registered `fieldwork.document_qa` worker and the declared page context, never
+  through `doc_tests.run_item`'s model adapter. Nothing the agent does satisfies
+  `doc_tests.dispositioned`. **Intake retained:** its authoritative state is the
+  staged batch under `Imports/`, not the workspace; there is exactly one unit at
+  every step; and `apply_batch` creates the artifacts rather than committing to
+  existing ones. `IntakeRunner` was converted onto `RunRuntime`, the registered
+  `intake.classification` worker, the declared `intake.classification` context
+  preset (a new `staged_files` source type and `file_metadata` representation
+  under the deny-by-default `allow_file_metadata` permission), and a
+  proposal-only `UnitPipeline` unit, so its one model call is manifested,
+  budgeted, and resumable without re-billing.
 
 ### Known duplication
 
@@ -479,6 +516,11 @@ npm run build
 - Document analysis is a declared workflow, not a leaf runner. The Documents tab
   still calls `/documents/analysis-runs`, but that endpoint now starts a
   `documents_workflow_v1` command run.
+- Document-test execution is likewise a declared workflow.
+  `POST /doc-tests/{test_id}/run` now starts a `doc_tests_workflow_v1` command
+  run naming that test as a workflow target; the DocTests tab's own Run and
+  Prepare buttons still send `document_testing` command actions through assistant
+  chat, which remain `ActionRunner` requests until Phase 11 consolidates routing.
 - The debug console is a first-class local diagnostics surface, not just test
   scaffolding.
 - PrimeVue `Select` still needs the full pointer event sequence in UI-driving

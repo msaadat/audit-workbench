@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, HTTPException
 from .. import doc_tests, working_papers, workspaces
 from ..workspaces import WorkspaceError
 from ..agent import runner
+from ..agent.workflows import doc_tests as doc_tests_workflow
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["document tests"])
 
@@ -97,15 +98,39 @@ async def patch_document_test_item(workspace_id: str, test_id: str, item_id: str
     return doc_tests.update_item(_ws(workspace_id), test_id, item_id, payload)
 
 
+def _execution_command(ws, test_id: str, mode: str, context: dict) -> dict:
+    """Start the declared document-test workflow for one named Document Test.
+
+    Standalone execution and the audit lifecycle request the same units through
+    the same binder: this endpoint names the test as a workflow target rather
+    than driving a separate runner.
+    """
+    test = doc_tests.load_test(ws, test_id)
+    return runner.start_command_run(
+        ws,
+        mode if mode in {"auto", "permission"} else "auto",
+        {
+            "source": "tab_button",
+            "text": f"Run document test {test.get('title') or test_id}.",
+            "goal_template": "document_test_execution",
+            "requested_outcomes": list(doc_tests_workflow.FULL_DOC_TEST_OUTCOMES),
+            "target_refs": [f"doctest:{test_id}"],
+            "generation_mode": "reuse_existing",
+        },
+        context={**dict(context or {}), "test_id": test_id},
+    )
+
+
 @router.post("/doc-tests/{test_id}/run")
 async def run_document_test(workspace_id: str, test_id: str, payload: dict = Body(default={})):
     ws = _ws(workspace_id)
-    doc_tests.load_test(ws, test_id)
     try:
         return await asyncio.to_thread(
-            runner.start_run, ws, payload.get("mode") or "auto",
-            {**dict(payload.get("context") or {}), "test_id": test_id},
-            kind="doc_test",
+            _execution_command,
+            ws,
+            test_id,
+            str(payload.get("mode") or "auto"),
+            dict(payload.get("context") or {}),
         )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error

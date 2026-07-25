@@ -32,25 +32,24 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 9 (complete).
-- Current task: `P10.1` — Phase 9 is closed. `WorkflowRunner` now schedules three
+- Current phase: Phase 10 (complete).
+- Current task: `P11.1` — Phase 10 is closed. `WorkflowRunner` now schedules four
   declared workflows: the audit lifecycle (`audit_workflow_v2`), the exploratory
-  data-analysis workflow (`analysis_workflow_v1`), and the document-analysis
-  workflow (`documents_workflow_v1`). `DocumentAnalysisRunner` and its engine are
-  deleted; the Documents tab endpoints, the assistant phrases, and the audit
-  graph's scoped `planning.context_ready` dependency all reach the same
-  capabilities, workers, and executor.
-- Last completed task: `P9.11` — the phase gate is green. See the Phase 9 note
-  below for the run-local chunk-proposal contract, the two recorded deviations
-  (no accumulating chunk orientation; no resumable leaf-run concept), and the
-  domain-neutral scheduler changes the phase required.
-- Prior tasks: Phase 8 added the exploratory data-analysis workflow on the same
-  scheduler. Phase 7 closed with every audit capability on a native scheduler
-  path and the transitional batch binding kind deleted.
-- Active blockers: none. Both `P7A.2` follow-ups are resolved: on-demand
-  document-analysis generation returned as the `documents.analysis_generated`
-  capability, and `planning.context_ready` now declares it as a scoped
-  dependency.
+  data-analysis workflow (`analysis_workflow_v1`), the document-analysis workflow
+  (`documents_workflow_v1`), and the standalone document-test workflow
+  (`doc_tests_workflow_v1`). Exactly one protocol runner survives — `IntakeRunner`
+  — with a recorded justification and on the target runtime/worker/context
+  contracts. `P11.1` therefore finalizes the supported engine set as
+  `workflow`, `action`, `intake` (justified), and `analysis` (Phase 12 removes
+  it).
+- Last completed task: `P10.7` — the phase gate is green: the full backend suite
+  passed `887` tests and the frontend production build passed. See the Phase 10
+  note below for both decisions, the shared document-test binder, and the three
+  recorded deviations.
+- Prior tasks: Phase 9 unified document analysis on the same scheduler. Phase 8
+  added the exploratory data-analysis workflow. Phase 7 closed with every audit
+  capability on a native scheduler path.
+- Active blockers: none.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -73,8 +72,8 @@ status notes below.
 | 7 | Complete | — |
 | 8 | Complete | — |
 | 9 | Complete | — |
-| 10 | Ready | `P10.1` |
-| 11 | Pending required workflow migrations | `P11.1` |
+| 10 | Complete | — |
+| 11 | Ready | `P11.1` |
 | 12 | Pending routing consolidation | `P12.1` |
 | 13 | Pending final cleanup | `P13.1` |
 
@@ -1756,6 +1755,87 @@ status notes below.
   the full backend suite passed `858` tests in `159.89s`; the frontend production
   build passed. Phase 9 is complete; the exact next task is `P10.1`, and no
   Phase 10 work has started.
+- Phase 10 completed on 2026-07-25. Both remaining leaf runners were measured
+  against the workflow scheduler's four requirements — readiness as a function of
+  the durable subject, semantic-unit fan-out, dependency-ordered stages, and
+  proposal-then-guarded-commit — and the reasoning is recorded in the new
+  [agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md), which
+  is the phase's required decision record.
+  **(1) `P10.1`/`P10.2`/`P10.3` — intake retained, and converted.** Intake fails
+  three of the four requirements: its authoritative state is the staged batch
+  under `Imports/<batch_id>/`, created and advanced by a separate HTTP upload
+  protocol the run cannot re-derive from workspace state; there is exactly one
+  unit at every step (one bounded model turn over the whole batch payload, one
+  `apply_batch` call); and application *creates* the tables and documents, so
+  there is no pre-existing artifact parent hash for a CAS guard and idempotency
+  comes from the batch's own per-item `target_ref`. Fanning classification out
+  per file would multiply provider turns by the file count and lose the
+  cross-file consistency the single payload gives the model. Retention did not
+  exempt it from the target contracts: `IntakeRunner` now takes an explicit
+  optional `runtime`, its prompt moved into the registered
+  `workers.intake:intake.classification` worker (hash-identified prompt and
+  response schema, semantic validation, one bounded repair), its model-facing
+  input comes only from the declared `intake.classification` preset, and
+  classification runs as a *proposal-only* `UnitPipeline` unit so the manifest is
+  persisted before the call and a restart reuses the proposal rather than
+  re-billing. The accepted decision set is persisted to its own semantic-unit
+  sidecar before `apply_batch` touches a file. The context boundary needed one
+  additive model change: a `staged_files` source type, a `file_metadata`
+  representation, and a deny-by-default `allow_file_metadata` privacy permission,
+  so "the classifier sees no file content" is structural rather than a promise
+  the prompt makes. The candidates are built through
+  `intake.classification_payload_for_model`, which is the existing privacy choke
+  point. `ActionRunner`'s `classify_import_batch` action now borrows the runner
+  with the action run's own runtime and ledger lock instead of constructing a
+  second runtime over the same record. `prompts.FILE_CLASSIFICATION_SYSTEM` and
+  `file_classification_user` are deleted. New `tests/test_agent_intake_runner.py`
+  passed `14` tests.
+  **(2) `P10.4`/`P10.5`/`P10.6` — document tests migrated.** Document tests fit
+  all four requirements, and the audit lifecycle already scheduled them that way
+  through `fieldwork.executed`, so retention would have kept a second — and
+  worse — implementation. `DocTestRunner`, the `doc_test` engine value, and the
+  `doc_test` run kind are deleted. The declared graph is
+  `doc_tests.definitions_ready` → `doc_tests.executed` →
+  `doc_tests.dispositioned` in `workflows/doc_tests.py` and
+  `capabilities/doc_tests.py`; `POST /doc-tests/{test_id}/run` now starts a
+  `doc_tests_workflow_v1` command run naming that test as a workflow target. The
+  migration is a deletion rather than a second implementation because both graphs
+  share exactly two functions: `capabilities.doc_tests.document_test_units`
+  expands a Document Test (evidence-blocked, Q&A fan-out, already-checked review,
+  or local execution) and `doc_tests_execution.bind_document_test_unit` binds
+  each unit kind. `capabilities/fieldwork.py::_execution_units` and
+  `audit_execution.py::_bind_execution` now keep only their datatest branch and
+  their own planned-test lineage and task identity.
+  **Recorded deviation (a): no model call from `run_item` any more.** The leaf
+  runner passed `model_adapter=self.model_adapter` into `doc_tests.run_item`, so
+  a Q&A worklist reached `documents.document_chat` from inside the runner. Both
+  graphs now expand a Q&A test into `document_qa_execution` units answered by the
+  registered `fieldwork.document_qa` worker against declared page context, and
+  `executors.fieldwork.run_document_test` raises rather than making an
+  unbudgeted call.
+  **Recorded deviation (b): execution readiness is "no item is still pending",
+  not `result_rollup(...)['pending']`.** That field also counts `agent_checked`,
+  which is the *disposition* question; using it would leave `doc_tests.executed`
+  permanently unsatisfied and re-run every item on every request.
+  **Recorded deviation (c): explicit force now re-executes an already-checked
+  test.** Previously a test whose items were all `agent_checked` expanded a review
+  unit even under `force`. Force is the auditor asking for the work again, so it
+  now expands an execution unit; items the auditor has already dispositioned are
+  still skipped by `run_document_test`'s own rule. The run-level
+  `run["doc_test"]["rollup"]` projection became `run["doc_tests"]` computed in the
+  workflow's finish projection.
+  **(3) Scope.** A document-test request that names nothing falls back to a
+  bounded set of tests with outstanding work (`MAX_SCOPE_TESTS`) and warns when it
+  truncates; no scope interaction was added, because no live caller can produce an
+  ambiguous document-test scope — the endpoint names exactly one test.
+  `doc_tests.dispositioned` is not in `FULL_DOC_TEST_OUTCOMES`, so it is reached
+  only when explicitly requested, exactly like `documents.analysis_reviewed`.
+  **(4) `P10.7` verification.** New `tests/test_workflow_doc_tests.py` passed `17`
+  tests; the full backend suite passed `887` tests in `152.60s`; the frontend
+  type-check and production build passed (`AgentRun.engine` and `AgentRun.kind`
+  lost `doc_test`, and `AgentWorkflow.definition` gained the two newer definition
+  ids). Phase 10 is complete; the exact next task is `P11.1`, and no Phase 11 work
+  has started.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -2768,22 +2848,22 @@ scheduling protocols into the workflow runner.
 
 **Tasks:**
 
-- [ ] `P10.1` Inventory intake scheduling requirements and write the required
+- [x] `P10.1` Inventory intake scheduling requirements and write the required
   decision record against workflow semantic units, review checkpoints, file
   operations, batch identity, and recovery.
-- [ ] `P10.2` Implement the intake decision: either migrate declared outcomes
+- [x] `P10.2` Implement the intake decision: either migrate declared outcomes
   incrementally or retain a thin runner using `RunRuntime`, `ModelGateway`, and
   declared worker/context contracts.
-- [ ] `P10.3` Prove intake review, idempotent apply, local file privacy,
+- [x] `P10.3` Prove intake review, idempotent apply, local file privacy,
   budgets, and same-schema restart behavior.
-- [ ] `P10.4` Inventory document-test scheduling requirements and write the
+- [x] `P10.4` Inventory document-test scheduling requirements and write the
   required decision record against fan-out, comparisons, disposition,
   attachments, evidence anchors, linked writes, and recovery.
-- [ ] `P10.5` Implement the document-test decision and route all model calls
+- [x] `P10.5` Implement the document-test decision and route all model calls
   through the injected gateway without duplicating `doc_tests.run_item`.
-- [ ] `P10.6` Prove per-item resume, comparison/disposition behavior,
+- [x] `P10.6` Prove per-item resume, comparison/disposition behavior,
   RCM-linked receipts, privacy, budgets, and same-schema recovery.
-- [ ] `P10.7` Update the authoritative package migration to reflect both
+- [x] `P10.7` Update the authoritative package migration to reflect both
   decisions, delete superseded live runners, then run the phase integration gate
   and update status.
 
@@ -2812,6 +2892,13 @@ scheduling protocols into the workflow runner.
 that either justifies retention or proves it fits `WorkflowRunner`. File count
 or historical separation is not sufficient justification.
 
+**Decision record:**
+[agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md).
+Document tests migrated and `DocTestRunner` is deleted; intake is retained as a
+justified protocol runner on `RunRuntime`, `ModelGateway`, and declared
+context/worker contracts. `intake` therefore stays a supported engine value in
+the target schema and `doc_test` does not.
+
 **Tests:** Existing intake and evidence-aware document-test suites must pass,
 plus runtime budget, recovery, approval, and privacy tests for the selected
 implementation.
@@ -2831,7 +2918,14 @@ explicit.
 - [ ] `P11.2A` Implement deterministic routing precedence for registered
   outcomes, workflow-owned generation/refresh, target-specific operations,
   scope-wide execution, and compound cross-engine requests; remove
-  workflow-owned generation actions from the canonical action catalog.
+  workflow-owned generation actions from the canonical action catalog. Phase 10
+  left one such overlap open deliberately: the registered `run_document_test`
+  action and the declared `doc_tests.executed` outcome both execute one named
+  Document Test end to end. The endpoint now uses the workflow; the DocTests
+  tab's `document_testing` chat requests still reach the action. Deciding which
+  survives — and, if the action does, narrowing it so it cannot execute a Q&A
+  worklist outside the registered worker — is `P11.2A` work, not a Phase 10
+  routing change.
 - [ ] `P11.3` Define and validate the bounded router-worker result schema for
   workflow, action, clarification, and unsupported outcomes.
 - [ ] `P11.4` Persist one normalized route and selected engine before thread
@@ -2977,13 +3071,15 @@ backend/app/agent/
 |- workflows/
 |  |- audit.py
 |  |- analysis.py
-|  `- documents.py
+|  |- documents.py
+|  `- doc_tests.py
 |- capabilities/
 |  |- model.py
 |  |- planning.py
 |  |- fieldwork.py
 |  |- analysis.py
 |  |- documents.py
+|  |- doc_tests.py
 |  `- reporting.py
 |- context/
 |  |- model.py
@@ -2996,6 +3092,7 @@ backend/app/agent/
 |  |- fieldwork.py
 |  |- analysis.py
 |  |- documents.py
+|  |- intake.py
 |  `- reporting.py
 |- executors/
 |  |- model.py
@@ -3008,13 +3105,19 @@ backend/app/agent/
 |  |- catalog.py
 |  |- planner.py
 |  `- executors.py
+|- intake_runner.py            - retained single-unit intake protocol runner
 `- runner.py                  - process launch and active-handle registry
 ```
 
-If Phase 10 retains an intake or document-test protocol runner, place it under a
-plainly named current package and include its explicit engine value in the target
-schema. Do not create a `compat/` package. Avoid a file per individual capability
-unless size or ownership independently warrants it.
+Phase 10 decided both protocol runners against the scheduler's own contract, in
+[agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md).
+`DocTestRunner` migrated to `doc_tests_workflow_v1` and was deleted with its
+engine value. `IntakeRunner` is retained under its plain current name, and
+`intake` is a supported engine in the target schema; it uses `RunRuntime`,
+`ModelGateway`, the registered `intake.classification` worker, the declared
+`intake.classification` context preset, and a proposal-only `UnitPipeline` unit.
+There is no `compat/` package. Avoid a file per individual capability unless size
+or ownership independently warrants it.
 
 ## 8. Test Plan
 

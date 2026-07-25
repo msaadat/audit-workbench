@@ -631,13 +631,22 @@ class ActionRunner(BaseRunner):
         definition = actions.validate_action(action)
         self.checkpoint()
         # Classification is model work owned by the intake runner; borrow it
-        # rather than duplicating the prompt and batch bookkeeping here.
+        # rather than duplicating the registered worker, its declared context,
+        # and the batch bookkeeping here. The borrowed runner shares this run's
+        # runtime and ledger lock, so both write the one durable record under
+        # one lock and one model budget.
         if action["type"] == "classify_import_batch":
             from .. import intake
             from .intake_runner import IntakeRunner
 
             batch = intake.load_batch(self.ws, action["args"]["batch_id"])
-            IntakeRunner(self.ws, self.run, self.handle)._classify(batch)
+            IntakeRunner(
+                self.ws,
+                self.run,
+                self.handle,
+                runtime=self.runtime,
+                state_lock=self._state_lock,
+            )._classify(batch)
             intake.save_batch(self.ws, batch)
         # Re-resolve immediately before mutations and capture a hashed before snapshot.
         if definition.target_kinds:

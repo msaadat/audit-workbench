@@ -11,9 +11,9 @@ from app import documents, llm
 from app.agent import (
     action_runner,
     audit_execution,
+    doc_tests_execution,
     documents_execution,
     base,
-    doc_test_runner,
     intake_runner,
     runner,
     store,
@@ -62,7 +62,7 @@ ACTIVE_RUNNER_CASES = (
     (action_runner.ActionRunner, store.ACTION_ENGINE),
     (audit_execution.build_audit_workflow_runner, store.WORKFLOW_ENGINE),
     (intake_runner.IntakeRunner, store.INTAKE_ENGINE),
-    (doc_test_runner.DocTestRunner, store.DOC_TEST_ENGINE),
+    (doc_tests_execution.build_doc_tests_workflow_runner, store.WORKFLOW_ENGINE),
     (documents_execution.build_documents_workflow_runner, store.WORKFLOW_ENGINE),
 )
 
@@ -250,7 +250,7 @@ def test_workflow_runner_accepts_an_injected_runtime_without_changing_default_ap
 @pytest.mark.parametrize(
     ("runner_type", "engine"),
     ACTIVE_RUNNER_CASES,
-    ids=("action", "workflow", "intake", "doc-test", "document-analysis"),
+    ids=("action", "audit", "intake", "doc-tests", "document-analysis"),
 )
 def test_active_runners_share_runtime_budget_and_gateway_contract(
     workspace_with_data,
@@ -299,7 +299,7 @@ def test_active_runners_share_runtime_budget_and_gateway_contract(
 @pytest.mark.parametrize(
     ("runner_type", "engine"),
     ACTIVE_RUNNER_CASES,
-    ids=("action", "workflow", "intake", "doc-test", "document-analysis"),
+    ids=("action", "audit", "intake", "doc-tests", "document-analysis"),
 )
 def test_active_runners_share_pause_resume_and_cancel_controls(
     workspace_with_data,
@@ -326,10 +326,7 @@ def test_active_runners_share_pause_resume_and_cancel_controls(
 
 
 def test_active_leaf_runners_share_runtime_without_graph_runner_inheritance():
-    leaf_runners = (
-        intake_runner.IntakeRunner,
-        doc_test_runner.DocTestRunner,
-    )
+    leaf_runners = (intake_runner.IntakeRunner,)
 
     for leaf_runner in leaf_runners:
         assert issubclass(leaf_runner, base.BaseRunner)

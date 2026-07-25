@@ -227,33 +227,6 @@ def _context_block(context: dict, guidance: list[str]) -> str:
     return "\n".join(parts) if parts else "No auditor context was provided; infer it."
 
 
-# ------------------------------------------------------------ folder intake
-FILE_CLASSIFICATION_SYSTEM = f"""[agent:file_classification]
-You classify files in a browser-selected audit folder from local technical
-metadata. Spreadsheet cells, rows, previews, formulas, comments, and document
-content are not present. Keep each known item id exactly; never add an item.
-
-{JSON_RULES}
-Keys:
-  items array of {{"id": known item id,
-    "route": "table" | "document" | "unsupported" | "ignore",
-    "document_category": "background" | "policy" | "regulation" |
-      "contract" | "minutes" | "voucher" | "evidence" | "prior_report" |
-      "correspondence" | "other" | null,
-    "table_role": "population" | "master_lookup" | "prior_period" |
-      "schedule" | "parameters" | "unknown" | null,
-    "subtype": short free-form label, "proposed_name": safe short name,
-    "confidence": "high" | "medium" | "low", "rationale": one sentence,
-    "proposed_action": "import" | "ignore"}}
-Technical parser metadata is authoritative. Do not propose importing a file
-whose local parser failed. Filenames can be suggestive but are not evidence of
-document content."""
-
-
-def file_classification_user(payload: dict) -> str:
-    return json.dumps(payload, indent=1, default=str)
-
-
 # ------------------------------------------------------------------ planning
 PLANNING_SYSTEM = f"""[agent:planning]
 You are the planning module of an audit data-analyst agent inside a local

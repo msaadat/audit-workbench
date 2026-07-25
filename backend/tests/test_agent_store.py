@@ -101,15 +101,12 @@ def test_run_json_is_valid_json_on_disk(workspace_with_data):
     [
         ("analysis", store.LEGACY_ANALYSIS_ENGINE),
         ("intake", store.INTAKE_ENGINE),
-        ("doc_test", store.DOC_TEST_ENGINE),
     ],
 )
 def test_new_run_persists_explicit_engine_for_each_live_protocol(
     workspace_with_data, kind, engine
 ):
-    context = {"doc_test": {"test_id": "DT-1"}}.get(kind)
-
-    run = store.new_run(workspace_with_data, "auto", context, kind=kind)
+    run = store.new_run(workspace_with_data, "auto", None, kind=kind)
 
     assert run["engine"] == engine
     assert store.load_run(workspace_with_data, run["id"])["engine"] == engine

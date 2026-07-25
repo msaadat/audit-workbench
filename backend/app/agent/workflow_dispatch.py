@@ -12,6 +12,7 @@ from ..workspaces import Workspace, WorkspaceError
 from .runtime import WorkflowRunner
 from .workflows import analysis as analysis_workflow
 from .workflows import audit as audit_workflow
+from .workflows import doc_tests as doc_tests_workflow
 from .workflows import documents as documents_workflow
 
 
@@ -27,6 +28,10 @@ def build_workflow_runner(
         from .analysis_execution import build_analysis_workflow_runner
 
         return build_analysis_workflow_runner(workspace, run, handle)
+    if definition == doc_tests_workflow.WORKFLOW_ID:
+        from .doc_tests_execution import build_doc_tests_workflow_runner
+
+        return build_doc_tests_workflow_runner(workspace, run, handle)
     if definition == documents_workflow.WORKFLOW_ID:
         from .documents_execution import build_documents_workflow_runner
 

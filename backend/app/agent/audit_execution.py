@@ -40,6 +40,7 @@ from .capabilities.reporting import (
     OBSERVATION_DISPOSITION_CHECKPOINT,
     STAGE_CHECKPOINTS,
 )
+from .doc_tests_execution import bind_document_test_unit
 from .documents_execution import (
     DocumentWorkflowExecution,
     build_document_capability_executions,
@@ -48,7 +49,6 @@ from .context import (
     ContextResolver,
     apm_document_methodology_scope,
     data_test_spec_scope,
-    document_qa_scope,
     document_test_spec_scope,
     finding_draft_scope,
     planned_test_scope,
@@ -58,15 +58,10 @@ from .context import (
 )
 from .executors import EXECUTORS
 from .executors.fieldwork import (
-    DOCUMENT_QA_DISPOSITION_REQUIRED,
-    DOCUMENT_REVIEW_REQUIRED,
     DataTestExecutorTarget,
-    DocumentQaExecutorTarget,
     DocumentTestExecutorTarget,
-    document_qa_answer_ref,
     roll_up_results,
     run_data_test,
-    run_document_test,
 )
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
@@ -793,34 +788,25 @@ class AuditWorkflowExecution(ActionRunner):
         the local ones, which is how a capability with mixed units keeps exactly
         one execution binding.
 
-        The status vocabulary carries audit meaning, not just success/failure:
-        ``awaiting_confirmation`` means the agent produced something only an
-        auditor may disposition, and ``blocked`` means evidence is missing —
-        which registers the unit against its evidence request so uploading the
-        document can unblock it later.
+        Only the datatest branch is audit-specific. Every Document Test unit kind
+        is bound by :func:`doc_tests_execution.bind_document_test_unit`, the same
+        function the standalone ``doc_tests_workflow_v1`` composition uses, so a
+        worklist behaves identically whichever graph scheduled it.
         """
         self.ws = subject
-        if unit["kind"] == "document_test_review":
-            return DeterministicUnitResult(
-                "awaiting_confirmation",
-                (self._unit_ref(unit, "doctest:"),),
-                DOCUMENT_REVIEW_REQUIRED,
-            )
         # Existing execution services combine compute and mutation and check the
         # revision they were handed, so each unit runs against a freshly loaded
         # workspace rather than the subject the stage started with.
         self._refresh_workspace()
-        if unit["kind"] == "document_qa_execution":
-            return self._bind_document_qa(capability, stage, unit)
         artifact_ref = unit["parent_refs"][-1]
         kind, item_id = artifact_ref.split(":", 1)
+        if kind != "datatest":
+            task = self.add_task(
+                "execution", "workflow:execution", "Fieldwork execution"
+            )
+            return bind_document_test_unit(self, capability, unit, task=task)
         try:
-            if kind == "datatest":
-                outcome = run_data_test(self.ws, item_id)
-            else:
-                outcome = run_document_test(
-                    self.ws, item_id, unit_id=unit["id"], run_id=self.run["id"]
-                )
+            outcome = run_data_test(self.ws, item_id)
         except WorkspaceConflict as error:
             return DeterministicUnitResult("conflict", error=str(error))
         if outcome.executed:
@@ -830,90 +816,6 @@ class AuditWorkflowExecution(ActionRunner):
             )
         return DeterministicUnitResult(
             outcome.status, (outcome.artifact_ref,), outcome.error
-        )
-
-    @staticmethod
-    def _unit_ref(unit: dict, prefix: str) -> str:
-        return next(ref for ref in unit["parent_refs"] if ref.startswith(prefix))
-
-    def _bind_document_qa(
-        self,
-        capability: workflow.Capability,
-        stage: dict,
-        unit: dict,
-    ) -> BoundUnitPipeline:
-        """Bind one item/document Q&A unit to the shared ``UnitPipeline``.
-
-        The answer now comes from the registered ``fieldwork.document_qa`` worker
-        through the injected gateway and the declared page context, and the
-        registered executor owns the guarded merge into the Document Test. The
-        answer is never a finished conclusion, so the post-commit callback folds
-        the unit to ``awaiting_confirmation`` instead of ``succeeded``.
-        """
-        test_id = self._unit_ref(unit, "doctest:").split(":", 1)[1]
-        item_id = self._unit_ref(unit, "docitem:").split(":", 1)[1]
-        document_id = self._unit_ref(unit, "document:").split(":", 1)[1]
-        expected_test = parent_hashes(self.ws, [f"doctest:{test_id}"])
-        target = DocumentQaExecutorTarget(
-            self.ws, self.run["id"], test_id, item_id, document_id
-        )
-        task = self.add_task("execution", "workflow:execution", "Fieldwork execution")
-
-        def context_provider():
-            return self._resolve_context(
-                capability,
-                unit,
-                document_qa_scope(self.ws, test_id, item_id, document_id),
-            )
-
-        def on_committed(_stage, _unit, outcome) -> DeterministicUnitResult:
-            self.ws = target.workspace
-            self.emit(
-                "workspace_changed",
-                {"kind": "doctest", "id": test_id, "action": "qa_answered"},
-            )
-            return DeterministicUnitResult(
-                "awaiting_confirmation",
-                (document_qa_answer_ref(test_id, item_id, document_id),),
-                DOCUMENT_QA_DISPOSITION_REQUIRED,
-            )
-
-        return BoundUnitPipeline(
-            request=UnitPipelineRequest(
-                capability_id=capability.id,
-                unit_id=unit["id"],
-                worker_id="fieldwork.document_qa",
-                executor_id="fieldwork.document_qa",
-                unit_input={
-                    "kind": unit.get("kind"),
-                    "input_sha1": unit.get("input_sha1"),
-                    "parent_refs": list(unit.get("parent_refs") or []),
-                },
-                activity={
-                    "artifact_refs": list(unit.get("parent_refs") or []),
-                    "document_ids": [document_id],
-                    "task_id": task["id"],
-                },
-                expected_revision=self.ws.revision,
-                expected_parents=expected_test,
-                capability_definition_hash=_capability_definition_hash(capability),
-                # A cited answer is a candidate for auditor disposition, not an
-                # artifact the auditor pre-approves, so no approval batch is
-                # requested even in permission mode.
-                approval_kind=None,
-                proposal_reference=unit.get("proposal_sidecar"),
-                receipt_reference=unit.get("receipt_sidecar"),
-            ),
-            context_provider=context_provider,
-            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
-                capability, manifest
-            ),
-            target=target,
-            approval_provider=None,
-            # Execution fans out one unit per artifact, question, and document, so
-            # this capability's readiness only holds once every unit has settled.
-            readiness_provider=None,
-            on_committed=on_committed,
         )
 
     def _bind_rollup(

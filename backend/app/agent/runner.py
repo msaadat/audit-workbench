@@ -177,7 +177,7 @@ def start_run(
     source_message_id: str | None = None,
 ) -> dict:
     recover_workspace(workspace)
-    if kind not in ("analysis", "intake", "doc_test"):
+    if kind not in ("analysis", "intake"):
         raise WorkspaceError("Unknown agent run kind.")
     if kind == "analysis" and not llm.agent_status()["configured"]:
         raise llm.LLMError(
@@ -197,13 +197,6 @@ def start_run(
         )
     if kind == "analysis" and not workspace.tables:
         raise WorkspaceError("Upload at least one data table before running the agent.")
-    if kind == "doc_test":
-        from .. import doc_tests
-
-        test_id = str((context or {}).get("test_id") or "")
-        if not test_id:
-            raise WorkspaceError("A document-test run requires context.test_id.")
-        doc_tests.load_test(workspace, test_id)
     run = store.new_run(
         workspace, mode, context, parent_run_id, kind=kind,
         chat_id=chat_id, source_message_id=source_message_id,
@@ -684,10 +677,6 @@ def _execute(workspace_id: str, run_id: str, handle: RunHandle) -> None:
                     from .intake_runner import IntakeRunner
 
                     IntakeRunner(workspace, run, handle).execute()
-                elif engine == store.DOC_TEST_ENGINE:
-                    from .doc_test_runner import DocTestRunner
-
-                    DocTestRunner(workspace, run, handle).execute()
                 elif engine == store.WORKFLOW_ENGINE:
                     from .workflow_dispatch import build_workflow_runner
 

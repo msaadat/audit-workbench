@@ -12,7 +12,7 @@ declared context. The dependency edges come from the authoritative graph in
 
 from __future__ import annotations
 
-from ... import doc_tests, rcm_execution
+from ... import rcm_execution
 from ...workspaces import Workspace
 from ..workflow import (
     Capability,
@@ -21,6 +21,7 @@ from ..workflow import (
     semantic_unit_id,
 )
 from ..workflows import audit as audit_workflow
+from .doc_tests import document_test_units
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
 from ._shared import target_rcm_ids as _target_rcm_ids
@@ -174,84 +175,17 @@ def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
                     )
                 )
                 continue
-            test = doc_tests.load_test(workspace, artifact["id"])
-            if test.get("kind") == "qa":
-                if doc_tests.evidence_blocked(test):
-                    units.append(
-                        UnitSpec(
-                            semantic_unit_id("document_test_execution", artifact["id"]),
-                            "document_test_execution",
-                            f"Execute doctest — {item['title']}",
-                            (
-                                f"planned_test:{item['planned_test_id']}",
-                                f"doctest:{artifact['id']}",
-                            ),
-                            artifact,
-                        )
-                    )
-                    continue
-                qa_units = []
-                for test_item in test.get("items") or []:
-                    answered = set((test_item.get("qa_answers") or {}).keys())
-                    for document_id in test_item.get("document_ids") or []:
-                        if document_id in answered and scope.get("generation_mode") != "force":
-                            continue
-                        qa_units.append(
-                            UnitSpec(
-                                semantic_unit_id(
-                                    "document_qa_execution",
-                                    artifact["id"],
-                                    test_item["id"],
-                                    document_id,
-                                ),
-                                "document_qa_execution",
-                                f"Answer {test_item.get('label') or test_item['id']} — {document_id}",
-                                (
-                                    f"planned_test:{item['planned_test_id']}",
-                                    f"doctest:{artifact['id']}",
-                                    f"docitem:{test_item['id']}",
-                                    f"document:{document_id}",
-                                ),
-                                {
-                                    "test_sha1": test.get("sha1"),
-                                    "question": test_item.get("question"),
-                                    "document_sha1": next(
-                                        (
-                                            document.get("sha1")
-                                            for document in workspace.documents
-                                            if document.get("id") == document_id
-                                        ),
-                                        None,
-                                    ),
-                                },
-                            )
-                        )
-                if qa_units:
-                    units.extend(qa_units)
-                    continue
-                units.append(
-                    UnitSpec(
-                        semantic_unit_id("document_test_review", artifact["id"]),
-                        "document_test_review",
-                        f"Review document Q&A — {item['title']}",
-                        (f"planned_test:{item['planned_test_id']}", f"doctest:{artifact['id']}"),
-                        artifact,
-                    )
-                )
-                continue
-            already_checked = bool(test.get("items")) and all(
-                test_item.get("state")
-                in {"agent_checked", "manual_review", "confirmed", "exception"}
-                for test_item in test.get("items") or []
-            )
-            kind = "document_test_review" if already_checked else "document_test_execution"
-            units.append(
-                UnitSpec(
-                    semantic_unit_id(kind, artifact["id"]),
-                    kind,
-                    f"{'Review' if already_checked else 'Execute'} doctest — {item['title']}",
-                    (f"planned_test:{item['planned_test_id']}", f"doctest:{artifact['id']}"),
-                    artifact,
+            # One expansion, two graphs. A Document Test fans out the same way
+            # whether an audit run or a standalone request scheduled it; the only
+            # audit-specific parts are the planned test it implements and the
+            # manifest title the auditor sees.
+            units.extend(
+                document_test_units(
+                    workspace,
+                    artifact["id"],
+                    forced=scope.get("generation_mode") == "force",
+                    title=item["title"],
+                    parent_refs=(f"planned_test:{item['planned_test_id']}",),
                 )
             )
     return units

@@ -17,6 +17,7 @@ from app.agent.audit_execution import (
     AuditWorkflowExecution,
     build_audit_workflow_runner,
 )
+from app.agent.doc_tests_execution import bind_document_qa
 import app.agent.context.adapters as context_adapters
 from app.agent.executors import fieldwork as fieldwork_executor
 from app.agent.executors import planning as planning_executor
@@ -1163,11 +1164,16 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
         for event in store.read_events(ws, command.run["id"])
         if event["type"] == "workspace_changed"
     } >= {("doctest", "qa_answered")}
-    # The binding inlines no bundle builder, model caller, or mutation.
-    binder_source = inspect.getsource(AuditWorkflowExecution._bind_document_qa)
+    # The binding inlines no bundle builder, model caller, or mutation — and it
+    # is the *shared* binder, so the audit graph and the standalone document-test
+    # workflow cannot drift into two Q&A implementations.
+    binder_source = inspect.getsource(bind_document_qa)
     assert "document_chat" not in binder_source
     assert "llm_json" not in binder_source
     assert "mutate(" not in binder_source
+    assert "bind_document_test_unit" in inspect.getsource(
+        AuditWorkflowExecution._bind_execution
+    )
 
 
 def test_document_qa_resume_reuses_the_durable_proposal_without_rebilling(monkeypatch):

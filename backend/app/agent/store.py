@@ -33,12 +33,13 @@ GENERATION_MODES = ("reuse_existing", "force")
 WORKFLOW_ENGINE = "workflow"
 ACTION_ENGINE = "action"
 
-# These protocol engines remain explicit while their live callers are migrated
-# in later phases. They are intentionally not inferred from ``kind`` when a run
-# is loaded or dispatched.
+# ``intake`` is a justified protocol engine in the target schema: folder intake
+# is a single-unit protocol over a staged batch rather than a capability graph
+# (``docs/agent-protocol-runner-decisions.md``). ``analysis`` is the legacy
+# fixed-stage pipeline, retired in Phase 12. Neither is ever inferred from
+# ``kind`` when a run is loaded or dispatched.
 LEGACY_ANALYSIS_ENGINE = "analysis"
 INTAKE_ENGINE = "intake"
-DOC_TEST_ENGINE = "doc_test"
 
 COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE})
 RUN_ENGINES = frozenset(
@@ -46,13 +47,11 @@ RUN_ENGINES = frozenset(
         *COMMAND_ENGINES,
         LEGACY_ANALYSIS_ENGINE,
         INTAKE_ENGINE,
-        DOC_TEST_ENGINE,
     }
 )
 ENGINE_BY_RUN_KIND = {
     "analysis": LEGACY_ANALYSIS_ENGINE,
     "intake": INTAKE_ENGINE,
-    "doc_test": DOC_TEST_ENGINE,
 }
 # Statuses that mean "a worker thread should be driving this run".
 ACTIVE_STATUSES = (
@@ -132,7 +131,7 @@ def new_run(
 ) -> dict:
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
-    if kind not in ("analysis", "intake", "doc_test"):
+    if kind not in ("analysis", "intake"):
         raise WorkspaceError("Unknown agent run kind.")
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -165,8 +164,6 @@ def new_run(
         "warnings": [],
         "error": None,
     }
-    if kind == "doc_test":
-        run["doc_test"] = {"test_id": str((context or {}).get("test_id") or "")}
     save_run(workspace, run)
     return run
 

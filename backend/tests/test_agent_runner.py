@@ -11,7 +11,6 @@ import app.agent as agent_package
 from app import documents, llm, workspaces
 from app.agent import (
     action_runner,
-    doc_test_runner,
     intake_runner,
     ledger,
     runner,
@@ -580,7 +579,6 @@ def test_phase_one_has_no_v2_reader_alias_or_compatibility_module(
         ),
         (store.ACTION_ENGINE, action_runner, "ActionRunner", "action"),
         (store.INTAKE_ENGINE, intake_runner, "IntakeRunner", "intake"),
-        (store.DOC_TEST_ENGINE, doc_test_runner, "DocTestRunner", "doc_test"),
     ],
 )
 def test_execute_dispatches_by_explicit_engine_only(

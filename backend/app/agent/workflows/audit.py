@@ -74,10 +74,10 @@ FULL_AUDIT_OUTCOMES = [
     "audit.verified",
 ]
 
-# Goal-template routing to requested outcome sets. The legacy data-analysis and
-# single-document-test buttons are isolated operations, not RCM workflow goals,
-# so they are intentionally absent here and handled by ActionRunner/DocTestRunner
-# during the compatibility window.
+# Goal-template routing to requested outcome sets. Running one named Document
+# Test is not an RCM workflow goal, so it is intentionally absent here: it is a
+# request against the standalone ``doc_tests_workflow_v1`` graph, which reaches
+# the same units through the same binder.
 TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     "full_audit_working_draft": FULL_AUDIT_OUTCOMES,
     "planning": [

@@ -356,6 +356,63 @@ Nothing the agent does satisfies `documents.analysis_reviewed`. Its units settle
 as `awaiting_confirmation`, because a generated summary is never evidence that a
 control operated.
 
+### Document Test Workflow
+
+```text
+doc_tests.definitions_ready
+-> doc_tests.executed
+-> doc_tests.dispositioned
+```
+
+Standalone document-test execution is fan-out over semantic items, so it is a
+declared workflow rather than a leaf runner (`P10.5`; `DocTestRunner` is
+deleted). The authoritative graph lives in `workflows/doc_tests.py`; the grouped
+declarations live in `capabilities/doc_tests.py`.
+
+**Scope.** Explicitly named Document Tests win — the run endpoint names exactly
+one — and a request that names none falls back to a bounded set of tests that
+still have outstanding work, warning when it truncates.
+
+**Persisted artifacts and readiness.**
+
+| Outcome | Persisted artifact | Readiness satisfied when |
+|---|---|---|
+| `doc_tests.definitions_ready` | The existing Document Test record | Every scoped test is structurally executable (`execution_issues` empty) |
+| `doc_tests.executed` | The existing per-item comparison results, evidence anchors, and Q&A answers | No scoped item is still `pending` |
+| `doc_tests.dispositioned` | The existing per-item auditor state | Every scoped item is `confirmed` or `exception` |
+
+The audit lifecycle continues to schedule document tests through
+`fieldwork.executed`. Both graphs expand a Document Test through one function
+(`capabilities.doc_tests.document_test_units`) and bind its units through one
+function (`doc_tests_execution.bind_document_test_unit`), so a worklist cannot
+behave one way standalone and another way inside an audit. A Q&A test fans out
+one `document_qa_execution` unit per unanswered item/document pair and reaches
+the provider only through the registered `fieldwork.document_qa` worker and its
+declared page context; `run_document_test` raises rather than making an
+unbudgeted call.
+
+Nothing the agent does satisfies `doc_tests.dispositioned`. Its units settle as
+`awaiting_confirmation`, because a deterministic comparison or a cited answer is
+a candidate for auditor judgment, not the judgment.
+
+## Protocol Runners
+
+One runner is deliberately not a capability workflow. `IntakeRunner` schedules a
+single-unit protocol over a staged import batch whose authoritative state lives
+under `Imports/<batch_id>/` and is advanced by a separate HTTP upload protocol,
+and whose application *creates* the workspace artifacts rather than committing to
+existing ones. Retention is justified against the scheduler's own contract, not
+by file count or history, in
+[agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md).
+
+Retention is not an exemption from the target contracts. `IntakeRunner` composes
+`RunRuntime`, reaches the provider only through the registered
+`intake.classification` worker and the shared `ModelGateway`, supplies that
+worker only what the declared `intake.classification` preset resolves, persists a
+content-free manifest before the call, and runs classification as a proposal-only
+`UnitPipeline` unit so a restart reuses the proposal instead of re-billing. Its
+explicit engine value `intake` is part of the target schema.
+
 ## ActionRunner
 
 `ActionRunner` handles bounded imperative requests that do not represent
@@ -381,6 +438,7 @@ router worker handles unresolved commands without performing any work.
 | Prepare the RCM | `WorkflowRunner` requesting `planning.rcm_ready` |
 | Analyze these two tables | `WorkflowRunner` requesting `analysis.executed` |
 | Analyze these documents | `WorkflowRunner` requesting `documents.analysis_generated` |
+| Run this document test | `WorkflowRunner` requesting `doc_tests.executed` |
 | Complete the audit | `WorkflowRunner` requesting `audit.verified` |
 | Attach this file to that test | `ActionRunner` |
 | Pin this analysis | `ActionRunner` |
@@ -446,6 +504,9 @@ capability unless its size independently justifies it.
   context.
 - Executors cannot call the model.
 - Capabilities cannot perform work directly.
+- A runner outside `WorkflowRunner`/`ActionRunner` exists only with a recorded
+  decision that names the scheduling feature justifying it, and it still uses
+  `RunRuntime`, `ModelGateway`, and declared context/worker contracts.
 - `ContextResolver` cannot exceed declared source, privacy, representation, or
   size policies.
 - The audit lifecycle is declared in one place.
@@ -463,8 +524,10 @@ capability unless its size independently justifies it.
 The final target has two scheduling engines: `WorkflowRunner` and
 `ActionRunner`. Existing domain runners migrate into capabilities, workers, and
 executors unless they demonstrably require a different scheduling protocol.
-`DocumentAnalysisRunner` has done so and is deleted; the legacy analysis runner
-and `DocTestRunner` remain scheduled for Phases 12 and 10. Temporary delegation may keep active callers working between commits,
+`DocumentAnalysisRunner` and `DocTestRunner` have done so and are deleted;
+`IntakeRunner` was measured against the same test and retained with a recorded
+justification; the legacy analysis runner remains scheduled for Phase 12.
+Temporary delegation may keep active callers working between commits,
 but it does not read legacy persisted records and is deleted in the same phase
 that migrates the last live caller. Duplicate execution logic is not retained.
 
@@ -496,11 +559,14 @@ document, pinning a dashboard tile, renaming an artifact, or composing a small
 bounded series of registered actions. It should not plan or enforce a complete
 audit lifecycle.
 
-The small intake, document-test, and document-analysis runners currently have
-their own durable run behavior. They are not simply copies of the general graph
-runners. The target architecture nevertheless applies a strict test: retain a
-separate runner only when it requires a genuinely different scheduling and
-control protocol. Otherwise migrate its work into capabilities and workers.
+The small intake, document-test, and document-analysis runners had their own
+durable run behavior. They were not simply copies of the general graph runners.
+The target architecture nevertheless applies a strict test: retain a separate
+runner only when it requires a genuinely different scheduling and control
+protocol. Otherwise migrate its work into capabilities and workers. Phase 9 and
+Phase 10 applied that test to all three: document analysis and document tests
+migrated and their runners were deleted; intake was retained for reasons recorded
+in [agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md).
 
 The `RunRuntime` and `ModelGateway` structural contracts live under
 `agent/runtime/`. `DefaultRunRuntime` now owns synchronized run saves, event

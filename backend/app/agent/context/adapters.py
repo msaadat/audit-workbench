@@ -1662,6 +1662,57 @@ def document_reduction_scope(
     )
 
 
+INTAKE_STAGED_FILE_SOURCE_ID = "staged_files"
+
+
+def intake_staged_file_candidates(
+    workspace: Workspace,
+    batch: Mapping[str, object],
+) -> tuple[ContextCandidate, ...]:
+    """Expose one uploaded staged file per candidate, metadata only.
+
+    The projection is exactly ``intake.classification_payload_for_model``'s per
+    item shape, which is the existing privacy choke point for folder intake: no
+    staging path, absolute path, cell value, row preview, formula, comment, or
+    extracted document text crosses it. Building the candidates through that
+    function rather than reading the batch directly keeps the projection rule in
+    one place.
+    """
+    payload = intake.classification_payload_for_model(workspace, dict(batch))
+    return tuple(
+        ContextCandidate(
+            source_ref=f"staged_file:{item['id']}",
+            source=item,
+            representations={"file_metadata": item},
+            metadata={
+                "item_id": str(item.get("id") or ""),
+                "relative_path": str(item.get("relative_path") or ""),
+                "route": str(
+                    (item.get("deterministic") or {}).get("route") or ""
+                ),
+            },
+        )
+        for item in sorted(
+            payload.get("items") or [],
+            key=lambda value: str(value.get("id") or ""),
+        )
+    )
+
+
+def intake_classification_scope(
+    workspace: Workspace,
+    batch: Mapping[str, object],
+) -> ContextScope:
+    """Build the local candidate scope for one folder-intake classification."""
+
+    candidates = intake_staged_file_candidates(workspace, batch)
+    if not candidates:
+        raise WorkspaceError(
+            f"Import batch '{batch.get('id')}' has no uploaded file to classify."
+        )
+    return ContextScope(candidates={INTAKE_STAGED_FILE_SOURCE_ID: candidates})
+
+
 __all__ = [
     "ANALYSIS_CURRENT_SOURCE_ID",
     "ANALYSIS_REGISTRY_SOURCE_ID",
@@ -1698,6 +1749,7 @@ __all__ = [
     "FINDING_OBSERVATION_SOURCE_ID",
     "FINDING_PLANNED_SOURCE_ID",
     "FINDING_ROW_SOURCE_ID",
+    "INTAKE_STAGED_FILE_SOURCE_ID",
     "PLANNING_CONTEXT_CURRENT_SOURCE_ID",
     "PLANNING_CONTEXT_DOCUMENT_SOURCE_ID",
     "PLANNED_TEST_DOCUMENT_SOURCE_ID",
@@ -1731,6 +1783,8 @@ __all__ = [
     "document_test_document_candidates",
     "document_test_spec_scope",
     "finding_draft_scope",
+    "intake_classification_scope",
+    "intake_staged_file_candidates",
     "planning_context_document_candidates",
     "planning_context_scope",
     "planned_test_methodology_candidates",

@@ -40,6 +40,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "excerpt": "allow_document_text",
     "raw_pages": "allow_document_text",
     "summary": "allow_document_text",
+    "file_metadata": "allow_file_metadata",
     "table_metadata": "allow_table_metadata",
     "table_profile": "allow_table_profiles",
     "table_aggregate": "allow_table_aggregates",
@@ -478,6 +479,15 @@ _register_selectors(
             ),
             strategy="lexical",
             configuration_keys=("query_fields", "scope"),
+        ),
+        SelectorDefinition(
+            selector_id="intake.staged_files",
+            selector_kind="deterministic",
+            supported_source_types=("staged_files",),
+            implementation_hash=_implementation_hash(
+                "intake.staged_files:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
         ),
         SelectorDefinition(
             selector_id="tables.all",
@@ -1155,6 +1165,32 @@ PRESETS.register(
             ),
             budget=ContextBudget(max_items=201, max_characters=62_000),
             privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="intake.classification",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="staged_files",
+                    source_type="staged_files",
+                    required=True,
+                    selector=ContextSelector(selector_id="intake.staged_files"),
+                    # Technical metadata only. There is no representation here
+                    # for spreadsheet cells, row previews, formulas, comments, or
+                    # extracted document text, so "the classifier sees no file
+                    # content" is a policy the resolver enforces structurally
+                    # rather than a promise the prompt makes.
+                    representations=(ContextRepresentation("file_metadata"),),
+                    budget=ContextBudget(max_items=500, max_characters=120_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=500, max_characters=120_000),
+            privacy=ContextPrivacy(allow_file_metadata=True),
         ),
     )
 )

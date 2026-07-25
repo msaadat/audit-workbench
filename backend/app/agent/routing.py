@@ -12,6 +12,7 @@ from . import context_bundles, prompts, store, workflow
 from .base import BaseRunner, LimitExceeded
 from .workflows import analysis as analysis_workflow
 from .workflows import audit as audit_workflow
+from .workflows import doc_tests as doc_tests_workflow
 from .workflows import documents as documents_workflow
 
 
@@ -19,6 +20,7 @@ WORKFLOW_MODULES = {
     audit_workflow.WORKFLOW_ID: audit_workflow,
     analysis_workflow.WORKFLOW_ID: analysis_workflow,
     documents_workflow.WORKFLOW_ID: documents_workflow,
+    doc_tests_workflow.WORKFLOW_ID: doc_tests_workflow,
 }
 
 ELIGIBLE_DISPOSITIONS = {
@@ -191,6 +193,7 @@ def local_resolution(command: dict) -> dict | None:
         audit_capabilities.outcomes_for_template(template)
         or audit_capabilities.analysis_outcomes_for_template(template)
         or audit_capabilities.document_outcomes_for_template(template)
+        or audit_capabilities.doc_test_outcomes_for_template(template)
     )
     if outcomes is not None:
         return {
@@ -415,6 +418,24 @@ def _document_model_turns(workspace: Workspace, scope: dict) -> int:
     return 4 + chunks + 2 * max(1, len(document_scope.document_ids))
 
 
+def _doc_test_model_turns(workspace: Workspace, scope: dict) -> int:
+    """Size the document-test budget from the Q&A pairs actually in scope.
+
+    Only the Q&A unit kind calls the model, once per unanswered item/document
+    pair; deterministic comparison, review, and disposition units never do.
+    """
+
+    from .capabilities.doc_tests import scoped_tests
+
+    qa_pairs = sum(
+        len(item.get("document_ids") or [])
+        for test in scoped_tests(workspace, scope)
+        if test.get("kind") == "qa"
+        for item in test.get("items") or []
+    )
+    return 4 + 2 * qa_pairs
+
+
 def _analysis_model_turns(workspace: Workspace, scope: dict) -> int:
     """Size the analysis model budget from the frames actually in scope.
 
@@ -441,6 +462,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     registry = audit_capabilities.REGISTRY_BY_WORKFLOW[definition_id]
     analysis_route = definition_id == analysis_workflow.WORKFLOW_ID
     document_route = definition_id == documents_workflow.WORKFLOW_ID
+    doc_test_route = definition_id == doc_tests_workflow.WORKFLOW_ID
     # The audit graph declares the scoped document capabilities, so an audit run
     # also carries the document scope and coverage bound.
     document_scope_route = document_route or definition_id == audit_workflow.WORKFLOW_ID
@@ -466,6 +488,21 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
             )
         ]
         scope["page_limit"] = document_page_limit()
+    if doc_test_route:
+        # A resolved Document Test scope is durable on the workflow record, so a
+        # resumed run executes exactly the worklists the request named.
+        # Explicitly named tests normally arrive as ``doctest:<id>`` target refs,
+        # which the scope resolver reads directly.
+        scope["test_ids"] = [
+            str(value)
+            for value in (
+                resolution.get("test_ids")
+                or (run.get("context") or {}).get("test_ids")
+                or ([(run.get("context") or {}).get("test_id")]
+                    if (run.get("context") or {}).get("test_id")
+                    else [])
+            )
+        ]
     if analysis_route:
         # A resolved table scope is durable on the workflow record, so a
         # checkpoint answer or a router-supplied selection survives a resume.
@@ -494,6 +531,8 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     run["schema_version"] = 3
     if analysis_route:
         calculated_model_turns = _analysis_model_turns(workspace, scope)
+    elif doc_test_route:
+        calculated_model_turns = _doc_test_model_turns(workspace, scope)
     elif document_route:
         calculated_model_turns = _document_model_turns(workspace, scope)
     else:
@@ -572,7 +611,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     if analysis_route:
         run.setdefault("analysis", {"relationships": []})
         return
-    if document_route:
+    if document_route or doc_test_route:
         return
     run.setdefault(
         "planning_changes",
@@ -623,6 +662,7 @@ class CommandRouter(BaseRunner):
             **audit_capabilities.workflow_state(self.ws),
             **audit_capabilities.analysis_workflow_state(self.ws),
             **audit_capabilities.documents_workflow_state(self.ws),
+            **audit_capabilities.doc_tests_workflow_state(self.ws),
         }
         supported = {
             capability.id
@@ -654,6 +694,7 @@ class CommandRouter(BaseRunner):
                 **audit_capabilities.workflow_state(fresh),
                 **audit_capabilities.analysis_workflow_state(fresh),
                 **audit_capabilities.documents_workflow_state(fresh),
+                **audit_capabilities.doc_tests_workflow_state(fresh),
             }
             bundle = context_bundles.command_router(
                 command,

@@ -116,7 +116,7 @@ def test_all_four_builders_and_auditor_dispositions(workspace_with_data):
     assert updated["items"][0]["auditor_note"] == "Policy is outdated."
 
 
-def test_doc_test_runner_persists_each_item_and_completes(workspace_with_data):
+def test_doc_test_workflow_persists_each_item_and_completes(workspace_with_data):
     ws = workspace_with_data
     document = documents.add_document(ws, "evidence.txt", b"Invoice: 1001\nAmount: 150.00")
     test = doc_tests.create_test(ws, {
@@ -126,14 +126,26 @@ def test_doc_test_runner_persists_each_item_and_completes(workspace_with_data):
             {"field": "amount", "expected": 150, "method": "numeric_tolerance"},
         ]}],
     })
-    run = runner.start_run(ws, "auto", {"test_id": test["id"]}, kind="doc_test")
+    run = runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "text": "Run document test.",
+            "requested_outcomes": ["doc_tests.executed"],
+            "target_refs": [f"doctest:{test['id']}"],
+        },
+        context={"test_id": test["id"]},
+    )
     finished = wait_run(ws, run["id"])
-    assert finished["status"] == "completed"
-    assert finished["kind"] == "doc_test"
-    assert finished["doc_test"]["rollup"]["matched"] == 2
+    # Executed, then awaiting the auditor's own disposition — which is why the
+    # run completes with open items rather than plain ``completed``.
+    assert finished["status"] == "completed_with_open_items", finished.get("error")
+    assert finished["engine"] == "workflow"
+    assert finished["workflow"]["definition"] == "doc_tests_workflow_v1"
+    assert finished["doc_tests"]["rollup"]["matched"] == 2
     saved = doc_tests.load_test(ws, test["id"])
     assert saved["items"][0]["state"] == "agent_checked"
-    assert saved["status"] == "in_progress"
+    assert saved["status"] == "review_required"
 
 
 def test_qa_runner_uses_document_context_without_workspace_setting(workspace_with_data, monkeypatch):
