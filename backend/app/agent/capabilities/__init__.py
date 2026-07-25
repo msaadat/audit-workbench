@@ -19,15 +19,45 @@ from __future__ import annotations
 from ..context import PRESETS
 from ..runtime import CapabilityExecutionRegistry
 from ..workflow import CapabilityRegistry
+from ..workflow import Capability
 from ..workflows import analysis as analysis_workflow
 from ..workflows import audit as audit_workflow
-from . import analysis, fieldwork, planning, reporting
+from ..workflows import documents as documents_workflow
+from . import analysis, documents, fieldwork, planning, reporting
 from ._shared import (
     apm_sha1,
     planned_test_sha1,
     planning_basis_sha1,
     rcm_row_sha1,
 )
+
+
+class CapabilityGroupView:
+    """A subset of one grouped module's declarations, for a second workflow.
+
+    The document capabilities are declared exactly once, in
+    :mod:`agent.capabilities.documents`. The audit graph declares three of the
+    four — generation, never auditor review — so it composes them through this
+    view rather than through a second set of declarations that could drift.
+    """
+
+    def __init__(self, module, capability_ids: tuple[str, ...]):
+        self._module = module
+        self.CAPABILITY_IDS = tuple(capability_ids)
+        declared = {value for value in module.CAPABILITY_IDS}
+        unknown = sorted(set(self.CAPABILITY_IDS) - declared)
+        if unknown:
+            raise ValueError(
+                f"Capability group view names undeclared capabilities: {unknown}."
+            )
+
+    def capabilities(self) -> tuple[Capability, ...]:
+        wanted = set(self.CAPABILITY_IDS)
+        return tuple(
+            capability
+            for capability in self._module.capabilities()
+            if capability.id in wanted
+        )
 
 # The audit dependency graph and outcome sets are authoritative in
 # ``workflows.audit``; these re-exports keep routing call sites reading from one
@@ -40,11 +70,20 @@ FULL_ANALYSIS_OUTCOMES = analysis_workflow.FULL_ANALYSIS_OUTCOMES
 ANALYSIS_TEMPLATE_OUTCOMES = analysis_workflow.TEMPLATE_OUTCOMES
 analysis_outcomes_for_template = analysis_workflow.outcomes_for_template
 
+FULL_DOCUMENT_OUTCOMES = documents_workflow.FULL_DOCUMENT_OUTCOMES
+DOCUMENT_TEMPLATE_OUTCOMES = documents_workflow.TEMPLATE_OUTCOMES
+document_outcomes_for_template = documents_workflow.outcomes_for_template
+
 # Grouped capability modules in authoritative order. Each module owns a disjoint
 # slice of its workflow graph and exposes ``CAPABILITY_IDS`` plus
-# ``capabilities()``.
-CAPABILITY_GROUPS = (planning, fieldwork, reporting)
+# ``capabilities()``. Order matters: a group's dependencies must be registered
+# before its dependents so the readiness projection can resolve them, which is
+# why the audit composition starts with the document capabilities that
+# ``planning.context_ready`` depends on.
+AUDIT_DOCUMENT_GROUP = CapabilityGroupView(documents, documents.AUDIT_CAPABILITY_IDS)
+CAPABILITY_GROUPS = (AUDIT_DOCUMENT_GROUP, planning, fieldwork, reporting)
 ANALYSIS_CAPABILITY_GROUPS = (analysis,)
+DOCUMENT_CAPABILITY_GROUPS = (documents,)
 
 
 class AuditCompositionError(ValueError):
@@ -69,6 +108,12 @@ def grouped_analysis_capability_ids() -> tuple[str, ...]:
     return _group_ids(ANALYSIS_CAPABILITY_GROUPS)
 
 
+def grouped_document_capability_ids() -> tuple[str, ...]:
+    """Every capability ID contributed by the document groups, in order."""
+
+    return _group_ids(DOCUMENT_CAPABILITY_GROUPS)
+
+
 def _build_registry(groups: tuple) -> CapabilityRegistry:
     registry = CapabilityRegistry()
     for group in groups:
@@ -87,6 +132,12 @@ def build_analysis_registry() -> CapabilityRegistry:
     """Compose the analysis capability registry from the grouped modules."""
 
     return _build_registry(ANALYSIS_CAPABILITY_GROUPS)
+
+
+def build_documents_registry() -> CapabilityRegistry:
+    """Compose the document capability registry from the grouped modules."""
+
+    return _build_registry(DOCUMENT_CAPABILITY_GROUPS)
 
 
 def _registered_preset_ids() -> frozenset[str]:
@@ -197,9 +248,26 @@ def validate_analysis_composition(
     )
 
 
+def validate_documents_composition(
+    registry: CapabilityRegistry,
+    *,
+    executions: CapabilityExecutionRegistry | None = None,
+) -> CapabilityRegistry:
+    """Validate the composed registry against the authoritative document graph."""
+
+    return validate_composition(
+        registry,
+        dependencies=documents_workflow.DEPENDENCIES,
+        groups=DOCUMENT_CAPABILITY_GROUPS,
+        label="documents",
+        executions=executions,
+    )
+
+
 # Startup validation: build and validate each grouped composition at import time.
 AUDIT_REGISTRY = validate_audit_composition(build_audit_registry())
 ANALYSIS_REGISTRY = validate_analysis_composition(build_analysis_registry())
+DOCUMENTS_REGISTRY = validate_documents_composition(build_documents_registry())
 # The live registry name used by routing and audit dispatch.
 REGISTRY = AUDIT_REGISTRY
 
@@ -208,6 +276,7 @@ REGISTRY = AUDIT_REGISTRY
 REGISTRY_BY_WORKFLOW = {
     audit_workflow.WORKFLOW_ID: AUDIT_REGISTRY,
     analysis_workflow.WORKFLOW_ID: ANALYSIS_REGISTRY,
+    documents_workflow.WORKFLOW_ID: DOCUMENTS_REGISTRY,
 }
 
 
@@ -216,16 +285,26 @@ def workflow_for_outcomes(outcomes) -> str | None:
 
     Returns ``None`` when the outcomes are unknown or span two workflows, so a
     caller fails closed instead of materializing a mixed closure.
+
+    The document capabilities are declared by two graphs — their own workflow and,
+    for generation only, the audit graph that depends on them — so a match is
+    resolved to the *narrowest* workflow that declares everything requested.
+    "Analyze these documents" is then the document workflow rather than an audit
+    whose other twelve outcomes were never asked for, while "prepare the RCM"
+    still resolves to the audit graph that alone declares it.
     """
 
-    requested = [str(value) for value in outcomes or []]
+    requested = set(str(value) for value in outcomes or [])
     if not requested:
         return None
-    for workflow_id, registry in REGISTRY_BY_WORKFLOW.items():
-        declared = {capability.id for capability in registry.all()}
-        if set(requested) <= declared:
-            return workflow_id
-    return None
+    matches = [
+        (len({capability.id for capability in registry.all()}), workflow_id)
+        for workflow_id, registry in REGISTRY_BY_WORKFLOW.items()
+        if requested <= {capability.id for capability in registry.all()}
+    ]
+    if not matches:
+        return None
+    return min(matches)[1]
 
 
 def workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
@@ -240,15 +319,27 @@ def analysis_workflow_state(workspace, scope: dict | None = None) -> dict[str, d
     return ANALYSIS_REGISTRY.workflow_state(workspace, scope)
 
 
+def documents_workflow_state(workspace, scope: dict | None = None) -> dict[str, dict]:
+    """Deterministic readiness projection for every document capability."""
+
+    return DOCUMENTS_REGISTRY.workflow_state(workspace, scope)
+
+
 __all__ = [
     "ANALYSIS_CAPABILITY_GROUPS",
     "ANALYSIS_REGISTRY",
     "ANALYSIS_TEMPLATE_OUTCOMES",
+    "AUDIT_DOCUMENT_GROUP",
     "AUDIT_REGISTRY",
     "AuditCompositionError",
     "CAPABILITY_GROUPS",
+    "CapabilityGroupView",
+    "DOCUMENT_CAPABILITY_GROUPS",
+    "DOCUMENT_TEMPLATE_OUTCOMES",
+    "DOCUMENTS_REGISTRY",
     "FULL_ANALYSIS_OUTCOMES",
     "FULL_AUDIT_OUTCOMES",
+    "FULL_DOCUMENT_OUTCOMES",
     "REGISTRY",
     "REGISTRY_BY_WORKFLOW",
     "TEMPLATE_OUTCOMES",
@@ -257,8 +348,12 @@ __all__ = [
     "apm_sha1",
     "build_analysis_registry",
     "build_audit_registry",
+    "build_documents_registry",
+    "document_outcomes_for_template",
+    "documents_workflow_state",
     "grouped_analysis_capability_ids",
     "grouped_capability_ids",
+    "grouped_document_capability_ids",
     "outcomes_for_template",
     "planned_test_sha1",
     "planning_basis_sha1",
@@ -266,6 +361,7 @@ __all__ = [
     "validate_analysis_composition",
     "validate_audit_composition",
     "validate_composition",
+    "validate_documents_composition",
     "workflow_for_outcomes",
     "workflow_state",
 ]

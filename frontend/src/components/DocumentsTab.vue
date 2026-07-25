@@ -124,7 +124,6 @@ const indexingDetail = computed(() => {
 const secondaryActions = computed(() => [
   { label: 'Search contents', icon: 'pi pi-search', command: () => { contentSearchOpen.value = true } },
   { label: 'Analyze eligible documents', icon: 'pi pi-sparkles', command: () => void batchAnalyze() },
-  { label: 'Continue partial analyses', icon: 'pi pi-play', command: () => void continuePartialAnalyses() },
   { label: 'Reindex documents', icon: 'pi pi-sync', command: () => void reindexAll() },
   { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
 ])
@@ -248,21 +247,11 @@ async function startAnalysis(action: 'analyze' | 'refresh') {
     const finished = await waitForAnalysis(run.id)
     await loadDocuments(); await loadAnalysis()
     if (finished.status === 'failed') throw new Error(finished.error || 'Document analysis failed.')
-    toast.add({ severity: finished.status === 'paused' ? 'warn' : 'success', summary: finished.status === 'paused' ? 'Analysis paused at its coverage limit' : 'Document analysis ready', life: 3200 })
+    const open = finished.status === 'completed_with_open_items'
+    toast.add({ severity: open ? 'warn' : 'success', summary: open ? 'Document analysis needs review' : 'Document analysis ready', life: 3200 })
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Analysis unavailable', detail: String(error), life: 5000 })
   } finally { analysisBusy.value = false }
-}
-
-async function continueAnalysis() {
-  const runId = analysis.value?.status.analysis_resumable_run_id
-  if (!runId) return
-  analysisBusy.value = true
-  try {
-    await api.post(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}/resume`)
-    await waitForAnalysis(runId); await loadDocuments(); await loadAnalysis()
-  } catch (error) { toast.add({ severity: 'error', summary: 'Could not continue analysis', detail: String(error), life: 5000 }) }
-  finally { analysisBusy.value = false }
 }
 
 async function saveAnalysis(reviewed = false) {
@@ -347,22 +336,6 @@ async function batchAnalyze() {
     const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/analysis-runs`, { document_ids: eligible.map(document => document.id), action: 'analyze' })
     await waitForAnalysis(run.id); await loadDocuments(); if (selectedId.value) await loadAnalysis()
   } catch (error) { toast.add({ severity: 'error', summary: 'Batch analysis unavailable', detail: String(error), life: 5000 }) }
-  finally { analysisBusy.value = false }
-}
-
-async function continuePartialAnalyses() {
-  const runIds = [...new Set(documents.value.map(document => document.analysis_resumable_run_id).filter((value): value is string => !!value))]
-  if (!runIds.length) {
-    toast.add({ severity: 'info', summary: 'No resumable document analyses', life: 2400 }); return
-  }
-  analysisBusy.value = true
-  try {
-    for (const runId of runIds) {
-      await api.post(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}/resume`)
-      await waitForAnalysis(runId)
-    }
-    await loadDocuments(); if (selectedId.value) await loadAnalysis()
-  } catch (error) { toast.add({ severity: 'error', summary: 'Could not continue all analyses', detail: String(error), life: 5000 }) }
   finally { analysisBusy.value = false }
 }
 
@@ -623,7 +596,6 @@ onUnmounted(() => {
             <div class="analysis-actions">
               <Button v-if="!analysis?.generated" label="Analyze" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
               <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" />
-              <Button v-if="analysis?.status.analysis_resumable_run_id" label="Continue" icon="pi pi-play" size="small" severity="warn" :loading="analysisBusy" @click="continueAnalysis" />
               <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" @click="compareCandidate = !compareCandidate" />
             </div>
           </div>

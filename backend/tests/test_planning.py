@@ -420,16 +420,19 @@ def test_auto_planning_selects_planning_relevant_documents_deterministically(
 
     assert completed["status"] == "completed"
     assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
-    # No model turn selects documents any more, and none generates an analysis.
+    # No model turn selects documents: relevance is a declared category rule.
     call_tags = [call["tag"] for call in fake.calls]
     assert "agent:document_selection" not in call_tags
-    assert "agent:document_analysis_map" not in call_tags
-    assert document_analysis.compact_artifact(reloaded, policy["id"]) is None
-    # The planning-relevant policy grounds synthesis; the voucher is excluded by
-    # the declared category rule.
+    # P9.9: the planning-relevant policy is analyzed first, as the declared
+    # ``documents.analysis_generated`` dependency of planning context, and the
+    # voucher is excluded from both by the same category rule.
+    assert "agent:document_analysis_map" in call_tags
+    assert document_analysis.compact_artifact(reloaded, policy["id"]) is not None
+    assert document_analysis.compact_artifact(reloaded, voucher["id"]) is None
+    # Synthesis is grounded in the generated analysis of the policy, not in the
+    # voucher and not in a document nobody analyzed.
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
     supplied = context_call["messages"][-1]["content"]
-    assert policy_text.decode() in supplied
     assert "Invoice 42 was paid" not in supplied
     # Provenance records the document that was actually supplied.
     activity = documents.activities(reloaded, limit=250)["items"]
@@ -476,11 +479,12 @@ def test_planning_recovers_labelled_context_when_synthesis_returns_empty(monkeyp
     assert any("recovered labelled facts" in warning for warning in completed["warnings"])
 
 
-def test_planning_does_not_generate_document_analyses(monkeypatch):
-    # P7A.2 recorded behavior change: planning-context synthesis consumes whatever
-    # document material exists and never runs the document-analysis map/reduce
-    # itself. Generating durable analyses is the documents subsystem's own work.
-    ws = workspaces.create_workspace("Planning without analysis")
+def test_planning_generates_document_analyses_as_a_declared_dependency(monkeypatch):
+    # P9.9: planning-context synthesis declares ``documents.analysis_generated``
+    # as a scoped dependency, so the scheduler generates the analyses first
+    # through the one document implementation. Planning itself still never runs a
+    # map/reduce of its own.
+    ws = workspaces.create_workspace("Planning with document analysis")
     selected = [
         documents.add_document(
             ws,
@@ -502,17 +506,16 @@ def test_planning_does_not_generate_document_analyses(monkeypatch):
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
-    assert [call["tag"] for call in fake.calls].count("agent:document_analysis_map") == 0
+    # One map turn per document, and each document carries a durable analysis.
+    assert [call["tag"] for call in fake.calls].count("agent:document_analysis_map") == 3
     assert all(
-        document_analysis.compact_artifact(reloaded, item["id"]) is None
+        document_analysis.compact_artifact(reloaded, item["id"]) is not None
         for item in selected
     )
-    # Synthesis still happened, grounded in every supplied document.
+    # Synthesis then consumed those generated analyses rather than raw text.
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
-    assert all(
-        f"Policy {index}: documented approval" in context_call["messages"][-1]["content"]
-        for index in range(1, 4)
-    )
+    supplied = context_call["messages"][-1]["content"]
+    assert "The requirements need operating evidence" in supplied
     assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
 
 
@@ -687,7 +690,11 @@ def test_planning_update_includes_selected_imported_documents(monkeypatch):
 
     assert completed["status"] == "completed"
     assert reloaded.planning["context"]["scope"] == "Procurement policy governance"
+    # P9.9: the selected document is analyzed first, so synthesis is grounded in
+    # its generated summary rather than in raw extracted text.
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
-    assert policy_text.decode() in context_call["messages"][-1]["content"]
+    supplied = context_call["messages"][-1]["content"]
+    assert document_analysis.compact_artifact(reloaded, policy["id"]) is not None
+    assert "The requirements need operating evidence" in supplied
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(policy["id"] in item.get("document_ids", []) for item in activity)

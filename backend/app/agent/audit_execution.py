@@ -32,9 +32,17 @@ from ..workspaces import (
 from . import capabilities as audit_capabilities
 from . import store, workflow
 from .action_runner import ActionRunner
+from .capabilities.documents import (
+    DOCUMENT_SCOPE_CHECKPOINT,
+    STAGE_CHECKPOINTS as DOCUMENT_STAGE_CHECKPOINTS,
+)
 from .capabilities.reporting import (
     OBSERVATION_DISPOSITION_CHECKPOINT,
     STAGE_CHECKPOINTS,
+)
+from .documents_execution import (
+    DocumentWorkflowExecution,
+    build_document_capability_executions,
 )
 from .context import (
     ContextResolver,
@@ -79,7 +87,6 @@ from .executors.reporting import (
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
-    CapabilityExecutionRegistry,
     DeterministicUnitResult,
     FinishProjection,
     RunRuntime,
@@ -1273,6 +1280,14 @@ class AuditWorkflowExecution(ActionRunner):
 
 
 _PARTIAL_DEPENDENCIES = {
+    # A document the run could not extract or analyze must never stop the audit:
+    # planning consumes the document material that exists, which is exactly what
+    # the scoped document dependency is for. The document chain's own edges are
+    # partial for the same reason — one unanalyzable document does not withhold
+    # the analyses of the others.
+    "documents.analysis_chunks_ready": {"documents.text_ready"},
+    "documents.analysis_generated": {"documents.analysis_chunks_ready"},
+    "planning.context_ready": {"documents.analysis_generated"},
     "fieldwork.definitions_ready": {"planning.planned_tests_ready"},
     "fieldwork.executed": {"fieldwork.definitions_ready"},
     "results.rolled_up": {"fieldwork.executed"},
@@ -1381,8 +1396,26 @@ def build_audit_workflow_runner(
             {"deterministic": "reporting.verify"},
         ),
     }
-    executions = CapabilityExecutionRegistry()
+    # The three document generation capabilities ``planning.context_ready``
+    # depends on are declared and implemented once, in the document group. The
+    # audit composition binds them through the same execution adapter rather than
+    # through a second implementation, sharing this run's runtime and ledger lock
+    # so both write one durable record under one lock.
+    document_adapter = DocumentWorkflowExecution(
+        workspace,
+        run,
+        handle,
+        runtime=adapter.runtime,
+        state_lock=adapter._state_lock,
+        context_resolver=adapter.context_resolver,
+    )
+    document_adapter.unit_pipeline = unit_pipeline
+    executions = build_document_capability_executions(
+        document_adapter, audit_capabilities.AUDIT_DOCUMENT_GROUP.capabilities()
+    )
     for capability in audit_capabilities.REGISTRY.all():
+        if capability.id in audit_capabilities.AUDIT_DOCUMENT_GROUP.CAPABILITY_IDS:
+            continue
         pipeline_binding = _PIPELINE_BINDERS.get(capability.id)
         if pipeline_binding is not None:
             binder, identity = pipeline_binding
@@ -1422,7 +1455,9 @@ def build_audit_workflow_runner(
     # runs only in permission mode.
     checkpoint_handlers = {
         OBSERVATION_DISPOSITION_CHECKPOINT: adapter._observation_checkpoint,
+        DOCUMENT_SCOPE_CHECKPOINT: document_adapter._scope_checkpoint,
     }
+    stage_checkpoints = {**DOCUMENT_STAGE_CHECKPOINTS, **STAGE_CHECKPOINTS}
 
     def before_stage(
         subject: Workspace,
@@ -1430,7 +1465,8 @@ def build_audit_workflow_runner(
         _stage: dict,
     ) -> None:
         adapter.ws = subject
-        checkpoint = STAGE_CHECKPOINTS.get(capability.id)
+        document_adapter.ws = subject
+        checkpoint = stage_checkpoints.get(capability.id)
         if checkpoint is not None and run.get("mode") == "permission":
             checkpoint_handlers[checkpoint]()
 

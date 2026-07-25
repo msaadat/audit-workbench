@@ -58,6 +58,10 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
         )
 
     assert {cid for cid, kind in kinds.items() if kind == "pipeline"} == {
+        # Phase 9: the scoped document capabilities planning depends on are bound
+        # through the same document implementation the standalone workflow uses.
+        "documents.analysis_chunks_ready",
+        "documents.analysis_generated",
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
@@ -69,6 +73,7 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
         "findings.drafted",
     }
     assert {cid for cid, kind in kinds.items() if kind == "deterministic"} == {
+        "documents.text_ready",
         "results.rolled_up",
         "working_papers.generated",
         "dashboard.curated",

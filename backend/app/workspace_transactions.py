@@ -200,6 +200,21 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
             )
         except WorkspaceError:
             return None
+    if kind == "document":
+        # The document-analysis workflow guards its commits on the document
+        # entry, so a replaced source or a re-extraction is a parent change
+        # rather than a silent basis swap under a running analysis.
+        return material_projection(
+            next((item for item in workspace.documents if item.get("id") == item_id), None)
+        )
+    if kind == "document_analysis":
+        # A generated analysis lives in its own sidecar, so the postcondition a
+        # receipt proves is that sidecar's material content, not a workspace
+        # collection entry. The import is local because ``document_analysis``
+        # depends on ``workspaces`` rather than the other way round.
+        from .document_analysis import generated_projection
+
+        return material_projection(generated_projection(workspace, item_id))
     if kind == "datatest":
         return next((item for item in workspace.data_tests if item.get("id") == item_id), None)
     if kind == "doctest":

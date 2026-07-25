@@ -14,6 +14,7 @@ grouped ``capabilities`` package reads the graph.
 from __future__ import annotations
 
 from ..workflow import canonical_sha1
+from . import documents as documents_workflow
 
 # Authoritative workflow identity persisted on every audit run.
 WORKFLOW_ID = "audit_workflow_v2"
@@ -24,14 +25,24 @@ WORKFLOW_ID = "audit_workflow_v2"
 # workflow is a DAG rather than a linear chain; those parallel branches are
 # intentional.
 #
-# Phase 9 may change the workflow definition hash by adding scoped
-# ``documents.analysis_generated`` edges where a specific capability declares a
-# dependency on document analysis. It must not make document analysis a universal
-# audit prerequisite: only capabilities that genuinely require an analyzed
-# document add the edge, and the global graph shape above stays intact for audits
-# that carry no documents.
+# Phase 9 added the scoped document-analysis edge: ``planning.context_ready``
+# depends on ``documents.analysis_generated`` so planning consumes generated
+# analyses rather than falling back to raw document text. The three document
+# capabilities are declared once, in :mod:`agent.workflows.documents` and
+# :mod:`agent.capabilities.documents`; this graph reuses those declarations with
+# the same edges rather than restating a second implementation. Document analysis
+# is not a universal prerequisite: with no planning-relevant document in scope
+# every document capability's readiness is satisfied and no unit expands, so an
+# audit that carries no documents runs exactly as before.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
-    "planning.context_ready": (),
+    "documents.text_ready": documents_workflow.dependencies("documents.text_ready"),
+    "documents.analysis_chunks_ready": documents_workflow.dependencies(
+        "documents.analysis_chunks_ready"
+    ),
+    "documents.analysis_generated": documents_workflow.dependencies(
+        "documents.analysis_generated"
+    ),
+    "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
     "planning.planned_tests_ready": ("planning.rcm_ready",),

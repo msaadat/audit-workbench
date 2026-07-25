@@ -7,13 +7,13 @@ closure, the intentional parallel branches after roll-up, and the stability of
 the workflow definition hash. Behavior attached to each capability ID is tested
 separately; here we only characterize the graph and its metadata.
 
-Phase 9 may extend the graph with scoped ``documents.analysis_generated`` edges
-where a specific capability declares a document-analysis dependency. Such a
-change deliberately changes ``definition_hash()`` (see
-``test_definition_hash_changes_when_an_edge_is_added``) but must not add a
-universal document-analysis prerequisite: only the capabilities that require an
-analyzed document gain the edge, and audits without documents keep the shape
-asserted here.
+Phase 9 extended the graph with the scoped document-analysis edge:
+``planning.context_ready`` depends on ``documents.analysis_generated``, so
+planning consumes generated analyses rather than falling back to raw document
+text. That deliberately changed ``definition_hash()``. It is not a universal
+prerequisite: only the capability that requires an analyzed document carries the
+edge, and every document capability's readiness is satisfied with no document in
+scope, so an audit without documents expands no document unit at all.
 """
 
 from __future__ import annotations
@@ -23,7 +23,10 @@ from app.agent.workflows import audit
 
 
 EXPECTED_DEPENDENCIES = {
-    "planning.context_ready": (),
+    "documents.text_ready": (),
+    "documents.analysis_chunks_ready": ("documents.text_ready",),
+    "documents.analysis_generated": ("documents.analysis_chunks_ready",),
+    "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
     "planning.planned_tests_ready": ("planning.rcm_ready",),
@@ -62,6 +65,9 @@ def test_full_audit_closure_is_topological():
     resolved = registry.closure(audit.FULL_AUDIT_OUTCOMES)
 
     assert resolved == [
+        "documents.text_ready",
+        "documents.analysis_chunks_ready",
+        "documents.analysis_generated",
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",

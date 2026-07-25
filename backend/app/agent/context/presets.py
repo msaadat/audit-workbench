@@ -1093,6 +1093,73 @@ PRESETS.register(
 )
 
 
+PRESETS.register(
+    ContextPreset(
+        preset_id="documents.analysis_chunk",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_metadata",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
+                ContextSource(
+                    id="document_chunk",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    # Exactly one bounded chunk of the document's own text. The
+                    # per-source budget is above ``ANALYSIS_CHUNK_CHARACTERS`` on
+                    # purpose: a chunk is the unit of evidence a citation binds
+                    # to, so supplying a truncated one would let the worker cite
+                    # text it never saw in full.
+                    representations=(ContextRepresentation("raw_pages"),),
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=2, max_characters=34_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="documents.analysis_reduction",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_metadata",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
+                ContextSource(
+                    id="chunk_analyses",
+                    source_type="artifacts",
+                    required=True,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    # Generated chunk analyses only. The reduction is declared
+                    # with no raw-source representation at all, which is what
+                    # makes "you receive no raw source" a policy the resolver
+                    # enforces rather than a prompt instruction.
+                    representations=(ContextRepresentation("summary"),),
+                    budget=ContextBudget(max_items=200, max_characters=60_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=201, max_characters=62_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
 __all__ = [
     "ContextPreset",
     "PRESETS",

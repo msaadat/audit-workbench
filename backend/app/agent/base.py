@@ -58,13 +58,17 @@ class BaseRunner:
         handle,
         *,
         runtime: RunRuntime | None = None,
+        state_lock: threading.RLock | None = None,
     ):
         self.ws = workspace
         self.run = run
         self.handle = handle
         # Independent planning-document requests may run concurrently. Keep
         # provider waits parallel while serializing the shared durable ledger.
-        self._state_lock = threading.RLock()
+        # Two compositions of the *same* durable run — the audit graph and the
+        # document capabilities it depends on — must share one lock, or the two
+        # would serialize their own writes to the one run record independently.
+        self._state_lock = state_lock if state_lock is not None else threading.RLock()
         self.runtime = runtime if runtime is not None else DefaultRunRuntime(
             workspace=self.ws,
             run=self.run,

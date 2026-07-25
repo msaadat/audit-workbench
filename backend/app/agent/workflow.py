@@ -21,6 +21,14 @@ UNIT_STATUSES = {
     "queued", "running", "succeeded", "failed", "blocked", "awaiting_input",
     "awaiting_confirmation", "conflict", "skipped", "cancelled",
 }
+# Declared unit barriers. ``all_settled_then_validate`` runs a capability's units
+# one at a time, which is what a capability whose units commit requires: commits
+# are serialized and conflict-aware. ``all_settled_parallel`` declares that this
+# capability's units are independent and never mutate, so the scheduler may fan
+# them out under ``max_llm_concurrency``; both settle all-settled.
+SEQUENTIAL_BARRIER = "all_settled_then_validate"
+PARALLEL_BARRIER = "all_settled_parallel"
+BARRIERS = {SEQUENTIAL_BARRIER, PARALLEL_BARRIER}
 TERMINAL_UNIT_STATUSES = UNIT_STATUSES - {"queued", "running"}
 
 
@@ -111,10 +119,14 @@ class Capability:
     readiness: Callable[[Workspace, dict], Readiness]
     expand_units: Callable[[Workspace, dict], list[UnitSpec]]
     context: object | None = None
-    barrier: str = "all_settled_then_validate"
+    barrier: str = SEQUENTIAL_BARRIER
     commit_policy: str = "serialized"
     approval_policy: str = "auto_or_stage_batch"
     invalidate_on: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.barrier not in BARRIERS:
+            raise ValueError(f"Unknown capability barrier '{self.barrier}'.")
 
 
 class CapabilityRegistry:

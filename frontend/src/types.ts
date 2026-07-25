@@ -1393,14 +1393,14 @@ export interface AgentAuditOutcome {
 
 export interface AgentRun {
   schema_version?: number
-  engine: 'workflow' | 'action' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
+  engine: 'workflow' | 'action' | 'analysis' | 'intake' | 'doc_test'
   id: string
   workspace_id: string
   parent_run_id: string | null
   planning_basis_run_id?: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
+  kind: 'audit' | 'analysis' | 'intake' | 'doc_test'
   mode: 'auto' | 'permission'
   context: AgentRunContext
   status: AgentRunStatus
@@ -1487,7 +1487,7 @@ export interface AgentRunSummary {
   planning_basis_run_id?: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake' | 'doc_test' | 'document_analysis'
+  kind: 'audit' | 'analysis' | 'intake' | 'doc_test'
   mode: 'auto' | 'permission'
   status: AgentRunStatus
   created: string

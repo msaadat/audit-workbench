@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 
 from .. import document_analysis, document_search, documents, embedding, intake, methodology, workspaces
 from ..agent import runner, store
+from ..agent.workflows import documents as documents_workflow
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["documents"])
 
@@ -126,14 +127,52 @@ async def reindex_documents(workspace_id: str, payload: dict = Body(...)):
     )
 
 
+def _analysis_command(ws, document_ids: list[str], action: str, mode: str) -> dict:
+    """Start the declared document-analysis workflow for the selected documents.
+
+    Standalone analysis and the audit-planning dependency request the same
+    outcome through the same scheduler: this endpoint names the documents as
+    workflow targets rather than driving a separate runner. ``refresh`` is the
+    explicit regeneration instruction, so it materializes with ``force``.
+    """
+    document_ids = [str(value) for value in document_ids or []]
+    if not document_ids:
+        raise workspaces.WorkspaceError("Select at least one document to analyze.")
+    known = {str(item.get("id")) for item in ws.documents}
+    missing = [value for value in document_ids if value not in known]
+    if missing:
+        raise workspaces.WorkspaceError(f"Document '{missing[0]}' not found.")
+    if action not in {"analyze", "refresh"}:
+        raise workspaces.WorkspaceError(
+            "Document analysis action must be analyze or refresh."
+        )
+    return runner.start_command_run(
+        ws,
+        mode if mode in {"auto", "permission"} else "auto",
+        {
+            "source": "tab_button",
+            "text": f"Analyze {len(document_ids)} selected document(s).",
+            "goal_template": "document_analysis",
+            "requested_outcomes": list(
+                documents_workflow.FULL_DOCUMENT_OUTCOMES
+            ),
+            "target_refs": [f"document:{value}" for value in document_ids],
+            "generation_mode": "force" if action == "refresh" else "reuse_existing",
+        },
+        context={"document_ids": document_ids, "action": action},
+    )
+
+
 @router.post("/documents/analysis-runs")
 async def create_document_analysis_run(workspace_id: str, payload: dict = Body(...)):
     ws = _ws(workspace_id)
     try:
         return await asyncio.to_thread(
-            runner.start_run, ws, payload.get("mode") or "auto",
-            {"document_ids": payload.get("document_ids") or [], "action": payload.get("action") or "analyze"},
-            kind="document_analysis",
+            _analysis_command,
+            ws,
+            payload.get("document_ids") or [],
+            str(payload.get("action") or "analyze"),
+            str(payload.get("mode") or "auto"),
         )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error
@@ -155,9 +194,11 @@ async def create_single_document_analysis_run(workspace_id: str, doc_id: str, pa
     ws = _ws(workspace_id)
     try:
         return await asyncio.to_thread(
-            runner.start_run, ws, payload.get("mode") or "auto",
-            {"document_ids": [doc_id], "action": payload.get("action") or "analyze"},
-            kind="document_analysis",
+            _analysis_command,
+            ws,
+            [doc_id],
+            str(payload.get("action") or "analyze"),
+            str(payload.get("mode") or "auto"),
         )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error
@@ -166,7 +207,15 @@ async def create_single_document_analysis_run(workspace_id: str, doc_id: str, pa
 @router.get("/documents/{doc_id}/analysis-runs/{run_id}")
 async def get_document_analysis_run(workspace_id: str, doc_id: str, run_id: str):
     run = store.load_run(_ws(workspace_id), run_id)
-    if doc_id not in ((run.get("document_analysis") or {}).get("document_ids") or []):
+    scoped = {
+        *((run.get("document_analysis") or {}).get("document_ids") or []),
+        *(
+            str(ref).split(":", 1)[1]
+            for ref in ((run.get("workflow") or {}).get("target_refs") or [])
+            if str(ref).startswith("document:")
+        ),
+    }
+    if doc_id not in scoped:
         raise workspaces.WorkspaceError("This run does not analyze the selected document.")
     return run
 

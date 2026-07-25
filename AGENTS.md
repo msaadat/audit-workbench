@@ -95,17 +95,22 @@ backend/app/
    |                             manifest identity/persistence, local bundle
    |                             models, and validated preset/selector registries
    |- workers/                 - immutable model-worker contracts, registry,
-   |                             bounded validation/repair, and planning worker
+   |                             bounded validation/repair, and the registered
+   |                             planning/fieldwork/reporting/analysis/document
+   |                             workers
    |- executors/               - deterministic mutation/reconciliation
-   |                             contracts, registry, receipts, and APM executor
+   |                             contracts, registry, receipts, and the
+   |                             registered domain executors
    |- workflows/               - authoritative workflow definitions; audit.py
-   |                             owns the audit dependency graph and analysis.py
-   |                             the exploratory data-analysis graph, each with
-   |                             its workflow id and hash-identified metadata
+   |                             owns the audit dependency graph, analysis.py
+   |                             the exploratory data-analysis graph, and
+   |                             documents.py the document-analysis graph, each
+   |                             with its workflow id and hash-identified metadata
    |- capabilities/            - grouped capability composition
-   |                             (planning/fieldwork/reporting for audit,
-   |                             analysis for data analysis) with startup
-   |                             validation against the authoritative graphs
+   |                             (documents/planning/fieldwork/reporting for
+   |                             audit, analysis for data analysis, documents for
+   |                             document analysis) with startup validation
+   |                             against the authoritative graphs
    |- store.py                 - durable run storage in AgentRuns/
    |- base.py                  - temporary BaseRunner delegation facade and
    |                             task/artifact hooks for current runners
@@ -119,6 +124,9 @@ backend/app/
    |                             per capability plus audit projections
    |- analysis_execution.py    - analysis-side composition: relationship,
    |                             join, definition, and execution bindings
+   |- documents_execution.py   - document-side composition: extraction, chunk,
+   |                             reduction, and review bindings, shared with the
+   |                             audit composition
    |- context_bundles.py       - bounded command-router context bundle
    |- actions.py               - registered action catalog and executors
    |- ledger.py                - domain-neutral action graph validation
@@ -129,7 +137,6 @@ backend/app/
    |- summary.py               - finding validation and fallback markdown
    |- intake_runner.py         - intake batch runner
    |- doc_test_runner.py       - resumable document-test execution
-   |- document_analysis_runner.py - map/reduce document-analysis execution
 
 frontend/src/
 |- api.ts                      - fetch wrapper, uploads, downloads, error model
@@ -202,20 +209,22 @@ BaseRunner
 |- _Runner                  legacy v1 fixed analysis pipeline
 |- IntakeRunner             one import batch
 |- DocTestRunner            one document test
-|- DocumentAnalysisRunner   document analysis map/reduce
 |- ActionRunner             action graph
-`- AuditWorkflowExecution  audit execution bindings and projections
+|- AuditWorkflowExecution   audit execution bindings and projections
+`- DocumentWorkflowExecution document execution bindings and projections
 
 WorkflowRunner             domain-neutral capability graph scheduler
 ```
 
 - `ActionRunner` is still used for isolated mutations and repairable action
   graphs.
-- `WorkflowRunner` is the main capability scheduler and now serves two declared
-  workflows: the RCM audit lifecycle (`audit_workflow_v2`) and the exploratory
+- `WorkflowRunner` is the main capability scheduler and now serves three declared
+  workflows: the RCM audit lifecycle (`audit_workflow_v2`), the exploratory
   data-analysis workflow (`analysis_workflow_v1`, which infers table
   relationships, materializes only evidence-supported joins, proposes rerunnable
-  analysis definitions, and executes them locally). `workflow_dispatch.py`
+  analysis definitions, and executes them locally), and the document-analysis
+  workflow (`documents_workflow_v1`: extract, map each bounded source chunk,
+  reduce, and separately await auditor review). `workflow_dispatch.py`
   selects the composition from the definition id the run persists. It receives a
   materialized route and registered capability executions, fans outcomes into units, and
   records `next_outcomes` for `Continue audit`. Every audit capability carries
@@ -368,6 +377,25 @@ WorkflowRunner             domain-neutral capability graph scheduler
   candidate. Requests such as "perform relevant joins and data analysis" and the
   `data_analysis` goal template now route to this workflow; "run this saved
   analysis" and "pin this result" stay with `ActionRunner`.
+- Phase 9 unified document analysis on the same scheduler:
+  `documents.text_ready` → `documents.analysis_chunks_ready` →
+  `documents.analysis_generated` → `documents.analysis_reviewed`. There is now
+  exactly one chunk-map worker, one reduction worker, and one persistence
+  executor; `DocumentAnalysisRunner`, the `document_analysis` engine and run
+  kind, and the runner-era map/reduce prompts are deleted. A chunk analysis is
+  run-local — its durable home is the unit's proposal sidecar, not a workspace
+  collection — so chunk units declare the new `all_settled_parallel` barrier and
+  are the first proposal-only pipeline units (`UnitPipelineRequest.executor_id`
+  may be `None`). Only the reduced analysis is an engagement artifact, committed
+  through the existing `Documents/.analysis` sidecars under the document's
+  material parent hash and stamped with run/unit/content provenance so an
+  interrupted commit is reconciled rather than repeated. The audit graph declares
+  the same three generation capabilities and the scoped
+  `planning.context_ready → documents.analysis_generated` edge, so planning is
+  grounded in generated analyses again; with no planning-relevant document in
+  scope every document capability is satisfied and no unit expands. Generated and
+  auditor-reviewed remain distinct outcomes: nothing the agent does satisfies
+  `documents.analysis_reviewed`.
 
 ### Known duplication
 
@@ -448,6 +476,9 @@ npm run build
   though profiling code still exists on the backend.
 - Legacy `work_program` and legacy working-paper behavior remain only for
   compatibility and rollback paths. The active audit model is RCM-first.
+- Document analysis is a declared workflow, not a leaf runner. The Documents tab
+  still calls `/documents/analysis-runs`, but that endpoint now starts a
+  `documents_workflow_v1` command run.
 - The debug console is a first-class local diagnostics surface, not just test
   scaffolding.
 - PrimeVue `Select` still needs the full pointer event sequence in UI-driving

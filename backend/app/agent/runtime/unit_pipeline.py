@@ -231,7 +231,11 @@ class UnitPipelineRequest:
     capability_id: str
     unit_id: str
     worker_id: str
-    executor_id: str
+    # ``None`` declares a proposal-only unit: one whose durable outcome is the
+    # persisted proposal itself, consumed by a later unit rather than committed.
+    # The manifest-before-model-call and exact-identity proposal reuse guarantees
+    # are unchanged; there is simply no mutation, and therefore no receipt.
+    executor_id: str | None
     unit_input: Mapping[str, Any]
     activity: Mapping[str, Any]
     expected_revision: int
@@ -398,6 +402,77 @@ class UnitPipeline:
         self.workers = workers
         self.executors = executors
         self.sidecars = sidecars
+
+    def commit_local(
+        self,
+        request: UnitPipelineRequest,
+        *,
+        proposal: Mapping[str, Any],
+        target: object,
+        origin: str = "deterministic",
+        on_proposal_persisted: PersistenceObserver | None = None,
+        on_receipt_persisted: PersistenceObserver | None = None,
+    ) -> UnitPipelineOutcome:
+        """Commit a locally derived proposal with the model path's durability.
+
+        A unit whose proposal needs no provider turn still gets the same
+        guarantees: the accepted proposal is persisted before the mutation, an
+        interrupted commit is reconciled rather than repeated, and the receipt is
+        written to the same ``receipts/<unit_id>.json`` sidecar. There is no
+        context manifest because no context was resolved and no model was called.
+        """
+        if not isinstance(request, UnitPipelineRequest):
+            raise UnitPipelineError("Unit pipeline requires a UnitPipelineRequest.")
+        if request.executor_id is None:
+            raise UnitPipelineError("A local commit requires an executor.")
+        payload = dict(proposal)
+        executor_request = ExecutorRequest(
+            executor_id=request.executor_id,
+            capability_id=request.capability_id,
+            unit_id=request.unit_id,
+            proposal=payload,
+            expected_revision=request.expected_revision,
+            expected_parents=request.expected_parents,
+            activity=request.activity,
+        )
+        proposal_reference = self.sidecars.persist_proposal(
+            request.unit_id,
+            {
+                "capability_id": request.capability_id,
+                "unit_id": request.unit_id,
+                "status": "accepted",
+                "origin": origin,
+                "proposal_hash": executor_request.proposal_hash,
+                "proposal": payload,
+            },
+        )
+        if on_proposal_persisted is not None:
+            on_proposal_persisted(proposal_reference)
+        reconciliation = self.executors.reconcile(executor_request, target)
+        if reconciliation.disposition == "conflict":
+            raise UnitPipelineConflict(
+                reconciliation.reason or "Executor reconciliation found a conflict.",
+                proposal_reference=proposal_reference,
+            )
+        executor_reconciled = reconciliation.disposition == "already_applied"
+        if executor_reconciled:
+            receipt = self.executors.receipt_for_reconciliation(
+                executor_request, reconciliation
+            )
+        else:
+            receipt = self.executors.execute(executor_request, target)
+        receipt_reference = self.sidecars.persist_receipt(request.unit_id, receipt)
+        if on_receipt_persisted is not None:
+            on_receipt_persisted(receipt_reference)
+        return UnitPipelineOutcome(
+            manifest_reference={},
+            proposal_reference=proposal_reference,
+            receipt_reference=receipt_reference,
+            receipt=receipt,
+            readiness=None,
+            status="succeeded",
+            executor_reconciled=executor_reconciled,
+        )
 
     def run(
         self,
@@ -577,6 +652,20 @@ class UnitPipeline:
             )
             if on_proposal_persisted is not None:
                 on_proposal_persisted(proposal_reference)
+
+        if request.executor_id is None:
+            # A proposal-only unit. Its persisted proposal is the durable
+            # outcome, so there is nothing to reconcile, commit, or receipt.
+            return UnitPipelineOutcome(
+                manifest_reference=manifest_reference,
+                proposal_reference=proposal_reference,
+                receipt_reference=None,
+                receipt=None,
+                readiness=None,
+                status="proposed",
+                proposal_reused=proposal_reused,
+                proposal_reuse_rejection_reasons=rejection_reasons,
+            )
 
         executor_request = ExecutorRequest(
             executor_id=request.executor_id,

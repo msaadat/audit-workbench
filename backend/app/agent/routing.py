@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 
 from .. import doc_tests
@@ -11,11 +12,13 @@ from . import context_bundles, prompts, store, workflow
 from .base import BaseRunner, LimitExceeded
 from .workflows import analysis as analysis_workflow
 from .workflows import audit as audit_workflow
+from .workflows import documents as documents_workflow
 
 
 WORKFLOW_MODULES = {
     audit_workflow.WORKFLOW_ID: audit_workflow,
     analysis_workflow.WORKFLOW_ID: analysis_workflow,
+    documents_workflow.WORKFLOW_ID: documents_workflow,
 }
 
 ELIGIBLE_DISPOSITIONS = {
@@ -115,6 +118,27 @@ ANALYSIS_PHRASES = (
     "explore the tables",
 )
 
+# Deterministic phrases for the document-analysis workflow. Checked before the
+# generic-action markers so "analyse these documents" becomes a declared workflow
+# rather than an action DAG. "Attach", "upload", and "delete" a document stay
+# isolated ActionRunner operations and are deliberately absent.
+DOCUMENT_ANALYSIS_PHRASES = (
+    "analyse the documents",
+    "analyze the documents",
+    "analyse these documents",
+    "analyze these documents",
+    "analyse the selected documents",
+    "analyze the selected documents",
+    "analyse this document",
+    "analyze this document",
+    "document analysis",
+    "analyse the policies",
+    "analyze the policies",
+    "summarise the documents",
+    "summarize the documents",
+    "read the documents",
+)
+
 
 def _workflow_definition_for(outcomes: list[str]) -> str:
     definition = audit_capabilities.workflow_for_outcomes(outcomes)
@@ -163,9 +187,11 @@ def local_resolution(command: dict) -> dict | None:
             "needs_clarification": False,
             "clarification": None,
         }
-    outcomes = audit_capabilities.outcomes_for_template(
-        template
-    ) or audit_capabilities.analysis_outcomes_for_template(template)
+    outcomes = (
+        audit_capabilities.outcomes_for_template(template)
+        or audit_capabilities.analysis_outcomes_for_template(template)
+        or audit_capabilities.document_outcomes_for_template(template)
+    )
     if outcomes is not None:
         return {
             "route": "workflow",
@@ -185,6 +211,22 @@ def local_resolution(command: dict) -> dict | None:
             "clarification": None,
         }
     text = str(command.get("text") or "").casefold()
+    if any(phrase in text for phrase in DOCUMENT_ANALYSIS_PHRASES):
+        return {
+            "route": "workflow",
+            "workflow_definition": documents_workflow.WORKFLOW_ID,
+            "requested_outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
+            "objective": str(command.get("text") or "").strip(),
+            "target_refs": [
+                str(item)
+                for item in command.get("target_refs") or ["workspace:current"]
+            ],
+            "generation_mode": workflow.command_generation_mode(command),
+            "action_intent": None,
+            "constraints": [],
+            "needs_clarification": False,
+            "clarification": None,
+        }
     if not any(marker in text for marker in ISOLATED_ANALYSIS_MARKERS) and any(
         phrase in text for phrase in ANALYSIS_PHRASES
     ):
@@ -341,6 +383,38 @@ def _audit_model_turns(workspace: Workspace) -> int:
     )
 
 
+def document_page_limit() -> int:
+    """The configured per-analysis page bound, or 0 when unbounded.
+
+    Resolved once at routing time and persisted on the run's scope, so a run's
+    coverage bound is durable and cannot change under a resume because the
+    environment did.
+    """
+    try:
+        return max(0, int(os.environ.get("DOCUMENT_ANALYSIS_PAGE_LIMIT") or 0))
+    except ValueError:
+        return 0
+
+
+def _document_model_turns(workspace: Workspace, scope: dict) -> int:
+    """Size the document budget from the chunks actually in scope.
+
+    Document analysis is one turn per bounded source chunk plus one reduction per
+    document, so the budget follows the resolved scope and the real chunk count.
+    A document with no cached extraction yet contributes a conservative estimate;
+    the composition refreshes the budget once extraction has run.
+    """
+
+    from .capabilities.documents import chunk_specs, resolve_document_scope
+
+    document_scope = resolve_document_scope(workspace, scope)
+    chunks = sum(
+        len(chunk_specs(workspace, document_id, scope)) or 1
+        for document_id in document_scope.document_ids
+    )
+    return 4 + chunks + 2 * max(1, len(document_scope.document_ids))
+
+
 def _analysis_model_turns(workspace: Workspace, scope: dict) -> int:
     """Size the analysis model budget from the frames actually in scope.
 
@@ -366,6 +440,10 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     definition = WORKFLOW_MODULES[definition_id]
     registry = audit_capabilities.REGISTRY_BY_WORKFLOW[definition_id]
     analysis_route = definition_id == analysis_workflow.WORKFLOW_ID
+    document_route = definition_id == documents_workflow.WORKFLOW_ID
+    # The audit graph declares the scoped document capabilities, so an audit run
+    # also carries the document scope and coverage bound.
+    document_scope_route = document_route or definition_id == audit_workflow.WORKFLOW_ID
     generation_mode = workflow.normalize_generation_mode(
         resolution.get("generation_mode") or "reuse_existing"
     )
@@ -374,6 +452,20 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         "permission_mode": run.get("mode") == "permission",
         "generation_mode": generation_mode,
     }
+    if document_scope_route:
+        # A resolved document scope is durable on the workflow record, so a
+        # checkpoint answer or an explicitly selected document survives a resume.
+        # Explicitly named documents normally arrive as ``document:<id>`` target
+        # refs, which the scope resolver reads directly.
+        scope["document_ids"] = [
+            str(value)
+            for value in (
+                resolution.get("document_ids")
+                or (run.get("context") or {}).get("document_ids")
+                or []
+            )
+        ]
+        scope["page_limit"] = document_page_limit()
     if analysis_route:
         # A resolved table scope is durable on the workflow record, so a
         # checkpoint answer or a router-supplied selection survives a resume.
@@ -400,11 +492,16 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         )
     explanation = _explanation(resolved, stages, reused, requested)
     run["schema_version"] = 3
-    calculated_model_turns = (
-        _analysis_model_turns(workspace, scope)
-        if analysis_route
-        else _audit_model_turns(workspace)
-    )
+    if analysis_route:
+        calculated_model_turns = _analysis_model_turns(workspace, scope)
+    elif document_route:
+        calculated_model_turns = _document_model_turns(workspace, scope)
+    else:
+        # An audit run also pays for the scoped document analyses planning
+        # depends on, so its budget covers both.
+        calculated_model_turns = _audit_model_turns(workspace) + _document_model_turns(
+            workspace, scope
+        )
     run.setdefault("limits", {}).update(
         max_llm_concurrency=int(
             run.get("limits", {}).get("max_llm_concurrency") or 4
@@ -459,8 +556,23 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     }
     run["workflow_explanation"] = explanation
     run["command"]["status"] = "resolved"
+    if document_scope_route:
+        run.setdefault(
+            "document_analysis",
+            {
+                "document_ids": list(scope.get("document_ids") or []),
+                "action": str(
+                    (run.get("context") or {}).get("action")
+                    or ("refresh" if generation_mode == "force" else "analyze")
+                ),
+                "scope_settled": False,
+            },
+        )
+        run["workflow"]["document_action"] = run["document_analysis"]["action"]
     if analysis_route:
         run.setdefault("analysis", {"relationships": []})
+        return
+    if document_route:
         return
     run.setdefault(
         "planning_changes",
@@ -510,6 +622,7 @@ class CommandRouter(BaseRunner):
         state = {
             **audit_capabilities.workflow_state(self.ws),
             **audit_capabilities.analysis_workflow_state(self.ws),
+            **audit_capabilities.documents_workflow_state(self.ws),
         }
         supported = {
             capability.id
@@ -540,6 +653,7 @@ class CommandRouter(BaseRunner):
             state = {
                 **audit_capabilities.workflow_state(fresh),
                 **audit_capabilities.analysis_workflow_state(fresh),
+                **audit_capabilities.documents_workflow_state(fresh),
             }
             bundle = context_bundles.command_router(
                 command,

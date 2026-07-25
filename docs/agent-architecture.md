@@ -238,11 +238,24 @@ report.working_draft -> audit.verified
 ```
 
 This is the baseline graph migrated from the current registry in Phase 7; its
-parallel branches are intentional. Phase 9 may change the graph definition hash
-to add scoped
-`documents.analysis_generated` dependencies where a capability declares them,
-but document analysis is not a global prerequisite for every audit. The
-authoritative executable audit lifecycle exists only in `workflows/audit.py`.
+parallel branches are intentional. Phase 9 added the scoped document-analysis
+dependency, which changed the graph definition hash:
+
+```text
+documents.text_ready
+  -> documents.analysis_chunks_ready
+     -> documents.analysis_generated
+        -> planning.context_ready
+```
+
+Document analysis is not a global prerequisite for every audit. Only
+`planning.context_ready` declares the edge, and with no planning-relevant
+document in scope every document capability's readiness is satisfied and no unit
+expands, so an audit that carries no documents runs the graph above unchanged.
+The three document capabilities are declared once, in `workflows/documents.py`
+and `capabilities/documents.py`; the audit registry composes that same
+declaration rather than restating it. The authoritative executable audit
+lifecycle exists only in `workflows/audit.py`.
 
 ### Exploratory Analysis Workflow
 
@@ -316,7 +329,32 @@ documents.text_ready
 Document map and reduce operations are separate unit types with separate
 workers. The runner owns chunk fan-out, concurrency, progress, resumption, and
 reduce ordering. A generated analysis and an auditor-reviewed analysis are
-distinct outcomes.
+distinct outcomes. The authoritative graph lives in `workflows/documents.py`; the
+grouped declarations live in `capabilities/documents.py`.
+
+**Scope.** Explicitly named documents win; a request that names none falls back
+to a bounded set of planning-relevant documents under the same declared category
+rule the planning presets use, and reports its own ambiguity through a declared
+scope checkpoint rather than silently analysing an arbitrary subset.
+
+**Persisted artifacts and readiness.**
+
+| Outcome | Persisted artifact | Readiness satisfied when |
+|---|---|---|
+| `documents.text_ready` | The existing extraction cache, content-addressed by source hash | Every scoped document has a cached extraction for its current source |
+| `documents.analysis_chunks_ready` | Run-local: one `proposals/<unit_id>.json` sidecar per chunk | Every scoped, analyzable document already has a generated analysis |
+| `documents.analysis_generated` | The existing `Documents/.analysis` sidecars, plus run/unit/content provenance | Every scoped document has a generated analysis |
+| `documents.analysis_reviewed` | The existing review sidecar | Every generated analysis carries the auditor's own `reviewed` decision |
+
+A chunk analysis is deliberately *not* a workspace artifact: it is an input to
+the reduced analysis rather than an engagement record, so it lives with the run
+that paid for it. That is what makes chunk units the one capability declared with
+the parallel barrier — independent, committing nothing, and resumable from their
+own proposals without re-billing the provider.
+
+Nothing the agent does satisfies `documents.analysis_reviewed`. Its units settle
+as `awaiting_confirmation`, because a generated summary is never evidence that a
+control operated.
 
 ## ActionRunner
 
@@ -423,10 +461,10 @@ capability unless its size independently justifies it.
 ## Migration Direction
 
 The final target has two scheduling engines: `WorkflowRunner` and
-`ActionRunner`. Existing domain runners such as the legacy analysis runner,
-`DocumentAnalysisRunner`, and `DocTestRunner` migrate into capabilities,
-workers, and executors unless they demonstrably require a different scheduling
-protocol. Temporary delegation may keep active callers working between commits,
+`ActionRunner`. Existing domain runners migrate into capabilities, workers, and
+executors unless they demonstrably require a different scheduling protocol.
+`DocumentAnalysisRunner` has done so and is deleted; the legacy analysis runner
+and `DocTestRunner` remain scheduled for Phases 12 and 10. Temporary delegation may keep active callers working between commits,
 but it does not read legacy persisted records and is deleted in the same phase
 that migrates the last live caller. Duplicate execution logic is not retained.
 
@@ -633,15 +671,14 @@ registered action definitions and catalog helpers in `actions.py`; the ledger
 only constructs records, validates and transitions the DAG, delegates reference
 normalization, and maintains generic projections.
 
-The concrete document-analysis duplication is half resolved. Phase 7 deleted
-`ActionRunner._ensure_planning_analysis`, so `DocumentAnalysisRunner` is the only
-remaining implementation of document extraction, chunk map calls, reduction,
-validation, and persistence — but it is still a leaf runner rather than a
-declared capability. Removing it in favour of one implementation expressed as
-document-analysis capabilities, workers, and executors is Phase 9's work, and
-`planning.context_ready` should declare the resulting
-`documents.analysis_generated` outcome as a scoped dependency so planning regains
-generated analyses rather than falling back to raw document text.
+The document-analysis duplication is fully resolved. Phase 7 deleted
+`ActionRunner._ensure_planning_analysis`; Phase 9 deleted `DocumentAnalysisRunner`
+and its engine, replacing both with one map worker, one reduction worker, and one
+persistence executor behind the declared document capabilities. Standalone
+Documents-tab analysis, assistant document-analysis requests, and the audit
+graph's scoped `planning.context_ready` dependency all reach that one
+implementation, so planning is grounded in generated analyses again rather than in
+raw document text.
 
 ### Decisions From The Architecture Discussion
 

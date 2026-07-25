@@ -32,33 +32,25 @@ no historical reader or resume adapter is retained.
 **Current position:**
 
 - Overall migration: in progress.
-- Current phase: Phase 8 (complete).
-- Current task: `P9.1` — Phase 8 is closed. `WorkflowRunner` now schedules two
-  declared workflows: the audit lifecycle (`audit_workflow_v2`) and the new
-  exploratory data-analysis workflow (`analysis_workflow_v1`). Routing resolves
-  which one a command belongs to, the run persists the definition ID, and
-  `workflow_dispatch.build_workflow_runner(...)` selects the composition by
-  lookup. Requests such as "see the two tables, perform relevant joins and data
-  analysis" and the `data_analysis` goal template are durable outcome workflows;
-  "run this saved analysis" and "pin this result" remain `ActionRunner`
-  operations.
-- Last completed task: `P8.11` — the phase gate is green. See the Phase 8 note
-  below for the persisted-artifact decision, the evidence gate on automatic join
-  creation, and the two recorded deviations.
-- Prior tasks: Phase 7 closed with every one of the twelve audit capabilities on
-  a native scheduler path — seven through `pipeline_binder`
-  (`planning.context_ready`, `planning.apm_ready`, `planning.rcm_ready`,
-  `planning.planned_tests_ready`, `fieldwork.definitions_ready`,
-  `fieldwork.executed`, `findings.drafted`) and five through
-  `deterministic_executor` (`results.rolled_up`, `working_papers.generated`,
-  `dashboard.curated`, `report.working_draft`, `audit.verified`). The
-  transitional batch binding kind is deleted from the scheduler, not merely
-  unused.
-- Active blockers: none. Two follow-ups belong to Phase 9 and are recorded in the
-  `P7A.2` note: on-demand document-analysis generation no longer happens as a
-  side effect of planning, and the Phase 9 `documents.analysis_generated`
-  capability should become a scoped dependency of `planning.context_ready` when
-  it lands.
+- Current phase: Phase 9 (complete).
+- Current task: `P10.1` — Phase 9 is closed. `WorkflowRunner` now schedules three
+  declared workflows: the audit lifecycle (`audit_workflow_v2`), the exploratory
+  data-analysis workflow (`analysis_workflow_v1`), and the document-analysis
+  workflow (`documents_workflow_v1`). `DocumentAnalysisRunner` and its engine are
+  deleted; the Documents tab endpoints, the assistant phrases, and the audit
+  graph's scoped `planning.context_ready` dependency all reach the same
+  capabilities, workers, and executor.
+- Last completed task: `P9.11` — the phase gate is green. See the Phase 9 note
+  below for the run-local chunk-proposal contract, the two recorded deviations
+  (no accumulating chunk orientation; no resumable leaf-run concept), and the
+  domain-neutral scheduler changes the phase required.
+- Prior tasks: Phase 8 added the exploratory data-analysis workflow on the same
+  scheduler. Phase 7 closed with every audit capability on a native scheduler
+  path and the transitional batch binding kind deleted.
+- Active blockers: none. Both `P7A.2` follow-ups are resolved: on-demand
+  document-analysis generation returned as the `documents.analysis_generated`
+  capability, and `planning.context_ready` now declares it as a scoped
+  dependency.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -80,8 +72,8 @@ status notes below.
 | 6 | Complete | — |
 | 7 | Complete | — |
 | 8 | Complete | — |
-| 9 | Ready | `P9.1` |
-| 10 | Pending Phase 9 gate | `P10.1` |
+| 9 | Complete | — |
+| 10 | Ready | `P10.1` |
 | 11 | Pending required workflow migrations | `P11.1` |
 | 12 | Pending routing consolidation | `P12.1` |
 | 13 | Pending final cleanup | `P13.1` |
@@ -1707,8 +1699,63 @@ status notes below.
   `tests/test_workflow_analysis.py` passed `31` tests, and the full backend suite
   passed `833` tests in `134.91s`; the frontend type-check and production build
   passed (`AgentWorkflow` gained the new definition id, `definition_hash`, and
-  the optional `scope`). Phase 8 is complete; the exact next task is `P9.1`, and
-  no Phase 9 work has started.
+  the optional `scope`). Phase 8 is complete.
+- Phase 9 completed on 2026-07-25. Document analysis now has exactly one
+  implementation: the `documents_workflow_v1` graph in
+  `agent/workflows/documents.py`, the four capabilities in
+  `agent/capabilities/documents.py`, one map worker and one reduction worker in
+  `agent/workers/documents.py`, and one persistence executor in
+  `agent/executors/documents.py`. `DocumentAnalysisRunner`, the
+  `document_analysis` engine and run kind, and the runner-era map/reduce prompts
+  are deleted, not merely unused.
+  **(1) Persistence and readiness (`P9.1`).** A chunk analysis is run-local: its
+  durable home is the semantic unit's `proposals/<unit_id>.json` sidecar, not a
+  workspace collection. Only the reduced analysis is an engagement artifact, and
+  it keeps the existing `Documents/.analysis` sidecar contract plus three new
+  provenance fields — `agent_run_id`, `unit_id`, and a `content_sha1` over the
+  human-facing content — which is exactly what lets an interrupted commit be
+  *proven* applied rather than repeated into a second artifact. Readiness reports
+  existence and structural usability only: a document with a generated analysis
+  satisfies `documents.analysis_generated` whatever its cache identity says, so
+  reuse never becomes a currency assessment. A document with no extractable text
+  is deliberately *not* satisfied — it settles for auditor attention instead.
+  **(2) Chunk fan-out (`P9.4`/`P9.5`).** Chunk units declare the new
+  `all_settled_parallel` barrier, so the scheduler fans them out under
+  `max_llm_concurrency`, all-settled, and folds them in semantic-unit order. They
+  are the first *proposal-only* pipeline units: `UnitPipelineRequest.executor_id`
+  may now be `None`, which keeps manifest-before-model-call and exact-identity
+  proposal reuse while declaring that this unit commits nothing.
+  **(3) One graph, two callers (`P9.9`).** The audit graph gained
+  `documents.text_ready → documents.analysis_chunks_ready →
+  documents.analysis_generated` and the scoped
+  `planning.context_ready → documents.analysis_generated` edge, changing
+  `audit_workflow_v2`'s definition hash. The capabilities are declared once and
+  composed into the audit registry through a `CapabilityGroupView`, and the audit
+  composition binds them through the same `DocumentWorkflowExecution` adapter
+  (sharing the run's runtime and ledger lock), so the two graphs cannot drift.
+  Document analysis is not a universal prerequisite: with no planning-relevant
+  document in scope every document capability is satisfied and no unit expands,
+  so an audit without documents runs exactly as before.
+  **Recorded deviation (a): no accumulating chunk orientation.** The former
+  runner carried a running summary of earlier chunks into each later chunk.
+  Independent, concurrently schedulable units with reusable proposals cannot have
+  an input that depends on sibling completion order, so it is gone; the prompt's
+  existing chunk-position signal is what tells the model whether front matter is
+  expected. **Recorded deviation (b): no resumable leaf run.** Partial coverage
+  now settles the unit as `awaiting_confirmation` and leaves the document
+  `idle`; `analysis_resumable_run_id` is no longer written and the Documents
+  tab's two Continue controls were removed. Explicit Refresh is the supported
+  regeneration path, which is the architecture's `force` contract.
+  **Simplification taken in passing.** `UnitPipeline.commit_local(...)` now owns
+  "persist a locally derived proposal, reconcile, commit, receipt" for both
+  compositions, replacing the copy that lived in `analysis_execution`; the
+  single-chunk reduction shortcut (consolidating one chunk analysis is the
+  identity, so no provider turn is spent) uses the same helper and gets the same
+  durability.
+  Verification: the new `tests/test_workflow_documents.py` passed `24` tests and
+  the full backend suite passed `858` tests in `159.89s`; the frontend production
+  build passed. Phase 9 is complete; the exact next task is `P10.1`, and no
+  Phase 10 work has started.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -2631,28 +2678,28 @@ implementations with one capability workflow.
 
 **Tasks:**
 
-- [ ] `P9.1` Define the persistence and readiness contract for run-local chunk
+- [x] `P9.1` Define the persistence and readiness contract for run-local chunk
   proposals, reduced document analyses, review state, and downstream source
   hashes used for provenance and proposal reuse, not automatic freshness.
-- [ ] `P9.2` Define `workflows/documents.py`, stable document/chunk unit IDs,
+- [x] `P9.2` Define `workflows/documents.py`, stable document/chunk unit IDs,
   dependencies, eligible text states, bounds, and routing scope.
-- [ ] `P9.3` Implement deterministic text readiness and extraction execution
+- [x] `P9.3` Implement deterministic text readiness and extraction execution
   by adapting existing document services.
-- [ ] `P9.4` Extract the single chunk-map worker with declared context,
+- [x] `P9.4` Extract the single chunk-map worker with declared context,
   citation rules, validation, and per-chunk proposal persistence.
-- [ ] `P9.5` Add bounded all-settled chunk scheduling and recovery so successful
+- [x] `P9.5` Add bounded all-settled chunk scheduling and recovery so successful
   chunk proposals survive sibling failure and restart.
-- [ ] `P9.6` Extract the single reduction worker with stable chunk ordering,
+- [x] `P9.6` Extract the single reduction worker with stable chunk ordering,
   proposal-sidecar inputs, bounded context, and semantic validation.
-- [ ] `P9.7` Extract the single analysis persistence executor with source/text
+- [x] `P9.7` Extract the single analysis persistence executor with source/text
   hashes, CAS, reconciliation, receipts, and explicit-force/conflict behavior.
-- [ ] `P9.8` Separate generated and auditor-reviewed readiness and preserve
+- [x] `P9.8` Separate generated and auditor-reviewed readiness and preserve
   status, review, citation, and activity projections.
-- [ ] `P9.9` Route standalone analysis and audit-planning dependencies through
+- [x] `P9.9` Route standalone analysis and audit-planning dependencies through
   the same workflow implementation.
-- [ ] `P9.10` Migrate every live `DocumentAnalysisRunner` caller to the workflow,
+- [x] `P9.10` Migrate every live `DocumentAnalysisRunner` caller to the workflow,
   then delete the runner and every duplicate map/reduce implementation.
-- [ ] `P9.11` Prove billing reuse, explicit forced replacement, format parity,
+- [x] `P9.11` Prove billing reuse, explicit forced replacement, format parity,
   page/character bounds, integration behavior, and the phase gate.
 
 **Workflow:**

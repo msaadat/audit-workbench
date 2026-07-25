@@ -38,7 +38,7 @@ from .capabilities.analysis import (
 )
 from .capabilities import ANALYSIS_REGISTRY
 from .context import ContextResolver, analysis_definition_scope
-from .executors import EXECUTORS, ExecutorReceipt, ExecutorRequest
+from .executors import EXECUTORS, ExecutorReceipt
 from .executors.analysis import (
     AMBIGUOUS_RELATIONSHIP,
     AUDITOR_ANALYSIS_PRESERVED,
@@ -60,6 +60,7 @@ from .runtime import (
     FinishProjection,
     RunRuntime,
     UnitPipeline,
+    UnitPipelineConflict,
     UnitPipelineRequest,
     UnitSidecarStore,
     WorkflowRunner,
@@ -125,6 +126,7 @@ class AnalysisWorkflowExecution(BaseRunner):
         super().__init__(workspace, run, handle, runtime=runtime)
         self.context_resolver = context_resolver or ContextResolver()
         self.sidecars = UnitSidecarStore(workspace, run["id"])
+        self.unit_pipeline: UnitPipeline | None = None
         self.scheduler: WorkflowRunner | None = None
 
     # ------------------------------------------------------------- scheduling
@@ -238,50 +240,45 @@ class AnalysisWorkflowExecution(BaseRunner):
     ) -> ExecutorReceipt:
         """Run one registered executor and persist its durable receipt.
 
-        Deterministic units still get the pipeline's durability guarantees: the
-        locally derived proposal is persisted before the commit, an interrupted
-        commit is reconciled rather than repeated, and the receipt is written
-        atomically to the same ``receipts/<unit_id>.json`` sidecar the
-        model-backed path uses.
+        Deterministic units still get the pipeline's durability guarantees, and
+        they get them from the pipeline itself rather than from a second
+        implementation: ``UnitPipeline.commit_local`` persists the locally derived
+        proposal before the commit, reconciles an interrupted commit instead of
+        repeating it, and writes the receipt to the same
+        ``receipts/<unit_id>.json`` sidecar the model-backed path uses.
         """
-        request = ExecutorRequest(
-            executor_id=executor_id,
+        assert self.unit_pipeline is not None
+        request = UnitPipelineRequest(
             capability_id=capability.id,
             unit_id=unit["id"],
-            proposal=proposal,
+            worker_id="",
+            executor_id=executor_id,
+            unit_input={},
+            activity={"artifact_refs": list(unit.get("parent_refs") or [])},
             expected_revision=self.ws.revision,
             expected_parents=expected_parents,
-            activity={"artifact_refs": list(unit.get("parent_refs") or [])},
+            capability_definition_hash=_capability_definition_hash(capability),
         )
-        unit["proposal_sidecar"] = dict(
-            self.sidecars.persist_proposal(
-                unit["id"],
-                {
-                    "capability_id": capability.id,
-                    "unit_id": unit["id"],
-                    "status": "accepted",
-                    "origin": "deterministic",
-                    "proposal_hash": request.proposal_hash,
-                    "proposal": proposal,
-                },
+
+        def record(field: str):
+            def persist(reference) -> None:
+                unit[field] = dict(reference)
+                self.save()
+
+            return persist
+
+        try:
+            outcome = self.unit_pipeline.commit_local(
+                request,
+                proposal=proposal,
+                target=target,
+                on_proposal_persisted=record("proposal_sidecar"),
+                on_receipt_persisted=record("receipt_sidecar"),
             )
-        )
-        self.save()
-        reconciliation = EXECUTORS.reconcile(request, target)
-        if reconciliation.disposition == "conflict":
-            raise DeterministicCommitConflict(
-                reconciliation.reason or "Executor reconciliation found a conflict.",
-                self.ws.revision,
-            )
-        if reconciliation.disposition == "already_applied":
-            receipt = EXECUTORS.receipt_for_reconciliation(request, reconciliation)
-        else:
-            receipt = EXECUTORS.execute(request, target)
-        unit["receipt_sidecar"] = dict(
-            self.sidecars.persist_receipt(unit["id"], receipt)
-        )
-        self.save()
-        return receipt
+        except UnitPipelineConflict as error:
+            raise DeterministicCommitConflict(str(error), self.ws.revision) from error
+        assert outcome.receipt is not None
+        return outcome.receipt
 
     # ------------------------------------------- data.relationships_inferred
     def _bind_relationships(
@@ -827,6 +824,7 @@ def build_analysis_workflow_runner(
         executors=EXECUTORS,
         sidecars=adapter.sidecars,
     )
+    adapter.unit_pipeline = unit_pipeline
     _PIPELINE_BINDERS = {
         "analysis.definitions_ready": (
             adapter._bind_definitions,

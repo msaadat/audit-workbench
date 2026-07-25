@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app import document_analysis, document_context, document_search, documents, embedding, llm, workspaces
 from app.agent import prompts, runner, store
 from app.main import create_app
+from conftest import wait_run
 
 
 def test_local_hybrid_index_resolves_exact_page_text_without_model(monkeypatch):
@@ -62,26 +63,30 @@ def test_analysis_chunks_are_complete_and_non_overlapping():
     ]
 
 
-def test_document_analysis_prompt_includes_classification_metadata_without_storage_path():
-    document = {
-        "id": "doc-1", "file": "doc-1.docx", "source": "Procurement SOP.docx",
-        "relative_path": "Planning/Policies/Procurement SOP.docx",
-        "title": "procurement_sop", "category": "policy", "note": "Current extract",
-        "sha1": "abc123",
-    }
-    chunk = {
-        "page": 1, "pages": [1], "start_character": 0, "end_character": 12,
-        "text": "Policy text.",
-    }
+def test_document_analysis_metadata_excludes_internal_storage_paths():
+    # The map worker owns this projection now (Phase 9). Metadata is a fallible
+    # classification hint, never citation evidence, and it never carries the
+    # internal storage filename.
+    from app.agent.workers import documents as document_workers
 
-    prompt = prompts.document_analysis_map_user(document, chunk)
+    metadata = document_workers.document_metadata(
+        {
+            "id": "doc-1", "file": "doc-1.docx", "source": "Procurement SOP.docx",
+            "relative_path": "Planning/Policies/Procurement SOP.docx",
+            "title": "procurement_sop", "category": "policy",
+            "note": "Current extract", "sha1": "abc123",
+        }
+    )
 
-    assert '"original_filename": "Procurement SOP.docx"' in prompt
-    assert '"category": "policy"' in prompt
-    assert '"folder_context": "Planning/Policies"' in prompt
-    assert '"user_note": "Current extract"' in prompt
-    assert "doc-1.docx" not in prompt
-    assert "DOCUMENT OPENING CHUNK: yes" in prompt
+    assert metadata == {
+        "document_id": "doc-1",
+        "title": "procurement_sop",
+        "original_filename": "Procurement SOP.docx",
+        "category": "policy",
+        "folder_context": "Planning/Policies",
+        "user_note": "Current extract",
+    }
+    assert "doc-1.docx" not in json.dumps(metadata)
 
 
 def test_analysis_overrides_candidate_and_replacement_staleness():
@@ -134,6 +139,26 @@ def test_broker_refuses_unscoped_large_attachment_without_prefix():
     assert attached["scope_required"] is True
 
 
+def _document_workflow_run(ws, document_ids, *, action="analyze"):
+    """Start the declared document workflow the way the Documents tab does."""
+
+    from app.agent.workflows import documents as documents_workflow
+
+    return runner.start_command_run(
+        ws,
+        "auto",
+        {
+            "source": "tab_button",
+            "text": f"Analyze {len(document_ids)} selected document(s).",
+            "goal_template": "document_analysis",
+            "requested_outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
+            "target_refs": [f"document:{value}" for value in document_ids],
+            "generation_mode": "force" if action == "refresh" else "reuse_existing",
+        },
+        context={"document_ids": list(document_ids), "action": action},
+    )
+
+
 def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
     ws = workspaces.create_workspace("Durable document analysis")
     source = "Invoices require finance director approval before payment."
@@ -150,17 +175,16 @@ def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "local", "model": "test"})
-    run = runner.start_run(ws, "auto", {"document_ids": [doc["id"]], "action": "analyze"}, kind="document_analysis")
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        finished = store.load_run(ws, run["id"])
-        if finished["status"] in store.TERMINAL_STATUSES:
-            break
-        time.sleep(.01)
+    finished = wait_run(ws, _document_workflow_run(ws, [doc["id"]])["id"])
+
     assert finished["status"] == "completed"
     analysis = document_analysis.load_analysis(ws, doc["id"])
     assert analysis["effective"]["citations"][0]["excerpt_hash"]
     assert analysis["status"]["analysis_coverage_state"] == "complete"
+    # The artifact carries the workflow provenance an interrupted commit is
+    # reconciled against.
+    assert analysis["generated"]["agent_run_id"] == finished["id"]
+    assert analysis["generated"]["content_sha1"]
 
 
 def test_document_analysis_retries_blank_notes_and_persists_complete_output(monkeypatch):
@@ -192,16 +216,7 @@ def test_document_analysis_retries_blank_notes_and_persists_complete_output(monk
         llm, "agent_status",
         lambda: {"configured": True, "provider": "local", "model": "test"},
     )
-    run = runner.start_run(
-        ws, "auto", {"document_ids": [doc["id"]], "action": "analyze"},
-        kind="document_analysis",
-    )
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        finished = store.load_run(ws, run["id"])
-        if finished["status"] in store.TERMINAL_STATUSES:
-            break
-        time.sleep(.01)
+    finished = wait_run(ws, _document_workflow_run(ws, [doc["id"]])["id"])
 
     assert finished["status"] == "completed"
     assert calls == 2

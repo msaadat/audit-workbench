@@ -18,7 +18,7 @@ All new durable agent runs are created under
 
 | Writer | Current record | Direct production caller |
 |---|---|---|
-| `store.new_run(...)` | Explicit-engine `analysis`, `intake`, `doc_test`, or `document_analysis` protocol run | `runner.start_run(...)` |
+| `store.new_run(...)` | Explicit-engine `analysis`, `intake`, or `doc_test` protocol run | `runner.start_run(...)` |
 | `store.new_command_run(...)` | Explicit-engine `workflow` command run, optionally routed to `action` before or during execution | `runner.start_command_run(...)` |
 
 No route, chat service, or frontend component calls these writers directly.
@@ -85,8 +85,8 @@ durable transcript and shared live-run state.
 |---|---|---|---|
 | Folder intake chat flow | Assistant message with `source="folder_intake"`, `run_kind="intake"`, and batch context | `runner.start_run(..., kind="intake")` | `IntakeRunner` |
 | Document-test API | `POST /api/workspaces/{workspace_id}/doc-tests/{test_id}/run` | `runner.start_run(..., kind="doc_test")` | `DocTestRunner` |
-| Batch document analysis | `POST /api/workspaces/{workspace_id}/documents/analysis-runs` | `runner.start_run(..., kind="document_analysis")` | `DocumentAnalysisRunner` |
-| Single-document analysis | `POST /api/workspaces/{workspace_id}/documents/{doc_id}/analysis-runs` | `runner.start_run(..., kind="document_analysis")` | `DocumentAnalysisRunner` |
+| Batch document analysis | `POST /api/workspaces/{workspace_id}/documents/analysis-runs` | `runner.start_command_run(...)` requesting `documents.analysis_generated` | runtime `WorkflowRunner` (`documents_workflow_v1`) |
+| Single-document analysis | `POST /api/workspaces/{workspace_id}/documents/{doc_id}/analysis-runs` | `runner.start_command_run(...)` requesting `documents.analysis_generated` | runtime `WorkflowRunner` (`documents_workflow_v1`) |
 
 The current `DocTestsTab.vue` does not call the specialized document-test
 endpoint. Its Run and Prepare buttons send `document_testing` command actions
@@ -149,7 +149,6 @@ from its explicit `engine`:
 |---|---|
 | `engine="intake"` | `IntakeRunner` |
 | `engine="doc_test"` | `DocTestRunner` |
-| `engine="document_analysis"` | `DocumentAnalysisRunner` |
 | `engine="workflow"` | runtime `WorkflowRunner` composed by `workflow_dispatch.build_workflow_runner(...)` |
 | `engine="action"` | `ActionRunner` |
 | `engine="analysis"` | legacy `_Runner` analysis pipeline |
@@ -165,13 +164,14 @@ composition by lookup rather than inference:
 |---|---|
 | `audit_workflow_v2` | `audit_execution.build_audit_workflow_runner(...)` |
 | `analysis_workflow_v1` | `analysis_execution.build_analysis_workflow_runner(...)` |
+| `documents_workflow_v1` | `documents_execution.build_documents_workflow_runner(...)` |
 
 A missing or unsupported definition fails closed the same way.
 
-The four protocol values are explicit migration scaffolding for live schedulers,
-not compatibility aliases. Document analysis migrates in Phase 9; Phase 10
-decides the retained intake and document-test protocols; Phase 12 removes the
-legacy analysis engine. The runtime `WorkflowRunner` is composed directly with
+The three remaining protocol values are explicit migration scaffolding for live
+schedulers, not compatibility aliases. Phase 9 removed the `document_analysis`
+engine and its runner outright; Phase 10 decides the retained intake and
+document-test protocols; Phase 12 removes the legacy analysis engine. The runtime `WorkflowRunner` is composed directly with
 `RunRuntime` and does not inherit from another runner. Current leaf runners,
 `ActionRunner`, and the temporary audit execution adapter still inherit from
 the temporary `BaseRunner` facade, which delegates per-run persistence, events,
@@ -207,9 +207,11 @@ preset definitions are authoritative, with no per-run, workspace, API, or
 frontend auditor override. Auditor source curation and explicit regeneration
 operate within, and cannot widen, those declarations.
 
-`ActionRunner` and the audit workflow composition accept an injected
-`RunRuntime`; intake, document-test, document-analysis, and legacy analysis
-remain active leaf callers of the facade until their scheduled migrations.
+`ActionRunner` and the audit, analysis, and document workflow compositions accept
+an injected `RunRuntime`; intake, document-test, and legacy analysis remain active
+leaf callers of the facade until their scheduled migrations. The audit
+composition constructs the document composition with its own runtime *and* ledger
+lock, so both write the one durable run record under one lock.
 
 ## Active HTTP Run API
 
@@ -249,7 +251,7 @@ analysis run association.
 | `PostImportPlanningOffer.vue` | Sends planning with imported document IDs as run context |
 | `DocTestsTab.vue` | Sends `document_testing` command actions through assistant chat |
 | `ImportDialog.vue` | Sends the validated folder-intake special action; edits and approves classification proposals |
-| `DocumentsTab.vue` | Directly starts single/batch document-analysis runs, polls records, and resumes partial analysis runs |
+| `DocumentsTab.vue` | Starts single/batch document-analysis workflow runs through the documents endpoints and polls the shared run record |
 | `DashboardTab.vue`, `AnalysisTab.vue`, `PlanningTab.vue`, `DocTestsTab.vue`, `ImportDialog.vue`, `DocumentsTab.vue`, and `validation/ValidationTab.vue` | Share `useAgentRun`; relevant tabs subscribe to `workspace_changed` events and refresh affected data |
 
 `useAgentRun.ts` is the sole frontend EventSource owner. It listens to status,
@@ -310,8 +312,13 @@ The boundary is intentionally strict:
   workflow, intake, document-test, and document-analysis runners, terminal
   crash handling before queued-command launch, and one direct provider-call
   path through `runtime/model_gateway.py`.
-- Document analysis has direct UI/API callers in addition to audit-planning
-  consumers; its Phase 9 migration must move both.
+- Phase 9 moved both document-analysis caller families to the declared workflow:
+  the Documents tab's two endpoints now start `documents_workflow_v1` command
+  runs, and the audit graph reaches the same capabilities through
+  `planning.context_ready`'s scoped `documents.analysis_generated` dependency. No
+  `DocumentAnalysisRunner`, `document_analysis` engine, or `document_analysis` run
+  kind remains, and the Documents tab's resumable-leaf-run controls were removed
+  with the concept.
 - Phase 10 must decide the current engine and scheduler disposition of both
   `IntakeRunner` and `DocTestRunner`; neither can be deleted based only on the
   current tab UX.

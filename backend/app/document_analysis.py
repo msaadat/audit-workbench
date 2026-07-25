@@ -115,6 +115,73 @@ def _load_generated(workspace: Workspace, document_id: str, analysis_id: str | N
     return value or None
 
 
+def analysis_content_sha1(payload: dict) -> str:
+    """Stable identity of one generated analysis' human-facing content.
+
+    Covers exactly the fields a reduction produces, so a workflow reconciler can
+    prove that the artifact on disk is the one its accepted proposal describes
+    without comparing volatile identifiers or timestamps.
+    """
+    material = {
+        "summary_markdown": str(payload.get("summary_markdown") or "").strip(),
+        "audit_notes_markdown": str(payload.get("audit_notes_markdown") or "").strip(),
+        "citations": [
+            {
+                "page": int(item.get("page") or 0),
+                "excerpt": str(item.get("excerpt") or ""),
+            }
+            for item in payload.get("citations") or []
+        ],
+        "coverage": dict(payload.get("coverage") or {}),
+    }
+    return hashlib.sha1(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def generated_record(workspace: Workspace, document_id: str) -> dict | None:
+    """The newest durable generated analysis for a document, if one exists.
+
+    A candidate supersedes the active artifact because it is what the most recent
+    generation produced; the auditor decides whether it replaces the active one.
+    """
+    index = load_index(workspace, document_id)
+    for key in ("candidate_analysis_id", "active_analysis_id"):
+        artifact = _load_generated(workspace, document_id, index.get(key))
+        if artifact:
+            return artifact
+    return None
+
+
+# The generated-analysis fields that identify the outcome. Provider, model, and
+# generation timestamps are excluded so a parent/postcondition projection stays
+# material rather than volatile.
+_GENERATED_PROJECTION_FIELDS = (
+    "id",
+    "document_id",
+    "source_sha1",
+    "extracted_text_sha1",
+    "cache_identity",
+    "content_sha1",
+    "agent_run_id",
+    "summary_markdown",
+    "audit_notes_markdown",
+    "citations",
+    "coverage",
+)
+
+
+def generated_projection(workspace: Workspace, document_id: str) -> dict | None:
+    """Material projection of a document's generated analysis for hashing."""
+
+    artifact = generated_record(workspace, document_id)
+    if artifact is None:
+        return None
+    return {key: artifact.get(key) for key in _GENERATED_PROJECTION_FIELDS}
+
+
 def _authoritative_status(workspace: Workspace, document: dict) -> dict:
     result = default_status()
     index = load_index(workspace, document["id"])
@@ -276,7 +343,8 @@ def validate_analysis_map(payload: dict, chunks: list[dict], source_sha1: str) -
 
 def persist_analysis(workspace: Workspace, document: dict, extracted: dict, output: dict,
                      *, provider: str | None, model: str | None, action: str = "analyze",
-                     coverage: dict | None = None) -> dict:
+                     coverage: dict | None = None, agent_run_id: str | None = None,
+                     unit_id: str | None = None) -> dict:
     from .documents import utcnow
     document_id = document["id"]
     with document_lock(workspace, document_id):
@@ -290,11 +358,16 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
             "cache_identity": cache_identity(document["sha1"], text_sha),
             "prompt_version": ANALYSIS_PROMPT_VERSION, "provider": provider,
             "model": model, "generated_at": utcnow(),
+            # Workflow provenance: which durable run and semantic unit produced
+            # this artifact, so an interrupted commit is proven applied rather
+            # than repeated into a second artifact.
+            "agent_run_id": agent_run_id, "unit_id": unit_id,
             "summary_markdown": str(output.get("summary_markdown") or "").strip(),
             "audit_notes_markdown": str(output.get("audit_notes_markdown") or "").strip(),
             "citations": list(output.get("citations") or []),
             "coverage": coverage or {"state": "complete", "analyzed_pages": [int(p["page"]) for p in extracted.get("pages") or [] if p.get("text")], "omitted_pages": []},
         }
+        artifact["content_sha1"] = analysis_content_sha1(artifact)
         write_json_atomic(_generated_path(workspace, document_id, analysis_id), artifact)
         if action == "refresh" and index.get("active_analysis_id"):
             index["candidate_analysis_id"] = analysis_id

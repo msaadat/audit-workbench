@@ -75,10 +75,11 @@ class BoundUnitPipeline:
     readiness_provider: Callable[[], object] | None = None
     # Optional domain callbacks. These keep the scheduler domain-neutral: the
     # binding supplies them, the scheduler merely invokes them. ``on_committed``
-    # runs after a successful commit and before the unit is marked succeeded, and
-    # may return a ``DeterministicUnitResult`` to replace the default
-    # ``succeeded`` fold when the domain owns the unit's terminal meaning (for
-    # example an answer that only an auditor may disposition);
+    # runs after a successful commit — or, for a proposal-only unit whose request
+    # declares no executor, after its proposal is durable — and before the unit is
+    # marked succeeded. It may return a ``DeterministicUnitResult`` to replace the
+    # default ``succeeded`` fold when the domain owns the unit's terminal meaning
+    # (for example an answer that only an auditor may disposition);
     # ``conflict_handler`` may translate a domain-recognized ``UnitPipelineConflict``
     # into a ``(status, error)`` override instead of the default ``conflict``.
     on_committed: OutcomeHandler | None = None
@@ -516,12 +517,44 @@ class WorkflowRunner:
                 f"Pipeline-backed capability '{capability.id}' requires UnitPipeline."
             )
         assert execution.pipeline_binder is not None
-        for unit in sorted(units, key=lambda item: str(item["id"])):
-            if unit.get("status") in {"succeeded", "skipped"}:
-                continue
+        pending = [
+            unit
+            for unit in sorted(units, key=lambda item: str(item["id"]))
+            if unit.get("status") not in {"succeeded", "skipped"}
+        ]
+        if capability.barrier == workflow.PARALLEL_BARRIER:
+            self._run_parallel_pipeline_units(execution, capability, stage, pending)
+            return
+        for unit in pending:
             self.runtime.checkpoint()
             self.set_unit(stage, unit, "running")
-            bound: BoundUnitPipeline | None = None
+            self._run_one_pipeline_unit(execution, capability, stage, unit)
+
+    def _run_parallel_pipeline_units(
+        self,
+        execution: CapabilityExecution,
+        capability: workflow.Capability,
+        stage: dict[str, Any],
+        units: list[dict[str, Any]],
+    ) -> None:
+        """Fan a declared-parallel capability's units out, bounded and all-settled.
+
+        A capability declares this barrier only when its units are independent
+        and commit nothing, so the concurrency here is confined to context
+        resolution, the provider call, and proposal persistence — all of which
+        the runtime already serializes internally. One unit's failure never
+        cancels its siblings, and every settled unit keeps the proposal it
+        already paid for. Binding and folding stay on this thread, and results
+        come back in semantic-unit order, so the durable transcript is identical
+        regardless of completion timing.
+        """
+        if not units:
+            return
+        self.runtime.checkpoint()
+        bindings: dict[str, BoundUnitPipeline] = {}
+        runnable: list[dict[str, Any]] = []
+        for unit in units:
+            self.set_unit(stage, unit, "running")
             try:
                 binding = execution.pipeline_binder(
                     self.subject,
@@ -530,52 +563,130 @@ class WorkflowRunner:
                     stage,
                     unit,
                 )
-                if isinstance(binding, DeterministicUnitResult):
-                    # A unit of this capability that needs no model proposal.
-                    self._set_deterministic_unit(stage, unit, binding)
-                    continue
-                if not isinstance(binding, BoundUnitPipeline):
-                    raise ValueError(
-                        "Pipeline binder must return BoundUnitPipeline or "
-                        "DeterministicUnitResult."
-                    )
-                bound = binding
-
-                def record(field: str):
-                    def persist(reference: Mapping[str, str]) -> None:
-                        unit[field] = dict(reference)
-                        self.runtime.save()
-
-                    return persist
-
-                outcome = self.unit_pipeline.run(
-                    bound.request,
-                    context_provider=bound.context_provider,
-                    context_identity_provider=bound.context_identity_provider,
-                    target=bound.target,
-                    approval_provider=bound.approval_provider,
-                    readiness_provider=bound.readiness_provider,
-                    on_manifest_persisted=record("context_manifest"),
-                    on_proposal_persisted=record("proposal_sidecar"),
-                    on_receipt_persisted=record("receipt_sidecar"),
-                )
-                self._fold_pipeline_outcome(stage, unit, outcome, bound)
-            except UnitPipelineConflict as error:
-                self._record_pipeline_error_references(unit, error)
-                override = (
-                    bound.conflict_handler(stage, unit, error)
-                    if bound is not None and bound.conflict_handler is not None
-                    else None
-                )
-                if override is not None:
-                    status, message = override
-                    self.set_unit(stage, unit, status, error=message)
-                else:
-                    self.set_unit(stage, unit, "conflict", error=str(error))
             except (Cancelled, LimitExceeded):
                 raise
             except Exception as error:
                 self.set_unit(stage, unit, "failed", error=str(error))
+                continue
+            if isinstance(binding, DeterministicUnitResult):
+                self._set_deterministic_unit(stage, unit, binding)
+                continue
+            if not isinstance(binding, BoundUnitPipeline):
+                self.set_unit(
+                    stage,
+                    unit,
+                    "failed",
+                    error=(
+                        "Pipeline binder must return BoundUnitPipeline or "
+                        "DeterministicUnitResult."
+                    ),
+                )
+                continue
+            bindings[str(unit["id"])] = binding
+            runnable.append(unit)
+
+        def execute(unit: dict[str, Any]) -> UnitPipelineOutcome:
+            bound = bindings[str(unit["id"])]
+            assert self.unit_pipeline is not None
+            return self.unit_pipeline.run(
+                bound.request,
+                context_provider=bound.context_provider,
+                context_identity_provider=bound.context_identity_provider,
+                target=bound.target,
+                approval_provider=bound.approval_provider,
+                readiness_provider=bound.readiness_provider,
+                on_manifest_persisted=self._reference_recorder(unit, "context_manifest"),
+                on_proposal_persisted=self._reference_recorder(unit, "proposal_sidecar"),
+                on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
+            )
+
+        settled = self.stable_all_settled(runnable, execute)
+        for unit, outcome, failure in settled:
+            bound = bindings[str(unit["id"])]
+            if failure is None and outcome is not None:
+                self._fold_pipeline_outcome(stage, unit, outcome, bound)
+                continue
+            if isinstance(failure, (Cancelled, LimitExceeded)):
+                raise failure
+            self._fold_pipeline_failure(stage, unit, bound, failure)
+
+    def _run_one_pipeline_unit(
+        self,
+        execution: CapabilityExecution,
+        capability: workflow.Capability,
+        stage: dict[str, Any],
+        unit: dict[str, Any],
+    ) -> None:
+        assert execution.pipeline_binder is not None
+        bound: BoundUnitPipeline | None = None
+        try:
+            binding = execution.pipeline_binder(
+                self.subject,
+                self.run,
+                capability,
+                stage,
+                unit,
+            )
+            if isinstance(binding, DeterministicUnitResult):
+                # A unit of this capability that needs no model proposal.
+                self._set_deterministic_unit(stage, unit, binding)
+                return
+            if not isinstance(binding, BoundUnitPipeline):
+                raise ValueError(
+                    "Pipeline binder must return BoundUnitPipeline or "
+                    "DeterministicUnitResult."
+                )
+            bound = binding
+            assert self.unit_pipeline is not None
+            outcome = self.unit_pipeline.run(
+                bound.request,
+                context_provider=bound.context_provider,
+                context_identity_provider=bound.context_identity_provider,
+                target=bound.target,
+                approval_provider=bound.approval_provider,
+                readiness_provider=bound.readiness_provider,
+                on_manifest_persisted=self._reference_recorder(unit, "context_manifest"),
+                on_proposal_persisted=self._reference_recorder(unit, "proposal_sidecar"),
+                on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
+            )
+            self._fold_pipeline_outcome(stage, unit, outcome, bound)
+        except (Cancelled, LimitExceeded):
+            raise
+        except Exception as error:
+            self._fold_pipeline_failure(stage, unit, bound, error)
+
+    def _reference_recorder(
+        self, unit: dict[str, Any], field: str
+    ) -> Callable[[Mapping[str, str]], None]:
+        def persist(reference: Mapping[str, str]) -> None:
+            unit[field] = dict(reference)
+            self.runtime.save()
+
+        return persist
+
+    def _fold_pipeline_failure(
+        self,
+        stage: dict[str, Any],
+        unit: dict[str, Any],
+        bound: BoundUnitPipeline | None,
+        error: BaseException | None,
+    ) -> None:
+        if isinstance(error, UnitPipelineConflict):
+            self._record_pipeline_error_references(unit, error)
+            override = (
+                bound.conflict_handler(stage, unit, error)
+                if bound is not None and bound.conflict_handler is not None
+                else None
+            )
+            if override is not None:
+                status, message = override
+                self.set_unit(stage, unit, status, error=message)
+                return
+            self.set_unit(stage, unit, "conflict", error=str(error))
+            return
+        self.set_unit(
+            stage, unit, "failed", error=str(error) if error else "Unit did not settle."
+        )
 
     def _run_deterministic_units(
         self,

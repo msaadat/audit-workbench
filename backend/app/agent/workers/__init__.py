@@ -22,6 +22,7 @@ from .planning import (
 )
 # Importing the grouped worker modules is what registers them in ``WORKERS``.
 from . import analysis as analysis  # noqa: F401
+from . import documents as documents  # noqa: F401
 from . import fieldwork as fieldwork  # noqa: F401
 from . import reporting as reporting  # noqa: F401
 

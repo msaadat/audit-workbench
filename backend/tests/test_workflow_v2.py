@@ -315,7 +315,12 @@ def test_generate_the_apm_materializes_locally_in_auto_mode_without_context():
 
 def test_audit_workflow_declares_the_complete_lifecycle_graph():
     expected_dependencies = {
-        "planning.context_ready": (),
+        # Phase 9: planning consumes generated document analyses through the
+        # scoped document-analysis edge rather than raw document text.
+        "documents.text_ready": (),
+        "documents.analysis_chunks_ready": ("documents.text_ready",),
+        "documents.analysis_generated": ("documents.analysis_chunks_ready",),
+        "planning.context_ready": ("documents.analysis_generated",),
         "planning.apm_ready": ("planning.context_ready",),
         "planning.rcm_ready": ("planning.apm_ready",),
         "planning.planned_tests_ready": ("planning.rcm_ready",),
@@ -349,6 +354,9 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
     )
 
     assert resolved == [
+        "documents.text_ready",
+        "documents.analysis_chunks_ready",
+        "documents.analysis_generated",
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
@@ -392,6 +400,11 @@ def test_partial_goal_prunes_current_prerequisites():
     )
 
     assert resolved == [
+        # The workspace carries no document, so every document capability is
+        # satisfied and reused without expanding a single unit.
+        "documents.text_ready",
+        "documents.analysis_chunks_ready",
+        "documents.analysis_generated",
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",

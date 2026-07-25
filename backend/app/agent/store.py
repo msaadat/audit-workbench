@@ -39,7 +39,6 @@ ACTION_ENGINE = "action"
 LEGACY_ANALYSIS_ENGINE = "analysis"
 INTAKE_ENGINE = "intake"
 DOC_TEST_ENGINE = "doc_test"
-DOCUMENT_ANALYSIS_ENGINE = "document_analysis"
 
 COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE})
 RUN_ENGINES = frozenset(
@@ -48,14 +47,12 @@ RUN_ENGINES = frozenset(
         LEGACY_ANALYSIS_ENGINE,
         INTAKE_ENGINE,
         DOC_TEST_ENGINE,
-        DOCUMENT_ANALYSIS_ENGINE,
     }
 )
 ENGINE_BY_RUN_KIND = {
     "analysis": LEGACY_ANALYSIS_ENGINE,
     "intake": INTAKE_ENGINE,
     "doc_test": DOC_TEST_ENGINE,
-    "document_analysis": DOCUMENT_ANALYSIS_ENGINE,
 }
 # Statuses that mean "a worker thread should be driving this run".
 ACTIVE_STATUSES = (
@@ -135,7 +132,7 @@ def new_run(
 ) -> dict:
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
-    if kind not in ("analysis", "intake", "doc_test", "document_analysis"):
+    if kind not in ("analysis", "intake", "doc_test"):
         raise WorkspaceError("Unknown agent run kind.")
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -170,12 +167,6 @@ def new_run(
     }
     if kind == "doc_test":
         run["doc_test"] = {"test_id": str((context or {}).get("test_id") or "")}
-    if kind == "document_analysis":
-        run["document_analysis"] = {
-            "document_ids": list((context or {}).get("document_ids") or []),
-            "action": str((context or {}).get("action") or "analyze"),
-            "documents": {},
-        }
     save_run(workspace, run)
     return run
 

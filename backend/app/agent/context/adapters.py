@@ -1518,6 +1518,150 @@ def analysis_definition_scope(
     )
 
 
+DOCUMENT_ANALYSIS_METADATA_SOURCE_ID = "document_metadata"
+DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"
+DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID = "chunk_analyses"
+
+# The document fields a chunk or reduction turn is allowed to see as
+# classification context. Storage paths, sizes, and internal filenames are
+# excluded; the source hash is included because a citation is bound to it.
+_DOCUMENT_ANALYSIS_FIELDS = (
+    "id",
+    "title",
+    "source",
+    "category",
+    "note",
+    "relative_path",
+)
+
+
+def _document_entry(workspace: Workspace, document_id: str) -> Mapping[str, object]:
+    document = next(
+        (
+            item
+            for item in workspace.documents
+            if str(item.get("id")) == str(document_id)
+        ),
+        None,
+    )
+    if document is None:
+        raise WorkspaceError(f"Document '{document_id}' not found.")
+    return document
+
+
+def document_metadata_candidate(
+    workspace: Workspace, document_id: str
+) -> ContextCandidate:
+    """Expose one document's classification metadata as a single candidate.
+
+    Metadata is explicitly not citation evidence: both document workers treat it
+    as a fallible classification hint, and the map worker binds every citation to
+    the supplied chunk text instead.
+    """
+    document = _document_entry(workspace, document_id)
+    projection = {
+        **{key: document.get(key) for key in _DOCUMENT_ANALYSIS_FIELDS},
+        "document_id": str(document_id),
+        "source_sha1": str(document.get("sha1") or ""),
+    }
+    return ContextCandidate(
+        source_ref=f"document:{document_id}",
+        source=projection,
+        representations={"current_artifact": projection},
+        metadata={
+            "document_id": str(document_id),
+            "category": str(document.get("category") or ""),
+            "source_sha1": str(document.get("sha1") or ""),
+        },
+    )
+
+
+def document_chunk_scope(
+    workspace: Workspace,
+    document_id: str,
+    chunk: Mapping[str, object],
+) -> ContextScope:
+    """Build the local candidate scope for one document chunk-analysis unit.
+
+    Exactly one chunk is supplied. The chunk text is the only evidence the map
+    worker may cite, so no sibling chunk, retrieved passage, or generated
+    orientation enters this scope — that is what makes each chunk unit
+    independent enough for the scheduler to run concurrently and to resume from a
+    persisted proposal without re-billing.
+    """
+    payload = {
+        "id": str(chunk.get("id") or ""),
+        "page": int(chunk.get("page") or 0),
+        "pages": [int(page) for page in chunk.get("pages") or []],
+        "start_character": int(chunk.get("start_character") or 0),
+        "end_character": int(chunk.get("end_character") or 0),
+        "text": str(chunk.get("text") or ""),
+    }
+    return ContextScope(
+        candidates={
+            DOCUMENT_ANALYSIS_METADATA_SOURCE_ID: (
+                document_metadata_candidate(workspace, document_id),
+            ),
+            DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=(
+                        f"document:{document_id}:chunk:{payload['id']}"
+                    ),
+                    source=payload,
+                    representations={"raw_pages": payload},
+                    metadata={
+                        "document_id": str(document_id),
+                        "chunk_id": payload["id"],
+                        "page": payload["page"],
+                    },
+                ),
+            ),
+        },
+    )
+
+
+def document_reduction_scope(
+    workspace: Workspace,
+    document_id: str,
+    chunk_analyses: Iterable[Mapping[str, object]],
+) -> ContextScope:
+    """Build the local candidate scope for one document reduction unit.
+
+    The reduction sees no raw source at all — only the validated chunk proposals
+    the map worker already bound to supplied text. Chunk references are the
+    stable chunk identifiers, so the deterministic ascending tie-break is chunk
+    order, which is also the order a budget truncation should keep.
+    """
+    analyses = [dict(item) for item in chunk_analyses]
+    if not analyses:
+        raise WorkspaceError(
+            f"Document '{document_id}' has no analyzed source chunks to consolidate."
+        )
+    return ContextScope(
+        candidates={
+            DOCUMENT_ANALYSIS_METADATA_SOURCE_ID: (
+                document_metadata_candidate(workspace, document_id),
+            ),
+            DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=(
+                        f"document:{document_id}:chunk:{item.get('chunk_id') or ''}"
+                    ),
+                    source=item,
+                    representations={"summary": item},
+                    metadata={
+                        "document_id": str(document_id),
+                        "chunk_id": str(item.get("chunk_id") or ""),
+                    },
+                )
+                for item in sorted(
+                    analyses, key=lambda value: str(value.get("chunk_id") or "")
+                )
+            ),
+        },
+    )
+
+
 __all__ = [
     "ANALYSIS_CURRENT_SOURCE_ID",
     "ANALYSIS_REGISTRY_SOURCE_ID",
@@ -1541,6 +1685,9 @@ __all__ = [
     "DATA_TEST_PLANNED_SOURCE_ID",
     "DATA_TEST_ROW_SOURCE_ID",
     "DATA_TEST_TABLE_METADATA_SOURCE_ID",
+    "DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID",
+    "DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID",
+    "DOCUMENT_ANALYSIS_METADATA_SOURCE_ID",
     "DOCUMENT_QA_ITEM_SOURCE_ID",
     "DOCUMENT_QA_PAGE_SOURCE_ID",
     "DOCUMENT_TEST_CURRENT_SOURCE_ID",
@@ -1576,8 +1723,11 @@ __all__ = [
     "current_data_test_candidates",
     "current_document_test_candidates",
     "data_test_spec_scope",
+    "document_chunk_scope",
+    "document_metadata_candidate",
     "document_qa_page_candidates",
     "document_qa_scope",
+    "document_reduction_scope",
     "document_test_document_candidates",
     "document_test_spec_scope",
     "finding_draft_scope",

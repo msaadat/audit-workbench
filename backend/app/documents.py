@@ -67,6 +67,31 @@ def cache_path(workspace: Workspace, doc_id: str) -> Path:
     return _documents_dir(workspace) / ".extracted" / f"{doc_id}.json"
 
 
+def cached_extraction(workspace: Workspace, doc_id: str) -> dict | None:
+    """Return the cached extraction for the document's current source, or None.
+
+    Read-only: unlike :func:`extract_document` this never extracts, writes, or
+    touches the workspace. Deterministic capability readiness and unit expansion
+    need to know what text already exists without producing it as a side effect
+    of asking.
+    """
+    document = next(
+        (item for item in workspace.documents if item.get("id") == doc_id), None
+    )
+    if document is None:
+        return None
+    path = cache_path(workspace, doc_id)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("source_sha1") != document.get("sha1"):
+        return None
+    return payload
+
+
 def _validate_upload(filename: str, category: str) -> tuple[str, str, str]:
     source = Path(filename or "document").name
     suffix = Path(source).suffix.lower()
