@@ -73,6 +73,16 @@ def test_full_run_over_api(client, ws_id, workspace_with_data, fake_agent_llm):
     run = client.get(f"/api/workspaces/{ws_id}/agent/runs/{run_id}").json()
     assert run["status"] == "completed"
     assert run["summary_markdown"]
+    # Phase 12: the endpoint's exploratory-analysis path is the declared
+    # workflow, requested through its registered goal template, not a fixed
+    # pipeline. The record is a routed command run like any other.
+    assert run["engine"] == "workflow"
+    assert run["kind"] == "audit"
+    assert run["workflow"]["definition"] == "analysis_workflow_v1"
+    assert run["workflow"]["requested_outcomes"] == ["analysis.executed"]
+    assert run["command"]["goal_template"] == "data_analysis"
+    assert run["route"]["route"] == "workflow"
+    assert run["context"]["objective"] == "revenue completeness"
 
     listing = client.get(f"/api/workspaces/{ws_id}/agent/runs").json()["runs"]
     assert listing and listing[0]["id"] == run_id
@@ -118,7 +128,7 @@ def test_approval_round_trip_over_api(client, ws_id, workspace_with_data, fake_a
     done = wait_run(workspace_with_data, run["id"])
     assert done["status"] == "completed"
     ws = workspaces.load_workspace(ws_id)
-    assert ws.rulesets and ws.tiles
+    assert ws.joins and ws.analyses
 
 
 def test_offline_control_responses_are_durable_before_resume(
@@ -247,7 +257,7 @@ def test_sse_replays_events_with_cursor(client, ws_id, workspace_with_data, fake
     assert events
     assert events[0]["seq"] == 1
     types = {e["type"] for e in events}
-    assert {"run_status", "plan_update", "summary_ready"} <= types
+    assert {"run_status", "stage_update", "task_update", "summary_ready"} <= types
 
     # Cursor replay: ask for events after the midpoint only.
     midpoint = events[len(events) // 2]["seq"]
@@ -267,11 +277,11 @@ def test_sse_replays_events_with_cursor(client, ws_id, workspace_with_data, fake
 def test_pause_and_resume_over_api(client, ws_id, workspace_with_data, fake_agent_llm):
     import time
 
-    def slow_planning(_user):
+    def slow_definitions(user):
         time.sleep(0.5)
-        return fake_agent_llm.DEFAULTS["agent:planning"]
+        return fake_agent_llm.DEFAULTS["agent:analysis_definitions"](user)
 
-    fake_agent_llm.overrides["agent:planning"] = slow_planning
+    fake_agent_llm.overrides["agent:analysis_definitions"] = slow_definitions
     run = client.post(
         f"/api/workspaces/{ws_id}/agent/runs", json={"mode": "auto"}
     ).json()

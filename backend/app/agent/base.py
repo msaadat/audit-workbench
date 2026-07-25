@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from .. import llm
 from ..workspaces import Workspace
@@ -21,6 +21,15 @@ from .runtime import (
 
 MAX_TASKS = 60
 LLM_JSON_ATTEMPTS = 2
+
+
+def _plain_json(value: object) -> object:
+    """Project frozen worker-proposal data back to plain JSON containers."""
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(item) for item in value]
+    return value
 
 
 MODEL_WAIT_LABELS = {
@@ -266,14 +275,6 @@ class BaseRunner:
                 attempt_user = f"{user}\n\nYour previous response could not be used: {last_error}. {prompts.JSON_RULES}"
         raise llm.LLMError(f"The model did not return usable JSON: {last_error}")
 
-    def llm_markdown(
-        self, system: str, user: str, *, legacy_field: str | None = None,
-        activity: dict | None = None,
-    ) -> str:
-        """Return Markdown without requiring a large JSON string envelope."""
-        content = self._llm_content(system, user, activity)
-        return prompts.parse_markdown_response(content, legacy_field=legacy_field)
-
     def model_adapter(self, messages: list[dict], activity: dict | None = None) -> dict:
         """Route a nested model-assisted service call through run budgets."""
         activity = dict(activity or {})
@@ -316,7 +317,6 @@ class BaseRunner:
             "status": "queued",
             "error": None,
             "result_refs": [],
-            "context_notes": [],
             "started_at": None,
             "finished_at": None,
         }
@@ -357,11 +357,6 @@ class BaseRunner:
                 f"task.{task['stage']}", task["title"], detail=detail,
                 task_id=task["id"],
             )
-
-    def note_context(self, task: dict, note: str) -> None:
-        notes = task.setdefault("context_notes", [])
-        if note not in notes:
-            notes.append(note)
 
     def record_model_source(self, source: dict) -> None:
         """Record document/methodology provenance used by later model turns."""
@@ -465,8 +460,12 @@ class BaseRunner:
             "id": uuid.uuid4().hex[:8],
             "title": title,
             "rationale": rationale,
-            "spec": spec,
-            "evidence": evidence or {},
+            # An approval item is persisted verbatim into ``run.json``, and a
+            # worker proposal arrives recursively frozen (``MappingProxyType``
+            # objects and tuples). Project it back to plain JSON here, at the
+            # one boundary every engine's approval batch passes through.
+            "spec": _plain_json(spec),
+            "evidence": _plain_json(evidence or {}),
             "decision": None,
             "edited_spec": None,
         }

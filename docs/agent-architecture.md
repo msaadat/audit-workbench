@@ -543,15 +543,24 @@ capability unless its size independently justifies it.
 
 ## Migration Direction
 
-The final target has two scheduling engines: `WorkflowRunner` and
-`ActionRunner`. Existing domain runners migrate into capabilities, workers, and
-executors unless they demonstrably require a different scheduling protocol.
-`DocumentAnalysisRunner` and `DocTestRunner` have done so and are deleted;
-`IntakeRunner` was measured against the same test and retained with a recorded
-justification; the legacy analysis runner remains scheduled for Phase 12.
-Temporary delegation may keep active callers working between commits,
-but it does not read legacy persisted records and is deleted in the same phase
-that migrates the last live caller. Duplicate execution logic is not retained.
+The target is reached. There are two scheduling engines — `WorkflowRunner` and
+`ActionRunner` — plus one protocol runner, `IntakeRunner`, retained by the
+recorded decision in
+[agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md).
+`DocumentAnalysisRunner` and `DocTestRunner` migrated into capabilities,
+workers, and executors and were deleted; Phase 12 deleted the fixed-stage v1
+analysis runner outright, and an exploratory-analysis request is now the
+declared `analysis_workflow_v1` graph. `store.RUN_ENGINES` is final at
+`{workflow, action, intake}`, and a record whose engine is absent or outside
+that set fails closed. Duplicate execution logic is not retained.
+
+One shared base class survives: `BaseRunner`. It is no longer the migration's
+delegation facade for runtime state — that behavior belongs to
+`DefaultRunRuntime`, which `BaseRunner` composes and forwards to — but it still
+owns the projections both engines and the intake runner write into the durable
+record: the task/stage plan, artifact entries, approval batches, proposal items,
+and the model-provenance callbacks. It is retained deliberately, as the shared
+run-projection surface, rather than left over.
 
 ## Handoff Context
 
@@ -561,20 +570,21 @@ new implementation thread.
 
 ### Current Implementation
 
-The repository currently contains three generations of general agent planning:
+The repository began this migration with three generations of general agent
+planning. Two remain, and they are the two target engines:
 
 | Generation | Implementation | Plan source | Work unit | Scheduler |
 |---|---|---|---|---|
-| v1 | `_Runner` in `agent/runner.py` | Hard-coded stages | Task | Straight-line stage calls |
+| ~~v1~~ | ~~`_Runner` in `agent/runner.py`~~ | Hard-coded stages | Task | **Deleted in Phase 12** |
 | v2 | `ActionRunner` | Model-generated action DAG | Action | Priority loop over the action ledger |
-| v3 | runtime `WorkflowRunner` plus registered audit executions | Capability registry closure and readiness | Semantic unit | Dependency-ordered stages with bounded parallelism |
+| v3 | runtime `WorkflowRunner` plus registered executions | Capability registry closure and readiness | Semantic unit | Dependency-ordered stages with bounded parallelism |
 
-The current audit path is v3. The runtime `WorkflowRunner` is domain-neutral,
-receives its runtime and registries through composition, and does not inherit
-from `ActionRunner`. Until the Phase 7 capability-family migrations complete,
-`audit_execution.py` supplies registered transitional handlers that reuse
-planning context, quality checks, proposal formatting, approvals, and RCM
-matching through a temporary `ActionRunner`-based execution adapter.
+The audit, analysis, document-analysis, and document-test paths are all v3 on
+one scheduler. The runtime `WorkflowRunner` is domain-neutral, receives its
+runtime and registries through composition, and does not inherit from
+`ActionRunner`. The `*_execution.py` adapters supply only domain-shaped glue:
+which worker/executor and declared context a unit uses, its approval items,
+post-commit bookkeeping, and the workflow's own completion projection.
 
 `ActionRunner` remains useful for isolated mutations, including attaching a
 document, pinning a dashboard tile, renaming an artifact, or composing a small
@@ -853,7 +863,11 @@ selector, raise a budget, enable a representation, or relax privacy.
 9. Migrate or retain document-test and intake protocols according to whether
    their scheduling protocols fit `WorkflowRunner`.
 10. Migrate every live v1 caller and delete `_Runner`, its fixed stages, and its
-    projections. No historical reader or resume path is retained.
+    projections. No historical reader or resume path is retained. **Done in
+    Phase 12:** the generic creation endpoint's exploratory-analysis path starts
+    an `analysis_workflow_v1` command run through the registered `data_analysis`
+    goal template, and the runner, its prompts, validators, limits, summary
+    module, and `discovery`/`domain`/`custom_analyses` projections are gone.
 
 Do not combine v1 retirement with the initial v2/v3 cleanup. Removing duplicate
 full-audit orchestration is lower risk and should land first.
@@ -893,6 +907,13 @@ The migration is complete when:
 - Existing privacy boundaries remain enforced.
 - Backend tests and the frontend build pass.
 
-At the time this handoff section was written, the architecture had only been
-documented. No framework implementation changes had been made as part of this
-architecture discussion.
+Every criterion above is now met and mechanically checked. The durable gates are
+`backend/tests/test_agent_definition_of_done.py` (one test per criterion),
+`test_agent_final_boundaries.py` (declaration, worker, executor, context, and
+single-provider-path boundaries), `test_agent_runtime_import_boundaries.py`
+(the runtime package's domain neutrality), and
+`test_agent_v1_retirement.py` (no v1 caller, engine value, import, API response,
+or UI path).
+
+This handoff section was written before any implementation change; the sections
+above describe the architecture as built.

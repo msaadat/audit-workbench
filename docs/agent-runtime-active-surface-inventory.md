@@ -18,7 +18,7 @@ All new durable agent runs are created under
 
 | Writer | Current record | Direct production caller |
 |---|---|---|
-| `store.new_run(...)` | Explicit-engine `analysis` or `intake` protocol run | `runner.start_run(...)` |
+| `store.new_run(...)` | The one explicit-engine `intake` protocol run | `runner.start_run(...)` |
 | `store.new_command_run(...)` | Command run with **no** engine; `routing.resolve_route(...)` persists the normalized route and the selected engine before thread launch | `runner.start_command_run(...)` |
 
 No route, chat service, or frontend component calls these writers directly.
@@ -36,8 +36,11 @@ update existing records and append events through `store.save_run(...)` and
 
 - A `command` object or `requested_outcomes` calls
   `runner.start_command_run(...)`.
-- Otherwise it calls `runner.start_run(...)`; absent `kind` defaults to the
-  legacy `analysis` run.
+- Absent `kind`, or `kind="analysis"`, is the exploratory-analysis path: since
+  Phase 12 it also calls `runner.start_command_run(...)`, with the registered
+  `data_analysis` goal template, so the request becomes an
+  `analysis_workflow_v1` run. Any `context.objective` becomes the command text.
+- `kind="intake"` calls `runner.start_run(...)`. Any other `kind` fails closed.
 - The endpoint supplies `mode`, `context`, `parent_run_id`, requested outcomes,
   target references, and the normalized `reuse_existing` or `force` generation
   mode.
@@ -106,8 +109,10 @@ runs without a new top-level creation request:
   run.
 - `continue_audit(...)` starts a linked command run from deterministic
   `next_outcomes` on a run completed with open items.
-- `steer(...)` starts a linked command or legacy-analysis follow-up when the
-  addressed run is terminal, and queues commands when a command run is live.
+- `steer(...)` starts a linked command run when the addressed run is terminal —
+  including a finished folder intake — and queues commands when a command run is
+  live. A terminal record that is neither a command run nor an `intake` engine
+  run is a pre-cutover shape and fails closed instead of being replayed.
 - `_launch_next_command(...)` starts the next queued command after the
   current run reaches a terminal state; if creation races or fails, it restores
   the command to the queue.
@@ -164,7 +169,6 @@ engine — and then selects the current runner only from that explicit `engine`:
 | `engine="intake"` | `IntakeRunner` |
 | `engine="workflow"` | runtime `WorkflowRunner` composed by `workflow_dispatch.build_workflow_runner(...)` |
 | `engine="action"` | `ActionRunner` |
-| `engine="analysis"` | legacy `_Runner` analysis pipeline |
 
 Missing or unsupported engines fail closed. No engine is inferred from `kind`,
 `schema_version`, or record contents while loading, resuming, or dispatching a
@@ -186,13 +190,13 @@ composition by lookup rather than inference:
 
 A missing or unsupported definition fails closed the same way.
 
-Two protocol engine values remain, and they are not compatibility aliases.
-Phase 9 removed the `document_analysis` engine and its runner outright; Phase 10
-removed `doc_test` the same way and *retained* `intake` with a recorded
-justification (see
+One protocol engine value remains, and it is not a compatibility alias.
+Phase 9 removed the `document_analysis` engine and its runner outright, Phase 10
+removed `doc_test` the same way, and Phase 12 removed the legacy `analysis`
+engine with the `_Runner` pipeline itself. `intake` was *retained* with a
+recorded justification (see
 [agent-protocol-runner-decisions.md](agent-protocol-runner-decisions.md)), so
-`intake` is a supported engine in the target schema; Phase 12 removes the legacy
-`analysis` engine. The runtime `WorkflowRunner` is composed directly with
+`store.RUN_ENGINES` is final at `{workflow, action, intake}`. The runtime `WorkflowRunner` is composed directly with
 `RunRuntime` and does not inherit from another runner. Current leaf runners,
 `ActionRunner`, and the temporary audit execution adapter still inherit from
 the temporary `BaseRunner` facade, which delegates per-run persistence, events,
@@ -229,9 +233,7 @@ frontend auditor override. Auditor source curation and explicit regeneration
 operate within, and cannot widen, those declarations.
 
 `ActionRunner`, `IntakeRunner`, and the audit, analysis, document, and
-document-test workflow compositions all accept an injected `RunRuntime`; legacy
-analysis remains the one active leaf caller of the facade's default construction
-until Phase 12. The `ActionRunner` `classify_import_batch` action borrows
+document-test workflow compositions all accept an injected `RunRuntime`. The `ActionRunner` `classify_import_batch` action borrows
 `IntakeRunner._classify` with the action run's own runtime and ledger lock rather
 than constructing a second runtime over the same record. The audit
 composition constructs the document composition with its own runtime *and* ledger
@@ -245,7 +247,7 @@ lock, so both write the one durable run record under one lock.
 |---|---|
 | `GET /api/agent/status` | Provider readiness shown by launch surfaces |
 | `GET /api/agent/actions` | Registered action coverage |
-| `POST /agent/runs` | Create command/workflow or specialized/legacy run |
+| `POST /agent/runs` | Create a command/workflow run, or the folder-intake protocol run |
 | `GET /agent/runs` | Recover orphans and list history |
 | `GET /agent/runs/{run_id}` | Recover orphans and load full run |
 | `GET /agent/runs/{run_id}/sidecars/{sha1}` | Load bounded interaction/action sidecar content |
@@ -350,6 +352,18 @@ The boundary is intentionally strict:
   justified protocol runner and converted onto `RunRuntime`, the registered
   `intake.classification` worker, the declared `intake.classification` context
   preset, and a proposal-only `UnitPipeline` unit.
+- Phase 12 retired v1. The generic creation endpoint's non-command path starts
+  an `analysis_workflow_v1` command run through the registered `data_analysis`
+  goal template; `_Runner`, `STAGES`, the v1 prompt/validator set,
+  `agent/summary.py`, the `analysis` engine and run kind, the
+  `discovery`/`domain`/`custom_analyses`/`context_notes` projections, and the
+  frontend `startRun`/`AgentDiscovery` surface are deleted. `runner.py` is now a
+  process layer that imports no compute or domain module.
+- Phase 13 closed the migration. The remaining dead delegation helpers were
+  removed, the workflow-definition default was deleted so a record without one
+  fails closed, and three durable gates were added:
+  `test_agent_v1_retirement.py`, `test_agent_final_boundaries.py`, and
+  `test_agent_definition_of_done.py`.
 - Phase 11 consolidated routing and dispatch. A request is classified once, in
   `agent/routing.py`, and the normalized route plus the selected engine are
   persisted before thread launch and projected by `store.run_summary(...)` as

@@ -13,6 +13,30 @@ from app.agent import runner as agent_runner  # noqa: E402
 from app.agent import store as agent_store  # noqa: E402
 
 
+def _analysis_definitions_response(user: str) -> dict:
+    """Answer for whichever frame the analysis-definitions worker was given."""
+    payload = json.loads(user.split("\n\nYour previous response")[0])
+    frame = payload["TARGET FRAME"]
+    table = frame["table"]
+    columns = [column["name"] for column in frame["columns"]]
+    key = "invoice_no" if "invoice_no" in columns else columns[0]
+    return {
+        "analyses": [
+            {
+                "title": f"Duplicates in {table}",
+                "kind": "analytics",
+                "spec": {"test": "duplicates", "params": {"columns": [key]}},
+                "note": "Reused keys signal double postings.",
+            },
+            {
+                "title": f"Preview {table}",
+                "kind": "python",
+                "spec": {"code": f"result = tables['{table}'].head(3)"},
+            },
+        ]
+    }
+
+
 def _document_analysis_response(user: str) -> dict:
     source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].strip()
     page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
@@ -75,83 +99,11 @@ class FakeAgentLLM:
     response (a dict, or a callable receiving the user message) per test."""
 
     DEFAULTS = {
-        "agent:planning": {
-            "domain": "sales",
-            "confidence": "high",
-            "table_roles": {
-                "transactions": "fact: invoice lines",
-                "customers": "dimension: customer master",
-            },
-            "assumptions": ["Amounts are in a single currency."],
-            "warnings": [],
-            "analysis_tasks": [
-                {
-                    "table": "transactions",
-                    "title": "Check duplicate invoices",
-                    "detail": "invoice_no repeats would signal double postings.",
-                }
-            ],
-        },
-        "agent:rules": {
-            "rules": [
-                {
-                    "column": "amount",
-                    "check": "range",
-                    "params": {"min": 0, "max": 100000},
-                    "severity": "warn",
-                    "rationale": "Amounts outside this band look implausible.",
-                }
-            ]
-        },
-        "agent:analyses": {
-            "library": [
-                {
-                    "table": "transactions",
-                    "test": "duplicates",
-                    "params": {"columns": ["invoice_no"]},
-                    "title": "Duplicate invoices",
-                    "rationale": "Reused invoice numbers.",
-                }
-            ],
-            "custom": [
-                {
-                    "table": "transactions",
-                    "title": "Spend by customer",
-                    "code": (
-                        "result = transactions.group_by('cust_id')"
-                        ".agg(pl.col('amount').sum())"
-                    ),
-                    "rationale": "Concentration by customer.",
-                }
-            ],
-        },
-        "agent:dashboard": {
-            "queries": [
-                {
-                    "table": "transactions",
-                    "title": "Amount by customer",
-                    "spec": {
-                        "group_by": ["cust_id"],
-                        "aggs": [{"column": "amount", "func": "sum"}],
-                        "sort": [{"column": "amount_sum", "desc": True}],
-                    },
-                    "viz": {"type": "bar", "x": "cust_id", "y": ["amount_sum"]},
-                    "rationale": "Concentration view.",
-                }
-            ]
-        },
+        # The stages the surviving engines actually call. The deleted v1
+        # pipeline's planning/rules/analyses/dashboard/summary scripts went
+        # with it in Phase 12.
+        "agent:analysis_definitions": _analysis_definitions_response,
         "agent:fix_code": {"code": "result = transactions.head(0)"},
-        "agent:summary": {
-            "findings": [
-                {
-                    "severity": "medium",
-                    "statement": "Invoice 1006 appears twice for 150.00.",
-                    "basis": "observed",
-                    "evidence_refs": [],
-                }
-            ],
-            "summary_markdown": "# Analyst Summary\n\nScripted test summary.",
-        },
         "agent:document_analysis_map": _document_analysis_response,
     }
 

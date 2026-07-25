@@ -1,16 +1,20 @@
-"""LLM-driven data-analyst agent.
+"""The audit agent: two schedulers, one durable run store, one router.
 
-An agent run populates a workspace after upload: it profiles the tables,
-infers the audit domain, creates high-confidence joins, proposes validation
-rules, runs library and custom analytics, curates dashboard tiles, and writes
-an evidence-linked summary — either autonomously (auto mode) or pausing for
-editable approval of every mutation batch (permission mode).
+A request becomes exactly one durable run. ``routing`` classifies it once and
+persists the selected engine before the worker thread starts, ``runner``
+launches the thread and owns the control surface, and the engine does the work:
 
-Modules:
-    store    durable run persistence (run.json + events.jsonl per run)
-    suggest  deterministic, profile-based validation-rule suggestions
-    joins    deterministic join-candidate inference and diagnostics
-    prompts  LLM prompt builders and JSON-response parsing
-    runner   the run state machine, worker thread, and control surface
-    summary  findings assembly and markdown rendering
+    routing              one classifier, one normalized route, one engine
+    runtime/             RunRuntime, ModelGateway, the domain-neutral
+                         WorkflowRunner, the unit pipeline, and interactions
+    action_runner        the bounded action-DAG scheduler
+    intake_runner        the one retained protocol runner (folder intake)
+    workflows/           authoritative capability graphs
+    capabilities/        readiness and semantic unit expansion per graph
+    context/             declared context presets, resolver, and manifests
+    workers/             registered model workers (bundle in, proposal out)
+    executors/           registered deterministic, conflict-aware commits
+    store                durable run persistence (run.json + events.jsonl)
+    actions / ledger     the registered action catalog and its DAG validation
+    suggest / joins      deterministic local diagnostics used by both engines
 """

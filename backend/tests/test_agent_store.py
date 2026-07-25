@@ -10,7 +10,7 @@ def test_new_run_persists_and_loads(workspace_with_data):
     run = store.new_run(workspace_with_data, "auto", {"objective": "revenue audit"})
     loaded = store.load_run(workspace_with_data, run["id"])
     assert loaded["status"] == "queued"
-    assert loaded["engine"] == store.LEGACY_ANALYSIS_ENGINE
+    assert loaded["engine"] == store.INTAKE_ENGINE
     assert loaded["mode"] == "auto"
     assert loaded["context"]["objective"] == "revenue audit"
     assert loaded["plan"] == {"stages": []}
@@ -96,20 +96,16 @@ def test_run_json_is_valid_json_on_disk(workspace_with_data):
     assert payload["id"] == run["id"]
 
 
-@pytest.mark.parametrize(
-    ("kind", "engine"),
-    [
-        ("analysis", store.LEGACY_ANALYSIS_ENGINE),
-        ("intake", store.INTAKE_ENGINE),
-    ],
-)
-def test_new_run_persists_explicit_engine_for_each_live_protocol(
-    workspace_with_data, kind, engine
-):
-    run = store.new_run(workspace_with_data, "auto", None, kind=kind)
+def test_new_run_persists_the_one_retained_protocol_engine(workspace_with_data):
+    run = store.new_run(workspace_with_data, "auto", None, kind="intake")
 
-    assert run["engine"] == engine
-    assert store.load_run(workspace_with_data, run["id"])["engine"] == engine
+    assert run["engine"] == store.INTAKE_ENGINE
+    assert store.load_run(workspace_with_data, run["id"])["engine"] == store.INTAKE_ENGINE
+
+
+def test_new_run_rejects_the_retired_analysis_kind(workspace_with_data):
+    with pytest.raises(WorkspaceError, match="run kind"):
+        store.new_run(workspace_with_data, "auto", None, kind="analysis")
 
 
 def test_new_command_run_chooses_no_engine_before_routing(workspace_with_data):
@@ -123,5 +119,5 @@ def test_new_command_run_chooses_no_engine_before_routing(workspace_with_data):
     assert store.run_summary(run)["engine"] is None
     assert store.is_command_run(run) is True
     assert store.is_command_run(
-        store.new_run(workspace_with_data, "auto", None, kind="analysis")
+        store.new_run(workspace_with_data, "auto", None, kind="intake")
     ) is False

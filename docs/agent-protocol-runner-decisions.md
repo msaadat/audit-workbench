@@ -236,10 +236,11 @@ registered actions.
 | `action` | Target scheduler |
 | `intake` | **Retained** by this decision record; a justified protocol engine in the target schema |
 | `doc_test` | **Deleted** |
-| `analysis` | Still scheduled for deletion in Phase 12 |
+| `analysis` | **Deleted** in Phase 12 with the `_Runner` pipeline itself; exploratory analysis is the declared `analysis_workflow_v1` graph |
 
-`P11.1` finalized the supported engine set against this table:
-`store.RUN_ENGINES == {workflow, action, intake, analysis}`. A record whose
+`P11.1` finalized the supported engine set against this table and `P12.2`
+narrowed it to its final value:
+`store.RUN_ENGINES == {workflow, action, intake}`. A record whose
 engine is absent or outside that set fails closed in
 `routing.dispatch_engine(...)`, and nothing infers an engine from `kind`,
 `schema_version`, or record contents. A command run created before routing has

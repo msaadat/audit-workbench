@@ -32,6 +32,17 @@ router = APIRouter(prefix="/api", tags=["agent"])
 POLL_SECONDS = 0.4
 HEARTBEAT_SECONDS = 15.0
 
+# The generic creation endpoint's historical default was the fixed v1 analysis
+# pipeline. Phase 12 retired that runner: an exploratory analysis request is now
+# the declared ``analysis_workflow_v1`` graph, requested through its registered
+# goal template.
+ANALYSIS_RUN_KIND = "analysis"
+ANALYSIS_GOAL_TEMPLATE = "data_analysis"
+ANALYSIS_COMMAND_TEXT = (
+    "Analyze the available tables: infer relationships, materialize the joins "
+    "the evidence supports, and run the resulting analyses."
+)
+
 
 @router.get("/agent/status")
 async def agent_status():
@@ -65,13 +76,34 @@ async def create_run(workspace_id: str, payload: dict = Body(default={})):
                 command, payload.get("parent_run_id"),
                 payload.get("context") or {},
             )
+        elif (payload.get("kind") or ANALYSIS_RUN_KIND) == ANALYSIS_RUN_KIND:
+            # Exploratory data analysis is a declared workflow, not a fixed
+            # pipeline: the request becomes a command run requesting
+            # ``analysis.executed`` through the registered ``data_analysis``
+            # goal template. Routing, not this endpoint, selects the engine.
+            context = dict(payload.get("context") or {})
+            objective = str(context.get("objective") or "").strip()
+            run = await asyncio.to_thread(
+                runner.start_command_run,
+                ws,
+                payload.get("mode") or "auto",
+                {
+                    "source": "tab_button",
+                    "text": objective or ANALYSIS_COMMAND_TEXT,
+                    "goal_template": ANALYSIS_GOAL_TEMPLATE,
+                    "target_refs": payload.get("target_refs") or ["workspace:current"],
+                    "generation_mode": payload.get("generation_mode") or "reuse_existing",
+                },
+                payload.get("parent_run_id"),
+                context,
+            )
         else:
             run = await asyncio.to_thread(
                 runner.start_run,
                 ws,
                 payload.get("mode") or "auto",
                 payload.get("context") or {},
-                kind=payload.get("kind") or "analysis",
+                kind=payload.get("kind"),
             )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error

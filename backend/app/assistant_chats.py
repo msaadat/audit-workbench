@@ -592,7 +592,7 @@ def _process_message(
             stored.update(state="complete", resolved_intent="interaction_response", outcome=outcome)
         _finalize(workspace, chat_id, user["id"], done)
         return outcome
-    if active and active.get("schema_version", 1) >= 2:
+    if active and store.is_command_run(active):
         interaction = next((item for item in active.get("interactions") or [] if item.get("status") == "pending" and item.get("type") == "clarification"), None)
         if interaction:
             runner.resolve_interaction(workspace, active["id"], interaction["id"], {"text": user["content"]})
@@ -605,7 +605,7 @@ def _process_message(
     if requested == "auto":
         resolved = _deterministic_intent(user["content"])
         if resolved is None:
-            classified = _classifier(workspace, record, user["content"], bool(active and active.get("schema_version", 1) >= 2))
+            classified = _classifier(workspace, record, user["content"], bool(active and store.is_command_run(active)))
             resolved = classified["intent"]
             clarification = classified.get("clarification")
         else:
@@ -676,8 +676,10 @@ def _process_message(
     # Action routing never bypasses the command runner.
     if not llm.agent_status().get("configured"):
         raise llm.LLMError("The action agent model is not configured.")
-    if active and active.get("schema_version", 1) < 2:
-        text = "A legacy run is active. Wait for it to finish, or pause or cancel it before starting another action."
+    # The only non-command run is folder intake, which owns the workspace
+    # until its staged batch is applied.
+    if active and not store.is_command_run(active):
+        text = "A folder import is running. Wait for it to finish, or pause or cancel it before starting another action."
         outcome = {"kind": "clarification_requested", "run_id": active["id"]}
         def done(rec, stored):
             stored.update(state="complete", resolved_intent="clarify", outcome=outcome)
@@ -746,7 +748,7 @@ def _process_message(
             outcome = {"kind": "run_started", "run_id": run["id"], "command_id": run["command"]["id"]}
         except runner.AgentBusyError:
             raced = _active_run(workspace)
-            if not raced or raced.get("schema_version", 1) < 2:
+            if not raced or not store.is_command_run(raced):
                 raise
             response = runner.steer(
                 workspace, raced["id"], user["content"], chat_id=chat_id,

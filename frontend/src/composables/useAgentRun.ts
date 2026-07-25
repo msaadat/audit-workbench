@@ -5,7 +5,6 @@ import type {
   AgentDecision,
   AgentInteraction,
   AgentRun,
-  AgentRunContext,
   AgentRunSummary,
   AssistantStatus,
   WorkspaceChange,
@@ -172,12 +171,10 @@ function connect(workspaceId: string, runId: string) {
   const refetch = () => scheduleRefetch(workspaceId, runId)
   for (const type of [
     'run_status',
-    'plan_update',
     'task_update',
     'approval_request',
     'approval_resolved',
     'message',
-    'discovery',
     'warning',
     'summary_ready',
     'command_queued',
@@ -287,28 +284,6 @@ export function useAgentRun(workspaceId: string) {
     else disconnect(workspaceId)
   }
 
-  async function startRun(
-    mode: AgentMode,
-    context: AgentRunContext,
-    kind: AgentRun['kind'] = 'analysis',
-  ) {
-    store.starting = true
-    try {
-      const run = await api.post<AgentRun>(
-        `/api/workspaces/${workspaceId}/agent/runs`,
-        { mode, context, kind },
-      )
-      store.run = run
-      store.drawerOpen = true
-      store.drawerAutoOpened = true
-      connect(workspaceId, run.id)
-      void loadRuns(workspaceId)
-      return run
-    } finally {
-      store.starting = false
-    }
-  }
-
   async function startCommand(
     mode: AgentMode,
     text: string,
@@ -404,7 +379,6 @@ export function useAgentRun(workspaceId: string) {
     refreshStatus,
     loadRuns: () => loadRuns(workspaceId),
     openRun,
-    startRun,
     startCommand,
     pause,
     resume,

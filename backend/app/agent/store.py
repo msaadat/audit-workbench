@@ -35,29 +35,23 @@ ACTION_ENGINE = "action"
 
 # ``intake`` is a justified protocol engine in the target schema: folder intake
 # is a single-unit protocol over a staged batch rather than a capability graph
-# (``docs/agent-protocol-runner-decisions.md``). ``analysis`` is the legacy
-# fixed-stage pipeline, retired in Phase 12. Neither is ever inferred from
-# ``kind`` when a run is loaded or dispatched.
-LEGACY_ANALYSIS_ENGINE = "analysis"
+# (``docs/agent-protocol-runner-decisions.md``). It is the only one left —
+# Phase 12 retired the fixed-stage ``analysis`` pipeline and its engine value —
+# and it is never inferred from ``kind`` when a run is loaded or dispatched.
 INTAKE_ENGINE = "intake"
+INTAKE_RUN_KIND = "intake"
 
 COMMAND_ENGINES = frozenset({WORKFLOW_ENGINE, ACTION_ENGINE})
-# The finalized supported engine set (P11.1). Dispatch accepts exactly these
-# values; a record whose engine is missing or outside this set fails closed.
-RUN_ENGINES = frozenset(
-    {
-        *COMMAND_ENGINES,
-        LEGACY_ANALYSIS_ENGINE,
-        INTAKE_ENGINE,
-    }
-)
+# The final supported engine set (P11.1, narrowed by P12.2). Dispatch accepts
+# exactly these values; a record whose engine is missing or outside this set
+# fails closed.
+RUN_ENGINES = frozenset({*COMMAND_ENGINES, INTAKE_ENGINE})
 # ``start_run`` selects a protocol engine from its explicit ``kind`` argument at
 # *creation* time and persists it. This mapping is a creation-time contract, not
 # a dispatch fallback: nothing reads it while loading, resuming, or dispatching.
-PROTOCOL_ENGINE_BY_RUN_KIND = {
-    "analysis": LEGACY_ANALYSIS_ENGINE,
-    "intake": INTAKE_ENGINE,
-}
+PROTOCOL_ENGINE_BY_RUN_KIND = {INTAKE_RUN_KIND: INTAKE_ENGINE}
+PROTOCOL_RUN_KINDS = frozenset(PROTOCOL_ENGINE_BY_RUN_KIND)
+COMMAND_RUN_KIND = "audit"
 
 
 def is_command_run(run: dict) -> bool:
@@ -142,13 +136,14 @@ def new_run(
     context: dict | None = None,
     parent_run_id: str | None = None,
     limits: dict | None = None,
-    kind: str = "analysis",
+    kind: str = INTAKE_RUN_KIND,
     chat_id: str | None = None,
     source_message_id: str | None = None,
 ) -> dict:
+    """Create the one retained protocol run record (folder intake)."""
     if mode not in MODES:
         raise WorkspaceError(f"Agent mode must be one of: {', '.join(MODES)}.")
-    if kind not in ("analysis", "intake"):
+    if kind not in PROTOCOL_RUN_KINDS:
         raise WorkspaceError("Unknown agent run kind.")
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -171,8 +166,7 @@ def new_run(
         "activity": None,
         "activity_revision": 0,
         "limits": dict(limits or {}),
-        "usage": {"llm_turns": 0, "tool_calls": 0, "custom_analyses": 0},
-        "discovery": {},
+        "usage": {"llm_turns": 0, "tool_calls": 0},
         "plan": {"stages": []},
         "approvals": [],
         "messages": [],
@@ -232,7 +226,7 @@ def new_command_run(
         ).strip() or None,
         "chat_id": str(command.get("chat_id") or "").strip() or None,
         "source_message_id": str(command.get("source_message_id") or "").strip() or None,
-        "kind": "audit",
+        "kind": COMMAND_RUN_KIND,
         "mode": mode,
         "context": dict(context or {}),
         "command": {
@@ -263,8 +257,8 @@ def new_command_run(
             "max_model_turns": 40, "max_execution_attempts": 2,
             **dict(limits or {}),
         },
-        # Compatibility projection consumed by older history/drawer clients.
-        "discovery": {}, "plan": {"stages": []}, "approvals": [],
+        # Shared drawer projections written by whichever engine runs the record.
+        "plan": {"stages": []}, "approvals": [],
         "messages": [], "artifacts": [], "findings": [],
         "warnings": [], "summary_markdown": None, "error": None,
         "cancellation": None,
@@ -309,9 +303,13 @@ def load_run(workspace: Workspace, run_id: str) -> dict:
 
 
 def _hydrate_run(run: dict) -> None:
-    """Read-compatible defaults; schema-v1 history is never rewritten."""
+    """Fill in optional fields of the supported record shapes.
+
+    This is not a converter: nothing here infers an engine, a run kind, or a
+    schema version from record contents. A record that predates the supported
+    shapes stays as it is on disk and fails closed at dispatch.
+    """
     run.setdefault("schema_version", 1)
-    run.setdefault("kind", "analysis")
     run.setdefault("route", None)
     run.setdefault("chat_id", None)
     run.setdefault("source_message_id", None)
@@ -319,7 +317,6 @@ def _hydrate_run(run: dict) -> None:
     run.setdefault("activity_revision", 0)
     for stage in (run.get("plan") or {}).get("stages") or []:
         for task in stage.get("tasks") or []:
-            task.setdefault("context_notes", list(task.get("disclosure") or []))
             task.setdefault("started_at", None)
             task.setdefault("finished_at", None)
     if run["schema_version"] >= 2:
@@ -350,7 +347,10 @@ def _hydrate_run(run: dict) -> None:
             pending.setdefault("context_refs", [])
     if run["schema_version"] >= 3:
         workflow = run.setdefault("workflow", {})
-        workflow.setdefault("definition", "audit_workflow_v2")
+        # The workflow definition is never defaulted: routing persists the
+        # authoritative id when it materializes the graph, and a record without
+        # one fails closed in ``workflow_dispatch`` rather than being guessed
+        # into the audit composition.
         workflow.setdefault("requested_outcomes", [])
         workflow.setdefault("target_refs", ["workspace:current"])
         workflow.setdefault("generation_mode", "reuse_existing")
@@ -429,7 +429,7 @@ def run_summary(run: dict) -> dict:
         "source_message_id": run.get("source_message_id"),
         "engine": run.get("engine"),
         "route": run.get("route"),
-        "kind": run.get("kind", "analysis"),
+        "kind": run.get("kind"),
         "mode": run["mode"],
         "status": run["status"],
         "created": run["created"],
@@ -438,10 +438,9 @@ def run_summary(run: dict) -> dict:
         "duration_ms": elapsed_ms(run.get("started"), run.get("finished")),
         "activity": run.get("activity"),
         "activity_revision": int(run.get("activity_revision") or 0),
-        # Aggregate counters explain historical runs without fabricating the
-        # raw calls that predate workspace Debug tracing.
+        # Aggregate counters explain a run without fabricating the raw calls
+        # that workspace Debug tracing records separately.
         "usage": dict(run.get("usage") or {}),
-        "domain": (run.get("discovery") or {}).get("domain"),
         "task_counts": counts,
         "error": run.get("error"),
         "cancellation": run.get("cancellation"),
@@ -526,7 +525,6 @@ def recover_orphans(workspace: Workspace, live_run_ids: set[str]) -> list[str]:
             continue
         try:
             run = json.loads(path.read_text(encoding="utf-8"))
-            run.setdefault("kind", "analysis")
         except (OSError, json.JSONDecodeError):
             continue
         if run["status"] in ACTIVE_STATUSES and run["id"] not in live_run_ids:

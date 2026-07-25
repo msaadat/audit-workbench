@@ -27,29 +27,28 @@ no historical reader or resume adapter is retained.
 
 ## Implementation Status And Session Handoff
 
-**Last updated:** 2026-07-25
+**Last updated:** 2026-07-26
 
 **Current position:**
 
-- Overall migration: in progress.
-- Current phase: Phase 10 (complete).
-- Current task: `P11.1` — Phase 10 is closed. `WorkflowRunner` now schedules four
-  declared workflows: the audit lifecycle (`audit_workflow_v2`), the exploratory
-  data-analysis workflow (`analysis_workflow_v1`), the document-analysis workflow
-  (`documents_workflow_v1`), and the standalone document-test workflow
-  (`doc_tests_workflow_v1`). Exactly one protocol runner survives — `IntakeRunner`
-  — with a recorded justification and on the target runtime/worker/context
-  contracts. `P11.1` therefore finalizes the supported engine set as
-  `workflow`, `action`, `intake` (justified), and `analysis` (Phase 12 removes
-  it).
-- Last completed task: `P10.7` — the phase gate is green: the full backend suite
-  passed `887` tests and the frontend production build passed. See the Phase 10
-  note below for both decisions, the shared document-test binder, and the three
-  recorded deviations.
-- Prior tasks: Phase 9 unified document analysis on the same scheduler. Phase 8
-  added the exploratory data-analysis workflow. Phase 7 closed with every audit
-  capability on a native scheduler path.
+- Overall migration: **complete**. Every phase, `P0.1` through `P13.4`, is
+  closed.
+- Current phase: Phase 13 (complete).
+- Current task: none. The architecture in
+  [agent-architecture.md](agent-architecture.md) is the implemented state, and
+  its definition of done is mechanically checked by
+  `backend/tests/test_agent_definition_of_done.py`.
+- Last completed task: `P13.4` — the definition-of-done gate, the final static
+  boundary gate, and the v1 retirement gate all pass; the full backend suite and
+  the frontend production build pass.
+- Prior tasks: Phase 12 retired v1. Phase 11 gave every request one route and one
+  engine. Phase 10 settled both protocol runners. Phase 9 unified document
+  analysis, Phase 8 added the exploratory data-analysis workflow, and Phase 7
+  put every audit capability on a native scheduler path.
 - Active blockers: none.
+- Future work that is deliberately *not* part of this migration: dissolving
+  `BaseRunner` into the runtime (see the Phase 13 note), generalized freshness
+  assessment, and automatic stale propagation.
 
 The checklists under each phase are the durable execution ledger for this
 migration. A task ID identifies the smallest intended implementation and review
@@ -73,9 +72,9 @@ status notes below.
 | 8 | Complete | — |
 | 9 | Complete | — |
 | 10 | Complete | — |
-| 11 | Ready | `P11.1` |
-| 12 | Pending routing consolidation | `P12.1` |
-| 13 | Pending final cleanup | `P13.1` |
+| 11 | Complete | — |
+| 12 | Complete | — |
+| 13 | Complete | — |
 
 **Status update rules:**
 
@@ -1908,6 +1907,108 @@ status notes below.
   crash, and retry/continue parent links. The full backend suite passed `939`
   tests in `156.05s`, and the frontend type-check and production build passed.
   The exact next task is `P12.1`, and no Phase 12 work has started.
+- **Phase 12 complete (2026-07-26).** The fixed-stage v1 analysis pipeline is
+  deleted, not deprecated.
+  **(1) `P12.1` — the one supported v1 caller is now a workflow request.** The
+  live inventory was short: `POST /api/workspaces/{id}/agent/runs` with no
+  `command` (whose `kind` defaulted to `analysis`), `runner.steer(...)`'s
+  terminal-run follow-up, and the exported-but-uncalled
+  `useAgentRun.startRun(...)`. Assistant chat never created a v1 run — its only
+  `start_run` call is the validated `folder_intake` special case. The endpoint's
+  non-command path now calls `start_command_run` with the registered
+  `data_analysis` goal template, so the request resolves to
+  `analysis_workflow_v1` / `analysis.executed` through the same router as every
+  other command; `context.objective` becomes the command text, `target_refs`
+  and `generation_mode` pass through, and `kind="intake"` still creates the
+  protocol run. Any other `kind` fails closed.
+  **(2) `P12.2` — deletion, not relocation.** Gone: `_Runner` and its eight
+  stages, `STAGES`, the five `_validate_*_payload` functions,
+  `MAX_CUSTOM_ANALYSES`/`MAX_QUERY_TILES`, the `agent:planning`/`agent:rules`/
+  `agent:analyses`/`agent:dashboard`/`agent:summary` prompts and their user
+  builders, `agent/summary.py`, `store.LEGACY_ANALYSIS_ENGINE`, the `analysis`
+  run kind, and the `discovery` / `domain` / `custom_analyses` projections.
+  `runner.py` dropped every compute and domain import and is now a process
+  layer: record creation, the one-live-run rule, thread launch, engine dispatch,
+  recovery, and the control surface. `store._hydrate_run` no longer defaults a
+  record's `kind`, and `assistant_chats`'s three `schema_version < 2` guards
+  became `store.is_command_run(...)` — the same record-shape predicate Phase 11
+  established — with the "legacy run is active" message replaced by the accurate
+  "a folder import is running".
+  **(3) Recorded behavior change: permission mode over the generic endpoint.**
+  That endpoint used to run v1 in permission mode; it now runs the analysis
+  workflow, which gates `analysis_definitions` instead of joins/rules/tiles.
+  Exercising that path exposed a real latent defect: a worker proposal is
+  recursively frozen (`MappingProxyType`/tuples), and `BaseRunner.proposal_item`
+  put it into `run.json` verbatim, where `write_json_atomic`'s plain
+  `json.dumps` raised `Object of type mappingproxy is not JSON serializable` and
+  failed the run. `proposal_item` now projects `spec`/`evidence` back to plain
+  JSON at the one boundary every engine's approval batch passes through.
+  **(4) Test migration.** `test_agent_runner.py` was rebuilt around what
+  `runner.py` now is. The provider-accounting and provider-concurrency
+  characterizations moved onto `ActionRunner` (they always described the shared
+  gateway), resume-to-completion moved onto the intake protocol run, and two new
+  tests cover the terminal-follow-up rules. The v1 behavior tests — permission
+  gating, degradation, rule preflight, custom-code repair, rerun reconciliation,
+  and the v1 prompt-content characterization — were deleted with the code they
+  described; their target-architecture equivalents live in the workflow,
+  executor, and context suites. `conftest.FakeAgentLLM` now scripts the stages
+  the surviving engines actually call.
+  **(5) `P12.3` verification.** New `tests/test_agent_v1_retirement.py` passed
+  `14` tests covering the deleted implementation, the unsupported engine value
+  and run kind, the absent projections, the workflow-routed endpoint, an unknown
+  `kind` failing closed, and the frontend contract (`engine`/`kind` unions,
+  no `AgentDiscovery`, no `startRun` in any component). The full backend suite
+  passed `936` tests at this point and the frontend type-check and production
+  build passed.
+- **Phase 13 complete (2026-07-26).** The migration is closed.
+  **(1) `P13.1` — remove what has no caller; keep what does, and say why.**
+  Deleted: `BaseRunner.llm_markdown` and `BaseRunner.note_context` (the latter
+  was a v1-only writer, so the `context_notes` task projection went with it,
+  including its frontend type and rendering), and the
+  `workflow.setdefault("definition", "audit_workflow_v2")` read-time default —
+  a record without a definition now fails closed in `workflow_dispatch` instead
+  of being guessed into the audit composition. `agent/__init__.py`'s module map
+  was rewritten from the v1 description to the target one.
+  **Recorded decision: `BaseRunner` is retained.** Its ~19 one-line
+  runtime pass-throughs (`save`, `emit`, `set_status`, `checkpoint`,
+  `request_approval`, …) still have ~150 live call sites across `ActionRunner`,
+  `IntakeRunner`, and the four `*_execution` adapters. Removing them is a
+  mechanical rename, not a design change, and it would not delete the class:
+  `BaseRunner` also owns the durable *projections* every engine writes — the
+  task/stage plan, artifact entries, approval batches, proposal items, and the
+  model-provenance callbacks. Nothing in it duplicates runtime logic. It is
+  therefore documented as the shared run-projection surface rather than as a
+  temporary facade, in `AGENTS.md` and `agent-architecture.md`. Dissolving it
+  into the runtime is recorded above as future work outside this migration.
+  **(2) `P13.2` — the boundaries are now mechanical.** New
+  `tests/test_agent_final_boundaries.py` (`10` tests) resolves relative imports
+  per package and asserts: a workflow definition imports only graph primitives;
+  a capability declaration never imports a scheduler, the run store, a worker,
+  an executor, routing, or `llm`; a worker never imports `app.workspaces`,
+  `workspace_transactions`, the run store, an executor, or a scheduler; an
+  executor never imports a worker, the runtime package, or the context resolver;
+  context resolution never imports `llm`, a worker, an executor, or a scheduler;
+  the two schedulers do not import each other; the process layer imports no
+  capability, workflow, worker, or executor module; and `llm.chat`/`chat_stream`
+  is called from exactly one file, `runtime/model_gateway.py`.
+  **(3) `P13.4` — the definition of done is a test.** New
+  `tests/test_agent_definition_of_done.py` (`22` tests) asserts one bullet of
+  §13 each: the engine set is exactly the two schedulers plus the justified
+  protocol runner; schedulers compose `RunRuntime` and `WorkflowRunner` inherits
+  nothing; no scheduler method names an audit artifact; the audit graph is
+  declared once and the grouped capability modules never restate an edge; the
+  ledger holds no audit policy; every declared context preset is registered;
+  analysis ends at `analysis.executed`; the audit graph reaches document
+  analysis and document tests through the standalone graphs' own binder and
+  expander objects (identity, not copies); seven superseded modules have no
+  import spec; no `compat` path or class alias exists; and a record without a
+  supported engine — or a workflow record without a definition — fails closed.
+  **(4) `P13.3` verification.** `AGENTS.md`, `agent-architecture.md`,
+  `agent-runtime-active-surface-inventory.md`, and
+  `agent-protocol-runner-decisions.md` were updated to the built state. The
+  focused Phase 12/13 selection passed `167` tests in `42.16s`; the final full
+  backend gate passed **`968` tests** in `287.35s`; the frontend type-check and
+  production build passed.
 - Clean-slate cutover is an explicit project assumption: all pre-cutover
   workspaces, runs, chats, artifacts, and debug records are disposable and
   unsupported after cutover.
@@ -3066,13 +3167,13 @@ runner without preserving its records or projections.
 
 **Tasks:**
 
-- [ ] `P12.1` Inventory all live v1 creation, API, UI, and chat callers, then
+- [x] `P12.1` Inventory all live v1 creation, API, UI, and chat callers, then
   route supported exploratory-analysis paths to the Phase 8 workflow with
   focused caller and projection tests.
-- [ ] `P12.2` Fail closed or clarify unsupported v1-only requests, remove every
+- [x] `P12.2` Fail closed or clarify unsupported v1-only requests, remove every
   v1 writer, update remaining active consumers, and delete `_Runner`, `STAGES`,
   validators, limits, and obsolete projections.
-- [ ] `P12.3` Prove no live caller, engine value, import, API response, or UI path
+- [x] `P12.3` Prove no live caller, engine value, import, API response, or UI path
   references v1 and that the phase gate passes.
 
 **Work:**
@@ -3094,14 +3195,14 @@ are stable.
 
 **Tasks:**
 
-- [ ] `P13.1` Remove temporary delegation facades, aliases, empty modules,
+- [x] `P13.1` Remove temporary delegation facades, aliases, empty modules,
   duplicate writers/readers, obsolete projections, and re-export shims; add
   fail-closed tests for records without a supported explicit engine.
-- [ ] `P13.2` Add final static import-boundary and single-provider-path
+- [x] `P13.2` Add final static import-boundary and single-provider-path
   enforcement across runtime, schedulers, workers, executors, and domains.
-- [ ] `P13.3` Update architecture, API, telemetry, developer, cutover, and
+- [x] `P13.3` Update architecture, API, telemetry, developer, cutover, and
   handoff docs; run the full backend suite and frontend build.
-- [ ] `P13.4` Prove the definition of done, mark the migration complete, and
+- [x] `P13.4` Prove the definition of done, mark the migration complete, and
   verify that no compatibility reader or package remains.
 
 **Work:**

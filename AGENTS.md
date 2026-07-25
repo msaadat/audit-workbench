@@ -118,10 +118,14 @@ backend/app/
    |                             precedence, the bounded router worker, and
    |                             route/engine persistence
    |- store.py                 - durable run storage in AgentRuns/
-   |- base.py                  - temporary BaseRunner delegation facade and
-   |                             task/artifact hooks for current runners
-   |- runner.py                - thread orchestration, active-handle registry,
-   |                             recovery, pause/resume/cancel/retry/continue
+   |- base.py                  - the shared run-projection base: plan/tasks,
+   |                             artifacts, approval batches, proposal items,
+   |                             and model-call provenance, over an injected
+   |                             RunRuntime and ModelGateway
+   |- runner.py                - process layer only: record creation, the
+   |                             one-live-run rule, thread launch, the
+   |                             active-handle registry, recovery, and
+   |                             pause/resume/cancel/retry/continue
    |- action_runner.py         - action-graph runner for isolated mutations
    |- workflow.py              - generic capability graph primitives
    |- workflow_dispatch.py     - selects a workflow composition from the run's
@@ -142,8 +146,9 @@ backend/app/
    |- artifact_index.py        - artifact selectors and canonical resolution
    |- joins.py                 - deterministic join inference/diagnostics
    |- suggest.py               - deterministic validation rule suggestions
-   |- prompts.py               - bounded prompts keyed by [agent:<stage>] tags
-   |- summary.py               - finding validation and fallback markdown
+   |- prompts.py               - the action engine's own bounded prompts, keyed
+   |                             by [agent:<stage>] tags; every capability
+   |                             prompt lives with its registered worker
    `- intake_runner.py         - retained single-unit folder-intake protocol
                                  runner (RunRuntime, registered worker, declared
                                  context, proposal-only pipeline unit)
@@ -210,20 +215,25 @@ frontend/src/
 - Assistant artifacts are revisioned and rerunnable; editable Python artifacts
   are re-executed locally through the sandbox.
 
-### Agent generations
+### Engines
 
-One durable run store supports multiple runner styles:
+One durable run store, two scheduling engines, and one retained protocol
+runner. `store.RUN_ENGINES` is final at `{workflow, action, intake}`; a record
+whose engine is absent or outside that set fails closed.
 
 ```text
-BaseRunner
-|- _Runner                  legacy v1 fixed analysis pipeline
+BaseRunner                  shared run projections (plan/tasks, artifacts,
+|                           approvals, proposal items, model provenance)
 |- IntakeRunner             one staged import batch (retained protocol runner)
 |- ActionRunner             action graph
 |- AuditWorkflowExecution   audit execution bindings and projections
+|- AnalysisWorkflowExecution analysis execution bindings and projections
 |- DocumentWorkflowExecution document execution bindings and projections
 `- DocTestWorkflowExecution document-test execution bindings and projections
 
-WorkflowRunner             domain-neutral capability graph scheduler
+WorkflowRunner             domain-neutral capability graph scheduler; composed
+                           with RunRuntime and validated executions, inherits
+                           nothing
 ```
 
 - `ActionRunner` is still used for isolated mutations and repairable action
@@ -323,19 +333,19 @@ WorkflowRunner             domain-neutral capability graph scheduler
   calling, derives the `[agent:<stage>]` tag that drives UI labels and
   per-worker accounting, holds a process-wide semaphore keyed on
   `provider:model`, records debug telemetry, and appends hash-only provenance.
-  `BaseRunner._llm_content` is a temporary delegation facade for existing
-  callers.
+  `BaseRunner._llm_content` is the single call site every engine uses to reach
+  it.
 - `agent.runtime` defines the target `RunRuntime` and `ModelGateway` structural
   contracts. `DefaultRunRuntime` owns synchronized run saves, event emission,
   durable run timing, status and warning transitions, activity/model-wait
   projections, budgets, dynamic limits, deadlines, checkpoints, controls,
-  inbox draining, approvals, and auditor interactions. `BaseRunner` delegates
-  that surface while retaining temporary task and artifact-activity hooks.
-  `ActionRunner` accepts an optional injected `RunRuntime` while preserving its
-  existing three-argument default construction. The domain-neutral
-  `WorkflowRunner` receives `RunRuntime` and all scheduler dependencies by
-  composition; the temporary audit execution adapter still uses `BaseRunner`
-  hooks until its Phase 7 capability-family migrations.
+  inbox draining, approvals, and auditor interactions. `BaseRunner` forwards to
+  that surface and owns only the shared durable *projections*: the task/stage
+  plan, artifact entries, approval batches, and proposal items. `ActionRunner`,
+  `IntakeRunner`, and every workflow execution adapter accept an injected
+  `RunRuntime` while preserving their existing default construction. The
+  domain-neutral `WorkflowRunner` receives `RunRuntime` and all scheduler
+  dependencies by composition and inherits nothing.
 - `documents.document_chat` accepts an injected `model_adapter` so its calls are
   charged to the same budget and provenance ledger. `doc_tests.run_item` still
   accepts one for the same reason, but no agent path supplies it any more: since
@@ -474,6 +484,32 @@ WorkflowRunner             domain-neutral capability graph scheduler
   (`fieldwork.definitions_ready`) and `document_test_execution`
   (`doc_tests.executed`). A compound request that genuinely needs both engines
   resolves to `clarification` rather than being split by a scheduler.
+- Phase 12 retired v1. The fixed-stage `_Runner` pipeline (discovery →
+  planning → joins → validation → analyses → dashboard → verify → summary) is
+  deleted with its prompts, payload validators, fixed limits, `agent/summary.py`,
+  the `analysis` engine value and run kind, and the `discovery` / `domain` /
+  `custom_analyses` / `context_notes` projections. The one supported
+  exploratory-analysis entry point, `POST /agent/runs` with no command, now
+  starts an `analysis_workflow_v1` command run through the registered
+  `data_analysis` goal template, carrying any `context.objective` as the command
+  text. `runner.py` is a process layer: it creates the record, enforces the
+  one-live-run rule, launches the thread, dispatches on the explicit engine, and
+  imports no compute or domain module. `store.new_run` accepts only
+  `kind="intake"`, and a terminal record that is neither a command run nor an
+  `intake` run fails closed instead of being replayed.
+- Phase 13 closed the migration. Dead delegation helpers (`llm_markdown`,
+  `note_context`) were removed, the `workflow.definition` read-time default was
+  deleted so a workflow record without one fails closed in `workflow_dispatch`,
+  and three durable gates now hold the architecture in place:
+  `test_agent_v1_retirement.py` (no v1 caller, engine, import, API response, or
+  UI path), `test_agent_final_boundaries.py` (workflow definitions import only
+  graph primitives; capabilities never schedule or persist; workers cannot reach
+  a workspace, transaction, or run store; executors cannot reach a worker or the
+  gateway; context cannot call a provider; one provider call site), and
+  `test_agent_definition_of_done.py` (one test per definition-of-done bullet).
+  `BaseRunner` is retained deliberately — not as a delegation facade but as the
+  shared run-projection surface both engines and the intake runner write
+  through.
 
 ### Known duplication
 
@@ -554,6 +590,11 @@ npm run build
   though profiling code still exists on the backend.
 - Legacy `work_program` and legacy working-paper behavior remain only for
   compatibility and rollback paths. The active audit model is RCM-first.
+- Exploratory data analysis is a declared workflow too. `POST /agent/runs`
+  without a command no longer starts a fixed pipeline: it requests
+  `analysis.executed` through the `data_analysis` goal template. There is no
+  frontend caller left for that path (`useAgentRun.startRun` is deleted); the
+  endpoint remains an active API surface.
 - Document analysis is a declared workflow, not a leaf runner. The Documents tab
   still calls `/documents/analysis-runs`, but that endpoint now starts a
   `documents_workflow_v1` command run.

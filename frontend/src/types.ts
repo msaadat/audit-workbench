@@ -1208,7 +1208,6 @@ export interface AgentTask {
   status: AgentTaskStatus
   error: string | null
   result_refs: string[]
-  context_notes?: string[]
   started_at?: string | null
   finished_at?: string | null
 }
@@ -1362,15 +1361,6 @@ export interface AgentFinding {
   evidence_refs: string[]
 }
 
-export interface AgentDiscovery {
-  domain?: string
-  confidence?: 'high' | 'medium' | 'low'
-  table_roles?: Record<string, string>
-  assumptions?: string[]
-  warnings?: string[]
-  tables?: { table: string; rows: number; columns: number }[]
-}
-
 export interface AgentRunContext {
   objective?: string
   period?: string
@@ -1419,7 +1409,7 @@ export interface AgentRun {
   schema_version?: number
   // Null only while a command run's route is still pending; dispatch requires a
   // supported value and fails closed without one.
-  engine: 'workflow' | 'action' | 'analysis' | 'intake' | null
+  engine: 'workflow' | 'action' | 'intake' | null
   route?: AgentRoute | null
   id: string
   workspace_id: string
@@ -1427,7 +1417,7 @@ export interface AgentRun {
   planning_basis_run_id?: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake'
+  kind: 'audit' | 'intake'
   mode: 'auto' | 'permission'
   context: AgentRunContext
   status: AgentRunStatus
@@ -1440,7 +1430,6 @@ export interface AgentRun {
   usage: {
     llm_turns: number
     tool_calls: number
-    custom_analyses?: number
     planner_waves?: number
     actions_started?: number
     prompt_tokens?: number
@@ -1469,7 +1458,6 @@ export interface AgentRun {
       context_metrics?: Record<string, unknown> | null
     }>
   }
-  discovery: AgentDiscovery
   plan: { stages: AgentStage[] }
   approvals: AgentApproval[]
   messages: AgentMessage[]
@@ -1515,7 +1503,7 @@ export interface AgentRunSummary {
   planning_basis_run_id?: string | null
   chat_id?: string | null
   source_message_id?: string | null
-  kind: 'audit' | 'analysis' | 'intake'
+  kind: 'audit' | 'intake'
   mode: 'auto' | 'permission'
   status: AgentRunStatus
   created: string
@@ -1524,7 +1512,6 @@ export interface AgentRunSummary {
   duration_ms?: number | null
   activity?: AgentActivity | null
   activity_revision?: number
-  domain?: string | null
   task_counts: { total: number; completed: number; failed: number; blocked?: number }
   error: string | null
   cancellation?: AgentRun['cancellation']

@@ -100,9 +100,6 @@ function taskDuration(task: AgentTask): string {
           >
             {{ task.detail }}
           </small>
-          <small v-for="note in task.context_notes ?? []" :key="note" class="muted context-note">
-            {{ note }}
-          </small>
           <small v-if="taskDuration(task)" class="muted">{{ taskDuration(task) }}</small>
           <div v-if="summarizeRefs(task.result_refs).length" class="refs">
             <span v-for="ref in summarizeRefs(task.result_refs)" :key="ref" class="ref">
@@ -113,7 +110,7 @@ function taskDuration(task: AgentTask): string {
       </div>
     </div>
     <p v-if="!visibleStages.length" class="muted empty">
-      The plan appears here once discovery finishes.
+      The plan appears here once the run resolves its work.
     </p>
   </div>
 </template>
@@ -150,7 +147,6 @@ function taskDuration(task: AgentTask): string {
 .task.completed .task-title { color: var(--p-surface-600); }
 .task-error { color: var(--p-red-500); font-size: 0.72rem; }
 .muted { color: var(--p-surface-500); font-size: 0.72rem; }
-.context-note { line-height: 1.35; word-break: break-word; }
 .refs { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.2rem; }
 .ref {
   font-size: 0.65rem;

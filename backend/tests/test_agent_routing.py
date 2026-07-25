@@ -359,9 +359,10 @@ def test_dispatch_reads_only_the_explicit_engine(workspace_with_data):
     assert all(line.startswith(("if engine ==", "elif engine ==")) for line in branches)
 
 
-def test_a_record_without_a_supported_engine_fails_closed(workspace_with_data):
-    run = store.new_run(workspace_with_data, "auto", None, kind="analysis")
-    run["engine"] = "doc_test"
+@pytest.mark.parametrize("retired", ["doc_test", "document_analysis", "analysis"])
+def test_a_record_without_a_supported_engine_fails_closed(workspace_with_data, retired):
+    run = store.new_run(workspace_with_data, "auto", None, kind="intake")
+    run["engine"] = retired
     run["route"] = None
     store.save_run(workspace_with_data, run)
 
@@ -380,9 +381,12 @@ def test_a_record_without_a_supported_engine_fails_closed(workspace_with_data):
 
 
 def test_supported_engine_set_matches_the_phase_10_decision_record():
-    assert store.RUN_ENGINES == frozenset({"workflow", "action", "intake", "analysis"})
+    # Phase 12 retired the legacy ``analysis`` pipeline, so the decision
+    # record's table is now exactly two schedulers plus the one justified
+    # protocol engine.
+    assert store.RUN_ENGINES == frozenset({"workflow", "action", "intake"})
     assert store.COMMAND_ENGINES == frozenset({"workflow", "action"})
-    assert set(store.PROTOCOL_ENGINE_BY_RUN_KIND) == {"analysis", "intake"}
+    assert set(store.PROTOCOL_ENGINE_BY_RUN_KIND) == {"intake"}
 
 
 # --------------------------------------------------------------------------- #
