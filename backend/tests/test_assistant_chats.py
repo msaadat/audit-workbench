@@ -33,8 +33,8 @@ def test_q_and_a_is_durable_idempotent_and_uses_bounded_history(workspace_with_d
     configured(monkeypatch)
     calls = []
 
-    def fake_ask(workspace, question, document_ids, *, prior_turns):
-        calls.append((question, prior_turns))
+    def fake_ask(workspace, question, document_ids, *, prior_turns, chat_id=None):
+        calls.append((question, prior_turns, chat_id))
         return {
             "answer": f"Answer to {question}", "steps": [{"tool": "list_tables", "args": {}, "ok": True}],
             "artifacts": [], "citations": [], "document_context": None,
@@ -61,9 +61,56 @@ def test_q_and_a_is_durable_idempotent_and_uses_bounded_history(workspace_with_d
         {"role": "user", "content": "What tables are available?"},
         {"role": "assistant", "content": "Answer to What tables are available?"},
     ]
+    assert calls[1][2] == chat["id"]
     restored = assistant_chats.get_chat(ws, chat["id"])
     assert [item["state"] for item in restored["messages"]] == ["complete"] * 4
     assert restored["title"] == "What tables are available?"
+
+
+def test_auto_next_task_question_uses_read_only_coordinator_with_chat_context(
+    workspace_with_data, monkeypatch,
+):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    captured = {}
+
+    def fake_ask(
+        workspace, question, document_ids, *, prior_turns, chat_id=None,
+    ):
+        captured.update(
+            question=question,
+            document_ids=document_ids,
+            prior_turns=prior_turns,
+            chat_id=chat_id,
+        )
+        return {
+            "answer": "The latest run is complete; inspect audit progress next.",
+            "steps": [{"tool": "get_audit_progress", "args": {}, "ok": True}],
+            "artifacts": [],
+            "citations": [],
+            "document_context": None,
+        }
+
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fake_ask)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "What's the next task to be done?",
+        "intent": "auto",
+        "mode": "auto",
+        "request_id": "request-next-task",
+        "source": "composer",
+    })
+
+    user = result["chat"]["messages"][0]
+    assert user["resolved_intent"] == "ask"
+    assert result["outcome"]["kind"] == "answer"
+    assert captured == {
+        "question": "What's the next task to be done?",
+        "document_ids": [],
+        "prior_turns": [],
+        "chat_id": chat["id"],
+    }
+    assert store.list_runs(ws) == []
 
 
 def test_artifact_sidecar_edit_rerun_and_revision_conflict(workspace_with_data, monkeypatch):

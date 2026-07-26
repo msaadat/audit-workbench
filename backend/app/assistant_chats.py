@@ -675,6 +675,7 @@ def _process_message(
             result = assistant.ask(
                 workspace, user["content"], doc_ids,
                 prior_turns=history,
+                chat_id=chat_id,
             )
         final_snapshot = _document_snapshot(
             workspace, doc_ids, manifest=(result.get("document_context") or {}).get("manifest") or []

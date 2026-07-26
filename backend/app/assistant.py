@@ -1,11 +1,11 @@
-"""Natural-language analysis assistant.
+"""Natural-language, read-only audit-workbench assistant.
 
 An auditor asks a question in plain English; an LLM answers it by *calling
-tools* that run locally against the workspace's data. The tools are the same
-primitives the app already exposes — structured queries, the audit-analytics
-library, and an escape hatch that runs visible, editable Polars — so simple
-requests ("top 10 vendors by spend", "run Benford on amount") are one tool
-call away and anything bespoke drops down to Python the auditor can inspect.
+registered read tools* that run locally against the workspace. The coordinator
+is deliberately domain-neutral: audit progress, prior runs, planning artifacts,
+documents, and tabular analysis are peer capabilities. Intent routing decides
+only whether a message is read-only (``ask``) or mutating (``act``); it never
+equates a question with data analysis.
 
 Model tool results include compact, unmasked previews. Full computations stay
 local and previews are bounded only to protect the model's context window.
@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import dataclass
 
 import polars as pl
 
@@ -85,6 +86,61 @@ def schema_brief(workspace: Workspace) -> list[dict]:
     return brief
 
 
+def workspace_manifest(workspace: Workspace) -> dict:
+    """Content-light opening context for domain selection.
+
+    Detailed table schemas, audit state, runs, and artifact content are all
+    discoverable through registered tools. Keeping the opening prompt to names
+    and counts avoids biasing every question toward whichever domain happens to
+    have the largest payload.
+    """
+
+    planned_tests = [
+        test
+        for row in workspace.rcm
+        for test in row.get("planned_tests") or []
+        if isinstance(test, dict)
+    ]
+    return {
+        "workspace": {
+            "id": workspace.id,
+            "name": workspace.name,
+            "revision": workspace.revision,
+        },
+        "available_domains": [
+            "audit_progress",
+            "agent_runs",
+            "planning_and_rcm",
+            "fieldwork_and_findings",
+            "reporting",
+            "documents",
+            "data_analysis",
+        ],
+        "artifact_counts": {
+            "tables": len(workspace.tables),
+            "joins": len(workspace.joins),
+            "saved_analyses": len(workspace.analyses),
+            "documents": len(workspace.documents),
+            "rcm_rows": len(workspace.rcm),
+            "planned_tests": len(planned_tests),
+            "work_program_items": len(workspace.work_program),
+            "findings": len(workspace.findings),
+        },
+        "table_names": workspace.table_names(),
+        "planning": {
+            "context_available": bool(
+                str((workspace.planning.get("context") or {}).get("objective") or "").strip()
+            ),
+            "apm_available": bool(
+                str(workspace.planning.get("apm_markdown") or "").strip()
+            ),
+        },
+        "report_available": bool(
+            str((workspace.report or {}).get("markdown") or "").strip()
+        ),
+    }
+
+
 # ================================================================ model views
 def _frame_for_model(df: pl.DataFrame) -> dict:
     """Return a bounded, unmasked model preview of a result frame."""
@@ -96,7 +152,71 @@ def _artifact_frame(df: pl.DataFrame) -> dict:
 
 
 # ====================================================================== tools
-TOOLS = [
+_TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_audit_progress",
+            "description": (
+                "Get deterministic audit-lifecycle readiness, blockers, current "
+                "artifact counts, recommended next tasks, and a compact latest-run "
+                "summary. Use for questions about what is done, what remains, what "
+                "is blocked, audit status, or what should happen next."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_latest_run",
+            "description": (
+                "Get a bounded read-only account of the latest agent run: command, "
+                "status, completed/skipped/blocked stages, artifacts, closing "
+                "message, and open items. Defaults to the latest run linked to this "
+                "chat; request workspace scope to inspect the latest run anywhere "
+                "in the engagement."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["chat", "workspace"],
+                        "description": "Which run history to inspect.",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_audit_artifacts",
+            "description": (
+                "Inspect bounded, read-only audit artifacts outside table data. "
+                "Use for questions about planning context or the APM, RCM rows, "
+                "fieldwork, findings, the report, or a general workspace overview."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "area": {
+                        "type": "string",
+                        "enum": [
+                            "overview",
+                            "planning",
+                            "rcm",
+                            "fieldwork",
+                            "findings",
+                            "report",
+                        ],
+                    }
+                },
+                "required": ["area"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -242,11 +362,52 @@ TOOLS = [
 ]
 
 
+@dataclass(frozen=True)
+class ReadTool:
+    """One registered read-only capability exposed to the Ask coordinator."""
+
+    name: str
+    handler: str
+    schema: dict
+
+
+_TOOL_HANDLERS = {
+    "get_audit_progress": "get_audit_progress",
+    "get_latest_run": "get_latest_run",
+    "inspect_audit_artifacts": "inspect_audit_artifacts",
+    "search_documents": "search_documents",
+    "list_tables": "list_tables",
+    "describe_table": "describe_table",
+    "query_table": "query_table",
+    "run_analytics": "run_analytics",
+    "run_python": "run_python",
+}
+
+READ_TOOLS = tuple(
+    ReadTool(
+        name=str(schema["function"]["name"]),
+        handler=_TOOL_HANDLERS[str(schema["function"]["name"])],
+        schema=schema,
+    )
+    for schema in _TOOL_SCHEMAS
+)
+READ_TOOL_REGISTRY = {tool.name: tool for tool in READ_TOOLS}
+if len(READ_TOOL_REGISTRY) != len(READ_TOOLS):
+    raise RuntimeError("Read-only assistant tool names must be unique.")
+if set(READ_TOOL_REGISTRY) != set(_TOOL_HANDLERS):
+    raise RuntimeError("Every read-only assistant tool needs one registered handler.")
+
+# OpenAI-compatible wire schemas. Kept as a public compatibility alias for
+# callers and tests that already import ``TOOLS``.
+TOOLS = [tool.schema for tool in READ_TOOLS]
+
+
 class _Session:
     """Holds per-request state: the workspace, a frame cache, and artifacts."""
 
-    def __init__(self, workspace: Workspace):
+    def __init__(self, workspace: Workspace, *, chat_id: str | None = None):
         self.workspace = workspace
+        self.chat_id = str(chat_id or "").strip() or None
         self._frames: dict[str, pl.DataFrame] = {}
         self.artifacts: list[dict] = []
         self.steps: list[dict] = []
@@ -268,6 +429,253 @@ class _Session:
         return frames
 
     # -- tool implementations; each returns (content_for_model, artifact|None)
+    def _select_run(self, scope: str = "chat") -> dict | None:
+        from .agent import store
+
+        normalized = str(scope or "chat").strip().casefold()
+        if normalized not in {"chat", "workspace"}:
+            raise WorkspaceError("Run scope must be chat or workspace.")
+        summaries = store.list_runs(self.workspace)
+        if normalized == "chat" and self.chat_id:
+            summaries = [
+                item for item in summaries
+                if str(item.get("chat_id") or "") == self.chat_id
+            ]
+        if not summaries:
+            return None
+        return store.load_run(self.workspace, str(summaries[0]["id"]))
+
+    @staticmethod
+    def _run_payload(run: dict | None) -> dict | None:
+        if run is None:
+            return None
+        from .agent import narration, store
+
+        workflow = run.get("workflow") or {}
+        stages = []
+        for stage in workflow.get("stages") or []:
+            units = list(stage.get("units") or [])
+            stages.append(
+                {
+                    "capability": stage.get("capability"),
+                    "title": stage.get("title"),
+                    "status": stage.get("status"),
+                    "unit_counts": {
+                        status: sum(
+                            1 for unit in units if str(unit.get("status") or "") == status
+                        )
+                        for status in (
+                            "succeeded",
+                            "skipped",
+                            "blocked",
+                            "awaiting_input",
+                            "awaiting_confirmation",
+                            "failed",
+                            "conflict",
+                        )
+                        if any(
+                            str(unit.get("status") or "") == status for unit in units
+                        )
+                    },
+                    "exceptions": [
+                        {
+                            "title": unit.get("title"),
+                            "status": unit.get("status"),
+                            "reason": unit.get("error"),
+                        }
+                        for unit in units
+                        if unit.get("status")
+                        in {
+                            "skipped",
+                            "blocked",
+                            "awaiting_input",
+                            "awaiting_confirmation",
+                            "failed",
+                            "conflict",
+                        }
+                    ][:20],
+                }
+            )
+        closing = next(
+            (
+                str(message.get("content") or "").strip()
+                for message in reversed(run.get("messages") or [])
+                if message.get("role") == "agent"
+                and str(message.get("content") or "").strip()
+            ),
+            "",
+        )
+        summary = store.run_summary(run)
+        return {
+            "id": run.get("id"),
+            "status": run.get("status"),
+            "engine": run.get("engine"),
+            "command": str((run.get("command") or {}).get("text") or ""),
+            "created": run.get("created"),
+            "finished": run.get("finished"),
+            "task_counts": summary.get("task_counts"),
+            "requested_outcomes": list(workflow.get("requested_outcomes") or []),
+            "next_outcomes": list(workflow.get("next_outcomes") or []),
+            "workflow_explanation": workflow.get("workflow_explanation"),
+            "stages": stages,
+            "artifacts": [
+                {
+                    key: artifact.get(key)
+                    for key in ("kind", "id", "semantic_id", "action")
+                    if artifact.get(key) is not None
+                }
+                for artifact in (run.get("artifacts") or [])[:40]
+            ],
+            "open_items": narration.blockers(run),
+            "closing_message": closing[:4_000],
+            "error": run.get("error"),
+            "warnings": [str(value)[:1_000] for value in (run.get("warnings") or [])[-10:]],
+        }
+
+    def get_audit_progress(self, _args: dict):
+        from .agent import capabilities as audit_capabilities
+        from .agent import narration
+
+        state = audit_capabilities.workflow_state(self.workspace)
+        lifecycle = [
+            {
+                "capability": capability_id,
+                "label": narration.humanize(capability_id),
+                **dict(readiness),
+            }
+            for capability_id, readiness in state.items()
+        ]
+        return {
+            "workspace": workspace_manifest(self.workspace),
+            "lifecycle": lifecycle,
+            "recommended_next_tasks": narration.next_steps(
+                self.workspace, state, limit=5
+            ),
+            "latest_run": self._run_payload(self._select_run("chat")),
+        }, None
+
+    def get_latest_run(self, args: dict):
+        scope = str(args.get("scope") or ("chat" if self.chat_id else "workspace"))
+        run = self._select_run(scope)
+        return {
+            "scope": scope,
+            "run": self._run_payload(run),
+            "message": None if run else f"No {scope}-scoped agent run was found.",
+        }, None
+
+    @staticmethod
+    def _text(value: object, limit: int = 4_000) -> str:
+        text = str(value or "")
+        return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+    def inspect_audit_artifacts(self, args: dict):
+        area = str(args.get("area") or "").strip().casefold()
+        if area == "overview":
+            return workspace_manifest(self.workspace), None
+        if area == "planning":
+            context = self.workspace.planning.get("context") or {}
+            return {
+                "context": {
+                    key: self._text(value, 2_000)
+                    for key, value in context.items()
+                    if key != "interview_answers"
+                },
+                "interview_answers": {
+                    str(key): self._text(value, 1_000)
+                    for key, value in (context.get("interview_answers") or {}).items()
+                },
+                "apm": {
+                    "available": bool(
+                        str(self.workspace.planning.get("apm_markdown") or "").strip()
+                    ),
+                    "updated": self.workspace.planning.get("updated"),
+                    "created_by": self.workspace.planning.get("created_by"),
+                    "excerpt": self._text(
+                        self.workspace.planning.get("apm_markdown"), 8_000
+                    ),
+                },
+            }, None
+        if area == "rcm":
+            return {
+                "total": len(self.workspace.rcm),
+                "rows": [
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "id",
+                            "process",
+                            "risk",
+                            "risk_rating",
+                            "control",
+                            "control_owner",
+                            "control_frequency",
+                            "status",
+                        )
+                        if row.get(key) not in (None, "")
+                    }
+                    | {"planned_test_count": len(row.get("planned_tests") or [])}
+                    for row in self.workspace.rcm[:50]
+                ],
+                "truncated": len(self.workspace.rcm) > 50,
+            }, None
+        if area == "fieldwork":
+            return {
+                "total": len(self.workspace.work_program),
+                "items": [
+                    {
+                        key: self._text(item.get(key), 1_500)
+                        for key in (
+                            "id",
+                            "title",
+                            "objective",
+                            "procedure",
+                            "status",
+                            "conclusion",
+                            "review_status",
+                        )
+                        if item.get(key) not in (None, "")
+                    }
+                    for item in self.workspace.work_program[:50]
+                ],
+                "truncated": len(self.workspace.work_program) > 50,
+            }, None
+        if area == "findings":
+            return {
+                "total": len(self.workspace.findings),
+                "findings": [
+                    {
+                        key: self._text(finding.get(key), 1_500)
+                        for key in (
+                            "id",
+                            "title",
+                            "status",
+                            "severity",
+                            "condition",
+                            "criteria",
+                            "cause",
+                            "effect",
+                            "recommendation",
+                        )
+                        if finding.get(key) not in (None, "")
+                    }
+                    for finding in self.workspace.findings[:50]
+                ],
+                "truncated": len(self.workspace.findings) > 50,
+            }, None
+        if area == "report":
+            report = self.workspace.report or {}
+            return {
+                "available": bool(str(report.get("markdown") or "").strip()),
+                "updated": report.get("updated"),
+                "edited": report.get("edited"),
+                "excerpt": self._text(report.get("markdown"), 10_000),
+                "quality": report.get("quality"),
+            }, None
+        raise WorkspaceError(
+            "Audit artifact area must be overview, planning, rcm, fieldwork, "
+            "findings, or report."
+        )
+
     def list_tables(self, _args: dict):
         return {"tables": schema_brief(self.workspace)}, None
 
@@ -394,17 +802,10 @@ class _Session:
         return artifact
 
     def dispatch(self, name: str, args: dict):
-        handler = {
-            "search_documents": self.search_documents,
-            "list_tables": self.list_tables,
-            "describe_table": self.describe_table,
-            "query_table": self.query_table,
-            "run_analytics": self.run_analytics,
-            "run_python": self.run_python,
-        }.get(name)
-        if handler is None:
+        definition = READ_TOOL_REGISTRY.get(name)
+        if definition is None:
             return {"error": f"Unknown tool '{name}'."}, None
-        return handler(args)
+        return getattr(self, definition.handler)(args)
 
 
 def _default_viz(df: pl.DataFrame, aggregated: bool) -> dict:
@@ -420,13 +821,23 @@ def _default_viz(df: pl.DataFrame, aggregated: bool) -> dict:
 
 
 # ================================================================= the agent
-SYSTEM_PROMPT = """You are an audit data-analysis assistant embedded in a local \
-workbench. You help an auditor interrogate their own datasets by calling tools \
-that run on their machine.
+SYSTEM_PROMPT = """You are the read-only audit assistant embedded in a local \
+audit workbench. Answer questions about the engagement, audit workflow and prior \
+runs, planning and fieldwork artifacts, findings and reports, documents, or \
+datasets by selecting the relevant registered tools.
 
 Rules:
-- Use the tools to get answers; never fabricate numbers. Discover schema with \
-list_tables / describe_table before querying unfamiliar columns.
+- Use tools for claims about current workspace state; never guess from the \
+wording of the question.
+- Use get_audit_progress for audit status, remaining work, blockers, and next \
+tasks. Use get_latest_run for what a prior run did or why it stopped. Use \
+inspect_audit_artifacts for planning, RCM, fieldwork, findings, and report \
+questions.
+- Do not assume verbs such as show, summarize, compare, inspect, count, or \
+calculate imply table analysis. Select tools from the subject of the question \
+and its conversation context.
+- For dataset questions, discover schema with list_tables / describe_table \
+before querying unfamiliar columns.
 - Prefer query_table for filters and group-by aggregations, run_analytics for \
 the canned audit tests, and run_python only when the structured tools can't \
 express the task. Keep run_python to Polars, assign the answer to `result`.
@@ -437,10 +848,10 @@ attachment was fully considered.
 Use filters and aggregates for large populations rather than asking for an \
 entire table at once. Attached document text is also available as context.
 - When done, give a short, plain-English answer grounded in the tool results. \
-Mention the concrete figures you were shown. Note truncation or data-quality \
-caveats briefly.
+Mention concrete figures when the tools provide them. Note truncation, blockers, \
+or data-quality caveats briefly. Never claim to have changed the workspace.
 
-Workspace tables and columns:
+Workspace manifest:
 %s
 """
 
@@ -514,9 +925,9 @@ def ask(
         if attached_ids else None
     )
 
-    session = _Session(workspace)
-    schema_text = json.dumps(schema_brief(workspace), indent=1)
-    system_prompt = SYSTEM_PROMPT % schema_text
+    session = _Session(workspace, chat_id=chat_id)
+    manifest_text = json.dumps(workspace_manifest(workspace), indent=1)
+    system_prompt = SYSTEM_PROMPT % manifest_text
     if document_context:
         system_prompt += DOCUMENT_CONTEXT_RULES % _document_prompt(document_context)
     messages = [{"role": "system", "content": system_prompt}]

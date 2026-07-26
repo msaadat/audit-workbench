@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 
 from app import assistant, assistant_settings, documents, llm, workspaces
+from app.agent import store
 from app.dashboard import tile_payload
 from app.routes import assistant_routes
 from app.sandbox import SandboxError, run as sandbox_run
@@ -81,6 +82,103 @@ def test_frame_for_model_returns_bounded_unmasked_rows():
 
 
 # ------------------------------------------------------------------- tools
+def test_read_tools_are_registered_once_with_matching_handlers():
+    names = [tool.name for tool in assistant.READ_TOOLS]
+
+    assert len(names) == len(set(names))
+    assert set(names) == set(assistant.READ_TOOL_REGISTRY)
+    assert {
+        "get_audit_progress",
+        "get_latest_run",
+        "inspect_audit_artifacts",
+        "search_documents",
+        "list_tables",
+        "describe_table",
+        "query_table",
+        "run_analytics",
+        "run_python",
+    } == set(names)
+    assert [schema["function"]["name"] for schema in assistant.TOOLS] == names
+
+
+def test_latest_run_tool_prefers_the_current_chat(workspace_with_data):
+    other = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "Other chat", "chat_id": "chat_other"},
+    )
+    other["status"] = "completed"
+    store.save_run(workspace_with_data, other)
+
+    linked = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "Generate the APM", "chat_id": "chat_current"},
+    )
+    linked["status"] = "completed"
+    linked["messages"] = [
+        {"role": "agent", "content": "Done — audit planning memorandum."}
+    ]
+    linked["artifacts"] = [
+        {
+            "kind": "planning",
+            "id": "apm",
+            "semantic_id": "planning:apm",
+            "action": "updated",
+        }
+    ]
+    store.save_run(workspace_with_data, linked)
+
+    session = assistant._Session(workspace_with_data, chat_id="chat_current")
+    content, artifact = session.get_latest_run({})
+
+    assert artifact is None
+    assert content["scope"] == "chat"
+    assert content["run"]["id"] == linked["id"]
+    assert content["run"]["command"] == "Generate the APM"
+    assert content["run"]["closing_message"] == "Done — audit planning memorandum."
+    assert content["run"]["artifacts"][0]["semantic_id"] == "planning:apm"
+
+
+def test_audit_progress_tool_exposes_read_only_lifecycle_and_run_context(
+    workspace_with_data,
+):
+    run = store.new_command_run(
+        workspace_with_data,
+        "auto",
+        {"source": "chat", "text": "Prepare planning", "chat_id": "chat_progress"},
+    )
+    run["status"] = "completed"
+    store.save_run(workspace_with_data, run)
+
+    session = assistant._Session(workspace_with_data, chat_id="chat_progress")
+    content, artifact = session.get_audit_progress({})
+
+    assert artifact is None
+    assert content["workspace"]["available_domains"]
+    assert content["latest_run"]["id"] == run["id"]
+    by_capability = {
+        item["capability"]: item for item in content["lifecycle"]
+    }
+    assert "planning.apm_ready" in by_capability
+    assert "state" in by_capability["planning.apm_ready"]
+
+
+def test_audit_artifact_tool_is_bounded_and_non_mutating(workspace_with_data):
+    workspace_with_data.planning["context"]["objective"] = "Review procurement"
+    workspace_with_data.planning["apm_markdown"] = "# APM\n\nPlanning basis."
+    before_revision = workspace_with_data.revision
+
+    content, artifact = assistant._Session(workspace_with_data).inspect_audit_artifacts(
+        {"area": "planning"}
+    )
+
+    assert artifact is None
+    assert content["context"]["objective"] == "Review procurement"
+    assert content["apm"]["excerpt"].startswith("# APM")
+    assert workspace_with_data.revision == before_revision
+
+
 def test_query_tool_shows_bounded_rows_for_aggregated_and_raw_results(workspace_with_data):
     session = assistant._Session(workspace_with_data)
     agg, artifact = session.query_table(
@@ -546,6 +644,51 @@ def test_lmstudio_model_error_includes_local_hint(monkeypatch):
 
 
 # --------------------------------------------------------------- full loop (mocked)
+def test_ask_coordinator_can_select_audit_progress_without_data_bias(
+    monkeypatch, workspace_with_data,
+):
+    calls = []
+
+    def fake_chat(messages, tools=None, temperature=0.0):
+        calls.append({"messages": list(messages), "tools": tools})
+        if not any(message.get("role") == "tool" for message in messages):
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "progress",
+                        "type": "function",
+                        "function": {
+                            "name": "get_audit_progress",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            }
+        return {"content": "The planning memorandum is complete; review the remaining lifecycle work."}
+
+    monkeypatch.setattr(assistant.llm, "chat", fake_chat)
+    result = assistant.ask(
+        workspace_with_data,
+        "What's the next task to be done?",
+        chat_id="chat_current",
+    )
+
+    assert result["steps"] == [
+        {"tool": "get_audit_progress", "args": {}, "ok": True}
+    ]
+    assert "planning memorandum" in result["answer"]
+    system = calls[0]["messages"][0]["content"]
+    assert "read-only audit assistant" in system
+    assert "audit data-analysis assistant" not in system
+    assert "get_audit_progress" in {
+        item["function"]["name"] for item in calls[0]["tools"]
+    }
+    # Detailed columns are now discovered through list_tables, not injected
+    # into every audit, document, planning, or reporting question.
+    assert "invoice_no" not in system
+
+
 def test_ask_runs_tool_loop(monkeypatch, workspace_with_data):
     calls = []
 
