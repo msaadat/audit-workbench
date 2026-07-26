@@ -23,21 +23,11 @@ def _workspace_with_procurement_population():
             "control": "Requisition, PO, receipt, and invoice are retained.",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Inspect the four-document procurement chain",
-            "objective": "Verify requisition, purchase order, receipt, and invoice support.",
-            "method": "document_inspection",
-            "steps": ["Inspect requisition, PO, GRN, and invoice evidence."],
-            "expected_evidence": "REQ, PO, GRN, and invoice documents.",
-        },
-    )
-    return ws, row, planned
+    return ws, row
 
 
 def test_procurement_package_is_selected_before_uncovered_transactions():
-    ws, row, planned = _workspace_with_procurement_population()
+    ws, row = _workspace_with_procurement_population()
     package = [
         documents.add_document(
             ws,
@@ -72,7 +62,7 @@ def test_procurement_package_is_selected_before_uncovered_transactions():
             "table": "procurement",
             "size": 2,
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
+            
             "identifier_fields": ["requisition_id", "po_id", "grn_id", "invoice_id"],
             "frozen_fields": ["requisition_id", "po_id", "grn_id", "invoice_id", "amount"],
             "required_document_types": [
@@ -105,7 +95,7 @@ def test_procurement_package_is_selected_before_uncovered_transactions():
 
 
 def test_no_available_evidence_creates_blocked_test_with_requests_and_limitation():
-    ws, row, planned = _workspace_with_procurement_population()
+    ws, row = _workspace_with_procurement_population()
 
     test = doc_tests.prepare_evidence_aware_vouching(
         ws,
@@ -114,7 +104,7 @@ def test_no_available_evidence_creates_blocked_test_with_requests_and_limitation
             "table": "procurement",
             "size": 1,
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
+            
             "identifier_fields": ["invoice_id"],
             "required_document_types": ["invoice"],
         },
@@ -125,12 +115,12 @@ def test_no_available_evidence_creates_blocked_test_with_requests_and_limitation
     assert len(ws.evidence_requests) == 1
     assert ws.evidence_requests[0]["status"] == "open"
     rolled = rcm_execution.rollup(ws)
-    planned_rollup = rolled["rows"][0]["planned_test_rollups"][0]
-    assert planned_rollup["status"] == "blocked"
+    test_rollup = rolled["rows"][0]["test_rollups"][0]
+    assert test_rollup["status"] == "blocked"
 
 
 def test_image_only_matched_evidence_routes_item_to_manual_review():
-    ws, row, planned = _workspace_with_procurement_population()
+    ws, row = _workspace_with_procurement_population()
     image = documents.add_document(
         ws,
         "INV2024004-invoice.png",
@@ -145,7 +135,7 @@ def test_image_only_matched_evidence_routes_item_to_manual_review():
             "table": "procurement",
             "size": 1,
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
+            
             "identifier_fields": ["invoice_id"],
             "required_document_types": ["invoice"],
         },
@@ -158,7 +148,7 @@ def test_image_only_matched_evidence_routes_item_to_manual_review():
 
 
 def test_evidence_request_status_is_auditable():
-    ws, row, planned = _workspace_with_procurement_population()
+    ws, row = _workspace_with_procurement_population()
     test = doc_tests.prepare_evidence_aware_vouching(
         ws,
         {
@@ -166,7 +156,7 @@ def test_evidence_request_status_is_auditable():
             "table": "procurement",
             "size": 1,
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
+            
             "identifier_fields": ["invoice_id"],
             "required_document_types": ["invoice"],
         },

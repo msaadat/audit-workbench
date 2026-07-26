@@ -1,4 +1,4 @@
-"""Planning, template, and RCM-central planned-test endpoints."""
+"""Planning, template, and RCM-central endpoints."""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ async def get_planning(workspace_id: str):
     return {
         "planning": ws.planning, "rcm": ws.rcm, "procedures": ws.work_program,
         "data_tests": ws.data_tests, "observations": ws.observations,
-        "rcm_migration": ws.rcm_migration,
         "document_tests": doc_tests.list_tests(ws),
         "findings": ws.findings,
         "finding_rollups": findings.rollups(ws),
@@ -64,25 +63,6 @@ async def patch_rcm(workspace_id: str, row_id: str, payload: dict = Body(...)):
 async def delete_rcm(workspace_id: str, row_id: str):
     ws = _ws(workspace_id)
     ws.remove_rcm(row_id)
-    return {"ok": True}
-
-
-@router.post("/rcm/{row_id}/planned-tests")
-async def add_planned_test(workspace_id: str, row_id: str, payload: dict = Body(...)):
-    return _ws(workspace_id).add_planned_test(row_id, payload)
-
-
-@router.patch("/rcm/{row_id}/planned-tests/{planned_test_id}")
-async def patch_planned_test(
-    workspace_id: str, row_id: str, planned_test_id: str, payload: dict = Body(...)
-):
-    return _ws(workspace_id).update_planned_test(row_id, planned_test_id, payload)
-
-
-@router.delete("/rcm/{row_id}/planned-tests/{planned_test_id}")
-async def delete_planned_test(workspace_id: str, row_id: str, planned_test_id: str):
-    ws = _ws(workspace_id)
-    ws.remove_planned_test(row_id, planned_test_id)
     return {"ok": True}
 
 
@@ -136,14 +116,14 @@ async def list_procedures(workspace_id: str):
 @router.post("/procedures")
 async def add_procedure(workspace_id: str, payload: dict = Body(...)):
     raise workspaces.WorkspaceError(
-        "Legacy procedure APIs are read-only; add a planned test under the RCM instead."
+        "Legacy procedure APIs are read-only; add a Document or Data Test linked to the RCM row instead."
     )
 
 
 @router.patch("/procedures/{procedure_id}")
 async def patch_procedure(workspace_id: str, procedure_id: str, payload: dict = Body(...)):
     raise workspaces.WorkspaceError(
-        "Legacy procedure APIs are read-only; edit the migrated RCM planned test instead."
+        "Legacy procedure APIs are read-only; edit the RCM-linked test instead."
     )
 
 

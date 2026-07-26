@@ -21,8 +21,10 @@ context builders and the bounded agent context bundles.
 **Current product shape:** The original data-workbench surfaces still exist
 (`Data`, `Query`, saved analyses, dashboard tiles), but the shipped product is
 now centered on an RCM-driven audit workflow: planning context and APM, RCM
-rows, planned tests, executable data/document tests, execution rollups,
-working-paper generation, findings, and report drafting.
+rows, the Document and Data Tests that cover them, execution rollups,
+working-paper generation, findings, and report drafting. A test is one durable
+record with one source: an RCM row links to its tests through ``test_refs`` and
+holds no test description of its own.
 
 ## 2. Architecture
 
@@ -80,8 +82,8 @@ backend/app/
 |  |- agent_routes.py          - durable run CRUD, SSE, approvals,
 |  |                             interactions, continue/retry, action coverage
 |  |- intake_routes.py         - folder intake manifests and apply flow
-|  |- planning_routes.py       - planning, templates, RCM, planned tests,
-|  |                             observations, and working papers
+|  |- planning_routes.py       - planning, templates, RCM, observations,
+|  |                             and working papers
 |  |- document_routes.py       - document CRUD, extraction, QA, and activity
 |  |- doc_test_routes.py       - document test CRUD and execution
 |  |- report_routes.py         - findings/report endpoints and reconciliation
@@ -171,7 +173,7 @@ frontend/src/
    |- DataTab.vue              - data upload/list/remove
    |- QueryTab.vue             - interactive query builder and pin flow
    |- AnalysisTab.vue          - saved analyses rail and editors
-   |- PlanningTab.vue          - planning context, APM, RCM, planned tests
+   |- PlanningTab.vue          - planning context, APM, RCM, linked tests
    |- DocumentsTab.vue         - document inventory and review
    |- DocTestsTab.vue          - document test worklists and execution
    |- DataTestsTab.vue         - data test authoring/history/results
@@ -481,7 +483,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   which a Q&A worklist could reach the provider outside the registered
   `fieldwork.document_qa` worker and the run's budget. The `document_testing`
   goal template is replaced by `document_test_preparation`
-  (`fieldwork.definitions_ready`) and `document_test_execution`
+  (`tests.specified`) and `document_test_execution`
   (`doc_tests.executed`). A compound request that genuinely needs both engines
   resolves to `clarification` rather than being split by a scheduler.
 - Phase 12 retired v1. The fixed-stage `_Runner` pipeline (discovery →
@@ -590,6 +592,21 @@ npm run build
   though profiling code still exists on the backend.
 - Legacy `work_program` and legacy working-paper behavior remain only for
   compatibility and rollback paths. The active audit model is RCM-first.
+- A test is a single durable record with a single source. The former
+  `rcm[].planned_tests` layer is gone: `tests.drafted` writes the audit plan
+  (title, objective, criteria, steps, expected evidence) straight onto a
+  Document or Data Test in `draft` status, and `tests.specified` writes that
+  test's executable part — generated Polars code, or document items and checks —
+  onto the same record. An RCM row carries only `test_refs`, and its
+  `execution_rollup` is the tally over them (`tests`, `completed`, `passed`,
+  `failed`, `findings`). The rationale and the schema-size measurements are in
+  `docs/simplified-test-model-plan.md`.
+- Generation deliberately emits a narrow slice of what the stores support:
+  Data Tests as Polars code (the analytics and validation engines stay for
+  auditor-authored tests) and Document Tests as `qa` or `vouching` only (the
+  `attribute` and `review` builders always route to manual review, so
+  generating them buys nothing). `SCHEMA_VERSION` is 3 and there is no
+  migration — a pre-3 workspace keeps its rows and loses its planned tests.
 - Exploratory data analysis is a declared workflow too. `POST /agent/runs`
   without a command no longer starts a fixed pipeline: it requests
   `analysis.executed` through the `data_analysis` goal template. There is no

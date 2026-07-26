@@ -1,4 +1,9 @@
-"""Deterministic RCM coverage, result roll-up, observations, and completion gates."""
+"""Deterministic RCM coverage, result roll-up, observations, and completion gates.
+
+A test is one durable record with one source, so this module folds test results
+straight into the RCM row that links them. There is no intermediate planned-test
+layer and nothing to reconcile between a plan and its execution.
+"""
 
 from __future__ import annotations
 
@@ -13,127 +18,35 @@ def _doc_tests(workspace: Workspace) -> list[dict]:
     return [doc_tests.load_test(workspace, item["id"]) for item in doc_tests.list_tests(workspace)]
 
 
-def required_execution_kinds(method: str) -> set[str]:
-    """Return the durable execution kinds required by one planned-test method.
-
-    This mapping is orchestration policy, not model judgment.  Keeping it public
-    lets the command runner expose the same requirements used by coverage and
-    roll-up instead of asking the model to infer them from a title.
-    """
-    if method in {"data_analytics", "validation"}:
-        return {"datatest"}
-    if method in {"document_inspection", "inquiry", "evidence_unavailable"}:
-        return {"doctest"}
-    if method == "hybrid":
-        return {"datatest", "doctest"}
-    return set()
-
-
-def execution_manifest(workspace: Workspace) -> list[dict]:
-    """Build a bounded, model-safe plan-to-execution contract for the RCM.
-
-    The manifest contains planning specifications and artifact metadata only;
-    it never includes table rows or document text.  It is also useful to local
-    semantic validators because it records whether an existing artifact has a
-    durable result rather than merely whether a definition exists.
-    """
-    manifest = []
-    for row in workspace.rcm:
-        for planned in row.get("planned_tests") or []:
-            artifacts = _artifacts(workspace, planned["id"])
-            existing = []
-            for artifact in artifacts:
-                item = artifact["item"]
-                if artifact["kind"] == "datatest":
-                    has_result = bool(item.get("last_run"))
-                    current_source_sha1 = data_tests._sha1(
-                        {
-                            "engine": item.get("engine"),
-                            "table_refs": item.get("table_refs") or [],
-                            "spec": item.get("spec") or {},
-                        }
-                    )
-                    current_fingerprints = data_tests._dataset_fingerprints(
-                        workspace, item.get("table_refs") or []
-                    )
-                    result_stale = bool(
-                        item.get("last_run")
-                        and (
-                            item["last_run"].get("source_sha1") != current_source_sha1
-                            or item["last_run"].get("dataset_fingerprints") != current_fingerprints
-                        )
-                    )
-                else:
-                    has_result = item.get("status") == "completed"
-                    result_stale = False
-                existing.append({
-                    "kind": artifact["kind"],
-                    "id": artifact["id"],
-                    "status": str(item.get("status") or ""),
-                    "has_durable_result": has_result,
-                    "executable": _artifact_executable(artifact),
-                    "workflow_parent_sha1": item.get("workflow_parent_sha1"),
-                    "result_stale": result_stale,
-                    **(
-                        {"execution_issues": doc_tests.execution_issues(item)}
-                        if artifact["kind"] == "doctest" else {}
-                    ),
-                    **(
-                        {"engine": str(item.get("engine") or "")}
-                        if artifact["kind"] == "datatest" else {}
-                    ),
-                })
-            required = sorted(required_execution_kinds(planned.get("method") or ""))
-            linked_kinds = {
-                item["kind"] for item in existing if item.get("executable")
-            }
-            missing = sorted(set(required) - linked_kinds)
-            if planned.get("method") == "validation" and not any(
-                item["kind"] == "datatest" and item.get("engine") == "validation"
-                for item in existing if item.get("executable")
-            ):
-                missing = ["validation_datatest"]
-            manifest.append({
-                "rcm_id": row["id"],
-                "rcm_risk": str(row.get("risk") or ""),
-                "risk_rating": str(row.get("risk_rating") or ""),
-                "planned_test_id": planned["id"],
-                "title": str(planned.get("title") or ""),
-                "objective": str(planned.get("objective") or ""),
-                "criteria": str(planned.get("criteria") or ""),
-                "method": str(planned.get("method") or ""),
-                "steps": [str(value) for value in planned.get("steps") or []],
-                "expected_evidence": str(planned.get("expected_evidence") or ""),
-                "sampling": dict(planned.get("sampling") or {}),
-                "thresholds": dict(planned.get("thresholds") or {}),
-                "required_execution": required,
-                "required_engine": "validation" if planned.get("method") == "validation" else None,
-                "existing_execution": existing,
-                "missing_execution": missing,
-            })
-    return manifest
-
-
-def _artifacts(workspace: Workspace, planned_test_id: str) -> list[dict]:
-    artifacts = [
+def _tests(workspace: Workspace, rcm_id: str) -> list[dict]:
+    """Every durable test linked to one RCM row, in a stable order."""
+    tests = [
         {"kind": "datatest", "id": item["id"], "item": item}
         for item in workspace.data_tests
-        if item.get("planned_test_id") == planned_test_id
+        if item.get("rcm_id") == rcm_id
     ]
-    artifacts.extend(
+    tests.extend(
         {"kind": "doctest", "id": item["id"], "item": item}
         for item in _doc_tests(workspace)
-        if item.get("planned_test_id") == planned_test_id
+        if item.get("rcm_id") == rcm_id
     )
-    return artifacts
+    return sorted(tests, key=lambda test: (test["kind"], test["id"]))
 
 
-def _artifact_executable(artifact: dict) -> bool:
-    if artifact["kind"] != "doctest":
-        return True
-    item = artifact["item"]
-    # Preserve auditor-completed historical work even when its older
-    # definition predates the stronger runner preflight metadata.
+def _specified(test: dict) -> bool:
+    """Whether a test has an executable specification yet."""
+    item = test["item"]
+    if item.get("status") == "draft":
+        return False
+    return bool(item.get("engine")) if test["kind"] == "datatest" else bool(item.get("kind"))
+
+
+def _executable(test: dict) -> bool:
+    if test["kind"] != "doctest":
+        return _specified(test)
+    item = test["item"]
+    # Preserve auditor-completed historical work even when its older definition
+    # predates the stronger runner preflight metadata.
     return (
         item.get("status") == "completed"
         or doc_tests.evidence_blocked(item)
@@ -141,103 +54,129 @@ def _artifact_executable(artifact: dict) -> bool:
     )
 
 
+def test_manifest(workspace: Workspace) -> list[dict]:
+    """Build a bounded, model-safe view of every RCM row's linked tests.
+
+    The manifest carries plan specifications and artifact metadata only; it never
+    includes table rows or document text. It records whether a test has a durable
+    result rather than merely whether a definition exists.
+    """
+    manifest = []
+    for row in workspace.rcm:
+        for test in _tests(workspace, row["id"]):
+            item = test["item"]
+            if test["kind"] == "datatest":
+                has_result = bool(item.get("last_run"))
+                current_source_sha1 = data_tests._sha1(
+                    {
+                        "engine": item.get("engine"),
+                        "table_refs": item.get("table_refs") or [],
+                        "spec": item.get("spec") or {},
+                    }
+                )
+                current_fingerprints = data_tests._dataset_fingerprints(
+                    workspace, item.get("table_refs") or []
+                )
+                result_stale = bool(
+                    item.get("last_run")
+                    and (
+                        item["last_run"].get("source_sha1") != current_source_sha1
+                        or item["last_run"].get("dataset_fingerprints") != current_fingerprints
+                    )
+                )
+            else:
+                has_result = item.get("status") == "completed"
+                result_stale = False
+            manifest.append({
+                "rcm_id": row["id"],
+                "rcm_risk": str(row.get("risk") or ""),
+                "risk_rating": str(row.get("risk_rating") or ""),
+                "kind": test["kind"],
+                "test_id": test["id"],
+                "title": str(item.get("title") or ""),
+                "objective": str(item.get("objective") or ""),
+                "criteria": str(item.get("criteria") or ""),
+                "steps": [str(value) for value in item.get("steps") or []],
+                "expected_evidence": str(item.get("expected_evidence") or ""),
+                "status": str(item.get("status") or ""),
+                "specified": _specified(test),
+                "has_durable_result": has_result,
+                "executable": _executable(test),
+                "workflow_parent_sha1": item.get("workflow_parent_sha1"),
+                "result_stale": result_stale,
+                **(
+                    {"execution_issues": doc_tests.execution_issues(item)}
+                    if test["kind"] == "doctest" else {}
+                ),
+                **(
+                    {"engine": str(item.get("engine") or "")}
+                    if test["kind"] == "datatest" else {}
+                ),
+            })
+    return manifest
+
+
 def coverage(workspace: Workspace) -> dict:
-    rows_without_planned_tests = []
-    planned_tests_without_execution = []
-    invalid_execution_parents = []
+    rows_without_tests = []
+    unspecified_tests = []
+    invalid_test_parents = []
     high_risks_without_executable_work = []
     completed_without_durable_result = []
     inconsistent_conclusions = []
-    all_docs = _doc_tests(workspace)
-    planned_index = {
-        planned["id"]: row["id"]
-        for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
-    }
+    known_rows = {row["id"] for row in workspace.rcm}
 
     for row in workspace.rcm:
-        planned_tests = row.get("planned_tests") or []
-        if not planned_tests:
-            rows_without_planned_tests.append(row["id"])
+        tests = _tests(workspace, row["id"])
+        if not tests:
+            rows_without_tests.append(row["id"])
         usable = False
-        for planned in planned_tests:
-            artifacts = _artifacts(workspace, planned["id"])
-            executable_artifacts = [
-                artifact for artifact in artifacts if _artifact_executable(artifact)
-            ]
-            linked_kinds = {artifact["kind"] for artifact in executable_artifacts}
-            required = required_execution_kinds(planned.get("method") or "")
-            missing = sorted(required - linked_kinds)
-            if planned.get("method") == "validation" and not any(
-                artifact["kind"] == "datatest"
-                and artifact["item"].get("engine") == "validation"
-                for artifact in executable_artifacts
-            ):
-                missing = ["validation datatest"]
-            if missing:
-                planned_tests_without_execution.append(
-                    {
-                        "rcm_id": row["id"],
-                        "planned_test_id": planned["id"],
-                        "missing": missing,
-                    }
-                )
-            if planned.get("status") not in {"blocked", "not_ready"}:
+        for test in tests:
+            item = test["item"]
+            if not _specified(test):
+                unspecified_tests.append({"rcm_id": row["id"], "test_id": test["id"]})
+            if item.get("status") not in {"blocked", "draft"}:
                 usable = True
-            if planned.get("status", "").startswith("completed"):
-                missing_result = any(
-                    artifact["kind"] == "datatest" and not artifact["item"].get("last_run")
-                    for artifact in executable_artifacts
-                ) or any(
-                    artifact["kind"] == "doctest"
-                    and artifact["item"].get("status") != "completed"
-                    for artifact in executable_artifacts
+            if str(item.get("status") or "").startswith("completed"):
+                missing_result = (
+                    not item.get("last_run")
+                    if test["kind"] == "datatest"
+                    else item.get("status") != "completed"
+                    and not str(item.get("status") or "").startswith("completed")
                 )
-                if not executable_artifacts or missing_result:
+                if missing_result:
                     completed_without_durable_result.append(
-                        {"rcm_id": row["id"], "planned_test_id": planned["id"]}
+                        {"rcm_id": row["id"], "test_id": test["id"]}
                     )
             if (
-                planned.get("control_conclusion") == "effective"
+                item.get("control_conclusion") == "effective"
                 and (
-                    int(planned.get("open_exception_count") or 0) > 0
-                    or str(planned.get("scope_limitations") or "").strip()
+                    int(item.get("open_exception_count") or 0) > 0
+                    or str(item.get("scope_limitations") or "").strip()
                 )
             ):
                 inconsistent_conclusions.append(
                     {
                         "rcm_id": row["id"],
-                        "planned_test_id": planned["id"],
+                        "test_id": test["id"],
                         "reason": "Effective conclusion conflicts with open exceptions or limitations.",
                     }
                 )
-        if row.get("risk_rating") in {"high", "critical"} and planned_tests and not usable:
+        if row.get("risk_rating") in {"high", "critical"} and tests and not usable:
             high_risks_without_executable_work.append(row["id"])
 
-    for item in workspace.data_tests:
-        if not item.get("rcm_id") and not item.get("planned_test_id"):
-            # Exploratory Data Tests are durable analysis artifacts, not audit
-            # execution, and therefore neither satisfy nor block RCM coverage.
-            continue
-        parent = planned_index.get(item.get("planned_test_id"))
-        if not parent or parent != item.get("rcm_id"):
-            invalid_execution_parents.append(
-                {"kind": "datatest", "id": item.get("id"), "reason": "Invalid RCM/planned-test parent."}
-            )
-    for item in all_docs:
-        if not item.get("planned_test_id"):
-            invalid_execution_parents.append(
-                {"kind": "doctest", "id": item.get("id"), "reason": "Unassigned execution artifact."}
-            )
-        elif planned_index.get(item.get("planned_test_id")) != item.get("rcm_id"):
-            invalid_execution_parents.append(
-                {"kind": "doctest", "id": item.get("id"), "reason": "Invalid RCM/planned-test parent."}
+    for item in [*workspace.data_tests, *_doc_tests(workspace)]:
+        rcm_id = item.get("rcm_id")
+        # An unlinked test is exploration or standalone document work, not a
+        # coverage defect. Only a link that does not resolve is.
+        if rcm_id and rcm_id not in known_rows:
+            invalid_test_parents.append(
+                {"id": item.get("id"), "reason": "Linked RCM row does not exist."}
             )
 
     issues = (
-        len(rows_without_planned_tests)
-        + len(planned_tests_without_execution)
-        + len(invalid_execution_parents)
+        len(rows_without_tests)
+        + len(unspecified_tests)
+        + len(invalid_test_parents)
         + len(high_risks_without_executable_work)
         + len(completed_without_durable_result)
         + len(inconsistent_conclusions)
@@ -245,9 +184,9 @@ def coverage(workspace: Workspace) -> dict:
     return {
         "ok": issues == 0,
         "issue_count": issues,
-        "rows_without_planned_tests": rows_without_planned_tests,
-        "planned_tests_without_execution": planned_tests_without_execution,
-        "invalid_execution_parents": invalid_execution_parents,
+        "rows_without_tests": rows_without_tests,
+        "unspecified_tests": unspecified_tests,
+        "invalid_test_parents": invalid_test_parents,
         "high_risks_without_executable_work": high_risks_without_executable_work,
         "completed_without_durable_result": completed_without_durable_result,
         "inconsistent_conclusions": inconsistent_conclusions,
@@ -258,7 +197,7 @@ def _observation(
     workspace: Workspace,
     *,
     rcm_id: str,
-    planned_test_id: str,
+    test_id: str,
     execution_ref: str,
     exception_count: int,
     suggested_disposition: str,
@@ -272,7 +211,7 @@ def _observation(
         existing = {
             "id": f"OBS-{uuid.uuid4().hex[:10].upper()}",
             "rcm_id": rcm_id,
-            "planned_test_id": planned_test_id,
+            "test_id": test_id,
             "execution_ref": execution_ref,
             "exception_count": exception_count,
             "summary": summary,
@@ -294,131 +233,115 @@ def _observation(
     return existing
 
 
-def _rollup_planned(workspace: Workspace, row: dict, planned: dict) -> dict:
-    artifacts = [
-        artifact
-        for artifact in _artifacts(workspace, planned["id"])
-        if _artifact_executable(artifact)
-    ]
-    required = sorted(required_execution_kinds(planned.get("method") or ""))
-    states = []
-    total_exceptions = 0
+def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, int, int, int]:
+    """Fold one Data Test's latest run into its own record."""
+    last_run = item.get("last_run")
+    exceptions = int((last_run or {}).get("exception_count") or 0)
     open_exceptions = 0
-    evidence_refs = []
     executed = 0
-    blocked = False
-    review_required = False
-    artifact_payload = []
-    for artifact in artifacts:
-        item = artifact["item"]
-        if artifact["kind"] == "datatest":
-            last_run = item.get("last_run")
-            state = item.get("status") or "ready"
-            exceptions = int((last_run or {}).get("exception_count") or 0)
-            if last_run:
-                executed += 1
-                run = data_tests.load_result(workspace, item["id"], last_run["id"])
-                if exceptions or not run.get("semantic_valid"):
-                    suggestion = (
-                        "invalid_test_or_result"
-                        if not run.get("semantic_valid")
-                        else "screening_follow_up"
-                        if any("Screening result" in issue for issue in run.get("semantic_issues") or [])
-                        else "draft_finding_candidate"
-                    )
-                    observation = _observation(
-                        workspace,
-                        rcm_id=row["id"],
-                        planned_test_id=planned["id"],
-                        execution_ref=f"datatest:{item['id']}:{last_run['id']}",
-                        exception_count=exceptions,
-                        suggested_disposition=suggestion,
-                        summary=run.get("verdict_text") or item["title"],
-                    )
-                    if observation.get("status") == "open":
-                        open_exceptions += exceptions or 1
-            review_required = review_required or state == "review_required"
-        else:
-            rollup = doc_tests.result_rollup(item)
-            state = item.get("status") or "draft"
-            exceptions = int(rollup["exceptions"] + rollup["mismatched"])
-            if state == "completed":
-                executed += 1
-            blocked = blocked or state == "blocked"
-            review_required = review_required or bool(rollup["manual_review"] or rollup["pending"])
-            evidence_refs.extend(
-                anchor
-                for test_item in item.get("items") or []
-                for anchor in test_item.get("evidence_refs") or []
+    if last_run:
+        executed = 1
+        run = data_tests.load_result(workspace, item["id"], last_run["id"])
+        if exceptions or not run.get("semantic_valid"):
+            suggestion = (
+                "invalid_test_or_result"
+                if not run.get("semantic_valid")
+                else "screening_follow_up"
+                if any("Screening result" in issue for issue in run.get("semantic_issues") or [])
+                else "draft_finding_candidate"
             )
-            if exceptions:
-                observation = _observation(
-                    workspace,
-                    rcm_id=row["id"],
-                    planned_test_id=planned["id"],
-                    execution_ref=f"doctest:{item['id']}",
-                    exception_count=exceptions,
-                    suggested_disposition="draft_finding_candidate",
-                    summary=f"{exceptions} document-test exception or mismatch result(s).",
-                )
-                if observation.get("status") == "open":
-                    open_exceptions += exceptions
-        states.append(state)
-        total_exceptions += exceptions
-        evidence_refs.extend(item.get("evidence_refs") or [])
-        artifact_payload.append(
-            {"kind": artifact["kind"], "id": item["id"], "status": state, "exception_count": exceptions}
+            observation = _observation(
+                workspace,
+                rcm_id=row["id"],
+                test_id=item["id"],
+                execution_ref=f"datatest:{item['id']}:{last_run['id']}",
+                exception_count=exceptions,
+                suggested_disposition=suggestion,
+                summary=run.get("verdict_text") or item["title"],
+            )
+            if observation.get("status") == "open":
+                open_exceptions = exceptions or 1
+    status = str(item.get("status") or "draft")
+    return status, exceptions, open_exceptions, executed
+
+
+def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, int, int, int, list]:
+    rollup = doc_tests.result_rollup(item)
+    status = str(item.get("status") or "draft")
+    exceptions = int(rollup["exceptions"] + rollup["mismatched"])
+    open_exceptions = 0
+    executed = 1 if status == "completed" else 0
+    evidence_refs = [
+        anchor
+        for test_item in item.get("items") or []
+        for anchor in test_item.get("evidence_refs") or []
+    ]
+    if exceptions:
+        observation = _observation(
+            workspace,
+            rcm_id=row["id"],
+            test_id=item["id"],
+            execution_ref=f"doctest:{item['id']}",
+            exception_count=exceptions,
+            suggested_disposition="draft_finding_candidate",
+            summary=f"{exceptions} document-test exception or mismatch result(s).",
         )
+        if observation.get("status") == "open":
+            open_exceptions = exceptions
+    if status == "completed":
+        status = (
+            "completed_with_exception" if exceptions else "completed_no_exception"
+        )
+    elif status != "blocked" and (rollup["manual_review"] or rollup["pending"]):
+        # A test waiting on requested evidence stays blocked: the auditor has an
+        # evidence request to settle, not an item to review.
+        status = "review_required" if item.get("items") else status
+    return status, exceptions, open_exceptions, executed, evidence_refs
 
-    linked_kinds = {artifact["kind"] for artifact in artifacts}
-    missing = set(required) - linked_kinds
-    if planned.get("method") == "validation" and not any(
-        artifact["kind"] == "datatest" and artifact["item"].get("engine") == "validation"
-        for artifact in artifacts
-    ):
-        missing = {"validation datatest"}
-    if missing:
-        status = "not_ready"
-    elif blocked:
-        status = "blocked"
-    elif review_required:
-        status = "review_required"
-    elif artifacts and executed < len(artifacts):
-        status = "in_progress" if executed else "ready"
-    elif total_exceptions:
-        status = "completed_with_exception"
-    elif artifacts:
-        status = "completed_no_exception"
+
+def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
+    """Recompute one test's outcome from its own durable results."""
+    item = test["item"]
+    evidence_refs = list(item.get("evidence_refs") or [])
+    if test["kind"] == "datatest":
+        status, exceptions, open_exceptions, executed = _rollup_datatest(
+            workspace, row, item
+        )
     else:
-        status = "not_ready"
+        status, exceptions, open_exceptions, executed, anchors = _rollup_doctest(
+            workspace, row, item
+        )
+        evidence_refs.extend(anchors)
+    if not _specified(test):
+        status = "draft"
 
-    planned.update(
+    item.update(
         status=status,
-        exception_count=total_exceptions,
+        exception_count=exceptions,
         open_exception_count=open_exceptions,
         evidence_refs=list(
             {anchor.get("id") or str(anchor): anchor for anchor in evidence_refs}.values()
         ),
         result_summary=(
-            f"{len(artifacts)} linked execution artifact(s); {executed} executed; "
-            f"{total_exceptions} exception result(s), {open_exceptions} open."
+            f"{executed} run(s); {exceptions} exception result(s), "
+            f"{open_exceptions} open."
         ),
         updated=workspace._updated_now(),
     )
     return {
-        "planned_test_id": planned["id"],
-        "required_execution": required,
-        "linked_execution": artifact_payload,
-        "missing_execution": sorted(missing),
+        "test_id": test["id"],
+        "kind": test["kind"],
+        "title": str(item.get("title") or ""),
         "executed_count": executed,
-        "exception_count": total_exceptions,
+        "exception_count": exceptions,
         "open_exception_count": open_exceptions,
-        "evidence_count": len(planned["evidence_refs"]),
+        "evidence_count": len(item["evidence_refs"]),
         "status": status,
-        "result_summary": planned["result_summary"],
-        "conclusion": planned.get("conclusion") or "",
-        "scope_limitations": planned.get("scope_limitations") or "",
-        "finding_refs": planned.get("finding_refs") or [],
+        "result_summary": item["result_summary"],
+        "conclusion": item.get("conclusion") or "",
+        "control_conclusion": item.get("control_conclusion") or "no_conclusion",
+        "scope_limitations": item.get("scope_limitations") or "",
+        "finding_refs": item.get("finding_refs") or [],
     }
 
 
@@ -434,16 +357,15 @@ def rollup(workspace: Workspace, *, persist: bool = True) -> dict:
             {"rcm": workspace.rcm, "observations": workspace.observations}
         )
     )
+    document_tests: dict[str, dict] = {}
     rows = []
     for row in workspace.rcm:
-        planned_rollups = [
-            _rollup_planned(workspace, row, planned)
-            for planned in row.get("planned_tests") or []
-        ]
-        conclusions = [
-            planned.get("control_conclusion") or "no_conclusion"
-            for planned in row.get("planned_tests") or []
-        ]
+        tests = _tests(workspace, row["id"])
+        test_rollups = [_rollup_test(workspace, row, test) for test in tests]
+        for test in tests:
+            if test["kind"] == "doctest":
+                document_tests[test["id"]] = test["item"]
+        conclusions = [item["control_conclusion"] for item in test_rollups]
         if "ineffective" in conclusions:
             control_conclusion = "ineffective"
         elif "partially_effective" in conclusions:
@@ -454,17 +376,22 @@ def rollup(workspace: Workspace, *, persist: bool = True) -> dict:
             control_conclusion = "not_applicable"
         else:
             control_conclusion = "no_conclusion"
+        # The row-level conclusion is this tally: how much of the linked work
+        # completed, how much of it passed, and what it produced.
         row_rollup = {
-            "planned_tests": len(planned_rollups),
-            "completed": sum(item["status"].startswith("completed") for item in planned_rollups),
-            "blocked": sum(item["status"] == "blocked" for item in planned_rollups),
-            "review_required": sum(item["status"] == "review_required" for item in planned_rollups),
-            "exceptions": sum(item["exception_count"] for item in planned_rollups),
-            "open_exceptions": sum(item["open_exception_count"] for item in planned_rollups),
+            "tests": len(test_rollups),
+            "completed": sum(item["status"].startswith("completed") for item in test_rollups),
+            "passed": sum(item["status"] == "completed_no_exception" for item in test_rollups),
+            "failed": sum(item["status"] == "completed_with_exception" for item in test_rollups),
+            "blocked": sum(item["status"] == "blocked" for item in test_rollups),
+            "review_required": sum(item["status"] == "review_required" for item in test_rollups),
+            "draft": sum(item["status"] == "draft" for item in test_rollups),
+            "exceptions": sum(item["exception_count"] for item in test_rollups),
+            "open_exceptions": sum(item["open_exception_count"] for item in test_rollups),
             "control_conclusion": control_conclusion,
-            "finding_count": len(row.get("finding_refs") or []),
+            "findings": len(row.get("finding_refs") or []),
             "review_status": row.get("review_status") or "draft",
-            "planned_test_rollups": planned_rollups,
+            "test_rollups": test_rollups,
         }
         row["execution_rollup"] = row_rollup
         row["updated"] = workspace._updated_now()
@@ -475,6 +402,11 @@ def rollup(workspace: Workspace, *, persist: bool = True) -> dict:
         )
     )
     if persist and after_sha1 != before_sha1:
+        # Document Tests are separate files, so their recomputed outcome is
+        # written back explicitly rather than riding the workspace save. The
+        # single coordinated revision bump is the workspace save below.
+        for test in document_tests.values():
+            doc_tests.write_test(workspace, test)
         workspace.save()
     return {"rows": rows, "coverage": coverage(workspace)}
 
@@ -506,22 +438,25 @@ def completion(workspace: Workspace) -> dict:
     open_observations = [
         item["id"] for item in workspace.observations if item.get("status") != "disposed"
     ]
-    incomplete_outcomes = [
-        {"rcm_id": row["id"], "planned_test_id": planned["id"], "status": planned.get("status")}
+    linked = [
+        (row, test)
         for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
-        if planned.get("status")
+        for test in _tests(workspace, row["id"])
+    ]
+    incomplete_outcomes = [
+        {"rcm_id": row["id"], "test_id": test["id"], "status": test["item"].get("status")}
+        for row, test in linked
+        if test["item"].get("status")
         not in {
             "blocked", "review_required", "completed_no_exception",
             "completed_with_exception", "not_applicable",
         }
     ]
     blank_conclusions = [
-        {"rcm_id": row["id"], "planned_test_id": planned["id"]}
-        for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
-        if planned.get("status", "").startswith("completed")
-        and not str(planned.get("conclusion") or "").strip()
+        {"rcm_id": row["id"], "test_id": test["id"]}
+        for row, test in linked
+        if str(test["item"].get("status") or "").startswith("completed")
+        and not str(test["item"].get("conclusion") or "").strip()
     ]
     missing_planning_context = [
         field for field in ("objective", "scope")
@@ -529,14 +464,14 @@ def completion(workspace: Workspace) -> dict:
     ]
     blocked_without_plan = [
         {
-            "rcm_id": row["id"], "planned_test_id": planned["id"],
+            "rcm_id": row["id"], "test_id": test["id"],
             "missing": [
                 label
                 for label, present in (
-                    ("scope limitation", bool(str(planned.get("scope_limitations") or "").strip())),
-                    ("next action", bool(str(planned.get("next_action") or "").strip())),
+                    ("scope limitation", bool(str(test["item"].get("scope_limitations") or "").strip())),
+                    ("next action", bool(str(test["item"].get("next_action") or "").strip())),
                     ("evidence request", any(
-                        request.get("planned_test_id") == planned["id"]
+                        request.get("document_test_id") == test["id"]
                         and request.get("status") in {"open", "requested"}
                         for request in workspace.evidence_requests
                     )),
@@ -544,20 +479,19 @@ def completion(workspace: Workspace) -> dict:
                 if not present
             ],
         }
-        for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
-        if planned.get("status") == "blocked"
+        for row, test in linked
+        if test["item"].get("status") == "blocked"
     ]
     blocked_without_plan = [item for item in blocked_without_plan if item["missing"]]
     rcm_without_conclusion = [
         row["id"] for row in workspace.rcm
         if (row.get("execution_rollup") or {}).get("control_conclusion") == "no_conclusion"
         and not all(
-            str(planned.get("scope_limitations") or "").strip()
-            for planned in row.get("planned_tests") or []
+            str(test["item"].get("scope_limitations") or "").strip()
+            for test in _tests(workspace, row["id"])
         )
     ]
-    technical = bool(cov["invalid_execution_parents"] or cov["completed_without_durable_result"])
+    technical = bool(cov["invalid_test_parents"] or cov["completed_without_durable_result"])
     open_items = bool(
         cov["issue_count"]
         or open_observations
@@ -567,9 +501,8 @@ def completion(workspace: Workspace) -> dict:
         or blocked_without_plan
         or rcm_without_conclusion
         or any(
-            planned.get("status") in {"blocked", "review_required"}
-            for row in workspace.rcm
-            for planned in row.get("planned_tests") or []
+            test["item"].get("status") in {"blocked", "review_required"}
+            for _row, test in linked
         )
     )
     status = "completed_with_issues" if technical else "completed_with_open_items" if open_items else "completed"

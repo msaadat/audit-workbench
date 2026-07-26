@@ -44,10 +44,10 @@ const anchor = ref<EvidenceRef | null>(null)
 const attachId = ref<string | null>(null)
 const workingPaper = ref<WorkingPaper | null>(null)
 const planning = ref<PlanningPayload | null>(null)
-const draft = ref({ kind: 'vouching' as DocTestKind, title: '', rcmId: '', plannedTestId: '', direction: 'vouching', table: '', size: 10, seed: 42, frozenFields: '', identifierFields: '', requiredDocumentTypes: '', evidenceAware: true, attributes: '', documentId: '', pages: '', questions: '' })
+const deleting = ref(false)
+const draft = ref({ kind: 'vouching' as DocTestKind, title: '', rcmId: '', direction: 'vouching', table: '', size: 10, seed: 42, frozenFields: '', identifierFields: '', requiredDocumentTypes: '', evidenceAware: true, attributes: '', documentId: '', pages: '', questions: '' })
 const createRequested = route.query.create === '1'
 const requestedCreateRcm = String(route.query.rcm || '')
-const requestedCreatePlannedTest = String(route.query.planned_test || '')
 
 const kinds = [
   { label: 'Vouching / tracing', value: 'vouching' },
@@ -60,10 +60,9 @@ const selectedItem = computed(() => current.value?.items.find(item => item.id ==
 const tableOptions = computed(() => props.workspace.tables.map(table => table.name))
 const documentOptions = computed(() => documents.value.map(doc => ({ label: doc.title, value: doc.id })))
 const rcmOptions = computed(() => (planning.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
-const plannedTestOptions = computed(() => (planning.value?.rcm.find(item => item.id === draft.value.rcmId)?.planned_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: item.id })))
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
 const draftReady = computed(() => {
-  if (!draft.value.rcmId || !draft.value.plannedTestId) return false
+  if (!draft.value.rcmId) return false
   if (draft.value.kind === 'vouching') return Boolean(draft.value.table)
   if (draft.value.kind === 'review' || draft.value.kind === 'qa') return Boolean(draft.value.documentId)
   return true
@@ -106,7 +105,6 @@ async function createTest() {
     const common = {
       title: draft.value.title || `New ${draft.value.kind} test`,
       rcm_id: draft.value.rcmId,
-      planned_test_id: draft.value.plannedTestId,
       rcm_refs: [draft.value.rcmId],
     }
     if (draft.value.kind === 'vouching') {
@@ -174,6 +172,25 @@ async function runTest() {
   } catch (error) { fail('Could not start document test', error) }
   finally { running.value = false }
 }
+async function deleteTest() {
+  if (!current.value) return
+  const test = current.value
+  const itemText = test.item_count === 1 ? '1 worklist item' : `${test.item_count} worklist items`
+  if (!window.confirm(`Delete "${test.title}" and its ${itemText}? This cannot be undone.`)) return
+  deleting.value = true
+  try {
+    await api.del(`/api/workspaces/${props.workspace.id}/doc-tests/${test.id}`)
+    if (selectedIdFromRoute() === test.id) {
+      await router.replace({ query: workspaceQuery('doc-tests') })
+    }
+    selectedItemId.value = null
+    current.value = null
+    await loadList()
+    emit('changed')
+    toast.add({ severity: 'success', summary: 'Document test deleted', life: 1800 })
+  } catch (error) { fail('Could not delete document test', error) }
+  finally { deleting.value = false }
+}
 async function prepareTests() {
   if (assistantUnavailable.value) {
     toast.add({
@@ -184,17 +201,19 @@ async function prepareTests() {
     return
   }
   try {
-    await assistantChat.send('Prepare the next required Document Tests from the RCM planned tests, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.', 'act', launchMode.value, { goalTemplate: 'document_test_preparation', source: 'tab_button' })
+    await assistantChat.send('Write the executable specification for each drafted Document Test, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.', 'act', launchMode.value, { goalTemplate: 'document_test_preparation', source: 'tab_button' })
     toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress and any required decisions in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start document test preparation', error) }
 }
 function openManualCreate() {
   createStep.value = 1
   draft.value.rcmId = String(route.query.rcm || draft.value.rcmId || '')
-  draft.value.plannedTestId = String(route.query.planned_test || draft.value.plannedTestId || '')
   createOpen.value = true
 }
 function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
+function selectedIdFromRoute() {
+  return String(route.query.test || '')
+}
 async function openWorkingPaper() {
   if (!current.value?.rcm_id) { workingPaper.value = null; return }
   try { workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${current.value.rcm_id}/working-paper`) }
@@ -216,7 +235,6 @@ async function copyPaper(kind: 'markdown' | 'html') {
 onMounted(() => void Promise.all([loadList(), loadDocuments(), loadPlanning()]).then(() => {
   if (createRequested) {
     draft.value.rcmId = requestedCreateRcm
-    draft.value.plannedTestId = requestedCreatePlannedTest
     openManualCreate()
   }
 }).catch(error => fail('Could not load document tests', error)))
@@ -243,7 +261,7 @@ onUnmounted(unsubscribe)
       </aside>
 
       <main v-if="current" class="test-detail">
-        <div class="detail-title card"><div><span class="eyebrow">{{ current.id }} · {{ current.kind }}</span><h3>{{ current.title }}</h3><small class="muted">Parent {{ current.rcm_id || 'unassigned' }} · {{ current.planned_test_id || 'coverage not satisfied' }}</small></div><div class="rollups"><Tag :value="`${current.rollup?.matched ?? 0} matched`" severity="success"/><Tag :value="`${current.rollup?.mismatched ?? 0} mismatch / missing`" :severity="current.rollup?.mismatched ? 'danger' : 'secondary'"/><Tag :value="`${current.rollup?.manual_review ?? 0} manual`" :severity="current.rollup?.manual_review ? 'warn' : 'secondary'"/></div></div>
+        <div class="detail-title card"><div><span class="eyebrow">{{ current.id }} · {{ current.kind }}</span><h3>{{ current.title }}</h3><small class="muted">{{ current.rcm_id ? `RCM ${current.rcm_id}` : 'unlinked' }}</small></div><div class="rollups"><Tag :value="`${current.rollup?.matched ?? 0} matched`" severity="success"/><Tag :value="`${current.rollup?.mismatched ?? 0} mismatch / missing`" :severity="current.rollup?.mismatched ? 'danger' : 'secondary'"/><Tag :value="`${current.rollup?.manual_review ?? 0} manual`" :severity="current.rollup?.manual_review ? 'warn' : 'secondary'"/><Button icon="pi pi-trash" severity="danger" outlined rounded aria-label="Delete document test" :loading="deleting" @click="deleteTest"/></div></div>
         <SelectButton v-model="view" :options="[{label:'Worklist & setup',value:'worklist'},{label:'Working paper',value:'working-paper'}]" optionLabel="label" optionValue="value" :allowEmpty="false" @change="view === 'working-paper' && openWorkingPaper()"/>
 
         <div v-if="view === 'worklist'" class="work-layout">
@@ -286,14 +304,14 @@ onUnmounted(unsubscribe)
 
         <section v-else class="paper card">
           <div class="paper-actions"><Button label="Generate RCM working paper" icon="pi pi-sparkles" outlined :disabled="!current.rcm_id" @click="draftResults"/><Button label="Copy Markdown" icon="pi pi-copy" text :disabled="!workingPaper" @click="copyPaper('markdown')"/><Button label="Copy HTML" icon="pi pi-copy" text :disabled="!workingPaper" @click="copyPaper('html')"/></div>
-          <p v-if="!current.rcm_id" class="empty">Assign this test to an RCM planned test before generating a working paper.</p>
+          <p v-if="!current.rcm_id" class="empty">Link this test to an RCM row before generating a working paper.</p>
           <div v-else-if="workingPaper" class="paper-preview" v-html="workingPaper.html"/>
           <p v-else class="empty">Generate the parent RCM working paper to include all linked execution.</p>
         </section>
       </main>
       <main v-else><UiEmptyState icon="pi pi-verified" title="Loading test" description="Preparing the selected worklist." /></main>
     </div>
-    <UiEmptyState v-else icon="pi pi-verified" title="Prepare document fieldwork" description="Create Document Tests from RCM planned tests and prioritize transactions with imported evidence."><Button label="Prepare with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="prepareTests"/><Button label="Create manually" icon="pi pi-plus" severity="secondary" outlined @click="openManualCreate"/></UiEmptyState>
+    <UiEmptyState v-else icon="pi pi-verified" title="Prepare document fieldwork" description="Create Document Tests for the RCM rows they cover and prioritize transactions with imported evidence."><Button label="Prepare with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="prepareTests"/><Button label="Create manually" icon="pi pi-plus" severity="secondary" outlined @click="openManualCreate"/></UiEmptyState>
 
     <Dialog v-model:visible="createOpen" modal header="New document test" :style="{width:'min(44rem,94vw)'}">
       <div class="wizard-steps"><span v-for="n in 3" :key="n" :class="{ active: createStep === n, done: createStep > n }"><i>{{ n }}</i>{{ ['Type','Source & scope','Review'][n-1] }}</span></div>
@@ -304,7 +322,7 @@ onUnmounted(unsubscribe)
         <template v-else-if="draft.kind === 'review'"><label>Document<Select v-model="draft.documentId" :options="documentOptions" optionLabel="label" optionValue="value" filter/></label><label>Pages (comma separated; blank = all)<InputText v-model="draft.pages" placeholder="1, 3, 4"/></label></template>
         <template v-else><label>Document<Select v-model="draft.documentId" :options="documentOptions" optionLabel="label" optionValue="value" filter/></label><label>Questions (one per line)<Textarea v-model="draft.questions" rows="5"/></label></template>
       </div>
-      <div v-else class="create-form"><div class="review-summary"><strong>{{ draft.title || `New ${draft.kind} test` }}</strong><span>{{ kinds.find(item => item.value === draft.kind)?.label }}</span><span v-if="draft.table">Population: {{ draft.table }}</span><span v-if="draft.documentId">Document: {{ documentOptions.find(item => item.value === draft.documentId)?.label }}</span></div><div class="create-form parent-links"><strong>Required RCM linkage</strong><label>Risk and control<Select v-model="draft.rcmId" :options="rcmOptions" optionLabel="label" optionValue="value" filter @change="draft.plannedTestId = ''"/></label><label>Planned test<Select v-model="draft.plannedTestId" :options="plannedTestOptions" optionLabel="label" optionValue="value" filter/></label><small class="muted">Unassigned tests do not satisfy engagement coverage.</small></div></div>
+      <div v-else class="create-form"><div class="review-summary"><strong>{{ draft.title || `New ${draft.kind} test` }}</strong><span>{{ kinds.find(item => item.value === draft.kind)?.label }}</span><span v-if="draft.table">Population: {{ draft.table }}</span><span v-if="draft.documentId">Document: {{ documentOptions.find(item => item.value === draft.documentId)?.label }}</span></div><div class="create-form parent-links"><strong>RCM linkage</strong><label>Risk and control<Select v-model="draft.rcmId" :options="rcmOptions" optionLabel="label" optionValue="value" filter showClear/></label><small class="muted">An unlinked test is standalone document work and does not satisfy engagement coverage.</small></div></div>
       <template #footer><Button label="Cancel" text severity="secondary" @click="createOpen=false"/><span class="grow"/><Button v-if="createStep > 1" label="Back" severity="secondary" outlined @click="createStep--"/><Button v-if="createStep < 3" label="Next" icon="pi pi-arrow-right" iconPos="right" :disabled="createStep === 2 && !draftReady" @click="createStep++"/><Button v-else label="Create worklist" icon="pi pi-plus" :loading="creating" :disabled="!draftReady" @click="createTest"/></template>
     </Dialog>
     <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor"/>

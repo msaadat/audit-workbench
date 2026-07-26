@@ -187,20 +187,19 @@ def test_derived_phases_can_reach_complete(workspace_with_data):
         "context": {"objective": "Test revenue controls.", "scope": "Recorded transactions."},
     })
     row = ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
-    planned = ws.add_planned_test(row["id"], {
-        "title": "Validate transaction identifiers", "objective": "Test completeness.",
-        "method": "data_analytics", "steps": ["Scan transaction amounts."],
-    })
     test = data_tests.create(ws, {
         "title": "Required transaction identifiers", "objective": "Identify missing IDs.",
+        "steps": ["Scan transaction amounts."],
         "engine": "analytics", "table_refs": ["transactions"],
-        "rcm_id": row["id"], "planned_test_id": planned["id"],
+        "rcm_id": row["id"],
         "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
     })
     data_tests.run(ws, test["id"])
     rcm_execution.rollup(ws)
-    planned["conclusion"] = "No missing transaction identifiers were identified."
-    planned["control_conclusion"] = "effective"
+    data_tests.update(ws, test["id"], {
+        "conclusion": "No missing transaction identifiers were identified.",
+        "control_conclusion": "effective",
+    })
     ws.report = {"markdown": "# Audit report\n\nThere are 0 findings."}
     ws.save()
 
@@ -221,16 +220,12 @@ def test_rcm_dashboard_curation_scores_and_pins_four_to_six_results(workspace_wi
             "process": "Procurement", "risk": f"Vendor or approval risk {index}",
             "risk_rating": "high",
         })
-        planned = ws.add_planned_test(row["id"], {
-            "title": f"Vendor integrity test {index}",
-            "objective": "Assess vendor and approval integrity.",
-            "method": "data_analytics", "steps": ["Scan the amount population."],
-        })
         item = data_tests.create(ws, {
             "title": f"Vendor integrity result {index}",
             "objective": "Identify management-relevant vendor integrity signals.",
+            "steps": ["Scan the amount population."],
             "engine": "analytics", "table_refs": ["transactions"],
-            "rcm_id": row["id"], "planned_test_id": planned["id"],
+            "rcm_id": row["id"],
             "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
         })
         data_tests.run(ws, item["id"])
@@ -239,7 +234,7 @@ def test_rcm_dashboard_curation_scores_and_pins_four_to_six_results(workspace_wi
 
     assert 4 <= len(curated["tiles"]) <= 6
     assert len(ws.tiles) == len(curated["tiles"])
-    assert all(tile.get("rcm_id") and tile.get("planned_test_id") for tile in ws.tiles)
+    assert all(tile.get("rcm_id") for tile in ws.tiles)
     assert all(str(tile.get("result_ref")).startswith("datatest:") for tile in ws.tiles)
     repeated = curate_rcm_tiles(ws, run_id="RUN-2")
     assert repeated["tiles"] == []

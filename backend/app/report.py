@@ -14,6 +14,19 @@ from .documents import append_activity
 from .findings import artifact, support_issues
 from .workspaces import Workspace, WorkspaceError
 
+
+def _linked_tests(workspace: Workspace, rcm_id: str) -> list[dict]:
+    """Every durable test linked to one RCM row, in a stable order."""
+    tests = [
+        item for item in workspace.data_tests if item.get("rcm_id") == rcm_id
+    ]
+    tests.extend(
+        doc_tests.load_test(workspace, summary["id"])
+        for summary in doc_tests.list_tests(workspace)
+        if summary.get("rcm_id") == rcm_id
+    )
+    return sorted(tests, key=lambda item: str(item.get("id") or ""))
+
 REQUIRED_FINDING_FIELDS = ("condition", "criteria", "cause", "effect", "recommendation")
 MODEL_CONTEXT_LIMIT = 30_000
 _PLANNING_FIELDS = ("objective", "entity", "period", "scope", "materiality")
@@ -44,7 +57,7 @@ def _safe_finding(item: dict) -> dict:
         for key in (
             "id", "title", "severity", "condition", "criteria", "cause", "effect",
             "recommendation", "management_response", "rcm_refs",
-            "planned_test_refs", "execution_refs", "cause_pending",
+            "test_refs", "execution_refs", "cause_pending",
             "severity_rationale", "auditor_confirmed", "source",
         )
     } | {
@@ -112,7 +125,7 @@ def _incomplete_coverage(workspace: Workspace, workflow: dict | None = None) -> 
     failed_definitions = sum(
         unit.get("status") in failed_statuses
         for stage in stages
-        if stage.get("capability") == "fieldwork.definitions_ready"
+        if stage.get("capability") == "tests.specified"
         for unit in stage.get("units") or []
     )
     completion = rcm_execution.completion(workspace)
@@ -121,12 +134,9 @@ def _incomplete_coverage(workspace: Workspace, workflow: dict | None = None) -> 
         len(completion.get("missing_planning_context") or [])
         + int(not str(workspace.planning.get("apm_markdown") or "").strip())
         + int(not workspace.rcm)
-        + len(coverage.get("rows_without_planned_tests") or [])
+        + len(coverage.get("rows_without_tests") or [])
     )
-    missing_definitions = sum(
-        len(item.get("missing") or [])
-        for item in coverage.get("planned_tests_without_execution") or []
-    )
+    missing_definitions = len(coverage.get("unspecified_tests") or [])
     return {
         "failed_planning_units": failed_planning,
         "missing_planning_items": missing_planning,
@@ -172,14 +182,13 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
             {
                 "id": test["id"], "title": test.get("title"), "kind": test.get("kind"),
                 "status": test.get("status"), "rcm_refs": test.get("rcm_refs") or [],
-                "rcm_id": test.get("rcm_id"),
-                "planned_test_id": test.get("planned_test_id"), "rollup": rollup,
+                "rcm_id": test.get("rcm_id"), "rollup": rollup,
             }
         )
     context = _planning_context(workspace)
     data_test_summaries = []
     for item in workspace.data_tests:
-        if not item.get("rcm_id") or not item.get("planned_test_id"):
+        if not item.get("rcm_id"):
             continue
         latest = None
         if item.get("last_run"):
@@ -194,8 +203,7 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
         data_test_summaries.append({
             "id": item["id"], "title": item.get("title"), "objective": item.get("objective"),
             "engine": item.get("engine"), "status": item.get("status"),
-            "rcm_id": item.get("rcm_id"), "planned_test_id": item.get("planned_test_id"),
-            "latest_result": latest,
+            "rcm_id": item.get("rcm_id"), "latest_result": latest,
         })
     supported = [
         item for item in workspace.findings
@@ -223,17 +231,18 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
                 "assertion": item.get("assertion"), "control": item.get("control"),
                 "control_conclusion": (item.get("execution_rollup") or {}).get("control_conclusion"),
                 "review_status": item.get("review_status"),
-                "planned_tests": [
+                "test_refs": list(item.get("test_refs") or []),
+                "tests": [
                     {
-                        key: planned.get(key)
+                        key: test.get(key)
                         for key in (
-                            "id", "title", "objective", "criteria", "method", "steps",
-                            "expected_evidence", "execution_refs", "status", "result_summary",
+                            "id", "title", "objective", "criteria", "steps",
+                            "expected_evidence", "status", "result_summary",
                             "conclusion", "control_conclusion", "scope_limitations",
                             "exception_count", "open_exception_count", "finding_refs",
                         )
                     }
-                    for planned in item.get("planned_tests") or []
+                    for test in _linked_tests(workspace, item["id"])
                 ],
             }
             for item in workspace.rcm
@@ -244,10 +253,10 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
         "findings": [_safe_finding(item) for item in supported],
         "draft_findings_excluded": [item["id"] for item in workspace.findings if item not in supported],
         "scope_limitations": [
-            {"rcm_id": row["id"], "planned_test_id": planned["id"], "text": planned.get("scope_limitations")}
+            {"rcm_id": row["id"], "test_id": test["id"], "text": test.get("scope_limitations")}
             for row in workspace.rcm
-            for planned in row.get("planned_tests") or []
-            if str(planned.get("scope_limitations") or "").strip()
+            for test in _linked_tests(workspace, row["id"])
+            if str(test.get("scope_limitations") or "").strip()
         ],
         "completion": completion,
         "preliminary": completion["status"] != "completed",
@@ -255,7 +264,7 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
         "statistics": {
             "rcm_rows": len(workspace.rcm),
             "risk_distribution": risk_distribution,
-            "planned_tests": sum(len(row.get("planned_tests") or []) for row in workspace.rcm),
+            "tests": sum(len(_linked_tests(workspace, row["id"])) for row in workspace.rcm),
             "data_tests": len(data_test_summaries), "findings": len(supported),
             "draft_findings": len(workspace.findings) - len(supported),
             "document_tests": len(tests), **totals,
@@ -367,7 +376,7 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
         "## Executive summary", "",
         f"This draft reports the results of the {workspace.name} engagement. "
         f"Fieldwork recorded {stats['findings']} supported finding(s) across "
-        f"{stats['planned_tests']} RCM planned test(s).",
+        f"{stats['tests']} RCM test(s).",
         "", "## Background, objective, and scope", "",
         f"**Entity:** {planning.get('entity') or 'Not stated'}", "",
         f"**Period:** {planning.get('period') or 'Not stated'}", "",
@@ -407,7 +416,7 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
     lines.extend(["", "## Scope limitations", ""])
     limitations = context.get("scope_limitations") or []
     limitation_lines = [
-        f"- RCM {item['rcm_id']} / planned test {item['planned_test_id']}: {item['text']}"
+        f"- RCM {item['rcm_id']} / test {item['test_id']}: {item['text']}"
         for item in limitations
     ]
     if context.get("preliminary"):
@@ -572,10 +581,10 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
     text = report["markdown"] if markdown is None else str(markdown)
     issues: list[dict] = []
     known_rcm = {item.get("id") for item in workspace.rcm}
-    known_planned = {
-        planned.get("id"): row.get("id")
+    known_tests = {
+        str(test.get("id")): row.get("id")
         for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
+        for test in _linked_tests(workspace, row["id"])
     }
     cited_findings = _finding_citations(text)
     supported_findings = []
@@ -597,9 +606,9 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
         for rcm_id in finding.get("rcm_refs") or []:
             if rcm_id not in known_rcm:
                 issues.append(_issue("broken_rcm_ref", "error", f"{finding['id']} references missing RCM row {rcm_id}.", [ref]))
-        for planned_id in finding.get("planned_test_refs") or []:
-            if planned_id not in known_planned:
-                issues.append(_issue("broken_planned_test_ref", "error", f"{finding['id']} references missing planned test {planned_id}.", [ref]))
+        for test_id in finding.get("test_refs") or []:
+            if test_id not in known_tests:
+                issues.append(_issue("broken_test_ref", "error", f"{finding['id']} references missing test {test_id}.", [ref]))
         for anchor in finding.get("evidence_refs") or []:
             resolved = artifact(workspace, anchor.get("source_kind"), anchor.get("source_id"))
             if resolved is None:
@@ -684,16 +693,16 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
                 [f"rcm:{item['id']}" for item in workspace.rcm if str(item.get("risk_rating") or "").casefold() == rating],
             ))
     limitations = [
-        (row, planned)
+        (row, test)
         for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
-        if str(planned.get("scope_limitations") or "").strip()
+        for test in _linked_tests(workspace, row["id"])
+        if str(test.get("scope_limitations") or "").strip()
     ]
     if limitations and "limitation" not in text.lower():
         issues.append(_issue(
             "missing_limitations", "warning",
-            "Recorded planned-test scope limitations are not disclosed in the report.",
-            [f"planned_test:{planned['id']}" for _row, planned in limitations],
+            "Recorded test scope limitations are not disclosed in the report.",
+            [f"test:{test['id']}" for _row, test in limitations],
         ))
     completion = rcm_execution.completion(workspace)
     if completion["status"] != "completed" and text.strip() and "preliminary" not in text.casefold():

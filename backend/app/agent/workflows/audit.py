@@ -45,9 +45,9 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
-    "planning.planned_tests_ready": ("planning.rcm_ready",),
-    "fieldwork.definitions_ready": ("planning.planned_tests_ready",),
-    "fieldwork.executed": ("fieldwork.definitions_ready",),
+    "tests.drafted": ("planning.rcm_ready",),
+    "tests.specified": ("tests.drafted",),
+    "fieldwork.executed": ("tests.specified",),
     "results.rolled_up": ("fieldwork.executed",),
     "findings.drafted": ("results.rolled_up",),
     "working_papers.generated": ("results.rolled_up",),
@@ -83,12 +83,13 @@ TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     "planning": [
         "planning.apm_ready",
         "planning.rcm_ready",
-        "planning.planned_tests_ready",
+        "tests.drafted",
+        "tests.specified",
     ],
     "apm_only": ["planning.apm_ready"],
-    # Preparing the Document Tests an RCM planned test requires is the
-    # ``fieldwork.definitions_ready`` deliverable, not a document-test run.
-    "document_test_preparation": ["fieldwork.definitions_ready"],
+    # Preparing an RCM row's Document Tests is the ``tests.specified``
+    # deliverable, not a document-test run.
+    "document_test_preparation": ["tests.specified"],
     "report": ["report.working_draft", "audit.verified"],
 }
 

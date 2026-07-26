@@ -63,19 +63,25 @@ def rcm_row_sha1(row: dict) -> str:
             for key in (
                 "id", "process", "risk", "risk_rating", "assertion", "control",
                 "control_type", "control_owner", "criteria", "criteria_refs",
-                "test_procedure", "evidence_refs", "review_status",
+                "evidence_refs", "review_status",
             )
         }
     )
 
 
-def planned_test_sha1(planned: dict) -> str:
+def test_plan_sha1(test: dict) -> str:
+    """The provenance identity of one test's audit plan.
+
+    Only the plan is covered — the executable spec is written by a later pass
+    over the same record, so including it would make a specified test look like
+    a changed parent to the pass that drafted it.
+    """
     return canonical_sha1(
         {
-            key: planned.get(key)
+            key: test.get(key)
             for key in (
-                "id", "title", "objective", "criteria", "method", "steps",
-                "expected_evidence", "sampling", "thresholds", "methodology_refs",
+                "id", "title", "objective", "criteria", "steps",
+                "expected_evidence", "methodology_refs",
             )
         }
     )
@@ -104,6 +110,20 @@ def rows(workspace: Workspace, scope: dict) -> list[dict]:
 
     selected = set(target_rcm_ids(workspace, scope))
     return [row for row in workspace.rcm if row["id"] in selected]
+
+
+def all_tests(workspace: Workspace) -> list[dict]:
+    """Every durable test in the workspace, linked or not."""
+
+    from ... import doc_tests
+
+    return [
+        *workspace.data_tests,
+        *(
+            doc_tests.load_test(workspace, summary["id"])
+            for summary in doc_tests.list_tests(workspace)
+        ),
+    ]
 
 
 def eligible_observations(workspace: Workspace) -> list[dict]:

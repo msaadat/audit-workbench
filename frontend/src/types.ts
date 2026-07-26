@@ -288,17 +288,15 @@ export interface DocTestRollup {
   pending: number
 }
 
-export interface DocTest {
+export interface DocTest extends TestPlan, TestOutcome {
   id: string
-  kind: DocTestKind
+  kind: DocTestKind | null
   title: string
-  status: 'draft' | 'in_progress' | 'review_required' | 'blocked' | 'completed'
+  status: TestStatus
   semantic_id: string
   rcm_refs: string[]
   procedure_refs: string[]
   rcm_id: string | null
-  planned_test_id: string | null
-  scope_limitations?: string
   spec: Record<string, unknown>
   items: DocTestItem[]
   item_count?: number
@@ -351,9 +349,7 @@ export interface RcmRow {
   control_owner: string
   criteria: string
   criteria_refs: unknown[]
-  test_procedure: string
   test_refs: string[]
-  planned_tests: PlannedTest[]
   execution_rollup: RcmExecutionRollup
   finding_refs: string[]
   evidence_refs: EvidenceRef[]
@@ -363,64 +359,79 @@ export interface RcmRow {
   updated: string
 }
 
-export type PlannedTestMethod = 'data_analytics' | 'validation' | 'document_inspection' | 'inquiry' | 'hybrid' | 'evidence_unavailable'
-export type PlannedTestStatus = 'not_ready' | 'ready' | 'in_progress' | 'review_required' | 'blocked' | 'completed_no_exception' | 'completed_with_exception' | 'not_applicable'
+/** The one source a test is answered from. */
+export type TestSource = 'data' | 'document'
+export type TestStatus =
+  | 'draft'
+  | 'ready'
+  | 'in_progress'
+  | 'review_required'
+  | 'blocked'
+  | 'completed'
+  | 'completed_no_exception'
+  | 'completed_with_exception'
+  | 'not_applicable'
+export type ControlConclusion =
+  | 'effective'
+  | 'partially_effective'
+  | 'ineffective'
+  | 'no_conclusion'
+  | 'not_applicable'
 
-export interface PlannedTest {
-  id: string
-  semantic_id: string
+/** The audit plan every test carries, whatever its source. */
+export interface TestPlan {
   title: string
   objective: string
   criteria: string
-  method: PlannedTestMethod
   steps: string[]
   expected_evidence: string
-  sampling: { strategy: string; size: number | null; seed: number; stratify_by: string | null }
-  thresholds: Record<string, unknown>
-  execution_refs: string[]
-  status: PlannedTestStatus
+  methodology_refs: Array<Record<string, unknown>>
+}
+
+/** The outcome roll-up computes onto every test. */
+export interface TestOutcome {
+  status: TestStatus
   result_summary: string
   conclusion: string
-  control_conclusion: 'effective' | 'partially_effective' | 'ineffective' | 'no_conclusion' | 'not_applicable'
+  control_conclusion: ControlConclusion
   scope_limitations: string
   next_action: string
   exception_count: number
   open_exception_count: number
   evidence_refs: EvidenceRef[]
-  methodology_refs: Array<Record<string, unknown>>
   finding_refs: string[]
-  created_by: 'agent' | 'user'
-  agent_run_id: string | null
-  updated: string
 }
 
-export interface PlannedTestRollup {
-  planned_test_id: string
-  required_execution: string[]
-  linked_execution: Array<{ kind: 'datatest' | 'doctest'; id: string; status: string; exception_count: number }>
-  missing_execution: string[]
+export interface TestRollup {
+  test_id: string
+  kind: 'datatest' | 'doctest'
+  title: string
   executed_count: number
   exception_count: number
   open_exception_count: number
   evidence_count: number
-  status: PlannedTestStatus
+  status: TestStatus
   result_summary: string
   conclusion: string
+  control_conclusion: ControlConclusion
   scope_limitations: string
   finding_refs: string[]
 }
 
 export interface RcmExecutionRollup {
-  planned_tests?: number
+  tests?: number
   completed?: number
+  passed?: number
+  failed?: number
   blocked?: number
   review_required?: number
+  draft?: number
   exceptions?: number
   open_exceptions?: number
   control_conclusion?: string
-  finding_count?: number
+  findings?: number
   review_status?: string
-  planned_test_rollups?: PlannedTestRollup[]
+  test_rollups?: TestRollup[]
 }
 
 export type DataTestEngine = 'analytics' | 'validation' | 'polars'
@@ -428,7 +439,7 @@ export type DataTestEngine = 'analytics' | 'validation' | 'polars'
 export interface DataTestRunSummary {
   id: string
   run_at: string
-  status: PlannedTestStatus
+  status: TestStatus
   verdict: 'ok' | 'warn' | 'fail' | 'info' | 'error'
   exception_count: number
   semantic_valid: boolean
@@ -437,17 +448,16 @@ export interface DataTestRunSummary {
   result_sha1: string
 }
 
-export interface DataTest {
+export interface DataTest extends TestPlan, TestOutcome {
   id: string
   semantic_id: string
   rcm_id: string | null
-  planned_test_id: string | null
   title: string
   objective: string
-  engine: DataTestEngine
+  engine: DataTestEngine | null
   table_refs: string[]
   spec: Record<string, unknown>
-  status: PlannedTestStatus
+  status: TestStatus
   semantic_warnings: string[]
   last_run: DataTestRunSummary | null
   runs: DataTestRunSummary[]
@@ -462,7 +472,6 @@ export interface DataTest {
 export interface DataTestResult extends DataTestRunSummary {
   data_test_id: string
   rcm_id: string | null
-  planned_test_id: string | null
   verdict_text: string
   statistics: Array<{ label: string; value: string }>
   viz: Record<string, unknown> | null
@@ -500,7 +509,6 @@ export interface PlanningPayload {
   procedures: AuditProcedure[]
   data_tests: DataTest[]
   observations: AuditObservation[]
-  rcm_migration: Record<string, unknown>
   document_tests: Array<Pick<DocTest, 'id' | 'title' | 'status'>>
   findings: AuditFinding[]
   finding_rollups: FindingRollups
@@ -509,7 +517,7 @@ export interface PlanningPayload {
 export interface AuditObservation {
   id: string
   rcm_id: string
-  planned_test_id: string
+  test_id: string
   execution_ref: string
   exception_count: number
   summary: string
@@ -538,7 +546,7 @@ export interface AuditFinding {
   management_response: string
   rcm_refs: string[]
   procedure_refs: string[]
-  planned_test_refs: string[]
+  test_refs: string[]
   execution_refs: string[]
   evidence_refs: EvidenceRef[]
   cause_pending: boolean
@@ -557,7 +565,7 @@ export interface FindingSummary {
 
 export interface FindingRollups {
   by_rcm: Record<string, FindingSummary[]>
-  by_planned_test: Record<string, FindingSummary[]>
+  by_test: Record<string, FindingSummary[]>
   by_procedure: Record<string, FindingSummary[]>
 }
 
@@ -613,7 +621,7 @@ export interface ReportContext {
   document_tests: Array<Record<string, unknown>>
   findings: Array<Record<string, unknown>>
   draft_findings_excluded: string[]
-  scope_limitations: Array<{ rcm_id: string; planned_test_id: string; text: string }>
+  scope_limitations: Array<{ rcm_id: string; test_id: string; text: string }>
   completion: Record<string, unknown>
   preliminary: boolean
   statistics: Record<string, number>
@@ -878,7 +886,7 @@ export interface DashboardOverview {
   rows: number
   documents: number
   rcm_rows: number
-  planned_tests: number
+  tests: number
   data_tests: number
   document_tests: number
   findings: number
@@ -1477,13 +1485,12 @@ export interface AgentRejectedProposal {
 export interface AgentAuditOutcome {
   audit_complete: boolean
   completion_status: string
-  planned_tests_total: number
-  planned_tests_completed: number
-  planned_tests_review_required: number
-  planned_tests_blocked: number
-  data_tests_required: number
+  tests_total: number
+  tests_completed: number
+  tests_review_required: number
+  tests_blocked: number
+  tests_unspecified: number
   data_tests_executed: number
-  document_tests_required: number
   document_tests_executed: number
   open_observations: number
   supported_findings: number

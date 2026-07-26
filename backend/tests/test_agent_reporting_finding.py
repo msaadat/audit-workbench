@@ -170,15 +170,6 @@ def _observed_workspace(workspace_with_data):
             "risk_rating": "high",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Duplicate invoices",
-            "objective": "Identify repeated invoice identifiers.",
-            "method": "data_analytics",
-            "steps": ["Identify repeated invoice identifiers."],
-        },
-    )
     test = data_tests.create(
         ws,
         {
@@ -187,7 +178,6 @@ def _observed_workspace(workspace_with_data):
             "engine": "analytics",
             "table_refs": ["transactions"],
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
             "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
         },
     )
@@ -226,7 +216,7 @@ def test_finding_executor_derives_every_reference_from_the_observation(
 
     committed = target.workspace.findings[0]
     assert committed["rcm_refs"] == [observation["rcm_id"]]
-    assert committed["planned_test_refs"] == [observation["planned_test_id"]]
+    assert committed["test_refs"] == [observation["test_id"]]
     assert committed["execution_refs"] == [observation["execution_ref"]]
     assert committed["evidence_refs"]
     assert committed["auditor_confirmed"] is False

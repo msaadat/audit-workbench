@@ -170,7 +170,7 @@ def document_test_units(
     * anything else is one deterministic local execution unit.
 
     ``parent_refs`` prefixes the caller's own lineage — the audit graph adds the
-    planned test the worklist implements — ahead of the references this expansion
+    RCM row the worklist covers — ahead of the references this expansion
     owns.
     """
     test = doc_test_service.load_test(workspace, test_id)

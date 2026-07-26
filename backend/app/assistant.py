@@ -95,12 +95,9 @@ def workspace_manifest(workspace: Workspace) -> dict:
     have the largest payload.
     """
 
-    planned_tests = [
-        test
-        for row in workspace.rcm
-        for test in row.get("planned_tests") or []
-        if isinstance(test, dict)
-    ]
+    from . import doc_tests
+
+    test_count = len(workspace.data_tests) + len(doc_tests.list_tests(workspace))
     return {
         "workspace": {
             "id": workspace.id,
@@ -122,7 +119,7 @@ def workspace_manifest(workspace: Workspace) -> dict:
             "saved_analyses": len(workspace.analyses),
             "documents": len(workspace.documents),
             "rcm_rows": len(workspace.rcm),
-            "planned_tests": len(planned_tests),
+            "tests": test_count,
             "work_program_items": len(workspace.work_program),
             "findings": len(workspace.findings),
         },
@@ -613,7 +610,7 @@ class _Session:
                         )
                         if row.get(key) not in (None, "")
                     }
-                    | {"planned_test_count": len(row.get("planned_tests") or [])}
+                    | {"test_count": len(row.get("test_refs") or [])}
                     for row in self.workspace.rcm[:50]
                 ],
                 "truncated": len(self.workspace.rcm) > 50,

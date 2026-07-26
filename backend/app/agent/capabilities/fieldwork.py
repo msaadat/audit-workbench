@@ -1,8 +1,8 @@
 """Fieldwork capability group of the audit workflow.
 
 Owns the fieldwork and roll-up outcomes of the authoritative audit graph:
-``fieldwork.definitions_ready``, ``fieldwork.executed``, and
-``results.rolled_up``.
+``fieldwork.executed`` and ``results.rolled_up``. The tests themselves — their
+plans and their executable specifications — belong to the tests capability group.
 
 Each capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry keys for its
@@ -27,108 +27,41 @@ from ._shared import single_unit as _single
 from ._shared import target_rcm_ids as _target_rcm_ids
 
 CAPABILITY_IDS: tuple[str, ...] = (
-    "fieldwork.definitions_ready",
     "fieldwork.executed",
     "results.rolled_up",
 )
 
 
-
-# --------------------------------------------------------------------------- #
-# fieldwork.definitions_ready (P7E)
-# --------------------------------------------------------------------------- #
-def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
+def _scoped_manifest(workspace: Workspace, scope: dict) -> list[dict]:
     selected = set(_target_rcm_ids(workspace, scope))
-    manifest = [
+    return [
         item
-        for item in rcm_execution.execution_manifest(workspace)
-        if item["rcm_id"] in selected
+        for item in rcm_execution.test_manifest(workspace)
+        if item["rcm_id"] in selected and item["specified"]
     ]
-    missing = sum(len(item.get("missing_execution") or []) for item in manifest)
-    if not manifest:
-        return Readiness("missing", ("no planned tests are available to translate",))
-    if missing:
-        return Readiness(
-            "missing",
-            (f"{missing} required execution definition(s) are missing",),
-            details={"missing": missing, "total": len(manifest)},
-        )
-    # Required execution definitions all exist; currency relative to their
-    # planned test is not assessed. Parent hashes remain for executor CAS.
-    return Readiness("satisfied", details={"total": len(manifest)})
-
-
-def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    selected = set(_target_rcm_ids(workspace, scope))
-    units = []
-    for item in rcm_execution.execution_manifest(workspace):
-        if item["rcm_id"] not in selected:
-            continue
-        missing = set(item.get("missing_execution") or [])
-        for kind in item.get("required_execution") or []:
-            # Generate only missing definitions, or everything on explicit force.
-            # A definition that predates its planned test (currency) is not
-            # regenerated automatically; the auditor forces regeneration instead.
-            needs = kind in missing or (
-                kind == "datatest" and "validation_datatest" in missing
-            )
-            if not needs and scope.get("generation_mode") != "force":
-                continue
-            worker_kind = "data_test_spec" if kind == "datatest" else "document_test_spec"
-            units.append(
-                UnitSpec(
-                    semantic_unit_id(worker_kind, item["planned_test_id"]),
-                    worker_kind,
-                    f"Create {kind} definition — {item['title']}",
-                    (f"rcm:{item['rcm_id']}", f"planned_test:{item['planned_test_id']}"),
-                    item,
-                )
-            )
-    return units
-
-
-def _fieldwork_definitions_ready() -> Capability:
-    return Capability(
-        "fieldwork.definitions_ready",
-        "execution_definitions",
-        "Execution definitions",
-        "execution_spec",
-        audit_workflow.dependencies("fieldwork.definitions_ready"),
-        _definitions_ready,
-        _definition_units,
-        context="fieldwork.execution_definitions",
-        invalidate_on=("planned_test",),
-    )
 
 
 # --------------------------------------------------------------------------- #
 # fieldwork.executed (P7F)
 # --------------------------------------------------------------------------- #
 def _execution_ready(workspace: Workspace, scope: dict) -> Readiness:
-    selected = set(_target_rcm_ids(workspace, scope))
-    manifest = [
-        item
-        for item in rcm_execution.execution_manifest(workspace)
-        if item["rcm_id"] in selected
-    ]
     pending = []
     review = []
     blocked = []
-    for requirement in manifest:
-        for artifact in requirement.get("existing_execution") or []:
-            # An artifact with a durable result counts as executed. Whether that
-            # result predates changed inputs (``result_stale``) is currency, not
-            # structural usability, and is not assessed by the framework.
-            if not artifact.get("executable"):
-                review.append(artifact["id"])
-            elif artifact.get("has_durable_result"):
-                continue
-            elif artifact.get("status") == "blocked":
-                blocked.append(artifact["id"])
-            elif artifact.get("status") == "review_required" and artifact["kind"] == "doctest":
-                review.append(artifact["id"])
-            else:
-                pending.append(artifact["id"])
+    for test in _scoped_manifest(workspace, scope):
+        # A test with a durable result counts as executed. Whether that result
+        # predates changed inputs (``result_stale``) is currency, not structural
+        # usability, and is not assessed by the framework.
+        if not test.get("executable"):
+            review.append(test["test_id"])
+        elif test.get("has_durable_result"):
+            continue
+        elif test.get("status") == "blocked":
+            blocked.append(test["test_id"])
+        elif test.get("status") == "review_required" and test["kind"] == "doctest":
+            review.append(test["test_id"])
+        else:
+            pending.append(test["test_id"])
     details = {
         "pending": len(pending),
         "review_required": len(review),
@@ -156,38 +89,34 @@ def _execution_ready(workspace: Workspace, scope: dict) -> Readiness:
 
 
 def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    selected = set(_target_rcm_ids(workspace, scope))
     units = []
-    for item in rcm_execution.execution_manifest(workspace):
-        if item["rcm_id"] not in selected:
+    for test in _scoped_manifest(workspace, scope):
+        if test.get("has_durable_result") and scope.get("generation_mode") != "force":
             continue
-        for artifact in item.get("existing_execution") or []:
-            if artifact.get("has_durable_result") and scope.get("generation_mode") != "force":
-                continue
-            if artifact["kind"] == "datatest":
-                units.append(
-                    UnitSpec(
-                        semantic_unit_id("data_test_execution", artifact["id"]),
-                        "data_test_execution",
-                        f"Execute datatest — {item['title']}",
-                        (f"planned_test:{item['planned_test_id']}", f"datatest:{artifact['id']}"),
-                        artifact,
-                    )
-                )
-                continue
-            # One expansion, two graphs. A Document Test fans out the same way
-            # whether an audit run or a standalone request scheduled it; the only
-            # audit-specific parts are the planned test it implements and the
-            # manifest title the auditor sees.
-            units.extend(
-                document_test_units(
-                    workspace,
-                    artifact["id"],
-                    forced=scope.get("generation_mode") == "force",
-                    title=item["title"],
-                    parent_refs=(f"planned_test:{item['planned_test_id']}",),
+        if test["kind"] == "datatest":
+            units.append(
+                UnitSpec(
+                    semantic_unit_id("data_test_execution", test["test_id"]),
+                    "data_test_execution",
+                    f"Execute datatest — {test['title']}",
+                    (f"rcm:{test['rcm_id']}", f"datatest:{test['test_id']}"),
+                    test,
                 )
             )
+            continue
+        # One expansion, two graphs. A Document Test fans out the same way
+        # whether an audit run or a standalone request scheduled it; the only
+        # audit-specific parts are the RCM row it covers and the manifest title
+        # the auditor sees.
+        units.extend(
+            document_test_units(
+                workspace,
+                test["test_id"],
+                forced=scope.get("generation_mode") == "force",
+                title=test["title"],
+                parent_refs=(f"rcm:{test['rcm_id']}",),
+            )
+        )
     return units
 
 
@@ -204,7 +133,7 @@ def _fieldwork_executed() -> Capability:
         # declaration the capability needs; the other kinds are deterministic
         # local computation with no model-facing context at all.
         context="fieldwork.document_qa",
-        invalidate_on=("definition", "evidence"),
+        invalidate_on=("test", "evidence"),
     )
 
 
@@ -235,7 +164,6 @@ def _results_rolled_up() -> Capability:
 
 
 _BUILDERS = {
-    "fieldwork.definitions_ready": _fieldwork_definitions_ready,
     "fieldwork.executed": _fieldwork_executed,
     "results.rolled_up": _results_rolled_up,
 }

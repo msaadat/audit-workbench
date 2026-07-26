@@ -8,8 +8,8 @@ from app import dashboard, data_tests, findings, rcm_execution, report, workspac
 from app.main import create_app
 
 
-def _planned(ws, *, method="data_analytics"):
-    row = ws.add_rcm(
+def _rcm_row(ws):
+    return ws.add_rcm(
         {
             "process": "Procurement",
             "risk": "Transactions may bypass controls",
@@ -17,24 +17,15 @@ def _planned(ws, *, method="data_analytics"):
             "control": "Automated validation",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Population control test",
-            "objective": "Identify transactions that bypass the control.",
-            "method": method,
-            "steps": ["Analyze the full population."],
-        },
-    )
-    return row, planned
 
 
-def _analytics_payload(row, planned):
+def _analytics_payload(row):
     return {
         "title": "Duplicate invoice numbers",
         "objective": "Identify repeated invoice numbers.",
+        "criteria": "Invoice identifiers must be unique.",
+        "steps": ["Analyze the full population."],
         "rcm_id": row["id"],
-        "planned_test_id": planned["id"],
         "engine": "analytics",
         "table_refs": ["transactions"],
         "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
@@ -43,21 +34,21 @@ def _analytics_payload(row, planned):
 
 def test_create_validates_but_does_not_count_as_execution(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws)
+    row = _rcm_row(ws)
 
-    item = data_tests.create(ws, _analytics_payload(row, planned))
+    item = data_tests.create(ws, _analytics_payload(row))
 
     assert item["status"] == "ready"
     assert item["last_run"] is None
     assert item["runs"] == []
-    assert f"datatest:{item['id']}" in planned["execution_refs"]
+    assert f"datatest:{item['id']}" in row["test_refs"]
     assert not (ws.root / "DataTestResults").exists()
 
 
 def test_analytics_run_is_durable_reopenable_and_history_preserving(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws)
-    item = data_tests.create(ws, _analytics_payload(row, planned))
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
 
     first = data_tests.run(ws, item["id"])
 
@@ -77,15 +68,14 @@ def test_analytics_run_is_durable_reopenable_and_history_preserving(workspace_wi
 
 def test_validation_and_polars_engines_persist_bounded_exception_results(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws, method="hybrid")
+    row = _rcm_row(ws)
     validation_test = data_tests.create(
         ws,
         {
             "title": "Positive amounts",
             "objective": "Identify non-positive transaction amounts.",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "engine": "validation",
+                "engine": "validation",
             "table_refs": ["transactions"],
             "spec": {
                 "rules": [
@@ -113,8 +103,7 @@ def test_validation_and_polars_engines_persist_bounded_exception_results(workspa
             "title": "Large transactions",
             "objective": "Identify transactions greater than 500.",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "engine": "polars",
+                "engine": "polars",
             "table_refs": ["transactions"],
             "spec": {"code": "result = transactions.filter(pl.col('amount') > 500)"},
         },
@@ -138,15 +127,14 @@ def test_zero_match_join_is_rejected_as_semantically_invalid(workspace_with_data
             "right_on": ["designation"],
         }
     )
-    row, planned = _planned(ws)
+    row = _rcm_row(ws)
     item = data_tests.create(
         ws,
         {
             "title": "Finance approval authority",
             "objective": "Test whether requesters had sufficient approval authority.",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "engine": "polars",
+                "engine": "polars",
             "table_refs": ["invalid_finance_authority"],
             "spec": {"code": "result = invalid_finance_authority.select(pl.len())", "result_mode": "summary"},
         },
@@ -161,15 +149,14 @@ def test_zero_match_join_is_rejected_as_semantically_invalid(workspace_with_data
 
 def test_null_only_result_is_not_accepted_as_success(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws)
+    row = _rcm_row(ws)
     item = data_tests.create(
         ws,
         {
             "title": "Null output",
             "objective": "Exercise the semantic output gate.",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "engine": "polars",
+                "engine": "polars",
             "table_refs": ["transactions"],
             "spec": {"code": "result = pl.DataFrame({'outcome': [None, None]})"},
         },
@@ -184,8 +171,8 @@ def test_null_only_result_is_not_accepted_as_success(workspace_with_data):
 
 def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws)
-    item = data_tests.create(ws, _analytics_payload(row, planned))
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
     result = data_tests.run(ws, item["id"])
     source_id = f"{item['id']}:{result['id']}"
     anchor = {
@@ -206,7 +193,7 @@ def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
             "recommendation": "Review and block duplicate identifiers.",
             "severity_rationale": "A repeated identifier creates a material duplicate-payment risk.",
             "rcm_refs": [row["id"]],
-            "planned_test_refs": [planned["id"]],
+            "test_refs": [item["id"]],
             "execution_refs": [f"datatest:{source_id}"],
             "evidence_refs": [anchor],
             "auditor_confirmed": True,
@@ -232,33 +219,27 @@ def test_exploratory_data_test_runs_without_counting_as_rcm_execution(workspace_
     result = data_tests.run(ws, item["id"])
 
     assert item["rcm_id"] is None
-    assert item["planned_test_id"] is None
     assert result["rcm_id"] is None
-    assert result["planned_test_id"] is None
     assert result["exception_count"] == 2
-    assert rcm_execution.coverage(ws)["invalid_execution_parents"] == []
+    assert rcm_execution.coverage(ws)["invalid_test_parents"] == []
     assert dashboard.curate_rcm_tiles(ws)["curation"]["created_count"] == 0
     assert item["id"] not in {test["id"] for test in report.build_context(ws)["data_tests"]}
 
 
-def test_data_test_parent_is_all_or_nothing_and_method_compatible(workspace_with_data):
+def test_data_test_rejects_a_link_to_a_row_that_does_not_exist(workspace_with_data):
     ws = workspace_with_data
-    with pytest.raises(workspaces.WorkspaceError, match="both an RCM row and planned test"):
+    with pytest.raises(workspaces.WorkspaceError, match="RCM row 'RCM-MISSING' not found"):
         data_tests.create(
             ws,
             {
-                "title": "Partially linked",
-                "objective": "Invalid partial audit link.",
-                "rcm_id": "RCM-MISSING-PLANNED",
+                "title": "Badly linked",
+                "objective": "Invalid audit link.",
+                "rcm_id": "RCM-MISSING",
                 "engine": "polars",
                 "table_refs": ["transactions"],
                 "spec": {"code": "result = transactions.head(1)"},
             },
         )
-    row, planned = _planned(ws, method="document_inspection")
-    payload = _analytics_payload(row, planned)
-    with pytest.raises(workspaces.WorkspaceError, match="does not permit"):
-        data_tests.create(ws, payload)
 
 
 def test_exploratory_data_test_can_be_linked_and_unlinked(workspace_with_data):
@@ -273,23 +254,20 @@ def test_exploratory_data_test_can_be_linked_and_unlinked(workspace_with_data):
             "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
         },
     )
-    row, planned = _planned(ws)
+    row = _rcm_row(ws)
 
-    data_tests.update(
-        ws, item["id"], {"rcm_id": row["id"], "planned_test_id": planned["id"]}
-    )
-    assert f"datatest:{item['id']}" in planned["execution_refs"]
+    data_tests.update(ws, item["id"], {"rcm_id": row["id"]})
+    assert f"datatest:{item['id']}" in row["test_refs"]
 
-    data_tests.update(ws, item["id"], {"rcm_id": None, "planned_test_id": None})
+    data_tests.update(ws, item["id"], {"rcm_id": None})
     assert item["rcm_id"] is None
-    assert item["planned_test_id"] is None
-    assert f"datatest:{item['id']}" not in planned["execution_refs"]
+    assert f"datatest:{item['id']}" not in row["test_refs"]
 
 
 def test_result_integrity_check_detects_tampering(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws)
-    item = data_tests.create(ws, _analytics_payload(row, planned))
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
     result = data_tests.run(ws, item["id"])
     path = ws.root / "DataTestResults" / item["id"] / f"{result['id']}.json"
     tampered = json.loads(path.read_text(encoding="utf-8"))
@@ -302,8 +280,8 @@ def test_result_integrity_check_detects_tampering(workspace_with_data):
 
 def test_table_rename_updates_data_test_references_and_invalidates_latest_status(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws)
-    item = data_tests.create(ws, _analytics_payload(row, planned))
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
     data_tests.run(ws, item["id"])
 
     renamed = ws.rename_table("transactions", "ledger entries")
@@ -315,11 +293,11 @@ def test_table_rename_updates_data_test_references_and_invalidates_latest_status
 
 def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _planned(ws)
+    row = _rcm_row(ws)
     client = TestClient(create_app())
     base = f"/api/workspaces/{ws.id}"
 
-    created_response = client.post(f"{base}/data-tests", json=_analytics_payload(row, planned))
+    created_response = client.post(f"{base}/data-tests", json=_analytics_payload(row))
     assert created_response.status_code == 200
     created = created_response.json()
     assert created["last_run"] is None
@@ -338,7 +316,7 @@ def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
     )
     assert pinned.status_code == 200
     assert pinned.json()["result_ref"] == f"datatest:{created['id']}:{result['id']}"
-    assert pinned.json()["planned_test_id"] == planned["id"]
+    assert pinned.json()["rcm_id"] == row["id"]
 
     exploratory = client.post(
         f"{base}/data-tests",
@@ -361,4 +339,3 @@ def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
     )
     assert exploratory_pin.status_code == 200
     assert exploratory_pin.json().get("rcm_id") is None
-    assert exploratory_pin.json().get("planned_test_id") is None

@@ -3,8 +3,8 @@
 Definitions live in ``workspace.json`` so they participate in engagement
 migration and reconciliation. Each run is written separately under
 ``DataTestResults``; the workspace stores only bounded latest-run metadata and
-history references. Tests may be exploratory or linked to exactly one RCM
-planned test. Creating or editing a definition never counts as execution.
+history references. A test may be exploratory or linked to one RCM row.
+Creating or editing a definition never counts as execution.
 """
 
 from __future__ import annotations
@@ -19,19 +19,17 @@ import polars as pl
 
 from . import analytics, explore, sandbox, validation
 from .agent import joins as join_diagnostics
-from .workspaces import Workspace, WorkspaceError, slugify, write_json_atomic
+from .workspaces import (
+    CONTROL_CONCLUSIONS,
+    TEST_STATUSES,
+    Workspace,
+    WorkspaceError,
+    slugify,
+    write_json_atomic,
+)
 
 ENGINES = {"analytics", "validation", "polars"}
-STATUSES = {
-    "not_ready",
-    "ready",
-    "in_progress",
-    "review_required",
-    "blocked",
-    "completed_no_exception",
-    "completed_with_exception",
-    "not_applicable",
-}
+STATUSES = TEST_STATUSES
 AUDITOR_DISPOSITIONS = {
     "pending",
     "follow_up",
@@ -78,35 +76,36 @@ def _record(workspace: Workspace, data_test_id: str) -> dict:
     item.setdefault("last_run", None)
     item.setdefault("auditor_disposition", "pending")
     item.setdefault("evidence_refs", [])
+    item.setdefault("criteria", "")
+    item.setdefault("steps", [])
+    item.setdefault("expected_evidence", "")
+    item.setdefault("methodology_refs", [])
+    item.setdefault("conclusion", "")
+    item.setdefault("control_conclusion", "no_conclusion")
+    item.setdefault("result_summary", "")
+    item.setdefault("scope_limitations", "")
+    item.setdefault("next_action", "")
+    item.setdefault("exception_count", 0)
+    item.setdefault("open_exception_count", 0)
+    item.setdefault("finding_refs", [])
     return item
 
 
-def _validate_parent(
-    workspace: Workspace, rcm_id: object, planned_test_id: object
-) -> tuple[str | None, str | None]:
-    rcm_value = str(rcm_id or "").strip()
-    planned_value = str(planned_test_id or "").strip()
-    if not rcm_value and not planned_value:
-        return None, None
-    if not rcm_value or not planned_value:
-        raise WorkspaceError(
-            "Provide both an RCM row and planned test, or leave both blank for exploration."
-        )
-    row, planned = workspace.planned_test(planned_value)
-    if row.get("id") != rcm_value:
-        raise WorkspaceError(
-            f"Planned test '{planned_value}' does not belong to RCM row '{rcm_value}'."
-        )
-    if planned.get("method") not in {"data_analytics", "validation", "hybrid"}:
-        raise WorkspaceError(
-            f"Planned-test method '{planned.get('method')}' does not permit a Data Test."
-        )
-    return rcm_value, planned_value
+def _validate_rcm_id(workspace: Workspace, rcm_id: object) -> str | None:
+    """Resolve the optional RCM row a test covers.
+
+    Leaving it blank is exploration; an exploratory result is a durable analysis
+    artifact but never RCM coverage.
+    """
+    value = str(rcm_id or "").strip() or None
+    if value and not any(row.get("id") == value for row in workspace.rcm):
+        raise WorkspaceError(f"RCM row '{value}' not found.")
+    return value
 
 
-def _table_refs(workspace: Workspace, values: object) -> list[str]:
+def _table_refs(workspace: Workspace, values: object, *, required: bool = True) -> list[str]:
     refs = list(dict.fromkeys(str(value).strip() for value in (values or []) if str(value).strip()))
-    if not refs:
+    if not refs and required:
         raise WorkspaceError("A Data Test needs at least one table.")
     missing = next((value for value in refs if value not in workspace.table_names()), None)
     if missing:
@@ -159,29 +158,18 @@ def _validate_spec(workspace: Workspace, engine: str, refs: list[str], spec: obj
 
 
 def _link(workspace: Workspace, item: dict) -> None:
+    """Keep ``rcm[].test_refs`` in step with this test's RCM link."""
     ref = f"datatest:{item['id']}"
     for row in workspace.rcm:
-        for planned in row.get("planned_tests") or []:
-            refs = planned.setdefault("execution_refs", [])
-            if planned.get("id") == item.get("planned_test_id") and ref not in refs:
+        refs = row.setdefault("test_refs", [])
+        if row.get("id") == item.get("rcm_id"):
+            if ref not in refs:
                 refs.append(ref)
-            elif planned.get("id") != item.get("planned_test_id"):
-                planned["execution_refs"] = [value for value in refs if value != ref]
+        elif ref in refs:
+            row["test_refs"] = [value for value in refs if value != ref]
 
 
-def create(workspace: Workspace, payload: dict) -> dict:
-    title = str(payload.get("title") or "").strip()
-    objective = str(payload.get("objective") or "").strip()
-    if not title or not objective:
-        raise WorkspaceError("Data Test title and objective are required.")
-    engine = str(payload.get("engine") or "").strip().lower()
-    if engine not in ENGINES:
-        raise WorkspaceError("Data Test engine must be analytics, validation, or polars.")
-    rcm_id, planned_test_id = _validate_parent(
-        workspace, payload.get("rcm_id"), payload.get("planned_test_id")
-    )
-    refs = _table_refs(workspace, payload.get("table_refs"))
-    spec, warnings = _validate_spec(workspace, engine, refs, payload.get("spec"))
+def _base_record(workspace: Workspace, payload: dict, *, title: str, now: str) -> dict:
     item_id = str(payload.get("id") or f"DAT-{uuid.uuid4().hex[:10].upper()}")
     semantic_id = str(payload.get("semantic_id") or f"datatest:{slugify(title)}")
     if any(
@@ -189,19 +177,26 @@ def create(workspace: Workspace, payload: dict) -> dict:
         for value in workspace.data_tests
     ):
         raise WorkspaceError("A Data Test with that ID or semantic ID already exists.")
-    now = utcnow()
-    item = {
+    return {
         "id": item_id,
         "semantic_id": semantic_id,
-        "rcm_id": rcm_id,
-        "planned_test_id": planned_test_id,
+        "rcm_id": _validate_rcm_id(workspace, payload.get("rcm_id")),
         "title": title,
-        "objective": objective,
-        "engine": engine,
-        "table_refs": refs,
-        "spec": spec,
-        "status": "ready",
-        "semantic_warnings": warnings,
+        "objective": str(payload.get("objective") or "").strip(),
+        # Audit plan — the fields that used to live on the RCM planned test.
+        "criteria": str(payload.get("criteria") or ""),
+        "steps": [str(step).strip() for step in (payload.get("steps") or []) if str(step).strip()],
+        "expected_evidence": str(payload.get("expected_evidence") or ""),
+        "methodology_refs": list(payload.get("methodology_refs") or []),
+        # Outcome.
+        "conclusion": "",
+        "control_conclusion": "no_conclusion",
+        "result_summary": "",
+        "scope_limitations": "",
+        "next_action": "",
+        "exception_count": 0,
+        "open_exception_count": 0,
+        "finding_refs": [],
         "last_run": None,
         "runs": [],
         "auditor_disposition": "pending",
@@ -212,8 +207,122 @@ def create(workspace: Workspace, payload: dict) -> dict:
         "created": now,
         "updated": now,
     }
+
+
+def create(workspace: Workspace, payload: dict) -> dict:
+    title = str(payload.get("title") or "").strip()
+    objective = str(payload.get("objective") or "").strip()
+    if not title or not objective:
+        raise WorkspaceError("Data Test title and objective are required.")
+    engine = str(payload.get("engine") or "").strip().lower()
+    if engine not in ENGINES:
+        raise WorkspaceError("Data Test engine must be analytics, validation, or polars.")
+    refs = _table_refs(workspace, payload.get("table_refs"))
+    spec, warnings = _validate_spec(workspace, engine, refs, payload.get("spec"))
+    item = {
+        **_base_record(workspace, payload, title=title, now=utcnow()),
+        "engine": engine,
+        "table_refs": refs,
+        "spec": spec,
+        "status": "ready",
+        "semantic_warnings": warnings,
+    }
     workspace.data_tests.append(item)
     _link(workspace, item)
+    workspace.save()
+    return item
+
+
+def create_draft(workspace: Workspace, payload: dict) -> dict:
+    """Create a planned-but-unspecified Data Test.
+
+    This is what the draft pass of test generation commits: the audit plan for
+    one test, with no engine, tables, or code yet. :func:`apply_spec` fills those
+    in and moves the record out of ``draft``.
+    """
+    title = str(payload.get("title") or "").strip()
+    objective = str(payload.get("objective") or "").strip()
+    if not title or not objective:
+        raise WorkspaceError("Data Test title and objective are required.")
+    item = {
+        **_base_record(workspace, payload, title=title, now=utcnow()),
+        "engine": None,
+        "table_refs": [],
+        "spec": {},
+        "status": "draft",
+        "semantic_warnings": [],
+    }
+    workspace.data_tests.append(item)
+    _link(workspace, item)
+    workspace.save()
+    return item
+
+
+PLAN_FIELDS = (
+    "title",
+    "objective",
+    "criteria",
+    "steps",
+    "expected_evidence",
+    "methodology_refs",
+)
+
+
+def update_plan(workspace: Workspace, data_test_id: str, payload: dict) -> dict:
+    """Rewrite one test's audit plan, leaving its spec and results untouched.
+
+    This is what a re-run of the draft pass commits onto a test it has already
+    created; the executable spec belongs to :func:`apply_spec`.
+    """
+    item = _record(workspace, data_test_id)
+    for key in PLAN_FIELDS:
+        if key not in payload:
+            continue
+        if key == "steps":
+            item["steps"] = [
+                str(step).strip() for step in (payload["steps"] or []) if str(step).strip()
+            ]
+        elif key == "methodology_refs":
+            item["methodology_refs"] = list(payload["methodology_refs"] or [])
+        else:
+            item[key] = str(payload[key] or "")
+    if "rcm_id" in payload:
+        item["rcm_id"] = _validate_rcm_id(workspace, payload["rcm_id"])
+        _link(workspace, item)
+    for key in ("agent_run_id", "workflow_parent_sha1"):
+        if payload.get(key):
+            item[key] = str(payload[key])
+    item["updated"] = utcnow()
+    workspace.save()
+    return item
+
+
+def apply_spec(workspace: Workspace, data_test_id: str, payload: dict) -> dict:
+    """Write the executable spec onto an existing test.
+
+    Execution history is immutable and stays put; the definition change simply
+    means the test must be run again.
+    """
+    item = _record(workspace, data_test_id)
+    engine = str(payload.get("engine") or "polars").strip().lower()
+    if engine not in ENGINES:
+        raise WorkspaceError("Data Test engine must be analytics, validation, or polars.")
+    refs = _table_refs(workspace, payload.get("table_refs"))
+    spec, warnings = _validate_spec(workspace, engine, refs, payload.get("spec"))
+    item.update(
+        engine=engine,
+        table_refs=refs,
+        spec=spec,
+        semantic_warnings=warnings,
+        status="ready",
+        updated=utcnow(),
+    )
+    if payload.get("title"):
+        item["title"] = str(payload["title"]).strip()
+    if payload.get("workflow_parent_sha1"):
+        item["workflow_parent_sha1"] = str(payload["workflow_parent_sha1"])
+    if payload.get("agent_run_id"):
+        item["agent_run_id"] = str(payload["agent_run_id"])
     workspace.save()
     return item
 
@@ -228,7 +337,9 @@ def update(
     item = _record(workspace, data_test_id)
     allowed = {
         "title", "objective", "engine", "table_refs", "spec", "rcm_id",
-        "planned_test_id", "auditor_disposition", "workflow_parent_sha1",
+        "auditor_disposition", "workflow_parent_sha1", "criteria", "steps",
+        "expected_evidence", "conclusion", "control_conclusion",
+        "scope_limitations", "next_action",
     }
     unknown = set(changes) - allowed
     if "workflow_parent_sha1" in changes and not agent:
@@ -242,11 +353,7 @@ def update(
     engine = str(changes.get("engine", item["engine"]) or "").lower()
     if engine not in ENGINES:
         raise WorkspaceError("Data Test engine must be analytics, validation, or polars.")
-    rcm_id, planned_test_id = _validate_parent(
-        workspace,
-        changes.get("rcm_id", item["rcm_id"]),
-        changes.get("planned_test_id", item["planned_test_id"]),
-    )
+    rcm_id = _validate_rcm_id(workspace, changes.get("rcm_id", item["rcm_id"]))
     refs = _table_refs(workspace, changes.get("table_refs", item["table_refs"]))
     spec, warnings = _validate_spec(
         workspace, engine, refs, changes.get("spec", item["spec"])
@@ -256,16 +363,35 @@ def update(
     )
     if disposition not in AUDITOR_DISPOSITIONS:
         raise WorkspaceError("Unknown Data Test auditor disposition.")
+    conclusion = str(
+        changes.get("control_conclusion", item.get("control_conclusion") or "no_conclusion")
+    )
+    if conclusion not in CONTROL_CONCLUSIONS:
+        raise WorkspaceError("Unknown control conclusion.")
     item.update(
         title=title,
         objective=objective,
         engine=engine,
         rcm_id=rcm_id,
-        planned_test_id=planned_test_id,
         table_refs=refs,
         spec=spec,
         semantic_warnings=warnings,
         auditor_disposition=disposition,
+        control_conclusion=conclusion,
+        criteria=str(changes.get("criteria", item.get("criteria") or "")),
+        steps=[
+            str(step).strip()
+            for step in (changes.get("steps", item.get("steps")) or [])
+            if str(step).strip()
+        ],
+        expected_evidence=str(
+            changes.get("expected_evidence", item.get("expected_evidence") or "")
+        ),
+        conclusion=str(changes.get("conclusion", item.get("conclusion") or "")),
+        scope_limitations=str(
+            changes.get("scope_limitations", item.get("scope_limitations") or "")
+        ),
+        next_action=str(changes.get("next_action", item.get("next_action") or "")),
         workflow_parent_sha1=str(
             changes.get("workflow_parent_sha1", item.get("workflow_parent_sha1")) or ""
         ) or None,
@@ -273,8 +399,11 @@ def update(
     )
     if not agent and item.get("created_by") == "agent":
         item["created_by"] = "user"
-    # A changed definition must be executed again; history remains immutable.
-    item["status"] = "ready"
+    # A changed *definition* must be executed again; history remains immutable.
+    # Editing the plan or recording an outcome is not a definition change, so it
+    # must not discard the status a durable run established.
+    if any(key in changes for key in ("engine", "table_refs", "spec")):
+        item["status"] = "ready"
     _link(workspace, item)
     workspace.save()
     return item
@@ -287,10 +416,7 @@ def remove(workspace: Workspace, data_test_id: str) -> None:
     workspace.data_tests.remove(item)
     ref = f"datatest:{data_test_id}"
     for row in workspace.rcm:
-        for planned in row.get("planned_tests") or []:
-            planned["execution_refs"] = [
-                value for value in planned.get("execution_refs", []) if value != ref
-            ]
+        row["test_refs"] = [value for value in row.get("test_refs", []) if value != ref]
     workspace.save()
 
 
@@ -397,6 +523,10 @@ def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | 
 def compute(workspace: Workspace, data_test_id: str) -> dict:
     """Compute an immutable result candidate without mutating the workspace."""
     item = _record(workspace, data_test_id)
+    if item.get("status") == "draft" or not item.get("engine"):
+        raise WorkspaceError(
+            f"Data Test '{data_test_id}' has no executable specification yet."
+        )
     run_id = f"DTR-{uuid.uuid4().hex[:12].upper()}"
     run_at = utcnow()
     fingerprints = _dataset_fingerprints(workspace, item["table_refs"])
@@ -436,7 +566,6 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         "id": run_id,
         "data_test_id": data_test_id,
         "rcm_id": item["rcm_id"],
-        "planned_test_id": item["planned_test_id"],
         "run_at": run_at,
         "status": status,
         "verdict": output["verdict"],

@@ -103,15 +103,6 @@ def test_curate_dashboard_commits_tiles_and_returns_stable_refs(workspace_with_d
             "risk_rating": "high",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Vendor integrity test",
-            "objective": "Assess vendor and approval integrity.",
-            "method": "data_analytics",
-            "steps": ["Scan the amount population."],
-        },
-    )
     data_test = data_tests.create(
         ws,
         {
@@ -120,7 +111,6 @@ def test_curate_dashboard_commits_tiles_and_returns_stable_refs(workspace_with_d
             "engine": "analytics",
             "table_refs": ["transactions"],
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
             "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
         },
     )

@@ -207,10 +207,11 @@ RCM_WORKER_ID = "planning.rcm"
 RCM_SYSTEM = f"""[agent:rcm]
 Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
 row containing operation (update|create), rcm_id for updates, process, risk,
-risk_rating (low|medium|high|critical), assertion, control, control_type, and
-test_procedure. All ids and narrative fields are strings. New rows also include
-new_risk_reason as a string. Do not invent control
-operation as fact when evidence is absent. {JSON_RULES}"""
+risk_rating (low|medium|high|critical), assertion, control, and control_type.
+All ids and narrative fields are strings. New rows also include new_risk_reason
+as a string. Describe the risk and the control only — how the control is tested
+is decided later, one test at a time. Do not invent control operation as fact
+when evidence is absent. {JSON_RULES}"""
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
 _RCM_REQUIRED_FIELDS = (
@@ -220,7 +221,6 @@ _RCM_REQUIRED_FIELDS = (
     "assertion",
     "control",
     "control_type",
-    "test_procedure",
 )
 _RCM_RISK_RATINGS = {"low", "medium", "high", "critical"}
 
@@ -408,289 +408,6 @@ RCM_WORKER = WorkerDefinition(
 )
 
 WORKERS.register(RCM_WORKER)
-
-
-# --------------------------------------------------------------------------- #
-# planning.planned_tests worker (P7D)
-# --------------------------------------------------------------------------- #
-PLANNED_TEST_WORKER_ID = "planning.planned_tests"
-PLANNED_TEST_SYSTEM = f"""[agent:work_program]
-Draft executable planned tests for exactly one supplied RCM row. Return an
-object with planned_tests. Each item must contain operation (create|update),
-planned_test_id for updates, stable_slug, title, objective, criteria, steps as
-non-empty strings, method (data_analytics|validation|document_inspection|inquiry|hybrid|evidence_unavailable),
-and expected_evidence. Optional sampling must be an object containing only
-strategy (string), size (positive integer or null), seed (integer), and
-stratify_by (string or null). Optional thresholds must be an object with short
-names and JSON scalar values; never put explanatory prose directly in sampling
-or thresholds. Link only to the supplied RCM row using rcm_id. Choose the
-method based on the available evidence and data. Do not define Data Tests or
-Document Tests here. {JSON_RULES}"""
-
-PLANNED_TEST_ROW_SOURCE_ID = "rcm_row"
-PLANNED_TEST_METHODOLOGY_SOURCE_ID = "methodology"
-# The citation fields a committed planned test persists in ``methodology_refs``.
-_METHODOLOGY_REF_FIELDS = (
-    "pack_id",
-    "pack_name",
-    "version",
-    "sha1",
-    "section",
-    "citation",
-)
-_PLANNED_TEST_METHODS = {
-    "data_analytics",
-    "validation",
-    "document_inspection",
-    "inquiry",
-    "hybrid",
-    "evidence_unavailable",
-}
-_SAMPLING_KEYS = {"strategy", "size", "seed", "stratify_by"}
-
-
-def _planned_test_rcm_id(request: WorkerRequest) -> str:
-    """Return the durable RCM id from the one supplied target-row item."""
-    refs = [
-        item.source_ref
-        for item in request.context.items
-        if item.source_id == PLANNED_TEST_ROW_SOURCE_ID
-    ]
-    if len(refs) != 1:
-        raise WorkerContractError(
-            "The planned-test context must supply exactly one target RCM row."
-        )
-    prefix, separator, rcm_id = str(refs[0]).partition(":")
-    if prefix != "rcm" or not separator or not rcm_id:
-        raise WorkerContractError(
-            "The planned-test target row must be an 'rcm:<id>' reference."
-        )
-    return rcm_id
-
-
-def _methodology_refs(request: WorkerRequest) -> list[dict]:
-    """Project the supplied methodology excerpts into durable citations."""
-    refs = []
-    for item in request.context.items:
-        if item.source_id != PLANNED_TEST_METHODOLOGY_SOURCE_ID:
-            continue
-        content = item.content
-        if not isinstance(content, Mapping):
-            raise WorkerContractError(
-                "Planned-test methodology context must supply citation objects."
-            )
-        refs.append(
-            {
-                key: content[key]
-                for key in _METHODOLOGY_REF_FIELDS
-                if key in content
-            }
-        )
-    return refs
-
-
-def _planned_test_response_schema(response: str) -> Mapping[str, Any]:
-    value = str(response or "").strip()
-    fenced = re.fullmatch(
-        r"```(?:json)?\s*\n?(.*?)\n?```",
-        value,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if fenced:
-        value = fenced.group(1).strip()
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError:
-        raise WorkerResponseValidationError("the response is not a valid JSON object")
-    if not isinstance(payload, dict):
-        raise WorkerResponseValidationError("the response must be a JSON object")
-    values = payload.get("planned_tests")
-    if values is None:
-        values = payload.get("procedures")
-    if not isinstance(values, list):
-        raise WorkerResponseValidationError(
-            "the response must be a JSON object with a `planned_tests` array"
-        )
-    return {"planned_tests": values}
-
-
-def validate_planned_test_proposal(
-    proposal: Mapping[str, Any],
-    request: WorkerRequest,
-) -> Mapping[str, Any]:
-    """Apply the planned-test engagement quality gate for one RCM row.
-
-    Every contract violation across every proposed test is collected so one
-    bounded repair turn can correct them together, matching the runner-era
-    validator this replaces.
-    """
-    values = proposal.get("planned_tests")
-    if not isinstance(values, (list, tuple)) or not values:
-        raise WorkerResponseValidationError("planned_tests must be a non-empty array")
-    rcm_id = _planned_test_rcm_id(request)
-    methodology_refs = _methodology_refs(request)
-    normalized: list[dict] = []
-    errors: list[str] = []
-    for index, raw in enumerate(values, 1):
-        path = f"planned_tests[{index - 1}]"
-        if not isinstance(raw, Mapping):
-            errors.append(f"{path} must be an object")
-            continue
-        value = _plain_json(raw)
-        required = (
-            "operation",
-            "stable_slug",
-            "title",
-            "objective",
-            "criteria",
-            "method",
-            "expected_evidence",
-        )
-        missing = [
-            key
-            for key in required
-            if not isinstance(value.get(key), str) or not value[key].strip()
-        ]
-        errors.extend(f"{path}.{key} must be a non-empty string" for key in missing)
-        operation = value.get("operation")
-        if operation not in {"create", "update"}:
-            errors.append(f"{path}.operation is unsupported")
-        if operation == "update" and not str(value.get("planned_test_id") or "").strip():
-            errors.append(f"{path}.planned_test_id is required for update")
-        if value.get("method") not in _PLANNED_TEST_METHODS:
-            errors.append(f"{path}.method is unsupported")
-        steps = value.get("steps")
-        if not isinstance(steps, list):
-            errors.append(f"{path}.steps expected an array")
-        else:
-            cleaned = [str(item).strip() for item in steps]
-            if not cleaned or any(not item for item in cleaned):
-                errors.append(f"{path}.steps array must contain non-empty strings")
-            else:
-                value["steps"] = cleaned
-        sampling = value.get("sampling")
-        if sampling is not None:
-            if not isinstance(sampling, Mapping):
-                errors.append(f"{path}.sampling must be an object")
-            else:
-                unknown = sorted(set(sampling) - _SAMPLING_KEYS)
-                if unknown:
-                    errors.append(f"{path}.sampling.{unknown[0]} is not supported")
-                if "strategy" in sampling and not isinstance(sampling["strategy"], str):
-                    errors.append(f"{path}.sampling.strategy must be a string")
-                size = sampling.get("size")
-                if size is not None and (
-                    not isinstance(size, int) or isinstance(size, bool) or size < 1
-                ):
-                    errors.append(
-                        f"{path}.sampling.size must be a positive integer or null"
-                    )
-                seed = sampling.get("seed")
-                if seed is not None and (
-                    not isinstance(seed, int) or isinstance(seed, bool)
-                ):
-                    errors.append(f"{path}.sampling.seed must be an integer")
-                if sampling.get("stratify_by") is not None and not isinstance(
-                    sampling.get("stratify_by"), str
-                ):
-                    errors.append(
-                        f"{path}.sampling.stratify_by must be a string or null"
-                    )
-        thresholds = value.get("thresholds")
-        if thresholds is not None:
-            if not isinstance(thresholds, Mapping):
-                errors.append(f"{path}.thresholds must be an object")
-            else:
-                invalid = next(
-                    (
-                        key
-                        for key, threshold in thresholds.items()
-                        if not isinstance(
-                            threshold, (str, int, float, bool, type(None))
-                        )
-                    ),
-                    None,
-                )
-                if invalid is not None:
-                    errors.append(f"{path}.thresholds.{invalid} must be a JSON scalar")
-        value["rcm_id"] = rcm_id
-        value["rcm_refs"] = [rcm_id]
-        value.setdefault("methodology_refs", methodology_refs)
-        normalized.append(value)
-    if errors:
-        raise WorkerResponseValidationError(errors)
-    return {"planned_tests": normalized}
-
-
-def run_planned_test_worker(
-    request: WorkerRequest,
-    gateway: ModelGateway,
-    attempt: WorkerAttempt,
-) -> str:
-    """Transform only the supplied bundle into one budgeted model request."""
-    user = json.dumps(
-        {
-            "TARGET RCM ROW": _resolved_item(request, PLANNED_TEST_ROW_SOURCE_ID),
-            "RESOLVED CONTEXT": request.context.to_dict(),
-            "INSTRUCTIONS": (
-                "Draft the planned tests for the target RCM row only. Use "
-                "operation='update' with the existing planned_test_id to revise a "
-                "planned test already on that row, and operation='create' "
-                "otherwise. Do not duplicate a test already covered by another "
-                "RCM row in the supplied context."
-            ),
-        },
-        indent=1,
-        ensure_ascii=False,
-    )
-    if attempt.is_repair:
-        user += (
-            "\n\nYour previous response could not be used: "
-            + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
-        )
-    activity = dict(request.activity)
-    activity.setdefault(
-        "context_metrics",
-        {
-            "worker_kind": "planned_test_generation",
-            "total_characters": request.context.supplied_size.characters,
-            "estimated_tokens": request.context.supplied_size.estimated_tokens,
-            "selected_items": request.context.supplied_size.items,
-        },
-    )
-    return gateway.complete(
-        PLANNED_TEST_SYSTEM,
-        user,
-        activity,
-        attempt=attempt.number,
-    )
-
-
-PLANNED_TEST_RESPONSE_SCHEMA = WorkerResponseSchema(
-    schema_id="planning.planned_tests.response",
-    schema_hash=_sha256_text("planned-tests-response:json-object-with-planned-tests-array"),
-    validator=_planned_test_response_schema,
-)
-PLANNED_TEST_WORKER = WorkerDefinition(
-    worker_id=PLANNED_TEST_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_planned_test_worker)),
-    prompt_hash=_sha256_text(PLANNED_TEST_SYSTEM),
-    response_schema=PLANNED_TEST_RESPONSE_SCHEMA,
-    repair_policy=WorkerRepairPolicy(
-        max_repair_attempts=2,
-        guidance_hash=_sha256_text(
-            "Repair planned-test contract violations against the supplied RCM row."
-        ),
-    ),
-    implementation=run_planned_test_worker,
-    semantic_validation_hash=_sha256_text(
-        inspect.getsource(validate_planned_test_proposal)
-    ),
-    semantic_validator=validate_planned_test_proposal,
-)
-
-WORKERS.register(PLANNED_TEST_WORKER)
 
 
 # --------------------------------------------------------------------------- #
@@ -896,10 +613,6 @@ __all__ = [
     "APM_SYSTEM",
     "APM_WORKER",
     "APM_WORKER_ID",
-    "PLANNED_TEST_RESPONSE_SCHEMA",
-    "PLANNED_TEST_SYSTEM",
-    "PLANNED_TEST_WORKER",
-    "PLANNED_TEST_WORKER_ID",
     "PLANNING_CONTEXT_FIELDS",
     "PLANNING_CONTEXT_RESPONSE_SCHEMA",
     "PLANNING_CONTEXT_SYSTEM",
@@ -910,11 +623,9 @@ __all__ = [
     "RCM_WORKER",
     "RCM_WORKER_ID",
     "run_apm_worker",
-    "run_planned_test_worker",
     "run_planning_context_worker",
     "run_rcm_worker",
     "validate_apm_proposal",
-    "validate_planned_test_proposal",
     "validate_planning_context_proposal",
     "validate_rcm_proposal",
 ]

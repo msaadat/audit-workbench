@@ -422,16 +422,9 @@ def test_created_rcm_references_add_generic_action_dependencies(workspace_with_d
     created = ledger.append_actions(run, [
         {"id": "rcm", "type": "create_rcm_row", "args": {"risk": "Purchases bypass approval"}},
         {
-            "id": "planned", "type": "create_rcm_planned_test",
-            "args": {
-                "rcm_id": "rcm", "title": "Test approvals", "objective": "Test approvals",
-                "method": "data_analytics",
-            },
-        },
-        {
             "id": "data", "type": "create_data_test",
             "args": {
-                "rcm_id": "rcm", "planned_test_id": "planned",
+                "rcm_id": "rcm",
                 "title": "Approval population", "objective": "Find missing approvals",
                 "engine": "analytics", "table_refs": ["transactions"],
                 "spec": {"test_id": "completeness", "params": {"columns": ["invoice_no"]}},
@@ -442,13 +435,10 @@ def test_created_rcm_references_add_generic_action_dependencies(workspace_with_d
     ])
     by_id = {item["id"]: item for item in created}
 
-    assert by_id["planned"]["args"]["rcm_id"] == by_id["rcm"]["args"]["id"]
     assert by_id["data"]["args"]["rcm_id"] == by_id["rcm"]["args"]["id"]
-    assert by_id["data"]["args"]["planned_test_id"] == by_id["planned"]["args"]["id"]
     assert by_id["run"]["target"]["resolved_id"] == by_id["data"]["args"]["id"]
     assert by_id["paper"]["target"]["resolved_id"] == by_id["rcm"]["args"]["id"]
-    assert by_id["planned"]["depends_on"] == ["rcm"]
-    assert set(by_id["data"]["depends_on"]) == {"rcm", "planned"}
+    assert by_id["data"]["depends_on"] == ["rcm"]
     assert by_id["run"]["depends_on"] == ["data"]
     assert by_id["paper"]["depends_on"] == ["rcm"]
     ledger.validate_graph(run)
@@ -472,13 +462,9 @@ def test_observation_finding_action_derives_immutable_evidence_locally(
     workspace_with_data,
 ):
     row = workspace_with_data.add_rcm({"risk": "Duplicate invoices may be paid"})
-    planned = workspace_with_data.add_planned_test(row["id"], {
-        "title": "Duplicate invoices", "objective": "Identify duplicate invoices",
-        "method": "data_analytics",
-    })
     data_test = data_tests.create(workspace_with_data, {
         "title": "Duplicate invoices", "objective": "Identify duplicate invoices",
-        "rcm_id": row["id"], "planned_test_id": planned["id"],
+        "rcm_id": row["id"],
         "engine": "analytics", "table_refs": ["transactions"],
         "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
     })
@@ -516,7 +502,7 @@ def test_observation_finding_action_derives_immutable_evidence_locally(
     assert receipt["result"]["auditor_confirmation_required"] is True
     assert finding["auditor_confirmed"] is False
     assert finding["rcm_refs"] == [row["id"]]
-    assert finding["planned_test_refs"] == [planned["id"]]
+    assert finding["test_refs"] == [data_test["id"]]
     assert finding["execution_refs"] == [observation["execution_ref"]]
     assert finding["evidence_refs"][0]["source_kind"] == "datatest"
     assert finding["evidence_refs"][0]["source_sha1"]
@@ -679,21 +665,20 @@ def test_compact_artifact_index_exposes_bare_ids_and_canonicalizes_typed_refs(
     workspace_with_data,
 ):
     row = workspace_with_data.add_rcm({"risk": "Duplicate invoices may be paid"})
-    planned = workspace_with_data.add_planned_test(
-        row["id"],
-        {
-            "title": "Test duplicates", "objective": "Test duplicate invoices",
-            "method": "data_analytics", "steps": ["Identify duplicate invoice numbers."],
-        },
-    )
+    data_test = data_tests.create(workspace_with_data, {
+        "title": "Test duplicates", "objective": "Test duplicate invoices",
+        "steps": ["Identify duplicate invoice numbers."], "rcm_id": row["id"],
+        "engine": "analytics", "table_refs": ["transactions"],
+        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+    })
     compact = artifact_index.compact(artifact_index.build(workspace_with_data))
     by_ref = {item["ref"]: item for item in compact["artifacts"]}
 
     assert by_ref[f"rcm:{row['id']}"]["id"] == row["id"]
-    assert by_ref[f"planned_test:{planned['id']}"]["id"] == planned["id"]
+    assert by_ref[f"datatest:{data_test['id']}"]["id"] == data_test["id"]
     assert artifact_index.canonical_id(f"rcm:{row['id']}", "rcm") == row["id"]
     with pytest.raises(ValueError, match="Expected artifact kind 'rcm'"):
-        artifact_index.canonical_id(f"planned_test:{planned['id']}", "rcm")
+        artifact_index.canonical_id(f"datatest:{data_test['id']}", "rcm")
 
 
 def test_data_test_action_preflight_rejects_wrong_engine_spec(workspace_with_data):
@@ -1372,27 +1357,27 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
             "process": "Procurement", "risk": risk, "risk_rating": "high",
             "assertion": "Authorization", "control": "Approval before commitment",
             "control_type": "Manual preventive",
-            "test_procedure": "Inspect requisitions and approval evidence.",
             "new_risk_reason": "No existing RCM row covers procurement approvals.",
         }]},
-        "agent:work_program": {"procedures": [{
-            "operation": "create",
-            "stable_slug": "approval-compliance", "rcm_refs": [semantic_risk],
+        "agent:test_plan": {"tests": [{
             "title": "Test procurement approval compliance",
             "objective": "Determine whether purchases were approved",
             "criteria": "Approval is documented before commitment.",
             "steps": ["Select purchases and inspect approval evidence."],
-            "method": "document_inspection", "expected_evidence": "Approved requisitions",
+            "source": "document", "expected_evidence": "Approved requisitions",
         }]},
-        "agent:document_test_spec": {"document_test": {
-            "kind": "review", "title": "Procurement approval review",
-            "spec": {},
+        "agent:document_test_spec": {
+            "mode": "question",
             "items": [{
                 "label": "Review approval evidence",
-                "document_ids": [policy["id"]], "page": 1,
-                "excerpt": "requisitions require approval",
+                "document_ids": [policy["id"]],
+                "question": "Do the requisitions carry documented approval?",
             }],
-        }},
+        },
+        "agent:document_qa": {
+            "answer": "Requisitions require approval before commitment.",
+            "citations": [{"page": 1, "excerpt": "requisitions require approval"}],
+        },
     })
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "backend": "fake", "model": "fake"})
@@ -1412,12 +1397,12 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     assert "## Key risks and planned response" in reloaded.planning["apm_markdown"]
     assert reloaded.rcm[-1]["control"] == "Approval before commitment"
     assert reloaded.work_program == []
-    assert reloaded.rcm[-1]["planned_tests"][-1]["steps"] == ["Select purchases and inspect approval evidence."]
-    assert doc_tests.list_tests(reloaded)[0]["kind"] == "review"
-    assert completed["audit_outcome"]["planned_tests_completed"] == 0
-    assert completed["audit_outcome"]["document_tests_required"] == 1
+    drafted = doc_tests.load_test(reloaded, doc_tests.list_tests(reloaded)[0]["id"])
+    assert drafted["steps"] == ["Select purchases and inspect approval evidence."]
+    assert drafted["kind"] == "qa"
+    assert completed["audit_outcome"]["tests_completed"] == 0
     assert completed["audit_outcome"]["document_tests_executed"] == 0
-    assert completed["audit_outcome"]["planned_tests_review_required"] == 1
+    assert completed["audit_outcome"]["tests_review_required"] == 1
     assert "Open workflow units: 2" in completed["summary_markdown"]
     assert call_tags.count("agent:apm") == 2
     activity = documents.activities(reloaded, limit=250)["items"]

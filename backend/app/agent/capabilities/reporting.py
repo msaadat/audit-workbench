@@ -24,6 +24,7 @@ from ..workflow import (
     semantic_unit_id,
 )
 from ..workflows import audit as audit_workflow
+from ._shared import all_tests as _all_tests
 from ._shared import eligible_observations as _eligible_observations
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
@@ -102,7 +103,9 @@ def _finding_units(workspace: Workspace, _scope: dict) -> list[UnitSpec]:
             (
                 f"observation:{item['id']}",
                 f"rcm:{item['rcm_id']}",
-                f"planned_test:{item['planned_test_id']}",
+                str(item.get("execution_ref") or "").rsplit(":", 1)[0]
+                if str(item.get("execution_ref") or "").count(":") > 1
+                else str(item.get("execution_ref") or ""),
             ),
             item,
         )
@@ -221,10 +224,9 @@ def _report_ready(workspace: Workspace, _scope: dict) -> Readiness:
     # A non-empty, reconciled report working draft exists; whether it predates
     # current planning/results/findings is currency and is not assessed here.
     preliminary = any(
-        planned.get("status")
-        in {"not_ready", "ready", "in_progress", "blocked", "review_required"}
-        for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
+        str(item.get("status") or "")
+        in {"draft", "ready", "in_progress", "blocked", "review_required"}
+        for item in _all_tests(workspace)
     ) or any(item.get("status") != "disposed" for item in workspace.observations)
     return Readiness("satisfied", details={"preliminary": preliminary})
 
@@ -253,10 +255,9 @@ def _verified(workspace: Workspace, _scope: dict) -> Readiness:
         coverage.get("issue_count")
         or any(item.get("status") != "disposed" for item in workspace.observations)
         or any(
-            planned.get("status")
+            str(item.get("status") or "")
             not in {"completed_no_exception", "completed_with_exception", "not_applicable"}
-            for row in workspace.rcm
-            for planned in row.get("planned_tests") or []
+            for item in _all_tests(workspace)
         )
     )
     status = "completed" if not open_items else "completed_with_open_items"

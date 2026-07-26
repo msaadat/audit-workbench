@@ -1,8 +1,8 @@
 from app import data_tests, doc_tests, rcm_execution, working_papers
 
 
-def _setup(ws, *, method="hybrid"):
-    row = ws.add_rcm(
+def _row(ws):
+    return ws.add_rcm(
         {
             "process": "Procurement",
             "risk": "Unsupported purchases",
@@ -11,27 +11,17 @@ def _setup(ws, *, method="hybrid"):
             "criteria": "Procurement policy section 4.",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Approval and support test",
-            "objective": "Determine whether purchases were approved and supported.",
-            "criteria": "Purchases require approval and invoice support.",
-            "method": method,
-            "steps": ["Analyze approval fields.", "Inspect supporting documents."],
-        },
-    )
-    return row, planned
 
 
-def _data_test(ws, row, planned):
+def _data_test(ws, row):
     return data_tests.create(
         ws,
         {
             "title": "Large transaction screening",
             "objective": "Identify purchases above 500 for follow-up.",
+            "criteria": "No purchase above 500 lacks approval.",
+            "steps": ["Analyze approval fields."],
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
             "engine": "polars",
             "table_refs": ["transactions"],
             "spec": {"code": "result = transactions.filter(pl.col('amount') > 500)"},
@@ -39,7 +29,7 @@ def _data_test(ws, row, planned):
     )
 
 
-def _document_test(ws, row, planned, *, exception=False):
+def _document_test(ws, row, *, exception=False):
     state = "exception" if exception else "confirmed"
     disposition = "exception" if exception else "accepted"
     test = doc_tests.create_test(
@@ -47,14 +37,17 @@ def _document_test(ws, row, planned, *, exception=False):
         {
             "kind": "attribute",
             "title": "Approval evidence",
+            "objective": "Determine whether purchases were approved.",
+            "steps": ["Inspect supporting documents."],
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
             "items": [
                 {
                     "label": "Invoice 1001",
                     "state": state,
                     "auditor_disposition": disposition,
-                    "attributes": [{"name": "Approval", "result": "fail" if exception else "pass"}],
+                    "attributes": [
+                        {"name": "Approval", "result": "fail" if exception else "pass"}
+                    ],
                 }
             ],
         },
@@ -62,86 +55,139 @@ def _document_test(ws, row, planned, *, exception=False):
     return doc_tests.update_test(ws, test["id"], {"status": "completed"})
 
 
-def test_coverage_reports_missing_plans_execution_and_invalid_parents(workspace_with_data):
+def test_coverage_reports_rows_without_tests_and_unspecified_drafts(
+    workspace_with_data,
+):
     ws = workspace_with_data
     orphan_row = ws.add_rcm(
         {"process": "Treasury", "risk": "Cash misuse", "risk_rating": "high"}
     )
-    row, planned = _setup(ws, method="hybrid")
+    row = _row(ws)
+    draft = data_tests.create_draft(
+        ws,
+        {
+            "title": "Approval analytics",
+            "objective": "Analyze approval fields.",
+            "rcm_id": row["id"],
+        },
+    )
 
     result = rcm_execution.coverage(ws)
 
-    assert orphan_row["id"] in result["rows_without_planned_tests"]
-    missing = next(
-        item for item in result["planned_tests_without_execution"]
-        if item["planned_test_id"] == planned["id"]
-    )
-    assert missing["missing"] == ["datatest", "doctest"]
+    assert orphan_row["id"] in result["rows_without_tests"]
+    assert {"rcm_id": row["id"], "test_id": draft["id"]} in result["unspecified_tests"]
     assert result["ok"] is False
 
 
-def test_execution_manifest_preserves_method_and_required_kinds(workspace_with_data):
-    row, planned = _setup(workspace_with_data, method="hybrid")
+def test_an_unlinked_test_is_exploration_not_a_coverage_defect(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    _data_test(ws, row)
+    data_tests.create(
+        ws,
+        {
+            "title": "Exploratory scan",
+            "objective": "Look at the population.",
+            "engine": "polars",
+            "table_refs": ["transactions"],
+            "spec": {"code": "result = transactions.head(1)"},
+        },
+    )
 
-    manifest = rcm_execution.execution_manifest(workspace_with_data)
+    result = rcm_execution.coverage(ws)
 
-    item = next(value for value in manifest if value["planned_test_id"] == planned["id"])
-    assert item["rcm_id"] == row["id"]
-    assert item["method"] == "hybrid"
-    assert item["required_execution"] == ["datatest", "doctest"]
-    assert item["steps"] == ["Analyze approval fields.", "Inspect supporting documents."]
-    assert item["missing_execution"] == ["datatest", "doctest"]
+    assert result["rows_without_tests"] == []
+    assert result["invalid_test_parents"] == []
 
 
-def test_description_only_linked_document_test_does_not_satisfy_execution_coverage(
+def test_test_manifest_carries_the_plan_and_the_specification_state(
     workspace_with_data,
 ):
-    row, planned = _setup(workspace_with_data, method="document_inspection")
-    shell = doc_tests.create_test(workspace_with_data, {
-        "kind": "review", "title": "Approval review shell",
-        "rcm_id": row["id"], "planned_test_id": planned["id"],
-        "items": [{"label": "Review approval evidence"}],
-    })
-
-    manifest = rcm_execution.execution_manifest(workspace_with_data)
-    item = next(value for value in manifest if value["planned_test_id"] == planned["id"])
-    covered = rcm_execution.coverage(workspace_with_data)
-
-    assert item["existing_execution"][0]["id"] == shell["id"]
-    assert item["existing_execution"][0]["executable"] is False
-    assert item["missing_execution"] == ["doctest"]
-    assert covered["planned_tests_without_execution"] == [{
-        "rcm_id": row["id"], "planned_test_id": planned["id"], "missing": ["doctest"],
-    }]
-
-
-def test_rollup_combines_both_execution_kinds_and_creates_observations(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _setup(ws)
-    data_test = _data_test(ws, row, planned)
+    row = _row(ws)
+    item = _data_test(ws, row)
+    draft = doc_tests.create_draft(
+        ws,
+        {
+            "title": "Approval inspection",
+            "objective": "Inspect approvals.",
+            "rcm_id": row["id"],
+        },
+    )
+
+    manifest = rcm_execution.test_manifest(ws)
+
+    specified = next(value for value in manifest if value["test_id"] == item["id"])
+    assert specified["rcm_id"] == row["id"]
+    assert specified["kind"] == "datatest"
+    assert specified["specified"] is True
+    assert specified["steps"] == ["Analyze approval fields."]
+    unspecified = next(value for value in manifest if value["test_id"] == draft["id"])
+    assert unspecified["kind"] == "doctest"
+    assert unspecified["specified"] is False
+
+
+def test_a_description_only_document_test_is_not_executable(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    shell = doc_tests.create_test(
+        ws,
+        {
+            "kind": "review",
+            "title": "Approval review shell",
+            "objective": "Review approval evidence.",
+            "rcm_id": row["id"],
+            "items": [{"label": "Review approval evidence"}],
+        },
+    )
+
+    manifest = rcm_execution.test_manifest(ws)
+    item = next(value for value in manifest if value["test_id"] == shell["id"])
+
+    assert item["executable"] is False
+
+
+def test_rollup_combines_both_sources_and_creates_observations(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    data_test = _data_test(ws, row)
     data_result = data_tests.run(ws, data_test["id"])
-    document_test = _document_test(ws, row, planned, exception=True)
+    document_test = _document_test(ws, row, exception=True)
 
     rolled = rcm_execution.rollup(ws)
-    planned_rollup = rolled["rows"][0]["planned_test_rollups"][0]
+    row_rollup = rolled["rows"][0]
 
-    assert planned_rollup["status"] == "completed_with_exception"
-    assert planned_rollup["executed_count"] == 2
-    assert planned_rollup["exception_count"] == data_result["exception_count"] + 1
-    assert {item["kind"] for item in planned_rollup["linked_execution"]} == {
+    assert row_rollup["tests"] == 2
+    assert {item["kind"] for item in row_rollup["test_rollups"]} == {
         "datatest",
         "doctest",
     }
+    assert row_rollup["exceptions"] == data_result["exception_count"] + 1
     assert len(ws.observations) == 2
-    assert planned["open_exception_count"] == data_result["exception_count"] + 1
-    assert row["execution_rollup"]["exceptions"] == planned_rollup["exception_count"]
-    assert document_test["id"] in planned["execution_refs"][1]
+    assert f"datatest:{data_test['id']}" in (row["test_refs"] or [])
+    assert f"doctest:{document_test['id']}" in (row["test_refs"] or [])
+
+
+def test_row_rollup_reports_a_passed_and_failed_tally(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    _document_test(ws, row, exception=True)
+    _document_test(ws, row)
+
+    rolled = rcm_execution.rollup(ws)
+    row_rollup = rolled["rows"][0]
+
+    # The row-level conclusion is the tally over its linked tests.
+    assert row_rollup["tests"] == 2
+    assert row_rollup["completed"] == 2
+    assert row_rollup["failed"] == 1
+    assert row_rollup["passed"] == 1
 
 
 def test_disposition_closes_observation_and_reduces_open_rollup(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _setup(ws, method="data_analytics")
-    item = _data_test(ws, row, planned)
+    row = _row(ws)
+    item = _data_test(ws, row)
     data_tests.run(ws, item["id"])
     rcm_execution.rollup(ws)
     observation = ws.observations[0]
@@ -152,57 +198,69 @@ def test_disposition_closes_observation_and_reduces_open_rollup(workspace_with_d
     rcm_execution.rollup(ws)
 
     assert disposed["status"] == "disposed"
-    assert planned["open_exception_count"] == 0
+    assert data_tests._record(ws, item["id"])["open_exception_count"] == 0
 
 
-def test_completed_planned_test_without_durable_execution_is_rejected(workspace_with_data):
+def test_completed_test_without_durable_execution_is_rejected(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _setup(ws, method="data_analytics")
-    _data_test(ws, row, planned)
-    planned["status"] = "completed_no_exception"
+    row = _row(ws)
+    item = _data_test(ws, row)
+    data_tests._record(ws, item["id"])["status"] = "completed_no_exception"
 
     result = rcm_execution.coverage(ws)
 
     assert result["completed_without_durable_result"] == [
-        {"rcm_id": row["id"], "planned_test_id": planned["id"]}
+        {"rcm_id": row["id"], "test_id": item["id"]}
     ]
 
 
 def test_effective_conclusion_with_open_exception_is_inconsistent(workspace_with_data):
     ws = workspace_with_data
-    row, planned = _setup(ws, method="data_analytics")
-    item = _data_test(ws, row, planned)
+    row = _row(ws)
+    item = _data_test(ws, row)
     data_tests.run(ws, item["id"])
     rcm_execution.rollup(ws)
-    planned["control_conclusion"] = "effective"
+    data_tests._record(ws, item["id"])["control_conclusion"] = "effective"
 
     result = rcm_execution.coverage(ws)
 
-    assert result["inconsistent_conclusions"][0]["planned_test_id"] == planned["id"]
+    assert result["inconsistent_conclusions"][0]["test_id"] == item["id"]
 
 
-def test_rcm_working_paper_contains_data_and_document_result_hashes(workspace_with_data):
+def test_rcm_working_paper_contains_data_and_document_result_hashes(
+    workspace_with_data,
+):
     ws = workspace_with_data
-    row, planned = _setup(ws)
-    item = _data_test(ws, row, planned)
+    row = _row(ws)
+    item = _data_test(ws, row)
     data_result = data_tests.run(ws, item["id"])
-    document_test = _document_test(ws, row, planned)
+    document_test = _document_test(ws, row)
 
     paper = working_papers.generate_rcm(ws, row["id"])
 
     assert f"Data Test {item['id']}" in paper["markdown"]
     assert f"Document Test {document_test['id']}" in paper["markdown"]
     assert data_result["result_sha1"] in paper["markdown"]
-    assert document_test["sha1"] in paper["markdown"]
+    # Generation rolls results up first, which refines the test's own outcome
+    # and therefore its content hash; the paper cites the current one.
+    current = doc_tests.load_test(ws, document_test["id"])
+    assert current["sha1"] in paper["markdown"]
     assert (ws.root / "WorkingPapers" / f"{row['id']}.json").is_file()
     assert "<script" not in paper["html"]
 
 
 def test_completion_uses_execution_and_outcome_gates(workspace_with_data):
     ws = workspace_with_data
-    ws.update_planning({"context": {"objective": "Test procurement controls.", "scope": "Invoice population."}})
-    row, planned = _setup(ws, method="data_analytics")
-    item = _data_test(ws, row, planned)
+    ws.update_planning(
+        {
+            "context": {
+                "objective": "Test procurement controls.",
+                "scope": "Invoice population.",
+            }
+        }
+    )
+    row = _row(ws)
+    item = _data_test(ws, row)
     data_tests.run(ws, item["id"])
 
     open_result = rcm_execution.completion(ws)
@@ -211,7 +269,13 @@ def test_completion_uses_execution_and_outcome_gates(workspace_with_data):
 
     for observation in list(ws.observations):
         rcm_execution.disposition(ws, observation["id"], "expected_or_benign")
-    planned["conclusion"] = "The control operated effectively for the tested population."
-    planned["control_conclusion"] = "effective"
+    data_tests.update(
+        ws,
+        item["id"],
+        {
+            "conclusion": "The control operated effectively for the tested population.",
+            "control_conclusion": "effective",
+        },
+    )
     completed = rcm_execution.completion(ws)
     assert completed["status"] == "completed"

@@ -46,9 +46,10 @@ async function promote(finding: AgentFinding) {
     <div v-if="auditOutcome" class="audit-outcome">
       <p class="section-title">Audit outcome</p>
       <div class="outcome-grid">
-        <span>Planned tests<strong>{{ auditOutcome.planned_tests_completed }}/{{ auditOutcome.planned_tests_total }}</strong></span>
-        <span>Data Tests<strong>{{ auditOutcome.data_tests_executed }}/{{ auditOutcome.data_tests_required }}</strong></span>
-        <span>Document Tests<strong>{{ auditOutcome.document_tests_executed }}/{{ auditOutcome.document_tests_required }}</strong></span>
+        <span>Tests<strong>{{ auditOutcome.tests_completed }}/{{ auditOutcome.tests_total }}</strong></span>
+        <span>Data Tests run<strong>{{ auditOutcome.data_tests_executed }}</strong></span>
+        <span>Document Tests run<strong>{{ auditOutcome.document_tests_executed }}</strong></span>
+        <span>Unspecified<strong>{{ auditOutcome.tests_unspecified }}</strong></span>
         <span>Open gates<strong>{{ auditOutcome.open_gate_count }}</strong></span>
         <span>Open observations<strong>{{ auditOutcome.open_observations }}</strong></span>
         <span>Supported findings<strong>{{ auditOutcome.supported_findings }}</strong></span>

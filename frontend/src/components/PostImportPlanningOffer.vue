@@ -30,7 +30,7 @@ async function startPlanningUpdate() {
       throw new Error('The planning assistant is not configured. Set an assistant provider and model before running this update.')
     }
     await assistantChat.send(
-      `Review newly imported documents ${props.action.document_ids.join(', ')} and update planning context, APM, RCM rows, and planned tests.`,
+      `Review newly imported documents ${props.action.document_ids.join(', ')} and update planning context, APM, RCM rows, and the tests that cover them.`,
       'act', launchMode.value, {
         goalTemplate: 'planning', source: 'tab_button',
         runContext: { document_ids: props.action.document_ids },
@@ -70,7 +70,7 @@ async function startPlanningUpdate() {
     <div class="planning-confirmation">
       <p>
         The planning assistant will use the selected documents to propose updates to the
-        engagement context, APM, RCM rows, and planned tests. It will use the global
+        engagement context, APM, RCM rows, and their tests. It will use the global
         {{ launchMode }} mode selected in the audit assistant.
       </p>
       <div class="context-preview">

@@ -26,6 +26,7 @@ from . import documents as documents  # noqa: F401
 from . import fieldwork as fieldwork  # noqa: F401
 from . import intake as intake  # noqa: F401
 from . import reporting as reporting  # noqa: F401
+from . import tests as tests  # noqa: F401
 
 __all__ = [
     "MAX_REPAIR_ATTEMPTS",

@@ -20,6 +20,8 @@ from pathlib import Path
 from . import analytics, documents, explore
 from .evidence import document_anchor, normalize_many
 from .workspaces import (
+    CONTROL_CONCLUSIONS,
+    TEST_STATUSES,
     Workspace,
     WorkspaceConflict,
     WorkspaceError,
@@ -74,26 +76,33 @@ def test_sha1(test: dict) -> str:
 
 
 def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
-    kind = str(test.get("kind") or "vouching")
+    # A drafted test has no kind until its spec pass runs, so ``kind`` stays
+    # None rather than defaulting to a builder the plan never chose.
+    kind = str(test.get("kind") or "") or None
     test.setdefault("status", "draft")
-    test.setdefault("semantic_id", f"doctest:{slugify(test.get('title') or kind)}")
+    test.setdefault("semantic_id", f"doctest:{slugify(test.get('title') or 'test')}")
     test.setdefault("rcm_refs", [])
     test.setdefault("procedure_refs", [])
     test.setdefault("rcm_id", None)
-    test.setdefault("planned_test_id", None)
+    # Audit plan — the fields that used to live on the RCM planned test.
+    test.setdefault("objective", "")
+    test.setdefault("criteria", "")
+    test.setdefault("steps", [])
+    test.setdefault("expected_evidence", "")
+    test.setdefault("methodology_refs", [])
+    # Outcome.
+    test.setdefault("conclusion", "")
+    test.setdefault("control_conclusion", "no_conclusion")
+    test.setdefault("result_summary", "")
     test.setdefault("scope_limitations", "")
+    test.setdefault("next_action", "")
+    test.setdefault("exception_count", 0)
+    test.setdefault("open_exception_count", 0)
+    test.setdefault("evidence_refs", [])
+    test.setdefault("finding_refs", [])
     test.setdefault("created_by", "user")
     test.setdefault("agent_run_id", None)
     test.setdefault("workflow_parent_sha1", None)
-    if workspace is not None and not test.get("planned_test_id"):
-        targets = [
-            workspace.rcm_migration.get("migrated_procedures", {}).get(str(ref))
-            for ref in test.get("procedure_refs") or []
-        ]
-        targets = [target for target in targets if target]
-        if len(targets) == 1:
-            test["rcm_id"] = targets[0]["rcm_id"]
-            test["planned_test_id"] = targets[0]["planned_test_id"]
     if test.get("rcm_id") and test["rcm_id"] not in test["rcm_refs"]:
         test["rcm_refs"].append(test["rcm_id"])
     test.setdefault("spec", {})
@@ -113,6 +122,8 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
             check.setdefault("comparisons", [])
             check["evidence_refs"] = normalize_many(check.get("evidence_refs") or [])
     test["kind"] = kind
+    test["evidence_refs"] = normalize_many(test.get("evidence_refs") or [])
+    test["steps"] = [str(step).strip() for step in test.get("steps") or [] if str(step).strip()]
     test["sha1"] = test_sha1(test)
     return test
 
@@ -148,6 +159,19 @@ def save_test(workspace: Workspace, test: dict) -> dict:
     return test
 
 
+def write_test(workspace: Workspace, test: dict) -> dict:
+    """Rewrite one test file in place without advancing the workspace revision.
+
+    For callers already inside their own workspace mutation that own the single
+    save. :func:`save_test` stays the coordinated path for edits that must be
+    visible as a workspace revision of their own.
+    """
+    test["updated"] = utcnow()
+    test["sha1"] = test_sha1(test)
+    write_json_atomic(_test_path(workspace, test["id"]), test)
+    return test
+
+
 def load_test(workspace: Workspace, test_id: str) -> dict:
     path = _test_path(workspace, test_id)
     if not path.exists():
@@ -176,9 +200,11 @@ def list_tests(workspace: Workspace) -> list[dict]:
         items.append({
             **{key: test.get(key) for key in (
                 "id", "kind", "title", "status", "semantic_id", "rcm_refs",
-                "procedure_refs", "rcm_id", "planned_test_id", "spec", "created",
+                "procedure_refs", "rcm_id", "spec", "created",
                 "updated", "sha1", "created_by", "agent_run_id",
-                "workflow_parent_sha1",
+                "workflow_parent_sha1", "objective", "criteria", "steps",
+                "expected_evidence", "conclusion", "control_conclusion",
+                "exception_count", "open_exception_count", "scope_limitations",
             )},
             "item_count": len(states),
             "state_counts": {state: states.count(state) for state in sorted(STATES)},
@@ -197,17 +223,16 @@ def _validate_links(workspace: Workspace, rcm_refs: list[str], procedure_refs: l
         raise WorkspaceError(f"Procedure '{missing[0]}' not found.")
 
 
-def _validate_parent(workspace: Workspace, rcm_id: object, planned_test_id: object) -> tuple[str | None, str | None]:
-    rcm_value = str(rcm_id or "").strip() or None
-    planned_value = str(planned_test_id or "").strip() or None
-    if bool(rcm_value) != bool(planned_value):
-        raise WorkspaceError("RCM row and planned test must be assigned together.")
-    if not rcm_value:
-        return None, None
-    row, planned = workspace.planned_test(planned_value)
-    if row.get("id") != rcm_value:
-        raise WorkspaceError(f"Planned test '{planned_value}' does not belong to RCM row '{rcm_value}'.")
-    return rcm_value, str(planned["id"])
+def _validate_rcm_id(workspace: Workspace, rcm_id: object) -> str | None:
+    """Resolve the optional RCM row a test covers.
+
+    The link is optional in both directions: an auditor may author a test with
+    no row at all, and only the row side requires at least one test.
+    """
+    value = str(rcm_id or "").strip() or None
+    if value and not any(row.get("id") == value for row in workspace.rcm):
+        raise WorkspaceError(f"RCM row '{value}' not found.")
+    return value
 
 
 def _link_test(workspace: Workspace, test: dict) -> None:
@@ -224,44 +249,57 @@ def _link_test(workspace: Workspace, test: dict) -> None:
             refs.append(ref)
         elif procedure["id"] not in test["procedure_refs"]:
             procedure["test_refs"] = [value for value in refs if value != ref]
-    for row in workspace.rcm:
-        for planned in row.get("planned_tests") or []:
-            refs = planned.setdefault("execution_refs", [])
-            if planned.get("id") == test.get("planned_test_id") and ref not in refs:
-                refs.append(ref)
-            elif planned.get("id") != test.get("planned_test_id"):
-                planned["execution_refs"] = [value for value in refs if value != ref]
 
 
-def _base_test(workspace: Workspace, payload: dict, kind: str) -> dict:
-    if kind not in KINDS:
+def unlink_rcm(workspace: Workspace, rcm_id: str) -> list[str]:
+    """Clear the RCM link from every Document Test that carried it.
+
+    Used when a row is deleted. The test files are rewritten in place without
+    advancing the workspace revision, because the caller is already inside its
+    own workspace mutation and owns the single save.
+    """
+    unlinked = []
+    for summary in list_tests(workspace):
+        if summary.get("rcm_id") != rcm_id:
+            continue
+        test = load_test(workspace, summary["id"])
+        test["rcm_id"] = None
+        test["rcm_refs"] = [ref for ref in test.get("rcm_refs") or [] if ref != rcm_id]
+        write_test(workspace, test)
+        unlinked.append(test["id"])
+    return unlinked
+
+
+def _base_test(workspace: Workspace, payload: dict, kind: str | None) -> dict:
+    if kind is not None and kind not in KINDS:
         raise WorkspaceError("Document-test kind must be vouching, attribute, review, or qa.")
-    title = str(payload.get("title") or f"New {kind} test").strip()
+    title = str(payload.get("title") or f"New {kind or 'document'} test").strip()
     if not title:
         raise WorkspaceError("Document-test title is required.")
+    rcm_id = _validate_rcm_id(workspace, payload.get("rcm_id"))
     rcm_refs = [str(ref) for ref in (payload.get("rcm_refs") or [])]
     procedure_refs = [str(ref) for ref in (payload.get("procedure_refs") or [])]
     _validate_links(workspace, rcm_refs, procedure_refs)
-    rcm_id, planned_test_id = _validate_parent(
-        workspace, payload.get("rcm_id"), payload.get("planned_test_id")
-    )
-    if not planned_test_id and len(procedure_refs) == 1:
-        target = workspace.rcm_migration.get("migrated_procedures", {}).get(procedure_refs[0])
-        if target:
-            rcm_id, planned_test_id = target["rcm_id"], target["planned_test_id"]
-            if rcm_id not in rcm_refs:
-                rcm_refs.append(rcm_id)
+    if rcm_id and rcm_id not in rcm_refs:
+        rcm_refs.append(rcm_id)
+    status = str(payload.get("status") or ("draft" if kind is None else "ready"))
+    if status not in TEST_STATUSES:
+        raise WorkspaceError("Unknown document-test status.")
     now = utcnow()
     return {
         "id": str(payload.get("id") or f"DT-{uuid.uuid4().hex[:8].upper()}"),
         "kind": kind,
         "title": title,
-        "status": "draft",
+        "status": status,
         "semantic_id": str(payload.get("semantic_id") or f"doctest:{slugify(title)}"),
         "rcm_refs": rcm_refs,
         "procedure_refs": procedure_refs,
         "rcm_id": rcm_id,
-        "planned_test_id": planned_test_id,
+        "objective": str(payload.get("objective") or ""),
+        "criteria": str(payload.get("criteria") or ""),
+        "steps": [str(step).strip() for step in (payload.get("steps") or []) if str(step).strip()],
+        "expected_evidence": str(payload.get("expected_evidence") or ""),
+        "methodology_refs": list(payload.get("methodology_refs") or []),
         "spec": dict(payload.get("spec") or {}),
         "items": [],
         "created_by": "agent" if payload.get("agent_run_id") else "user",
@@ -290,16 +328,11 @@ def _new_item(payload: dict | None = None) -> dict:
     return item
 
 
-def create_test(workspace: Workspace, payload: dict) -> dict:
-    kind = str(payload.get("kind") or "vouching").lower()
-    test = _base_test(workspace, payload, kind)
+def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
+    """Normalize one payload's items onto a test according to its kind."""
+    kind = test["kind"]
     known_documents = {str(item.get("id")) for item in workspace.documents}
-    if kind == "vouching":
-        direction = str((payload.get("spec") or {}).get("direction") or payload.get("direction") or "vouching")
-        if direction not in DIRECTIONS:
-            raise WorkspaceError("Direction must be vouching or tracing.")
-        test["spec"]["direction"] = direction
-    for raw in payload.get("items") or []:
+    for raw in raw_items or []:
         item = _new_item(raw)
         missing_documents = [
             document_id
@@ -320,6 +353,113 @@ def create_test(workspace: Workspace, payload: dict) -> dict:
         else:
             item.update(question=str(raw.get("question") or ""), response=str(raw.get("response") or ""), citations=normalize_many(raw.get("citations") or []))
         test["items"].append(item)
+
+
+def _apply_kind_spec(test: dict, payload: dict) -> None:
+    if test["kind"] == "vouching":
+        direction = str(
+            (payload.get("spec") or {}).get("direction")
+            or payload.get("direction")
+            or "vouching"
+        )
+        if direction not in DIRECTIONS:
+            raise WorkspaceError("Direction must be vouching or tracing.")
+        test["spec"]["direction"] = direction
+        test["spec"].setdefault("require_all_documents", True)
+
+
+def create_test(workspace: Workspace, payload: dict) -> dict:
+    kind = str(payload.get("kind") or "vouching").lower()
+    test = _base_test(workspace, payload, kind)
+    _apply_kind_spec(test, payload)
+    _build_items(workspace, test, payload.get("items"))
+    save_test(workspace, test)
+    return test
+
+
+def create_draft(workspace: Workspace, payload: dict) -> dict:
+    """Create a planned-but-unspecified Document Test.
+
+    This is what the draft pass of test generation commits: the audit plan for
+    one test, with no builder chosen and no items yet. :func:`apply_spec` fills
+    those in and moves the record out of ``draft``.
+    """
+    test = _base_test(workspace, payload, None)
+    save_test(workspace, test)
+    return test
+
+
+PLAN_FIELDS = (
+    "title",
+    "objective",
+    "criteria",
+    "steps",
+    "expected_evidence",
+    "methodology_refs",
+)
+
+
+def update_plan(workspace: Workspace, test_id: str, payload: dict) -> dict:
+    """Rewrite one test's audit plan, leaving its spec and results untouched.
+
+    This is what a re-run of the draft pass commits onto a test it has already
+    created; the executable spec belongs to :func:`apply_spec`.
+    """
+    test = load_test(workspace, test_id)
+    for key in PLAN_FIELDS:
+        if key not in payload:
+            continue
+        if key == "steps":
+            test["steps"] = [
+                str(step).strip() for step in (payload["steps"] or []) if str(step).strip()
+            ]
+        elif key == "methodology_refs":
+            test["methodology_refs"] = list(payload["methodology_refs"] or [])
+        else:
+            test[key] = str(payload[key] or "")
+    if "rcm_id" in payload:
+        rcm_id = _validate_rcm_id(workspace, payload["rcm_id"])
+        test["rcm_refs"] = [ref for ref in test.get("rcm_refs") or [] if ref != test.get("rcm_id")]
+        test["rcm_id"] = rcm_id
+        if rcm_id and rcm_id not in test["rcm_refs"]:
+            test["rcm_refs"].append(rcm_id)
+    for key in ("agent_run_id", "workflow_parent_sha1"):
+        if payload.get(key):
+            test[key] = str(payload[key])
+    save_test(workspace, test)
+    return test
+
+
+def apply_spec(workspace: Workspace, test_id: str, payload: dict) -> dict:
+    """Write the executable spec onto an existing test, replacing its items.
+
+    Items an auditor has already dispositioned are never discarded: a test that
+    has been executed must be re-drafted rather than silently re-specified.
+    """
+    test = load_test(workspace, test_id)
+    settled = [
+        item for item in test.get("items") or []
+        if item.get("state") in {"confirmed", "exception"}
+    ]
+    if settled:
+        raise WorkspaceError(
+            f"Document Test '{test_id}' has auditor-settled items and cannot be re-specified."
+        )
+    kind = str(payload.get("kind") or "").lower()
+    if kind not in KINDS:
+        raise WorkspaceError("Document-test kind must be vouching, attribute, review, or qa.")
+    test["kind"] = kind
+    test["spec"] = dict(payload.get("spec") or {})
+    test["items"] = []
+    _apply_kind_spec(test, payload)
+    _build_items(workspace, test, payload.get("items"))
+    if payload.get("title"):
+        test["title"] = str(payload["title"]).strip()
+    test["status"] = "ready"
+    if payload.get("workflow_parent_sha1"):
+        test["workflow_parent_sha1"] = str(payload["workflow_parent_sha1"])
+    if payload.get("agent_run_id"):
+        test["agent_run_id"] = str(payload["agent_run_id"])
     save_test(workspace, test)
     return test
 
@@ -457,17 +597,17 @@ def _required_document_types(workspace: Workspace, payload: dict) -> list[str]:
     ]
     if explicit:
         return list(dict.fromkeys(explicit))
-    planned_id = str(payload.get("planned_test_id") or "")
-    if not planned_id:
-        return []
-    _, planned = workspace.planned_test(planned_id)
+    # Otherwise derive them from the test's own plan, which is where the
+    # expected evidence now lives.
     source = " ".join(
         [
-            str(planned.get("expected_evidence") or ""),
-            str(planned.get("criteria") or ""),
-            *[str(step) for step in planned.get("steps") or []],
+            str(payload.get("expected_evidence") or ""),
+            str(payload.get("criteria") or ""),
+            *[str(step) for step in payload.get("steps") or []],
         ]
     ).casefold()
+    if not source.strip():
+        return []
     return [
         kind
         for kind, aliases in _DOCUMENT_TYPE_ALIASES.items()
@@ -497,7 +637,6 @@ def _evidence_request(
         existing = {
             "id": f"ER-{uuid.uuid4().hex[:10].upper()}",
             "rcm_id": test.get("rcm_id"),
-            "planned_test_id": test.get("planned_test_id"),
             "document_test_id": test["id"],
             "item_id": item["id"],
             "transaction_identifier": transaction_identifier,
@@ -724,29 +863,43 @@ def build_qa(workspace: Workspace, payload: dict) -> dict:
 def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
     test = load_test(workspace, test_id)
     allowed = {
-        "title", "status", "rcm_refs", "procedure_refs", "rcm_id", "planned_test_id", "spec"
+        "title", "status", "rcm_refs", "procedure_refs", "rcm_id", "spec",
+        "objective", "criteria", "steps", "expected_evidence", "conclusion",
+        "control_conclusion", "scope_limitations", "next_action",
     }
     if set(changes) - allowed:
         raise WorkspaceError("Unknown document-test field.")
+    rcm_id = _validate_rcm_id(workspace, changes.get("rcm_id", test.get("rcm_id")))
     rcm_refs = [str(ref) for ref in changes.get("rcm_refs", test["rcm_refs"])]
     procedure_refs = [str(ref) for ref in changes.get("procedure_refs", test["procedure_refs"])]
     _validate_links(workspace, rcm_refs, procedure_refs)
-    rcm_id, planned_test_id = _validate_parent(
-        workspace,
-        changes.get("rcm_id", test.get("rcm_id")),
-        changes.get("planned_test_id", test.get("planned_test_id")),
-    )
+    if rcm_id and rcm_id not in rcm_refs:
+        rcm_refs.append(rcm_id)
+    if not rcm_id:
+        rcm_refs = [ref for ref in rcm_refs if ref != test.get("rcm_id")]
     if "title" in changes:
         test["title"] = str(changes["title"] or "").strip()
         if not test["title"]:
             raise WorkspaceError("Document-test title is required.")
     if "status" in changes:
         status = str(changes["status"])
-        if status not in {"draft", "in_progress", "review_required", "blocked", "completed"}:
+        if status not in TEST_STATUSES:
             raise WorkspaceError("Unknown document-test status.")
         test["status"] = status
+    if "control_conclusion" in changes:
+        conclusion = str(changes["control_conclusion"] or "no_conclusion")
+        if conclusion not in CONTROL_CONCLUSIONS:
+            raise WorkspaceError("Unknown control conclusion.")
+        test["control_conclusion"] = conclusion
+    if "steps" in changes:
+        test["steps"] = [
+            str(step).strip() for step in (changes["steps"] or []) if str(step).strip()
+        ]
+    for key in ("objective", "criteria", "expected_evidence", "conclusion", "scope_limitations", "next_action"):
+        if key in changes:
+            test[key] = str(changes[key] or "")
     test["rcm_refs"], test["procedure_refs"] = rcm_refs, procedure_refs
-    test["rcm_id"], test["planned_test_id"] = rcm_id, planned_test_id
+    test["rcm_id"] = rcm_id
     if "spec" in changes:
         test["spec"] = {**test["spec"], **dict(changes["spec"] or {})}
     save_test(workspace, test)
@@ -759,11 +912,6 @@ def remove_test(workspace: Workspace, test_id: str) -> None:
     ref = f"doctest:{test_id}"
     for item in [*workspace.rcm, *workspace.work_program]:
         item["test_refs"] = [value for value in item.get("test_refs", []) if value != ref]
-    for row in workspace.rcm:
-        for planned in row.get("planned_tests") or []:
-            planned["execution_refs"] = [
-                value for value in planned.get("execution_refs", []) if value != ref
-            ]
     workspace.save()
 
 

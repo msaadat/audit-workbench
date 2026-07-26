@@ -36,23 +36,20 @@ from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
 from . import loader, profiler
 from .field_names import resolve_columns
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 JOIN_TYPES = ("inner", "left", "full", "semi", "anti", "cross")
 
-PLANNED_TEST_METHODS = {
-    "data_analytics",
-    "validation",
-    "document_inspection",
-    "inquiry",
-    "hybrid",
-    "evidence_unavailable",
-}
-PLANNED_TEST_STATUSES = {
-    "not_ready",
+# The one status vocabulary shared by Document Tests and Data Tests. ``draft`` is
+# a test whose plan exists but whose executable spec has not been written yet;
+# ``completed`` is what a runner writes when every item is settled, which roll-up
+# then refines into the exception-bearing pair from the durable results.
+TEST_STATUSES = {
+    "draft",
     "ready",
     "in_progress",
     "review_required",
     "blocked",
+    "completed",
     "completed_no_exception",
     "completed_with_exception",
     "not_applicable",
@@ -220,18 +217,8 @@ def sync_workspace(target: "Workspace", source: "Workspace") -> "Workspace":
             if old is None:
                 merged.append(value)
                 continue
-            if "planned_tests" in value and isinstance(value.get("planned_tests"), list):
-                planned = merge_list(
-                    list(old.get("planned_tests") or []),
-                    list(value.get("planned_tests") or []),
-                    "id",
-                )
-                old.clear()
-                old.update(value)
-                old["planned_tests"] = planned
-            else:
-                old.clear()
-                old.update(value)
+            old.clear()
+            old.update(value)
             merged.append(old)
         current[:] = merged
         return current
@@ -244,13 +231,13 @@ def sync_workspace(target: "Workspace", source: "Workspace") -> "Workspace":
     }
     for attribute, key in list_keys.items():
         merge_list(getattr(target, attribute), getattr(source, attribute), key)
-    for attribute in ("planning", "report", "dashboard_advice", "rcm_migration"):
+    for attribute in ("planning", "report", "dashboard_advice"):
         current = getattr(target, attribute)
         current.clear()
         current.update(getattr(source, attribute))
     for attribute, value in source.__dict__.items():
         if attribute not in list_keys and attribute not in {
-            "planning", "report", "dashboard_advice", "rcm_migration",
+            "planning", "report", "dashboard_advice",
         }:
             setattr(target, attribute, value)
     return target
@@ -264,144 +251,12 @@ def reset_request_revision(token: Token) -> None:
     _request_revision.reset(token)
 
 
-def _legacy_method(value: object, test_refs: object = None) -> str:
-    """Map the former free-text procedure method to the RCM vocabulary.
-
-    The mapping is deliberately conservative. Ambiguous text that combines
-    data work and inspection becomes ``hybrid``; unknown methods remain
-    document inspection because legacy procedures were manual by default.
-    """
-    text = str(value or "").strip().lower()
-    has_data = any(word in text for word in ("data", "analytic", "polars", "validation"))
-    has_document = any(
-        word in text
-        for word in ("inspect", "document", "vouch", "trace", "inquiry", "walkthrough")
-    )
-    if has_data and has_document:
-        return "hybrid"
-    if "validation" in text:
-        return "validation"
-    if has_data:
-        return "data_analytics"
-    if "inquiry" in text or "walkthrough" in text:
-        return "inquiry"
-    if "unavailable" in text or "missing evidence" in text:
-        return "evidence_unavailable"
-    # Existing procedure test_refs only contain document tests.
-    if test_refs:
-        return "document_inspection"
-    return "document_inspection"
-
-
-def _planned_test_id(rcm_id: str, procedure_id: str) -> str:
-    digest = hashlib.sha1(f"{rcm_id}\0{procedure_id}".encode("utf-8")).hexdigest()[:10]
-    return f"PT-{digest.upper()}"
-
-
-def _normalize_sampling(value: object) -> dict:
-    if value not in (None, "") and not isinstance(value, dict):
-        raise WorkspaceError("Planned-test sampling must be an object.")
-    raw = dict(value or {})
-    size = raw.get("size")
-    if size not in (None, ""):
-        try:
-            size = int(size)
-        except (TypeError, ValueError) as error:
-            raise WorkspaceError("Planned-test sample size must be a positive integer.") from error
-        if size < 1:
-            raise WorkspaceError("Planned-test sample size must be a positive integer.")
-    else:
-        size = None
-    try:
-        seed = int(raw.get("seed", 42))
-    except (TypeError, ValueError) as error:
-        raise WorkspaceError("Planned-test sampling seed must be an integer.") from error
-    return {
-        "strategy": str(raw.get("strategy") or "judgmental"),
-        "size": size,
-        "seed": seed,
-        "stratify_by": str(raw.get("stratify_by") or "").strip() or None,
-    }
-
-
-def _normalize_thresholds(value: object) -> dict:
-    if value not in (None, "") and not isinstance(value, dict):
-        raise WorkspaceError("Planned-test thresholds must be an object.")
-    return dict(value or {})
-
-
-def _normalize_planned_test(
-    payload: dict,
-    *,
-    rcm_id: str,
-    now: str,
-    legacy_procedure_id: str | None = None,
-) -> dict:
-    title = str(payload.get("title") or payload.get("objective") or "").strip()
-    objective = str(payload.get("objective") or title).strip()
-    if not objective:
-        raise WorkspaceError("Planned-test objective is required.")
-    method = str(payload.get("method") or "document_inspection").strip().lower()
-    if method not in PLANNED_TEST_METHODS:
-        method = _legacy_method(method, payload.get("execution_refs") or payload.get("test_refs"))
-    status = str(payload.get("status") or "not_ready").strip().lower()
-    if status not in PLANNED_TEST_STATUSES:
-        raise WorkspaceError("Unknown planned-test status.")
-    conclusion = str(payload.get("control_conclusion") or "no_conclusion").strip().lower()
-    if conclusion not in CONTROL_CONCLUSIONS:
-        raise WorkspaceError("Unknown planned-test control conclusion.")
-    procedure_id = legacy_procedure_id or str(payload.get("legacy_procedure_id") or "") or None
-    item_id = str(
-        payload.get("id")
-        or (_planned_test_id(rcm_id, procedure_id) if procedure_id else f"PT-{uuid.uuid4().hex[:10].upper()}")
-    )
-    semantic_default = f"planned-test:{slugify(title or objective)}"
-    evidence = payload.get("evidence_refs") or []
-    from .evidence import normalize_many
-
-    return {
-        "id": item_id,
-        "semantic_id": str(payload.get("semantic_id") or semantic_default),
-        "title": title or objective,
-        "objective": objective,
-        "criteria": str(payload.get("criteria") or ""),
-        "method": method,
-        "steps": [str(step).strip() for step in (payload.get("steps") or []) if str(step).strip()],
-        "expected_evidence": str(payload.get("expected_evidence") or ""),
-        "sampling": _normalize_sampling(payload.get("sampling")),
-        "thresholds": _normalize_thresholds(payload.get("thresholds")),
-        "execution_refs": list(
-            dict.fromkeys(
-                str(ref).strip()
-                for ref in (payload.get("execution_refs") or payload.get("test_refs") or [])
-                if str(ref).strip()
-            )
-        ),
-        "status": status,
-        "result_summary": str(payload.get("result_summary") or ""),
-        "conclusion": str(payload.get("conclusion") or ""),
-        "control_conclusion": conclusion,
-        "scope_limitations": str(payload.get("scope_limitations") or ""),
-        "next_action": str(payload.get("next_action") or ""),
-        "exception_count": max(0, int(payload.get("exception_count") or 0)),
-        "open_exception_count": max(0, int(payload.get("open_exception_count") or 0)),
-        "evidence_refs": normalize_many(evidence),
-        "methodology_refs": list(payload.get("methodology_refs") or []),
-        "finding_refs": [str(ref) for ref in (payload.get("finding_refs") or [])],
-        "workflow_parent_sha1": str(payload.get("workflow_parent_sha1") or "") or None,
-        "created_by": str(payload.get("created_by") or ("agent" if payload.get("agent_run_id") else "user")),
-        "agent_run_id": payload.get("agent_run_id"),
-        "updated": str(payload.get("updated") or now),
-        **({"legacy_procedure_id": procedure_id} if procedure_id else {}),
-    }
-
-
 def _normalize_rcm_row(row: dict, *, now: str) -> dict:
     item = dict(row)
     item.setdefault("criteria", "")
     item.setdefault("criteria_refs", [])
     item.setdefault("control_owner", "")
-    item.setdefault("planned_tests", [])
+    item.setdefault("test_refs", [])
     item.setdefault("execution_rollup", {})
     item.setdefault("finding_refs", [])
     item.setdefault("evidence_refs", [])
@@ -414,190 +269,50 @@ def _normalize_rcm_row(row: dict, *, now: str) -> dict:
     from .evidence import normalize_many
 
     item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
-    normalized = []
-    seen: set[str] = set()
-    for planned in item.get("planned_tests") or []:
-        value = _normalize_planned_test(dict(planned), rcm_id=str(item.get("id") or ""), now=now)
-        if value["id"] not in seen:
-            normalized.append(value)
-            seen.add(value["id"])
-    item["planned_tests"] = normalized
+    item["test_refs"] = list(
+        dict.fromkeys(
+            str(ref).strip() for ref in item.get("test_refs") or [] if str(ref).strip()
+        )
+    )
     return item
 
 
-def _migrate_legacy_planning(
-    rcm_rows: list[dict], procedures: list[dict], *, from_version: int, now: str
-) -> dict:
-    """Project unambiguous legacy procedures into RCM planned tests.
-
-    The old collection is retained verbatim for rollback. This projection is
-    idempotent because migrated tests use deterministic IDs and record the
-    source procedure ID.
-    """
-    known_rcm = {str(row.get("id")): row for row in rcm_rows}
-    migrated: dict[str, dict] = {}
-    review: list[dict] = []
-    unassigned: list[dict] = []
-    for procedure in procedures:
-        procedure_id = str(procedure.get("id") or "")
-        refs = list(dict.fromkeys(str(ref) for ref in (procedure.get("rcm_refs") or []) if str(ref)))
-        valid = [ref for ref in refs if ref in known_rcm]
-        if len(refs) == 1 and len(valid) == 1:
-            row = known_rcm[valid[0]]
-            planned_id = _planned_test_id(valid[0], procedure_id)
-            existing = next(
-                (
-                    item
-                    for item in row["planned_tests"]
-                    if item.get("legacy_procedure_id") == procedure_id or item.get("id") == planned_id
-                ),
-                None,
-            )
-            if existing is None:
-                planned = _normalize_planned_test(
-                    {
-                        **procedure,
-                        "title": procedure.get("title") or procedure.get("objective"),
-                        "method": _legacy_method(procedure.get("method"), procedure.get("test_refs")),
-                        "execution_refs": procedure.get("test_refs") or [],
-                        "control_conclusion": procedure.get("control_conclusion") or "no_conclusion",
-                    },
-                    rcm_id=valid[0],
-                    now=now,
-                    legacy_procedure_id=procedure_id,
-                )
-                row["planned_tests"].append(planned)
-                existing = planned
-            migrated[procedure_id] = {"rcm_id": valid[0], "planned_test_id": existing["id"]}
-        elif not refs:
-            unassigned.append({"procedure_id": procedure_id, "reason": "No RCM reference."})
-        else:
-            reason = "Procedure has multiple RCM references and requires auditor assignment."
-            if not valid:
-                reason = "Procedure references an RCM row that does not exist."
-            review.append({"procedure_id": procedure_id, "rcm_refs": refs, "reason": reason})
-    return {
-        "from_schema_version": from_version,
-        "migrated_procedures": migrated,
-        "review_queue": review,
-        "unassigned_procedures": unassigned,
-        "legacy_work_program_retained": True,
-    }
-
-
-def _legacy_execution_parent(workspace: "Workspace", item: dict) -> tuple[str, str] | None:
-    rcm_id = str(item.get("rcm_id") or "")
-    planned_id = str(item.get("planned_test_id") or "")
-    if rcm_id and planned_id:
-        try:
-            row, _planned = workspace.planned_test(planned_id)
-        except WorkspaceError:
-            return None
-        return (rcm_id, planned_id) if row["id"] == rcm_id else None
-    procedure_refs = [str(value) for value in item.get("procedure_refs") or []]
-    targets = [
-        workspace.rcm_migration.get("migrated_procedures", {}).get(value)
-        for value in procedure_refs
-    ]
-    targets = [value for value in targets if value]
-    if len(targets) == 1 and len(procedure_refs) == 1:
-        return targets[0]["rcm_id"], targets[0]["planned_test_id"]
-    rcm_refs = [str(value) for value in item.get("rcm_refs") or []]
-    if len(rcm_refs) == 1:
-        row = next((value for value in workspace.rcm if value.get("id") == rcm_refs[0]), None)
-        if row is not None and len(row.get("planned_tests") or []) == 1:
-            return row["id"], row["planned_tests"][0]["id"]
-    return None
-
-
-def _migrate_legacy_execution(workspace: "Workspace") -> None:
-    """Project only unambiguously linked saved analyses/rules into Data Tests."""
-    from . import data_tests
-
-    migrated = dict(workspace.rcm_migration.get("migrated_execution") or {})
-    unassigned = []
-    sources = [
-        *(('analysis', item) for item in workspace.analyses),
-        *(('ruleset', item) for item in workspace.rulesets),
-    ]
-    existing_sources = {
-        (item.get("legacy_source_kind"), item.get("legacy_source_id"))
-        for item in workspace.data_tests
-    }
-    for kind, source in sources:
-        source_id = str(source.get("id") or "")
-        if not source_id or (kind, source_id) in existing_sources:
-            continue
-        parent = _legacy_execution_parent(workspace, source)
-        if parent is None:
-            unassigned.append({
-                "kind": kind, "id": source_id,
-                "reason": "No unambiguous RCM planned-test parent.",
-            })
-            continue
-        engine = "validation" if kind == "ruleset" else (
-            "polars" if source.get("kind") == "python" else "analytics"
-        )
-        table_refs = [str(source.get("table") or "")]
-        spec = dict(source.get("spec") or {})
-        if kind == "ruleset":
-            spec = {"rules": source.get("rules") or []}
-        elif engine == "analytics":
-            spec = {"test_id": spec.get("test") or spec.get("test_id"), "params": spec.get("params") or {}}
-        try:
-            refs = data_tests._table_refs(workspace, table_refs)
-            normalized_spec, warnings = data_tests._validate_spec(workspace, engine, refs, spec)
-        except WorkspaceError as error:
-            unassigned.append({"kind": kind, "id": source_id, "reason": str(error)})
-            continue
-        digest = hashlib.sha1(f"{kind}\0{source_id}".encode("utf-8")).hexdigest()[:10]
-        now = str(source.get("updated") or source.get("created") or workspace._updated_now())
-        item = {
-            "id": f"DAT-{digest.upper()}",
-            "semantic_id": f"datatest:migrated-{kind}:{slugify(source_id)}",
-            "rcm_id": parent[0], "planned_test_id": parent[1],
-            "title": str(source.get("title") or f"Migrated {kind} {source_id}"),
-            "objective": str(source.get("objective") or source.get("title") or f"Reperform {kind} {source_id}"),
-            "engine": engine, "table_refs": refs, "spec": normalized_spec,
-            "status": "ready", "semantic_warnings": warnings,
-            "last_run": None, "runs": [], "auditor_disposition": "pending",
-            "evidence_refs": [], "created_by": source.get("created_by") or "user",
-            "agent_run_id": source.get("agent_run_id"), "created": now, "updated": now,
-            "legacy_source_kind": kind, "legacy_source_id": source_id,
-        }
-        workspace.data_tests.append(item)
-        data_tests._link(workspace, item)
-        migrated[f"{kind}:{source_id}"] = item["id"]
-    workspace.rcm_migration["migrated_execution"] = migrated
-    workspace.rcm_migration["unassigned_tests"] = unassigned
-
-
 def _validate_test_refs(workspace: "Workspace", refs: object) -> list[str]:
+    """Validate an RCM row's ``test_refs`` — its links to durable tests.
+
+    Both test kinds live here, so a row lists every test that covers it whatever
+    its source. The refs are maintained automatically when a test is linked to a
+    row; anything that is not a ``doctest:``/``datatest:`` reference (a model's
+    free-text citation, say) is dropped rather than persisted.
+    """
     if not refs:
         return []
-    # A bare string is malformed input (the model occasionally returns a free-text
-    # citation here). Iterating it would split it into single characters, so wrap
-    # it as one reference rather than exploding it.
+    # A bare string would iterate into single characters, so wrap it as one ref.
     if isinstance(refs, str):
         refs = [refs]
     elif not isinstance(refs, (list, tuple)):
-        raise WorkspaceError("test_refs must be a list of document-test references.")
+        raise WorkspaceError("test_refs must be a list of test references.")
     from . import doc_tests
+
     values: list[str] = []
     for ref in refs:
         value = str(ref).strip()
         if not value:
             continue
         kind, separator, item_id = value.partition(":")
-        # test_refs holds document-test links only; they are added automatically
-        # when a doc test is linked to a row. Drop anything that is not a doctest
-        # reference (e.g. a hallucinated citation string) instead of persisting it.
-        if kind != "doctest":
+        if kind not in {"doctest", "datatest"}:
             continue
-        if not separator or not item_id or not doc_tests.exists(workspace, item_id):
-            raise WorkspaceError(f"Document test reference '{value}' does not exist.")
+        if not separator or not item_id:
+            raise WorkspaceError(f"Test reference '{value}' is malformed.")
+        known = (
+            doc_tests.exists(workspace, item_id)
+            if kind == "doctest"
+            else any(item.get("id") == item_id for item in workspace.data_tests)
+        )
+        if not known:
+            raise WorkspaceError(f"Test reference '{value}' does not exist.")
         values.append(value)
-    return values
+    return list(dict.fromkeys(values))
 
 
 def _normalized_table_name(text: str) -> str:
@@ -774,14 +489,6 @@ class Workspace:
             for row in (definition.get("rcm") or [])
         ]
         self.work_program: list[dict] = list(definition.get("work_program") or [])
-        derived_migration = _migrate_legacy_planning(
-            self.rcm,
-            self.work_program,
-            from_version=self.schema_version,
-            now=hydrated_at,
-        )
-        stored_migration = dict(definition.get("rcm_migration") or {})
-        self.rcm_migration: dict = {**stored_migration, **derived_migration}
         self.data_tests: list[dict] = list(definition.get("data_tests") or [])
         self.observations: list[dict] = list(definition.get("observations") or [])
         self.evidence_requests: list[dict] = list(definition.get("evidence_requests") or [])
@@ -797,21 +504,17 @@ class Workspace:
             item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
             item.setdefault("rcm_refs", [])
             item.setdefault("procedure_refs", [])
-            item.setdefault("planned_test_refs", [])
+            item.setdefault("test_refs", [])
             item.setdefault("execution_refs", [])
             item.setdefault("cause_pending", False)
             item.setdefault("severity_rationale", "")
             # Legacy/manual origin is not equivalent to a formal auditor
             # confirmation. Unsupported records stay visible as drafts.
             item.setdefault("auditor_confirmed", False)
-            for procedure_id in item.get("procedure_refs") or []:
-                target = self.rcm_migration["migrated_procedures"].get(str(procedure_id))
-                if target and target["planned_test_id"] not in item["planned_test_refs"]:
-                    item["planned_test_refs"].append(target["planned_test_id"])
+            item.pop("planned_test_refs", None)
             item.pop("status", None)
             item.setdefault("source", "manual")
         self.report: dict = dict(definition.get("report") or {})
-        _migrate_legacy_execution(self)
         self.planning.pop("status", None)
         self.report.pop("status", None)
 
@@ -872,7 +575,6 @@ class Workspace:
             "observations": self.observations,
             "evidence_requests": self.evidence_requests,
             "work_program": self.work_program,
-            "rcm_migration": self.rcm_migration,
             "findings": self.findings,
             "report": self.report,
             "dashboard_advice": self.dashboard_advice,
@@ -1242,9 +944,7 @@ class Workspace:
                 "created": date.today().isoformat(),
                 **{
                     key: payload[key]
-                    for key in (
-                        "data_test_id", "rcm_id", "planned_test_id", "result_ref"
-                    )
+                    for key in ("data_test_id", "rcm_id", "result_ref")
                     if payload.get(key)
                 },
             },
@@ -1480,9 +1180,6 @@ class Workspace:
             "rulesets": self.rulesets,
             "joins": self.joins,
             "rcm": self.rcm,
-            "planned_tests": [
-                planned for row in self.rcm for planned in row.get("planned_tests") or []
-            ],
             "data_tests": self.data_tests,
             "procedures": self.work_program,
             "work_program": self.work_program,
@@ -1549,9 +1246,7 @@ class Workspace:
             "control_owner": str(payload.get("control_owner") or ""),
             "criteria": str(payload.get("criteria") or ""),
             "criteria_refs": list(payload.get("criteria_refs") or []),
-            "test_procedure": str(payload.get("test_procedure") or ""),
             "test_refs": _validate_test_refs(self, payload.get("test_refs") or []),
-            "planned_tests": [],
             "execution_rollup": dict(payload.get("execution_rollup") or {}),
             "finding_refs": [str(ref) for ref in (payload.get("finding_refs") or [])],
             "evidence_refs": list(payload.get("evidence_refs") or []),
@@ -1564,10 +1259,6 @@ class Workspace:
         if item["risk_rating"] not in ("low", "medium", "high", "critical"):
             raise WorkspaceError("Risk rating must be low, medium, high, or critical.")
         item = _normalize_rcm_row(item, now=now)
-        item["planned_tests"] = [
-            _normalize_planned_test(dict(test), rcm_id=item["id"], now=now)
-            for test in (payload.get("planned_tests") or [])
-        ]
         self.rcm.append(item)
         self.save()
         return item
@@ -1576,7 +1267,7 @@ class Workspace:
         item = self._planning_record(self.rcm, item_id, "RCM row")
         allowed = {
             "process", "risk", "risk_rating", "assertion", "control", "control_type",
-            "control_owner", "criteria", "criteria_refs", "test_procedure", "test_refs",
+            "control_owner", "criteria", "criteria_refs", "test_refs",
             "evidence_refs", "prepared_by", "reviewed_by", "review_status",
             "workflow_parent_sha1",
         }
@@ -1605,86 +1296,27 @@ class Workspace:
         return item
 
     def remove_rcm(self, item_id: str) -> None:
+        """Delete one RCM row, unlinking — never deleting — the tests it linked.
+
+        A test is a durable artifact in its own right, so losing its row leaves
+        it as an unlinked test rather than destroying the work.
+        """
+        from . import doc_tests
+
         item = self._planning_record(self.rcm, item_id, "RCM row")
+        linked = set(item.get("test_refs") or [])
         self.rcm.remove(item)
         for procedure in self.work_program:
             procedure["rcm_refs"] = [ref for ref in procedure.get("rcm_refs", []) if ref != item_id]
         for test in self.data_tests:
             if test.get("rcm_id") == item_id:
                 test["rcm_id"] = None
-                test["planned_test_id"] = None
+        doc_tests.unlink_rcm(self, item_id)
         for finding in self.findings:
             finding["rcm_refs"] = [ref for ref in finding.get("rcm_refs", []) if ref != item_id]
-            planned_ids = {test.get("id") for test in item.get("planned_tests") or []}
-            finding["planned_test_refs"] = [
-                ref for ref in finding.get("planned_test_refs", []) if ref not in planned_ids
+            finding["test_refs"] = [
+                ref for ref in finding.get("test_refs", []) if ref not in linked
             ]
-        self.save()
-
-    def _planned_test_record(self, rcm_id: str, planned_test_id: str) -> tuple[dict, dict]:
-        row = self._planning_record(self.rcm, rcm_id, "RCM row")
-        planned = next(
-            (item for item in row.get("planned_tests") or [] if item.get("id") == planned_test_id),
-            None,
-        )
-        if planned is None:
-            raise WorkspaceError(f"Planned test '{planned_test_id}' not found under RCM row '{rcm_id}'.")
-        return row, planned
-
-    def planned_test(self, planned_test_id: str) -> tuple[dict, dict]:
-        for row in self.rcm:
-            for planned in row.get("planned_tests") or []:
-                if planned.get("id") == planned_test_id:
-                    return row, planned
-        raise WorkspaceError(f"Planned test '{planned_test_id}' not found.")
-
-    def add_planned_test(self, rcm_id: str, payload: dict) -> dict:
-        row = self._planning_record(self.rcm, rcm_id, "RCM row")
-        item = _normalize_planned_test(payload, rcm_id=rcm_id, now=self._updated_now())
-        if any(
-            test.get("id") == item["id"] or test.get("semantic_id") == item["semantic_id"]
-            for existing_row in self.rcm
-            for test in existing_row.get("planned_tests") or []
-        ):
-            raise WorkspaceError("A planned test with that ID or semantic ID already exists.")
-        row.setdefault("planned_tests", []).append(item)
-        row["updated"] = self._updated_now()
-        self.save()
-        return item
-
-    def update_planned_test(
-        self, rcm_id: str, planned_test_id: str, changes: dict, *, agent: bool = False
-    ) -> dict:
-        row, current = self._planned_test_record(rcm_id, planned_test_id)
-        immutable = {"id", "legacy_procedure_id"}
-        allowed = set(current) - immutable
-        unknown = set(changes) - allowed
-        if unknown:
-            raise WorkspaceError(f"Unknown planned-test field: {sorted(unknown)[0]}.")
-        normalized = _normalize_planned_test(
-            {**current, **changes}, rcm_id=rcm_id, now=self._updated_now()
-        )
-        normalized["id"] = current["id"]
-        if current.get("legacy_procedure_id"):
-            normalized["legacy_procedure_id"] = current["legacy_procedure_id"]
-        if not agent and normalized.get("created_by") == "agent":
-            normalized["created_by"] = "user"
-        current.clear()
-        current.update(normalized)
-        row["updated"] = current["updated"]
-        self.save()
-        return current
-
-    def remove_planned_test(self, rcm_id: str, planned_test_id: str) -> None:
-        row, item = self._planned_test_record(rcm_id, planned_test_id)
-        if item.get("execution_refs"):
-            raise WorkspaceError("A planned test with linked execution artifacts cannot be removed.")
-        row["planned_tests"].remove(item)
-        for finding in self.findings:
-            finding["planned_test_refs"] = [
-                ref for ref in finding.get("planned_test_refs", []) if ref != planned_test_id
-            ]
-        row["updated"] = self._updated_now()
         self.save()
 
     def add_procedure(self, payload: dict) -> dict:
@@ -1712,7 +1344,6 @@ class Workspace:
             "updated": self._updated_now(),
         }
         self.work_program.append(item)
-        self._sync_legacy_procedure(item)
         self.save()
         return item
 
@@ -1736,88 +1367,17 @@ class Workspace:
         if not agent:
             _user_touch(item)
         item["updated"] = self._updated_now()
-        self._sync_legacy_procedure(item)
         self.save()
         return item
 
     def remove_procedure(self, item_id: str) -> None:
         item = self._planning_record(self.work_program, item_id, "Procedure")
         self.work_program.remove(item)
-        for row in self.rcm:
-            row["planned_tests"] = [
-                planned
-                for planned in row.get("planned_tests") or []
-                if planned.get("legacy_procedure_id") != item_id
-                or planned.get("execution_refs")
-            ]
         for finding in self.findings:
-            finding["procedure_refs"] = [ref for ref in finding.get("procedure_refs", []) if ref != item_id]
-        self.rcm_migration = _migrate_legacy_planning(
-            self.rcm,
-            self.work_program,
-            from_version=SCHEMA_VERSION,
-            now=self._updated_now(),
-        )
-        self.save()
-
-    def _sync_legacy_procedure(self, procedure: dict) -> None:
-        """Dual-write an unambiguous legacy procedure during the migration window."""
-        procedure_id = str(procedure.get("id") or "")
-        refs = list(dict.fromkeys(str(ref) for ref in (procedure.get("rcm_refs") or []) if str(ref)))
-        # Remove an unexecuted projection if the legacy procedure was reassigned.
-        for row in self.rcm:
-            row["planned_tests"] = [
-                planned
-                for planned in row.get("planned_tests") or []
-                if planned.get("legacy_procedure_id") != procedure_id
-                or planned.get("execution_refs")
-                or (len(refs) == 1 and refs[0] == row.get("id"))
+            finding["procedure_refs"] = [
+                ref for ref in finding.get("procedure_refs", []) if ref != item_id
             ]
-        if len(refs) == 1:
-            row = next((value for value in self.rcm if value.get("id") == refs[0]), None)
-            if row is not None:
-                planned_id = _planned_test_id(row["id"], procedure_id)
-                existing = next(
-                    (
-                        planned
-                        for planned in row.get("planned_tests") or []
-                        if planned.get("legacy_procedure_id") == procedure_id
-                        or planned.get("id") == planned_id
-                    ),
-                    None,
-                )
-                payload = {
-                    **(existing or {}),
-                    **procedure,
-                    "id": planned_id,
-                    "title": procedure.get("title") or procedure.get("objective"),
-                    "method": _legacy_method(procedure.get("method"), procedure.get("test_refs")),
-                    "execution_refs": [
-                        *[
-                            ref
-                            for ref in ((existing or {}).get("execution_refs") or [])
-                            if not str(ref).startswith("doctest:")
-                        ],
-                        *(procedure.get("test_refs") or []),
-                    ],
-                }
-                normalized = _normalize_planned_test(
-                    payload,
-                    rcm_id=row["id"],
-                    now=self._updated_now(),
-                    legacy_procedure_id=procedure_id,
-                )
-                if existing is None:
-                    row.setdefault("planned_tests", []).append(normalized)
-                else:
-                    existing.clear()
-                    existing.update(normalized)
-        self.rcm_migration = _migrate_legacy_planning(
-            self.rcm,
-            self.work_program,
-            from_version=self.schema_version,
-            now=self._updated_now(),
-        )
+        self.save()
 
     # ------------------------------------------------------------------ frames
     def get_frame(self, name: str, _seen: frozenset = frozenset()) -> pl.DataFrame:

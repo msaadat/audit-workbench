@@ -2,7 +2,16 @@ import inspect
 
 import polars as pl
 
-from app import assistant, document_analysis, document_context, documents, methodology, workspaces
+from app import (
+    assistant,
+    data_tests,
+    doc_tests,
+    document_analysis,
+    document_context,
+    documents,
+    methodology,
+    workspaces,
+)
 from app.agent import context as agent_context
 from app.agent.context import ContextResolver, PRESETS
 import app.agent.context.adapters as context_adapters
@@ -262,8 +271,8 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     assert "document_search" not in adapter_source
 
 
-def test_planning_planned_tests_preset_declares_the_row_scoped_sources():
-    spec = PRESETS.compile("planning.planned_tests")
+def test_tests_draft_preset_declares_the_row_scoped_sources():
+    spec = PRESETS.compile("tests.draft")
 
     assert [source.id for source in spec.sources] == [
         "planning_context",
@@ -277,14 +286,14 @@ def test_planning_planned_tests_preset_declares_the_row_scoped_sources():
     assert [source.required for source in spec.sources] == [
         True, True, False, False, False, False,
     ]
-    # Planned-test drafting reads schema metadata, never row values or profiles.
+    # Test drafting reads schema metadata, never row values or profiles.
     assert spec.privacy.allow_table_metadata is True
     assert spec.privacy.allow_table_profiles is False
     assert spec.privacy.allow_table_rows is False
 
 
-def test_planned_test_scope_supplies_one_target_row_and_citable_methodology():
-    workspace = workspaces.create_workspace("Planned test scope")
+def test_test_draft_scope_supplies_one_target_row_and_citable_methodology():
+    workspace = workspaces.create_workspace("Test draft scope")
     workspace.update_planning(
         {"context": {"objective": "Assess payments", "scope": "Accounts payable"}}
     )
@@ -301,9 +310,9 @@ def test_planned_test_scope_supplies_one_target_row_and_citable_methodology():
     )
     target_id = workspace.rcm[0]["id"]
     other_id = workspace.rcm[1]["id"]
-    workspace.add_planned_test(
-        target_id,
-        {"title": "Existing", "objective": "Existing objective", "method": "inquiry"},
+    doc_tests.create_draft(
+        workspace,
+        {"title": "Existing", "objective": "Existing objective", "rcm_id": target_id},
     )
     methodology.save_pack(
         workspace,
@@ -311,12 +320,14 @@ def test_planned_test_scope_supplies_one_target_row_and_citable_methodology():
         "# Duplicate payments\nProcedures should address duplicate-payment risk.",
     )
 
-    scope = context_adapters.planned_test_scope(workspace, target_id)
+    scope = context_adapters.test_draft_scope(workspace, target_id)
 
     rows = scope.candidates["rcm_row"]
     assert [candidate.source_ref for candidate in rows] == [f"rcm:{target_id}"]
-    # The existing planned tests travel with the row so an update can name one.
-    assert rows[0].source["planned_tests"][0]["objective"] == "Existing objective"
+    # The row's existing tests travel with it so a re-run revises rather than
+    # duplicates them.
+    assert rows[0].source["existing_tests"][0]["objective"] == "Existing objective"
+    assert rows[0].source["existing_tests"][0]["source"] == "document"
     # Execution state stays out of the drafting context.
     assert "execution_rollup" not in rows[0].source
     assert [candidate.source_ref for candidate in scope.candidates["other_rcm_rows"]] == [
@@ -329,33 +340,34 @@ def test_planned_test_scope_supplies_one_target_row_and_citable_methodology():
     assert section["pack_name"] == "Firm AP Guide"
     assert section["citation"].startswith("Firm AP Guide v")
     assert "duplicate-payment risk" in section["text"]
-    assert "Duplicate payments are processed" in scope.selector_context["planned_test_query"]
+    assert "Duplicate payments are processed" in scope.selector_context["test_draft_query"]
 
 
-def test_fieldwork_execution_definitions_preset_serves_both_unit_kinds():
-    spec = PRESETS.compile("fieldwork.execution_definitions")
+def test_tests_spec_preset_serves_both_unit_kinds():
+    spec = PRESETS.compile("tests.spec")
 
     assert [source.id for source in spec.sources] == [
         "rcm_row",
-        "planned_test",
+        "test",
         "table_metadata",
+        "table_profiles",
         "documents",
-        "current_data_tests",
-        "current_document_tests",
     ]
     # Only the two shared parents are required; each unit kind supplies its own
     # optional sources and the rest are recorded as absent in that manifest.
     assert [source.id for source in spec.sources if source.required] == [
         "rcm_row",
-        "planned_test",
+        "test",
     ]
+    # Generated Data Tests are Polars code, so the spec pass sees column types
+    # and value shapes — but never a row.
     assert spec.privacy.allow_table_metadata is True
+    assert spec.privacy.allow_table_profiles is True
     assert spec.privacy.allow_table_rows is False
-    assert spec.privacy.allow_table_profiles is False
 
 
-def test_definition_scopes_supply_only_their_own_unit_kind_sources():
-    workspace = workspaces.create_workspace("Definition scopes")
+def test_spec_scopes_supply_only_their_own_unit_kind_sources():
+    workspace = workspaces.create_workspace("Spec scopes")
     workspace.add_table(
         "transactions.csv",
         pl.DataFrame({"invoice": [1, 1, 2]}).write_csv().encode(),
@@ -364,34 +376,43 @@ def test_definition_scopes_supply_only_their_own_unit_kind_sources():
     row = workspace.add_rcm(
         {"process": "AP", "risk": "Duplicate payments", "control": "Duplicate check"}
     )
-    planned = workspace.add_planned_test(
-        row["id"],
+    data_test = data_tests.create_draft(
+        workspace,
         {
             "title": "Test duplicates",
             "objective": "Identify duplicates",
-            "method": "data_analytics",
             "steps": ["Identify repeated invoice identifiers."],
+            "rcm_id": row["id"],
+        },
+    )
+    document_test = doc_tests.create_draft(
+        workspace,
+        {
+            "title": "Inspect approvals",
+            "objective": "Inspect approvals",
+            "rcm_id": row["id"],
         },
     )
 
-    data_scope = context_adapters.data_test_spec_scope(
-        workspace, row["id"], planned["id"]
+    data_scope = context_adapters.test_spec_scope(
+        workspace, row["id"], "datatest", data_test["id"]
     )
-    document_scope = context_adapters.document_test_spec_scope(
-        workspace, row["id"], planned["id"]
+    document_scope = context_adapters.test_spec_scope(
+        workspace, row["id"], "doctest", document_test["id"]
     )
 
-    assert set(data_scope.candidates) == {
+    # One declaration, two unit kinds: the sources the other kind does not need
+    # are supplied empty and recorded as absent in that unit's manifest.
+    assert {key for key, value in data_scope.candidates.items() if value} == {
         "rcm_row",
-        "planned_test",
+        "test",
         "table_metadata",
-        "current_data_tests",
+        "table_profiles",
     }
-    assert set(document_scope.candidates) == {
+    assert {key for key, value in document_scope.candidates.items() if value} == {
         "rcm_row",
-        "planned_test",
+        "test",
         "documents",
-        "current_document_tests",
     }
     # A document with no analysis is still selectable evidence for an item.
     supplied = document_scope.candidates["documents"][0].representations["summary"]

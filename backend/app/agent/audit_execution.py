@@ -47,27 +47,21 @@ from .documents_execution import (
 from .context import (
     ContextResolver,
     apm_document_methodology_scope,
-    data_test_spec_scope,
-    document_test_spec_scope,
     finding_draft_scope,
-    planned_test_scope,
     planning_context_scope,
     rcm_scope,
+    test_draft_scope,
+    test_spec_scope,
 )
 from .executors import EXECUTORS
-from .executors.fieldwork import (
-    DataTestExecutorTarget,
-    DocumentTestExecutorTarget,
-    roll_up_results,
-    run_data_test,
-)
+from .executors.fieldwork import roll_up_results, run_data_test
 from .executors.planning import (
     AUDITOR_EDIT_PRESERVED,
     ApmExecutorTarget,
-    PlannedTestExecutorTarget,
     PlanningContextExecutorTarget,
     RcmExecutorTarget,
 )
+from .executors.tests import DraftExecutorTarget, SpecExecutorTarget
 from .executors.reporting import (
     VERIFICATION_REF,
     FindingExecutorTarget,
@@ -118,9 +112,7 @@ class AuditWorkflowExecution(ActionRunner):
 
     # ------------------------------------------------------------ ledger
     def _refresh_dynamic_limits(self) -> None:
-        planned_count = sum(
-            len(row.get("planned_tests") or []) for row in self.ws.rcm
-        )
+        test_count = len(self.ws.data_tests) + len(doc_tests.list_tests(self.ws))
         qa_pairs = sum(
             len(item.get("document_ids") or [])
             for summary in doc_tests.list_tests(self.ws)
@@ -133,7 +125,7 @@ class AuditWorkflowExecution(ActionRunner):
             for item in self.ws.observations
         )
         calculated = (
-            20 + 4 * len(self.ws.rcm) + 4 * planned_count
+            20 + 4 * len(self.ws.rcm) + 4 * test_count
             + 2 * qa_pairs + 2 * eligible_findings
         )
         document_scope = dict(
@@ -521,7 +513,7 @@ class AuditWorkflowExecution(ActionRunner):
             on_committed=on_committed,
         )
 
-    def _bind_planned_tests(
+    def _bind_test_draft(
         self,
         subject: Workspace,
         run: dict,
@@ -529,24 +521,24 @@ class AuditWorkflowExecution(ActionRunner):
         stage: dict,
         unit: dict,
     ) -> BoundUnitPipeline:
-        """Bind one RCM row's planned-test unit to the shared ``UnitPipeline``.
+        """Bind one RCM row's test-draft unit to the shared ``UnitPipeline``.
 
         The domain-neutral scheduler owns manifest/proposal/receipt persistence,
         proposal reuse, approval, and readiness reevaluation. This binding
-        supplies only the row-scoped declared context, the planned-test commit
-        target, per-test approval items, and the post-commit bookkeeping that
-        translates receipt actions into planning-change accounting.
+        supplies only the row-scoped declared context, the draft commit target,
+        per-test approval items, and the post-commit bookkeeping that translates
+        receipt actions into planning-change accounting.
         """
         self.ws = subject
         rcm_id = unit["parent_refs"][0].split(":", 1)[1]
         expected_row = parent_hashes(self.ws, [f"rcm:{rcm_id}"])
-        target = PlannedTestExecutorTarget(
+        target = DraftExecutorTarget(
             self.ws,
             self.run["id"],
             rcm_id,
             allow_auditor_overwrite=self.run["mode"] == "permission",
         )
-        task = self.add_task("work_program", "workflow:planned_tests", "RCM planned tests")
+        task = self.add_task("tests", "workflow:tests", "RCM tests")
 
         def context_provider():
             return resolve_context(
@@ -554,7 +546,7 @@ class AuditWorkflowExecution(ActionRunner):
                 self.context_resolver,
                 capability,
                 unit,
-                planned_test_scope(
+                test_draft_scope(
                     self.ws,
                     rcm_id,
                     document_ids=self._curated_document_ids(),
@@ -565,38 +557,32 @@ class AuditWorkflowExecution(ActionRunner):
             proposed = [
                 self.proposal_item(
                     str(spec.get("title") or spec.get("objective")),
-                    f"Planned test for {rcm_id}.",
+                    f"{spec.get('source')} test for {rcm_id}.",
                     dict(spec),
                 )
-                for spec in proposal.get("planned_tests") or []
+                for spec in proposal.get("tests") or []
             ]
-            accepted = self.request_approval("planned_tests", task, proposed)
+            accepted = self.request_approval("tests", task, proposed)
             tests = [dict(item["spec"]) for item in accepted]
-            return {"planned_tests": tests} if tests else None
+            return {"tests": tests} if tests else None
 
         def on_committed(_stage, _unit, outcome) -> None:
             self.ws = target.workspace
             for item in (
-                (outcome.receipt.output.get("planned_tests") or [])
-                if outcome.receipt
-                else []
+                (outcome.receipt.output.get("tests") or []) if outcome.receipt else []
             ):
                 action = str(item.get("action"))
-                self.run["planning_changes"][f"planned_test_{action}"] += 1
+                self.run["planning_changes"][f"test_{action}"] += 1
                 self.record_artifact(
-                    "planned_test",
-                    str(item["id"]),
-                    str(item["semantic_id"]),
-                    action,
-                    None,
+                    str(item["kind"]), str(item["id"]), "", action, None
                 )
 
         return BoundUnitPipeline(
             request=UnitPipelineRequest(
                 capability_id=capability.id,
                 unit_id=unit["id"],
-                worker_id="planning.planned_tests",
-                executor_id="planning.planned_tests",
+                worker_id="tests.draft",
+                executor_id="tests.draft",
                 unit_input={
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
@@ -609,9 +595,7 @@ class AuditWorkflowExecution(ActionRunner):
                 expected_revision=self.ws.revision,
                 expected_parents=expected_row,
                 capability_definition_hash=workflow.capability_definition_hash(capability),
-                approval_kind=(
-                    "planned_tests" if self.run["mode"] == "permission" else None
-                ),
+                approval_kind=("tests" if self.run["mode"] == "permission" else None),
                 proposal_reference=unit.get("proposal_sidecar"),
                 receipt_reference=unit.get("receipt_sidecar"),
             ),
@@ -623,15 +607,15 @@ class AuditWorkflowExecution(ActionRunner):
             approval_provider=(
                 approval_provider if self.run["mode"] == "permission" else None
             ),
-            # Unlike the single-unit APM/RCM capabilities, planned tests fan out
-            # one unit per RCM row, so this capability's readiness is only
-            # satisfied once every row's unit has committed. Post-commit
-            # readiness is therefore evaluated by the stage fold, not per unit.
+            # Unlike the single-unit APM/RCM capabilities, test drafts fan out one
+            # unit per RCM row, so this capability's readiness is only satisfied
+            # once every row's unit has committed. Post-commit readiness is
+            # therefore evaluated by the stage fold, not per unit.
             readiness_provider=None,
             on_committed=on_committed,
         )
 
-    def _bind_definitions(
+    def _bind_test_spec(
         self,
         subject: Workspace,
         run: dict,
@@ -639,42 +623,37 @@ class AuditWorkflowExecution(ActionRunner):
         stage: dict,
         unit: dict,
     ) -> BoundUnitPipeline:
-        """Bind one execution-definition unit to the shared ``UnitPipeline``.
+        """Bind one test-specification unit to the shared ``UnitPipeline``.
 
         The capability fans out into two unit kinds, so the binding selects the
         Data Test or Document Test worker/executor pair from ``unit["kind"]``.
-        Everything else is common: the planned-test parent guard, the declared
-        row-scoped context, one approval item, and the post-commit artifact
-        record.
+        Everything else is common: the test parent guard, the row-scoped declared
+        context, one approval item, and the post-commit artifact record.
         """
         self.ws = subject
-        planned_id = next(
+        data_test = unit["kind"] == "data_test_spec"
+        artifact_kind = "datatest" if data_test else "doctest"
+        test_id = next(
             ref.split(":", 1)[1]
             for ref in unit["parent_refs"]
-            if ref.startswith("planned_test:")
+            if ref.startswith(f"{artifact_kind}:")
         )
         rcm_id = next(
             ref.split(":", 1)[1]
             for ref in unit["parent_refs"]
             if ref.startswith("rcm:")
         )
-        data_test = unit["kind"] == "data_test_spec"
-        artifact_kind = "datatest" if data_test else "doctest"
-        expected_planned = parent_hashes(self.ws, [f"planned_test:{planned_id}"])
-        target_type = (
-            DataTestExecutorTarget if data_test else DocumentTestExecutorTarget
-        )
-        target = target_type(
+        expected_test = parent_hashes(self.ws, [f"{artifact_kind}:{test_id}"])
+        target = SpecExecutorTarget(
             self.ws,
             self.run["id"],
             rcm_id,
-            planned_id,
+            test_id,
+            artifact_kind,
             allow_auditor_overwrite=self.run["mode"] == "permission",
         )
-        scope_builder = data_test_spec_scope if data_test else document_test_spec_scope
-        proposal_key = "data_test" if data_test else "document_test"
         task = self.add_task(
-            "execution_definitions", "workflow:definitions", "Execution definitions"
+            "test_specs", "workflow:test_specs", "Executable test specifications"
         )
 
         def context_provider():
@@ -683,22 +662,22 @@ class AuditWorkflowExecution(ActionRunner):
                 self.context_resolver,
                 capability,
                 unit,
-                scope_builder(self.ws, rcm_id, planned_id),
+                test_spec_scope(self.ws, rcm_id, artifact_kind, test_id),
             )
 
         def approval_provider(proposal):
             accepted = self.request_approval(
-                "execution_definitions",
+                "test_specs",
                 task,
                 [
                     self.proposal_item(
                         unit["title"],
-                        "Executable definition derived from a required kind.",
-                        dict(proposal.get(proposal_key) or {}),
+                        "Executable specification for a drafted test.",
+                        dict(proposal),
                     )
                 ],
             )
-            return {proposal_key: dict(accepted[0]["spec"])} if accepted else None
+            return dict(accepted[0]["spec"]) if accepted else None
 
         def on_committed(_stage, _unit, outcome) -> None:
             self.ws = target.workspace
@@ -708,7 +687,7 @@ class AuditWorkflowExecution(ActionRunner):
             self.record_artifact(
                 artifact_kind,
                 str(output["id"]),
-                str(output["semantic_id"]),
+                str(output.get("semantic_id") or ""),
                 str(output["action"]),
                 None,
             )
@@ -718,12 +697,10 @@ class AuditWorkflowExecution(ActionRunner):
                 capability_id=capability.id,
                 unit_id=unit["id"],
                 worker_id=(
-                    "fieldwork.data_test_spec"
-                    if data_test
-                    else "fieldwork.document_test_spec"
+                    "tests.data_spec" if data_test else "tests.document_spec"
                 ),
                 executor_id=(
-                    "fieldwork.data_test" if data_test else "fieldwork.document_test"
+                    "tests.data_spec" if data_test else "tests.document_spec"
                 ),
                 unit_input={
                     "kind": unit.get("kind"),
@@ -735,12 +712,10 @@ class AuditWorkflowExecution(ActionRunner):
                     "task_id": task["id"],
                 },
                 expected_revision=self.ws.revision,
-                expected_parents=expected_planned,
+                expected_parents=expected_test,
                 capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=(
-                    "execution_definitions"
-                    if self.run["mode"] == "permission"
-                    else None
+                    "test_specs" if self.run["mode"] == "permission" else None
                 ),
                 proposal_reference=unit.get("proposal_sidecar"),
                 receipt_reference=unit.get("receipt_sidecar"),
@@ -753,8 +728,8 @@ class AuditWorkflowExecution(ActionRunner):
             approval_provider=(
                 approval_provider if self.run["mode"] == "permission" else None
             ),
-            # Definitions fan out per required execution kind, so this
-            # capability's readiness only holds once every unit has committed.
+            # Specifications fan out per drafted test, so this capability's
+            # readiness only holds once every unit has committed.
             readiness_provider=None,
             on_committed=on_committed,
         )
@@ -847,7 +822,7 @@ class AuditWorkflowExecution(ActionRunner):
                 "options": [],
                 "payload": {
                     "observations": [
-                        {key: item.get(key) for key in ("id", "rcm_id", "planned_test_id", "execution_ref", "summary", "exception_count", "suggested_disposition")}
+                        {key: item.get(key) for key in ("id", "rcm_id", "test_id", "execution_ref", "summary", "exception_count", "suggested_disposition")}
                         for item in open_items
                     ],
                     "allowed_values": sorted(OBSERVATION_DISPOSITIONS),
@@ -1184,8 +1159,8 @@ _PARTIAL_DEPENDENCIES = {
     "documents.analysis_chunks_ready": {"documents.text_ready"},
     "documents.analysis_generated": {"documents.analysis_chunks_ready"},
     "planning.context_ready": {"documents.analysis_generated"},
-    "fieldwork.definitions_ready": {"planning.planned_tests_ready"},
-    "fieldwork.executed": {"fieldwork.definitions_ready"},
+    "tests.specified": {"tests.drafted"},
+    "fieldwork.executed": {"tests.specified"},
     "results.rolled_up": {"fieldwork.executed"},
     "report.working_draft": {"findings.drafted"},
     "audit.verified": {
@@ -1238,18 +1213,15 @@ def build_audit_workflow_runner(
             adapter._bind_rcm,
             {"worker": "planning.rcm", "executor": "planning.rcm"},
         ),
-        "planning.planned_tests_ready": (
-            adapter._bind_planned_tests,
-            {
-                "worker": "planning.planned_tests",
-                "executor": "planning.planned_tests",
-            },
+        "tests.drafted": (
+            adapter._bind_test_draft,
+            {"worker": "tests.draft", "executor": "tests.draft"},
         ),
-        "fieldwork.definitions_ready": (
-            adapter._bind_definitions,
+        "tests.specified": (
+            adapter._bind_test_spec,
             {
-                "worker": "fieldwork.data_test_spec|fieldwork.document_test_spec",
-                "executor": "fieldwork.data_test|fieldwork.document_test",
+                "worker": "tests.data_spec|tests.document_spec",
+                "executor": "tests.data_spec|tests.document_spec",
             },
         ),
         "fieldwork.executed": (

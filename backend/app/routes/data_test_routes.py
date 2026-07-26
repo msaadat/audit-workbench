@@ -81,7 +81,6 @@ async def pin_data_test(
             "viz": dict(payload.get("viz") or {"type": "table"}),
             "data_test_id": item["id"],
             "rcm_id": item["rcm_id"],
-            "planned_test_id": item["planned_test_id"],
             "result_ref": f"datatest:{item['id']}:{item['last_run']['id']}",
         }
     )

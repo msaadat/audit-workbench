@@ -1,8 +1,8 @@
 """Planning capability group of the audit workflow.
 
 Owns the planning outcomes of the authoritative audit graph:
-``planning.context_ready``, ``planning.apm_ready``, ``planning.rcm_ready``, and
-``planning.planned_tests_ready``.
+``planning.context_ready``, ``planning.apm_ready``, and ``planning.rcm_ready``.
+Drafting the tests an RCM row needs belongs to the tests capability group.
 
 Each capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry keys for its
@@ -12,14 +12,8 @@ declared context. The dependency edges come from the authoritative graph in
 
 from __future__ import annotations
 
-from ... import rcm_execution
 from ...workspaces import Workspace
-from ..workflow import (
-    Capability,
-    Readiness,
-    UnitSpec,
-    semantic_unit_id,
-)
+from ..workflow import Capability, Readiness, UnitSpec
 from ..workflows import audit as audit_workflow
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
@@ -28,7 +22,6 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "planning.context_ready",
     "planning.apm_ready",
     "planning.rcm_ready",
-    "planning.planned_tests_ready",
 )
 
 
@@ -148,71 +141,11 @@ def _planning_rcm_ready() -> Capability:
     )
 
 
-# --------------------------------------------------------------------------- #
-# planning.planned_tests_ready (P7D)
-# --------------------------------------------------------------------------- #
-def _planned_ready(workspace: Workspace, scope: dict) -> Readiness:
-    rows = _rows(workspace, scope)
-    total = len(rows)
-    ready = sum(bool(row.get("planned_tests")) for row in rows)
-    invalid = [
-        planned.get("id")
-        for row in rows
-        for planned in row.get("planned_tests") or []
-        if not planned.get("steps")
-        or not rcm_execution.required_execution_kinds(str(planned.get("method") or ""))
-    ]
-    if invalid:
-        return Readiness(
-            "review_required",
-            (f"{len(invalid)} planned test(s) are not executable",),
-            details={"ready": ready, "total": total},
-        )
-    # Every RCM row has executable planned tests; currency relative to the RCM
-    # row is not assessed. Parent hashes remain for executor CAS/provenance.
-    if total and ready == total:
-        return Readiness("satisfied", details={"ready": ready, "total": total})
-    return Readiness(
-        "missing",
-        (f"{total - ready} RCM row(s) need planned tests",),
-        details={"ready": ready, "total": total},
-    )
-
-
-def _planned_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    return [
-        UnitSpec(
-            semantic_unit_id("planned_test", row["id"]),
-            "planned_test_generation",
-            f"Draft planned tests — {row.get('risk') or row['id']}",
-            (f"rcm:{row['id']}",),
-            row,
-        )
-        for row in _rows(workspace, scope)
-        if not row.get("planned_tests") or scope.get("generation_mode") == "force"
-    ]
-
-
-def _planning_planned_tests_ready() -> Capability:
-    return Capability(
-        "planning.planned_tests_ready",
-        "planned_tests",
-        "RCM planned tests",
-        "planned_test_generation",
-        audit_workflow.dependencies("planning.planned_tests_ready"),
-        _planned_ready,
-        _planned_units,
-        context="planning.planned_tests",
-        invalidate_on=("rcm",),
-    )
-
-
 # Locally-owned declaration builders keyed by capability ID.
 _BUILDERS = {
     "planning.context_ready": _planning_context_ready,
     "planning.apm_ready": _planning_apm_ready,
     "planning.rcm_ready": _planning_rcm_ready,
-    "planning.planned_tests_ready": _planning_planned_tests_ready,
 }
 
 

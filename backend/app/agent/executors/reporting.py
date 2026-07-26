@@ -135,6 +135,12 @@ def verify_audit(workspace: Workspace) -> dict:
 
     completion = rcm_execution.completion(workspace)
     quality = report.quality_checks(workspace)
+    linked_rows = {row["id"] for row in workspace.rcm}
+    linked_tests = [
+        item
+        for item in audit_capabilities.all_tests(workspace)
+        if item.get("rcm_id") in linked_rows
+    ]
     errors = [
         item for item in quality.get("issues") or [] if item.get("severity") == "error"
     ]
@@ -154,44 +160,29 @@ def verify_audit(workspace: Workspace) -> dict:
         and not errors
         and not issues,
         "completion_status": completion["status"],
-        "planned_tests_total": sum(
-            len(row.get("planned_tests") or []) for row in workspace.rcm
-        ),
-        "planned_tests_completed": sum(
+        "tests_total": len(linked_tests),
+        "tests_completed": sum(
             str(item.get("status") or "").startswith("completed")
-            for row in workspace.rcm
-            for item in row.get("planned_tests") or []
+            for item in linked_tests
         ),
-        "planned_tests_review_required": sum(
-            item.get("status") == "review_required"
-            for row in workspace.rcm
-            for item in row.get("planned_tests") or []
+        "tests_review_required": sum(
+            item.get("status") == "review_required" for item in linked_tests
         ),
-        "planned_tests_blocked": sum(
-            item.get("status") == "blocked"
-            for row in workspace.rcm
-            for item in row.get("planned_tests") or []
+        "tests_blocked": sum(
+            item.get("status") == "blocked" for item in linked_tests
         ),
-        "data_tests_required": sum(
-            "datatest"
-            in rcm_execution.required_execution_kinds(item.get("method") or "")
-            for row in workspace.rcm
-            for item in row.get("planned_tests") or []
+        "tests_unspecified": sum(
+            item.get("status") == "draft" for item in linked_tests
         ),
         "data_tests_executed": sum(
             bool(item.get("last_run"))
             for item in workspace.data_tests
-            if item.get("planned_test_id")
-        ),
-        "document_tests_required": sum(
-            "doctest"
-            in rcm_execution.required_execution_kinds(item.get("method") or "")
-            for row in workspace.rcm
-            for item in row.get("planned_tests") or []
+            if item.get("rcm_id")
         ),
         "document_tests_executed": sum(
             item.get("status") == "completed"
             for item in doc_tests.list_tests(workspace)
+            if item.get("rcm_id")
         ),
         "open_observations": len(completion.get("open_observations") or []),
         "supported_findings": sum(
@@ -217,7 +208,7 @@ def verify_audit(workspace: Workspace) -> dict:
 # --------------------------------------------------------------------------- #
 FINDING_EXECUTOR_ID = "reporting.finding"
 # The narrative fields an accepted proposal may write. Every reference field —
-# RCM, planned test, execution, and evidence — is derived from the observation.
+# RCM, test, execution, and evidence — is derived from the observation.
 FINDING_FIELDS = (
     "title",
     "severity",
@@ -330,7 +321,7 @@ def _finding_result(
 def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
     """Commit one accepted finding draft under its observation parent guard.
 
-    Every reference the finding carries — RCM row, planned test, execution
+    Every reference the finding carries — RCM row, test, execution
     result, and the immutable evidence anchor — is derived from the current
     observation rather than taken from the proposal, and the draft must pass
     deterministic support validation before it is written. The finding id is
@@ -353,7 +344,7 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
             "source_observation_id": target.observation_id,
             "rcm_refs": [observation["rcm_id"]],
             "procedure_refs": [],
-            "planned_test_refs": [observation["planned_test_id"]],
+            "test_refs": [observation["test_id"]],
             "execution_refs": [execution_ref],
             "evidence_refs": [anchor] if anchor else [],
             "auditor_confirmed": False,

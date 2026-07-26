@@ -150,7 +150,7 @@ watch(() => route.query.tab, tab => {
 // Agent mutations can change both workspace counts and engagement status.
 const unsubscribe = agent.onWorkspaceChanged((change) => {
   if (change.kind === 'join' || change.kind === 'table') void reload()
-  if (['table', 'join', 'planning', 'rcm', 'planned_test', 'datatest', 'doctest', 'observation', 'evidence_request', 'ruleset', 'analysis', 'tile', 'finding', 'report'].includes(change.kind)) {
+  if (['table', 'join', 'planning', 'rcm', 'datatest', 'doctest', 'observation', 'evidence_request', 'ruleset', 'analysis', 'tile', 'finding', 'report'].includes(change.kind)) {
     void loadEngagementStatus()
   }
 })

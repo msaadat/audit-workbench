@@ -21,9 +21,10 @@ const emit = defineEmits<{
 const ratings = ['low', 'medium', 'high', 'critical']
 const router = useRouter()
 function openFinding(id: string) { void router.replace({ query: workspaceQuery('findings', { finding: id }) }) }
-function methodSummary(row: RcmRow) { return [...new Set(row.planned_tests.map(item => item.method.replaceAll('_', ' ')))].join(', ') || 'Not planned' }
-function plannedTitles(row: RcmRow) { return row.planned_tests.map(item => item.title).join('; ') || 'Add a planned test' }
-function executedCount(row: RcmRow) { return row.execution_rollup.planned_test_rollups?.reduce((sum, item) => sum + item.executed_count, 0) ?? 0 }
+function testCount(row: RcmRow) { return row.execution_rollup.tests ?? row.test_refs.length }
+function sourceSummary(row: RcmRow) { return [...new Set((row.execution_rollup.test_rollups ?? []).map(item => item.kind === 'datatest' ? 'data' : 'document'))].join(', ') || 'Not planned' }
+function testTitles(row: RcmRow) { return (row.execution_rollup.test_rollups ?? []).map(item => item.title).join('; ') || 'Add a test' }
+function executedCount(row: RcmRow) { return row.execution_rollup.test_rollups?.reduce((sum, item) => sum + item.executed_count, 0) ?? 0 }
 function statusSeverity(status?: string) { return status?.includes('exception') || status === 'blocked' ? 'danger' : status === 'completed_no_exception' ? 'success' : status === 'review_required' ? 'warn' : 'secondary' }
 </script>
 
@@ -44,9 +45,9 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
         </Select>
       </template></Column>
       <Column header="Control" style="min-width: 20rem"><template #body="{ data }"><Textarea v-model="data.control" rows="2" autoResize @change="emit('update', data.id, { control: data.control })" /></template></Column>
-      <Column header="Planned test summary" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ data.planned_tests.length }} planned test(s)</strong><span>{{ plannedTitles(data) }}</span></button></template></Column>
-      <Column header="Method" style="min-width: 10rem"><template #body="{ data }">{{ methodSummary(data) }}</template></Column>
-      <Column header="Execution status" style="min-width: 12rem"><template #body="{ data }"><div class="rollup"><Tag :value="data.planned_tests.length ? `${data.execution_rollup.completed ?? 0}/${data.planned_tests.length} complete` : 'not ready'" :severity="data.execution_rollup.blocked ? 'danger' : data.execution_rollup.review_required ? 'warn' : data.execution_rollup.completed === data.planned_tests.length && data.planned_tests.length ? 'success' : 'secondary'"/><small>{{ data.execution_rollup.blocked ?? 0 }} blocked · {{ data.execution_rollup.review_required ?? 0 }} review</small></div></template></Column>
+      <Column header="Test summary" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ testCount(data) }} test(s)</strong><span>{{ testTitles(data) }}</span></button></template></Column>
+      <Column header="Source" style="min-width: 10rem"><template #body="{ data }">{{ sourceSummary(data) }}</template></Column>
+      <Column header="Execution status" style="min-width: 12rem"><template #body="{ data }"><div class="rollup"><Tag :value="testCount(data) ? `${data.execution_rollup.completed ?? 0}/${testCount(data)} complete` : 'not ready'" :severity="data.execution_rollup.blocked ? 'danger' : data.execution_rollup.review_required ? 'warn' : data.execution_rollup.completed === testCount(data) && testCount(data) ? 'success' : 'secondary'"/><small>{{ data.execution_rollup.passed ?? 0 }} passed · {{ data.execution_rollup.failed ?? 0 }} failed · {{ data.execution_rollup.blocked ?? 0 }} blocked</small></div></template></Column>
       <Column header="Coverage" style="min-width: 8rem"><template #body="{ data }"><span>{{ executedCount(data) }} executed</span></template></Column>
       <Column header="Exceptions" style="min-width: 7rem"><template #body="{ data }"><Tag :value="String(data.execution_rollup.exceptions ?? 0)" :severity="(data.execution_rollup.exceptions ?? 0) ? 'danger' : 'secondary'"/></template></Column>
       <Column header="Conclusion" style="min-width: 10rem"><template #body="{ data }"><Tag :value="data.execution_rollup.control_conclusion ?? 'no conclusion'" :severity="statusSeverity(data.execution_rollup.control_conclusion)"/></template></Column>

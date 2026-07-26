@@ -192,14 +192,6 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
         return material_projection(
             next((item for item in workspace.rcm if item.get("id") == item_id), None)
         )
-    if kind == "planned_test":
-        try:
-            row, planned = workspace.planned_test(item_id)
-            return material_projection(
-                {"rcm_id": row.get("id"), "planned_test": planned}
-            )
-        except WorkspaceError:
-            return None
     if kind == "document":
         # The document-analysis workflow guards its commits on the document
         # entry, so a replaced source or a re-extraction is a parent change

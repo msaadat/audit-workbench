@@ -42,7 +42,7 @@ from .. import (
 )
 from ..field_names import resolve_columns
 from ..workspaces import (
-    JOIN_TYPES, OBSERVATION_DISPOSITIONS, PLANNED_TEST_METHODS,
+    JOIN_TYPES, OBSERVATION_DISPOSITIONS,
     Workspace, WorkspaceError, slugify,
 )
 from . import artifact_index
@@ -197,7 +197,7 @@ def allocate_create_id(action: dict) -> None:
     prefixes = {
         "create_rcm_row": "RCM-", "create_procedure": "PROC-", "create_finding": "F-",
         "draft_finding_from_observation": "F-",
-        "create_document_test": "DT-", "create_rcm_planned_test": "PT-",
+        "create_document_test": "DT-",
         "create_data_test": "DAT-",
     }
     if not args.get("id") and action["type"] in prefixes:
@@ -212,7 +212,6 @@ def allocate_create_id(action: dict) -> None:
 
 CREATE_TARGET_KINDS = {
     "create_rcm_row": "rcm",
-    "create_rcm_planned_test": "planned_test",
     "create_procedure": "procedure",
     "create_data_test": "datatest",
     "create_validation_rules": "ruleset",
@@ -244,7 +243,6 @@ def normalize_created_targets(run: dict, created: list[dict]) -> list[dict]:
     }
     argument_refs = {
         "rcm_id": "create_rcm_row",
-        "planned_test_id": "create_rcm_planned_test",
     }
     for action in created:
         args = action.get("args") or {}
@@ -348,12 +346,6 @@ def artifact_snapshot(workspace: Workspace, kind: str, item_id: str) -> dict | N
             return None
         test = doc_tests.load_test(workspace, test_id)
         return copy.deepcopy(next((item for item in test.get("items") or [] if item.get("id") == child_id), None))
-    if kind == "planned_test":
-        try:
-            _row, item = workspace.planned_test(item_id)
-        except WorkspaceError:
-            return None
-        return copy.deepcopy(item)
     if kind == "report" and item_id == "working":
         return copy.deepcopy(report.hydrate(workspace))
     if kind == "table":
@@ -371,7 +363,7 @@ def expected_postcondition(action: dict) -> dict:
         "draft_finding_from_observation": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
         "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile", "create_join": "table",
-        "create_rcm_planned_test": "planned_test", "create_data_test": "datatest",
+        "create_data_test": "datatest",
     }
     if type_ in create_kinds:
         item_id = args.get("name") if type_ == "create_join" else args.get("id")
@@ -381,7 +373,7 @@ def expected_postcondition(action: dict) -> dict:
         return {"fields": {"context": args.get("changes") or {}}}
     if type_ == "edit_apm":
         return {"fields": {"apm_markdown": args.get("apm_markdown")}}
-    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "update_test_disposition", "edit_rcm_planned_test", "edit_data_test"}:
+    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "update_test_disposition", "edit_data_test"}:
         return {"fields": dict(args.get("changes") or {})}
     if type_ == "update_test_comparisons":
         return {"fields": {"checks": args.get("checks") or []}}
@@ -444,16 +436,8 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
                 parent_args["rcm_id"] = artifact_index.canonical_id(
                     parent_args.get("rcm_id"), "rcm"
                 )
-            if "planned_test_id" in parent_args:
-                parent_args["planned_test_id"] = artifact_index.canonical_id(
-                    parent_args.get("planned_test_id"), "planned_test"
-                )
 
-        if type_ == "create_rcm_planned_test":
-            args["rcm_id"] = artifact_index.canonical_id(args.get("rcm_id"), "rcm")
-            if any(row.get("id") == args["rcm_id"] for row in workspace.rcm):
-                workspace._planning_record(workspace.rcm, args["rcm_id"], "RCM row")
-        elif type_ in {"create_data_test", "edit_data_test"}:
+        if type_ in {"create_data_test", "edit_data_test"}:
             values = parent_args if isinstance(parent_args, dict) else args
             current = None
             if type_ == "edit_data_test":
@@ -463,23 +447,11 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
                 if any(item.get("id") == target_id for item in workspace.data_tests):
                     current = data_tests._record(workspace, target_id)
                     values = {**current, **values}
-            rcm_id = str(values.get("rcm_id") or "")
-            planned_id = str(values.get("planned_test_id") or "")
-            if bool(rcm_id) != bool(planned_id):
-                raise WorkspaceError(
-                    "Provide both an RCM row and planned test, or leave both blank for exploration."
-                )
             # Durable parents can be checked now. Producer-action ids are
             # resolved by the ledger and checked again before execution.
-            known_planned_ids = {
-                str(planned.get("id"))
-                for row in workspace.rcm for planned in row.get("planned_tests") or []
-            }
-            if (
-                any(row.get("id") == rcm_id for row in workspace.rcm)
-                and planned_id in known_planned_ids
-            ):
-                data_tests._validate_parent(workspace, rcm_id, planned_id)
+            rcm_id = str(values.get("rcm_id") or "")
+            if rcm_id and any(row.get("id") == rcm_id for row in workspace.rcm):
+                data_tests._validate_rcm_id(workspace, rcm_id)
             if type_ == "create_data_test":
                 refs = data_tests._table_refs(workspace, args.get("table_refs"))
                 spec, _warnings = data_tests._validate_spec(
@@ -513,30 +485,12 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
                 if current is not None:
                     values = {**current, **values}
             rcm_id = str(values.get("rcm_id") or "")
-            planned_id = str(values.get("planned_test_id") or "")
-            if bool(rcm_id) != bool(planned_id):
-                raise WorkspaceError("RCM row and planned test must be assigned together.")
-            known_planned_ids = {
-                str(planned.get("id"))
-                for row in workspace.rcm for planned in row.get("planned_tests") or []
-            }
-            if (
-                any(row.get("id") == rcm_id for row in workspace.rcm)
-                and planned_id in known_planned_ids
-            ):
-                doc_tests._validate_parent(workspace, rcm_id, planned_id)
-        elif type_ == "link_execution_to_planned_test":
+            if rcm_id and any(row.get("id") == rcm_id for row in workspace.rcm):
+                doc_tests._validate_rcm_id(workspace, rcm_id)
+        elif type_ == "link_test_to_rcm_row":
             rcm_id = str(args.get("rcm_id") or "")
-            planned_id = str(args.get("planned_test_id") or "")
-            if any(
-                planned.get("id") == planned_id
-                for row in workspace.rcm for planned in row.get("planned_tests") or []
-            ):
-                row, _planned = workspace.planned_test(planned_id)
-                if row.get("id") != rcm_id:
-                    raise WorkspaceError(
-                        f"Planned test '{planned_id}' does not belong to RCM row '{rcm_id}'."
-                    )
+            if rcm_id and not any(row.get("id") == rcm_id for row in workspace.rcm):
+                raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
         elif type_ == "create_join":
             left, right = args.get("left"), args.get("right")
             if left in workspace.table_names() and right in workspace.table_names():
@@ -615,22 +569,6 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         return _receipt(action, item, refs=[f"rcm:{target_id}"])
     if type_ == "delete_rcm_row":
         workspace.remove_rcm(target_id); return _receipt(action, refs=[f"rcm:{target_id}"])
-    if type_ == "create_rcm_planned_test":
-        item = workspace.add_planned_test(
-            args["rcm_id"], {**args, "agent_run_id": run["id"]}
-        )
-        return _receipt(
-            action, item,
-            refs=[f"rcm:{args['rcm_id']}", f"planned_test:{item['id']}"],
-        )
-    if type_ == "edit_rcm_planned_test":
-        row, _planned = workspace.planned_test(target_id)
-        item = workspace.update_planned_test(
-            row["id"], target_id, args["changes"], agent=True
-        )
-        return _receipt(
-            action, item, refs=[f"rcm:{row['id']}", f"planned_test:{target_id}"]
-        )
     if type_ == "create_procedure":
         item = workspace.add_procedure({**args, "agent_run_id": run["id"]})
         return _receipt(action, item, refs=[f"procedure:{item['id']}"])
@@ -675,7 +613,7 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
                 **args,
                 "agent_run_id": run["id"],
                 "rcm_refs": [observation["rcm_id"]],
-                "planned_test_refs": [observation["planned_test_id"]],
+                "test_refs": [observation["test_id"]],
                 "execution_refs": [execution_ref],
                 "evidence_refs": [anchor],
                 "auditor_confirmed": False,
@@ -733,7 +671,7 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         safe = {
             key: result.get(key)
             for key in (
-                "id", "data_test_id", "rcm_id", "planned_test_id", "status",
+                "id", "data_test_id", "rcm_id", "status",
                 "verdict", "verdict_text", "statistics", "exception_count",
                 "semantic_valid", "semantic_issues", "result_sha1",
             )
@@ -743,21 +681,16 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
             refs=[f"datatest:{target_id}", f"datatest:{target_id}:{result['id']}"],
             result=safe,
         )
-    if type_ == "link_execution_to_planned_test":
+    if type_ == "link_test_to_rcm_row":
+        rcm_id = str(args.get("rcm_id") or "") or None
         if (action.get("target") or {}).get("kind") == "datatest":
-            item = data_tests.update(
-                workspace, target_id,
-                {"rcm_id": args["rcm_id"], "planned_test_id": args["planned_test_id"]},
-            )
+            item = data_tests.update(workspace, target_id, {"rcm_id": rcm_id})
             ref = f"datatest:{target_id}"
         else:
-            item = doc_tests.update_test(
-                workspace, target_id,
-                {"rcm_id": args["rcm_id"], "planned_test_id": args["planned_test_id"]},
-            )
+            item = doc_tests.update_test(workspace, target_id, {"rcm_id": rcm_id})
             ref = f"doctest:{target_id}"
         return _receipt(
-            action, item, refs=[ref, f"planned_test:{args['planned_test_id']}"]
+            action, item, refs=[ref, *( [f"rcm:{rcm_id}"] if rcm_id else [] )]
         )
     if type_ == "create_custom_analysis":
         sandbox.run(str((args.get("spec") or {}).get("code") or ""), {name: workspace.get_frame(name) for name in workspace.table_names()})
@@ -877,7 +810,7 @@ def _reconcile(workspace: Workspace, action: dict) -> str:
         "draft_finding_from_observation": "finding",
         "create_document_test": "doctest", "create_validation_rules": "ruleset",
         "create_custom_analysis": "analysis", "pin_dashboard_tile": "tile",
-        "create_rcm_planned_test": "planned_test", "create_data_test": "datatest",
+        "create_data_test": "datatest",
     }
     if action["type"] == "create_join":
         create_kinds[action["type"]] = "table"
@@ -917,12 +850,6 @@ def _restore_snapshot(workspace: Workspace, kind: str, item_id: str, before: dic
         collection[index] = copy.deepcopy(before); workspace.save(); return collection[index]
     if kind == "doctest":
         return doc_tests.save_test(workspace, copy.deepcopy(before))
-    if kind == "planned_test":
-        row, _item = workspace.planned_test(item_id)
-        restored = copy.deepcopy(before)
-        restored.pop("id", None)
-        restored.pop("legacy_procedure_id", None)
-        return workspace.update_planned_test(row["id"], item_id, restored, agent=True)
     if kind == "doctest_item":
         test_id, _, child_id = item_id.partition(":")
         test = doc_tests.load_test(workspace, test_id)
@@ -996,17 +923,6 @@ _register(
 _register("edit_rcm_row", "Edit one RCM row", "reversible_mutation", ("rcm",), ("changes",), {"changes": OBJ})
 _register("delete_rcm_row", "Delete one RCM row", "destructive", ("rcm",))
 _register(
-    "create_rcm_planned_test", "Create a structured planned test under one RCM row", "create",
-    required=("rcm_id", "title", "objective", "method"),
-    properties={
-        "rcm_id": STR, "title": STR, "objective": STR, "criteria": STR,
-        "steps": ARR_STR,
-        "method": {"type": "string", "enum": sorted(PLANNED_TEST_METHODS)},
-        "population_scope": STR, "sampling": OBJ, "expected_evidence": STR,
-    },
-)
-_register("edit_rcm_planned_test", "Edit one RCM planned test", "reversible_mutation", ("planned_test",), ("changes",), {"changes": OBJ})
-_register(
     "create_procedure", "Legacy compatibility: create an audit procedure", "create", required=("objective",),
     properties={
         "rcm_refs": ARR, "objective": STR, "criteria": STR, "steps": ARR,
@@ -1044,7 +960,8 @@ _register(
     "create_data_test", "Create an exploratory or RCM-linked durable Data Test definition", "create",
     required=("title", "objective", "engine", "table_refs", "spec"),
     properties={
-        "rcm_id": STR, "planned_test_id": STR, "title": STR, "objective": STR,
+        "rcm_id": STR, "title": STR, "objective": STR, "criteria": STR,
+        "steps": ARR_STR, "expected_evidence": STR,
         "engine": {"type": "string", "enum": sorted(data_tests.ENGINES)},
         "table_refs": ARR_STR, "spec": OBJ,
     },
@@ -1059,9 +976,10 @@ _register(
     planning_significant=True,
 )
 _register(
-    "link_execution_to_planned_test", "Link a legacy/manual execution artifact to an RCM planned test",
-    "reversible_mutation", ("datatest", "doctest"), ("rcm_id", "planned_test_id"),
-    {"rcm_id": STR, "planned_test_id": STR},
+    "link_test_to_rcm_row",
+    "Link a test to an RCM row, or unlink it by passing an empty rcm_id",
+    "reversible_mutation", ("datatest", "doctest"), ("rcm_id",),
+    {"rcm_id": STR},
 )
 _register("create_custom_analysis", "Create an in-memory sandboxed Polars analysis (no imports or file I/O; assign result)", "create", required=("title", "spec"), properties={"title": STR, "spec": PYTHON_SPEC}, model="draft")
 _register("edit_custom_analysis", "Edit a custom analysis", "reversible_mutation", ("analysis",), ("changes",), {"changes": OBJ}, model="draft")
@@ -1074,7 +992,8 @@ _register(
     required=("kind", "title"),
     properties={
         "kind": {"type": "string", "enum": ["vouching", "attribute", "review", "qa"]},
-        "title": STR, "items": ARR, "rcm_id": STR, "planned_test_id": STR,
+        "title": STR, "items": ARR, "rcm_id": STR, "objective": STR,
+        "criteria": STR, "steps": ARR_STR, "expected_evidence": STR,
         "table": STR, "frozen_fields": ARR_STR, "identifier_fields": ARR_STR,
         "size": {"type": "integer"}, "seed": {"type": "integer"},
         "direction": {"type": "string", "enum": ["vouching", "tracing"]},
@@ -1100,7 +1019,7 @@ FINDING_PROPERTIES = {
     "severity": {"type": "string", "enum": list(findings.SEVERITIES)},
     "condition": STR, "criteria": STR, "cause": STR, "cause_pending": {"type": "boolean"},
     "effect": STR, "recommendation": STR, "severity_rationale": STR,
-    "management_response": STR, "rcm_refs": ARR_STR, "planned_test_refs": ARR_STR,
+    "management_response": STR, "rcm_refs": ARR_STR, "test_refs": ARR_STR,
     "procedure_refs": ARR_STR, "execution_refs": ARR_STR, "evidence_refs": ARR,
 }
 _register("create_finding", "Create an evidence-linked finding", "create", required=("title",), properties=FINDING_PROPERTIES, model="draft")

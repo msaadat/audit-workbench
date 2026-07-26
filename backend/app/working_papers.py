@@ -180,26 +180,42 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
         f"**Control:** {row.get('control') or 'Not stated'}", "",
         f"**Control owner:** {row.get('control_owner') or 'Not stated'}", "",
         f"**Criteria:** {row.get('criteria') or 'Not stated'}", "",
-        "## Planned tests and execution", "",
+        "## Tests and execution", "",
     ]
-    if not row.get("planned_tests"):
-        lines.append("No planned tests recorded.")
+    linked_refs = list(row.get("test_refs") or [])
+    if not linked_refs:
+        lines.append("No tests recorded.")
     source_hashes = []
-    for planned in row.get("planned_tests") or []:
+    for test_ref in linked_refs:
+        kind, separator, test_id = str(test_ref).partition(":")
+        if not separator:
+            continue
+        test = (
+            next(
+                (item for item in workspace.data_tests if item.get("id") == test_id),
+                None,
+            )
+            if kind == "datatest"
+            else (doc_tests.load_test(workspace, test_id) if doc_tests.exists(workspace, test_id) else None)
+        )
+        if test is None:
+            lines.append(f"Missing test reference: {test_ref}")
+            continue
         lines.extend(
             [
-                f"### {planned['title']} ({planned['id']})", "",
-                f"Objective: {planned.get('objective') or 'Not stated'}", "",
-                f"Method: {planned.get('method')}; status: {planned.get('status')}; "
-                f"control conclusion: {planned.get('control_conclusion') or 'no_conclusion'}.", "",
+                f"### {test.get('title') or test_id} ({test_id})", "",
+                f"Objective: {test.get('objective') or 'Not stated'}", "",
+                f"Source: {'data' if kind == 'datatest' else 'document'}; "
+                f"status: {test.get('status')}; "
+                f"control conclusion: {test.get('control_conclusion') or 'no_conclusion'}.", "",
                 "Steps:", "",
             ]
         )
         lines.extend(
-            [f"{index}. {step}" for index, step in enumerate(planned.get("steps") or ["No steps recorded."], 1)]
+            [f"{index}. {step}" for index, step in enumerate(test.get("steps") or ["No steps recorded."], 1)]
         )
-        lines.extend(["", f"Expected evidence: {planned.get('expected_evidence') or 'Not stated'}", ""])
-        for ref in planned.get("execution_refs") or []:
+        lines.extend(["", f"Expected evidence: {test.get('expected_evidence') or 'Not stated'}", ""])
+        for ref in [test_ref]:
             kind, separator, execution_id = str(ref).partition(":")
             if not separator:
                 continue
@@ -232,11 +248,11 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
         lines.extend(
             [
                 "", "Result summary:", "",
-                planned.get("result_summary") or "No result summary recorded.", "",
+                test.get("result_summary") or "No result summary recorded.", "",
                 "Conclusion:", "",
-                planned.get("conclusion") or "No conclusion recorded.", "",
+                test.get("conclusion") or "No conclusion recorded.", "",
                 "Scope limitations:", "",
-                planned.get("scope_limitations") or "No scope limitations recorded.", "",
+                test.get("scope_limitations") or "No scope limitations recorded.", "",
             ]
         )
     lines.extend(["## Observations and findings", ""])

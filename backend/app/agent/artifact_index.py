@@ -45,13 +45,8 @@ def build(workspace: Workspace) -> dict:
                           body=" ".join((planning.get("context") or {}).values()) if all(isinstance(v, str) for v in (planning.get("context") or {}).values()) else ""))
     for item in workspace.rcm:
         entries.append(_entry("rcm", item["id"], item.get("risk") or item.get("process") or item["id"], item,
-                              body=" ".join(str(item.get(k) or "") for k in ("process", "control", "test_procedure"))))
-        for planned in item.get("planned_tests") or []:
-            entries.append(_entry(
-                "planned_test", planned["id"], planned.get("title") or planned["id"], planned,
-                body=" ".join(str(planned.get(k) or "") for k in ("objective", "criteria", "method", "expected_evidence")),
-                linked=[f"rcm:{item['id']}"],
-            ))
+                              body=" ".join(str(item.get(k) or "") for k in ("process", "control", "criteria")),
+                              linked=list(item.get("test_refs") or [])))
     for item in workspace.work_program:
         entries.append(_entry("procedure", item["id"], item.get("objective") or item["id"], item,
                               body=" ".join(str(item.get(k) or "") for k in ("criteria", "method", "expected_evidence")),
@@ -62,7 +57,6 @@ def build(workspace: Workspace) -> dict:
                               body=str(test.get("kind") or ""), linked=[
                                   *[f"procedure:{v}" for v in test.get("procedure_refs") or []],
                                   *([f"rcm:{test['rcm_id']}"] if test.get("rcm_id") else []),
-                                  *([f"planned_test:{test['planned_test_id']}"] if test.get("planned_test_id") else []),
                               ]))
         for item in test.get("items") or []:
             item_id = f"{test['id']}:{item['id']}"
@@ -74,7 +68,7 @@ def build(workspace: Workspace) -> dict:
                               body=" ".join(str(item.get(k) or "") for k in ("condition", "criteria", "cause", "effect", "recommendation")),
                               linked=[
                                   *[f"rcm:{v}" for v in item.get("rcm_refs") or []],
-                                  *[f"planned_test:{v}" for v in item.get("planned_test_refs") or []],
+                                  *[str(v) for v in item.get("test_refs") or []],
                                   *[f"procedure:{v}" for v in item.get("procedure_refs") or []],
                                   *[str(v) for v in item.get("execution_refs") or []],
                               ]))
@@ -93,13 +87,16 @@ def build(workspace: Workspace) -> dict:
         entries.append(_entry(
             "datatest", item["id"], item.get("title") or item["id"], item,
             body=" ".join(str(item.get(k) or "") for k in ("objective", "engine", "status")),
-            linked=[f"rcm:{item['rcm_id']}", f"planned_test:{item['planned_test_id']}"],
+            linked=[f"rcm:{item['rcm_id']}"] if item.get("rcm_id") else [],
         ))
     for item in workspace.observations:
         entries.append(_entry(
             "observation", item["id"], item.get("summary") or item["id"], item,
             body=" ".join(str(item.get(k) or "") for k in ("suggested_disposition", "disposition", "auditor_note")),
-            linked=[f"rcm:{item['rcm_id']}", f"planned_test:{item['planned_test_id']}", str(item.get("execution_ref") or "")],
+            linked=[
+                *([f"rcm:{item['rcm_id']}"] if item.get("rcm_id") else []),
+                str(item.get("execution_ref") or ""),
+            ],
         ))
     for name in workspace.table_names():
         source = next((v for v in [*workspace.tables, *workspace.joins] if v.get("name") == name), {"name": name})

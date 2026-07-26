@@ -99,7 +99,7 @@ ISOLATED_ACTION_INTENT = "isolated_mutation"
 GOAL_TEMPLATES: dict[str, dict] = {
     "full_audit_working_draft": {
         "objective": (
-            "Execute RCM-linked planned tests through an evidence-linked report "
+            "Execute RCM-linked tests through an evidence-linked report "
             "working draft."
         ),
         "constraints": [
@@ -109,8 +109,8 @@ GOAL_TEMPLATES: dict[str, dict] = {
     },
     "planning": {
         "objective": (
-            "Prepare or improve engagement planning and structured RCM planned "
-            "tests."
+            "Prepare or improve engagement planning and the RCM tests that "
+            "cover it."
         ),
     },
     "apm_only": {"objective": "Prepare or revise only the audit planning memorandum."},
@@ -128,7 +128,7 @@ GOAL_TEMPLATES: dict[str, dict] = {
     },
     "document_analysis": {"objective": "Analyze the documents in scope."},
     "document_test_preparation": {
-        "objective": "Translate RCM planned tests into executable test definitions.",
+        "objective": "Write the executable specification for each drafted test.",
     },
     "document_test_execution": {"objective": "Execute the Document Tests in scope."},
 }
@@ -209,12 +209,13 @@ GENERATION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
         [
             "planning.apm_ready",
             "planning.rcm_ready",
-            "planning.planned_tests_ready",
+            "tests.drafted",
+            "tests.specified",
         ],
     ),
-    # Declared before the planned-test rule: "prepare the next required Document
-    # Tests from the RCM planned tests" is a request for executable definitions,
-    # not for the planned tests those definitions come from.
+    # Declared before the test-draft rule: "prepare the next required Document
+    # Tests" is a request for executable specifications, not for the test plans
+    # those specifications come from.
     (
         (
             "translate planned",
@@ -226,12 +227,12 @@ GENERATION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
             "required document tests",
         ),
         audit_workflow.WORKFLOW_ID,
-        ["fieldwork.definitions_ready"],
+        ["tests.specified"],
     ),
     (
-        ("testing procedures", "planned procedures", "planned tests"),
+        ("testing procedures", "planned procedures", "planned tests", "draft the tests", "plan the tests"),
         audit_workflow.WORKFLOW_ID,
-        ["planning.planned_tests_ready"],
+        ["tests.drafted", "tests.specified"],
     ),
     (
         ("draft eligible findings", "draft findings"),
@@ -311,7 +312,7 @@ SPECIFIC_TARGET_MARKERS = (
     "item",
 )
 
-# "Prepare the planned tests" is generation; "run the planned tests" is
+# "Prepare the tests" is generation; "run the tests" is
 # execution and belongs to the scope-wide rule below.
 EXECUTION_VERBS = ("run ", "execute ")
 
@@ -577,8 +578,8 @@ def _single_intent(text: str, command: dict) -> dict | None:
         for phrases, definition, outcomes in GENERATION_RULES:
             if not any(phrase in text for phrase in phrases):
                 continue
-            # "Run the planned tests" is execution, not generation.
-            if outcomes == ["planning.planned_tests_ready"] and any(
+            # "Run the tests" is execution, not generation.
+            if outcomes == ["tests.drafted", "tests.specified"] and any(
                 verb in text for verb in EXECUTION_VERBS
             ):
                 continue
@@ -764,9 +765,11 @@ def _explanation(
 
 
 def _audit_model_turns(workspace: Workspace) -> int:
-    """Size the audit model budget from real RCM, planned-test, and Q&A counts."""
+    """Size the audit model budget from real RCM, test, and Q&A counts."""
 
-    planned_count = sum(len(row.get("planned_tests") or []) for row in workspace.rcm)
+    from .. import doc_tests as doc_test_service
+
+    test_count = len(workspace.data_tests) + len(doc_test_service.list_tests(workspace))
     qa_pairs = sum(
         len(item.get("document_ids") or [])
         for summary in doc_tests.list_tests(workspace)
@@ -781,7 +784,7 @@ def _audit_model_turns(workspace: Workspace) -> int:
     return (
         20
         + 4 * len(workspace.rcm)
-        + 4 * planned_count
+        + 4 * test_count
         + 2 * qa_pairs
         + 2 * eligible_findings
     )
@@ -1044,9 +1047,9 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
             "rcm_created": 0,
             "rcm_updated": 0,
             "rcm_preserved": 0,
-            "planned_test_created": 0,
-            "planned_test_updated": 0,
-            "planned_test_preserved": 0,
+            "test_created": 0,
+            "test_updated": 0,
+            "test_preserved": 0,
         },
     )
 

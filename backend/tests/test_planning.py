@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.agent import runner, store
 from app.agent.workers import planning as planning_worker
 from app.main import create_app
-from app import document_analysis, documents, llm, methodology, templates_store, workspaces
+from app import doc_tests, document_analysis, documents, llm, methodology, templates_store, workspaces
 
 from conftest import FakeAgentLLM, wait_run
 
@@ -39,29 +39,30 @@ PLANNING_RESPONSES = {
                 "assertion": "Occurrence",
                 "control": "Duplicate invoice validation",
                 "control_type": "Automated preventive",
-                "test_procedure": "Test invoice number and amount duplicates.",
                 "new_risk_reason": "No existing RCM row covers duplicate payments.",
                 "test_refs": [],
             }
         ]
     },
-    "agent:work_program": {
-        "procedures": [
+    "agent:test_plan": {
+        "tests": [
             {
-                "operation": "create",
-                "stable_slug": "duplicate-payments",
-                "rcm_refs": [
-                    "rcm:accounts-payable:duplicate-payments-are-processed"
-                ],
                 "title": "Test duplicate payments",
                 "objective": "Determine whether duplicate payments occurred",
                 "criteria": "Each valid invoice is paid once.",
-                "steps": ["Identify repeated invoice numbers and amounts.", "Inspect exceptions."],
-                "method": "hybrid",
-                "expected_evidence": "Exception listing and inspected invoices",
-                "test_refs": [],
+                "steps": ["Identify repeated invoice numbers and amounts."],
+                "source": "document",
+                "expected_evidence": "Exception listing",
             }
         ]
+    },
+    "agent:data_test_spec": {
+        "table_refs": ["transactions"],
+        "code": "result = transactions.filter(transactions['invoice_no'].is_duplicated())",
+    },
+    "agent:document_test_spec": {
+        "mode": "question",
+        "items": [{"label": "Approval", "document_ids": [], "question": "Who approved?"}],
     },
 }
 
@@ -158,8 +159,11 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     assert ws.planning["apm_markdown"].startswith("# Audit Planning Memorandum")
     assert len(ws.rcm) == 1
     assert ws.work_program == []
-    assert len(ws.rcm[0]["planned_tests"]) == 1
-    assert {call["tag"] for call in fake.calls} >= {"agent:apm", "agent:rcm", "agent:work_program"}
+    # A test is executable work, so a workspace with no table and no document
+    # has nothing to draft against: the RCM lands, the tests wait for material.
+    assert ws.rcm[0]["test_refs"] == []
+    assert {call["tag"] for call in fake.calls} >= {"agent:apm", "agent:rcm"}
+    assert "agent:test_plan" not in {call["tag"] for call in fake.calls}
 
     row_id = ws.rcm[0]["id"]
     ws.update_rcm(row_id, {"control": "Auditor-confirmed manual review"})
@@ -173,11 +177,16 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
 def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
     configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("Planning revisions")
+    documents.add_document(
+        ws, "Procurement Policy.txt", b"Purchases require documented approval.",
+        category="policy",
+    )
+    ws = workspaces.load_workspace(ws.id)
     first = wait_run(ws, start_planning(ws)["id"])
     assert first["status"] == "completed"
     ws = workspaces.load_workspace(ws.id)
     row_id = ws.rcm[0]["id"]
-    planned_id = ws.rcm[0]["planned_tests"][0]["id"]
+    test_id = doc_tests.list_tests(ws)[0]["id"]
 
     def revised_apm(user):
         assert "CURRENT APM TO REVISE" in user
@@ -192,26 +201,24 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
                 "process": "Accounts payable", "risk": "Duplicate payments are processed",
                 "risk_rating": "critical", "assertion": "Occurrence",
                 "control": "Duplicate invoice validation", "control_type": "Automated preventive",
-                "test_procedure": "Test invoice number and amount duplicates.",
             }]
         }
 
     def revised_tests(user):
-        assert planned_id in user
+        assert test_id in user
         return {
-            "planned_tests": [{
-                "operation": "update", "planned_test_id": planned_id,
-                "stable_slug": "duplicate-payments", "rcm_refs": [f"rcm:{row_id}"],
-                "title": "Test duplicate payments", "objective": "Determine whether duplicate payments occurred",
+            "tests": [{
+                "title": "Test duplicate payments",
+                "objective": "Determine whether duplicate payments occurred",
                 "criteria": "Each valid invoice is paid once.",
-                "steps": ["Identify repeated invoice numbers and amounts.", "Inspect exceptions."],
-                "method": "data_analytics", "expected_evidence": "Exception listing",
+                "steps": ["Identify repeated invoice numbers and amounts."],
+                "source": "document", "expected_evidence": "Exception listing",
             }]
         }
 
     configure_planning_llm(monkeypatch, {
         "agent:apm": revised_apm, "agent:rcm": revised_rcm,
-        "agent:work_program": revised_tests,
+        "agent:test_plan": revised_tests,
     })
     completed = wait_run(
         ws,
@@ -222,62 +229,67 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
     assert completed["status"] == "completed"
     assert len(reloaded.rcm) == 1 and reloaded.rcm[0]["id"] == row_id
     assert reloaded.rcm[0]["risk_rating"] == "critical"
-    assert len(reloaded.rcm[0]["planned_tests"]) == 1
-    assert reloaded.rcm[0]["planned_tests"][0]["id"] == planned_id
+    assert len(doc_tests.list_tests(reloaded)) == 1
+    assert doc_tests.list_tests(reloaded)[0]["id"] == test_id
     assert completed["planning_changes"]["rcm_updated"] == 1
-    assert completed["planning_changes"]["planned_test_updated"] == 1
+    assert completed["planning_changes"]["test_updated"] == 1
 
 
 def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
     ws = workspaces.create_workspace("Atomic planning")
+    # Seeded as agent-owned so the run reaches the draft stage instead of
+    # stopping at the auditor-owned-APM review gate.
     ws.update_planning(
         {
             "context": {"objective": "Assess purchasing", "scope": "Original scope"},
             "apm_markdown": "# Original APM",
+            "created_by": "agent",
+            "agent_run_id": "seed",
         },
+        agent=True,
     )
     ws.add_rcm({
         "process": "Purchasing", "risk": "Original risk", "risk_rating": "medium",
         "control": "Purchases require approval",
     })
-    before = {
-        "planning": dict(ws.planning),
-        "rcm": [dict(item) for item in ws.rcm],
-    }
-
+    documents.add_document(
+        ws, "Procurement Policy.txt", b"Purchases require documented approval.",
+        category="policy",
+    )
+    ws = workspaces.load_workspace(ws.id)
     def disconnect(_user):
-        raise llm.LLMError("planned-test generation disconnected")
+        raise llm.LLMError("test drafting disconnected")
 
     configure_planning_llm(monkeypatch, {
-        "agent:work_program": disconnect,
+        "agent:test_plan": disconnect,
     })
     started = runner.start_command_run(
         ws,
         "auto",
         {
             "source": "follow_up",
-            "text": "Complete the missing planned tests.",
-            "requested_outcomes": ["planning.planned_tests_ready"],
+            "text": "Complete the missing tests.",
+            "requested_outcomes": ["tests.drafted"],
             "generation_mode": "reuse_existing",
         },
     )
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
 
-    assert completed["status"] == "failed"
-    assert reloaded.planning == before["planning"]
-    assert reloaded.rcm == before["rcm"]
     units = [
         unit
         for stage in completed["workflow"]["stages"]
         for unit in stage["units"]
     ]
-    assert reloaded.planning["apm_markdown"] == "# Original APM"
-    assert reloaded.rcm[0]["control"] == "Purchases require approval"
-    assert {"planning.apm_ready", "planning.rcm_ready"} <= set(
-        completed["workflow"]["reused_capabilities"]
-    )
-    assert any(unit["kind"] == "planned_test_generation" and unit["status"] == "failed" for unit in units)
+
+    assert completed["status"] == "failed"
+    assert any(unit["kind"] == "test_draft" and unit["status"] == "failed" for unit in units)
+    # The APM and RCM this run committed before the failure are checkpoints: a
+    # later failed stage never rolls them back, and the auditor's own row
+    # survives untouched alongside them.
+    assert reloaded.planning["apm_markdown"].startswith("# Audit Planning Memorandum")
+    assert any(row["control"] == "Purchases require approval" for row in reloaded.rcm)
+    assert all(row["test_refs"] == [] for row in reloaded.rcm)
 
 
 def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
@@ -307,72 +319,40 @@ def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
     assert "planning:rcm" not in tasks
 
 
-def test_planning_repairs_non_object_sampling_and_thresholds(monkeypatch):
+def test_planning_repairs_a_malformed_test_plan(monkeypatch):
     attempts = 0
 
-    def planned_tests(_user):
+    def drafted_tests(_user):
         nonlocal attempts
         attempts += 1
         base = {
-            "operation": "create",
-            "stable_slug": "duplicate-payments",
-            "rcm_refs": ["rcm:accounts-payable:duplicate-payments-are-processed"],
             "title": "Test duplicate payments",
             "objective": "Determine whether duplicate payments occurred",
             "criteria": "Each valid invoice is paid once.",
             "steps": ["Identify repeated invoice numbers and amounts."],
-            "method": "data_analytics",
+            "source": "document",
             "expected_evidence": "Exception listing",
         }
         if attempts == 1:
-            return {
-                "planned_tests": [{
-                    **base,
-                    "sampling": "Full population",
-                    "thresholds": "Zero duplicate payments",
-                }]
-            }
-        return {
-            "planned_tests": [{
-                **base,
-                "sampling": {
-                    "strategy": "full_population", "size": None,
-                    "seed": 42, "stratify_by": None,
-                },
-                "thresholds": {"maximum_duplicates": 0},
-            }]
-        }
+            # A string where the contract declares an array, and a source the
+            # workspace cannot supply: both are decidable from the bundle.
+            return {"tests": [{**base, "steps": "Identify duplicates.", "source": "data"}]}
+        return {"tests": [base]}
 
-    fake = configure_planning_llm(
-        monkeypatch, {"agent:work_program": planned_tests}
+    fake = configure_planning_llm(monkeypatch, {"agent:test_plan": drafted_tests})
+    ws = workspaces.create_workspace("Repair test plan")
+    documents.add_document(
+        ws, "Procurement Policy.txt", b"Purchases require documented approval.",
+        category="policy",
     )
-    ws = workspaces.create_workspace("Repair planned test objects")
+    ws = workspaces.load_workspace(ws.id)
     completed = wait_run(ws, start_planning(ws)["id"])
     reloaded = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
     assert attempts == 2
-    assert [call["tag"] for call in fake.calls].count("agent:work_program") == 2
-    planned = reloaded.rcm[0]["planned_tests"][0]
-    assert planned["sampling"]["strategy"] == "full_population"
-    assert planned["thresholds"] == {"maximum_duplicates": 0}
-
-
-@pytest.mark.parametrize("field", ["sampling", "thresholds"])
-def test_planned_test_crud_rejects_non_object_structured_fields(field):
-    ws = workspaces.create_workspace(f"Invalid planned test {field}")
-    row = ws.add_rcm({"process": "Purchasing", "risk": "Duplicate payment"})
-    payload = {
-        "objective": "Test duplicate payments",
-        "steps": ["Identify duplicates."],
-        field: "free-form prose",
-    }
-
-    with pytest.raises(
-        workspaces.WorkspaceError,
-        match=rf"Planned-test {field} must be an object",
-    ):
-        ws.add_planned_test(row["id"], payload)
+    assert [call["tag"] for call in fake.calls].count("agent:test_plan") == 2
+    assert len(doc_tests.list_tests(reloaded)) == 1
 
 
 def test_planning_context_response_schema_requires_string_field_values():
@@ -434,10 +414,20 @@ def test_auto_planning_selects_planning_relevant_documents_deterministically(
     context_call = next(call for call in fake.calls if call["tag"] == "agent:document_context")
     supplied = context_call["messages"][-1]["content"]
     assert "Invoice 42 was paid" not in supplied
-    # Provenance records the document that was actually supplied.
+    # Provenance records the document that was actually supplied. The category
+    # rule governs the planning stages; a Document Test may still vouch to a
+    # transaction voucher, so the exclusion is asserted where the rule applies.
     activity = documents.activities(reloaded, limit=250)["items"]
-    assert any(policy["id"] in item.get("document_ids", []) for item in activity)
-    assert not any(voucher["id"] in item.get("document_ids", []) for item in activity)
+    planning_stages = {
+        "agent:document_context", "agent:apm", "agent:rcm", "agent:test_plan",
+    }
+    planning_activity = [
+        item for item in activity if item.get("stage") in planning_stages
+    ]
+    assert any(policy["id"] in item.get("document_ids", []) for item in planning_activity)
+    assert not any(
+        voucher["id"] in item.get("document_ids", []) for item in planning_activity
+    )
 
 
 def test_planning_recovers_labelled_context_when_synthesis_returns_empty(monkeypatch):
@@ -568,7 +558,7 @@ def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
         time.sleep(0.02)
     completed = wait_run(ws, started["id"])
     assert completed["status"] == "completed"
-    assert [approval["kind"] for approval in completed["approvals"]] == ["apm", "rcm", "planned_tests"]
+    assert [approval["kind"] for approval in completed["approvals"]] == ["apm", "rcm"]
 
 
 def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
@@ -644,13 +634,20 @@ def test_planning_routes():
     assert client.patch(f"{base}/rcm/{row['id']}", json={"risk_rating": "high"}).json()["risk_rating"] == "high"
     legacy = client.post(f"{base}/procedures", json={"objective": "Test cash", "rcm_refs": [row["id"]]})
     assert legacy.status_code == 400
-    planned = client.post(
+    assert client.post(
         f"{base}/rcm/{row['id']}/planned-tests",
-        json={"title": "Test cash", "objective": "Test cash", "method": "data_analytics"},
+        json={"title": "Test cash"},
+    ).status_code == 405
+    created = client.post(
+        f"{base}/doc-tests",
+        json={
+            "kind": "qa", "title": "Test cash", "objective": "Test cash",
+            "rcm_id": row["id"], "items": [],
+        },
     ).json()
     payload = client.get(f"{base}/planning").json()
     assert payload["rcm"][0]["id"] == row["id"]
-    assert payload["rcm"][0]["planned_tests"][0]["id"] == planned["id"]
+    assert payload["rcm"][0]["test_refs"] == [f"doctest:{created['id']}"]
     assert payload["procedures"] == []
     template = client.put(f"{base}/templates/apm", json={"markdown": "# Custom"})
     assert template.json()["source"] == "workspace"
@@ -659,6 +656,11 @@ def test_planning_routes():
 def test_planning_cites_methodology_pack(monkeypatch):
     configure_planning_llm(monkeypatch)
     ws = workspaces.create_workspace("Methodology planning")
+    documents.add_document(
+        ws, "Procurement Policy.txt", b"Purchases require documented approval.",
+        category="policy",
+    )
+    ws = workspaces.load_workspace(ws.id)
     methodology.save_pack(
         ws,
         "Firm AP Guide",
@@ -668,14 +670,15 @@ def test_planning_cites_methodology_pack(monkeypatch):
     completed = wait_run(ws, started["id"])
     reloaded = workspaces.load_workspace(ws.id)
     assert completed["status"] == "completed"
-    refs = reloaded.rcm[0]["planned_tests"][0]["methodology_refs"]
+    drafted = doc_tests.load_test(reloaded, doc_tests.list_tests(reloaded)[0]["id"])
+    refs = drafted["methodology_refs"]
     assert refs[0]["pack_name"] == "Firm AP Guide"
     assert refs[0]["section"] == "Duplicate payments"
     activity = documents.activities(reloaded)["items"]
     assert any(item.get("artifact_ref") == "planning:apm" for item in activity)
     apm_call = next(item for item in activity if item.get("stage") == "agent:apm")
     assert apm_call["template_versions"][0]["name"] == "apm"
-    assert apm_call["knowledge_packs"][0]["sha1"] == refs[0]["sha1"]
+    assert refs[0]["sha1"] == methodology.list_packs(reloaded)[0]["sha1"]
 
 
 def test_planning_update_includes_selected_imported_documents(monkeypatch):
@@ -698,3 +701,6 @@ def test_planning_update_includes_selected_imported_documents(monkeypatch):
     assert "The requirements need operating evidence" in supplied
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(policy["id"] in item.get("document_ids", []) for item in activity)
+
+
+

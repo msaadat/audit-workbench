@@ -144,7 +144,7 @@ def _action(action_id: str, title: str, reason: str, tab: str, *,
             priority: str = "medium", object_id: str | None = None) -> dict:
     query = {}
     if object_id:
-        key = {"doc-tests": "test", "findings": "finding", "planning": "planned_test"}.get(tab)
+        key = {"doc-tests": "test", "findings": "finding", "planning": "rcm"}.get(tab)
         if key:
             query[key] = object_id
     return {
@@ -185,27 +185,31 @@ def _engagement_state(workspace: Workspace) -> dict:
             planning_issues.append(f"Planning context is missing {field}.")
     if not workspace.rcm:
         planning_issues.append("No risks or controls are recorded in the RCM.")
-    rows_without_tests = completion["coverage"]["rows_without_planned_tests"]
+    rows_without_tests = completion["coverage"]["rows_without_tests"]
     if rows_without_tests:
-        planning_issues.append(f"{len(rows_without_tests)} RCM row(s) have no structured planned test.")
+        planning_issues.append(f"{len(rows_without_tests)} RCM row(s) have no test.")
     planning_complete = not planning_issues
     planning_state = "complete" if planning_complete else ("in_progress" if planning_started else "not_started")
+    linked_rows = {row["id"] for row in workspace.rcm}
+    linked_tests = [
+        item
+        for item in [*workspace.data_tests, *tests]
+        if item.get("rcm_id") in linked_rows
+    ]
     planning_summary = (
-        "Planning context and RCM planned-test coverage are complete."
+        "Planning context and RCM test coverage are complete."
         if planning_complete else (
-            f"{len(workspace.rcm)} RCM row(s) and "
-            f"{sum(len(row.get('planned_tests') or []) for row in workspace.rcm)} planned test(s)."
+            f"{len(workspace.rcm)} RCM row(s) and {len(linked_tests)} test(s)."
         )
     )
 
-    incomplete_planned_tests = [
-        planned
-        for row in workspace.rcm
-        for planned in row.get("planned_tests") or []
-        if planned.get("status") not in {
+    incomplete_linked_tests = [
+        item
+        for item in linked_tests
+        if item.get("status") not in {
             "completed_no_exception", "completed_with_exception", "not_applicable",
         }
-        or not str(planned.get("conclusion") or planned.get("scope_limitations") or "").strip()
+        or not str(item.get("conclusion") or item.get("scope_limitations") or "").strip()
     ]
     incomplete_tests = [
         test for test in tests
@@ -219,8 +223,8 @@ def _engagement_state(workspace: Workspace) -> dict:
         f"Coverage gate: {completion['coverage']['issue_count']} issue(s)."
         for _ in [0] if completion["coverage"]["issue_count"]
     ]
-    if incomplete_planned_tests:
-        fieldwork_issues.append(f"{len(incomplete_planned_tests)} planned test(s) have open execution or outcomes.")
+    if incomplete_linked_tests:
+        fieldwork_issues.append(f"{len(incomplete_linked_tests)} test(s) have open execution or outcomes.")
     if incomplete_tests:
         fieldwork_issues.append(f"{len(incomplete_tests)} document test(s) are incomplete.")
     if state_counts["manual_review"]:
@@ -241,7 +245,7 @@ def _engagement_state(workspace: Workspace) -> dict:
         else "in_progress"
     )
     fieldwork_summary = (
-        "All RCM planned tests passed deterministic execution, outcome, and disposition gates."
+        "All RCM tests passed deterministic execution, outcome, and disposition gates."
         if fieldwork_complete else (
             f"{len(workspace.data_tests)} Data Test(s), {len(tests)} Document Test(s), "
             f"{len(completion['open_observations'])} open observation(s)."
@@ -269,7 +273,7 @@ def _engagement_state(workspace: Workspace) -> dict:
 
     phases = [
         _phase("planning", planning_state, planning_complete, planning_summary,
-               {"rcm_rows": len(workspace.rcm), "planned_tests": sum(len(row.get("planned_tests") or []) for row in workspace.rcm)}, planning_issues),
+               {"rcm_rows": len(workspace.rcm), "tests": len(linked_tests)}, planning_issues),
         _phase("fieldwork", fieldwork_state, fieldwork_complete, fieldwork_summary,
                {"data_tests": len(workspace.data_tests), "document_tests": len(tests),
                 "open_observations": len(completion["open_observations"])}, fieldwork_issues),
@@ -287,7 +291,8 @@ def _engagement_state(workspace: Workspace) -> dict:
         "planning_started": planning_started,
         "planning_complete": planning_complete,
         "planning_issues": planning_issues,
-        "incomplete_planned_tests": incomplete_planned_tests,
+        "linked_tests": linked_tests,
+        "incomplete_linked_tests": incomplete_linked_tests,
         "incomplete_tests": incomplete_tests,
         "fieldwork_started": fieldwork_started,
         "fieldwork_complete": fieldwork_complete,
@@ -312,7 +317,7 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     planning_started = state["planning_started"]
     planning_complete = state["planning_complete"]
     planning_issues = state["planning_issues"]
-    incomplete_planned_tests = state["incomplete_planned_tests"]
+    incomplete_linked_tests = state["incomplete_linked_tests"]
     incomplete_tests = state["incomplete_tests"]
     fieldwork_started = state["fieldwork_started"]
     fieldwork_complete = state["fieldwork_complete"]
@@ -340,7 +345,7 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
         "tables": len(workspace.table_names()), "readable_tables": readable_tables,
         "table_errors": len(table_errors), "rows": total_rows,
         "documents": len(workspace.documents), "rcm_rows": len(workspace.rcm),
-        "planned_tests": sum(len(row.get("planned_tests") or []) for row in workspace.rcm),
+        "tests": len(state["linked_tests"]),
         "data_tests": len(workspace.data_tests), "document_tests": len(tests),
         "findings": len(workspace.findings),
         "pinned_tiles": len(workspace.tiles),
@@ -353,13 +358,13 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     if not has_sources:
         actions.append(_action("import-sources", "Import audit files", "Add a folder or individual files to begin the engagement.", "data", priority="high"))
     elif not planning_started:
-        actions.append(_action("start-planning", "Start engagement planning", "Record the objective and scope, then build the RCM and its planned tests.", "planning", priority="high"))
+        actions.append(_action("start-planning", "Start engagement planning", "Record the objective and scope, then build the RCM and its tests.", "planning", priority="high"))
     elif not planning_complete:
         actions.append(_action("complete-planning", "Complete engagement planning", planning_issues[0], "planning", priority="high"))
     if incomplete_tests:
         actions.append(_action("review-doc-test", "Continue document testing", f"{len(incomplete_tests)} test(s) still require work.", "doc-tests", priority="high", object_id=incomplete_tests[0]["id"]))
-    elif incomplete_planned_tests:
-        actions.append(_action("conclude-planned-test", "Conclude RCM planned tests", f"Record results, limitations, and conclusions for {len(incomplete_planned_tests)} planned test(s).", "planning", priority="high", object_id=incomplete_planned_tests[0]["id"]))
+    elif incomplete_linked_tests:
+        actions.append(_action("conclude-test", "Conclude RCM tests", f"Record results, limitations, and conclusions for {len(incomplete_linked_tests)} test(s).", "planning", priority="high", object_id=incomplete_linked_tests[0].get("rcm_id")))
     elif planning_complete and not fieldwork_started:
         actions.append(_action("start-fieldwork", "Start fieldwork", "Run the RCM-linked Data Tests and Document Tests.", "data-tests", priority="high"))
     if state_counts["manual_review"] or unresolved_exceptions:
@@ -429,8 +434,8 @@ def _cached_advice(workspace: Workspace, snapshot: dict) -> dict | None:
 
 def _candidate_score(workspace: Workspace, item: dict, result: dict) -> tuple[int, list[str]]:
     """Score only semantically valid, reproducible RCM-linked Data Test results."""
-    if not item.get("rcm_id") or not item.get("planned_test_id"):
-        return -100, ["exploratory result is not linked to an RCM planned test"]
+    if not item.get("rcm_id"):
+        return -100, ["exploratory result is not linked to an RCM row"]
     if not result.get("semantic_valid") or result.get("status") == "review_required":
         return -100, ["semantic validation did not pass"]
     row = next((value for value in workspace.rcm if value.get("id") == item.get("rcm_id")), {})
@@ -524,7 +529,6 @@ def curate_rcm_tiles(workspace: Workspace, *, run_id: str | None = None) -> dict
                     "viz": dict(result.get("viz") or {"type": "table"}),
                     "data_test_id": item["id"],
                     "rcm_id": item["rcm_id"],
-                    "planned_test_id": item["planned_test_id"],
                     "result_ref": f"datatest:{item['id']}:{result['id']}",
                     "agent_run_id": run_id,
                 }

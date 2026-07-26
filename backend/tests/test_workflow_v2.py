@@ -21,6 +21,7 @@ from app.agent.doc_tests_execution import bind_document_qa
 import app.agent.context.adapters as context_adapters
 from app.agent.executors import fieldwork as fieldwork_executor
 from app.agent.executors import planning as planning_executor
+from app.agent.executors import tests as tests_executor
 from app.agent.runtime import UnitSidecarStore, WorkflowRunner
 from app.agent.workers import planning as planning_worker
 from app.agent.context import (
@@ -48,6 +49,11 @@ from conftest import FakeAgentLLM, wait_run
 
 def _planning_workspace(name: str = "Workflow planning") -> workspaces.Workspace:
     ws = workspaces.create_workspace(name)
+    # A test is executable work, so drafting one needs material to test against.
+    ws.add_table(
+        "transactions.csv",
+        b"invoice,amount\n1001,100\n1001,100\n1002,50\n",
+    )
     ws.update_planning(
         {
             "context": {"objective": "Assess payments", "scope": "Accounts payable"},
@@ -96,7 +102,12 @@ def test_full_template_materializes_locally_without_command_interpreter():
         (
             "planning",
             "workflow",
-            ["planning.apm_ready", "planning.rcm_ready", "planning.planned_tests_ready"],
+            [
+                "planning.apm_ready",
+                "planning.rcm_ready",
+                "tests.drafted",
+                "tests.specified",
+            ],
         ),
         ("apm_only", "workflow", ["planning.apm_ready"]),
         ("report", "workflow", ["report.working_draft", "audit.verified"]),
@@ -105,7 +116,7 @@ def test_full_template_materializes_locally_without_command_interpreter():
         ("data_analysis", "workflow", ["analysis.executed"]),
         ("table_relationships", "workflow", ["data.joins_ready"]),
         ("document_analysis", "workflow", ["documents.analysis_generated"]),
-        ("document_test_preparation", "workflow", ["fieldwork.definitions_ready"]),
+        ("document_test_preparation", "workflow", ["tests.specified"]),
         ("document_test_execution", "workflow", ["doc_tests.executed"]),
     ],
 )
@@ -179,12 +190,13 @@ def test_unclassifiable_command_launches_with_a_pending_route(workspace_with_dat
         ("Plan the audit", [
             "planning.apm_ready",
             "planning.rcm_ready",
-            "planning.planned_tests_ready",
+            "tests.drafted",
+            "tests.specified",
         ]),
         ("Draft the audit planning memorandum", ["planning.apm_ready"]),
         ("Generate the risk and control matrix", ["planning.rcm_ready"]),
-        ("Create the planned procedures", ["planning.planned_tests_ready"]),
-        ("Translate planned work into executable tests", ["fieldwork.definitions_ready"]),
+        ("Create the planned procedures", ["tests.drafted", "tests.specified"]),
+        ("Translate planned work into executable tests", ["tests.specified"]),
         ("Execute the RCM tests", ["fieldwork.executed", "results.rolled_up"]),
         ("Draft eligible findings", ["findings.drafted"]),
         ("Generate the audit report", ["report.working_draft"]),
@@ -344,9 +356,9 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "planning.context_ready": ("documents.analysis_generated",),
         "planning.apm_ready": ("planning.context_ready",),
         "planning.rcm_ready": ("planning.apm_ready",),
-        "planning.planned_tests_ready": ("planning.rcm_ready",),
-        "fieldwork.definitions_ready": ("planning.planned_tests_ready",),
-        "fieldwork.executed": ("fieldwork.definitions_ready",),
+        "tests.drafted": ("planning.rcm_ready",),
+        "tests.specified": ("tests.drafted",),
+        "fieldwork.executed": ("tests.specified",),
         "results.rolled_up": ("fieldwork.executed",),
         "findings.drafted": ("results.rolled_up",),
         "working_papers.generated": ("results.rolled_up",),
@@ -381,8 +393,8 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
-        "planning.planned_tests_ready",
-        "fieldwork.definitions_ready",
+        "tests.drafted",
+        "tests.specified",
         "fieldwork.executed",
         "results.rolled_up",
         "findings.drafted",
@@ -416,7 +428,7 @@ def test_partial_goal_prunes_current_prerequisites():
     resolved, stages, reused = workflow.materialize(
         audit_capabilities.REGISTRY,
         ws,
-        ["planning.planned_tests_ready"],
+        ["tests.drafted"],
         {"target_refs": ["workspace:current"]},
     )
 
@@ -429,10 +441,10 @@ def test_partial_goal_prunes_current_prerequisites():
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
-        "planning.planned_tests_ready",
+        "tests.drafted",
     ]
     assert reused == resolved[:-1]
-    assert [stage["capability"] for stage in stages] == ["planning.planned_tests_ready"]
+    assert [stage["capability"] for stage in stages] == ["tests.drafted"]
     assert len(stages[0]["units"]) == 1
 
 
@@ -443,14 +455,14 @@ def test_repeated_materialization_preserves_semantic_unit_identity():
     first = workflow.materialize(
         audit_capabilities.REGISTRY,
         ws,
-        ["planning.planned_tests_ready"],
+        ["tests.drafted"],
         scope,
         generation_mode="force",
     )
     second = workflow.materialize(
         audit_capabilities.REGISTRY,
         workspaces.load_workspace(ws.id),
-        ["planning.planned_tests_ready"],
+        ["tests.drafted"],
         dict(scope),
         generation_mode="force",
     )
@@ -469,44 +481,38 @@ def test_repeated_materialization_preserves_semantic_unit_identity():
     assert all(unit_id for _capability, units in identities(first) for unit_id, _kind, _sha1 in units)
 
 
-def test_workflow_planned_test_repair_reports_all_contract_errors(monkeypatch):
-    ws = _planning_workspace("Planned test contract repair")
+def test_workflow_test_draft_repair_reports_all_contract_errors(monkeypatch):
+    ws = _planning_workspace("Test draft contract repair")
     attempts = 0
 
-    def planned_tests(user):
+    def drafted_tests(user):
         nonlocal attempts
         attempts += 1
         base = {
-            "operation": "create",
-            "stable_slug": "duplicate-payments",
             "title": "Test duplicate payments",
             "objective": "Determine whether duplicate payments occurred",
             "criteria": "Each invoice is paid once.",
-            "method": "data_analytics",
             "expected_evidence": "Duplicate listing",
         }
         if attempts == 1:
             return {
-                "planned_tests": [{
+                "tests": [{
                     **base,
                     "steps": "Identify repeated invoice identifiers.",
-                    "sampling": "Full population",
-                    "thresholds": "Zero duplicates",
+                    "source": "document",
                 }]
             }
-        assert "planned_tests[0].steps" in user
-        assert "planned_tests[0].sampling must be an object" in user
-        assert "planned_tests[0].thresholds must be an object" in user
+        assert "tests[0].steps" in user
+        assert "no document is available" in user
         return {
-            "planned_tests": [{
+            "tests": [{
                 **base,
                 "steps": ["Identify repeated invoice identifiers."],
-                "sampling": {"strategy": "full_population", "size": None, "seed": 42},
-                "thresholds": {"maximum_duplicates": 0},
+                "source": "data",
             }]
         }
 
-    fake = FakeAgentLLM({"agent:work_program": planned_tests})
+    fake = FakeAgentLLM({"agent:test_plan": drafted_tests})
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm,
@@ -519,8 +525,8 @@ def test_workflow_planned_test_repair_reports_all_contract_errors(monkeypatch):
         "auto",
         {
             "source": "tab_button",
-            "text": "Draft planned tests",
-            "requested_outcomes": ["planning.planned_tests_ready"],
+            "text": "Draft the tests",
+            "requested_outcomes": ["tests.drafted"],
         },
     )
     completed = wait_run(ws, started["id"])
@@ -528,9 +534,8 @@ def test_workflow_planned_test_repair_reports_all_contract_errors(monkeypatch):
 
     assert completed["status"] == "completed"
     assert attempts == 2
-    assert current.rcm[0]["planned_tests"][0]["sampling"] == {
-        "strategy": "full_population", "size": None, "seed": 42, "stratify_by": None,
-    }
+    assert current.data_tests[0]["title"] == "Test duplicate payments"
+    assert current.data_tests[0]["status"] == "draft"
 
 
 def test_router_bundle_is_small_and_excludes_domain_catalogs():
@@ -570,24 +575,25 @@ def test_data_test_definition_context_has_schema_metadata_but_no_table_rows():
             "control": "Duplicate invoice monitoring",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
+
+    draft = data_tests.create_draft(
+        ws,
         {
             "title": "Test duplicate invoice IDs",
             "objective": "Identify duplicate invoices",
             "criteria": "Invoice IDs should be unique",
             "steps": ["Run duplicate analysis."],
-            "method": "data_analytics",
             "expected_evidence": "Duplicate-analysis output",
+            "rcm_id": row["id"],
         },
     )
 
-    capability = audit_capabilities.REGISTRY.get("fieldwork.definitions_ready")
+    capability = audit_capabilities.REGISTRY.get("tests.specified")
     manifest, bundle = ContextResolver().resolve(
         ws,
         capability,
-        SimpleNamespace(id="data_test_spec:pt"),
-        context_adapters.data_test_spec_scope(ws, row["id"], planned["id"]),
+        SimpleNamespace(id=f"data_test_spec:{draft['id']}"),
+        context_adapters.test_spec_scope(ws, row["id"], "datatest", draft["id"]),
     )
     serialized = bundle.to_json()
 
@@ -598,13 +604,11 @@ def test_data_test_definition_context_has_schema_metadata_but_no_table_rows():
     assert "ROW_SECRET_NEVER_SEND_7F4C" not in manifest.to_json()
     assert {selection.source_id for selection in manifest.selections} >= {
         "rcm_row",
-        "planned_test",
+        "test",
         "table_metadata",
     }
-    # A Data Test unit declares but does not supply the document sources.
-    assert not [
-        item for item in bundle.items if item.source_id == "current_document_tests"
-    ]
+    # A Data Test unit declares but does not supply the document source.
+    assert not [item for item in bundle.items if item.source_id == "documents"]
 
 
 def test_transaction_merges_unrelated_revision_and_rejects_parent_change():
@@ -820,15 +824,6 @@ def test_results_rolled_up_through_deterministic_scheduler_path(workspace_with_d
             "risk_rating": "high",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Duplicate invoices",
-            "objective": "Identify repeated invoice identifiers.",
-            "method": "data_analytics",
-            "steps": ["Identify repeated invoice identifiers."],
-        },
-    )
     data_test = data_tests.create(
         ws,
         {
@@ -837,8 +832,7 @@ def test_results_rolled_up_through_deterministic_scheduler_path(workspace_with_d
             "engine": "analytics",
             "table_refs": ["transactions"],
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+                        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
         },
     )
     data_tests.run(ws, data_test["id"])
@@ -876,7 +870,7 @@ def test_results_rolled_up_through_deterministic_scheduler_path(workspace_with_d
     assert unit["result_refs"] == [f"rcm:{row['id']}"]
     assert stage["status"] == "succeeded"
     reloaded = workspaces.load_workspace(ws.id)
-    assert reloaded.rcm[0]["execution_rollup"]["planned_tests"] == 1
+    assert reloaded.rcm[0]["execution_rollup"]["tests"] == 1
     assert reloaded.observations  # the exception raised an observation
     # The binder emits the roll-up ``workspace_changed`` signal the generic
     # deterministic path does not.
@@ -1050,15 +1044,6 @@ def test_data_test_execution_runs_through_the_mixed_execution_binding(
             "risk_rating": "high",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Duplicate invoices",
-            "objective": "Identify repeated invoice identifiers.",
-            "method": "data_analytics",
-            "steps": ["Identify repeated invoice identifiers."],
-        },
-    )
     data_test = data_tests.create(
         ws,
         {
@@ -1067,8 +1052,7 @@ def test_data_test_execution_runs_through_the_mixed_execution_binding(
             "engine": "analytics",
             "table_refs": ["transactions"],
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+                        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
         },
     )
     command, stage = _executed_stage_runner(ws)
@@ -1102,17 +1086,6 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
     # executor, and folds to auditor disposition rather than to succeeded.
     ws = _planning_workspace("Live document Q&A binding")
     row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Read approval evidence",
-            "objective": "Determine whether approvals were documented",
-            "criteria": "Approval is present.",
-            "steps": ["Ask the evidence question."],
-            "method": "inquiry",
-            "expected_evidence": "Approval records",
-        },
-    )
     document = documents.add_document(
         ws,
         "Approval.txt",
@@ -1124,8 +1097,7 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
             "title": "Approval Q&A",
             "kind": "qa",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "items": [
+                        "items": [
                 {
                     "label": "Who approved the order?",
                     "question": "Who approved the purchase order?",
@@ -1199,17 +1171,6 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
 def test_document_qa_resume_reuses_the_durable_proposal_without_rebilling(monkeypatch):
     ws = _planning_workspace("Document Q&A proposal no rebilling")
     row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Read approval evidence",
-            "objective": "Determine whether approvals were documented",
-            "criteria": "Approval is present.",
-            "steps": ["Ask the evidence question."],
-            "method": "inquiry",
-            "expected_evidence": "Approval records",
-        },
-    )
     document = documents.add_document(
         ws, "Approval.txt", b"The controller approved the purchase order."
     )
@@ -1219,8 +1180,7 @@ def test_document_qa_resume_reuses_the_durable_proposal_without_rebilling(monkey
             "title": "Approval Q&A",
             "kind": "qa",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "items": [
+                        "items": [
                 {
                     "label": "Who approved the order?",
                     "question": "Who approved the purchase order?",
@@ -1323,15 +1283,6 @@ def test_dashboard_curated_through_deterministic_scheduler_path(workspace_with_d
             "risk_rating": "high",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Vendor integrity test",
-            "objective": "Assess vendor and approval integrity.",
-            "method": "data_analytics",
-            "steps": ["Scan the amount population."],
-        },
-    )
     data_test = data_tests.create(
         ws,
         {
@@ -1340,8 +1291,7 @@ def test_dashboard_curated_through_deterministic_scheduler_path(workspace_with_d
             "engine": "analytics",
             "table_refs": ["transactions"],
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
+                        "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
         },
     )
     data_tests.run(ws, data_test["id"])
@@ -1835,14 +1785,14 @@ def test_rcm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
     assert len(workspaces.load_workspace(ws.id).rcm) == 1
 
 
-def _planned_tests_only_runner(workspace):
+def _test_draft_only_runner(workspace):
     run = store.new_command_run(
         workspace,
         "auto",
         {
             "source": "follow_up",
             "text": "Draft the planned tests",
-            "requested_outcomes": ["planning.planned_tests_ready"],
+            "requested_outcomes": ["tests.drafted"],
             "generation_mode": "force",
         },
     )
@@ -1851,7 +1801,7 @@ def _planned_tests_only_runner(workspace):
     stage = next(
         item
         for item in run["workflow"]["stages"]
-        if item["capability"] == "planning.planned_tests_ready"
+        if item["capability"] == "tests.drafted"
     )
     command = build_audit_workflow_runner(
         workspace,
@@ -1865,23 +1815,21 @@ def _planned_tests_only_runner(workspace):
     return command, stage, stage["units"][0]
 
 
-_PLANNED_TEST_RESPONSE = {
-    "planned_tests": [
+_TEST_DRAFT_RESPONSE = {
+    "tests": [
         {
-            "operation": "create",
-            "stable_slug": "duplicate-payments",
             "title": "Test duplicate payments",
             "objective": "Determine whether duplicate payments occurred",
             "criteria": "Each invoice is paid once.",
             "steps": ["Identify repeated invoice identifiers."],
-            "method": "data_analytics",
+            "source": "data",
             "expected_evidence": "Duplicate listing",
         }
     ]
 }
 
 
-def test_live_planned_tests_capability_commits_through_pipeline_binding(monkeypatch):
+def test_live_test_draft_capability_commits_through_pipeline_binding(monkeypatch):
     ws = _planning_workspace("Live planned-test binding")
     sentinel = "ROW_SECRET_NEVER_SEND_P7D2"
     ws.add_table(
@@ -1895,14 +1843,14 @@ def test_live_planned_tests_capability_commits_through_pipeline_binding(monkeypa
         "Firm AP Guide",
         "# Duplicate payments\nProcedures should address duplicate-payment risk.",
     )
-    command, stage, unit = _planned_tests_only_runner(ws)
+    command, stage, unit = _test_draft_only_runner(ws)
     captured = {}
 
     def draft(user):
         captured["user"] = user
-        return _PLANNED_TEST_RESPONSE
+        return _TEST_DRAFT_RESPONSE
 
-    fake = FakeAgentLLM({"agent:work_program": draft})
+    fake = FakeAgentLLM({"agent:test_plan": draft})
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm,
@@ -1915,15 +1863,16 @@ def test_live_planned_tests_capability_commits_through_pipeline_binding(monkeypa
     assert stage["status"] == "succeeded"
     reloaded = workspaces.load_workspace(ws.id)
     rcm_id = reloaded.rcm[0]["id"]
-    planned = reloaded.rcm[0]["planned_tests"]
-    assert [item["title"] for item in planned] == ["Test duplicate payments"]
-    assert planned[0]["created_by"] == "agent"
-    assert planned[0]["semantic_id"] == f"planned-test:{rcm_id}:duplicate-payments"
-    assert planned[0]["workflow_parent_sha1"]
+    drafted = reloaded.data_tests
+    assert [item["title"] for item in drafted] == ["Test duplicate payments"]
+    assert drafted[0]["created_by"] == "agent"
+    assert drafted[0]["status"] == "draft"
+    assert drafted[0]["semantic_id"] == f"datatest:{rcm_id}:test-duplicate-payments"
+    assert drafted[0]["workflow_parent_sha1"]
     # Methodology citations come from the declared context, not a run-scoped basis.
-    assert planned[0]["methodology_refs"][0]["pack_name"] == "Firm AP Guide"
-    assert unit["result_refs"] == [f"planned_test:{planned[0]['id']}"]
-    assert command.run["planning_changes"]["planned_test_created"] == 1
+    assert drafted[0]["methodology_refs"][0]["pack_name"] == "Firm AP Guide"
+    assert unit["result_refs"] == [f"datatest:{drafted[0]['id']}"]
+    assert command.run["planning_changes"]["test_created"] == 1
     # Row-level table values never reach the provider or the durable provenance.
     assert sentinel not in captured["user"]
     assert sentinel not in json.dumps(command.run.get("provenance") or [])
@@ -1933,32 +1882,30 @@ def test_live_planned_tests_capability_commits_through_pipeline_binding(monkeypa
     assert (
         store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
     ).is_file()
-    # The planned-test path is a native pipeline binding: the binder inlines no
+    # The test-draft path is a native pipeline binding: the binder inlines no
     # bundle builder, model worker, or workspace mutation.
-    binder_source = inspect.getsource(AuditWorkflowExecution._bind_planned_tests)
+    binder_source = inspect.getsource(AuditWorkflowExecution._bind_test_draft)
     assert "context_bundles" not in binder_source
     assert "llm_json" not in binder_source
     assert "mutate(" not in binder_source
     assert not hasattr(AuditWorkflowExecution, "_planned_tests")
-    assert not hasattr(AuditWorkflowExecution, "_commit_planned_test")
     assert not hasattr(action_runner.ActionRunner, "stage_work_program")
-    assert not hasattr(action_runner.ActionRunner, "_match_planned_test_revision")
 
 
-def test_planned_test_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
+def test_test_draft_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
     ws = _planning_workspace("Planned-test proposal no rebilling")
-    fake = FakeAgentLLM({"agent:work_program": _PLANNED_TEST_RESPONSE})
+    fake = FakeAgentLLM({"agent:test_plan": _TEST_DRAFT_RESPONSE})
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm,
         "agent_status",
         lambda: {"configured": True, "backend": "fake", "model": "fake"},
     )
-    command, stage, unit = _planned_tests_only_runner(ws)
+    command, stage, unit = _test_draft_only_runner(ws)
 
     with monkeypatch.context() as interrupted:
         interrupted.setattr(
-            planning_executor,
+            tests_executor,
             "mutate",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
         )
@@ -1966,7 +1913,7 @@ def test_planned_test_resume_reuses_durable_proposal_without_rebilling(monkeypat
             command._run_stage(stage)
 
     run_root = store.run_dir(ws, command.run["id"])
-    assert [call["tag"] for call in fake.calls] == ["agent:work_program"]
+    assert [call["tag"] for call in fake.calls] == ["agent:test_plan"]
     assert (run_root / unit["proposal_sidecar"]["path"]).is_file()
 
     workflow.recovery(command.run["workflow"])
@@ -1979,13 +1926,13 @@ def test_planned_test_resume_reuses_durable_proposal_without_rebilling(monkeypat
     resumed._run_stage(stage)
 
     # Resume reused the durable proposal; no second provider call was billed.
-    assert [call["tag"] for call in fake.calls] == ["agent:work_program"]
+    assert [call["tag"] for call in fake.calls] == ["agent:test_plan"]
     assert unit["status"] == "succeeded"
     assert (run_root / unit["receipt_sidecar"]["path"]).is_file()
     assert "proposal_reused" in {
         event["type"] for event in store.read_events(ws, resumed.run["id"])
     }
-    assert len(workspaces.load_workspace(ws.id).rcm[0]["planned_tests"]) == 1
+    assert len(workspaces.load_workspace(ws.id).data_tests) == 1
 
 
 def test_data_test_compute_is_pure_and_commit_is_revisioned():
@@ -2018,25 +1965,13 @@ def test_data_test_compute_is_pure_and_commit_is_revisioned():
 def test_document_test_linked_write_rolls_back_if_workspace_commit_fails(monkeypatch):
     ws = _planning_workspace("Document Test transaction")
     row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Inspect approval",
-            "objective": "Determine whether approval exists",
-            "criteria": "Approval is documented.",
-            "steps": ["Inspect evidence."],
-            "method": "document_inspection",
-            "expected_evidence": "Approval record",
-        },
-    )
     test = doc_tests.create_test(
         ws,
         {
             "title": "Approval inspection",
             "kind": "review",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "items": [{"label": "Approval", "summary": ""}],
+                        "items": [{"label": "Approval", "summary": ""}],
         },
     )
     before_revision = ws.revision
@@ -2057,25 +1992,13 @@ def test_document_test_linked_write_rolls_back_if_workspace_commit_fails(monkeyp
 def test_linked_write_recovery_restores_uncommitted_sidecar():
     ws = _planning_workspace("Linked write recovery")
     row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Inspect evidence",
-            "objective": "Determine whether evidence exists",
-            "criteria": "Evidence is retained.",
-            "steps": ["Inspect the record."],
-            "method": "inspection",
-            "expected_evidence": "Supporting record",
-        },
-    )
     test = doc_tests.create_test(
         ws,
         {
             "title": "Evidence review",
             "kind": "review",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "items": [{"label": "Evidence", "summary": "Pending review"}],
+                        "items": [{"label": "Evidence", "summary": "Pending review"}],
         },
     )
     path = doc_tests._test_path(ws, test["id"])
@@ -2092,17 +2015,6 @@ def test_linked_write_recovery_restores_uncommitted_sidecar():
 def test_document_qa_expands_per_document_and_merges_in_attachment_order():
     ws = _planning_workspace("Q&A units")
     row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Read approval evidence",
-            "objective": "Determine whether approvals were documented",
-            "criteria": "Approval is present.",
-            "steps": ["Ask the evidence question."],
-            "method": "inquiry",
-            "expected_evidence": "Approval records",
-        },
-    )
     first = documents.add_document(ws, "First.txt", b"First approval was documented.")
     second = documents.add_document(ws, "Second.txt", b"Second approval was documented.")
     test = doc_tests.create_test(
@@ -2111,8 +2023,7 @@ def test_document_qa_expands_per_document_and_merges_in_attachment_order():
             "title": "Approval Q&A",
             "kind": "qa",
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-            "items": [
+                        "items": [
                 {
                     "label": "Was approval documented?",
                     "question": "Was approval documented?",
@@ -2174,30 +2085,20 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
         "control": "Duplicate invoice check",
         "risk_rating": "high",
     })
-    ws.add_planned_test(defined_row["id"], {
-        "title": "Test duplicate invoices",
-        "objective": "Determine whether duplicate invoices were paid",
-        "criteria": "Each invoice is paid once.",
-        "steps": ["Identify duplicate invoice identifiers."],
-        "method": "data_analytics",
-        "expected_evidence": "Exception listing",
-    })
     fake = FakeAgentLLM({
-        "agent:work_program": {
-            "planned_tests": [{
-                "operation": "create",
-                "stable_slug": "approval-workflow",
+        "agent:test_plan": {
+            "tests": [{
                 "title": "Test approval workflow",
                 "objective": "Determine whether invoices were approved",
                 "criteria": "Invoices require approval.",
                 "steps": ["Inspect invoice approval status."],
-                "method": "data_analytics",
+                "source": "data",
                 "expected_evidence": "Approval exception listing",
-                "sampling": "Full population",
-                "thresholds": {},
             }]
         },
-        "agent:data_test_spec": {"data_test": "not an object"},
+        # The specification pass cannot produce a runnable definition, so the
+        # report is generated from a partially covered workspace.
+        "agent:data_test_spec": {"table_refs": [], "code": ""},
     })
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
@@ -2222,62 +2123,35 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
     assert completed["status"] == "failed"
     assert current.report["markdown"]
     assert current.report["generation_warnings"] == [
-        "Incomplete planning coverage: 1 planning workflow unit(s) failed and "
-        "1 required planning item(s) are missing.",
-        "Incomplete execution-definition coverage: 1 execution-definition workflow "
-        "unit(s) failed and 1 required execution definition(s) are missing.",
+        "Incomplete execution-definition coverage: 2 execution-definition workflow "
+        "unit(s) failed and 2 required execution definition(s) are missing.",
     ]
     assert "# Preliminary Internal Audit Working Draft" in current.report["markdown"]
-    assert "Incomplete planning coverage" in current.report["markdown"]
     assert "Incomplete execution-definition coverage" in current.report["markdown"]
 
 
-def test_stage_units_expand_after_upstream_planned_tests_are_created(monkeypatch):
-    ws = _planning_workspace("Dynamic definition expansion")
-    ws.add_table(
-        "transactions.csv",
-        pl.DataFrame({"invoice": [1, 1, 2]}).write_csv().encode(),
-    )
-    existing_row = ws.add_rcm({
+def test_stage_units_expand_after_upstream_tests_are_drafted(monkeypatch):
+    ws = _planning_workspace("Dynamic specification expansion")
+    ws.add_rcm({
         "process": "Payments",
         "risk": "Duplicate invoices",
         "control": "Duplicate invoice check",
         "risk_rating": "high",
     })
-    ws.add_planned_test(
-        existing_row["id"],
-        {
-            "title": "Existing duplicate test",
-            "objective": "Identify duplicate invoices",
-            "criteria": "Invoice identifiers are unique.",
-            "steps": ["Run duplicate analysis."],
-            "method": "data_analytics",
-            "expected_evidence": "Duplicate listing",
-        },
-    )
     fake = FakeAgentLLM({
-        "agent:work_program": {
-            "planned_tests": [{
-                "operation": "create",
-                "stable_slug": "new-duplicate-test",
+        "agent:test_plan": {
+            "tests": [{
                 "title": "New duplicate test",
                 "objective": "Identify duplicate payments",
                 "criteria": "Payment identifiers are unique.",
                 "steps": ["Run duplicate analysis."],
-                "method": "data_analytics",
+                "source": "data",
                 "expected_evidence": "Duplicate listing",
-                "sampling": {"strategy": "full_population", "seed": 42},
-                "thresholds": {"maximum_duplicates": 0},
             }]
         },
         "agent:data_test_spec": {
-            "data_test": {
-                "title": "Duplicate identifiers",
-                "objective": "Identify duplicate identifiers",
-                "engine": "analytics",
-                "table_refs": ["transactions"],
-                "spec": {"test_id": "duplicates", "params": {"columns": ["invoice"]}},
-            }
+            "table_refs": ["transactions"],
+            "code": "result = transactions.filter(transactions['invoice'].is_duplicated())",
         },
     })
     monkeypatch.setattr(llm, "chat", fake)
@@ -2292,15 +2166,15 @@ def test_stage_units_expand_after_upstream_planned_tests_are_created(monkeypatch
         "auto",
         {
             "source": "tab_button",
-            "text": "Complete execution definitions",
-            "requested_outcomes": ["fieldwork.definitions_ready"],
+            "text": "Write the test specifications",
+            "requested_outcomes": ["tests.specified"],
         },
     )
     completed = wait_run(ws, started["id"])
     current = workspaces.load_workspace(ws.id)
     definitions = next(
         stage for stage in completed["workflow"]["stages"]
-        if stage["capability"] == "fieldwork.definitions_ready"
+        if stage["capability"] == "tests.specified"
     )
 
     assert completed["status"] == "completed"
@@ -2309,69 +2183,62 @@ def test_stage_units_expand_after_upstream_planned_tests_are_created(monkeypatch
     assert len(current.data_tests) == 2
 
 
-def test_data_test_definition_repairs_unknown_analytics_id(monkeypatch):
-    ws = _planning_workspace("Analytics definition repair")
-    ws.add_table(
-        "transactions.csv",
-        pl.DataFrame({"invoice": [1, 1, 2], "amount": [10.0, 10.0, 20.0]}).write_csv().encode(),
-    )
-    row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
+def _drafted_data_test(ws, *, title="Duplicate invoices"):
+    return data_tests.create_draft(
+        ws,
         {
-            "title": "Test duplicate invoices",
-            "objective": "Identify duplicate invoices",
+            "title": title,
+            "objective": "Identify duplicate invoice identifiers",
             "criteria": "Invoice identifiers are unique.",
             "steps": ["Run duplicate analysis."],
-            "method": "data_analytics",
-            "expected_evidence": "Duplicate listing",
+            "rcm_id": ws.rcm[0]["id"],
+            "agent_run_id": "seed",
         },
     )
-    attempts = 0
 
-    def definition(user):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            test_id = planned["id"]
-        elif attempts == 2:
-            assert "is not a registry ID" in user
-            test_id = "still-not-a-test"
-        else:
-            assert "is not a registry ID" in user
-            test_id = "duplicates"
-        return {
-            "data_test": {
-                "title": "Duplicate invoices",
-                "objective": "Identify duplicate invoice identifiers",
-                "engine": "analytics",
-                "table_refs": ["transactions"],
-                "spec": {"test_id": test_id, "params": {"columns": ["invoice"]}},
-            }
-        }
 
-    fake = FakeAgentLLM({"agent:data_test_spec": definition})
+def _spec_run(ws, monkeypatch, fake, text="Write the test specifications"):
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm,
         "agent_status",
         lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
     )
-
     started = runner.start_command_run(
         ws,
         "auto",
         {
             "source": "tab_button",
-            "text": "Create execution definitions",
-            "requested_outcomes": ["fieldwork.definitions_ready"],
+            "text": text,
+            "requested_outcomes": ["tests.specified"],
         },
     )
-    completed = wait_run(ws, started["id"])
+    return wait_run(ws, started["id"])
+
+
+def test_data_spec_repairs_a_table_outside_the_supplied_schemas(monkeypatch):
+    ws = _planning_workspace("Data spec table repair")
+    _drafted_data_test(ws)
+    ws = workspaces.load_workspace(ws.id)
+    attempts = 0
+
+    def definition(user):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {"table_refs": ["ledger"], "code": "result = ledger.head(1)"}
+        assert "unknown table 'ledger'" in user
+        return {
+            "table_refs": ["transactions"],
+            "code": "result = transactions.filter(transactions['invoice'].is_duplicated())",
+        }
+
+    fake = FakeAgentLLM({"agent:data_test_spec": definition})
+    completed = _spec_run(ws, monkeypatch, fake)
     current = workspaces.load_workspace(ws.id)
     stage = next(
         value for value in completed["workflow"]["stages"]
-        if value["capability"] == "fieldwork.definitions_ready"
+        if value["capability"] == "tests.specified"
     )
     unit = stage["units"][0]
     persisted = UnitSidecarStore(current, completed["id"]).load_proposal(
@@ -2379,152 +2246,96 @@ def test_data_test_definition_repairs_unknown_analytics_id(monkeypatch):
     )
 
     assert completed["status"] == "completed"
-    assert attempts == 3
-    assert current.data_tests[0]["spec"]["test_id"] == "duplicates"
-    # The durable proposal carries the repaired definition, not the first draft.
-    assert persisted["proposal"]["data_test"]["spec"]["test_id"] == "duplicates"
+    assert attempts == 2
+    assert current.data_tests[0]["engine"] == "polars"
+    assert current.data_tests[0]["status"] == "ready"
+    assert current.data_tests[0]["table_refs"] == ["transactions"]
+    # The durable proposal carries the repaired code, not the first draft.
+    assert "transactions" in persisted["proposal"]["spec"]["code"]
 
 
-def test_data_test_definition_repairs_sql_like_validation_rule(monkeypatch):
-    ws = _planning_workspace("Validation definition repair")
-    ws.add_table(
-        "transactions.csv",
-        pl.DataFrame({"invoice": [1, None, 2]}).write_csv().encode(),
-    )
-    row = ws.rcm[0]
-    ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Validate invoice identifiers",
-            "objective": "Identify missing invoice identifiers",
-            "criteria": "Invoice identifiers are present.",
-            "steps": ["Validate invoice identifiers."],
-            "method": "validation",
-            "expected_evidence": "Validation exceptions",
-        },
-    )
+def test_data_spec_repairs_code_the_sandbox_refuses(monkeypatch):
+    ws = _planning_workspace("Data spec sandbox repair")
+    _drafted_data_test(ws)
+    ws = workspaces.load_workspace(ws.id)
     attempts = 0
 
     def definition(user):
         nonlocal attempts
         attempts += 1
-        rules = (
-            [{"name": "invoice_required", "code": "SELECT * FROM transactions"}]
-            if attempts == 1
-            else [{"check": "required", "column": "invoice", "params": {}}]
-        )
-        if attempts == 2:
-            assert "check is not a validation registry ID" in user
-        return {
-            "data_test": {
-                "title": "Required invoice identifiers",
-                "objective": "Identify missing invoice identifiers",
-                "engine": "validation",
+        if attempts == 1:
+            return {
                 "table_refs": ["transactions"],
-                "spec": {"rules": rules},
+                "code": "import os\nresult = os.listdir('.')",
             }
+        assert "not allowed in the sandbox" in user
+        return {
+            "table_refs": ["transactions"],
+            "code": "result = transactions.filter(transactions['invoice'].is_duplicated())",
         }
 
     fake = FakeAgentLLM({"agent:data_test_spec": definition})
-    monkeypatch.setattr(llm, "chat", fake)
-    monkeypatch.setattr(
-        llm,
-        "agent_status",
-        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
-    )
-
-    started = runner.start_command_run(
-        ws,
-        "auto",
-        {
-            "source": "tab_button",
-            "text": "Create validation definition",
-            "requested_outcomes": ["fieldwork.definitions_ready"],
-        },
-    )
-    completed = wait_run(ws, started["id"])
+    completed = _spec_run(ws, monkeypatch, fake)
     current = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
     assert attempts == 2
-    assert current.data_tests[0]["spec"]["rules"][0]["check"] == "required"
+    assert "import" not in current.data_tests[0]["spec"]["code"]
 
 
-def test_document_test_definition_repairs_comparison_method(monkeypatch):
-    ws = _planning_workspace("Document definition repair")
-    document = documents.add_document(ws, "Approval.txt", b"Management approved the request.")
-    row = ws.rcm[0]
-    ws.add_planned_test(
-        row["id"],
+def test_document_spec_repairs_an_unsupplied_document_reference(monkeypatch):
+    ws = _planning_workspace("Document spec repair")
+    document = documents.add_document(ws, "Approval.txt", b"Management approved REQ-1.")
+    ws = workspaces.load_workspace(ws.id)
+    doc_tests.create_draft(
+        ws,
         {
-            "title": "Inspect approval evidence",
-            "objective": "Determine whether approval was documented",
-            "criteria": "Management approval is present.",
-            "steps": ["Inspect the approval evidence."],
-            "method": "document_inspection",
-            "expected_evidence": "Approval document",
+            "title": "Approval inspection",
+            "objective": "Inspect the approval evidence",
+            "rcm_id": ws.rcm[0]["id"],
+            "agent_run_id": "seed",
         },
     )
+    ws = workspaces.load_workspace(ws.id)
     attempts = 0
 
     def definition(user):
         nonlocal attempts
         attempts += 1
-        method = "Document Content Analysis" if attempts == 1 else "normalized"
+        document_id = "DOC-MISSING" if attempts == 1 else document["id"]
         if attempts == 2:
-            assert "Unknown comparison method" in user
+            assert "unknown document 'DOC-MISSING'" in user
         return {
-            "document_test": {
-                "title": "Approval evidence",
-                "kind": "vouching",
-                "spec": {},
-                "items": [{
-                    "label": "Management approval",
-                    "document_ids": [document["id"]],
-                    "checks": [{
-                        "field": "approval",
-                        "expected": "Management approved",
-                        "method": method,
-                    }],
-                }],
-            }
+            "mode": "question",
+            "items": [
+                {
+                    "label": "Approval",
+                    "document_ids": [document_id],
+                    "question": "Who approved the requisition?",
+                }
+            ],
         }
 
-    fake = FakeAgentLLM({"agent:document_test_spec": definition})
-    monkeypatch.setattr(llm, "chat", fake)
-    monkeypatch.setattr(
-        llm,
-        "agent_status",
-        lambda: {"configured": True, "backend": "fake", "provider": "fake", "model": "fake"},
-    )
-
-    started = runner.start_command_run(
-        ws,
-        "auto",
-        {
-            "source": "tab_button",
-            "text": "Create document definition",
-            "requested_outcomes": ["fieldwork.definitions_ready"],
-        },
-    )
-    completed = wait_run(ws, started["id"])
+    fake = FakeAgentLLM({"agent:document_spec_unused": {}, "agent:document_test_spec": definition})
+    completed = _spec_run(ws, monkeypatch, fake)
     current = workspaces.load_workspace(ws.id)
-    test = doc_tests.load_test(current, doc_tests.list_tests(current)[0]["id"])
+    committed = doc_tests.load_test(current, doc_tests.list_tests(current)[0]["id"])
 
     assert completed["status"] == "completed"
     assert attempts == 2
-    assert test["items"][0]["checks"][0]["method"] == "normalized"
+    assert committed["kind"] == "qa"
+    assert committed["items"][0]["document_ids"] == [document["id"]]
 
 
 def test_execution_definitions_run_through_the_native_pipeline_binding():
     # Both unit kinds are one capability, so the binding selects its worker and
     # executor pair from the unit kind; the runner-era handler is gone.
-    binder_source = inspect.getsource(AuditWorkflowExecution._bind_definitions)
+    binder_source = inspect.getsource(AuditWorkflowExecution._bind_test_spec)
     assert "context_bundles" not in binder_source
     assert "llm_json" not in binder_source
     assert "mutate(" not in binder_source
-    assert "fieldwork.data_test_spec" in binder_source
-    assert "fieldwork.document_test_spec" in binder_source
+    assert "tests.data_spec" in binder_source
+    assert "tests.document_spec" in binder_source
     assert not hasattr(AuditWorkflowExecution, "_definitions")
     assert not hasattr(AuditWorkflowExecution, "_commit_definition")
     assert not hasattr(context_bundles, "data_test_spec")
@@ -2547,38 +2358,28 @@ def test_finding_and_report_capabilities_left_the_transitional_adapter():
 
 def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):
     ws = _planning_workspace("Missing workflow evidence")
-    row = ws.rcm[0]
-    ws.add_planned_test(
-        row["id"],
+    doc_tests.create_draft(
+        ws,
         {
-            "title": "Inspect approval package",
-            "objective": "Determine whether approval evidence exists",
-            "criteria": "Approval is documented.",
-            "steps": ["Inspect the approval package."],
-            "method": "inquiry",
-            "expected_evidence": "Approval package REQ-404",
+            "title": "Approval evidence inquiry",
+            "objective": "Determine whether REQ-404 was approved.",
+            "rcm_id": ws.rcm[0]["id"],
+            "agent_run_id": "seed",
         },
     )
+    ws = workspaces.load_workspace(ws.id)
     fake = FakeAgentLLM(
         {
             "agent:document_test_spec": {
-                "document_test": {
-                    "title": "Approval evidence inquiry",
-                    "kind": "qa",
-                    "spec": {},
-                    "items": [
-                        {
-                            "label": "Was REQ-404 approved?",
-                            "question": "Was REQ-404 approved before commitment?",
-                            "document_ids": [],
-                        }
-                    ],
-                    "missing_evidence": {
-                        "document_types": ["approved_requisition"],
-                        "identifiers": "REQ-404",
-                        "rationale": "The approval package is not imported.",
-                    },
-                }
+                "mode": "question",
+                "items": [
+                    {
+                        "label": "Was REQ-404 approved?",
+                        "question": "Was REQ-404 approved before commitment?",
+                        "document_ids": [],
+                    }
+                ],
+                "missing_evidence": "The approval package for REQ-404 is not imported.",
             }
         }
     )
@@ -2596,8 +2397,8 @@ def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):
             "source": "tab_button",
             "text": "Run the RCM tests",
             "requested_outcomes": [
-                "fieldwork.executed", "results.rolled_up", "report.working_draft",
-                "audit.verified",
+                "tests.specified", "fieldwork.executed", "results.rolled_up",
+                "report.working_draft", "audit.verified",
             ],
         },
     )
@@ -2638,17 +2439,6 @@ def test_permission_mode_dispositions_resume_into_finding_batch(monkeypatch):
         pl.DataFrame({"invoice": [1, 1], "amount": [10.0, 10.0]}).write_csv().encode(),
     )
     row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Test duplicate invoices",
-            "objective": "Identify duplicate invoices",
-            "criteria": "Invoices are unique.",
-            "steps": ["Run duplicate analysis."],
-            "method": "data_analytics",
-            "expected_evidence": "Duplicate listing",
-        },
-    )
     test = data_tests.create(
         ws,
         {
@@ -2658,8 +2448,7 @@ def test_permission_mode_dispositions_resume_into_finding_batch(monkeypatch):
             "table_refs": ["transactions"],
             "spec": {"test_id": "duplicates", "params": {"columns": ["invoice"]}},
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-        },
+                    },
     )
     data_tests.run(ws, test["id"])
     rcm_execution.rollup(ws)
@@ -2767,17 +2556,6 @@ def test_observation_checkpoint_pauses_and_resumes_before_findings(monkeypatch):
         pl.DataFrame({"invoice": [1, 1], "amount": [10.0, 10.0]}).write_csv().encode(),
     )
     row = ws.rcm[0]
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Test duplicate invoices",
-            "objective": "Identify duplicate invoices",
-            "criteria": "Invoices are unique.",
-            "steps": ["Run duplicate analysis."],
-            "method": "data_analytics",
-            "expected_evidence": "Duplicate listing",
-        },
-    )
     test = data_tests.create(
         ws,
         {
@@ -2787,8 +2565,7 @@ def test_observation_checkpoint_pauses_and_resumes_before_findings(monkeypatch):
             "table_refs": ["transactions"],
             "spec": {"test_id": "duplicates", "params": {"columns": ["invoice"]}},
             "rcm_id": row["id"],
-            "planned_test_id": planned["id"],
-        },
+                    },
     )
     data_tests.run(ws, test["id"])
     rcm_execution.rollup(ws)
@@ -2929,35 +2706,25 @@ def test_full_workflow_runs_capability_closure_and_stops_for_auditor_judgment(mo
                         "assertion": "Occurrence",
                         "control": "Duplicate invoice validation",
                         "control_type": "Automated preventive",
-                        "test_procedure": "Test duplicate invoice identifiers.",
                         "new_risk_reason": "No current RCM row covers duplicate invoices.",
                     }
                 ]
             },
-            "agent:work_program": {
-                "planned_tests": [
+            "agent:test_plan": {
+                "tests": [
                     {
-                        "operation": "create",
-                        "stable_slug": "duplicate-invoices",
                         "title": "Test duplicate invoices",
                         "objective": "Determine whether invoice identifiers repeat",
                         "criteria": "Each invoice is paid once.",
                         "steps": ["Identify repeated invoice identifiers."],
-                        "method": "data_analytics",
+                        "source": "data",
                         "expected_evidence": "Durable duplicate listing",
-                        "sampling": {"strategy": "full_population", "seed": 42},
-                        "thresholds": {"maximum_duplicates": 0},
                     }
                 ]
             },
             "agent:data_test_spec": {
-                "data_test": {
-                    "title": "Duplicate invoices",
-                    "objective": "Identify repeated invoice identifiers",
-                    "engine": "analytics",
-                    "table_refs": ["transactions"],
-                    "spec": {"test_id": "duplicates", "params": {"columns": ["invoice"]}},
-                }
+                "table_refs": ["transactions"],
+                "code": "result = transactions.filter(transactions['invoice'].is_duplicated())",
             },
         }
     )
@@ -2983,7 +2750,7 @@ def test_full_workflow_runs_capability_closure_and_stops_for_auditor_judgment(mo
     assert completed["status"] == "completed_with_open_items"
     assert "agent:command_interpreter" not in {call["tag"] for call in fake.calls}
     assert {call["tag"] for call in fake.calls} >= {
-        "agent:apm", "agent:rcm", "agent:work_program", "agent:data_test_spec",
+        "agent:apm", "agent:rcm", "agent:test_plan", "agent:data_test_spec",
     }
     assert current.data_tests[0]["last_run"]
     assert current.observations and current.observations[0]["status"] != "disposed"
@@ -2998,7 +2765,7 @@ def test_full_workflow_runs_capability_closure_and_stops_for_auditor_judgment(mo
         for stage in completed["workflow"]["stages"]
         if stage["capability"] in {
             "planning.apm_ready", "planning.rcm_ready",
-            "planning.planned_tests_ready", "fieldwork.definitions_ready",
+            "tests.drafted", "tests.specified",
         }
     }
     assert all(

@@ -44,7 +44,7 @@ MODEL_WAIT_LABELS = {
     "agent:document_context": "Analyzing planning documents",
     "agent:apm": "Drafting the audit planning memorandum",
     "agent:rcm": "Drafting the risk and control matrix",
-    "agent:work_program": "Drafting RCM planned tests",
+    "agent:test_plan": "Drafting RCM tests",
     "agent:data_test_spec": "Defining a Data Test",
     "agent:document_test_spec": "Defining a Document Test",
     "agent:document_qa": "Answering from document evidence",

@@ -15,7 +15,7 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { workspaceQuery } from '../composables/useWorkspaceNavigation'
-import type { AuditObservation, MarkdownTemplate, PlannedTest, PlannedTestMethod, PlanningPayload, RcmRow, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditObservation, MarkdownTemplate, PlanningPayload, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
@@ -39,17 +39,6 @@ const selectedRcmId = ref<string | null>(null)
 const detailOpen = ref(false)
 const paperOpen = ref(false)
 const workingPaper = ref<WorkingPaper | null>(null)
-const stepDrafts = ref<Record<string, string>>({})
-
-const methods: Array<{ label: string; value: PlannedTestMethod }> = [
-  { label: 'Data analytics', value: 'data_analytics' },
-  { label: 'Validation / data quality', value: 'validation' },
-  { label: 'Document inspection / vouching', value: 'document_inspection' },
-  { label: 'Inquiry / walkthrough', value: 'inquiry' },
-  { label: 'Hybrid', value: 'hybrid' },
-  { label: 'Evidence unavailable', value: 'evidence_unavailable' },
-]
-const conclusions = ['effective', 'partially_effective', 'ineffective', 'no_conclusion', 'not_applicable']
 const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
 const observationDispositions = [
   'confirmed_control_exception', 'data_quality_issue', 'expected_or_benign',
@@ -65,33 +54,21 @@ const selectedObservations = computed(() => (data.value?.observations ?? []).fil
 function fail(summary: string, error: unknown) {
   toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
 }
-function initializeSteps(row: RcmRow) {
-  stepDrafts.value = Object.fromEntries(row.planned_tests.map(item => [item.id, item.steps.join('\n')]))
-}
 async function reload() {
   data.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
   const requestedView = String(route.query.view || '')
   if (requestedView === 'rcm') view.value = 'rcm'
   const requestedRcm = String(route.query.rcm || '')
-  const requestedPlanned = String(route.query.planned_test || '')
   const requestedObservation = String(route.query.observation || '')
-  const plannedParent = requestedPlanned
-    ? data.value.rcm.find(row => row.planned_tests.some(item => item.id === requestedPlanned))
-    : undefined
   const observationParent = requestedObservation
     ? data.value.rcm.find(row => data.value?.observations.some(item => item.id === requestedObservation && item.rcm_id === row.id))
     : undefined
   if (requestedRcm && data.value.rcm.some(item => item.id === requestedRcm)) openRcm(data.value.rcm.find(item => item.id === requestedRcm)!)
-  else if (plannedParent) openRcm(plannedParent)
   else if (observationParent) openRcm(observationParent)
-  else if (selectedRcmId.value) {
-    const row = data.value.rcm.find(item => item.id === selectedRcmId.value)
-    if (row) initializeSteps(row)
-  }
 }
 onMounted(() => void reload().catch(error => fail('Could not load planning', error)))
 const unsubscribe = agent.onWorkspaceChanged(change => {
-  if (['planning', 'rcm', 'planned_test', 'datatest', 'doctest', 'observation', 'evidence_request'].includes(change.kind)) void reload()
+  if (['planning', 'rcm', 'datatest', 'doctest', 'observation', 'evidence_request'].includes(change.kind)) void reload()
 })
 onUnmounted(unsubscribe)
 
@@ -112,7 +89,7 @@ async function generate() {
   try {
     await savePlanning()
     await assistantChat.send(
-      'Update the planning context and APM, then create or reconcile the RCM and its structured planned tests. Do not create a separate audit program.',
+      'Update the planning context and APM, then create or reconcile the RCM and the Document and Data Tests that cover it. Do not create a separate audit program.',
       'act', launchMode.value, { goalTemplate: 'planning', source: 'tab_button' },
     )
   } catch (error) { fail('Could not start planning', error) }
@@ -155,13 +132,13 @@ async function saveRcmDetail() {
 function removeRcm(id: string) {
   const row = data.value?.rcm.find(item => item.id === id)
   const label = row?.process?.trim() || id
-  const plannedCount = row?.planned_tests?.length ?? 0
-  const plannedNote = plannedCount
-    ? ` Its ${plannedCount} planned test${plannedCount === 1 ? '' : 's'} will also be deleted, and any linked Data/Document Tests and findings will be unlinked.`
-    : ' Any linked Data/Document Tests and findings will be unlinked.'
+  const testCount = row?.test_refs?.length ?? 0
+  const testNote = testCount
+    ? ` Its ${testCount} linked test${testCount === 1 ? '' : 's'} will be unlinked, not deleted; findings will be unlinked too.`
+    : ' Any linked findings will be unlinked.'
   confirm.require({
     header: 'Remove RCM row',
-    message: `Remove "${label}"?${plannedNote}`,
+    message: `Remove "${label}"?${testNote}`,
     icon: 'pi pi-exclamation-triangle',
     acceptProps: { label: 'Remove', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
@@ -174,34 +151,11 @@ function removeRcm(id: string) {
 function openRcm(row: RcmRow) {
   const current = data.value?.rcm.find(item => item.id === row.id) ?? row
   selectedRcmId.value = current.id
-  initializeSteps(current)
   detailOpen.value = true
   void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: current.id }) })
 }
-async function addPlannedTest() {
-  if (!selectedRcm.value) return
-  try {
-    await api.post(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests`, {
-      title: 'New planned test', objective: 'Describe the test objective.', method: 'data_analytics', steps: [],
-    })
-    await reload()
-  } catch (error) { fail('Could not add the planned test', error) }
-}
-async function savePlannedTest(item: PlannedTest) {
-  if (!selectedRcm.value) return
-  try {
-    item.steps = (stepDrafts.value[item.id] ?? '').split('\n').map(value => value.trim()).filter(Boolean)
-    await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests/${item.id}`, {
-      title: item.title, objective: item.objective, criteria: item.criteria, method: item.method,
-      steps: item.steps, expected_evidence: item.expected_evidence,
-      conclusion: item.conclusion, control_conclusion: item.control_conclusion,
-      scope_limitations: item.scope_limitations,
-      next_action: item.next_action,
-    })
-    await reload()
-    emit('changed')
-    toast.add({ severity: 'success', summary: 'Planned test saved', life: 1800 })
-  } catch (error) { fail('Could not save the planned test', error) }
+function linkedTests(row: RcmRow): TestRollup[] {
+  return row.execution_rollup.test_rollups ?? []
 }
 async function saveObservation(item: AuditObservation) {
   if (!item.disposition) return
@@ -218,25 +172,23 @@ async function promoteObservation(item: AuditObservation) {
     const finding = await api.post<{ id: string }>(`/api/workspaces/${props.workspace.id}/findings`, {
       title: item.summary.slice(0, 120) || `Observation ${item.id}`,
       condition: item.summary, rcm_refs: [item.rcm_id],
-      planned_test_refs: [item.planned_test_id], execution_refs: [item.execution_ref],
+      test_refs: [item.test_id], execution_refs: [item.execution_ref],
       auditor_confirmed: false,
     })
     emit('changed')
     void router.replace({ query: { tab: 'findings', finding: finding.id } })
   } catch (error) { fail('Could not create a draft finding', error) }
 }
-async function removePlannedTest(item: PlannedTest) {
-  if (!selectedRcm.value) return
-  try { await api.del(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/planned-tests/${item.id}`); await reload(); emit('changed') }
-  catch (error) { fail('Could not remove the planned test', error) }
+function openTest(rollup: TestRollup) {
+  void router.replace({
+    query: workspaceQuery(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id }),
+  })
 }
-function openExecution(ref: string) {
-  const [kind, id] = ref.split(':', 2)
-  void router.replace({ query: workspaceQuery(kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: id }) })
-}
-function createExecution(item: PlannedTest, kind: 'data' | 'document') {
+function createTest(kind: 'data' | 'document') {
   if (!selectedRcm.value) return
-  void router.replace({ query: { tab: kind === 'data' ? 'data-tests' : 'doc-tests', create: '1', rcm: selectedRcm.value.id, planned_test: item.id } })
+  void router.replace({
+    query: { tab: kind === 'data' ? 'data-tests' : 'doc-tests', create: '1', rcm: selectedRcm.value.id },
+  })
 }
 async function refreshRollup() {
   try {
@@ -277,14 +229,14 @@ async function copyPaper(kind: 'markdown' | 'html') {
     <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">
       <div v-if="selectedRcm" class="rcm-detail">
         <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Assertion<InputText v-model="selectedRcm.assertion"/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/></label></div>
-        <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add planned test" icon="pi pi-plus" size="small" @click="addPlannedTest"/></div>
-        <section class="planned-list"><article v-for="item in selectedRcm.planned_tests" :key="item.id" class="planned-card">
-          <div class="planned-head"><div><strong>{{ item.id }}</strong><Tag :value="item.status.replaceAll('_',' ')" :severity="item.status.includes('exception') || item.status === 'blocked' ? 'danger' : item.status === 'completed_no_exception' ? 'success' : item.status === 'review_required' ? 'warn' : 'secondary'"/></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>
-          <div class="planned-fields"><label>Title<InputText v-model="item.title"/></label><label>Method<Select v-model="item.method" :options="methods" optionLabel="label" optionValue="value"/></label><label class="wide">Objective<Textarea v-model="item.objective" rows="2" autoResize/></label><label class="wide">Criteria<Textarea v-model="item.criteria" rows="2" autoResize/></label><label class="wide">Steps — one per line<Textarea v-model="stepDrafts[item.id]" rows="4" autoResize/></label><label class="wide">Expected evidence<Textarea v-model="item.expected_evidence" rows="2" autoResize/></label></div>
-          <div class="execution-cards"><strong>Linked execution</strong><button v-for="ref in item.execution_refs" :key="ref" @click="openExecution(ref)"><i :class="ref.startsWith('datatest:') ? 'pi pi-chart-bar' : 'pi pi-file-check'"/>{{ ref }}</button><span v-if="!item.execution_refs.length" class="muted">No execution artifact linked.</span><Button v-if="['data_analytics','validation','hybrid'].includes(item.method)" label="Create Data Test" icon="pi pi-plus" size="small" text @click="createExecution(item, 'data')"/><Button v-if="['document_inspection','inquiry','hybrid','evidence_unavailable'].includes(item.method)" label="Create Document Test" icon="pi pi-plus" size="small" text @click="createExecution(item, 'document')"/></div>
-          <div class="outcome"><label>Result summary<Textarea v-model="item.result_summary" rows="2" disabled/></label><label>Control conclusion<Select v-model="item.control_conclusion" :options="conclusions"/></label><label class="wide">Conclusion<Textarea v-model="item.conclusion" rows="2" autoResize/></label><label class="wide">Scope limitations<Textarea v-model="item.scope_limitations" rows="2" autoResize/></label><label class="wide">Next action<Textarea v-model="item.next_action" rows="2" autoResize/></label></div>
-          <div class="card-actions"><Button label="Save planned test" icon="pi pi-save" size="small" @click="savePlannedTest(item)"/><Button icon="pi pi-trash" severity="danger" text size="small" @click="removePlannedTest(item)"/></div>
-        </article><p v-if="!selectedRcm.planned_tests.length" class="empty">This RCM row has no planned tests and cannot pass coverage.</p></section>
+        <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
+        <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
+          <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><Tag :value="item.status.replaceAll('_',' ')" :severity="item.status.includes('exception') || item.status === 'blocked' ? 'danger' : item.status === 'completed_no_exception' ? 'success' : item.status === 'review_required' ? 'warn' : 'secondary'"/></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>
+          <p class="planned-title">{{ item.title }}</p>
+          <p class="muted">{{ item.result_summary || 'Not executed yet.' }}</p>
+          <p v-if="item.scope_limitations" class="muted">Limitation: {{ item.scope_limitations }}</p>
+          <div class="card-actions"><Button label="Open test" icon="pi pi-arrow-up-right" size="small" outlined @click="openTest(item)"/></div>
+        </article><p v-if="!linkedTests(selectedRcm).length" class="empty">This RCM row has no linked test and cannot pass coverage.</p></section>
         <section v-if="selectedObservations.length" class="observations"><strong>Observation triage</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.status" :severity="item.status === 'open' ? 'warn' : 'success'"/><span>{{ item.summary }}</span><small>Suggested: {{ item.suggested_disposition }}</small><Select v-model="item.disposition" :options="observationDispositions" placeholder="Auditor disposition"/><Textarea v-model="item.auditor_note" rows="2" placeholder="Auditor note"/><span class="observation-actions"><Button label="Save disposition" size="small" :disabled="!item.disposition" @click="saveObservation(item)"/><Button label="Draft finding" icon="pi pi-arrow-right" size="small" severity="secondary" @click="promoteObservation(item)"/></span></div></section>
       </div>
     </Dialog>

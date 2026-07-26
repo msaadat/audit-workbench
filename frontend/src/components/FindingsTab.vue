@@ -40,7 +40,10 @@ const filtered = computed(() => (data.value?.items ?? []).filter(item => {
   return matchesSeverity && (!needle || `${item.id} ${item.title} ${item.condition}`.toLowerCase().includes(needle))
 }))
 const rcmOptions = computed(() => (data.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
-const plannedTestOptions = computed(() => (data.value?.rcm ?? []).flatMap(row => row.planned_tests.map(item => ({ label: `${row.id} · ${item.id} · ${item.title}`, value: item.id }))))
+const testOptions = computed(() => [
+  ...(data.value?.data_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: item.id })),
+  ...(data.value?.document_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: item.id })),
+])
 const executionOptions = computed(() => [
   ...(data.value?.data_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: `datatest:${item.id}${item.last_run ? `:${item.last_run.id}` : ''}` })),
   ...(data.value?.document_tests ?? []).map(item => ({ label: `${item.id} · ${item.title}`, value: `doctest:${item.id}` })),
@@ -90,7 +93,7 @@ async function save() {
       title: item.title, severity: item.severity, condition: item.condition,
       criteria: item.criteria, cause: item.cause, effect: item.effect,
       recommendation: item.recommendation, management_response: item.management_response,
-      rcm_refs: item.rcm_refs, planned_test_refs: item.planned_test_refs,
+      rcm_refs: item.rcm_refs, test_refs: item.test_refs,
       execution_refs: item.execution_refs, cause_pending: item.cause_pending,
       severity_rationale: item.severity_rationale, auditor_confirmed: item.auditor_confirmed,
       evidence_refs: item.evidence_refs,
@@ -119,8 +122,8 @@ function addEvidence(value: EvidenceRef) {
 function removeEvidence(id: string) {
   if (selected.value) selected.value.evidence_refs = selected.value.evidence_refs.filter(item => item.id !== id)
 }
-function openPlanning(rcmId: string, plannedTestId?: string) {
-  void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: rcmId, planned_test: plannedTestId }) })
+function openPlanning(rcmId: string) {
+  void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: rcmId }) })
 }
 function openEvidence(value: EvidenceRef) {
   if (value.source_kind === 'doctest') {
@@ -165,13 +168,13 @@ function openEvidence(value: EvidenceRef) {
         <div class="iia-grid"><label>Severity rationale<Textarea v-model="selected.severity_rationale" rows="3" autoResize /></label><label><span><input v-model="selected.auditor_confirmed" type="checkbox"/> Auditor confirmed for formal reporting</span></label><label class="wide">Recommendation<Textarea v-model="selected.recommendation" rows="4" autoResize /></label><label class="wide">Management response<Textarea v-model="selected.management_response" rows="4" autoResize /></label></div>
         <div class="link-grid">
           <label>RCM links<MultiSelect v-model="selected.rcm_refs" :options="rcmOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select risks and controls" /></label>
-          <label>Planned-test links<MultiSelect v-model="selected.planned_test_refs" :options="plannedTestOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select planned tests" /></label>
+          <label>Test links<MultiSelect v-model="selected.test_refs" :options="testOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select tests" /></label>
           <label class="wide">Execution sources<MultiSelect v-model="selected.execution_refs" :options="executionOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select durable execution results" /></label>
         </div>
         <UiAdvancedSection title="Evidence and traceability" :description="`${selected.evidence_refs.length} evidence link(s)`" :open="!selected.evidence_refs.length">
         <div class="source-links">
           <h3>Traceability and evidence</h3>
-          <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning(id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.planned_test_refs" :key="`planned:${id}`" @click="openPlanning(selected.rcm_refs[0] || '', id)"><i class="pi pi-list-check"/> {{ id }}</button></div>
+          <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning(id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.test_refs" :key="`test:${id}`" @click="openPlanning(selected.rcm_refs[0] || '')"><i class="pi pi-list-check"/> {{ id }}</button></div>
           <p v-if="!selected.evidence_refs.length" class="warning"><i class="pi pi-exclamation-triangle"/> No typed evidence is linked. Add evidence through a promoted agent observation or an evidence-enabled workflow.</p>
           <div v-else class="evidence-list"><div v-for="value in selected.evidence_refs" :key="value.id"><button @click="openEvidence(value)"><i class="pi pi-link"/><span>{{ value.source_kind }}:{{ value.source_id }}<small v-if="value.page">page {{ value.page }}</small></span><code>{{ value.source_sha1?.slice(0, 10) }}</code></button><Button icon="pi pi-times" text rounded severity="danger" size="small" aria-label="Remove evidence link" @click="removeEvidence(value.id)"/></div></div>
           <details v-if="availableEvidence.length" class="evidence-picker"><summary>Add evidence already captured in fieldwork</summary><button v-for="option in availableEvidence" :key="option.anchor.id" @click="addEvidence(option.anchor)"><i class="pi pi-plus"/>{{ option.label }}</button></details>

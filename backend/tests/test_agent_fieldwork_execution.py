@@ -47,7 +47,7 @@ class _Gateway:
         return self.responses[min(attempt, len(self.responses)) - 1]
 
 
-def _row_with_planned_test(ws, *, method="data_analytics"):
+def _rcm_row(ws, *, method="data_analytics"):
     row = ws.add_rcm(
         {
             "process": "Accounts payable",
@@ -56,16 +56,7 @@ def _row_with_planned_test(ws, *, method="data_analytics"):
             "risk_rating": "high",
         }
     )
-    planned = ws.add_planned_test(
-        row["id"],
-        {
-            "title": "Duplicate invoices",
-            "objective": "Identify repeated invoice identifiers.",
-            "method": method,
-            "steps": ["Identify repeated invoice identifiers."],
-        },
-    )
-    return row["id"], planned["id"]
+    return row["id"]
 
 
 # --------------------------------------------------------------------------- #
@@ -75,7 +66,7 @@ def test_run_data_test_commits_the_result_and_returns_its_immutable_ref(
     workspace_with_data,
 ):
     ws = workspace_with_data
-    rcm_id, planned_id = _row_with_planned_test(ws)
+    rcm_id = _rcm_row(ws)
     definition = data_tests.create(
         ws,
         {
@@ -84,7 +75,6 @@ def test_run_data_test_commits_the_result_and_returns_its_immutable_ref(
             "engine": "analytics",
             "table_refs": ["transactions"],
             "rcm_id": rcm_id,
-            "planned_test_id": planned_id,
             "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
         },
     )
@@ -104,7 +94,7 @@ def test_run_document_test_completes_a_local_review_without_a_model(
     workspace_with_data,
 ):
     ws = workspace_with_data
-    rcm_id, planned_id = _row_with_planned_test(ws, method="inspection")
+    rcm_id = _rcm_row(ws, method="inspection")
     document = documents.add_document(ws, "Approval.txt", b"Approval was documented.")
     test = doc_tests.create_test(
         ws,
@@ -112,7 +102,6 @@ def test_run_document_test_completes_a_local_review_without_a_model(
             "title": "Approval review",
             "kind": "review",
             "rcm_id": rcm_id,
-            "planned_test_id": planned_id,
             "items": [
                 {
                     "label": "Approval",
@@ -135,14 +124,13 @@ def test_run_document_test_registers_the_blocked_unit_on_open_evidence_requests(
     workspace_with_data,
 ):
     ws = workspace_with_data
-    rcm_id, planned_id = _row_with_planned_test(ws, method="inspection")
+    rcm_id = _rcm_row(ws, method="inspection")
     test = doc_tests.create_test(
         ws,
         {
             "title": "Missing evidence",
             "kind": "review",
             "rcm_id": rcm_id,
-            "planned_test_id": planned_id,
             "items": [{"label": "Approval", "summary": "Review the approval"}],
         },
     )
@@ -153,7 +141,6 @@ def test_run_document_test_registers_the_blocked_unit_on_open_evidence_requests(
         {
             "id": "ER-1",
             "rcm_id": rcm_id,
-            "planned_test_id": planned_id,
             "document_test_id": test["id"],
             "status": "open",
         }
@@ -179,7 +166,7 @@ def test_run_document_test_registers_the_blocked_unit_on_open_evidence_requests(
 
 def test_run_document_test_refuses_a_model_backed_qa_test(workspace_with_data):
     ws = workspace_with_data
-    rcm_id, planned_id = _row_with_planned_test(ws, method="inquiry")
+    rcm_id = _rcm_row(ws, method="inquiry")
     document = documents.add_document(ws, "Approval.txt", b"Approval was documented.")
     test = doc_tests.create_test(
         ws,
@@ -187,7 +174,6 @@ def test_run_document_test_refuses_a_model_backed_qa_test(workspace_with_data):
             "title": "Approval Q&A",
             "kind": "qa",
             "rcm_id": rcm_id,
-            "planned_test_id": planned_id,
             "items": [
                 {
                     "label": "Was approval documented?",
@@ -209,7 +195,7 @@ def test_run_document_test_refuses_a_model_backed_qa_test(workspace_with_data):
 # --------------------------------------------------------------------------- #
 def _qa_workspace():
     ws = workspaces.create_workspace("Document Q&A execution")
-    rcm_id, planned_id = _row_with_planned_test(ws, method="inquiry")
+    rcm_id = _rcm_row(ws, method="inquiry")
     document = documents.add_document(
         ws,
         "Approval.txt",
@@ -221,7 +207,6 @@ def _qa_workspace():
             "title": "Approval Q&A",
             "kind": "qa",
             "rcm_id": rcm_id,
-            "planned_test_id": planned_id,
             "items": [
                 {
                     "label": "Who approved the order?",

@@ -91,23 +91,18 @@ _DECLARED = {
     ),
     "planning.apm_ready": ("apm", "apm", "planning.apm", ("planning:context",)),
     "planning.rcm_ready": ("rcm", "rcm", "planning.rcm", ("planning:apm",)),
-    "planning.planned_tests_ready": (
-        "planned_tests",
-        "planned_test_generation",
-        "planning.planned_tests",
-        ("rcm",),
-    ),
-    "fieldwork.definitions_ready": (
-        "execution_definitions",
-        "execution_spec",
-        "fieldwork.execution_definitions",
-        ("planned_test",),
+    "tests.drafted": ("tests", "test_draft", "tests.draft", ("rcm",)),
+    "tests.specified": (
+        "test_specs",
+        "test_spec",
+        "tests.spec",
+        ("test",),
     ),
     "fieldwork.executed": (
         "execution",
         "mixed_execution",
         "fieldwork.document_qa",
-        ("definition", "evidence"),
+        ("test", "evidence"),
     ),
     "results.rolled_up": ("rollup", "rollup", None, ("execution",)),
     "findings.drafted": (
@@ -151,8 +146,8 @@ class _StubWorkspace:
 
 
 # Representative states exercising each planning capability's readiness branches:
-# absent inputs, satisfied context + structured APM, valid RCM rows with
-# executable planned tests, and an invalid RCM row.
+# absent inputs, satisfied context + structured APM, a valid RCM row, and an
+# invalid RCM row.
 _PLANNING_STATES = (
     _StubWorkspace(planning={}),
     _StubWorkspace(
@@ -166,14 +161,7 @@ _PLANNING_STATES = (
         planning={"context": {"objective": "o"}},
         documents=[{"id": "d"}],
         rcm=[
-            {
-                "id": "R1",
-                "risk": "r",
-                "control": "c",
-                "planned_tests": [
-                    {"id": "P1", "method": "validation", "steps": ["s"]}
-                ],
-            }
+            {"id": "R1", "risk": "r", "control": "c", "test_refs": []}
         ],
     ),
     _StubWorkspace(rcm=[{"id": "R2", "risk": "", "control": ""}]),
@@ -186,7 +174,7 @@ def test_planning_readiness_and_units_are_stable_across_representative_states(
 ):
     """Planning readiness and expansion stay deterministic across the branches
     they were characterized on: absent inputs, satisfied context + structured
-    APM, valid RCM rows with executable planned tests, and an invalid RCM row."""
+    APM, a valid RCM row, and an invalid RCM row."""
     capability = capabilities.AUDIT_REGISTRY.get(capability_id)
 
     for stub in _PLANNING_STATES:
@@ -207,9 +195,9 @@ def test_planning_readiness_and_units_are_stable_across_representative_states(
 def test_every_declaration_is_deterministic_on_a_real_workspace(
     capability_id, workspace_with_data
 ):
-    """Fieldwork and reporting readiness read RCM execution manifests, document
-    tests, working papers, findings, and report state, so a real workspace — not
-    a stub — is required to exercise them."""
+    """Test, fieldwork, and reporting readiness read the RCM test manifest,
+    document tests, working papers, findings, and report state, so a real
+    workspace — not a stub — is required to exercise them."""
     capability = capabilities.AUDIT_REGISTRY.get(capability_id)
 
     readiness = capability.readiness(workspace_with_data, {}).payload()

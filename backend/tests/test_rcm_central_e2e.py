@@ -113,24 +113,15 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
                 "review_status": "prepared",
             }
         )
-        planned = workspace.add_planned_test(
-            row["id"],
-            {
-                "title": title,
-                "objective": f"Identify and assess {title.casefold()}.",
-                "criteria": "Procurement transactions must be valid, approved, and supported.",
-                "method": "hybrid" if index == 0 else "data_analytics",
-                "steps": ["Test the complete procurement population."],
-                "expected_evidence": "Durable population results and linked source evidence.",
-            },
-        )
         test = data_tests.create(
             workspace,
             {
                 "title": title,
-                "objective": planned["objective"],
+                "objective": f"Identify and assess {title.casefold()}.",
+                "criteria": "Procurement transactions must be valid, approved, and supported.",
+                "steps": ["Test the complete procurement population."],
+                "expected_evidence": "Durable population results and linked source evidence.",
                 "rcm_id": row["id"],
-                "planned_test_id": planned["id"],
                 "engine": "analytics",
                 "table_refs": ["procurement"],
                 "spec": {
@@ -142,10 +133,10 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
         result = data_tests.run(workspace, test["id"])
         assert result["semantic_valid"] is True
         assert result["exception_count"] > 0
-        rows.append((row, planned, test))
+        rows.append((row, test))
         valid_results.append(result)
 
-    first_row, first_planned, _first_test = rows[0]
+    first_row, _first_test = rows[0]
     document_test = doc_tests.prepare_evidence_aware_vouching(
         workspace,
         {
@@ -153,7 +144,6 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
             "table": "procurement",
             "size": 2,
             "rcm_id": first_row["id"],
-            "planned_test_id": first_planned["id"],
             "identifier_fields": ["requisition_id", "po_id", "grn_id", "invoice_id"],
             "frozen_fields": ["requisition_id", "po_id", "grn_id", "invoice_id", "amount"],
             "required_document_types": [
@@ -173,7 +163,6 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
             "title": "Invalid finance-authority join",
             "objective": "Test approval authority only if source keys match.",
             "rcm_id": first_row["id"],
-            "planned_test_id": first_planned["id"],
             "engine": "polars",
             "table_refs": ["invalid_finance_authority"],
             "spec": {
@@ -187,17 +176,27 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
     assert any("0% key match coverage" in issue for issue in invalid_result["semantic_issues"])
 
     rcm_execution.rollup(workspace)
-    for row, planned, _test in rows:
+    for row, test in rows:
         changes = {
             "conclusion": "The stored population result was reviewed and retained.",
             "control_conclusion": "partially_effective",
         }
-        if planned["id"] == first_planned["id"]:
+        if row["id"] == first_row["id"]:
             changes.update(
                 scope_limitations="One selected transaction is awaiting source documents.",
                 next_action="Obtain and inspect the open evidence request before final reporting.",
             )
-        workspace.update_planned_test(row["id"], planned["id"], changes)
+        data_tests.update(workspace, test["id"], changes)
+    data_tests.update(workspace, invalid_test["id"], {
+        "conclusion": "The join diagnostics invalidated this result.",
+        "control_conclusion": "not_applicable",
+    })
+    doc_tests.update_test(workspace, document_test["id"], {
+        "conclusion": "Open evidence requests remain.",
+        "control_conclusion": "partially_effective",
+        "scope_limitations": "One selected transaction is awaiting source documents.",
+        "next_action": "Obtain and inspect the open evidence request.",
+    })
     for observation in list(workspace.observations):
         rcm_execution.disposition(
             workspace,
@@ -208,10 +207,10 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
             "Reviewed in the synthetic acceptance workflow.",
         )
     rolled = rcm_execution.rollup(workspace)
-    assert rolled["coverage"]["planned_tests_without_execution"] == []
+    assert rolled["coverage"]["unspecified_tests"] == []
     assert all(item["status"] == "disposed" for item in workspace.observations)
 
-    finding_test = rows[1][2]
+    finding_test = rows[1][1]
     finding_result = valid_results[1]
     finding = findings.add(
         workspace,
@@ -225,7 +224,7 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
             "recommendation": "Investigate and prevent repeated invoice identifiers.",
             "severity_rationale": "The exception could result in a duplicate disbursement.",
             "rcm_refs": [rows[1][0]["id"]],
-            "planned_test_refs": [rows[1][1]["id"]],
+            "test_refs": [finding_test["id"]],
             "execution_refs": [f"datatest:{finding_test['id']}:{finding_result['id']}"],
             "evidence_refs": [
                 {
@@ -239,13 +238,13 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
     )
     assert findings.support_issues(workspace, finding) == []
 
-    papers = [working_papers.generate_rcm(workspace, row["id"]) for row, _planned, _test in rows]
+    papers = [working_papers.generate_rcm(workspace, row["id"]) for row, _test in rows]
     assert len(papers) == 11
     assert all((workspace.root / "WorkingPapers" / f"{row[0]['id']}.json").exists() for row in rows)
 
     curated = dashboard.curate_rcm_tiles(workspace, run_id="synthetic-procurement")
     assert 4 <= len(curated["tiles"]) <= 6
-    assert all(tile.get("rcm_id") and tile.get("planned_test_id") for tile in curated["tiles"])
+    assert all(tile.get("rcm_id") for tile in curated["tiles"])
     assert all(tile["data_test_id"] != invalid_test["id"] for tile in curated["tiles"])
 
     generated = report.generate(workspace, use_model=False)

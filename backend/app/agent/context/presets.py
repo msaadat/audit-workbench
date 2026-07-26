@@ -771,7 +771,7 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
-        preset_id="planning.planned_tests",
+        preset_id="tests.draft",
         spec=ContextSpec(
             sources=(
                 ContextSource(
@@ -817,7 +817,7 @@ PRESETS.register(
                         # the planning-context capability uses keeps transaction
                         # vouchers and raw evidence out of a planning turn.
                         configuration={
-                            "query_fields": ["planned_test_query"],
+                            "query_fields": ["test_draft_query"],
                             "planning_relevant": True,
                         },
                     ),
@@ -837,7 +837,7 @@ PRESETS.register(
                     selector=AutoSelect(
                         selector_id="methodology.lexical",
                         item_limit=5,
-                        configuration={"query_fields": ["planned_test_query"]},
+                        configuration={"query_fields": ["test_draft_query"]},
                     ),
                     representations=(ContextRepresentation("excerpt"),),
                     budget=ContextBudget(max_items=5, max_characters=8_000),
@@ -856,7 +856,7 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
-        preset_id="fieldwork.execution_definitions",
+        preset_id="tests.spec",
         spec=ContextSpec(
             sources=(
                 ContextSource(
@@ -868,7 +868,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=4_000),
                 ),
                 ContextSource(
-                    id="planned_test",
+                    id="test",
                     source_type="artifacts",
                     required=True,
                     selector=ContextSelector(selector_id="artifacts.current"),
@@ -884,13 +884,23 @@ PRESETS.register(
                     budget=ContextBudget(max_items=12, max_characters=12_000),
                 ),
                 ContextSource(
+                    id="table_profiles",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # Generated Data Tests are Polars code, so the spec pass needs
+                    # to see column types and value shapes, not just names.
+                    representations=(ContextRepresentation("table_profile"),),
+                    budget=ContextBudget(max_items=6, max_characters=16_000),
+                ),
+                ContextSource(
                     id="documents",
                     source_type="documents",
                     required=False,
                     selector=AutoSelect(
                         selector_id="documents.lexical",
                         item_limit=12,
-                        configuration={"query_fields": ["definition_query"]},
+                        configuration={"query_fields": ["test_spec_query"]},
                     ),
                     # A current analysis contributes ``summary``; a document
                     # without one still grounds the turn through locally
@@ -901,24 +911,10 @@ PRESETS.register(
                     ),
                     budget=ContextBudget(max_items=12, max_characters=24_000),
                 ),
-                ContextSource(
-                    id="current_data_tests",
-                    source_type="artifacts",
-                    required=False,
-                    selector=ContextSelector(selector_id="artifacts.current"),
-                    representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=10, max_characters=12_000),
-                ),
-                ContextSource(
-                    id="current_document_tests",
-                    source_type="artifacts",
-                    required=False,
-                    selector=ContextSelector(selector_id="artifacts.current"),
-                    representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=10, max_characters=8_000),
-                ),
             ),
-            budget=ContextBudget(max_items=46, max_characters=40_000),
+            # The test being specified is itself the ``test`` source, so there is
+            # no separate "current definition" source to reconcile against.
+            budget=ContextBudget(max_items=32, max_characters=56_000),
             # One declaration serves both unit kinds of the capability: a Data
             # Test unit supplies the table sources and a Document Test unit the
             # document sources, and the unsupplied optional sources are recorded
@@ -927,6 +923,7 @@ PRESETS.register(
             privacy=ContextPrivacy(
                 allow_document_text=True,
                 allow_table_metadata=True,
+                allow_table_profiles=True,
             ),
         ),
     )
@@ -995,7 +992,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=4_000),
                 ),
                 ContextSource(
-                    id="planned_test",
+                    id="test",
                     source_type="artifacts",
                     required=True,
                     selector=ContextSelector(selector_id="artifacts.current"),

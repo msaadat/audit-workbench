@@ -24,12 +24,21 @@ from ..workflows import analysis as analysis_workflow
 from ..workflows import audit as audit_workflow
 from ..workflows import doc_tests as doc_tests_workflow
 from ..workflows import documents as documents_workflow
-from . import analysis, doc_tests, documents, fieldwork, planning, reporting
+from . import (
+    analysis,
+    doc_tests,
+    documents,
+    fieldwork,
+    planning,
+    reporting,
+    tests as tests_group,
+)
 from ._shared import (
+    all_tests,
     apm_sha1,
-    planned_test_sha1,
     planning_basis_sha1,
     rcm_row_sha1,
+    test_plan_sha1,
 )
 
 
@@ -86,7 +95,13 @@ doc_test_outcomes_for_template = doc_tests_workflow.outcomes_for_template
 # why the audit composition starts with the document capabilities that
 # ``planning.context_ready`` depends on.
 AUDIT_DOCUMENT_GROUP = CapabilityGroupView(documents, documents.AUDIT_CAPABILITY_IDS)
-CAPABILITY_GROUPS = (AUDIT_DOCUMENT_GROUP, planning, fieldwork, reporting)
+CAPABILITY_GROUPS = (
+    AUDIT_DOCUMENT_GROUP,
+    planning,
+    tests_group,
+    fieldwork,
+    reporting,
+)
 ANALYSIS_CAPABILITY_GROUPS = (analysis,)
 DOCUMENT_CAPABILITY_GROUPS = (documents,)
 DOC_TEST_CAPABILITY_GROUPS = (doc_tests,)
@@ -411,7 +426,8 @@ __all__ = [
     "grouped_doc_test_capability_ids",
     "grouped_document_capability_ids",
     "outcomes_for_template",
-    "planned_test_sha1",
+    "all_tests",
+    "test_plan_sha1",
     "planning_basis_sha1",
     "rcm_row_sha1",
     "validate_analysis_composition",
