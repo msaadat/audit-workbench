@@ -27,7 +27,7 @@ import threading
 from .. import doc_tests
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
-from . import workflow
+from . import narration, workflow
 from .base import BaseRunner
 from .capabilities import DOC_TESTS_REGISTRY
 from .capabilities.doc_tests import (
@@ -401,17 +401,19 @@ class DocTestWorkflowExecution(BaseRunner):
             )
         else:
             terminal = "completed" if not open_units else "completed_with_open_items"
-        summary = (
-            "# Document tests\n\n"
-            f"- Tests in scope: {len(tests)}\n"
-            f"- Items: {totals['items']}\n"
-            f"- Deterministic matches: {totals['matched']}\n"
-            f"- Mismatch or missing: {totals['mismatched']}\n"
-            f"- Confirmed: {totals['confirmed']}\n"
-            f"- Exceptions: {totals['exceptions']}\n"
-            f"- Manual review: {totals['manual_review']}\n"
-            f"- Unchecked items: {unexecuted}\n\n"
-            "Automated results remain subject to auditor disposition."
+        summary = narration.summary_markdown(
+            "Document tests",
+            [
+                ("Tests in scope", len(tests)),
+                ("Items", totals["items"]),
+                ("Deterministic matches", totals["matched"]),
+                ("Mismatch or missing", totals["mismatched"]),
+                ("Confirmed", totals["confirmed"]),
+                ("Exceptions", totals["exceptions"]),
+                ("Manual review", totals["manual_review"]),
+                ("Unchecked items", unexecuted),
+            ],
+            "Automated results remain subject to auditor disposition.",
         )
         return FinishProjection(
             next_outcomes=tuple(dict.fromkeys(next_outcomes)),

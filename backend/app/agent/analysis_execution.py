@@ -23,7 +23,7 @@ import uuid
 
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
-from . import store, workflow
+from . import narration, store, workflow
 from .base import BaseRunner
 from .capabilities.analysis import (
     ANALYSIS_SCOPE_CHECKPOINT,
@@ -727,14 +727,16 @@ class AnalysisWorkflowExecution(BaseRunner):
             self.run["error"] = errors[0] if errors else "One or more analysis units failed."
         else:
             terminal = "completed" if not open_units else "completed_with_open_items"
-        summary = (
-            "# Data analysis summary\n\n"
-            f"- Tables analysed: {', '.join(table_scope.tables) or 'none'}\n"
-            f"- Joins available: {len(table_scope.joins)}\n"
-            f"- Analysis definitions: {len(analyses)}\n"
-            f"- Analyses executed: {len(executed)}\n"
-            f"- Failed/conflict units: {failed}\n"
-            f"- Open workflow units: {open_units}\n"
+        summary = narration.summary_markdown(
+            "Data analysis",
+            [
+                ("Tables analysed", list(table_scope.tables)),
+                ("Joins available", len(table_scope.joins)),
+                ("Analysis definitions", len(analyses)),
+                ("Analyses executed", len(executed)),
+                ("Failed or conflicting units", failed),
+                ("Open workflow units", open_units),
+            ],
         )
         return FinishProjection(
             next_outcomes=tuple(dict.fromkeys(next_outcomes)),

@@ -27,7 +27,7 @@ from ..workspaces import (
     slugify,
 )
 from . import capabilities as audit_capabilities
-from . import store, workflow
+from . import narration, store, workflow
 from .action_runner import ActionRunner
 from .capabilities.documents import (
     DOCUMENT_SCOPE_CHECKPOINT,
@@ -1113,14 +1113,19 @@ class AuditWorkflowExecution(ActionRunner):
             terminal = "completed" if not open_units else "completed_with_open_items"
         else:
             terminal = "completed" if completion["status"] == "completed" and not open_units else "completed_with_open_items"
-        summary = (
-            "# Audit workflow summary\n\n"
-            f"- Requested outcomes: {', '.join(self.run['workflow']['requested_outcomes'])}\n"
-            f"- Completion status: {completion['status']}\n"
-            f"- Failed/conflict units: {failed}\n"
-            f"- Open workflow units: {open_units}\n"
-            f"- Open observations: {len(open_observations)}\n"
-            f"- Open evidence requests: {len(open_evidence)}\n"
+        summary = narration.summary_markdown(
+            "Audit workflow",
+            [
+                ("Requested", [
+                    narration.humanize(item)
+                    for item in self.run["workflow"]["requested_outcomes"]
+                ]),
+                ("Completion", None if completion["status"] == "completed" else completion["status"]),
+                ("Failed or conflicting units", failed),
+                ("Open workflow units", open_units),
+                ("Open observations", len(open_observations)),
+                ("Open evidence requests", len(open_evidence)),
+            ],
         )
         return FinishProjection(
             next_outcomes=tuple(dict.fromkeys(next_outcomes)),

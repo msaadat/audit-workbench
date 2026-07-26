@@ -297,7 +297,7 @@ def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
     assert completed["status"] == "failed"
     assert completed["command"]["status"] == "failed"
     assert completed["error"] == "LLM request failed: Remote end closed connection without response"
-    assert "Failed/conflict units: 1" in completed["summary_markdown"]
+    assert "Failed or conflicting units: 1" in completed["summary_markdown"]
     assert tasks["planning:context"]["status"] == "completed"
     assert any(
         unit["kind"] == "apm" and unit["status"] == "failed"

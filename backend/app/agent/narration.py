@@ -437,6 +437,27 @@ def closing_text(run: dict, status: str | None = None) -> str:
     return "\n".join(lines)
 
 
+def summary_markdown(heading: str, rows: list[tuple[str, object]], note: str = "") -> str:
+    """A work-product summary with the noise taken out.
+
+    The closing message already says what happened, so this is the record, not
+    a restatement of it: rows that count nothing are dropped rather than listed
+    as zeroes, and labels are words rather than capability ids.
+    """
+    lines = [f"# {heading}", ""]
+    for label, value in rows:
+        if isinstance(value, (int, float)) and not value:
+            continue
+        if value in (None, "", [], ()):
+            continue
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(item) for item in value)
+        lines.append(f"- {label}: {value}")
+    if note:
+        lines.extend(["", note])
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 # Next steps
 # --------------------------------------------------------------------------- #

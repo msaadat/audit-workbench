@@ -886,11 +886,16 @@ class WorkflowRunner:
                 else "completed"
             )
         state["next_outcomes"] = list(dict.fromkeys(projection.next_outcomes))
-        self.run["summary_markdown"] = projection.summary_markdown or (
-            "# Workflow summary\n\n"
-            f"- Requested outcomes: {', '.join(state.get('requested_outcomes') or [])}\n"
-            f"- Failed/conflict units: {failed}\n"
-            f"- Open workflow units: {open_units}\n"
+        self.run["summary_markdown"] = projection.summary_markdown or narration.summary_markdown(
+            "Workflow",
+            [
+                ("Requested", [
+                    narration.humanize(item)
+                    for item in state.get("requested_outcomes") or []
+                ]),
+                ("Failed or conflicting units", failed),
+                ("Open workflow units", open_units),
+            ],
         )
         if terminal == "failed" and not self.run.get("error"):
             errors = [

@@ -54,7 +54,8 @@ const subline = computed(() => {
     parts.push(activity)
   }
   const counts = props.projection.task_counts
-  if (counts.total) parts.push(`${counts.completed}/${counts.total} done`)
+  // The status label already carries the verb, so the counts are just counts.
+  if (counts.total) parts.push(`${counts.completed}/${counts.total}`)
   if (counts.failed) parts.push(`${counts.failed} failed`)
   if (!working.value && runElapsedMs.value != null) parts.push(duration(runElapsedMs.value))
   return parts.filter(Boolean).join(' · ')

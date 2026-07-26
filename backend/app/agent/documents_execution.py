@@ -714,14 +714,16 @@ class DocumentWorkflowExecution(BaseRunner):
             )
         else:
             terminal = "completed" if not open_units else "completed_with_open_items"
-        summary = (
-            "# Document analysis\n\n"
-            f"- Documents in scope: {len(document_scope.document_ids)}\n"
-            f"- Generated analyses: {len(analyzed)}\n"
-            f"- Failed/conflict units: {failed}\n"
-            f"- Open workflow units: {open_units}\n\n"
+        summary = narration.summary_markdown(
+            "Document analysis",
+            [
+                ("Documents in scope", len(document_scope.document_ids)),
+                ("Generated analyses", len(analyzed)),
+                ("Failed or conflicting units", failed),
+                ("Open workflow units", open_units),
+            ],
             "Generated content is awaiting auditor review and is not evidence that "
-            "controls operated."
+            "controls operated.",
         )
         return FinishProjection(
             next_outcomes=tuple(dict.fromkeys(next_outcomes)),
