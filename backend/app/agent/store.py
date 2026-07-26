@@ -167,6 +167,7 @@ def new_run(
         "plan": {"stages": []},
         "approvals": [],
         "messages": [],
+        "narration": [],
         "artifacts": [],
         "findings": [],
         "summary_markdown": None,
@@ -256,7 +257,7 @@ def new_command_run(
         },
         # Shared drawer projections written by whichever engine runs the record.
         "plan": {"stages": []}, "approvals": [],
-        "messages": [], "artifacts": [], "findings": [],
+        "messages": [], "narration": [], "artifacts": [], "findings": [],
         "warnings": [], "summary_markdown": None, "error": None,
         "cancellation": None,
     }
@@ -312,6 +313,9 @@ def _hydrate_run(run: dict) -> None:
     run.setdefault("source_message_id", None)
     run.setdefault("activity", None)
     run.setdefault("activity_revision", 0)
+    # Narration is additive: runs written before it existed simply have none,
+    # and their cards fall back to the status projection.
+    run.setdefault("narration", [])
     for stage in (run.get("plan") or {}).get("stages") or []:
         for task in stage.get("tasks") or []:
             task.setdefault("started_at", None)

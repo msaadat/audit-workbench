@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .. import workflow
+from .. import narration, workflow
 from .run_runtime import Cancelled, LimitExceeded, RunRuntime
 from .unit_pipeline import (
     ContextIdentityProvider,
@@ -304,21 +304,29 @@ class WorkflowRunner:
             self._finish()
         except Cancelled:
             self._cancel_remaining()
-            self.runtime.mark_finished()
-            self._set_command_status("cancelled")
-            self.runtime.set_status("cancelled")
+            self._terminate("cancelled")
         except LimitExceeded as error:
             self.run["error"] = str(error)
             self._mark_running("failed", str(error))
-            self.runtime.mark_finished()
-            self._set_command_status("failed")
-            self.runtime.set_status("failed")
+            self._terminate("failed")
         except Exception as error:
             self.run["error"] = str(error)
             self._mark_running("failed", str(error))
-            self.runtime.mark_finished()
-            self._set_command_status("failed")
-            self.runtime.set_status("failed")
+            self._terminate("failed")
+
+    def _terminate(self, status: str) -> None:
+        """Close an abandoned run: terminal status first, then its closing turn.
+
+        A run that was cancelled or that failed is exactly the run whose reason
+        the auditor most needs stated in words, so the narration path is shared
+        with the normal ``_finish`` ending rather than skipped here.
+        """
+        narration.say(
+            self.run, self.runtime.emit, narration.closing_text(self.run, status)
+        )
+        self.runtime.mark_finished()
+        self._set_command_status(status)
+        self.runtime.set_status(status)
 
     def stable_all_settled(
         self,
@@ -807,6 +815,7 @@ class WorkflowRunner:
         return "failed"
 
     def _set_stage(self, stage: dict[str, Any], status: str) -> None:
+        previous = stage.get("status")
         stage["status"] = status
         if status == "running":
             stage["started_at"] = stage.get("started_at") or self.runtime.utcnow()
@@ -819,6 +828,26 @@ class WorkflowRunner:
             "cancelled",
         }:
             stage["finished_at"] = self.runtime.utcnow()
+        # Stage boundaries are the only points where a domain-neutral scheduler
+        # knows something a reader would want narrated, so they are where the
+        # live progress log is written from.
+        if previous != status:
+            if status == "running":
+                narration.note(
+                    self.run,
+                    self.runtime.emit,
+                    narration.stage_started(stage),
+                    kind="stage_started",
+                    stage_id=str(stage.get("id") or ""),
+                )
+            elif status != "queued":
+                narration.note(
+                    self.run,
+                    self.runtime.emit,
+                    narration.stage_settled(stage),
+                    kind="stage_settled",
+                    stage_id=str(stage.get("id") or ""),
+                )
         self.runtime.save()
         self.runtime.emit("stage_update", {"stage": copy.deepcopy(stage)})
 
@@ -871,6 +900,12 @@ class WorkflowRunner:
                 if unit.get("status") in {"failed", "conflict"} and unit.get("error")
             ]
             self.run["error"] = errors[0] if errors else "One or more workflow units failed."
+        # The closing turn is composed against the status about to be published
+        # and written before it, so a client reacting to the run finishing never
+        # sees a terminal run that has not said anything yet.
+        narration.say(
+            self.run, self.runtime.emit, narration.closing_text(self.run, terminal)
+        )
         self.runtime.mark_finished()
         self._set_command_status(terminal)
         self.runtime.set_status(terminal)

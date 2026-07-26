@@ -1077,6 +1077,35 @@ export interface AssistantChatMessage {
   error: string | null
 }
 
+/** One line of the agent's live progress log, newest last. */
+export interface AgentNarrationEntry {
+  at: string
+  kind: 'progress' | 'stage_started' | 'stage_settled' | string
+  text: string
+  stage_id: string | null
+  unit_id: string | null
+}
+
+/**
+ * A unit that stopped because it needs a person, already turned into a
+ * question. `suggestions` are ordinary chat commands, so answering a blocker
+ * goes through the same path as anything else the auditor types.
+ */
+export interface AgentBlocker {
+  unit_id: string
+  unit_ids: string[]
+  stage_id: string
+  stage_title: string
+  subject: string
+  subjects: string[]
+  code: string | null
+  status: string
+  severity: 'blocked' | 'failed' | 'review'
+  message: string
+  where: string | null
+  suggestions: Array<{ label: string; command: string }>
+}
+
 export interface AssistantRunProjection extends AgentRunSummary {
   id: string
   type: 'run'
@@ -1088,6 +1117,12 @@ export interface AssistantRunProjection extends AgentRunSummary {
   current_activity: string
   pending_attention: boolean
   summary_line: string
+  /** Humanized terminal/active status; `status` stays the machine value. */
+  status_label: string
+  /** The plan in the auditor's words, resolved before execution starts. */
+  plan_line: string
+  narration: AgentNarrationEntry[]
+  blockers: AgentBlocker[]
   /** Injected client-side for an active run owned by another chat. */
   foreign?: boolean
 }
@@ -1128,7 +1163,16 @@ export interface AssistantChat extends Omit<AssistantChatSummary, 'message_count
   runs: AssistantRunProjection[]
   missing_document_ids: string[]
   capabilities: AssistantCapabilities
+  /** What this engagement actually needs next, from workspace readiness. */
+  suggestions: AssistantSuggestion[]
   active_workspace_run: AssistantRunProjection | null
+}
+
+export interface AssistantSuggestion {
+  capability: string
+  label: string
+  command: string
+  reason: string
 }
 
 export interface AssistantAnswer {
@@ -1458,6 +1502,8 @@ export interface AgentRun {
   plan: { stages: AgentStage[] }
   approvals: AgentApproval[]
   messages: AgentMessage[]
+  /** Absent on runs recorded before narration existed. */
+  narration?: AgentNarrationEntry[]
   artifacts: { kind: string; id: string; semantic_id: string; action: string }[]
   findings: AgentFinding[]
   finding_refs?: string[]

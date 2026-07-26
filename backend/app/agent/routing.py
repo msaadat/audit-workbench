@@ -47,7 +47,7 @@ from .. import doc_tests
 from ..workspaces import Workspace, WorkspaceError, load_workspace
 from . import actions as action_catalog
 from . import capabilities as audit_capabilities
-from . import context_bundles, prompts, store, workflow
+from . import context_bundles, narration, prompts, store, workflow
 from .base import BaseRunner, LimitExceeded
 from .workflows import analysis as analysis_workflow
 from .workflows import audit as audit_workflow
@@ -736,25 +736,31 @@ def _resolve_command(runner, bundle: context_bundles.ContextBundle, supported: s
 # Route installation
 # --------------------------------------------------------------------------- #
 def _explanation(
+    registry: workflow.CapabilityRegistry,
     resolved: list[str],
     stages: list[dict],
     reused: list[str],
     requested: list[str],
 ) -> str:
-    running = [stage["capability"] for stage in stages]
-    automatically_added = [item for item in resolved if item not in requested]
-    parts = [f"Requested outcome(s): {', '.join(requested)}."]
-    if automatically_added:
-        parts.append("Added prerequisite(s): " + ", ".join(automatically_added) + ".")
-    if reused:
-        parts.append(
-            "Reusing capability output(s) with currency not assessed: "
-            + ", ".join(reused)
-            + "."
-        )
-    if running:
-        parts.append("Running in dependency order: " + " → ".join(running) + ".")
-    return " ".join(parts)
+    """The plan, in the words the auditor uses.
+
+    This string is read directly in the chat transcript, so it is built from
+    capability *titles* rather than capability ids. The dependency closure that
+    produced it is still fully recoverable from ``resolved_capabilities`` and
+    ``reused_capabilities`` on the same record.
+    """
+
+    def title(capability_id: str) -> str:
+        try:
+            return registry.get(capability_id).title
+        except WorkspaceError:
+            return narration.humanize(capability_id)
+
+    return narration.plan_sentence(
+        [str(stage.get("title") or title(stage["capability"])) for stage in stages],
+        [title(item) for item in reused],
+        added_prerequisites=any(item not in requested for item in resolved),
+    )
 
 
 def _audit_model_turns(workspace: Workspace) -> int:
@@ -922,7 +928,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
             f"Stage '{oversized['title']}' requires {len(oversized['units'])} units, "
             f"above its {maximum_units}-unit limit."
         )
-    explanation = _explanation(resolved, stages, reused, requested)
+    explanation = _explanation(registry, resolved, stages, reused, requested)
     run["schema_version"] = 3
     if analysis_route:
         calculated_model_turns = _analysis_model_turns(workspace, scope)
@@ -1134,12 +1140,19 @@ class CommandRouter(BaseRunner):
 
         if not self.run.get("started"):
             self.mark_started()
-        self.run["summary_markdown"] = route.get("clarification") or (
-            "This request is not available as an audit workflow."
+        text = route.get("clarification") or (
+            "I can't do that one as an audit workflow. Tell me which part of the "
+            "engagement you want me to work on and I'll take it from there."
         )
+        self.run["summary_markdown"] = text
         self.run["command"]["status"] = "completed"
         self.mark_finished()
         self.set_status("completed_with_open_items")
+        # A route that selects no engine produces no stages, so the answer to
+        # the command *is* the reply — it belongs in the transcript, not only
+        # in a card the auditor has to expand.
+        narration.say(self.run, self.emit, text)
+        self.save()
 
 
 def resolve_pending_route(workspace: Workspace, run: dict, handle: object) -> str | None:

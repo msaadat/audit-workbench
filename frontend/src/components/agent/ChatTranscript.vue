@@ -7,12 +7,15 @@ import EvidenceAnchorDialog from '../EvidenceAnchorDialog.vue'
 import MarkdownView from '../MarkdownView.vue'
 import AgentApprovalCard from './AgentApprovalCard.vue'
 import AgentInteractionCard from './AgentInteractionCard.vue'
+import AgentNarration from './AgentNarration.vue'
+import AgentThinking from './AgentThinking.vue'
 import ChatArtifactCard from './ChatArtifactCard.vue'
 import ChatRunCard from './ChatRunCard.vue'
 
 const props = defineProps<{ workspaceId: string; chat: AssistantChat; documents: AuditDocument[]; actionBusy?: boolean; busy?: boolean }>()
 const emit = defineEmits<{
   shortcut: [string, string]
+  command: [string]
   retry: [AssistantChatMessage]
   changed: []
   respond: [string, AssistantInteractionProjection['interaction'], Record<string, unknown>]
@@ -22,13 +25,19 @@ const scroller = ref<HTMLElement | null>(null)
 const inner = ref<HTMLElement | null>(null)
 const anchor = ref<EvidenceRef | null>(null)
 const anchorOpen = ref(false)
+// Templates stay available, but they are no longer the first thing offered:
+// what this engagement actually needs next leads, because a menu of five fixed
+// procedures frames the agent as a form to fill in.
 const shortcuts = [
   ['Full audit', 'full_audit_working_draft'], ['Planning', 'planning'],
   ['Data analysis', 'data_analysis'], ['Document tests', 'document_test_preparation'], ['Report', 'report'],
 ]
+const showTemplates = ref(false)
 // Transcript covers stored messages, run projections, and the optimistic
 // pending message, so it is the single source of truth for emptiness.
-const empty = computed(() => props.chat.transcript.length === 0)
+// A foreign run is appended for visibility only; a chat with nothing of its own
+// is still empty, and should still offer somewhere to start.
+const empty = computed(() => props.chat.transcript.every(item => item.type === 'run' && item.foreign === true))
 
 // "Stick to bottom" tracks the user's own scrolling: any content growth
 // (new items, run cards updating in place, artifacts rendering) keeps the
@@ -56,6 +65,22 @@ type TranscriptItem = AssistantChat['transcript'][number]
 function isRun(item: TranscriptItem): item is AssistantRunProjection { return item.type === 'run' }
 function isInteraction(item: TranscriptItem): item is AssistantInteractionProjection { return item.type === 'interaction' }
 function isApproval(item: TranscriptItem): item is AssistantApprovalProjection { return item.type === 'approval' }
+// Narrower than the card's notion of "active": a run that is paused, waiting on
+// the auditor, or interrupted is not working, and animating a phase line for it
+// claims progress that isn't happening.
+const WORKING_RUN_STATUSES = new Set(['queued', 'interpreting', 'executing', 'verifying'])
+function isRunWorking(item: AssistantRunProjection) { return WORKING_RUN_STATUSES.has(item.status) }
+// The word pool follows what the user actually asked for; the trailing pending
+// message is the request currently in flight.
+const pendingIntent = computed(() => {
+  for (let index = props.chat.transcript.length - 1; index >= 0; index -= 1) {
+    const item = props.chat.transcript[index]
+    if (item.type === 'message' && item.role === 'user') {
+      return (item.requested_intent === 'ask' || item.requested_intent === 'act') ? item.requested_intent : 'auto'
+    }
+  }
+  return 'auto'
+})
 function openCitation(value: NonNullable<AssistantChatMessage['citations']>[number]) { anchor.value = value; anchorOpen.value = true }
 function documentTitle(id: string) { return props.documents.find(item => item.id === id)?.title ?? 'Unavailable document' }
 function messageTime(value: string) {
@@ -70,14 +95,42 @@ function messageTime(value: string) {
     <div v-if="empty" class="empty-state">
       <span class="empty-icon"><i class="pi pi-sparkles" /></span>
       <strong>What should we work on?</strong>
-      <p>Ask a question, or start with a guided audit workflow.</p>
-      <div class="shortcuts">
+      <p>Ask me anything about this engagement, or tell me what to do next.</p>
+      <div v-if="chat.suggestions?.length" class="suggestions">
+        <button v-for="item in chat.suggestions" :key="item.capability" class="suggestion" @click="emit('command', item.command)">
+          <strong>{{ item.label }}</strong>
+          <small v-if="item.reason">{{ item.reason }}</small>
+        </button>
+      </div>
+      <button class="templates-toggle" @click="showTemplates = !showTemplates">
+        {{ showTemplates ? 'Hide' : 'Or start a guided workflow' }}
+        <i :class="showTemplates ? 'pi pi-chevron-up' : 'pi pi-chevron-down'" />
+      </button>
+      <div v-if="showTemplates" class="shortcuts">
         <Button v-for="([label, template]) in shortcuts" :key="template" :label="label" size="small" severity="secondary" outlined @click="emit('shortcut', label, template)" />
       </div>
     </div>
 
     <template v-for="item in chat.transcript" :key="item.id">
-      <ChatRunCard v-if="isRun(item)" :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" />
+      <!-- The agent's running commentary reads before the card that summarizes
+           it: you watch the work, then you get the receipt. -->
+      <template v-if="isRun(item)">
+        <!-- A run owned by another chat is context, not this conversation's
+             work: it stays a compact card and does not replay its narration
+             here. -->
+        <div v-if="!item.foreign && (item.plan_line || item.narration?.length)" class="run-log">
+          <p v-if="item.plan_line" class="plan">{{ item.plan_line }}</p>
+          <AgentNarration v-if="item.narration?.length" :entries="item.narration" :active="isRunWorking(item)" :limit="isRunWorking(item) ? 8 : 5" />
+          <!-- Timed from the model call when there is one, so a long provider
+               round trip is what the counter actually reflects. -->
+          <AgentThinking
+            v-if="isRunWorking(item)"
+            :label="item.current_activity"
+            :startedAt="item.activity?.model_started_at ?? item.activity?.started_at ?? item.started"
+          />
+        </div>
+        <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
+      </template>
       <AgentInteractionCard v-else-if="isInteraction(item)" :interaction="item.interaction" :busy="actionBusy ?? false" :workspaceId="workspaceId" :runId="item.run_id" @respond="emit('respond', item.run_id, item.interaction, $event)" />
       <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" @decide="emit('decide', item.run_id, item.approval, $event)" />
       <div v-else class="message" :class="[item.role, item.kind, item.state]">
@@ -101,8 +154,8 @@ function messageTime(value: string) {
     </template>
 
     <div v-if="busy" class="message assistant">
-      <div class="bubble typing" aria-label="Assistant is working">
-        <span class="dot" /><span class="dot" /><span class="dot" />
+      <div class="bubble typing">
+        <AgentThinking :intent="pendingIntent" />
       </div>
     </div>
     </div>
@@ -111,5 +164,7 @@ function messageTime(value: string) {
 </template>
 
 <style scoped>
-.transcript{flex:1;min-height:0;overflow:auto}.transcript-inner{display:flex;flex-direction:column;gap:.65rem;min-height:100%;padding:.8rem .9rem}.empty-state{display:grid;justify-items:center;gap:.55rem;margin:auto;padding:1.5rem;text-align:center}.empty-icon{display:grid;place-items:center;width:3rem;height:3rem;border-radius:12px;background:var(--aw-teal-soft);color:var(--aw-teal);font-size:1.25rem}.empty-state p{margin:0;color:var(--aw-muted);font-size:.78rem}.shortcuts{display:flex;justify-content:center;flex-wrap:wrap;gap:.4rem;margin-top:.35rem}.message{max-width:92%}.message.user{align-self:flex-end}.message.assistant{align-self:flex-start}.bubble{position:relative;display:flex;align-items:center;gap:.4rem;padding:.55rem .7rem;border-radius:10px;background:var(--p-surface-100);font-size:.79rem;line-height:1.4}.user .bubble{background:var(--aw-teal);color:white;border-bottom-right-radius:3px}.assistant .bubble{background:var(--p-surface-100);border-bottom-left-radius:3px}.clarification .bubble{background:#fff7e6;border:1px solid #f0d9a8}.error .bubble,.failed .bubble{background:var(--p-red-50);color:var(--p-red-700)}.bubble p{margin:0;white-space:pre-wrap}.bubble-markdown{min-width:0;font-size:.79rem}.bubble-markdown :deep(> :first-child){margin-top:0}.bubble-markdown :deep(> :last-child){margin-bottom:0}.bubble-markdown :deep(h1){font-size:.95rem;margin:.5rem 0 .3rem}.bubble-markdown :deep(h2){font-size:.88rem;margin:.5rem 0 .25rem}.bubble-markdown :deep(h3),.bubble-markdown :deep(h4){font-size:.82rem;margin:.45rem 0 .2rem}.bubble-markdown :deep(table){font-size:.72rem;margin:.45rem 0}.bubble-markdown :deep(th),.bubble-markdown :deep(td){padding:.3rem .4rem}.bubble.typing{padding:.65rem .8rem}.typing .dot{width:.38rem;height:.38rem;border-radius:50%;background:var(--aw-muted);animation:typing-bounce 1.2s infinite ease-in-out}.typing .dot:nth-child(2){animation-delay:.15s}.typing .dot:nth-child(3){animation-delay:.3s}@keyframes typing-bounce{0%,60%,100%{opacity:.35;transform:translateY(0)}30%{opacity:1;transform:translateY(-.18rem)}}.intent{align-self:flex-end;opacity:.65;text-transform:uppercase;font-size:.55rem}.trace{margin:.3rem 0;font-size:.68rem;color:var(--aw-muted)}.trace summary{cursor:pointer}.trace div{padding:.1rem .3rem}.citations{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.warning{margin-top:.35rem;padding:.4rem;border-radius:6px;background:#fff7e6;color:#8a5a00;font-size:.68rem}
+.transcript{flex:1;min-height:0;overflow:auto}.transcript-inner{display:flex;flex-direction:column;gap:.65rem;min-height:100%;padding:.8rem .9rem}.empty-state{display:grid;justify-items:center;gap:.55rem;margin:auto;padding:1.5rem;text-align:center}.empty-icon{display:grid;place-items:center;width:3rem;height:3rem;border-radius:12px;background:var(--aw-teal-soft);color:var(--aw-teal);font-size:1.25rem}.empty-state p{margin:0;color:var(--aw-muted);font-size:.78rem}.shortcuts{display:flex;justify-content:center;flex-wrap:wrap;gap:.4rem;margin-top:.35rem}.suggestions{display:grid;gap:.35rem;width:100%;max-width:20rem;margin-top:.35rem}.suggestion{display:grid;gap:.1rem;padding:.5rem .6rem;border:1px solid var(--aw-border);border-radius:8px;background:var(--p-surface-0);text-align:left;cursor:pointer;color:inherit}.suggestion:hover{border-color:var(--aw-teal);background:var(--aw-teal-soft)}.suggestion strong{font-size:.78rem;font-weight:500}.suggestion small{font-size:.68rem;color:var(--aw-muted)}.templates-toggle{display:inline-flex;align-items:center;gap:.3rem;margin-top:.2rem;border:0;background:transparent;color:var(--aw-muted);font-size:.7rem;cursor:pointer}.templates-toggle i{font-size:.55rem}.message{max-width:92%}.message.user{align-self:flex-end}.message.assistant{align-self:flex-start}.bubble{position:relative;display:flex;align-items:center;gap:.4rem;padding:.55rem .7rem;border-radius:10px;background:var(--p-surface-100);font-size:.79rem;line-height:1.4}.user .bubble{background:var(--aw-teal);color:white;border-bottom-right-radius:3px}.assistant .bubble{background:var(--p-surface-100);border-bottom-left-radius:3px}.clarification .bubble{background:#fff7e6;border:1px solid #f0d9a8}.error .bubble,.failed .bubble{background:var(--p-red-50);color:var(--p-red-700)}.bubble p{margin:0;white-space:pre-wrap}.bubble-markdown{min-width:0;font-size:.79rem}.bubble-markdown :deep(> :first-child){margin-top:0}.bubble-markdown :deep(> :last-child){margin-bottom:0}.bubble-markdown :deep(h1){font-size:.95rem;margin:.5rem 0 .3rem}.bubble-markdown :deep(h2){font-size:.88rem;margin:.5rem 0 .25rem}.bubble-markdown :deep(h3),.bubble-markdown :deep(h4){font-size:.82rem;margin:.45rem 0 .2rem}.bubble-markdown :deep(table){font-size:.72rem;margin:.45rem 0}.bubble-markdown :deep(th),.bubble-markdown :deep(td){padding:.3rem .4rem}.bubble.typing{padding:.5rem .7rem;background:transparent}
+.run-log{display:grid;gap:.3rem;max-width:92%;align-self:flex-start;padding:.1rem 0}
+.run-log .plan{margin:0;font-size:.79rem;line-height:1.45}.intent{align-self:flex-end;opacity:.65;text-transform:uppercase;font-size:.55rem}.trace{margin:.3rem 0;font-size:.68rem;color:var(--aw-muted)}.trace summary{cursor:pointer}.trace div{padding:.1rem .3rem}.citations{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.warning{margin-top:.35rem;padding:.4rem;border-radius:6px;background:#fff7e6;color:#8a5a00;font-size:.68rem}
 </style>

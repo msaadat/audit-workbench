@@ -60,6 +60,10 @@ watch(() => [
   agent.state.run?.graph_revision ?? 0,
   agent.state.run?.warnings.length ?? 0,
   agent.state.run?.pending_commands?.length ?? 0,
+  // Narration and the agent's own turns are the live content of the transcript,
+  // so they have to pull a chat refresh the same way status changes do.
+  agent.state.run?.narration?.length ?? 0,
+  agent.state.run?.messages?.length ?? 0,
 ].join(':'), () => {
   if (chats.state.activeChatId) void chats.refresh()
 })
@@ -71,6 +75,18 @@ async function send(content: string, sendIntent: AssistantMessageIntent = 'auto'
   try {
     await chats.send(content, sendIntent, mode.value, { goalTemplate, source })
   } catch (error) { fail('Message failed', error) }
+}
+function stopRun() {
+  confirm.require({
+    header: 'Stop the run',
+    message: 'Stop the agent here? Work already committed to the workspace is kept.',
+    icon: 'pi pi-stop-circle',
+    acceptProps: { label: 'Stop', severity: 'danger' },
+    rejectProps: { label: 'Keep going', severity: 'secondary', outlined: true },
+    accept: async () => {
+      try { await agent.cancel() } catch (error) { fail('Could not stop the run', error) }
+    },
+  })
 }
 function shortcut(label: string, template: string) {
   const text = template === 'full_audit_working_draft' ? 'Prepare a full audit working draft.' : `Start ${label.toLowerCase()} work for this engagement.`
@@ -145,7 +161,7 @@ function fail(summary: string, error: unknown) { toast.add({ severity: 'error', 
     </header>
       <ChatHistoryPanel v-if="showHistory" :chats="chats.state.summaries" :activeId="chats.state.activeChatId" @select="chats.switchChat($event); showHistory = false" @create="chats.createChat(); showHistory = false" @rename="rename" @remove="remove" @close="showHistory = false" />
       <div v-if="chats.state.loading && !displayChat" class="loading"><i class="pi pi-spin pi-spinner" /> Loading chat…</div>
-      <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" @shortcut="shortcut" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
+      <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" @shortcut="shortcut" @command="send($event, 'act')" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
       <ChatComposer
         v-if="activeChat"
         v-model:mode="mode"
@@ -153,9 +169,11 @@ function fail(summary: string, error: unknown) { toast.add({ severity: 'error', 
         :capabilities="chats.state.capabilities"
         :documents="documents"
         :selectedIds="activeChat.composer_context.document_ids"
+        :runActive="runActive"
         @send="send"
         @documents="pickerOpen = true"
         @removeDocument="chats.removeDocument"
+        @stop="stopRun"
       />
     </template>
   </aside>

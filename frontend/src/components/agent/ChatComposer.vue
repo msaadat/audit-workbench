@@ -13,12 +13,14 @@ const props = defineProps<{
   mode: AgentMode
   documents: AuditDocument[]
   selectedIds: string[]
+  runActive?: boolean
 }>()
 const emit = defineEmits<{
   send: [string]
   'update:mode': [AgentMode]
   documents: []
   removeDocument: [string]
+  stop: []
 }>()
 const draft = ref('')
 const modeOptions = [
@@ -33,6 +35,8 @@ const placeholder = computed(() => {
   // Capabilities are unknown while the chat is still loading; only a loaded
   // "nothing configured" state should show the configuration hint.
   if (props.capabilities && !props.capabilities.ask && !props.capabilities.act) return 'Configure an assistant or agent model first'
+  // Steering a live run has always worked; nothing ever said so.
+  if (props.runActive) return 'Send a message to steer the run…'
   return 'Ask a question or request an action…'
 })
 function submit() { const value = draft.value.trim(); if (!value || !canSend.value) return; draft.value = ''; emit('send', value) }
@@ -56,6 +60,9 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
         <template #option="{ option }"><span :title="option.hint">{{ option.label }}</span></template>
       </SelectButton>
       <span class="grow" />
+      <!-- Stopping a run is a first-class action, not something to hunt for
+           inside an expanded card. -->
+      <Button v-if="runActive" icon="pi pi-stop-circle" size="small" severity="danger" outlined aria-label="Stop the run" @click="emit('stop')" />
       <Button icon="pi pi-send" size="small" aria-label="Send" :loading="busy" :disabled="!canSend" @click="submit" />
     </div>
   </div>

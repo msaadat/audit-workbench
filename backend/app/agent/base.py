@@ -33,6 +33,12 @@ def _plain_json(value: object) -> object:
 
 
 MODEL_WAIT_LABELS = {
+    # Every worker that can hold a run needs a line here; an unmapped tag falls
+    # back to "Waiting for the model", which tells the auditor nothing about
+    # what is actually being worked out.
+    "agent:workflow_router": "Working out which workflow this needs",
+    "agent:report": "Drafting the audit report",
+    "agent:report_editorial": "Editing the audit report",
     "agent:command_interpreter": "Preparing the action plan",
     "agent:command_planner": "Planning the next fieldwork steps",
     "agent:document_context": "Analyzing planning documents",

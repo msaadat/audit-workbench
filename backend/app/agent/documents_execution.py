@@ -23,7 +23,7 @@ import uuid
 from .. import document_analysis
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceError, load_workspace
-from . import store, workflow
+from . import narration, store, workflow
 from .base import BaseRunner
 from .workflow import semantic_unit_id
 from .capabilities import DOCUMENTS_REGISTRY
@@ -133,6 +133,33 @@ class DocumentWorkflowExecution(BaseRunner):
             return "refresh"
         return str((self.run.get("workflow") or {}).get("document_action") or "analyze")
 
+    def _unreadable_document(
+        self, document_id: str, result_refs: tuple[str, ...] = ()
+    ) -> DeterministicUnitResult:
+        """Settle a document that has no text a model could read.
+
+        A scan with no extractable text is a fact about the file, not a
+        judgement call, so in auto mode the run skips it and carries on rather
+        than stopping to ask a question with one sensible answer. Permission
+        mode still asks, because that is what the mode is for.
+
+        Skipping is never silent: the run warns, narrates the skip, and names
+        the document in its closing summary, so a document that contributed
+        nothing to the analysis is always visible as such.
+        """
+        if workflow_scope(self.run).get("permission_mode"):
+            return DeterministicUnitResult(
+                "awaiting_confirmation", result_refs, DOCUMENT_TEXT_UNAVAILABLE
+            )
+        title = self._title(document_id)
+        narration.note(
+            self.run,
+            self.emit,
+            f"Skipped {title} — no readable text, most likely a scan.",
+            kind="skipped",
+        )
+        return DeterministicUnitResult("skipped", result_refs, DOCUMENT_TEXT_UNAVAILABLE)
+
     @staticmethod
     def _parent(unit: dict, prefix: str) -> str:
         return next(
@@ -184,11 +211,7 @@ class DocumentWorkflowExecution(BaseRunner):
             self.warn(f"'{self._title(document_id)}' cannot be analyzed: {reason}")
             self.task_detail(task, f"{self._title(document_id)}: {reason}")
             self.task_status(task, "completed")
-            return DeterministicUnitResult(
-                "awaiting_confirmation",
-                (document_ref(document_id),),
-                DOCUMENT_TEXT_UNAVAILABLE,
-            )
+            return self._unreadable_document(document_id, (document_ref(document_id),))
         pages = len(extracted.get("pages") or [])
         self.task_detail(task, f"{self._title(document_id)}: {pages} page(s) extracted.")
         self.task_status(task, "completed")
@@ -317,9 +340,7 @@ class DocumentWorkflowExecution(BaseRunner):
         document_id = self._parent(unit, "document")
         extracted = analyzable(self.ws, document_id)
         if extracted is None:
-            return DeterministicUnitResult(
-                "awaiting_confirmation", (), DOCUMENT_TEXT_UNAVAILABLE
-            )
+            return self._unreadable_document(document_id)
         scope = workflow_scope(self.run)
         chunks = chunk_specs(self.ws, document_id, scope)
         analyses, missing = self._chunk_analyses(document_id, chunks)

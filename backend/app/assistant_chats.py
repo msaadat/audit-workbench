@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import assistant, debug_store, llm
-from .agent import routing, runner, store
+from .agent import narration, routing, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 CHATS_DIRNAME = "AssistantChats"
@@ -222,6 +222,23 @@ def delete_chat(workspace: Workspace, chat_id: str) -> None:
         raise WorkspaceError("Unsafe assistant chat path.")
     if not (target / "chat.json").is_file():
         raise WorkspaceError(f"Assistant chat '{chat_id}' not found.")
+    # Runs outlive the chat directory that launched them. A non-terminal one
+    # left behind becomes the workspace's "active run" indefinitely and
+    # reappears at the bottom of every new chat with no conversation to return
+    # to, so deleting the conversation stops the work it started.
+    for summary in store.list_runs(workspace):
+        if summary.get("chat_id") != chat_id:
+            continue
+        if summary.get("status") in store.TERMINAL_STATUSES:
+            continue
+        try:
+            runner.cancel_run(
+                workspace, str(summary["id"]),
+                reason="The chat that started this run was deleted.",
+                source="chat_delete",
+            )
+        except WorkspaceError:
+            continue
     shutil.rmtree(target)
     # Drop the per-path locks so long-lived processes don't accumulate one
     # entry per deleted chat.
@@ -403,11 +420,34 @@ def _touch(workspace: Workspace, chat_id: str) -> None:
         write_json_atomic(path, record)
 
 
+def _orphaned_run(workspace: Workspace, summary: dict) -> bool:
+    """True when the chat that started this run no longer exists.
+
+    An orphan has nowhere to be answered and nothing to resume it, so it must
+    not count as the workspace's active run: steering would queue commands onto
+    a record that will never execute them, and the messages would vanish.
+
+    A run with no ``chat_id`` at all (started from a tab button) is not
+    orphaned — it never had a conversation to lose.
+    """
+    owner = str(summary.get("chat_id") or "")
+    if not owner:
+        return False
+    try:
+        return not (chat_dir(workspace, owner) / "chat.json").is_file()
+    except WorkspaceError:
+        # A malformed chat id can never name a chat that exists.
+        return True
+
+
 def _active_run(workspace: Workspace, summaries: list[dict] | None = None) -> dict | None:
     active = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
     if summaries is None:
         summaries = store.list_runs(workspace)
-    matches = [item for item in summaries if item.get("status") in active]
+    matches = [
+        item for item in summaries
+        if item.get("status") in active and not _orphaned_run(workspace, item)
+    ]
     if not matches:
         return None
     return store.load_run(workspace, matches[0]["id"])
@@ -784,23 +824,78 @@ def _current_activity(run: dict) -> str:
     return str(run.get("status") or "").replace("_", " ")
 
 
+def _summary_line(run: dict) -> str:
+    """One line of plain language about where the run got to.
+
+    The domain summary markdown is an audit work product whose first line is a
+    heading ("# Document analysis"), which says nothing on a card. The agent's
+    own closing turn is the sentence a reader wants, so it is preferred and the
+    markdown heading is never used as a summary.
+    """
+    for message in reversed(run.get("messages") or []):
+        if message.get("role") == "agent":
+            first = str(message.get("content") or "").strip().splitlines()
+            if first and first[0].strip():
+                return first[0].strip()
+    for entry in reversed(run.get("narration") or []):
+        if str(entry.get("text") or "").strip():
+            return str(entry["text"]).strip()
+    if run.get("error"):
+        return str(run["error"])
+    if run.get("warnings"):
+        return str(run["warnings"][-1])
+    # Runs recorded before narration existed still deserve a sentence; the
+    # closing text is a pure projection, so it can be derived on read.
+    if str(run.get("status") or "") in store.TERMINAL_STATUSES:
+        derived = narration.closing_text(run).splitlines()
+        if derived:
+            return derived[0]
+    return ""
+
+
+# Terminal statuses are the run's verdict; a raw identifier ("completed with
+# open items") makes the reader translate it. These do not replace `status`,
+# which stays the machine value every client already keys on.
+_STATUS_LABELS = {
+    "queued": "Queued",
+    "interpreting": "Working out the plan",
+    "executing": "Working",
+    "verifying": "Checking the result",
+    "awaiting_approval": "Waiting for your approval",
+    "awaiting_input": "Waiting for your answer",
+    "paused": "Paused",
+    "interrupted": "Interrupted",
+    "completed": "Done",
+    "completed_with_open_items": "Done, with things for you",
+    "completed_with_issues": "Done, with issues",
+    "failed": "Couldn't finish",
+    "cancelled": "Stopped",
+}
+
+
 def _run_projection(run: dict) -> dict:
     summary = store.run_summary(run)
-    summary_line = (str(run.get("summary_markdown") or "").strip().splitlines() or [""])[0]
-    if not summary_line:
-        summary_line = str(run.get("error") or "")
-    if not summary_line and run.get("warnings"):
-        summary_line = str(run["warnings"][-1])
+    open_items = narration.blockers(run)
+    status = str(run.get("status") or "")
     summary.update({
         "type": "run", "derived": True, "run_id": run["id"],
         "id": f"run:{run['id']}", "created_at": run.get("created"),
         "title": (run.get("command") or {}).get("text") or (run.get("goal") or {}).get("objective") or run.get("kind", "Agent run"),
         "current_activity": _current_activity(run),
+        # A unit that stopped needing a person is attention even when it never
+        # became a typed interaction — that gap is why blocked work used to end
+        # a run silently.
         "pending_attention": bool(
             any(item.get("status") == "pending" for item in run.get("approvals") or [])
             or any(item.get("status") == "pending" for item in run.get("interactions") or [])
+            or any(item["severity"] != "review" for item in open_items)
         ),
-        "summary_line": summary_line,
+        "status_label": _STATUS_LABELS.get(status, status.replace("_", " ")),
+        "plan_line": (run.get("workflow") or {}).get("workflow_explanation") or "",
+        # The tail is what a live card shows; the whole log stays on the record.
+        "narration": list(run.get("narration") or [])[-12:],
+        "blockers": open_items,
+        "summary_line": _summary_line(run),
     })
     return summary
 
@@ -843,6 +938,14 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
             linked_runs[run["id"]] = run
             linked.append(_run_projection(run))
     by_run = {item["run_id"]: item for item in linked}
+    # A command queued behind a busy run is relaunched as its own child run when
+    # the parent finishes, and that child carries the queueing message's id. It
+    # is how a queued command is told apart from one that was never drained.
+    by_source_message = {}
+    for projection in linked:
+        source = str(projection.get("source_message_id") or "")
+        if source:
+            by_source_message.setdefault(source, projection)
     transcript = [dict(item, type="message", derived=False) for item in record.get("messages") or []]
     documents_by_id = {str(item.get("id")): item for item in workspace.documents}
     for item in transcript:
@@ -855,19 +958,60 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 )
             )
     for item in record.get("messages") or []:
-        run_id = (item.get("outcome") or {}).get("run_id")
+        outcome = item.get("outcome") or {}
+        run_id = outcome.get("run_id")
         if run_id and not RUN_ID_RE.fullmatch(str(run_id)):
             continue
-        if run_id and run_id in by_run:
-            card = dict(by_run[run_id], created_at=item.get("created_at"), ordinal=float(item.get("ordinal") or 0) + 0.5, source_message_id=item["id"])
-            transcript.append(card)
-        elif run_id and (item.get("outcome") or {}).get("kind") == "command_queued":
+        # A queued command is projected as the command, always — never as the
+        # run it is waiting on. Testing `run_id in by_run` first appended a
+        # second, identical copy of that run's card (sharing its id) whenever
+        # the run belonged to this same chat, which is the ordinary case for a
+        # follow-up message steering a live run.
+        launched = by_source_message.get(str(item.get("id") or ""))
+        if run_id and outcome.get("kind") == "command_queued" and launched is not None:
+            # The queue drained: this command became its own run. Show that run
+            # in the message's place rather than a card still saying "queued".
+            transcript.append(dict(
+                launched,
+                created_at=item.get("created_at"),
+                ordinal=float(item.get("ordinal") or 0) + 0.5,
+                source_message_id=item["id"],
+            ))
+        elif run_id and outcome.get("kind") == "command_queued":
             try:
-                parent = _run_projection(store.load_run(workspace, run_id))
+                parent_run = linked_runs.get(run_id) or store.load_run(workspace, run_id)
+                parent = _run_projection(parent_run)
+                position = (item.get("outcome") or {}).get("position") or 1
+                # A command only leaves the queue when its parent finishes
+                # cleanly. A parent that died, or whose chat was deleted, will
+                # never drain it, and reporting that as "queued" waits forever.
+                stranded = (
+                    parent_run.get("status") in store.TERMINAL_STATUSES
+                    or _orphaned_run(workspace, parent)
+                )
+                # The card sits directly beneath the message that produced it,
+                # so titling it with that same text printed the request twice.
+                # It identifies the run being waited on instead.
                 parent.update({
                     "id": f"run:{run_id}:command:{(item.get('outcome') or {}).get('command_id')}",
-                    "title": item.get("content") or parent["title"], "status": "queued",
-                    "current_activity": f"queued position {(item.get('outcome') or {}).get('position') or 1}",
+                    "status": "cancelled" if stranded else "queued",
+                    "status_label": "Didn't run" if stranded else "Queued",
+                    "current_activity": (
+                        "the run it was waiting for ended first — send it again"
+                        if stranded
+                        else f"waiting for “{parent['title']}” to finish"
+                        if position <= 1
+                        else f"number {position} in the queue behind “{parent['title']}”"
+                    ),
+                    "title": "Queued for the agent",
+                    "plan_line": "", "narration": [], "blockers": [],
+                    "summary_line": "", "pending_attention": False,
+                    # This card is the command, not the run it is waiting on:
+                    # inheriting the parent's counters and clock would report
+                    # the parent's progress as though it were the command's.
+                    "task_counts": {"total": 0, "completed": 0, "failed": 0, "blocked": 0},
+                    "started": None, "finished": None, "duration_ms": None,
+                    "activity": None, "next_outcomes": [], "error": None,
                     "created_at": item.get("created_at"),
                     "ordinal": float(item.get("ordinal") or 0) + 0.5,
                     "source_message_id": item["id"],
@@ -875,8 +1019,16 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 transcript.append(parent)
             except WorkspaceError:
                 pass
+        elif run_id and run_id in by_run:
+            card = dict(by_run[run_id], created_at=item.get("created_at"), ordinal=float(item.get("ordinal") or 0) + 0.5, source_message_id=item["id"])
+            transcript.append(card)
     # Child runs can appear after a queued parent ends; include unplaced links.
-    placed = {item.get("run_id") for item in transcript if item.get("type") == "run"}
+    # A queued-command card carries its parent's ``run_id`` but is not that
+    # run's card, so it must not satisfy the placement check.
+    placed = {
+        item.get("run_id") for item in transcript
+        if item.get("type") == "run" and ":command:" not in str(item.get("id") or "")
+    }
     transcript.extend(item for item in linked if item["run_id"] not in placed)
     # Run-owned conversational messages and typed attention items are response
     # projections.  They retain stable derived IDs and are never written back
@@ -932,9 +1084,16 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
     result.update({
         "transcript": transcript, "artifacts": artifacts, "artifact_errors": artifact_errors,
         "runs": linked, "missing_document_ids": missing, "capabilities": capabilities(),
+        "suggestions": narration.next_steps(workspace),
     })
     active_statuses = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
-    active_summary = next((item for item in run_summaries if item.get("status") in active_statuses), None)
+    active_summary = next(
+        (
+            item for item in run_summaries
+            if item.get("status") in active_statuses and not _orphaned_run(workspace, item)
+        ),
+        None,
+    )
     active = None
     if active_summary is not None:
         active = linked_runs.get(active_summary["id"])

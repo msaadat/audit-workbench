@@ -243,14 +243,14 @@ def test_unit_expansion_never_extracts_and_readiness_reports_missing_text():
     assert document_capabilities.chunk_specs(refreshed, document["id"], scope)
 
 
-def test_image_only_documents_settle_for_review_without_failing_the_run(monkeypatch):
-    ws = workspaces.create_workspace("Image only document")
+def _image_only_run(mode: str, monkeypatch):
+    ws = workspaces.create_workspace(f"Image only document {mode}")
     document = documents.add_document(ws, "scan.png", b"\x89PNG\r\n\x1a\n" + b"0" * 64)
     _fake_model(monkeypatch)
 
     finished = wait_run(ws, runner.start_command_run(
         ws,
-        "auto",
+        mode,
         {
             "source": "tab_button",
             "text": "Analyze 1 selected document(s).",
@@ -260,13 +260,18 @@ def test_image_only_documents_settle_for_review_without_failing_the_run(monkeypa
         },
         context={"document_ids": [document["id"]], "action": "analyze"},
     )["id"])
-
-    assert finished["status"] == "completed_with_open_items"
     units = [
         unit
         for stage in finished["workflow"]["stages"]
         for unit in stage.get("units") or []
     ]
+    return ws, document, finished, units
+
+
+def test_permission_mode_settles_an_image_only_document_for_review(monkeypatch):
+    ws, document, finished, units = _image_only_run("permission", monkeypatch)
+
+    assert finished["status"] == "completed_with_open_items"
     assert any(
         unit["status"] == "awaiting_confirmation"
         and unit["error"] == document_executors.DOCUMENT_TEXT_UNAVAILABLE
@@ -275,6 +280,32 @@ def test_image_only_documents_settle_for_review_without_failing_the_run(monkeypa
     assert document_analysis.generated_record(
         workspaces.load_workspace(ws.id), document["id"]
     ) is None
+
+
+def test_auto_mode_skips_an_image_only_document_and_says_so(monkeypatch):
+    """Auto mode answers a question that has one sensible answer.
+
+    A file with no extractable text cannot be analyzed by any decision the
+    auditor could make here, so stopping to ask stalls the run for nothing.
+    The skip is still on the record, in the narration, and in the run's closing
+    message — never silent.
+    """
+    ws, document, finished, units = _image_only_run("auto", monkeypatch)
+
+    assert finished["status"] == "completed"
+    assert not any(unit["status"] == "awaiting_confirmation" for unit in units)
+    assert any(
+        unit["status"] == "skipped"
+        and unit["error"] == document_executors.DOCUMENT_TEXT_UNAVAILABLE
+        for unit in units
+    )
+    # Nothing was fabricated for a document that could not be read.
+    assert document_analysis.generated_record(
+        workspaces.load_workspace(ws.id), document["id"]
+    ) is None
+    assert any("Skipped scan" in entry["text"] for entry in finished["narration"])
+    closing = next(item for item in finished["messages"] if item["role"] == "agent")
+    assert "I skipped scan" in closing["content"]
 
 
 # --------------------------------------------------------------------------- #
