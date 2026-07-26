@@ -1,7 +1,8 @@
-"""Persisted assistant provider/model settings.
+"""Persisted assistant and agent model-profile settings.
 
 Secrets stay in ``.env`` or the process environment. This file stores only the
-normal, non-secret choices the user can edit from the UI: provider and model.
+normal, non-secret choices the user can edit from the UI: provider, model, and
+declared capabilities for custom agent-vision profiles.
 """
 
 from __future__ import annotations
@@ -22,6 +23,11 @@ PROVIDERS = {
         "local": False,
         "vision": True,
         "vision_model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "model_capabilities": {
+            "llama-3.3-70b-versatile": [],
+            "llama-3.1-8b-instant": [],
+            "meta-llama/llama-4-scout-17b-16e-instruct": ["vision"],
+        },
     },
     "openrouter": {
         "label": "OpenRouter",
@@ -36,6 +42,11 @@ PROVIDERS = {
         "local": False,
         "vision": True,
         "vision_model": "openai/gpt-4o-mini",
+        "model_capabilities": {
+            "~openai/gpt-latest": ["vision"],
+            "openai/gpt-4o-mini": ["vision"],
+            "anthropic/claude-3.5-sonnet": ["vision"],
+        },
     },
     "mistral": {
         "label": "Mistral",
@@ -46,6 +57,12 @@ PROVIDERS = {
         "local": False,
         "vision": True,
         "vision_model": "pixtral-large-latest",
+        "model_capabilities": {
+            "mistral-large-latest": [],
+            "mistral-medium-3-5": [],
+            "mistral-small-latest": [],
+            "pixtral-large-latest": ["vision"],
+        },
     },
     "opencode": {
         "label": "OpenCode Zen",
@@ -55,6 +72,7 @@ PROVIDERS = {
         "models": ["deepseek-v4-flash-free"],
         "local": False,
         "vision": False,
+        "model_capabilities": {"deepseek-v4-flash-free": []},
     },
     "cerebras": {
         "label": "Cerebras",
@@ -64,6 +82,7 @@ PROVIDERS = {
         "models": ["gpt-oss-120b"],
         "local": False,
         "vision": False,
+        "model_capabilities": {"gpt-oss-120b": []},
     },
     "lmstudio": {
         "label": "LM Studio",
@@ -74,6 +93,10 @@ PROVIDERS = {
         "local": True,
         "vision": True,
         "vision_model": "",
+        # LM Studio accepts arbitrary local model identifiers. Capabilities are
+        # therefore never inferred from this catalog and must be declared in the
+        # persisted agent-vision profile or environment.
+        "model_capabilities": {},
     },
 }
 
@@ -139,6 +162,49 @@ def load() -> dict:
     return {"provider": provider, "model": model}
 
 
+def _stored_document() -> dict:
+    if not SETTINGS_PATH.exists():
+        return {}
+    try:
+        stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SettingsError(f"Could not read assistant settings: {error}") from error
+    return stored if isinstance(stored, dict) else {}
+
+
+def load_agent_vision_profile() -> dict | None:
+    """Return the optional non-secret custom vision profile declaration."""
+
+    stored = _stored_document()
+    value = stored.get("agent_vision")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SettingsError("Agent vision profile must be an object.")
+    provider = _clean_provider(value.get("provider"))
+    model = str(value.get("model") or "").strip()
+    if not model:
+        raise SettingsError("Agent vision profile model is required.")
+    raw_capabilities = value.get("capabilities")
+    if not isinstance(raw_capabilities, list):
+        raise SettingsError("Agent vision profile capabilities must be an array.")
+    capabilities = sorted(
+        {str(item or "").strip().lower() for item in raw_capabilities if str(item or "").strip()}
+    )
+    unknown = [item for item in capabilities if item not in {"vision"}]
+    if unknown:
+        raise SettingsError(f"Unknown model capability '{unknown[0]}'.")
+    if "vision" not in capabilities:
+        raise SettingsError(
+            "A custom agent vision profile must explicitly declare the vision capability."
+        )
+    return {
+        "provider": provider,
+        "model": model,
+        "capabilities": capabilities,
+    }
+
+
 def save(changes: dict) -> dict:
     current = load()
     provider = _clean_provider(changes.get("provider", current["provider"]))
@@ -147,9 +213,46 @@ def save(changes: dict) -> dict:
         model = _default_model(provider)
     current = {"provider": provider, "model": model}
 
+    stored = _stored_document()
+    stored["assistant"] = current
+    if "vision_profile" in changes or "agent_vision" in changes:
+        profile = changes.get("vision_profile", changes.get("agent_vision"))
+        if profile is None:
+            stored.pop("agent_vision", None)
+        elif not isinstance(profile, dict):
+            raise SettingsError("Agent vision profile must be an object.")
+        else:
+            # Validate the exact shape through the same reader contract before
+            # persisting it as the authoritative custom declaration.
+            provider_value = _clean_provider(profile.get("provider"))
+            model_value = str(profile.get("model") or "").strip()
+            capabilities_value = profile.get("capabilities")
+            if not model_value:
+                raise SettingsError("Agent vision profile model is required.")
+            if not isinstance(capabilities_value, list):
+                raise SettingsError(
+                    "Agent vision profile capabilities must be an array."
+                )
+            capabilities = sorted(
+                {
+                    str(item or "").strip().lower()
+                    for item in capabilities_value
+                    if str(item or "").strip()
+                }
+            )
+            if capabilities != ["vision"]:
+                raise SettingsError(
+                    "A custom agent vision profile must explicitly declare only "
+                    "the supported vision capability."
+                )
+            stored["agent_vision"] = {
+                "provider": provider_value,
+                "model": model_value,
+                "capabilities": capabilities,
+            }
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(
-        json.dumps({"assistant": current}, indent=2),
+        json.dumps(stored, indent=2),
         encoding="utf-8",
     )
     return current
@@ -172,6 +275,7 @@ def provider_options() -> list[dict]:
                 "local": meta["local"],
                 "vision": bool(meta.get("vision")),
                 "vision_model": meta.get("vision_model") or "",
+                "model_capabilities": dict(meta.get("model_capabilities") or {}),
             }
         )
     return options

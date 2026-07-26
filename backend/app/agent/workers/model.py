@@ -337,6 +337,7 @@ class WorkerDefinition:
     response_schema: WorkerResponseSchema
     repair_policy: WorkerRepairPolicy
     implementation: WorkerImplementation = field(repr=False, compare=False)
+    required_model_capabilities: tuple[str, ...] = ()
     semantic_validation_hash: str | None = None
     semantic_validator: SemanticValidator | None = field(
         default=None, repr=False, compare=False
@@ -358,6 +359,23 @@ class WorkerDefinition:
             )
         if not callable(self.implementation):
             raise ValueError("worker_definition.implementation must be callable.")
+        capabilities = tuple(
+            sorted(
+                {
+                    _normalized_id(
+                        value,
+                        "worker_definition.required_model_capabilities",
+                    )
+                    for value in self.required_model_capabilities
+                }
+            )
+        )
+        unknown = [value for value in capabilities if value not in {"vision"}]
+        if unknown:
+            raise ValueError(
+                f"Unknown required model capability '{unknown[0]}'."
+            )
+        object.__setattr__(self, "required_model_capabilities", capabilities)
         if self.semantic_validator is None:
             if self.semantic_validation_hash is not None:
                 raise ValueError(
@@ -382,6 +400,9 @@ class WorkerDefinition:
             "response_schema_id": self.response_schema.schema_id,
             "response_schema_hash": self.response_schema.schema_hash,
             "semantic_validation_hash": self.semantic_validation_hash,
+            "required_model_capabilities": list(
+                self.required_model_capabilities
+            ),
             "repair_policy": self.repair_policy.to_dict(),
         }
 
@@ -482,7 +503,29 @@ class WorkerRegistry:
         total_attempts = 1 + definition.repair_policy.max_repair_attempts
         for attempt_number in range(1, total_attempts + 1):
             attempt = WorkerAttempt(attempt_number, errors)
-            response = definition.implementation(request, gateway, attempt)
+            gateway_context = getattr(gateway, "context", None)
+            previous_capabilities = (
+                getattr(gateway_context, "required_model_capabilities", None)
+                if gateway_context is not None
+                else None
+            )
+            if gateway_context is not None:
+                gateway_context.required_model_capabilities = (
+                    definition.required_model_capabilities
+                )
+            try:
+                response = definition.implementation(request, gateway, attempt)
+            finally:
+                if gateway_context is not None:
+                    if previous_capabilities is None:
+                        try:
+                            del gateway_context.required_model_capabilities
+                        except AttributeError:
+                            pass
+                    else:
+                        gateway_context.required_model_capabilities = (
+                            previous_capabilities
+                        )
             if not isinstance(response, str):
                 raise WorkerContractError(
                     f"Worker '{definition.worker_id}' must return response text."

@@ -14,7 +14,7 @@ import { documentStatus } from '../composables/documentStatus'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { workspaceQuery } from '../composables/useWorkspaceNavigation'
-import type { AIActivityEvent, AgentRun, AuditDocument, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
+import type { AIActivityEvent, AgentRun, AssistantProvider, AssistantStatus, AuditDocument, DocumentAnalysisCitation, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import MarkdownView from './MarkdownView.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -55,6 +55,12 @@ const summaryDraft = ref('')
 const notesDraft = ref('')
 const analysisBusy = ref(false)
 const compareCandidate = ref(false)
+const fullVisualCoverage = ref(false)
+const visionSettingsOpen = ref(false)
+const settingsStatus = ref<AssistantStatus | null>(null)
+const visionProvider = ref('')
+const visionModel = ref('')
+const visionSettingsBusy = ref(false)
 const contentSearchOpen = ref(false)
 const contentSearch = ref('')
 const sourceSearch = ref('')
@@ -73,6 +79,17 @@ const groupOptions = [
   { value: 'folder', label: 'Group by folder' },
   { value: 'status', label: 'Group by status' },
 ]
+const visualPageLimit = 20
+const visionAvailable = computed(() => agent.state.status?.vision_configured === true)
+const providerOptions = computed(() => settingsStatus.value?.providers || [])
+const selectedVisionProvider = computed<AssistantProvider | undefined>(() =>
+  providerOptions.value.find(provider => provider.id === visionProvider.value),
+)
+const visionModelOptions = computed(() => {
+  const provider = selectedVisionProvider.value
+  if (!provider) return []
+  return [...new Set([...(provider.models || []), provider.vision_model || ''].filter(Boolean))]
+})
 const selected = computed(() => documents.value.find(doc => doc.id === selectedId.value) || null)
 const filtered = computed(() => documents.value.filter(doc => {
   const term = search.value.toLowerCase()
@@ -128,7 +145,9 @@ const secondaryActions = computed(() => [
   { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
 ])
 
-const selectedStatus = computed(() => selected.value ? documentStatus(selected.value) : null)
+const selectedStatus = computed(() => selected.value
+  ? documentStatus(selected.value, { visionAvailable: visionAvailable.value })
+  : null)
 const selectedStatusSeverity = computed(() => {
   const status = selectedStatus.value
   if (!status) return 'secondary'
@@ -139,6 +158,45 @@ const documentActions = computed(() => [
   { label: 'Re-extract text', icon: 'pi pi-refresh', command: () => void reextract() },
   { label: 'Delete document', icon: 'pi pi-trash', command: () => remove() },
 ])
+
+async function openVisionSettings() {
+  settingsStatus.value = await api.get<AssistantStatus>('/api/assistant/status')
+  const current = agent.state.status?.vision_profile
+  visionProvider.value = current?.provider || settingsStatus.value.provider || settingsStatus.value.backend
+  visionModel.value = current?.model
+    || selectedVisionProvider.value?.vision_model
+    || selectedVisionProvider.value?.default_model
+    || ''
+  visionSettingsOpen.value = true
+}
+
+async function saveVisionSettings() {
+  if (!visionProvider.value || !visionModel.value.trim()) return
+  visionSettingsBusy.value = true
+  try {
+    await api.patch<AssistantStatus>('/api/assistant/settings', {
+      vision_profile: {
+        provider: visionProvider.value,
+        model: visionModel.value.trim(),
+        capabilities: ['vision'],
+      },
+    })
+    await agent.refreshStatus()
+    visionSettingsOpen.value = false
+    toast.add({ severity: 'success', summary: 'Vision profile saved', detail: `${visionProvider.value} / ${visionModel.value}`, life: 3000 })
+  } catch (error) {
+    toast.add({ severity: 'error', summary: 'Vision profile not saved', detail: String(error), life: 5000 })
+  } finally {
+    visionSettingsBusy.value = false
+  }
+}
+
+watch(visionProvider, () => {
+  const provider = selectedVisionProvider.value
+  if (provider && !visionModelOptions.value.includes(visionModel.value)) {
+    visionModel.value = provider.vision_model || provider.default_model
+  }
+})
 
 const prefsKey = `aw-doc-rail:${props.workspace.id}`
 
@@ -203,6 +261,7 @@ async function selectDocument(id: string, page?: number) {
   if (id !== selectedId.value) {
     sourceSearch.value = ''
     sourceResults.value = []
+    fullVisualCoverage.value = false
   }
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
@@ -243,7 +302,10 @@ async function startAnalysis(action: 'analyze' | 'refresh') {
   if (!selected.value) return
   analysisBusy.value = true
   try {
-    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis-runs`, { action })
+    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis-runs`, {
+      action,
+      full_visual_coverage: fullVisualCoverage.value,
+    })
     const finished = await waitForAnalysis(run.id)
     await loadDocuments(); await loadAnalysis()
     if (finished.status === 'failed') throw new Error(finished.error || 'Document analysis failed.')
@@ -309,10 +371,12 @@ async function openSearchResult(result: DocumentSearchResult) {
   view.value = 'preview'; sourceView.value = 'text'
 }
 
-async function openCitation(page: number) {
+async function openCitation(citation: DocumentAnalysisCitation) {
   if (!selected.value) return
-  currentPage.value = page; view.value = 'preview'; sourceView.value = 'text'
-  await router.replace({ query: workspaceQuery('documents', { doc: selected.value.id, page }) })
+  currentPage.value = citation.page
+  view.value = 'preview'
+  sourceView.value = citation.evidence_kind === 'visual' ? 'original' : 'text'
+  await router.replace({ query: workspaceQuery('documents', { doc: selected.value.id, page: citation.page }) })
 }
 
 async function reindexAll() {
@@ -327,13 +391,19 @@ async function reindexAll() {
 }
 
 async function batchAnalyze() {
-  const eligible = documents.value.filter(document => ['extracted', 'partial'].includes(document.text_state) && document.analysis_validity_state !== 'current')
+  const eligible = documents.value.filter(document =>
+    ['extracted', 'partial', 'image_only'].includes(document.text_state)
+    && document.analysis_validity_state !== 'current')
   if (!eligible.length) {
     toast.add({ severity: 'info', summary: 'All eligible documents already have current analysis', life: 2600 }); return
   }
   analysisBusy.value = true
   try {
-    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/analysis-runs`, { document_ids: eligible.map(document => document.id), action: 'analyze' })
+    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/analysis-runs`, {
+      document_ids: eligible.map(document => document.id),
+      action: 'analyze',
+      full_visual_coverage: false,
+    })
     await waitForAnalysis(run.id); await loadDocuments(); if (selectedId.value) await loadAnalysis()
   } catch (error) { toast.add({ severity: 'error', summary: 'Batch analysis unavailable', detail: String(error), life: 5000 }) }
   finally { analysisBusy.value = false }
@@ -512,7 +582,7 @@ onUnmounted(() => {
             >
               <span class="doc-icon"><i :class="fileIcon(doc)" /></span>
               <span class="doc-identity"><strong>{{ doc.title }}</strong><small v-if="showSource(doc)">{{ doc.source }}</small></span>
-              <template v-for="status in [documentStatus(doc)]" :key="`${doc.id}:status`">
+              <template v-for="status in [documentStatus(doc, { visionAvailable })]" :key="`${doc.id}:status`">
                 <span
                   v-if="status.level !== 'ready'" class="doc-status" :class="[status.level, { failed: status.failed }]"
                   :title="`${status.label} — ${status.detail}`"
@@ -574,7 +644,15 @@ onUnmounted(() => {
           <div v-if="sourceResults.length && sourceSearch" class="inline-search-results">
             <button v-for="result in sourceResults" :key="result.citation_id" @click="openSearchResult(result)"><strong>Page {{ result.page }}</strong><span>{{ result.excerpt }}</span></button>
           </div>
-          <div v-if="current?.image_only && showTextView" class="scan-notice"><i class="pi pi-image" /><div><strong>Image-only page</strong><p>This page has insufficient extractable text. Use the original image/PDF or a configured vision workflow; tiled scans may require uploading the page as an image.</p></div></div>
+          <div v-if="current?.image_only && showTextView" class="scan-notice">
+            <i class="pi pi-image" />
+            <div>
+              <strong>{{ selected.analysis_vision_used && selected.analysis_validity_state === 'current' ? 'Visual source—analysis available' : 'Visual source' }}</strong>
+              <p v-if="selected.analysis_vision_used && selected.analysis_validity_state === 'current'">The extracted-text view is empty, but the current analysis includes an AI-derived visual transcription. Open the Analysis tab to review it.</p>
+              <p v-else-if="visionAvailable">This page has insufficient extractable text. Analyze it with the configured vision profile; the original remains the authoritative source.</p>
+              <p v-else>This page has insufficient extractable text. You can start analysis now; it will remain an open item without a model charge until a vision profile is configured.</p>
+            </div>
+          </div>
           <img v-if="isImage" class="document-image" :src="fileUrl" :alt="selected.title" />
           <iframe v-else-if="isPdf && sourceView === 'original'" :key="`${selected.id}:${currentPage}`" class="document-frame" :src="`${fileUrl}#page=${currentPage}`" :title="selected.title" />
           <div v-else-if="isDocx && sourceView === 'original'" :key="selected.id" ref="docxContainer" class="docx-frame" :class="{ loading: docxLoading }" :aria-busy="docxLoading" />
@@ -594,6 +672,24 @@ onUnmounted(() => {
               <Tag v-if="analysis?.status.analysis_review_state !== 'not_applicable'" :value="analysis?.status.analysis_review_state?.replace('_', ' ')" severity="secondary" />
             </div>
             <div class="analysis-actions">
+              <Button
+                v-if="selected.text_state === 'extracted' || selected.text_state === 'partial'"
+                :label="fullVisualCoverage ? `Full visual coverage (max ${visualPageLimit})` : 'Text coverage only'"
+                :icon="fullVisualCoverage ? 'pi pi-images' : 'pi pi-file'"
+                size="small"
+                severity="secondary"
+                outlined
+                v-tooltip.bottom="`Opt in to visual analysis of text-bearing pages, bounded to ${visualPageLimit} pages for this document.`"
+                @click="fullVisualCoverage = !fullVisualCoverage"
+              />
+              <Button
+                :label="visionAvailable ? 'Vision configured' : 'Configure vision'"
+                :icon="visionAvailable ? 'pi pi-eye' : 'pi pi-cog'"
+                size="small"
+                severity="secondary"
+                text
+                @click="openVisionSettings"
+              />
               <Button v-if="!analysis?.generated" label="Analyze" icon="pi pi-sparkles" size="small" :loading="analysisBusy" @click="startAnalysis('analyze')" />
               <Button v-else label="Refresh" icon="pi pi-refresh" size="small" severity="secondary" :loading="analysisBusy" @click="startAnalysis('refresh')" />
               <Button v-if="analysis?.candidate" label="Compare candidate" icon="pi pi-clone" size="small" severity="secondary" @click="compareCandidate = !compareCandidate" />
@@ -602,7 +698,14 @@ onUnmounted(() => {
 
           <div v-if="analysis?.status.analysis_coverage_state === 'partial'" class="coverage-warning">
             <i class="pi pi-exclamation-triangle" />
-            <span>Partial source coverage. Analyzed pages {{ analysis.effective?.coverage.analyzed_pages.join(', ') || '—' }}; omitted {{ analysis.effective?.coverage.omitted_pages.join(', ') || '—' }}.</span>
+            <div>
+              <strong>Partial source coverage</strong>
+              <p>Text pages: {{ analysis.effective?.coverage.text_analyzed_pages?.join(', ') || '—' }} · Visual pages: {{ analysis.effective?.coverage.vision_analyzed_pages?.join(', ') || '—' }}</p>
+              <ul v-if="analysis.effective?.coverage.omissions?.length">
+                <li v-for="item in analysis.effective.coverage.omissions" :key="`${item.page}:${item.reason}`">Page {{ item.page }} — {{ item.reason.replaceAll('_', ' ') }}</li>
+              </ul>
+              <p v-else>Omitted pages: {{ analysis.effective?.coverage.omitted_pages.join(', ') || '—' }}</p>
+            </div>
           </div>
           <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity and is excluded from agent context.</span></div>
 
@@ -626,10 +729,36 @@ onUnmounted(() => {
 
             <section class="analysis-sources">
               <h4>Sources</h4>
-              <button v-for="citation in analysis.effective.citations" :key="`${citation.id}:${citation.page}`" @click="openCitation(citation.page)"><strong>[{{ citation.id }}] Page {{ citation.page }}</strong><span>{{ citation.excerpt }}</span></button>
+              <button v-for="citation in analysis.effective.citations" :key="`${citation.id}:${citation.page}`" @click="openCitation(citation)">
+                <strong>
+                  [{{ citation.id }}] Page {{ citation.page }}
+                  <Tag v-if="citation.evidence_kind === 'visual'" value="AI visual description" severity="info" />
+                </strong>
+                <span v-if="citation.evidence_kind === 'visual'">
+                  {{ citation.description || 'Visual region' }}
+                  <small v-if="citation.region"> · region {{ citation.region.x }}, {{ citation.region.y }}, {{ citation.region.width }} × {{ citation.region.height }}</small>
+                </span>
+                <span v-else>{{ citation.excerpt }}</span>
+              </button>
               <p v-if="!analysis.effective.citations.length" class="muted">No validated source citations were generated.</p>
             </section>
-            <details class="technical-details"><summary>Technical provenance</summary><dl><div><dt>Analysis ID</dt><dd><code>{{ analysis.effective.id }}</code></dd></div><div><dt>Generated</dt><dd>{{ analysis.effective.generated_at }}</dd></div><div><dt>Provider / model</dt><dd>{{ analysis.effective.provider || '—' }} / {{ analysis.effective.model || '—' }}</dd></div><div><dt>Prompt version</dt><dd><code>{{ analysis.effective.prompt_version }}</code></dd></div><div><dt>Extracted text hash</dt><dd><code>{{ analysis.effective.extracted_text_sha1 }}</code></dd></div></dl></details>
+            <details class="technical-details">
+              <summary>Technical provenance</summary>
+              <dl>
+                <div><dt>Analysis ID</dt><dd><code>{{ analysis.effective.id }}</code></dd></div>
+                <div><dt>Generated</dt><dd>{{ analysis.effective.generated_at }}</dd></div>
+                <div><dt>Provider / model</dt><dd>{{ analysis.effective.provider || '—' }} / {{ analysis.effective.model || '—' }}</dd></div>
+                <div><dt>Vision used</dt><dd>{{ analysis.effective.vision_used ? 'Yes' : 'No' }}</dd></div>
+                <div v-for="profile in analysis.effective.generation_profiles" :key="profile.profile_hash">
+                  <dt>{{ profile.name === 'vision' ? 'Vision profile' : 'Text profile' }}</dt>
+                  <dd>{{ profile.provider }} / {{ profile.model }} · <code>{{ profile.profile_hash }}</code></dd>
+                </div>
+                <div><dt>Prompt version</dt><dd><code>{{ analysis.effective.prompt_version }}</code></dd></div>
+                <div><dt>Extracted text hash</dt><dd><code>{{ analysis.effective.extracted_text_sha1 }}</code></dd></div>
+                <div><dt>Transcription hash</dt><dd><code>{{ analysis.effective.derived_text_sha256 || '—' }}</code></dd></div>
+                <div><dt>Prepared media</dt><dd><code>{{ analysis.effective.prepared_media_set_hash || '—' }}</code></dd></div>
+              </dl>
+            </details>
           </template>
         </div>
 
@@ -651,7 +780,19 @@ onUnmounted(() => {
     </Dialog>
     <Dialog v-model:visible="contentSearchOpen" modal header="Search document contents" :style="{ width: 'min(58rem, 95vw)' }">
       <div class="global-search-bar"><InputText v-model="contentSearch" autofocus placeholder="Clause, amount, policy name, person, or audit concept" @keyup.enter="runContentSearch()" /><Button label="Search" icon="pi pi-search" :loading="searchBusy" @click="runContentSearch()" /></div>
-      <div class="global-search-results"><button v-for="result in searchResults" :key="result.citation_id" @click="openSearchResult(result)"><div><strong>{{ result.title }}</strong><Tag :value="`Page ${result.page}`" severity="secondary" /></div><p>{{ result.excerpt }}</p><small>Relevance {{ result.score.toFixed(2) }}</small></button><p v-if="contentSearch && !searchBusy && !searchResults.length" class="muted">No indexed source excerpts matched.</p></div>
+      <div class="global-search-results"><button v-for="result in searchResults" :key="result.citation_id" @click="openSearchResult(result)"><div><strong>{{ result.title }}</strong><span><Tag v-if="result.origin === 'vision_transcript'" value="AI visual transcription" severity="info" /><Tag :value="`Page ${result.page}`" severity="secondary" /></span></div><p>{{ result.excerpt }}</p><small>Relevance {{ result.score.toFixed(2) }}</small></button><p v-if="contentSearch && !searchBusy && !searchResults.length" class="muted">No indexed source excerpts matched.</p></div>
+    </Dialog>
+    <Dialog v-model:visible="visionSettingsOpen" modal header="Vision model profile" :style="{ width: 'min(34rem, 95vw)' }">
+      <div class="vision-settings">
+        <p>Document analysis uses this profile only for supported image and scanned-PDF pages. Later workflows reuse the persisted transcription without resending images.</p>
+        <label><span>Provider</span><Select v-model="visionProvider" :options="providerOptions" optionLabel="label" optionValue="id" /></label>
+        <label><span>Model</span><Select v-if="visionModelOptions.length" v-model="visionModel" :options="visionModelOptions" editable /><InputText v-else v-model="visionModel" placeholder="Vision-capable model name" /></label>
+        <p v-if="agent.state.status?.vision_unavailability_reason" class="settings-warning">{{ agent.state.status.vision_unavailability_reason }}</p>
+      </div>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" text @click="visionSettingsOpen = false" />
+        <Button label="Save vision profile" icon="pi pi-save" :loading="visionSettingsBusy" :disabled="!visionProvider || !visionModel.trim()" @click="saveVisionSettings" />
+      </template>
     </Dialog>
   </section>
 </template>
@@ -669,6 +810,6 @@ onUnmounted(() => {
 .preview-view .source-search-bar,.preview-view .inline-search-results { margin-bottom:.75rem; }.preview-view .source-search-bar .p-inputtext { max-width:24rem; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--p-surface-200); border-radius:8px; background:var(--p-surface-50); color:var(--p-surface-500); font-size:.7rem; }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: .7rem; }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
-.analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); color:#7c4b00; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.analysis-editor header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small { color:var(--aw-muted); }.analysis-editor :deep(.markdown-editor) { min-height:18rem; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--p-blue-200); border-radius:var(--aw-radius-sm); background:var(--p-blue-50); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }
+.analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid #f0cf9f; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); color:#7c4b00; }.coverage-warning p { margin:.25rem 0 0; }.coverage-warning ul { margin:.35rem 0 0; padding-left:1.1rem; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.analysis-editor header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small { color:var(--aw-muted); }.analysis-editor :deep(.markdown-editor) { min-height:18rem; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.analysis-sources button strong { display:flex; align-items:center; gap:.45rem; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--p-blue-200); border-radius:var(--aw-radius-sm); background:var(--p-blue-50); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:#fff; }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results button > div > span { display:flex; gap:.35rem; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }.vision-settings { display:grid; gap:1rem; }.vision-settings > p { margin:0; color:var(--aw-muted); line-height:1.5; }.vision-settings label { display:grid; gap:.35rem; font-weight:600; }.vision-settings label :deep(.p-select),.vision-settings label .p-inputtext { width:100%; }.vision-settings .settings-warning { padding:.65rem; border-radius:var(--aw-radius-sm); background:var(--aw-warn-soft); color:#7c4b00; }
 @media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }
 </style>

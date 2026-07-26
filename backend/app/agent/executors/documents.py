@@ -21,7 +21,7 @@ import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from ... import document_analysis, documents as document_service, llm
+from ... import document_analysis, documents as document_service
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError
 from .model import (
@@ -36,6 +36,9 @@ from .model import (
 ANALYSIS_EXECUTOR_ID = "documents.analysis"
 
 DOCUMENT_TEXT_UNAVAILABLE = "document_has_no_extractable_text"
+DOCUMENT_REQUIRES_VISION = "document_requires_vision"
+DOCUMENT_VISUAL_SOURCE_UNSUPPORTED = "document_visual_source_unsupported"
+VISUAL_PREPARATION_FAILED = "visual_preparation_failed"
 DOCUMENT_REVIEW_REQUIRED = "generated_analysis_awaits_auditor_review"
 PARTIAL_COVERAGE = "analysis_coverage_is_partial"
 
@@ -54,6 +57,16 @@ def analysis_ref(document_id: str) -> str:
     """The stable artifact reference for one document's generated analysis."""
 
     return f"document_analysis:{document_id}"
+
+
+def _plain_json(value: object) -> object:
+    """Detach recursively frozen executor input before durable persistence."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(item) for item in value]
+    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -120,14 +133,28 @@ def _validated_analysis(
     if not isinstance(coverage, Mapping) or not str(coverage.get("state") or ""):
         raise WorkspaceError("The accepted document analysis declares no coverage.")
     payload = {
+        "derived_text_markdown": str(
+            request.proposal.get("derived_text_markdown")
+            or request.proposal.get("transcription_markdown")
+            or ""
+        ).strip(),
         "summary_markdown": summary,
         "audit_notes_markdown": notes,
         "citations": [
-            dict(citation)
+            _plain_json(citation)
             for citation in request.proposal.get("citations") or []
             if isinstance(citation, Mapping)
         ],
-        "coverage": dict(coverage),
+        "coverage": _plain_json(coverage),
+        "vision_used": bool(request.proposal.get("vision_used")),
+        "generation_profiles": [
+            _plain_json(profile)
+            for profile in request.proposal.get("generation_profiles") or []
+            if isinstance(profile, Mapping)
+        ],
+        "prepared_media_set_hash": str(
+            request.proposal.get("prepared_media_set_hash") or ""
+        ),
     }
     return target, payload
 
@@ -159,6 +186,13 @@ def _analysis_result(
             "coverage_state": str(coverage.get("state") or ""),
             "omitted_pages": [int(page) for page in coverage.get("omitted_pages") or []],
             "citations": len(list(artifact.get("citations") or [])),
+            "vision_used": bool(artifact.get("vision_used")),
+            "derived_text_sha256": str(
+                artifact.get("derived_text_sha256") or ""
+            ),
+            "prepared_media_set_hash": str(
+                artifact.get("prepared_media_set_hash") or ""
+            ),
         },
     )
 
@@ -177,7 +211,6 @@ def execute_document_analysis(
     text that no longer exists.
     """
     target, payload = _validated_analysis(request, raw_target)
-    profile = llm.agent_status()
     state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> dict:
@@ -192,13 +225,22 @@ def execute_document_analysis(
         )
         if document is None:
             raise WorkspaceError(f"Document '{target.document_id}' not found.")
+        profiles = list(payload.get("generation_profiles") or [])
+        legacy_profile = next(
+            (
+                profile
+                for profile in profiles
+                if str(profile.get("name") or "") == "agent"
+            ),
+            profiles[0] if profiles else {},
+        )
         document_analysis.persist_analysis(
             fresh,
             document,
             dict(target.extracted),
             payload,
-            provider=profile.get("provider"),
-            model=profile.get("model"),
+            provider=legacy_profile.get("provider"),
+            model=legacy_profile.get("model"),
             action=target.action,
             coverage=dict(payload["coverage"]),
             agent_run_id=target.run_id,
@@ -287,8 +329,11 @@ __all__ = [
     "ANALYSIS_EXECUTOR",
     "ANALYSIS_EXECUTOR_ID",
     "DOCUMENT_REVIEW_REQUIRED",
+    "DOCUMENT_REQUIRES_VISION",
     "DOCUMENT_TEXT_UNAVAILABLE",
+    "DOCUMENT_VISUAL_SOURCE_UNSUPPORTED",
     "PARTIAL_COVERAGE",
+    "VISUAL_PREPARATION_FAILED",
     "DocumentAnalysisExecutorTarget",
     "analysis_ref",
     "document_ref",

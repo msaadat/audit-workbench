@@ -220,12 +220,18 @@ def validate_composition(
 
     known_presets = _registered_preset_ids()
     for capability in registry.all():
-        preset_id = capability.context
-        if preset_id is not None and str(preset_id) not in known_presets:
-            raise AuditCompositionError(
-                f"Capability '{capability.id}' declares unregistered context "
-                f"preset '{preset_id}'."
-            )
+        declaration = capability.context
+        preset_ids = (
+            tuple(declaration.values())
+            if isinstance(declaration, dict)
+            else (() if declaration is None else (declaration,))
+        )
+        for preset_id in preset_ids:
+            if str(preset_id) not in known_presets:
+                raise AuditCompositionError(
+                    f"Capability '{capability.id}' declares unregistered context "
+                    f"preset '{preset_id}'."
+                )
 
     if executions is not None:
         # CapabilityExecutionRegistry.validate raises on missing/unknown bindings.

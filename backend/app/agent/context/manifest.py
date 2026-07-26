@@ -52,7 +52,12 @@ def source_hash(value: object) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def supplied_size(content: object, *, items: int = 1) -> ContextSize:
+def supplied_size(
+    content: object,
+    *,
+    items: int = 1,
+    representation_kind: str | None = None,
+) -> ContextSize:
     """Measure the exact local representation that will be supplied.
 
     Character counts use Unicode code points.  Token counts are a stable,
@@ -61,6 +66,25 @@ def supplied_size(content: object, *, items: int = 1) -> ContextSize:
     """
     if isinstance(items, bool) or not isinstance(items, int) or items < 0:
         raise ValueError("Supplied item count must be a non-negative integer.")
+    if representation_kind == "page_image":
+        if not isinstance(content, Mapping):
+            raise ValueError("A page_image representation requires a media handle.")
+        try:
+            media_bytes = int(content["prepared_byte_count"])
+            media_pixels = int(content["pixel_count"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Prepared-media metrics are invalid.") from error
+        if media_bytes < 0 or media_pixels < 0:
+            raise ValueError("Prepared-media metrics must be non-negative.")
+        return ContextSize(
+            items=items,
+            characters=0,
+            estimated_tokens=0,
+            media_items=items,
+            media_bytes=media_bytes,
+            media_pixels=media_pixels,
+            estimated_image_tokens=4_096 * items,
+        )
     if content is None:
         characters = 0
     elif isinstance(content, str):
@@ -78,16 +102,25 @@ def supplied_size(content: object, *, items: int = 1) -> ContextSize:
 def total_supplied_size(sizes: Iterable[ContextSize]) -> ContextSize:
     """Aggregate supplied-size records without inspecting bundle content."""
     items = characters = estimated_tokens = 0
+    media_items = media_bytes = media_pixels = estimated_image_tokens = 0
     for size in sizes:
         if not isinstance(size, ContextSize):
             raise ValueError("Supplied sizes must contain only ContextSize values.")
         items += size.items
         characters += size.characters
         estimated_tokens += size.estimated_tokens
+        media_items += size.media_items
+        media_bytes += size.media_bytes
+        media_pixels += size.media_pixels
+        estimated_image_tokens += size.estimated_image_tokens
     return ContextSize(
         items=items,
         characters=characters,
         estimated_tokens=estimated_tokens,
+        media_items=media_items,
+        media_bytes=media_bytes,
+        media_pixels=media_pixels,
+        estimated_image_tokens=estimated_image_tokens,
     )
 
 

@@ -97,7 +97,7 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def _manifest_identity(text_sha1: str) -> dict:
+def _manifest_identity(text_sha1: str, analysis_content_sha1: str = "") -> dict:
     backend = embedding.get_backend()
     return {
         "extracted_text_sha1": text_sha1,
@@ -106,11 +106,17 @@ def _manifest_identity(text_sha1: str) -> dict:
         "embedding_dimension": getattr(backend, "dimension", 0) if backend else 0,
         "tokenizer_version": getattr(backend, "tokenizer_version", "audit-tokenizer-v1"),
         "search_chunker_version": SEARCH_CHUNKER_VERSION,
+        "analysis_content_sha1": analysis_content_sha1,
     }
 
 
-def index_identity(text_sha1: str) -> str:
-    return hashlib.sha1(json.dumps(_manifest_identity(text_sha1), sort_keys=True).encode()).hexdigest()
+def index_identity(text_sha1: str, analysis_content_sha1: str = "") -> str:
+    return hashlib.sha1(
+        json.dumps(
+            _manifest_identity(text_sha1, analysis_content_sha1),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
 
 
 def search_chunks(extracted: dict, max_characters: int = SEARCH_CHUNK_CHARACTERS,
@@ -136,7 +142,9 @@ def search_chunks(extracted: dict, max_characters: int = SEARCH_CHUNK_CHARACTERS
             output.append({"chunk_id": f"DC-{len(output)+1:06d}", "page": page_no,
                            "start_character": start, "end_character": end,
                            "text_sha1": hashlib.sha1(exact.encode()).hexdigest(),
-                           "token_count": len(terms), "term_frequencies": dict(Counter(terms))})
+                           "token_count": len(terms), "term_frequencies": dict(Counter(terms)),
+                           "origin": str(page.get("origin") or "extracted_text"),
+                           "analysis_id": page.get("analysis_id")})
             if end >= len(text):
                 break
             start = max(start + 1, end - overlap)
@@ -144,12 +152,60 @@ def search_chunks(extracted: dict, max_characters: int = SEARCH_CHUNK_CHARACTERS
 
 
 def _resolve(extracted: dict, chunk: dict) -> str | None:
-    page = next((value for value in extracted.get("pages") or [] if int(value.get("page") or 0) == int(chunk["page"])), None)
+    page = next(
+        (
+            value
+            for value in extracted.get("pages") or []
+            if int(value.get("page") or 0) == int(chunk["page"])
+            and str(value.get("origin") or "extracted_text")
+            == str(chunk.get("origin") or "extracted_text")
+        ),
+        None,
+    )
     if page is None:
         return None
     text = str(page.get("text") or "")
     excerpt = text[int(chunk["start_character"]):int(chunk["end_character"])]
     return excerpt if hashlib.sha1(excerpt.encode()).hexdigest() == chunk.get("text_sha1") else None
+
+
+def _index_payload(extracted: dict, analysis: dict | None) -> dict:
+    pages = [
+        {**dict(page), "origin": "extracted_text", "analysis_id": None}
+        for page in extracted.get("pages") or []
+        if str(page.get("text") or "")
+    ]
+    derived = str((analysis or {}).get("derived_text_markdown") or "").strip()
+    if derived:
+        citation_pages = [
+            int(item.get("page") or 0)
+            for item in (analysis or {}).get("citations") or []
+            if int(item.get("page") or 0) > 0
+        ]
+        pages.append(
+            {
+                "page": min(citation_pages) if citation_pages else 1,
+                "text": derived,
+                "characters": len(derived),
+                "origin": "vision_transcript",
+                "analysis_id": (analysis or {}).get("id"),
+            }
+        )
+    return {**dict(extracted), "pages": pages}
+
+
+def _current_analysis(
+    workspace: Workspace, document: dict
+) -> dict | None:
+    from . import document_analysis
+
+    detail = document_analysis.load_analysis(
+        workspace, str(document["id"]), document=document
+    )
+    if detail["status"]["analysis_validity_state"] != "current":
+        return None
+    effective = detail.get("effective")
+    return dict(effective) if isinstance(effective, dict) else None
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -175,7 +231,11 @@ def build_index(workspace: Workspace, document_id: str) -> dict:
     if document is None:
         raise WorkspaceError(f"Document '{document_id}' not found.")
     with document_analysis.document_lock(workspace, document_id):
-        if document.get("text_state") == "image_only":
+        analysis = _current_analysis(workspace, document)
+        derived_text = str(
+            (analysis or {}).get("derived_text_markdown") or ""
+        ).strip()
+        if document.get("text_state") == "image_only" and not derived_text:
             manifest = {"schema_version": 1, "document_id": document_id,
                         "source_sha1": document.get("sha1"), "state": "unsupported",
                         "error": "No extractable text; OCR is not available."}
@@ -187,16 +247,20 @@ def build_index(workspace: Workspace, document_id: str) -> dict:
         if extracted.get("state") == "failed":
             raise WorkspaceError(extracted.get("error") or "Document extraction failed.")
         text_sha = document_analysis.extracted_text_sha(extracted)
-        chunks = search_chunks(extracted)
+        analysis_content_sha1 = str(
+            (analysis or {}).get("content_sha1") or ""
+        )
+        indexed_payload = _index_payload(extracted, analysis)
+        chunks = search_chunks(indexed_payload)
         if not chunks:
             manifest = {"schema_version": 1, "document_id": document_id,
-                        "source_sha1": document.get("sha1"), **_manifest_identity(text_sha),
-                        "identity": index_identity(text_sha), "state": "unsupported",
+                        "source_sha1": document.get("sha1"), **_manifest_identity(text_sha, analysis_content_sha1),
+                        "identity": index_identity(text_sha, analysis_content_sha1), "state": "unsupported",
                         "chunk_count": 0, "error": "The document contains no searchable text."}
             write_json_atomic(_manifest_path(workspace, document_id), manifest)
             document_analysis.update_status(workspace, document_id, search_index_state="unsupported")
             return manifest
-        texts = [_resolve(extracted, chunk) or "" for chunk in chunks]
+        texts = [_resolve(indexed_payload, chunk) or "" for chunk in chunks]
         backend = embedding.get_backend()
         try:
             vectors = []
@@ -219,8 +283,8 @@ def build_index(workspace: Workspace, document_id: str) -> dict:
                 array("f", vector).tofile(handle)
         vector_tmp.replace(_vectors_path(workspace, document_id))
         manifest = {"schema_version": 1, "document_id": document_id,
-                    "source_sha1": document.get("sha1"), **_manifest_identity(text_sha),
-                    "identity": index_identity(text_sha), "state": "ready",
+                    "source_sha1": document.get("sha1"), **_manifest_identity(text_sha, analysis_content_sha1),
+                    "identity": index_identity(text_sha, analysis_content_sha1), "state": "ready",
                     "chunk_count": len(chunks), "vector_count": len(vectors),
                     "created_at": documents.utcnow(), "error": vector_error,
                     "lexical_only": not bool(vectors)}
@@ -236,9 +300,24 @@ def manifest_state(workspace: Workspace, document_id: str) -> dict:
         raise WorkspaceError(f"Document '{document_id}' not found.")
     manifest = _read_json(_manifest_path(workspace, document_id))
     if not manifest:
-        return {"document_id": document_id, "state": "unsupported" if document.get("text_state") == "image_only" else "pending"}
+        analysis = _current_analysis(workspace, document)
+        return {
+            "document_id": document_id,
+            "state": (
+                "unsupported"
+                if document.get("text_state") == "image_only"
+                and not str(
+                    (analysis or {}).get("derived_text_markdown") or ""
+                ).strip()
+                else "pending"
+            ),
+        }
     extracted = documents.extract_document(workspace, document_id)
-    expected = index_identity(document_analysis.extracted_text_sha(extracted))
+    analysis = _current_analysis(workspace, document)
+    expected = index_identity(
+        document_analysis.extracted_text_sha(extracted),
+        str((analysis or {}).get("content_sha1") or ""),
+    )
     state = manifest.get("state") or "pending"
     if manifest.get("identity") != expected or manifest.get("source_sha1") != document.get("sha1"):
         state = "stale"
@@ -301,13 +380,15 @@ def search(workspace: Workspace, query: str, *, document_ids: list[str] | None =
     average_length = sum(int(chunk.get("token_count") or 0) for chunk in all_chunks) / max(1, len(all_chunks))
     backend = embedding.get_backend(); query_vector = _normalized(backend.encode([query])[0]) if backend else None
     candidates = []
-    from . import documents
+    from . import document_analysis, documents
     for document_id, manifest, chunks in indexes:
         extracted = documents.extract_document(workspace, document_id)
+        analysis = _current_analysis(workspace, known[document_id])
+        indexed_payload = _index_payload(extracted, analysis)
         dimension = int(manifest.get("embedding_dimension") or 0)
         vectors = _load_vectors(_vectors_path(workspace, document_id), int(manifest.get("vector_count") or 0), dimension)
         for index, chunk in enumerate(chunks):
-            excerpt = _resolve(extracted, chunk)
+            excerpt = _resolve(indexed_payload, chunk)
             if excerpt is None:
                 continue
             lexical = _bm25(query_terms, chunk.get("term_frequencies") or {}, int(chunk.get("token_count") or 0),
@@ -321,12 +402,27 @@ def search(workspace: Workspace, query: str, *, document_ids: list[str] | None =
                 candidates.append({"document_id": document_id, "page": int(chunk["page"]),
                                    "start_character": int(chunk["start_character"]), "end_character": int(chunk["end_character"]),
                                    "excerpt": excerpt, "score": score, "lexical_score": lexical,
-                                   "vector_score": vector_score})
+                                   "vector_score": vector_score,
+                                   "origin": str(chunk.get("origin") or "extracted_text"),
+                                   "analysis_id": chunk.get("analysis_id")})
     candidates.sort(key=lambda value: (-value["score"], value["document_id"], value["page"], value["start_character"]))
     selected, used, total = [], set(), 0
     for result in candidates:
-        overlap_key = (result["document_id"], result["page"])
-        ranges = [item for item in selected if (item["document_id"], item["page"]) == overlap_key]
+        overlap_key = (
+            result["document_id"],
+            result["page"],
+            result["origin"],
+        )
+        ranges = [
+            item
+            for item in selected
+            if (
+                item["document_id"],
+                item["page"],
+                item["origin"],
+            )
+            == overlap_key
+        ]
         if any(result["start_character"] < item["end_character"] and item["start_character"] < result["end_character"] for item in ranges):
             continue
         remaining = max_characters - total
@@ -337,6 +433,12 @@ def search(workspace: Workspace, query: str, *, document_ids: list[str] | None =
             result["end_character"] = result["start_character"] + remaining
         document = known[result["document_id"]]
         anchor = document_anchor(document, result["page"], result["excerpt"], generated_by="document-search")
+        if result["origin"] == "vision_transcript":
+            anchor.update(
+                evidence_kind="model_generated_transcription",
+                analysis_id=result.get("analysis_id"),
+                auditor_confirmed=False,
+            )
         result.update(title=document.get("title") or document.get("source"), citation_id=anchor["id"], citation=anchor)
         selected.append(result); total += len(result["excerpt"]); used.add(result["document_id"])
     return {"results": selected, "trimmed": len(selected) < len(candidates),

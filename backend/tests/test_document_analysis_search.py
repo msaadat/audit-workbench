@@ -44,6 +44,63 @@ def test_lexical_search_survives_missing_embedding_runtime():
     assert result["results"][0]["page"] == 1
 
 
+def test_image_only_visual_transcription_is_indexed_locally_with_origin():
+    ws = workspaces.create_workspace("Visual transcription search")
+    doc = documents.add_document(ws, "org-chart.png", b"not-readable-as-an-image")
+    extracted = documents.extract_document(ws, doc["id"])
+    document_analysis.persist_analysis(
+        ws,
+        doc,
+        extracted,
+        {
+            "derived_text_markdown": (
+                "The procurement manager reports to the chief financial officer."
+            ),
+            "summary_markdown": "Organization reporting lines.",
+            "audit_notes_markdown": "Confirm against the approved organization register.",
+            "citations": [
+                {
+                    "id": "V1",
+                    "page": 1,
+                    "evidence_kind": "visual",
+                    "description": "Procurement manager below CFO.",
+                    "source_sha1": doc["sha1"],
+                }
+            ],
+            "vision_used": True,
+            "prepared_media_set_hash": f"sha256:{'4' * 64}",
+        },
+        provider="local",
+        model="vision-test",
+        coverage={
+            "state": "complete",
+            "analyzed_pages": [1],
+            "text_analyzed_pages": [],
+            "vision_analyzed_pages": [1],
+            "omitted_pages": [],
+            "omissions": [],
+        },
+    )
+    original = embedding.get_backend()
+    try:
+        embedding.set_backend(None, "test lexical path")
+        manifest = document_search.build_index(ws, doc["id"])
+        result = document_search.search(
+            ws,
+            "procurement manager chief financial officer",
+            document_ids=[doc["id"]],
+        )
+    finally:
+        embedding.set_backend(original)
+
+    assert manifest["state"] == "ready"
+    assert result["results"][0]["origin"] == "vision_transcript"
+    assert result["results"][0]["citation"]["evidence_kind"] == (
+        "model_generated_transcription"
+    )
+    assert result["results"][0]["citation"]["auditor_confirmed"] is False
+
+
 def test_local_vector_signal_handles_audit_concept_synonyms():
     ws = workspaces.create_workspace("Semantic document search")
     relevant = documents.add_document(ws, "procurement.txt", b"Every purchase must receive approval before commitment.")

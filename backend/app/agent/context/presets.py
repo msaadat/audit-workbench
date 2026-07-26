@@ -40,6 +40,9 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "excerpt": "allow_document_text",
     "raw_pages": "allow_document_text",
     "summary": "allow_document_text",
+    "derived_text": "allow_document_text",
+    "vision_transcript": "allow_document_text",
+    "page_image": "allow_document_images",
     "file_metadata": "allow_file_metadata",
     "table_metadata": "allow_table_metadata",
     "table_profile": "allow_table_profiles",
@@ -1132,6 +1135,53 @@ PRESETS.register(
             ),
             budget=ContextBudget(max_items=2, max_characters=34_000),
             privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
+        preset_id="documents.analysis_visual_page",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_metadata",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=2_000),
+                ),
+                ContextSource(
+                    id="document_page_images",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("page_image"),),
+                    budget=ContextBudget(
+                        max_items=4,
+                        max_characters=1,
+                        max_media_items=4,
+                        max_media_bytes=12 * 1024 * 1024,
+                        max_media_pixels=12_000_000,
+                        max_estimated_image_tokens=4 * 4_096,
+                    ),
+                ),
+            ),
+            budget=ContextBudget(
+                max_items=5,
+                max_characters=2_000,
+                max_estimated_tokens=1_000,
+                max_media_items=4,
+                max_media_bytes=12 * 1024 * 1024,
+                max_media_pixels=12_000_000,
+                max_estimated_image_tokens=4 * 4_096,
+            ),
+            privacy=ContextPrivacy(
+                allow_document_text=True,
+                allow_document_images=True,
+            ),
         ),
     )
 )

@@ -32,6 +32,8 @@ from .action_runner import ActionRunner
 from .capabilities.documents import (
     DOCUMENT_SCOPE_CHECKPOINT,
     STAGE_CHECKPOINTS as DOCUMENT_STAGE_CHECKPOINTS,
+    analysis_unit_specs,
+    resolve_document_scope,
 )
 from .capabilities.reporting import (
     OBSERVATION_DISPOSITION_CHECKPOINT,
@@ -134,11 +136,50 @@ class AuditWorkflowExecution(ActionRunner):
             20 + 4 * len(self.ws.rcm) + 4 * planned_count
             + 2 * qa_pairs + 2 * eligible_findings
         )
+        document_scope = dict(
+            (self.run.get("workflow") or {}).get("scope") or {}
+        )
+        resolved_documents = resolve_document_scope(
+            self.ws, document_scope
+        )
+        document_specs = [
+            spec
+            for document_id in resolved_documents.document_ids
+            for spec in analysis_unit_specs(
+                self.ws, document_id, document_scope
+            )
+        ]
+        text_units = sum(
+            spec["kind"] == "document_chunk_analysis"
+            for spec in document_specs
+        )
+        visual_units = sum(
+            spec["kind"] == "document_visual_page_analysis"
+            and not spec.get("unsupported_reason")
+            for spec in document_specs
+        )
+        document_turns = len(document_specs) + max(
+            1, len(resolved_documents.document_ids)
+        )
+        calculated += document_turns
+        prompt_allowance = (
+            calculated * 10_000
+            + text_units * 2_000
+            + visual_units * 10_480
+        )
         self.update_limits(
             {
                 "max_model_turns": calculated,
-                "max_estimated_prompt_tokens": calculated * 10_000,
+                "max_estimated_prompt_tokens": prompt_allowance,
                 "max_completion_tokens": calculated * 4_000,
+                "max_image_parts": max(4, visual_units * 4),
+                "max_prepared_image_bytes": max(
+                    12 * 1024 * 1024,
+                    visual_units * 12 * 1024 * 1024,
+                ),
+                "max_prepared_image_pixels": max(
+                    12_000_000, visual_units * 12_000_000
+                ),
             },
             grow_only=True,
         )

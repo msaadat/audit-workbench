@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 
-from .. import document_analysis
+from .. import document_analysis, document_media
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceError, load_workspace
 from . import narration, store, workflow
@@ -32,21 +32,27 @@ from .capabilities.documents import (
     MAX_SCOPE_DOCUMENTS,
     STAGE_CHECKPOINTS,
     DocumentScope,
+    analysis_unit_specs,
     analyzable,
     chunk_specs,
     has_generated_analysis,
     resolve_document_scope,
+    visual_page_limit,
 )
 from .context import (
     ContextResolver,
     document_chunk_scope,
     document_reduction_scope,
+    document_visual_page_scope,
 )
 from .executors import EXECUTORS
 from .executors.documents import (
     DOCUMENT_REVIEW_REQUIRED,
+    DOCUMENT_REQUIRES_VISION,
     DOCUMENT_TEXT_UNAVAILABLE,
+    DOCUMENT_VISUAL_SOURCE_UNSUPPORTED,
     PARTIAL_COVERAGE,
+    VISUAL_PREPARATION_FAILED,
     DocumentAnalysisExecutorTarget,
     analysis_ref,
     document_ref,
@@ -66,7 +72,11 @@ from .runtime import (
     WorkflowRunner,
 )
 from .workers import WORKERS
-from .workers.documents import CHUNK_WORKER_ID, REDUCTION_WORKER_ID
+from .workers.documents import (
+    CHUNK_WORKER_ID,
+    REDUCTION_WORKER_ID,
+    VISUAL_WORKER_ID,
+)
 
 
 class DocumentWorkflowExecution(BaseRunner):
@@ -105,16 +115,41 @@ class DocumentWorkflowExecution(BaseRunner):
         """
         scope = workflow_scope(self.run)
         document_scope = self.scope()
-        chunks = sum(
-            len(chunk_specs(self.ws, document_id, scope))
+        specs = [
+            item
             for document_id in document_scope.document_ids
+            for item in analysis_unit_specs(self.ws, document_id, scope)
+        ]
+        text_units = sum(
+            item["kind"] == "document_chunk_analysis" for item in specs
         )
-        calculated = 4 + chunks + 2 * max(1, len(document_scope.document_ids))
+        visual_units = sum(
+            item["kind"] == "document_visual_page_analysis"
+            and not item.get("unsupported_reason")
+            for item in specs
+        )
+        calculated = 4 + len(specs) + 2 * max(
+            1, len(document_scope.document_ids)
+        )
+        prompt_allowance = (
+            4 * 12_000
+            + text_units * 12_000
+            + visual_units * 20_480
+            + max(1, len(document_scope.document_ids)) * 12_000
+        )
         self.update_limits(
             {
                 "max_model_turns": calculated,
-                "max_estimated_prompt_tokens": calculated * 12_000,
+                "max_estimated_prompt_tokens": prompt_allowance,
                 "max_completion_tokens": calculated * 4_000,
+                "max_image_parts": max(4, visual_units * 4),
+                "max_prepared_image_bytes": max(
+                    12 * 1024 * 1024,
+                    visual_units * 12 * 1024 * 1024,
+                ),
+                "max_prepared_image_pixels": max(
+                    12_000_000, visual_units * 12_000_000
+                ),
             },
             grow_only=True,
         )
@@ -195,7 +230,9 @@ class DocumentWorkflowExecution(BaseRunner):
         """
         self.ws = subject
         document_id = self._parent(unit, "document")
-        task = self.add_task("document_text", "workflow:document_text", "Document text")
+        task = self.add_task(
+            "document_text", "workflow:document_text", "Document content"
+        )
         self.task_status(task, "running")
         extracted = extract_text(
             self.ws,
@@ -204,7 +241,7 @@ class DocumentWorkflowExecution(BaseRunner):
         )
         self.ws = load_workspace(self.ws.id)
         state = str(extracted.get("state") or "")
-        if state in {"failed", "image_only"}:
+        if state == "failed":
             reason = str(
                 extracted.get("error") or "The document has no extractable text."
             )
@@ -236,7 +273,7 @@ class DocumentWorkflowExecution(BaseRunner):
         """
         self.ws = subject
         document_id = self._parent(unit, "document")
-        chunk = self._chunk_for_unit(document_id, str(unit["id"]))
+        chunk = self._map_for_unit(document_id, str(unit["id"]))
         if chunk is None:
             # The extraction this unit was expanded against no longer produces
             # this chunk (a re-extraction, or a narrowed page bound). Skipping is
@@ -250,6 +287,54 @@ class DocumentWorkflowExecution(BaseRunner):
         task = self.add_task(
             "document_chunks", "workflow:document_chunks", "Document chunk analysis"
         )
+        visual = chunk["kind"] == "document_visual_page_analysis"
+        handles: list[dict] = []
+        if visual:
+            unsupported_reason = str(chunk.get("unsupported_reason") or "")
+            if unsupported_reason:
+                self.task_detail(
+                    task,
+                    f"{self._title(document_id)}: visual source is unsupported.",
+                )
+                self.task_status(task, "completed")
+                return DeterministicUnitResult(
+                    "awaiting_confirmation",
+                    (),
+                    DOCUMENT_VISUAL_SOURCE_UNSUPPORTED,
+                )
+            vision = dict(
+                (self.run.get("model_profiles") or {}).get("vision") or {}
+            )
+            if (
+                not vision.get("configured")
+                or "vision" not in (vision.get("capabilities") or [])
+            ):
+                self.task_detail(
+                    task,
+                    f"{self._title(document_id)}: a vision profile is required.",
+                )
+                self.task_status(task, "completed")
+                return DeterministicUnitResult(
+                    "awaiting_confirmation",
+                    (),
+                    DOCUMENT_REQUIRES_VISION,
+                )
+            try:
+                handles = document_media.prepare_document_page(
+                    self.ws, document_id, int(chunk["page"])
+                )
+            except document_media.MediaPreparationError as error:
+                self.warn(
+                    f"'{self._title(document_id)}' page {chunk['page']} could "
+                    f"not be prepared: {error}"
+                )
+                self.task_detail(task, str(error))
+                self.task_status(task, "completed")
+                return DeterministicUnitResult(
+                    "awaiting_confirmation",
+                    (),
+                    VISUAL_PREPARATION_FAILED,
+                )
 
         def context_provider():
             return resolve_context(
@@ -257,7 +342,13 @@ class DocumentWorkflowExecution(BaseRunner):
                 self.context_resolver,
                 capability,
                 unit,
-                document_chunk_scope(self.ws, document_id, chunk),
+                (
+                    document_visual_page_scope(
+                        self.ws, document_id, handles
+                    )
+                    if visual
+                    else document_chunk_scope(self.ws, document_id, chunk)
+                ),
             )
 
         def on_committed(_stage, _unit, _outcome) -> DeterministicUnitResult:
@@ -267,24 +358,35 @@ class DocumentWorkflowExecution(BaseRunner):
             )
             self.task_status(task, "completed")
             return DeterministicUnitResult(
-                "succeeded", (f"document_chunk:{document_id}:{chunk_id}",)
+                "succeeded",
+                (
+                    (
+                        f"document_visual_page:{document_id}:{chunk['page']}"
+                        if visual
+                        else f"document_chunk:{document_id}:{chunk_id}"
+                    ),
+                ),
             )
 
         return BoundUnitPipeline(
             request=UnitPipelineRequest(
                 capability_id=capability.id,
                 unit_id=unit["id"],
-                worker_id=CHUNK_WORKER_ID,
+                worker_id=VISUAL_WORKER_ID if visual else CHUNK_WORKER_ID,
                 executor_id=None,
                 unit_input={
                     "kind": unit.get("kind"),
                     "input_sha1": unit.get("input_sha1"),
                     "parent_refs": list(unit.get("parent_refs") or []),
+                    "chunk_id": chunk_id,
+                    "page": int(chunk["page"]),
+                    "modality": "image" if visual else "text",
                 },
                 activity={
                     "artifact_refs": list(unit.get("parent_refs") or []),
                     "document_ids": [document_id],
                     "task_id": task["id"],
+                    "page_ranges": [int(chunk["page"])],
                 },
                 expected_revision=self.ws.revision,
                 expected_parents={},
@@ -295,6 +397,30 @@ class DocumentWorkflowExecution(BaseRunner):
                 approval_kind=None,
                 proposal_reference=unit.get("proposal_sidecar"),
                 receipt_reference=None,
+                model_profile_hash=(
+                    str(
+                        (
+                            (self.run.get("model_profiles") or {})
+                            .get("vision" if visual else "text", {})
+                            .get("profile_hash")
+                            or ""
+                        )
+                    )
+                    or None
+                ),
+                input_modalities=(
+                    ("text", "image") if visual else ("text",)
+                ),
+                prepared_media_hashes=tuple(
+                    sorted(
+                        str(item["prepared_sha256"]) for item in handles
+                    )
+                ),
+                media_policy_hash=(
+                    document_media.PREPARATION_POLICY_HASH
+                    if visual
+                    else None
+                ),
             ),
             context_provider=context_provider,
             context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
@@ -309,14 +435,26 @@ class DocumentWorkflowExecution(BaseRunner):
     def _chunk_unit_id(self, document_id: str, chunk_id: str) -> str:
         return semantic_unit_id("document_chunk", document_id, chunk_id)
 
-    def _chunk_for_unit(self, document_id: str, unit_id: str) -> dict | None:
+    def _map_unit_id(self, document_id: str, spec: dict) -> str:
+        if spec["kind"] == "document_chunk_analysis":
+            return self._chunk_unit_id(document_id, str(spec["id"]))
+        return semantic_unit_id(
+            "document_visual_page",
+            document_id,
+            spec["page"],
+            spec["prepared_set_identity"],
+        )
+
+    def _map_for_unit(self, document_id: str, unit_id: str) -> dict | None:
         """The chunk a semantic unit ID names, resolved forwards.
 
         Unit IDs are slugified, so they are matched by regenerating each current
         chunk's ID rather than by parsing the unit ID back apart.
         """
-        for chunk in chunk_specs(self.ws, document_id, workflow_scope(self.run)):
-            if self._chunk_unit_id(document_id, str(chunk["id"])) == unit_id:
+        for chunk in analysis_unit_specs(
+            self.ws, document_id, workflow_scope(self.run)
+        ):
+            if self._map_unit_id(document_id, chunk) == unit_id:
                 return chunk
         return None
 
@@ -342,7 +480,7 @@ class DocumentWorkflowExecution(BaseRunner):
         if extracted is None:
             return self._unreadable_document(document_id)
         scope = workflow_scope(self.run)
-        chunks = chunk_specs(self.ws, document_id, scope)
+        chunks = analysis_unit_specs(self.ws, document_id, scope)
         analyses, missing = self._chunk_analyses(document_id, chunks)
         if not analyses:
             return DeterministicUnitResult(
@@ -350,7 +488,9 @@ class DocumentWorkflowExecution(BaseRunner):
                 (),
                 "No source chunk of this document was analyzed successfully.",
             )
-        coverage = self._coverage(document_id, chunks, analyses, missing)
+        coverage = self._coverage(
+            document_id, extracted, chunks, analyses, missing
+        )
         task = self.add_task(
             "document_analysis", "workflow:document_analysis", "Document analysis"
         )
@@ -376,6 +516,14 @@ class DocumentWorkflowExecution(BaseRunner):
                 "input_sha1": unit.get("input_sha1"),
                 "parent_refs": list(unit.get("parent_refs") or []),
                 "chunk_ids": [str(item.get("chunk_id") or "") for item in analyses],
+                "generation_profiles": self._generation_profiles(analyses),
+                "prepared_media_set_hashes": sorted(
+                    {
+                        str(item.get("prepared_media_set_hash") or "")
+                        for item in analyses
+                        if item.get("prepared_media_set_hash")
+                    }
+                ),
             },
             activity={
                 "artifact_refs": list(unit.get("parent_refs") or []),
@@ -412,7 +560,17 @@ class DocumentWorkflowExecution(BaseRunner):
             re-persisted before the executor sees it, so a resume commits exactly
             what was accepted.
             """
-            return {**dict(proposal), "coverage": coverage}
+            return {
+                **dict(proposal),
+                "coverage": coverage,
+                "generation_profiles": self._generation_profiles(analyses),
+                "prepared_media_set_hash": self._prepared_media_set_hash(
+                    analyses
+                ),
+                "vision_used": any(
+                    item.get("modality") == "image" for item in analyses
+                ),
+            }
 
         def on_committed(_stage, _unit, outcome) -> DeterministicUnitResult:
             self.ws = target.workspace
@@ -515,7 +673,7 @@ class DocumentWorkflowExecution(BaseRunner):
         for chunk in chunks:
             try:
                 payload = self.sidecars.load_proposal(
-                    self._chunk_unit_id(document_id, str(chunk["id"]))
+                    self._map_unit_id(document_id, chunk)
                 )
             except WorkspaceError:
                 payload = None
@@ -526,25 +684,144 @@ class DocumentWorkflowExecution(BaseRunner):
             analyses.append(dict(proposal))
         return analyses, missing
 
+    def _generation_profiles(self, analyses: list[dict]) -> list[dict]:
+        profiles = self.run.get("model_profiles") or {}
+        keys = {
+            "vision" if item.get("modality") == "image" else "text"
+            for item in analyses
+        }
+        if len(analyses) > 1:
+            keys.add("text")
+        return [
+            {
+                key: profile.get(key)
+                for key in (
+                    "name",
+                    "provider",
+                    "model",
+                    "capabilities",
+                    "configuration_source",
+                    "profile_hash",
+                )
+            }
+            for name in ("text", "vision")
+            if name in keys
+            for profile in [dict(profiles.get(name) or {})]
+        ]
+
     @staticmethod
+    def _prepared_media_set_hash(analyses: list[dict]) -> str:
+        values = sorted(
+            {
+                str(item.get("prepared_media_set_hash") or "")
+                for item in analyses
+                if item.get("prepared_media_set_hash")
+            }
+        )
+        if not values:
+            return ""
+        return values[0] if len(values) == 1 else workflow.canonical_sha256(values)
+
     def _coverage(
+        self,
         document_id: str,
+        extracted: dict,
         chunks: list[dict],
         analyses: list[dict],
         missing: list[dict],
     ) -> dict:
+        text_analyzed_pages = sorted(
+            {
+                int(page)
+                for item in analyses
+                if item.get("modality") != "image"
+                for page in item.get("pages") or []
+            }
+        )
+        vision_analyzed_pages = sorted(
+            {
+                int(page)
+                for item in analyses
+                if item.get("modality") == "image"
+                for page in item.get("pages") or []
+            }
+        )
         analyzed_pages = sorted(
             {int(page) for item in analyses for page in item.get("pages") or []}
         )
+        omissions: list[dict] = []
+        vision_profile = dict(
+            (self.run.get("model_profiles") or {}).get("vision") or {}
+        )
+        for chunk in missing:
+            unit_error = self._unit_error(
+                self._map_unit_id(document_id, chunk)
+            )
+            reason = (
+                DOCUMENT_VISUAL_SOURCE_UNSUPPORTED
+                if chunk.get("unsupported_reason")
+                else DOCUMENT_REQUIRES_VISION
+                if chunk.get("modality") == "image"
+                and (
+                    not vision_profile.get("configured")
+                    or "vision"
+                    not in (vision_profile.get("capabilities") or [])
+                )
+                else VISUAL_PREPARATION_FAILED
+                if str(unit_error).startswith(VISUAL_PREPARATION_FAILED)
+                else "vision_request_rejected"
+                if str(unit_error).startswith("vision_request_rejected")
+                else "map_unit_failed"
+            )
+            omissions.append(
+                {"page": int(chunk["page"]), "reason": reason}
+            )
+        scope = workflow_scope(self.run)
+        suffix = str(extracted.get("source_suffix") or "")
+        visual_candidates = [
+            int(page.get("page") or 0)
+            for page in extracted.get("pages") or []
+            if (
+                bool(page.get("image_only"))
+                or (
+                    suffix == ".pdf"
+                    and bool(page.get("no_usable_text_no_image"))
+                )
+                or document_id
+                in set(scope.get("full_visual_document_ids") or [])
+            )
+        ]
+        # Standalone image suffixes live in the document service; avoid an
+        # import cycle in document_media by checking the stable set here.
+        if suffix in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}:
+            visual_candidates = [
+                int(page.get("page") or 0)
+                for page in extracted.get("pages") or []
+            ]
+        visual_limit = visual_page_limit(scope)
+        for page in visual_candidates[visual_limit:]:
+            omissions.append(
+                {"page": page, "reason": "visual_page_limit_reached"}
+            )
         omitted_pages = sorted(
-            {int(chunk["page"]) for chunk in missing} - set(analyzed_pages)
+            {item["page"] for item in omissions} - set(analyzed_pages)
         )
         return {
             "state": "partial" if omitted_pages else "complete",
             "analyzed_pages": analyzed_pages,
+            "text_analyzed_pages": text_analyzed_pages,
+            "vision_analyzed_pages": vision_analyzed_pages,
             "omitted_pages": omitted_pages,
-            "reason": "unanalyzed_source_chunks" if omitted_pages else None,
+            "omissions": omissions,
+            "reason": "partial_coverage" if omitted_pages else None,
         }
+
+    def _unit_error(self, unit_id: str) -> str:
+        for stage in (self.run.get("workflow") or {}).get("stages") or []:
+            for unit in stage.get("units") or []:
+                if str(unit.get("id")) == unit_id:
+                    return str(unit.get("error") or "")
+        return ""
 
     # ------------------------------------- documents.analysis_reviewed
     def _bind_review(
@@ -745,7 +1022,13 @@ _PARTIAL_DEPENDENCIES = {
 _PIPELINE_BINDERS = {
     "documents.analysis_chunks_ready": (
         "_bind_chunk",
-        {"worker": CHUNK_WORKER_ID, "executor": None},
+        {
+            "workers_by_unit_kind": {
+                "document_chunk_analysis": CHUNK_WORKER_ID,
+                "document_visual_page_analysis": VISUAL_WORKER_ID,
+            },
+            "executor": None,
+        },
     ),
     "documents.analysis_generated": (
         "_bind_reduction",

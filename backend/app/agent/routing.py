@@ -800,6 +800,18 @@ def document_page_limit() -> int:
         return 0
 
 
+def document_visual_page_limit() -> int:
+    """Durable default bound for image-bearing document map units."""
+
+    try:
+        return max(
+            1,
+            int(os.environ.get("DOCUMENT_VISUAL_PAGE_LIMIT") or 20),
+        )
+    except ValueError:
+        return 20
+
+
 def _document_model_turns(workspace: Workspace, scope: dict) -> int:
     """Size the document budget from the chunks actually in scope.
 
@@ -809,11 +821,11 @@ def _document_model_turns(workspace: Workspace, scope: dict) -> int:
     the composition refreshes the budget once extraction has run.
     """
 
-    from .capabilities.documents import chunk_specs, resolve_document_scope
+    from .capabilities.documents import analysis_unit_specs, resolve_document_scope
 
     document_scope = resolve_document_scope(workspace, scope)
     chunks = sum(
-        len(chunk_specs(workspace, document_id, scope)) or 1
+        len(analysis_unit_specs(workspace, document_id, scope)) or 1
         for document_id in document_scope.document_ids
     )
     return 4 + chunks + 2 * max(1, len(document_scope.document_ids))
@@ -889,6 +901,17 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
             )
         ]
         scope["page_limit"] = document_page_limit()
+        scope["visual_page_limit"] = document_visual_page_limit()
+        scope["full_visual_document_ids"] = [
+            str(value)
+            for value in (
+                resolution.get("full_visual_document_ids")
+                or (run.get("context") or {}).get(
+                    "full_visual_document_ids"
+                )
+                or []
+            )
+        ]
     if doc_test_route:
         # A resolved Document Test scope is durable on the workflow record, so a
         # resumed run executes exactly the worklists the request named.

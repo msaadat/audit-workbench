@@ -246,6 +246,9 @@ def _pdf_pages(path: Path) -> list[dict]:
             "characters": len(text),
             "embedded_images": images,
             "image_only": len(text) < MIN_TEXT_CHARACTERS and images > 0,
+            "no_usable_text_no_image": (
+                len(text) < MIN_TEXT_CHARACTERS and images == 0
+            ),
         })
     return pages
 
@@ -285,17 +288,69 @@ def extract_document(workspace: Workspace, doc_id: str, *, force: bool = False) 
         elif suffix == ".docx":
             pages = _docx_page(path)
         elif suffix in IMAGE_SUFFIXES:
-            pages = [{"page": 1, "text": "", "characters": 0, "embedded_images": 1, "image_only": True}]
+            from . import document_media
+
+            try:
+                frames = document_media.image_frame_count(path)
+            except document_media.MediaPreparationError:
+                # Extraction records the structural visual source without
+                # decoding its bytes. Deterministic media preparation owns the
+                # typed corrupt/unsupported verdict at execution time.
+                frames = 1
+            pages = [
+                {
+                    "page": page,
+                    "text": "",
+                    "characters": 0,
+                    "embedded_images": 1,
+                    "image_only": True,
+                }
+                for page in range(1, frames + 1)
+            ]
         else:
             raise WorkspaceError(f"Unsupported document type '{suffix}'.")
         image_only_count = sum(bool(page["image_only"]) for page in pages)
-        text_count = sum(page["characters"] > 0 for page in pages)
-        state = "image_only" if pages and image_only_count == len(pages) else "partial" if image_only_count else "extracted"
-        if not pages or (not text_count and not image_only_count):
+        usable_text_count = sum(
+            int(page.get("characters") or 0) >= MIN_TEXT_CHARACTERS
+            for page in pages
+        )
+        visually_routable_count = sum(
+            bool(page.get("image_only"))
+            or (
+                suffix == ".pdf"
+                and int(page.get("characters") or 0) < MIN_TEXT_CHARACTERS
+                and int(page.get("embedded_images") or 0) == 0
+            )
+            for page in pages
+        )
+        state = (
+            "image_only"
+            if pages and not usable_text_count and visually_routable_count
+            else "partial"
+            if visually_routable_count
+            else "extracted"
+        )
+        if not pages:
             state = "failed"
-        payload = {"document_id": doc_id, "source_sha1": doc["sha1"], "state": state, "pages": pages, "extracted_at": utcnow(), "error": None}
+        payload = {
+            "document_id": doc_id,
+            "source_sha1": doc["sha1"],
+            "source_suffix": suffix,
+            "state": state,
+            "pages": pages,
+            "extracted_at": utcnow(),
+            "error": None,
+        }
     except Exception as error:
-        payload = {"document_id": doc_id, "source_sha1": doc.get("sha1"), "state": "failed", "pages": [], "extracted_at": utcnow(), "error": str(error)}
+        payload = {
+            "document_id": doc_id,
+            "source_sha1": doc.get("sha1"),
+            "source_suffix": suffix,
+            "state": "failed",
+            "pages": [],
+            "extracted_at": utcnow(),
+            "error": str(error),
+        }
     digest = hashlib.sha1()
     for page in payload.get("pages") or []:
         digest.update(f"\n\fPAGE:{int(page.get('page') or 0)}\n".encode())
@@ -306,8 +361,18 @@ def extract_document(workspace: Workspace, doc_id: str, *, force: bool = False) 
     workspace.save()
     from . import document_analysis
     document_analysis.repair_status(workspace, doc_id)
+    current_analysis = document_analysis.generated_record(workspace, doc_id)
+    has_derived_text = bool(
+        (current_analysis or {}).get("derived_text_markdown")
+    )
     document_analysis.update_status(
-        workspace, doc_id, search_index_state="unsupported" if payload["state"] == "image_only" else "pending",
+        workspace,
+        doc_id,
+        search_index_state=(
+            "pending"
+            if payload["state"] != "image_only" or has_derived_text
+            else "unsupported"
+        ),
     )
     return payload
 

@@ -241,10 +241,44 @@ def _required_id(value: object, kind: str) -> str:
     return identifier
 
 
-def _context_spec(capability: object, presets: PresetRegistry) -> ContextSpec:
+def _context_spec(
+    capability: object,
+    presets: PresetRegistry,
+    *,
+    unit: object | None = None,
+    manifest: ContextManifest | None = None,
+) -> ContextSpec:
     declaration = _member(capability, "context_spec")
     if declaration is None:
         declaration = _member(capability, "context")
+    if isinstance(declaration, Mapping):
+        if unit is not None:
+            kind = str(_member(unit, "kind") or "").strip()
+            if kind not in declaration:
+                raise ContextResolutionError(
+                    f"Context capability has no binding for unit kind '{kind}'."
+                )
+            declaration = declaration[kind]
+        elif manifest is not None:
+            matches: list[ContextSpec] = []
+            for value in declaration.values():
+                spec = (
+                    presets.compile(value)
+                    if isinstance(value, str)
+                    else value
+                )
+                if isinstance(spec, ContextSpec) and _spec_hash(spec) == manifest.context_spec_hash:
+                    matches.append(spec)
+            if len(matches) != 1:
+                raise ContextResolutionError(
+                    "Context manifest does not identify exactly one declared "
+                    "per-unit context binding."
+                )
+            return matches[0]
+        else:
+            raise ContextResolutionError(
+                "Per-unit context binding requires a unit or manifest identity."
+            )
     if isinstance(declaration, str):
         return presets.compile(declaration)
     if isinstance(declaration, ContextSpec):
@@ -459,13 +493,30 @@ def _select_candidates(
     )
 
 
-def _remaining(budget: ContextBudget, used: ContextSize) -> tuple[int, int, int | None]:
+def _remaining(
+    budget: ContextBudget, used: ContextSize
+) -> tuple[int, int, int | None, int | None, int | None, int | None, int | None]:
     return (
         max(0, budget.max_items - used.items),
         max(0, budget.max_characters - used.characters),
         None
         if budget.max_estimated_tokens is None
         else max(0, budget.max_estimated_tokens - used.estimated_tokens),
+        None
+        if budget.max_media_items is None
+        else max(0, budget.max_media_items - used.media_items),
+        None
+        if budget.max_media_bytes is None
+        else max(0, budget.max_media_bytes - used.media_bytes),
+        None
+        if budget.max_media_pixels is None
+        else max(0, budget.max_media_pixels - used.media_pixels),
+        None
+        if budget.max_estimated_image_tokens is None
+        else max(
+            0,
+            budget.max_estimated_image_tokens - used.estimated_image_tokens,
+        ),
     )
 
 
@@ -474,11 +525,25 @@ def _sum_size(left: ContextSize, right: ContextSize) -> ContextSize:
         items=left.items + right.items,
         characters=left.characters + right.characters,
         estimated_tokens=left.estimated_tokens + right.estimated_tokens,
+        media_items=left.media_items + right.media_items,
+        media_bytes=left.media_bytes + right.media_bytes,
+        media_pixels=left.media_pixels + right.media_pixels,
+        estimated_image_tokens=(
+            left.estimated_image_tokens + right.estimated_image_tokens
+        ),
     )
 
 
 def _zero_size() -> ContextSize:
-    return ContextSize(items=0, characters=0, estimated_tokens=0)
+    return ContextSize(
+        items=0,
+        characters=0,
+        estimated_tokens=0,
+        media_items=0,
+        media_bytes=0,
+        media_pixels=0,
+        estimated_image_tokens=0,
+    )
 
 
 def _selection_reason(
@@ -533,16 +598,49 @@ def _representation(
 def _fit_content(
     content: object,
     *,
+    representation_kind: str,
     source_budget: ContextBudget,
     source_used: ContextSize,
     global_budget: ContextBudget,
     global_used: ContextSize,
 ) -> tuple[object | None, ContextSize, str | None]:
-    original = supplied_size(content)
-    source_items, source_chars, source_tokens = _remaining(source_budget, source_used)
-    global_items, global_chars, global_tokens = _remaining(global_budget, global_used)
+    original = supplied_size(
+        content, representation_kind=representation_kind
+    )
+    (
+        source_items,
+        source_chars,
+        source_tokens,
+        source_media_items,
+        source_media_bytes,
+        source_media_pixels,
+        source_image_tokens,
+    ) = _remaining(source_budget, source_used)
+    (
+        global_items,
+        global_chars,
+        global_tokens,
+        global_media_items,
+        global_media_bytes,
+        global_media_pixels,
+        global_image_tokens,
+    ) = _remaining(global_budget, global_used)
     if source_items == 0 or global_items == 0:
         return None, original, "item"
+    if representation_kind == "page_image":
+        media_limits = (
+            (source_media_items, original.media_items),
+            (global_media_items, original.media_items),
+            (source_media_bytes, original.media_bytes),
+            (global_media_bytes, original.media_bytes),
+            (source_media_pixels, original.media_pixels),
+            (global_media_pixels, original.media_pixels),
+            (source_image_tokens, original.estimated_image_tokens),
+            (global_image_tokens, original.estimated_image_tokens),
+        )
+        if any(limit is not None and required > limit for limit, required in media_limits):
+            return None, original, "media"
+        return content, original, None
 
     character_limit = min(source_chars, global_chars)
     token_limits = [value for value in (source_tokens, global_tokens) if value is not None]
@@ -553,7 +651,11 @@ def _fit_content(
     if not isinstance(content, str) or character_limit <= 0:
         return None, original, "size"
     truncated = content[:character_limit]
-    return truncated, supplied_size(truncated), "truncate"
+    return (
+        truncated,
+        supplied_size(truncated, representation_kind=representation_kind),
+        "truncate",
+    )
 
 
 class ContextResolver:
@@ -584,7 +686,9 @@ class ContextResolver:
             )
         capability_id = _required_id(capability, "capability")
         spec = self._selectors.validate_spec(
-            _context_spec(capability, self._presets)
+            _context_spec(
+                capability, self._presets, manifest=manifest
+            )
         )
         spec_hash = _spec_hash(spec)
         if (
@@ -628,7 +732,9 @@ class ContextResolver:
             raise ContextResolutionError("Context scope must be a ContextScope.")
         capability_id = _required_id(capability, "capability")
         unit_id = _required_id(unit, "unit")
-        spec = self._selectors.validate_spec(_context_spec(capability, self._presets))
+        spec = self._selectors.validate_spec(
+            _context_spec(capability, self._presets, unit=unit)
+        )
         declared_ids = {source.id for source in spec.sources}
         undeclared = sorted(
             (set(scope.candidates) | set(scope.local_embedding_queries)) - declared_ids
@@ -742,6 +848,7 @@ class ContextResolver:
                 original_content = candidate.representations[representation.kind]
                 content, content_size, disposition = _fit_content(
                     original_content,
+                    representation_kind=representation.kind,
                     source_budget=source.budget,
                     source_used=source_used,
                     global_budget=spec.budget,
@@ -756,7 +863,11 @@ class ContextResolver:
                             reason=(
                                 "Global or per-source item limit reached."
                                 if disposition == "item"
-                                else "Global or per-source size limit reached."
+                                else (
+                                    "Global or per-source media limit reached."
+                                    if disposition == "media"
+                                    else "Global or per-source size limit reached."
+                                )
                             ),
                         )
                     )
@@ -790,6 +901,30 @@ class ContextResolver:
                     reason=reason,
                     representation=representation,
                     supplied_size=content_size,
+                    media=(
+                        {
+                            key: content.get(key)
+                            for key in (
+                                "source_ref",
+                                "source_sha1",
+                                "prepared_sha256",
+                                "page",
+                                "frame",
+                                "variant",
+                                "tile_order",
+                                "mime",
+                                "width",
+                                "height",
+                                "prepared_byte_count",
+                                "pixel_count",
+                                "policy_hash",
+                                "prepared_set_hash",
+                            )
+                        }
+                        if representation.kind == "page_image"
+                        and isinstance(content, Mapping)
+                        else None
+                    ),
                 )
                 bundle_item = ContextBundleItem(
                     source_id=source.id,

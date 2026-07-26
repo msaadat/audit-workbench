@@ -88,10 +88,16 @@ def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
               "source_sha1": document.get("sha1"), "mode": mode, "content": "",
               "pages": [], "citations": [], "characters": 0, "outcome": "unavailable",
               "analysis_id": None, "trimmed": False}
-    if mode in {"summary", "audit_notes"}:
+    if mode in {"summary", "audit_notes", "derived_text", "vision_transcript"}:
         analysis = document_analysis.load_analysis(workspace, document_id, document=document)
         if analysis["effective"] and analysis["status"]["analysis_validity_state"] == "current":
-            key = "summary_markdown" if mode == "summary" else "audit_notes_markdown"
+            key = (
+                "summary_markdown"
+                if mode == "summary"
+                else "audit_notes_markdown"
+                if mode == "audit_notes"
+                else "derived_text_markdown"
+            )
             content = str(analysis["effective"].get(key) or "")
             result.update(content=content[:max_chars], characters=min(len(content), max_chars),
                           outcome="trimmed" if len(content) > max_chars else "supplied",
@@ -108,7 +114,61 @@ def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
     elif mode in {"pages", "full"}:
         extracted = documents.extract_document(workspace, document_id)
         total = sum(len(str(page.get("text") or "")) for page in extracted.get("pages") or [])
-        if mode == "full" and total > min(max_chars, SMALL_DOCUMENT_CHARACTERS):
+        if total == 0:
+            analysis = document_analysis.load_analysis(
+                workspace, document_id, document=document
+            )
+            derived = (
+                str(
+                    (analysis.get("effective") or {}).get(
+                        "derived_text_markdown"
+                    )
+                    or ""
+                )
+                if analysis["status"]["analysis_validity_state"] == "current"
+                else ""
+            )
+            if derived:
+                page = next(
+                    (
+                        int(item.get("page") or 1)
+                        for item in (
+                            analysis.get("effective") or {}
+                        ).get("citations")
+                        or []
+                    ),
+                    1,
+                )
+                bounded = derived[:max_chars]
+                result.update(
+                    content=f"--- Page {page} (AI-derived visual transcription) ---\n{bounded}",
+                    characters=len(bounded),
+                    pages=[page],
+                    page_items=[
+                        {
+                            "page": page,
+                            "text": bounded,
+                            "origin": "vision_transcript",
+                            "analysis_id": (
+                                analysis.get("effective") or {}
+                            ).get("id"),
+                            "auditor_confirmed": False,
+                        }
+                    ],
+                    outcome=(
+                        "trimmed" if len(derived) > max_chars else "supplied"
+                    ),
+                    trimmed=len(derived) > max_chars,
+                    analysis_id=(analysis.get("effective") or {}).get("id"),
+                    citations=(
+                        analysis.get("effective") or {}
+                    ).get("citations")
+                    or [],
+                )
+                total = -1
+        if total == -1:
+            pass
+        elif mode == "full" and total > min(max_chars, SMALL_DOCUMENT_CHARACTERS):
             result.update(outcome="scope_required")
         else:
             included = documents.prompt_content(workspace, document_id, pages if mode == "pages" else None,
@@ -123,7 +183,13 @@ def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
     duration = round((time.monotonic() - started) * 1000, 2)
     result["retrieval_duration_ms"] = duration
     if record_activity:
-        representation = {"full": "raw_pages", "pages": "raw_pages", "search_excerpts": "excerpt"}.get(mode, mode)
+        representation = {
+            "full": "raw_pages",
+            "pages": "raw_pages",
+            "search_excerpts": "excerpt",
+            "derived_text": "vision_transcript",
+            "vision_transcript": "vision_transcript",
+        }.get(mode, mode)
         documents.append_activity(
             workspace, run_id=run_id, stage=stage, task=None, purpose=purpose,
             provider=None, model=None, vision_used=False, prompt_version=None,

@@ -58,6 +58,38 @@ class LLMSettings:
     base_url: str
     extra_headers: dict[str, str]
     timeout: int
+    profile_name: str = "assistant"
+    capabilities: tuple[str, ...] = ()
+    profile_hash: str = ""
+    configuration_source: str = "assistant_settings"
+
+
+@dataclass(frozen=True)
+class ResolvedModelProfile:
+    """Non-secret, hash-identified model selection used by durable runs."""
+
+    name: str
+    provider: str
+    model: str
+    capabilities: tuple[str, ...]
+    configuration_source: str
+    configured: bool
+    base_url: str
+    profile_hash: str
+    unavailability_reason: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "provider": self.provider,
+            "model": self.model,
+            "capabilities": list(self.capabilities),
+            "configuration_source": self.configuration_source,
+            "configured": self.configured,
+            "base_url": self.base_url,
+            "profile_hash": self.profile_hash,
+            "unavailability_reason": self.unavailability_reason,
+        }
 
 
 def _env(name: str) -> str:
@@ -77,34 +109,176 @@ def _request_timeout(default: int) -> int:
     return timeout
 
 
-def _settings(profile: str = "assistant") -> LLMSettings:
+def _profile_hash(
+    name: str,
+    provider: str,
+    model: str,
+    capabilities: tuple[str, ...],
+    configuration_source: str,
+) -> str:
+    material = {
+        "name": name,
+        "provider": provider,
+        "model": model,
+        "capabilities": list(capabilities),
+        "configuration_source": configuration_source,
+    }
+    encoded = json.dumps(
+        material, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _declared_capabilities(name: str) -> tuple[str, ...] | None:
+    raw = _env(f"{name.upper()}_CAPABILITIES")
+    if not raw:
+        return None
+    capabilities = tuple(
+        sorted({item.strip().lower() for item in raw.split(",") if item.strip()})
+    )
+    unknown = [item for item in capabilities if item not in {"vision"}]
+    if unknown:
+        raise LLMError(f"Unknown {name.upper()} capability '{unknown[0]}'.")
+    return capabilities
+
+
+def _model_capabilities(provider: str, model: str) -> tuple[str, ...] | None:
+    catalog = assistant_settings.PROVIDERS[provider].get("model_capabilities") or {}
+    if model not in catalog:
+        return None
+    return tuple(sorted(str(item) for item in catalog[model]))
+
+
+def resolve_model_profile(profile: str = "agent") -> ResolvedModelProfile:
+    """Resolve one model-level profile without probing a provider."""
+
+    if profile not in {"agent", "vision"}:
+        raise LLMError("Model profile must be 'agent' or 'vision'.")
+    saved = assistant_settings.load()
+    provider = saved["provider"]
+    model = saved["model"]
+    source = "assistant_settings"
+    explicit_capabilities: tuple[str, ...] | None = None
+
+    prefix = "AGENT_VISION" if profile == "vision" else "AGENT"
+    override_provider = (_env(f"{prefix}_PROVIDER") or _env(f"{prefix}_BACKEND")).lower()
+    override_model = _env(f"{prefix}_MODEL")
+    declared = _declared_capabilities(prefix)
+    if override_provider:
+        if override_provider not in assistant_settings.PROVIDERS:
+            supported = ", ".join(assistant_settings.PROVIDERS)
+            raise LLMError(
+                f"Unsupported {prefix}_PROVIDER '{override_provider}'. "
+                f"Use one of: {supported}."
+            )
+        provider = override_provider
+        provider_meta = assistant_settings.PROVIDERS[provider]
+        model = override_model or str(
+            (provider_meta.get("vision_model") or provider_meta["default_model"])
+            if profile == "vision"
+            else provider_meta["default_model"]
+        )
+        source = "environment"
+        explicit_capabilities = declared
+    elif override_model:
+        model = override_model
+        source = "environment"
+        explicit_capabilities = declared
+    elif profile == "vision":
+        persisted = assistant_settings.load_agent_vision_profile()
+        if persisted is not None:
+            provider = str(persisted["provider"])
+            model = str(persisted["model"])
+            explicit_capabilities = tuple(persisted["capabilities"])
+            source = "settings.agent_vision"
+        else:
+            model = str(
+                assistant_settings.PROVIDERS[provider].get("vision_model") or model
+            )
+            source = "model_catalog"
+
+    catalog_capabilities = _model_capabilities(provider, model)
+    capabilities = (
+        explicit_capabilities
+        if explicit_capabilities is not None
+        else catalog_capabilities or ()
+    )
+    capabilities = tuple(sorted(set(capabilities)))
+    provider_meta = assistant_settings.PROVIDERS[provider]
+    api_key = _env(str(provider_meta["api_key_env"]))
+    if provider == "lmstudio" and not api_key:
+        api_key = DEFAULT_LMSTUDIO_API_KEY
+    configured = bool(api_key)
+    reason = None
+    if not configured:
+        reason = (
+            "Start LM Studio's local server."
+            if provider == "lmstudio"
+            else f"Set {provider_meta['api_key_env']}."
+        )
+    elif profile == "vision" and "vision" not in capabilities:
+        reason = (
+            f"Model '{model}' is not declared vision-capable. Choose a known "
+            "vision model or explicitly declare the vision capability."
+        )
+    return ResolvedModelProfile(
+        name=profile,
+        provider=provider,
+        model=model,
+        capabilities=capabilities,
+        configuration_source=source,
+        configured=configured,
+        base_url=str(provider_meta["base_url"]).rstrip("/"),
+        profile_hash=_profile_hash(
+            profile, provider, model, capabilities, source
+        ),
+        unavailability_reason=reason,
+    )
+
+
+def model_profile_snapshot() -> dict[str, dict]:
+    """Snapshot both durable agent profiles for a newly created run."""
+
+    text = resolve_model_profile("agent")
+    vision = resolve_model_profile("vision")
+    return {"text": text.to_dict(), "vision": vision.to_dict()}
+
+
+def _settings(profile: str | dict = "assistant") -> LLMSettings:
+    if isinstance(profile, dict):
+        provider_name = str(profile.get("provider") or "")
+        model_name = str(profile.get("model") or "")
+        if provider_name not in assistant_settings.PROVIDERS or not model_name:
+            raise LLMError("Persisted model profile snapshot is invalid.")
+        provider_meta = assistant_settings.PROVIDERS[provider_name]
+        api_key = _env(str(provider_meta["api_key_env"]))
+        if provider_name == "lmstudio" and not api_key:
+            api_key = DEFAULT_LMSTUDIO_API_KEY
+        return LLMSettings(
+            backend=provider_name,
+            api_key=api_key,
+            model=model_name,
+            base_url=str(provider_meta["base_url"]).rstrip("/"),
+            extra_headers={},
+            timeout=_request_timeout(
+                LOCAL_REQUEST_TIMEOUT if provider_meta["local"] else REQUEST_TIMEOUT
+            ),
+            profile_name=str(profile.get("name") or "agent"),
+            capabilities=tuple(
+                sorted(str(item) for item in profile.get("capabilities") or [])
+            ),
+            profile_hash=str(profile.get("profile_hash") or ""),
+            configuration_source=str(
+                profile.get("configuration_source") or "run_snapshot"
+            ),
+        )
     saved = assistant_settings.load()
     backend = saved["provider"]
     model = saved["model"]
     if profile in ("agent", "vision"):
-        # Agent runs may need a stronger model than the chat assistant.
-        # AGENT_PROVIDER/AGENT_BACKEND and AGENT_MODEL override when set;
-        # otherwise the agent uses the assistant's configured backend/model.
-        prefix = "AGENT_VISION" if profile == "vision" else "AGENT"
-        override_backend = (_env(f"{prefix}_PROVIDER") or _env(f"{prefix}_BACKEND")).lower()
-        override_model = _env(f"{prefix}_MODEL")
-        if override_backend:
-            if override_backend not in assistant_settings.PROVIDERS:
-                supported = ", ".join(assistant_settings.PROVIDERS)
-                raise LLMError(
-                    f"Unsupported {prefix}_PROVIDER '{override_backend}'. "
-                    f"Use one of: {supported}."
-                )
-            backend = override_backend
-            provider_meta = assistant_settings.PROVIDERS[backend]
-            model = override_model or str(
-                (provider_meta.get("vision_model") or provider_meta["default_model"])
-                if profile == "vision" else provider_meta["default_model"]
-            )
-        elif override_model:
-            model = override_model
-        elif profile == "vision":
-            model = str(assistant_settings.PROVIDERS[backend].get("vision_model") or model)
+        resolved = resolve_model_profile(profile)
+        backend = resolved.provider
+        model = resolved.model
     provider = assistant_settings.PROVIDERS[backend]
     api_key_env = str(provider["api_key_env"])
     api_key = _env(api_key_env)
@@ -118,6 +292,22 @@ def _settings(profile: str = "assistant") -> LLMSettings:
         extra_headers={},
         timeout=_request_timeout(
             LOCAL_REQUEST_TIMEOUT if provider["local"] else REQUEST_TIMEOUT
+        ),
+        profile_name=str(profile),
+        capabilities=(
+            resolve_model_profile(profile).capabilities
+            if profile in {"agent", "vision"}
+            else ()
+        ),
+        profile_hash=(
+            resolve_model_profile(profile).profile_hash
+            if profile in {"agent", "vision"}
+            else ""
+        ),
+        configuration_source=(
+            resolve_model_profile(profile).configuration_source
+            if profile in {"agent", "vision"}
+            else "assistant_settings"
         ),
     )
 
@@ -167,28 +357,38 @@ def agent_status() -> dict:
         return {
             "configured": False,
             "vision_configured": False,
+            "vision_unavailability_reason": str(error),
             "backend": "",
             "provider": "",
             "model": "",
             "base_url": "",
             "error": str(error),
         }
+    text_profile = resolve_model_profile("agent")
     result = {
         "configured": bool(settings.api_key),
         "backend": settings.backend,
         "provider": settings.backend,
         "model": settings.model,
         "base_url": settings.base_url,
+        "text_profile": text_profile.to_dict(),
     }
     try:
-        vision = _settings("vision")
+        vision_profile = resolve_model_profile("vision")
         result["vision_configured"] = bool(
-            vision.api_key and assistant_settings.PROVIDERS[vision.backend].get("vision")
+            vision_profile.configured and "vision" in vision_profile.capabilities
         )
-        result["vision_provider"] = vision.backend
-        result["vision_model"] = vision.model
-    except (LLMError, assistant_settings.SettingsError):
+        result["vision_provider"] = vision_profile.provider
+        result["vision_model"] = vision_profile.model
+        result["vision_profile"] = vision_profile.to_dict()
+        result["vision_unavailability_reason"] = (
+            None
+            if result["vision_configured"]
+            else vision_profile.unavailability_reason
+        )
+    except (LLMError, assistant_settings.SettingsError) as error:
         result["vision_configured"] = False
+        result["vision_unavailability_reason"] = str(error)
     return result
 
 
@@ -201,7 +401,7 @@ def image_part(content: bytes, mime: str) -> dict:
 
 
 def chat(messages: list[dict], tools: list[dict] | None = None,
-         temperature: float = 0.0, profile: str = "assistant") -> dict:
+         temperature: float = 0.0, profile: str | dict = "assistant") -> dict:
     """One chat/completions round-trip. Returns the assistant message dict.
 
     The returned message may contain ``content`` and/or ``tool_calls``; the
@@ -220,7 +420,7 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
         fallback = SimpleNamespace(backend=None, model=None, base_url="", timeout=None)
         call_id, _ = debug_store.start_call(
             {"messages": messages, "tools": tools, "temperature": temperature},
-            fallback, extra={"profile": profile},
+            fallback, extra={"profile": profile if isinstance(profile, str) else profile.get("name")},
         )
         context = debug_store.current_context()
         if call_id:
@@ -238,7 +438,9 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
-    call_id, _ = debug_store.start_call(body, settings, extra={"profile": profile})
+    call_id, _ = debug_store.start_call(
+        body, settings, extra={"profile": settings.profile_name}
+    )
     trace = debug_store.current_context()
     trace_workspace_id = str(trace.get("workspace_id") or "")
 

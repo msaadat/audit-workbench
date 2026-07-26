@@ -1,6 +1,12 @@
 """Public runtime contracts shared by agent schedulers."""
 
-from .model_gateway import DefaultModelGateway, ModelGateway
+from .model_gateway import (
+    DefaultModelGateway,
+    ModelCapabilityError,
+    ModelGateway,
+    PreparedMediaError,
+    VisionRequestRejected,
+)
 from .interactions import submit_approval_response, submit_interaction_response
 from .run_runtime import Cancelled, DefaultRunRuntime, LimitExceeded, RunRuntime
 from .unit_pipeline import (
@@ -27,7 +33,9 @@ __all__ = [
     "DefaultModelGateway",
     "DefaultRunRuntime",
     "LimitExceeded",
+    "ModelCapabilityError",
     "ModelGateway",
+    "PreparedMediaError",
     "RunRuntime",
     "ProposalExecutionIdentity",
     "submit_approval_response",
@@ -45,4 +53,5 @@ __all__ = [
     "CapabilityExecutionRegistry",
     "DeterministicUnitResult",
     "WorkflowRunner",
+    "VisionRequestRejected",
 ]

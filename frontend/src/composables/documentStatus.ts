@@ -9,7 +9,11 @@ export interface DocumentStatusSummary {
   failed: boolean
 }
 
-type StatusFields = Pick<AuditDocument, 'text_state' | 'analysis_run_state' | 'analysis_coverage_state' | 'analysis_validity_state' | 'search_index_state'>
+type StatusFields = Pick<AuditDocument, 'text_state' | 'analysis_run_state' | 'analysis_coverage_state' | 'analysis_validity_state' | 'search_index_state' | 'analysis_vision_used'>
+
+interface DocumentStatusOptions {
+  visionAvailable?: boolean
+}
 
 /**
  * Collapses the three per-document pipeline states (extraction, analysis, search
@@ -17,7 +21,7 @@ type StatusFields = Pick<AuditDocument, 'text_state' | 'analysis_run_state' | 'a
  * quiet cases, including documents that simply have not been analyzed yet;
  * only in-flight work or problems surface a distinct label.
  */
-export function documentStatus(doc: StatusFields): DocumentStatusSummary {
+export function documentStatus(doc: StatusFields, options: DocumentStatusOptions = {}): DocumentStatusSummary {
   const working: string[] = []
   if (doc.text_state === 'pending') working.push('Extracting text')
   if (doc.analysis_run_state === 'queued' || doc.analysis_run_state === 'analyzing') working.push('Analyzing')
@@ -26,7 +30,11 @@ export function documentStatus(doc: StatusFields): DocumentStatusSummary {
   const problems: string[] = []
   if (doc.text_state === 'failed') problems.push('Extraction failed')
   else if (doc.text_state === 'partial') problems.push('Partially extracted')
-  else if (doc.text_state === 'image_only') problems.push('Image-only source')
+  else if (doc.text_state === 'image_only' && !(doc.analysis_vision_used && doc.analysis_validity_state === 'current')) {
+    problems.push(options.visionAvailable === false
+      ? 'Visual source—vision unavailable'
+      : 'Visual source—analysis needed')
+  }
   if (doc.analysis_run_state === 'failed') problems.push('Analysis failed')
   else if (doc.analysis_run_state === 'paused' || doc.analysis_run_state === 'interrupted') problems.push('Analysis incomplete')
   else if (doc.analysis_validity_state === 'stale') problems.push('Analysis stale')
@@ -41,5 +49,8 @@ export function documentStatus(doc: StatusFields): DocumentStatusSummary {
 
   if (working.length) return { level: 'processing', label: `${working[0]}…`, detail, failed: false }
   if (problems.length) return { level: 'attention', label: problems[0], detail, failed: problems.some(item => item.includes('failed')) }
+  if (doc.text_state === 'image_only' && doc.analysis_vision_used && doc.analysis_validity_state === 'current') {
+    return { level: 'ready', label: 'Visual source—analysis available', detail, failed: false }
+  }
   return { level: 'ready', label: 'Ready', detail, failed: false }
 }

@@ -18,6 +18,25 @@ from typing import Any, ClassVar, Mapping, Self
 
 
 ROW_LEVEL_TABLE_REPRESENTATIONS = frozenset({"table_rows"})
+PREPARED_MEDIA_HANDLE_FIELDS = frozenset(
+    {
+        "cache_key",
+        "source_ref",
+        "source_sha1",
+        "prepared_sha256",
+        "page",
+        "frame",
+        "variant",
+        "tile_order",
+        "mime",
+        "width",
+        "height",
+        "prepared_byte_count",
+        "pixel_count",
+        "policy_hash",
+        "prepared_set_hash",
+    }
+)
 
 
 def _reject_row_level_table_representation(
@@ -147,11 +166,15 @@ class ContextRepresentation(_JSONModel):
 
 @dataclass(frozen=True)
 class ContextBudget(_JSONModel):
-    """Hard item and character limits, with an optional token-estimate limit."""
+    """Independent hard limits for text and prepared media."""
 
     max_items: int
     max_characters: int
     max_estimated_tokens: int | None = None
+    max_media_items: int | None = None
+    max_media_bytes: int | None = None
+    max_media_pixels: int | None = None
+    max_estimated_image_tokens: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "max_items", _positive_int(self.max_items, "budget.max_items"))
@@ -169,12 +192,27 @@ class ContextBudget(_JSONModel):
                     "budget.max_estimated_tokens",
                 ),
             )
+        for name in (
+            "max_media_items",
+            "max_media_bytes",
+            "max_media_pixels",
+            "max_estimated_image_tokens",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(
+                    self, name, _positive_int(value, f"budget.{name}")
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "max_items": self.max_items,
             "max_characters": self.max_characters,
             "max_estimated_tokens": self.max_estimated_tokens,
+            "max_media_items": self.max_media_items,
+            "max_media_bytes": self.max_media_bytes,
+            "max_media_pixels": self.max_media_pixels,
+            "max_estimated_image_tokens": self.max_estimated_image_tokens,
         }
 
     @classmethod
@@ -182,12 +220,24 @@ class ContextBudget(_JSONModel):
         payload = _object_payload(
             value,
             "budget",
-            fields={"max_items", "max_characters", "max_estimated_tokens"},
+            fields={
+                "max_items",
+                "max_characters",
+                "max_estimated_tokens",
+                "max_media_items",
+                "max_media_bytes",
+                "max_media_pixels",
+                "max_estimated_image_tokens",
+            },
         )
         return cls(
             max_items=payload.get("max_items"),
             max_characters=payload.get("max_characters"),
             max_estimated_tokens=payload.get("max_estimated_tokens"),
+            max_media_items=payload.get("max_media_items"),
+            max_media_bytes=payload.get("max_media_bytes"),
+            max_media_pixels=payload.get("max_media_pixels"),
+            max_estimated_image_tokens=payload.get("max_estimated_image_tokens"),
         )
 
 
@@ -204,6 +254,7 @@ class ContextPrivacy(_JSONModel):
     allow_planning_context: bool = False
     allow_template_text: bool = False
     allow_document_text: bool = False
+    allow_document_images: bool = False
     # Technical metadata about a locally staged file — its relative path, size,
     # timestamp, MIME type, and local parser verdict. Deliberately its own
     # permission: a staged file's *content* (spreadsheet cells, rows, previews,
@@ -220,6 +271,7 @@ class ContextPrivacy(_JSONModel):
         "allow_planning_context",
         "allow_template_text",
         "allow_document_text",
+        "allow_document_images",
         "allow_file_metadata",
         "allow_table_metadata",
         "allow_table_profiles",
@@ -482,6 +534,10 @@ class ContextSize(_JSONModel):
     items: int
     characters: int
     estimated_tokens: int
+    media_items: int = 0
+    media_bytes: int = 0
+    media_pixels: int = 0
+    estimated_image_tokens: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "items", _non_negative_int(self.items, "size.items"))
@@ -495,12 +551,27 @@ class ContextSize(_JSONModel):
             "estimated_tokens",
             _non_negative_int(self.estimated_tokens, "size.estimated_tokens"),
         )
+        for name in (
+            "media_items",
+            "media_bytes",
+            "media_pixels",
+            "estimated_image_tokens",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _non_negative_int(getattr(self, name), f"size.{name}"),
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "items": self.items,
             "characters": self.characters,
             "estimated_tokens": self.estimated_tokens,
+            "media_items": self.media_items,
+            "media_bytes": self.media_bytes,
+            "media_pixels": self.media_pixels,
+            "estimated_image_tokens": self.estimated_image_tokens,
         }
 
     @classmethod
@@ -508,12 +579,24 @@ class ContextSize(_JSONModel):
         payload = _object_payload(
             value,
             "size",
-            fields={"items", "characters", "estimated_tokens"},
+            fields={
+                "items",
+                "characters",
+                "estimated_tokens",
+                "media_items",
+                "media_bytes",
+                "media_pixels",
+                "estimated_image_tokens",
+            },
         )
         return cls(
             items=payload.get("items"),
             characters=payload.get("characters"),
             estimated_tokens=payload.get("estimated_tokens"),
+            media_items=payload.get("media_items", 0),
+            media_bytes=payload.get("media_bytes", 0),
+            media_pixels=payload.get("media_pixels", 0),
+            estimated_image_tokens=payload.get("estimated_image_tokens", 0),
         )
 
 
@@ -531,6 +614,7 @@ class ContextSelection(_JSONModel):
     reason: str
     representation: ContextRepresentation
     supplied_size: ContextSize
+    media: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -552,6 +636,22 @@ class ContextSelection(_JSONModel):
         )
         if not isinstance(self.supplied_size, ContextSize):
             raise ValueError("selection.supplied_size must be a ContextSize.")
+        if self.media is not None:
+            media = _json_value(self.media, "selection.media")
+            if not isinstance(media, dict):
+                raise ValueError("selection.media must be an object.")
+            serialized = json.dumps(media, sort_keys=True, separators=(",", ":")).casefold()
+            if (
+                "base64," in serialized
+                or "data:image" in serialized
+                or '"path"' in serialized
+                or "cache_key" in media
+            ):
+                raise ValueError(
+                    "Manifest media records cannot contain bytes, data URIs, cache "
+                    "keys, or local paths."
+                )
+            object.__setattr__(self, "media", media)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -565,6 +665,11 @@ class ContextSelection(_JSONModel):
             "reason": self.reason,
             "representation": self.representation.to_dict(),
             "supplied_size": self.supplied_size.to_dict(),
+            "media": (
+                None
+                if self.media is None
+                else _json_value(self.media, "selection.media")
+            ),
         }
 
     @classmethod
@@ -580,6 +685,7 @@ class ContextSelection(_JSONModel):
             "reason",
             "representation",
             "supplied_size",
+            "media",
         }
         payload = _object_payload(value, "selection", fields=fields)
         return cls(
@@ -821,7 +927,24 @@ class ContextBundleItem(_JSONModel):
             self.representation,
             "bundle_item.representation",
         )
-        object.__setattr__(self, "content", _json_value(self.content, "bundle_item.content"))
+        normalized_content = _json_value(self.content, "bundle_item.content")
+        if self.representation.kind == "page_image":
+            if (
+                not isinstance(normalized_content, dict)
+                or set(normalized_content) != PREPARED_MEDIA_HANDLE_FIELDS
+            ):
+                raise ValueError(
+                    "A page_image bundle item must carry exactly one prepared-media "
+                    "handle."
+                )
+            serialized = json.dumps(
+                normalized_content, sort_keys=True, separators=(",", ":")
+            ).casefold()
+            if "base64," in serialized or "data:image" in serialized or '"path"' in serialized:
+                raise ValueError(
+                    "Prepared-media handles cannot contain bytes, data URIs, or paths."
+                )
+        object.__setattr__(self, "content", normalized_content)
         if not isinstance(self.supplied_size, ContextSize):
             raise ValueError("bundle_item.supplied_size must be a ContextSize.")
 

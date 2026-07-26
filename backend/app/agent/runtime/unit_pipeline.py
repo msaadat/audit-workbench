@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -244,6 +244,10 @@ class UnitPipelineRequest:
     approval_kind: str | None = None
     proposal_reference: Mapping[str, str] | None = None
     receipt_reference: Mapping[str, str] | None = None
+    model_profile_hash: str | None = None
+    input_modalities: tuple[str, ...] = ()
+    prepared_media_hashes: tuple[str, ...] = ()
+    media_policy_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +279,14 @@ class ProposalExecutionIdentity:
     worker_implementation_hash: str
     prompt_hash: str
     response_schema_hash: str
+    model_profile_hash: str = field(
+        default_factory=lambda: _sha256({"profile": "unspecified"})
+    )
+    input_modalities: tuple[str, ...] = ("text",)
+    prepared_media_hashes: tuple[str, ...] = ()
+    media_policy_hash: str = field(
+        default_factory=lambda: _sha256({"media_policy_hashes": []})
+    )
 
     def __post_init__(self) -> None:
         scalar_fields = (
@@ -287,14 +299,24 @@ class ProposalExecutionIdentity:
             "worker_implementation_hash",
             "prompt_hash",
             "response_schema_hash",
+            "model_profile_hash",
+            "media_policy_hash",
         )
         for name in scalar_fields:
             object.__setattr__(self, name, _require_hash(getattr(self, name), name))
-        for name in ("selector_definition_hashes", "selected_source_hashes"):
+        for name in (
+            "selector_definition_hashes",
+            "selected_source_hashes",
+            "prepared_media_hashes",
+        ):
             values = tuple(_require_hash(value, name) for value in getattr(self, name))
             if tuple(sorted(set(values))) != values:
                 raise ValueError(f"{name} must be unique and sorted.")
             object.__setattr__(self, name, values)
+        modalities = tuple(sorted(set(str(value) for value in self.input_modalities)))
+        if not modalities or any(value not in {"text", "image"} for value in modalities):
+            raise ValueError("input_modalities must contain text and/or image.")
+        object.__setattr__(self, "input_modalities", modalities)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -309,6 +331,10 @@ class ProposalExecutionIdentity:
             "worker_implementation_hash": self.worker_implementation_hash,
             "prompt_hash": self.prompt_hash,
             "response_schema_hash": self.response_schema_hash,
+            "model_profile_hash": self.model_profile_hash,
+            "input_modalities": list(self.input_modalities),
+            "prepared_media_hashes": list(self.prepared_media_hashes),
+            "media_policy_hash": self.media_policy_hash,
         }
 
     @property
@@ -331,6 +357,10 @@ class ProposalExecutionIdentity:
             "worker_implementation_hash",
             "prompt_hash",
             "response_schema_hash",
+            "model_profile_hash",
+            "input_modalities",
+            "prepared_media_hashes",
+            "media_policy_hash",
         }
         if set(value) != expected:
             raise ValueError("Proposal execution identity fields are invalid.")
@@ -341,6 +371,8 @@ class ProposalExecutionIdentity:
                     value["selector_definition_hashes"]
                 ),
                 "selected_source_hashes": tuple(value["selected_source_hashes"]),
+                "input_modalities": tuple(value["input_modalities"]),
+                "prepared_media_hashes": tuple(value["prepared_media_hashes"]),
             }
         )
 
@@ -360,6 +392,10 @@ class ProposalExecutionIdentity:
             ("worker_implementation_hash", "worker_implementation_changed"),
             ("prompt_hash", "prompt_changed"),
             ("response_schema_hash", "response_schema_changed"),
+            ("model_profile_hash", "model_profile_changed"),
+            ("input_modalities", "input_modalities_changed"),
+            ("prepared_media_hashes", "prepared_media_changed"),
+            ("media_policy_hash", "media_policy_changed"),
         )
         return tuple(
             reason
@@ -541,6 +577,80 @@ class UnitPipeline:
         selected_source_hashes = tuple(
             sorted({selection.source_hash for selection in manifest.selections})
         )
+        image_handles = [
+            item.content
+            for item in bundle.items
+            if item.representation.kind == "page_image"
+            and isinstance(item.content, Mapping)
+        ]
+        prepared_media_hashes = tuple(
+            sorted(
+                {
+                    _require_hash(
+                        value,
+                        "prepared_media_hashes",
+                    )
+                    for value in (
+                        request.prepared_media_hashes
+                        or tuple(
+                            str(item.get("prepared_sha256") or "")
+                            for item in image_handles
+                        )
+                    )
+                }
+            )
+        )
+        policy_hashes = tuple(
+            sorted(
+                {
+                    _require_hash(
+                        str(item.get("policy_hash") or ""),
+                        "media_policy_hash",
+                    )
+                    for item in image_handles
+                }
+            )
+        )
+        media_policy_hash = (
+            _require_hash(request.media_policy_hash, "media_policy_hash")
+            if request.media_policy_hash is not None
+            else (
+                policy_hashes[0]
+                if len(policy_hashes) == 1
+                else _sha256({"media_policy_hashes": list(policy_hashes)})
+            )
+        )
+        input_modalities = tuple(request.input_modalities) or (
+            ("text", "image") if image_handles else ("text",)
+        )
+        model_profile_hash = request.model_profile_hash
+        if model_profile_hash is None:
+            run = getattr(self.gateway, "run", {})
+            profiles = run.get("model_profiles") if isinstance(run, Mapping) else {}
+            profile_key = (
+                "vision"
+                if "vision" in worker_definition.required_model_capabilities
+                else "text"
+            )
+            profile = (
+                profiles.get(profile_key)
+                if isinstance(profiles, Mapping)
+                else None
+            )
+            model_profile_hash = (
+                profile.get("profile_hash")
+                if isinstance(profile, Mapping)
+                else None
+            )
+        if model_profile_hash is None:
+            model_profile_hash = _sha256(
+                {
+                    "profile": "unspecified",
+                    "required_capabilities": list(
+                        worker_definition.required_model_capabilities
+                    ),
+                }
+            )
         execution_identity = ProposalExecutionIdentity(
             capability_definition_hash=request.capability_definition_hash,
             unit_input_hash=_sha256(dict(request.unit_input)),
@@ -553,6 +663,10 @@ class UnitPipeline:
             worker_implementation_hash=worker_definition.implementation_hash,
             prompt_hash=worker_definition.prompt_hash,
             response_schema_hash=worker_definition.response_schema.schema_hash,
+            model_profile_hash=model_profile_hash,
+            input_modalities=input_modalities,
+            prepared_media_hashes=prepared_media_hashes,
+            media_policy_hash=media_policy_hash,
         )
 
         rejection_reasons: tuple[str, ...] = ()

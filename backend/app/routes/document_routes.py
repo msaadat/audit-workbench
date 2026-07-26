@@ -127,7 +127,13 @@ async def reindex_documents(workspace_id: str, payload: dict = Body(...)):
     )
 
 
-def _analysis_command(ws, document_ids: list[str], action: str, mode: str) -> dict:
+def _analysis_command(
+    ws,
+    document_ids: list[str],
+    action: str,
+    mode: str,
+    full_visual_coverage: bool = False,
+) -> dict:
     """Start the declared document-analysis workflow for the selected documents.
 
     Standalone analysis and the audit-planning dependency request the same
@@ -159,7 +165,13 @@ def _analysis_command(ws, document_ids: list[str], action: str, mode: str) -> di
             "target_refs": [f"document:{value}" for value in document_ids],
             "generation_mode": "force" if action == "refresh" else "reuse_existing",
         },
-        context={"document_ids": document_ids, "action": action},
+        context={
+            "document_ids": document_ids,
+            "action": action,
+            "full_visual_document_ids": (
+                document_ids if full_visual_coverage else []
+            ),
+        },
     )
 
 
@@ -173,6 +185,7 @@ async def create_document_analysis_run(workspace_id: str, payload: dict = Body(.
             payload.get("document_ids") or [],
             str(payload.get("action") or "analyze"),
             str(payload.get("mode") or "auto"),
+            bool(payload.get("full_visual_coverage")),
         )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error
@@ -199,6 +212,7 @@ async def create_single_document_analysis_run(workspace_id: str, doc_id: str, pa
             [doc_id],
             str(payload.get("action") or "analyze"),
             str(payload.get("mode") or "auto"),
+            bool(payload.get("full_visual_coverage")),
         )
     except runner.AgentBusyError as error:
         raise HTTPException(409, detail=str(error)) from error

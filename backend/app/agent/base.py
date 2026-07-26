@@ -77,6 +77,11 @@ class BaseRunner:
         self.ws = workspace
         self.run = run
         self.handle = handle
+        # Production launchers persist this before the worker thread starts.
+        # Directly constructed runners in local tests/tools still receive a
+        # stable in-memory snapshot rather than consulting settings per call.
+        if "model_profiles" not in self.run:
+            self.run["model_profiles"] = llm.model_profile_snapshot()
         # Independent planning-document requests may run concurrently. Keep
         # provider waits parallel while serializing the shared durable ledger.
         # Two compositions of the *same* durable run — the audit graph and the

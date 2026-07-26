@@ -14,12 +14,14 @@ reconciled rather than repeated into a second artifact.
 
 from __future__ import annotations
 
+from io import BytesIO
 import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
-from app import document_analysis, documents, llm, workspaces
+from app import document_analysis, document_context, documents, llm, workspaces
 from app.agent import runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent.capabilities import documents as document_capabilities
@@ -246,7 +248,35 @@ def test_unit_expansion_never_extracts_and_readiness_reports_missing_text():
 def _image_only_run(mode: str, monkeypatch):
     ws = workspaces.create_workspace(f"Image only document {mode}")
     document = documents.add_document(ws, "scan.png", b"\x89PNG\r\n\x1a\n" + b"0" * 64)
-    _fake_model(monkeypatch)
+    fake = _fake_model(monkeypatch)
+    monkeypatch.setattr(
+        llm,
+        "model_profile_snapshot",
+        lambda: {
+            "text": {
+                "name": "text",
+                "provider": "local",
+                "model": "test",
+                "capabilities": [],
+                "configuration_source": "test",
+                "configured": True,
+                "base_url": "http://local.test/v1",
+                "profile_hash": f"sha256:{'1' * 64}",
+                "unavailability_reason": None,
+            },
+            "vision": {
+                "name": "vision",
+                "provider": "local",
+                "model": "test-vision",
+                "capabilities": [],
+                "configuration_source": "test",
+                "configured": False,
+                "base_url": "http://local.test/v1",
+                "profile_hash": f"sha256:{'2' * 64}",
+                "unavailability_reason": "No vision profile is configured.",
+            },
+        },
+    )
 
     finished = wait_run(ws, runner.start_command_run(
         ws,
@@ -265,47 +295,174 @@ def _image_only_run(mode: str, monkeypatch):
         for stage in finished["workflow"]["stages"]
         for unit in stage.get("units") or []
     ]
-    return ws, document, finished, units
+    return ws, document, finished, units, fake
 
 
 def test_permission_mode_settles_an_image_only_document_for_review(monkeypatch):
-    ws, document, finished, units = _image_only_run("permission", monkeypatch)
+    ws, document, finished, units, fake = _image_only_run("permission", monkeypatch)
 
     assert finished["status"] == "completed_with_open_items"
     assert any(
         unit["status"] == "awaiting_confirmation"
-        and unit["error"] == document_executors.DOCUMENT_TEXT_UNAVAILABLE
+        and unit["error"] == document_executors.DOCUMENT_REQUIRES_VISION
         for unit in units
     )
     assert document_analysis.generated_record(
         workspaces.load_workspace(ws.id), document["id"]
     ) is None
+    assert fake.calls == []
 
 
-def test_auto_mode_skips_an_image_only_document_and_says_so(monkeypatch):
-    """Auto mode answers a question that has one sensible answer.
+def test_auto_mode_leaves_an_image_only_document_open_without_vision(monkeypatch):
+    """Known lack of vision is an explicit, provider-free open item."""
+    ws, document, finished, units, fake = _image_only_run("auto", monkeypatch)
 
-    A file with no extractable text cannot be analyzed by any decision the
-    auditor could make here, so stopping to ask stalls the run for nothing.
-    The skip is still on the record, in the narration, and in the run's closing
-    message — never silent.
-    """
-    ws, document, finished, units = _image_only_run("auto", monkeypatch)
-
-    assert finished["status"] == "completed"
-    assert not any(unit["status"] == "awaiting_confirmation" for unit in units)
+    assert finished["status"] == "completed_with_open_items"
     assert any(
-        unit["status"] == "skipped"
-        and unit["error"] == document_executors.DOCUMENT_TEXT_UNAVAILABLE
+        unit["status"] == "awaiting_confirmation"
+        and unit["error"] == document_executors.DOCUMENT_REQUIRES_VISION
         for unit in units
     )
-    # Nothing was fabricated for a document that could not be read.
     assert document_analysis.generated_record(
         workspaces.load_workspace(ws.id), document["id"]
     ) is None
-    assert any("Skipped scan" in entry["text"] for entry in finished["narration"])
-    closing = next(item for item in finished["messages"] if item["role"] == "agent")
-    assert "I skipped scan" in closing["content"]
+    assert fake.calls == []
+
+
+def test_standalone_png_uses_one_visual_call_and_commits_without_reduction(
+    monkeypatch,
+):
+    output = BytesIO()
+    Image.new("RGB", (900, 600), "white").save(output, format="PNG")
+    ws = workspaces.create_workspace("Visual document success")
+    document = documents.add_document(ws, "org-chart.png", output.getvalue())
+    fake = _fake_model(
+        monkeypatch,
+        {
+            "agent:document_analysis_visual_map": {
+                "transcription_markdown": (
+                    "## Visual transcription\n\nThe chart places Finance under "
+                    "the Chief Financial Officer."
+                ),
+                "summary_markdown": "## Summary\n\nFinance reports to the CFO. [V1]",
+                "audit_notes_markdown": (
+                    "## Notes\n\nConfirm the reporting relationship with the "
+                    "approved organization register. [V1]"
+                ),
+                "citations": [
+                    {
+                        "id": "V1",
+                        "kind": "visual",
+                        "page": 1,
+                        "tile_order": 0,
+                        "description": "Finance box connected below the CFO box.",
+                        "region": {
+                            "x": 0.1,
+                            "y": 0.1,
+                            "width": 0.8,
+                            "height": 0.8,
+                        },
+                    }
+                ],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        llm,
+        "model_profile_snapshot",
+        lambda: {
+            "text": {
+                "name": "text",
+                "provider": "local",
+                "model": "test",
+                "capabilities": [],
+                "configuration_source": "test",
+                "configured": True,
+                "base_url": "http://local.test/v1",
+                "profile_hash": f"sha256:{'1' * 64}",
+                "unavailability_reason": None,
+            },
+            "vision": {
+                "name": "vision",
+                "provider": "local",
+                "model": "test-vision",
+                "capabilities": ["vision"],
+                "configuration_source": "test",
+                "configured": True,
+                "base_url": "http://local.test/v1",
+                "profile_hash": f"sha256:{'3' * 64}",
+                "unavailability_reason": None,
+            },
+        },
+    )
+
+    finished = wait_run(
+        ws,
+        runner.start_command_run(
+            ws,
+            "auto",
+            {
+                "source": "tab_button",
+                "text": "Analyze one visual document.",
+                "goal_template": "document_analysis",
+                "requested_outcomes": list(
+                    documents_workflow.FULL_DOCUMENT_OUTCOMES
+                ),
+                "target_refs": [f"document:{document['id']}"],
+            },
+            context={"document_ids": [document["id"]], "action": "analyze"},
+        )["id"],
+    )
+
+    generated = document_analysis.generated_record(
+        workspaces.load_workspace(ws.id), document["id"]
+    )
+    assert finished["status"] == "completed", (
+        finished.get("error"),
+        [
+            (stage["capability"], unit["status"], unit.get("error"))
+            for stage in finished["workflow"]["stages"]
+            for unit in stage.get("units") or []
+        ],
+    )
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:document_analysis_visual_map"
+    ]
+    assert generated is not None
+    assert generated["vision_used"] is True
+    assert generated["derived_text_markdown"].startswith(
+        "## Visual transcription"
+    )
+    assert generated["citations"][0]["evidence_kind"] == "visual"
+    assert generated["generation_profiles"][0]["name"] == "vision"
+
+    reused = wait_run(
+        ws,
+        runner.start_command_run(
+            ws,
+            "auto",
+            {
+                "source": "tab_button",
+                "text": "Analyze the same visual document.",
+                "goal_template": "document_analysis",
+                "requested_outcomes": list(
+                    documents_workflow.FULL_DOCUMENT_OUTCOMES
+                ),
+                "target_refs": [f"document:{document['id']}"],
+            },
+            context={"document_ids": [document["id"]], "action": "analyze"},
+        )["id"],
+    )
+    context = document_context.get_document_context(
+        workspaces.load_workspace(ws.id),
+        document["id"],
+        "pages",
+        record_activity=False,
+    )
+    assert reused["status"] == "completed"
+    assert len(fake.calls) == 1
+    assert "AI-derived visual transcription" in context["content"]
+    assert "Finance under" in context["content"]
 
 
 # --------------------------------------------------------------------------- #
@@ -696,9 +853,14 @@ def test_standalone_and_planning_use_the_same_workers_and_executor():
     workers = {definition.worker_id for definition in WORKERS.all()}
     executors = {definition.executor_id for definition in EXECUTORS.all()}
 
-    # Exactly one map worker, one reduction worker, and one persistence executor.
-    assert {"documents.analysis_chunk", "documents.analysis_reduction"} <= workers
-    assert len({name for name in workers if name.startswith("documents.")}) == 2
+    # One text map worker, one visual map worker, one reduction worker, and one
+    # persistence executor are shared by standalone and audit callers.
+    assert {
+        "documents.analysis_chunk",
+        "documents.analysis_visual_page",
+        "documents.analysis_reduction",
+    } <= workers
+    assert len({name for name in workers if name.startswith("documents.")}) == 3
     assert {name for name in executors if name.startswith("documents.")} == {
         "documents.analysis"
     }

@@ -1520,6 +1520,7 @@ def analysis_definition_scope(
 
 DOCUMENT_ANALYSIS_METADATA_SOURCE_ID = "document_metadata"
 DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"
+DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID = "document_page_images"
 DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID = "chunk_analyses"
 
 # The document fields a chunk or reduction turn is allowed to see as
@@ -1615,6 +1616,52 @@ def document_chunk_scope(
                         "page": payload["page"],
                     },
                 ),
+            ),
+        },
+    )
+
+
+def document_visual_page_scope(
+    workspace: Workspace,
+    document_id: str,
+    handles: Iterable[Mapping[str, object]],
+) -> ContextScope:
+    """Supply only safe prepared-media handles for one visual map unit."""
+
+    media = [dict(item) for item in handles]
+    if not media:
+        raise WorkspaceError(
+            f"Document '{document_id}' has no prepared visual page parts."
+        )
+    return ContextScope(
+        candidates={
+            DOCUMENT_ANALYSIS_METADATA_SOURCE_ID: (
+                document_metadata_candidate(workspace, document_id),
+            ),
+            DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=str(item.get("source_ref") or ""),
+                    source={
+                        key: value
+                        for key, value in item.items()
+                        if key != "cache_key"
+                    },
+                    representations={"page_image": item},
+                    metadata={
+                        "document_id": str(document_id),
+                        "page": int(item.get("page") or 0),
+                        "frame": int(item.get("frame") or 0),
+                        "variant": str(item.get("variant") or ""),
+                        "tile_order": int(item.get("tile_order") or 0),
+                    },
+                )
+                for item in sorted(
+                    media,
+                    key=lambda value: (
+                        int(value.get("page") or 0),
+                        int(value.get("tile_order") or 0),
+                    ),
+                )
             ),
         },
     )
@@ -1739,6 +1786,7 @@ __all__ = [
     "DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID",
     "DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID",
     "DOCUMENT_ANALYSIS_METADATA_SOURCE_ID",
+    "DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID",
     "DOCUMENT_QA_ITEM_SOURCE_ID",
     "DOCUMENT_QA_PAGE_SOURCE_ID",
     "DOCUMENT_TEST_CURRENT_SOURCE_ID",
@@ -1780,6 +1828,7 @@ __all__ = [
     "document_qa_page_candidates",
     "document_qa_scope",
     "document_reduction_scope",
+    "document_visual_page_scope",
     "document_test_document_candidates",
     "document_test_spec_scope",
     "finding_draft_scope",

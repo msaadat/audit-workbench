@@ -121,13 +121,18 @@ Assistant settings. OpenCode Zen defaults to `deepseek-v4-flash-free`, and
 Cerebras defaults to `gpt-oss-120b`. LM Studio uses
 `http://localhost:1234/v1` and defaults its dummy key to `lm-studio`. Cloud
 requests default to 60 seconds and local LM Studio requests to 300 seconds.
+The Documents analysis view also exposes a separate vision profile. Known
+models use the built-in capability catalog; custom models must explicitly
+declare `vision`. Deployments may override that profile with
+`AGENT_VISION_PROVIDER`, `AGENT_VISION_MODEL`, and
+`AGENT_VISION_CAPABILITIES=vision`.
 Real environment variables override `.env`. The LLM transport and dotenv
 loader use only the Python standard library.
 
 ## Stack
 
 - **Backend** — Python 3.12, FastAPI, Polars (the only data engine),
-  XlsxWriter/fastexcel, and pypdf.
+  XlsxWriter/fastexcel, pypdf, Pillow, and pypdfium2.
 - **Frontend** — Vue 3, TypeScript, Vite, PrimeVue 4, and Chart.js.
 - **Storage** — local JSON plus workspace source/evidence files under
   `Workspaces/` by default; set `WORKBENCH_DATA` to override the root.

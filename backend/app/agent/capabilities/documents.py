@@ -24,7 +24,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ... import document_analysis, documents as document_service, intake
+from ... import (
+    document_analysis,
+    document_media,
+    documents as document_service,
+    intake,
+)
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import documents as documents_workflow
@@ -49,6 +54,7 @@ MAX_SCOPE_DOCUMENTS = 12
 # Extraction states that carry model-usable text. ``image_only`` and ``failed``
 # documents are reported rather than analyzed — the existing eligibility rule.
 ELIGIBLE_TEXT_STATES = frozenset({"extracted", "partial"})
+ELIGIBLE_CONTENT_STATES = frozenset({"extracted", "partial", "image_only"})
 
 
 @dataclass(frozen=True)
@@ -156,7 +162,7 @@ def analyzable(workspace: Workspace, document_id: str) -> dict | None:
     Callers distinguish the two by asking for the extraction directly.
     """
     extracted = document_service.cached_extraction(workspace, document_id)
-    if extracted is None or extracted.get("state") not in ELIGIBLE_TEXT_STATES:
+    if extracted is None or extracted.get("state") not in ELIGIBLE_CONTENT_STATES:
         return None
     return extracted
 
@@ -173,12 +179,136 @@ def chunk_specs(workspace: Workspace, document_id: str, scope: dict) -> list[dic
     extracted = analyzable(workspace, document_id)
     if extracted is None:
         return []
-    chunks = document_analysis.analysis_chunks(extracted)
+    chunks = [
+        chunk
+        for chunk in document_analysis.analysis_chunks(extracted)
+        if not any(
+            bool(page.get("image_only"))
+            or bool(page.get("no_usable_text_no_image"))
+            for page in extracted.get("pages") or []
+            if int(page.get("page") or 0) == int(chunk.get("page") or 0)
+        )
+    ]
     limit = page_limit(scope)
     if limit:
         allowed = set(sorted({chunk["page"] for chunk in chunks})[:limit])
         chunks = [chunk for chunk in chunks if chunk["page"] in allowed]
     return chunks
+
+
+def visual_page_limit(scope: dict) -> int:
+    try:
+        return min(
+            document_media.MAX_VISUAL_PAGES,
+            max(
+                1,
+                int(
+                    scope.get("visual_page_limit")
+                    or document_media.MAX_VISUAL_PAGES
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        return document_media.MAX_VISUAL_PAGES
+
+
+def _full_visual_coverage(scope: dict, document_id: str) -> bool:
+    return document_id in {
+        str(value)
+        for value in scope.get("full_visual_document_ids") or []
+    }
+
+
+def _visual_page(
+    document: dict,
+    extracted: dict,
+    page: dict,
+    scope: dict,
+) -> tuple[bool, str | None]:
+    """Apply the plan's four-clause visual routing predicate."""
+
+    suffix = str(extracted.get("source_suffix") or "").lower()
+    standalone = suffix in document_service.IMAGE_SUFFIXES
+    if standalone:
+        return True, None
+    if suffix == ".docx" and bool(page.get("image_only")):
+        return False, "document_visual_source_unsupported"
+    if bool(page.get("image_only")):
+        return True, None
+    if suffix == ".pdf" and bool(page.get("no_usable_text_no_image")):
+        return True, None
+    if _full_visual_coverage(scope, str(document.get("id"))):
+        return True, None
+    return False, None
+
+
+def analysis_unit_specs(
+    workspace: Workspace, document_id: str, scope: dict
+) -> list[dict]:
+    """Generalized text and visual map units in document source order."""
+
+    extracted = analyzable(workspace, document_id)
+    if extracted is None:
+        return []
+    document = next(
+        item for item in workspace.documents if str(item.get("id")) == document_id
+    )
+    text_chunks = chunk_specs(workspace, document_id, scope)
+    by_page: dict[int, list[dict]] = {}
+    for chunk in text_chunks:
+        by_page.setdefault(int(chunk["page"]), []).append(
+            {**chunk, "kind": "document_chunk_analysis", "modality": "text"}
+        )
+    routed_visual: list[tuple[dict, str | None]] = []
+    for page in extracted.get("pages") or []:
+        selected, unsupported = _visual_page(document, extracted, page, scope)
+        if selected or unsupported:
+            routed_visual.append((page, unsupported))
+    limit = visual_page_limit(scope)
+    allowed_visual_pages = {
+        int(page.get("page") or 0)
+        for page, unsupported in routed_visual[:limit]
+        if unsupported is None
+    }
+    unsupported_by_page = {
+        int(page.get("page") or 0): unsupported
+        for page, unsupported in routed_visual
+        if unsupported
+    }
+    values: list[dict] = []
+    for page in extracted.get("pages") or []:
+        page_no = int(page.get("page") or 0)
+        values.extend(by_page.get(page_no, ()))
+        if page_no in unsupported_by_page:
+            values.append(
+                {
+                    "id": f"VISUAL-UNSUPPORTED-{page_no:04d}",
+                    "kind": "document_visual_page_analysis",
+                    "modality": "image",
+                    "page": page_no,
+                    "frame": page_no,
+                    "prepared_set_identity": document_media.planned_prepared_set_hash(
+                        str(document.get("sha1") or ""), page_no
+                    ),
+                    "unsupported_reason": unsupported_by_page[page_no],
+                }
+            )
+        elif page_no in allowed_visual_pages:
+            prepared_set_identity = document_media.planned_prepared_set_hash(
+                str(document.get("sha1") or ""), page_no
+            )
+            values.append(
+                {
+                    "id": f"VISUAL-{page_no:04d}-{prepared_set_identity[-12:]}",
+                    "kind": "document_visual_page_analysis",
+                    "modality": "image",
+                    "page": page_no,
+                    "frame": page_no,
+                    "prepared_set_identity": prepared_set_identity,
+                    "unsupported_reason": None,
+                }
+            )
+    return values
 
 
 def page_limit(scope: dict) -> int:
@@ -252,7 +382,7 @@ def _documents_text_ready() -> Capability:
     return Capability(
         "documents.text_ready",
         "document_text",
-        "Document text",
+        "Document content",
         "document_extraction",
         documents_workflow.dependencies("documents.text_ready"),
         _text_ready,
@@ -286,6 +416,7 @@ def _chunks_ready(workspace: Workspace, scope: dict) -> Readiness:
         for document_id in document_scope.document_ids
         if not has_generated_analysis(workspace, document_id)
         and analyzable(workspace, document_id) is not None
+        and bool(analysis_unit_specs(workspace, document_id, scope))
     ]
     details = {
         "documents": len(document_scope.document_ids),
@@ -316,19 +447,47 @@ def _chunk_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
         if not forced and has_generated_analysis(workspace, document_id):
             continue
         title = known[document_id].get("title") or document_id
-        for chunk in chunk_specs(workspace, document_id, scope):
+        for chunk in analysis_unit_specs(workspace, document_id, scope):
+            visual = chunk["kind"] == "document_visual_page_analysis"
             units.append(
                 UnitSpec(
-                    semantic_unit_id("document_chunk", document_id, chunk["id"]),
-                    "document_chunk_analysis",
-                    f"Analyze {title} — page {chunk['page']}",
+                    (
+                        semantic_unit_id("document_chunk", document_id, chunk["id"])
+                        if not visual
+                        else semantic_unit_id(
+                            "document_visual_page",
+                            document_id,
+                            chunk["page"],
+                            chunk["prepared_set_identity"],
+                        )
+                    ),
+                    chunk["kind"],
+                    (
+                        f"Analyze {title} — page {chunk['page']}"
+                        if not visual
+                        else f"Analyze visual page — {title}, page {chunk['page']}"
+                    ),
                     (f"document:{document_id}",),
                     {
                         "document_id": document_id,
                         "chunk_id": chunk["id"],
                         "page": chunk["page"],
-                        "start_character": chunk["start_character"],
-                        "end_character": chunk["end_character"],
+                        **(
+                            {
+                                "start_character": chunk["start_character"],
+                                "end_character": chunk["end_character"],
+                            }
+                            if not visual
+                            else {
+                                "frame": chunk["frame"],
+                                "prepared_set_identity": chunk[
+                                    "prepared_set_identity"
+                                ],
+                                "unsupported_reason": chunk[
+                                    "unsupported_reason"
+                                ],
+                            }
+                        ),
                     },
                 )
             )
@@ -344,7 +503,10 @@ def _documents_analysis_chunks_ready() -> Capability:
         documents_workflow.dependencies("documents.analysis_chunks_ready"),
         _chunks_ready,
         _chunk_units,
-        context="documents.analysis_chunk",
+        context={
+            "document_chunk_analysis": "documents.analysis_chunk",
+            "document_visual_page_analysis": "documents.analysis_visual_page",
+        },
         # Chunks are independent of each other and never commit, so they are the
         # one capability whose units the scheduler may run concurrently.
         barrier="all_settled_parallel",
@@ -520,14 +682,17 @@ __all__ = [
     "CAPABILITY_IDS",
     "DOCUMENT_SCOPE_CHECKPOINT",
     "ELIGIBLE_TEXT_STATES",
+    "ELIGIBLE_CONTENT_STATES",
     "MAX_SCOPE_DOCUMENTS",
     "STAGE_CHECKPOINTS",
     "DocumentScope",
     "analyzable",
+    "analysis_unit_specs",
     "capabilities",
     "chunk_specs",
     "has_generated_analysis",
     "page_limit",
+    "visual_page_limit",
     "resolve_document_scope",
     "scoped_documents",
 ]

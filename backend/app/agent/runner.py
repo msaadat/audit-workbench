@@ -112,10 +112,14 @@ def start_run(
             "The agent is busy with another workspace right now; try again "
             "when that run finishes."
         )
+    model_profiles = llm.model_profile_snapshot()
     run = store.new_run(
         workspace, mode, context, parent_run_id, kind=kind,
         chat_id=chat_id, source_message_id=source_message_id,
     )
+    run["model_profiles"] = model_profiles
+    run["model_profiles_snapshotted"] = True
+    store.save_run(workspace, run)
     store.append_event(workspace, run["id"], "run_status", {"status": "queued"})
     _launch(workspace.id, run["id"])
     return run
@@ -160,9 +164,15 @@ def start_command_run(
         basis_run_id = str((workspace.planning or {}).get("agent_run_id") or "").strip()
         if basis_run_id:
             context["planning_basis_run_id"] = basis_run_id
+    model_profiles = llm.model_profile_snapshot()
     run = store.new_command_run(
         workspace, mode, command, parent_run_id=parent_run_id, context=context
     )
+    # A resumed run must use the exact provider/model identities selected at
+    # creation even if local settings change while it is paused.
+    run["model_profiles"] = model_profiles
+    run["model_profiles_snapshotted"] = True
+    store.save_run(workspace, run)
     from .routing import resolve_route
 
     resolve_route(workspace, run)
@@ -649,5 +659,3 @@ def _launch_next_command(workspace: Workspace, run: dict) -> None:
         run.setdefault("pending_commands", []).insert(0, command)
         run.setdefault("warnings", []).append(f"Queued command could not start yet: {error}")
         store.save_run(workspace, run)
-
-

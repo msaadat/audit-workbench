@@ -66,6 +66,7 @@ export interface AuditDocument {
   candidate_analysis_id: string | null
   analysis_resumable_run_id: string | null
   search_index_state: DocumentSearchIndexState
+  analysis_vision_used: boolean
 }
 
 export type DocumentAnalysisRunState = 'idle' | 'queued' | 'analyzing' | 'paused' | 'interrupted' | 'failed' | 'cancelled'
@@ -85,9 +86,16 @@ export interface DocumentIndexingStatus {
 export interface DocumentAnalysisCitation {
   id: string
   page: number
-  excerpt: string
-  excerpt_hash: string
+  excerpt?: string
+  excerpt_hash?: string
   source_sha1: string
+  evidence_kind?: 'text' | 'visual'
+  description?: string
+  region?: { x: number; y: number; width: number; height: number } | null
+  tile_order?: number
+  variant?: string
+  prepared_sha256?: string
+  generated_description?: boolean
 }
 
 export interface GeneratedDocumentAnalysis {
@@ -95,6 +103,11 @@ export interface GeneratedDocumentAnalysis {
   document_id: string
   source_sha1: string
   extracted_text_sha1: string
+  derived_text_markdown: string
+  derived_text_sha256: string
+  prepared_media_set_hash: string
+  vision_used: boolean
+  generation_profiles: ModelProfileStatus[]
   prompt_version: string
   provider: string | null
   model: string | null
@@ -102,7 +115,15 @@ export interface GeneratedDocumentAnalysis {
   summary_markdown: string
   audit_notes_markdown: string
   citations: DocumentAnalysisCitation[]
-  coverage: { state: DocumentAnalysisCoverageState; analyzed_pages: number[]; omitted_pages: number[]; reason?: string | null }
+  coverage: {
+    state: DocumentAnalysisCoverageState
+    analyzed_pages: number[]
+    text_analyzed_pages?: number[]
+    vision_analyzed_pages?: number[]
+    omitted_pages: number[]
+    omissions?: Array<{ page: number; reason: string }>
+    reason?: string | null
+  }
 }
 
 export interface DocumentAnalysisDetail {
@@ -120,7 +141,7 @@ export interface DocumentAnalysisDetail {
     reviewed_at: string | null
     updated_at: string | null
   }
-  status: Pick<AuditDocument, 'analysis_run_state' | 'analysis_coverage_state' | 'analysis_validity_state' | 'analysis_updated_at' | 'analysis_review_state' | 'has_analysis_overrides' | 'candidate_analysis_id' | 'analysis_resumable_run_id' | 'search_index_state'>
+  status: Pick<AuditDocument, 'analysis_run_state' | 'analysis_coverage_state' | 'analysis_validity_state' | 'analysis_updated_at' | 'analysis_review_state' | 'has_analysis_overrides' | 'candidate_analysis_id' | 'analysis_resumable_run_id' | 'search_index_state' | 'analysis_vision_used'>
 }
 
 export interface DocumentSearchResult {
@@ -133,6 +154,8 @@ export interface DocumentSearchResult {
   vector_score: number
   citation_id: string
   citation: EvidenceRef
+  origin?: 'extracted_text' | 'vision_transcript'
+  analysis_id?: string | null
 }
 
 export interface DocumentPage {
@@ -141,6 +164,7 @@ export interface DocumentPage {
   characters: number
   embedded_images: number
   image_only: boolean
+  no_usable_text_no_image?: boolean
 }
 
 export interface EvidenceRef {
@@ -156,6 +180,9 @@ export interface EvidenceRef {
   generated_by: string | null
   confirmed_by: string | null
   confirmed_at: string | null
+  evidence_kind?: string
+  auditor_confirmed?: boolean
+  analysis_id?: string | null
   legacy_ref?: string
   available?: boolean
 }
@@ -997,7 +1024,25 @@ export interface AssistantStatus {
   model: string
   base_url: string
   providers?: AssistantProvider[]
+  vision_configured?: boolean
+  vision_provider?: string
+  vision_model?: string
+  vision_unavailability_reason?: string | null
+  text_profile?: ModelProfileStatus
+  vision_profile?: ModelProfileStatus
   error?: string
+}
+
+export interface ModelProfileStatus {
+  name: string
+  provider: string
+  model: string
+  capabilities: string[]
+  configuration_source: string
+  configured: boolean
+  base_url?: string
+  profile_hash: string
+  unavailability_reason?: string | null
 }
 
 export interface AssistantProvider {
@@ -1009,6 +1054,9 @@ export interface AssistantProvider {
   default_model: string
   models: string[]
   local: boolean
+  vision?: boolean
+  vision_model?: string
+  model_capabilities?: Record<string, string[]>
 }
 
 export interface AssistantStep {

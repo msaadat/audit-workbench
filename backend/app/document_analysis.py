@@ -12,8 +12,8 @@ from pathlib import Path
 from . import embedding
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
-ANALYSIS_SCHEMA_VERSION = "1"
-ANALYSIS_PROMPT_VERSION = "document-analysis-v2"
+ANALYSIS_SCHEMA_VERSION = "2"
+ANALYSIS_PROMPT_VERSION = "document-analysis-v3-multimodal"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
 
@@ -59,6 +59,7 @@ def default_status() -> dict:
         "analysis_review_state": "not_applicable", "has_analysis_overrides": False,
         "candidate_analysis_id": None, "analysis_resumable_run_id": None,
         "search_index_state": "pending",
+        "analysis_vision_used": False,
     }
 
 
@@ -104,8 +105,19 @@ def extracted_text_sha(extracted: dict) -> str:
 
 def cache_identity(source_sha1: str, text_sha1: str,
                    schema_version: str = ANALYSIS_SCHEMA_VERSION,
-                   prompt_version: str = ANALYSIS_PROMPT_VERSION) -> str:
-    return hashlib.sha1("\0".join((source_sha1, text_sha1, schema_version, prompt_version)).encode()).hexdigest()
+                   prompt_version: str = ANALYSIS_PROMPT_VERSION,
+                   prepared_media_set_hash: str = "") -> str:
+    return hashlib.sha1(
+        "\0".join(
+            (
+                source_sha1,
+                text_sha1,
+                schema_version,
+                prompt_version,
+                prepared_media_set_hash,
+            )
+        ).encode()
+    ).hexdigest()
 
 
 def _load_generated(workspace: Workspace, document_id: str, analysis_id: str | None) -> dict | None:
@@ -125,13 +137,23 @@ def analysis_content_sha1(payload: dict) -> str:
     material = {
         "summary_markdown": str(payload.get("summary_markdown") or "").strip(),
         "audit_notes_markdown": str(payload.get("audit_notes_markdown") or "").strip(),
+        "derived_text_markdown": str(
+            payload.get("derived_text_markdown") or ""
+        ).strip(),
+        "derived_text_sha256": str(
+            payload.get("derived_text_sha256")
+            or hashlib.sha256(
+                str(payload.get("derived_text_markdown") or "")
+                .strip()
+                .encode("utf-8")
+            ).hexdigest()
+        ),
         "citations": [
-            {
-                "page": int(item.get("page") or 0),
-                "excerpt": str(item.get("excerpt") or ""),
-            }
-            for item in payload.get("citations") or []
+            dict(item) for item in payload.get("citations") or []
         ],
+        "prepared_media_set_hash": str(
+            payload.get("prepared_media_set_hash") or ""
+        ),
         "coverage": dict(payload.get("coverage") or {}),
     }
     return hashlib.sha1(
@@ -163,11 +185,16 @@ _GENERATED_PROJECTION_FIELDS = (
     "document_id",
     "source_sha1",
     "extracted_text_sha1",
+    "derived_text_sha256",
+    "prepared_media_set_hash",
     "cache_identity",
     "content_sha1",
     "agent_run_id",
     "summary_markdown",
     "audit_notes_markdown",
+    "derived_text_markdown",
+    "vision_used",
+    "generation_profiles",
     "citations",
     "coverage",
 )
@@ -196,10 +223,17 @@ def _authoritative_status(workspace: Workspace, document: dict) -> dict:
         analysis_resumable_run_id=index.get("resumable_run_id"),
     )
     if active:
+        result["analysis_vision_used"] = bool(active.get("vision_used"))
         result["analysis_coverage_state"] = (active.get("coverage") or {}).get("state", "none")
         extraction = _read_json(workspace.root / "Documents" / ".extracted" / f"{document['id']}.json", {})
         current_text_sha = extracted_text_sha(extraction) if extraction else ""
-        current_identity = cache_identity(str(document.get("sha1") or ""), current_text_sha)
+        current_identity = cache_identity(
+            str(document.get("sha1") or ""),
+            current_text_sha,
+            prepared_media_set_hash=str(
+                active.get("prepared_media_set_hash") or ""
+            ),
+        )
         result["analysis_validity_state"] = (
             "current" if active.get("cache_identity") == current_identity and active.get("source_sha1") == document.get("sha1") else "stale"
         )
@@ -211,11 +245,21 @@ def _authoritative_status(workspace: Workspace, document: dict) -> dict:
             or int(search_manifest.get("embedding_dimension") or 0) != int(runtime.get("dimension") or 0)
             or search_manifest.get("tokenizer_version") != runtime.get("tokenizer_version")
         )
-        if search_manifest.get("source_sha1") != document.get("sha1") or runtime_mismatch:
+        analysis_mismatch = search_manifest.get(
+            "analysis_content_sha1", ""
+        ) != str((active or {}).get("content_sha1") or "")
+        if (
+            search_manifest.get("source_sha1") != document.get("sha1")
+            or runtime_mismatch
+            or analysis_mismatch
+        ):
             result["search_index_state"] = "stale"
         else:
             result["search_index_state"] = search_manifest.get("state") or "pending"
-    elif document.get("text_state") == "image_only":
+    elif (
+        document.get("text_state") == "image_only"
+        and not bool((active or {}).get("derived_text_markdown"))
+    ):
         result["search_index_state"] = "unsupported"
     return result
 
@@ -351,13 +395,31 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
         index, review = load_index(workspace, document_id), load_review(workspace, document_id)
         analysis_id = f"DA-{uuid.uuid4().hex[:12].upper()}"
         text_sha = extracted_text_sha(extracted)
+        derived_text = str(output.get("derived_text_markdown") or "").strip()
+        derived_text_sha256 = hashlib.sha256(
+            derived_text.encode("utf-8")
+        ).hexdigest()
+        prepared_media_set_hash = str(
+            output.get("prepared_media_set_hash") or ""
+        )
         artifact = {
             "schema_version": ANALYSIS_SCHEMA_VERSION, "id": analysis_id,
             "document_id": document_id, "source_sha1": document["sha1"],
             "extracted_text_sha1": text_sha,
-            "cache_identity": cache_identity(document["sha1"], text_sha),
+            "derived_text_markdown": derived_text,
+            "derived_text_sha256": derived_text_sha256,
+            "prepared_media_set_hash": prepared_media_set_hash,
+            "cache_identity": cache_identity(
+                document["sha1"],
+                text_sha,
+                prepared_media_set_hash=prepared_media_set_hash,
+            ),
             "prompt_version": ANALYSIS_PROMPT_VERSION, "provider": provider,
             "model": model, "generated_at": utcnow(),
+            "vision_used": bool(output.get("vision_used")),
+            "generation_profiles": list(
+                output.get("generation_profiles") or []
+            ),
             # Workflow provenance: which durable run and semantic unit produced
             # this artifact, so an interrupted commit is proven applied rather
             # than repeated into a second artifact.
@@ -384,6 +446,10 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
         index.update(revision=int(index.get("revision") or 0) + 1, run_state="idle",
                      resumable_run_id=None, updated_at=utcnow())
         write_json_atomic(_index_path(workspace, document_id), index)
+        if derived_text:
+            update_status(
+                workspace, document_id, search_index_state="pending"
+            )
         update_status(workspace, document_id, **_authoritative_status(workspace, document))
         return load_analysis(workspace, document_id, document=document)
 
@@ -497,6 +563,16 @@ def compact_artifact(workspace: Workspace, document_id: str) -> dict | None:
             "review_state": analysis["review"].get("review_state"),
             "summary_markdown": effective.get("summary_markdown", ""),
             "audit_notes_markdown": effective.get("audit_notes_markdown", ""),
+            "derived_text_markdown": effective.get(
+                "derived_text_markdown", ""
+            ),
+            "derived_text_sha256": effective.get(
+                "derived_text_sha256", ""
+            ),
+            "vision_used": bool(effective.get("vision_used")),
+            "generation_profiles": effective.get(
+                "generation_profiles", []
+            ),
             "citations": effective.get("citations", []), "coverage": effective.get("coverage", {}),
             "has_overrides": analysis["status"]["has_analysis_overrides"],
             "summary_overridden": analysis["review"].get("summary_override") is not None,

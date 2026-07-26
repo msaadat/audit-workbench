@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+from pathlib import Path
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -14,6 +17,74 @@ from ... import debug_store, llm
 
 _provider_semaphores: dict[str, threading.BoundedSemaphore] = {}
 _provider_semaphores_guard = threading.Lock()
+_SHA256 = re.compile(r"^(?:sha256:)?([0-9a-f]{64})$")
+_CACHE_KEY = re.compile(r"^[0-9a-f]{64}$")
+FALLBACK_IMAGE_TOKENS = 4_096
+
+
+class ModelCapabilityError(RuntimeError):
+    """The snapshotted model profile cannot serve the worker request."""
+
+
+class PreparedMediaError(RuntimeError):
+    """A prepared-media handle cannot be integrity-checked and loaded."""
+
+
+class VisionRequestRejected(RuntimeError):
+    """A declared vision provider rejected an image-bearing request."""
+
+
+def _media_handle(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and detach the content-free prepared-media handle contract."""
+
+    required = {
+        "cache_key",
+        "source_ref",
+        "source_sha1",
+        "prepared_sha256",
+        "page",
+        "frame",
+        "variant",
+        "tile_order",
+        "mime",
+        "width",
+        "height",
+        "prepared_byte_count",
+        "pixel_count",
+        "policy_hash",
+        "prepared_set_hash",
+    }
+    if not isinstance(value, Mapping) or set(value) != required:
+        raise PreparedMediaError("Prepared-media handle fields are invalid.")
+    handle = dict(value)
+    if not _CACHE_KEY.fullmatch(str(handle["cache_key"])):
+        raise PreparedMediaError("Prepared-media cache key is invalid.")
+    match = _SHA256.fullmatch(str(handle["prepared_sha256"]))
+    if match is None:
+        raise PreparedMediaError("Prepared-media SHA-256 is invalid.")
+    if not str(handle["mime"]).startswith("image/"):
+        raise PreparedMediaError("Prepared media must use an image MIME type.")
+    for name in (
+        "page",
+        "frame",
+        "tile_order",
+        "width",
+        "height",
+        "prepared_byte_count",
+        "pixel_count",
+    ):
+        if isinstance(handle[name], bool) or not isinstance(handle[name], int):
+            raise PreparedMediaError(f"Prepared-media {name} is invalid.")
+    if min(
+        handle["page"],
+        handle["frame"],
+        handle["width"],
+        handle["height"],
+        handle["prepared_byte_count"],
+        handle["pixel_count"],
+    ) < 1 or handle["tile_order"] < 0:
+        raise PreparedMediaError("Prepared-media numeric metrics are invalid.")
+    return handle
 
 
 def _provider_semaphore(profile: Mapping[str, Any]) -> threading.BoundedSemaphore:
@@ -49,6 +120,8 @@ class ModelGateway(Protocol):
         activity: dict[str, Any] | None = None,
         *,
         attempt: int = 1,
+        media: tuple[Mapping[str, Any], ...] | None = None,
+        required_capabilities: tuple[str, ...] = (),
     ) -> str: ...
 
 
@@ -99,17 +172,77 @@ class DefaultModelGateway:
         activity: dict[str, Any] | None = None,
         *,
         attempt: int = 1,
+        media: tuple[Mapping[str, Any], ...] | None = None,
+        required_capabilities: tuple[str, ...] = (),
     ) -> str:
         """Execute and provenance-log one model turn."""
         self._checkpoint()
+        handles = tuple(_media_handle(item) for item in (media or ()))
+        required = tuple(
+            sorted(
+                {
+                    *(
+                        str(value)
+                        for value in getattr(
+                            self.context, "required_model_capabilities", ()
+                        )
+                    ),
+                    *(str(value) for value in required_capabilities),
+                    *(("vision",) if handles else ()),
+                }
+            )
+        )
+        snapshots = self.run.get("model_profiles") or llm.model_profile_snapshot()
+        snapshot_key = "vision" if "vision" in required else "text"
+        profile = dict(snapshots.get(snapshot_key) or {})
+        durable_snapshot = bool(
+            self.run.get("model_profiles_snapshotted")
+        )
+        if not durable_snapshot and snapshot_key == "text":
+            legacy = llm.agent_status()
+            profile.update(
+                {
+                    "name": "agent",
+                    "provider": legacy.get("provider"),
+                    "model": legacy.get("model"),
+                    "configured": legacy.get("configured"),
+                    "capabilities": profile.get("capabilities") or [],
+                }
+            )
+        capabilities = set(str(value) for value in profile.get("capabilities") or [])
+        missing_capabilities = sorted(set(required) - capabilities)
+        if missing_capabilities:
+            raise ModelCapabilityError(
+                "The configured model profile does not provide required "
+                f"capability '{missing_capabilities[0]}'."
+            )
+        if not profile.get("configured"):
+            raise ModelCapabilityError(
+                str(profile.get("unavailability_reason") or "The model profile is unavailable.")
+            )
+        # A missing or changed cache entry is a preparation failure, not a
+        # provider turn. Verify all handles before reserving model budget.
+        prepared_contents = [
+            self._load_prepared_media(handle) for handle in handles
+        ]
+
         request_characters = len(system) + len(user)
-        estimated_input_tokens = max(1, request_characters // 4)
+        text_token_estimate = max(1, request_characters // 4)
+        image_token_estimate = len(handles) * FALLBACK_IMAGE_TOKENS
+        estimated_input_tokens = text_token_estimate + image_token_estimate
+        media_bytes = sum(int(item["prepared_byte_count"]) for item in handles)
+        media_pixels = sum(int(item["pixel_count"]) for item in handles)
 
         # Charge before the provider call. Actual counts are reconciled after
         # the response, but an estimated overage never spends provider tokens.
         budget = self._reserve_model_turn(
             request_characters=request_characters,
             estimated_input_tokens=estimated_input_tokens,
+            text_token_estimate=text_token_estimate,
+            image_token_estimate=image_token_estimate,
+            image_count=len(handles),
+            prepared_bytes=media_bytes,
+            prepared_pixels=media_pixels,
             attempt=attempt,
         )
 
@@ -125,6 +258,11 @@ class DefaultModelGateway:
         activity_fields.setdefault("retry_number", attempt)
         current_activity = dict(self.run.get("activity") or {})
         call_started = time.monotonic()
+        user_parts: str | list[dict[str, Any]] = user
+        if handles:
+            user_parts = [{"type": "text", "text": user}]
+            for handle, content in zip(handles, prepared_contents):
+                user_parts.append(llm.image_part(content, str(handle["mime"])))
 
         try:
             with debug_store.trace_context(
@@ -147,19 +285,30 @@ class DefaultModelGateway:
                 unit_id=unit_id,
                 parent_refs=parent_refs,
             ):
-                profile_state = llm.agent_status()
-                with _provider_semaphore(profile_state):
-                    message = llm.chat(
-                        [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": user},
-                        ],
-                        profile="agent",
-                    )
+                with _provider_semaphore(profile):
+                    try:
+                        message = llm.chat(
+                            [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": user_parts},
+                            ],
+                            profile=(
+                                profile
+                                if durable_snapshot
+                                else "vision"
+                                if snapshot_key == "vision"
+                                else "agent"
+                            ),
+                        )
+                    except llm.LLMError as error:
+                        if handles:
+                            raise VisionRequestRejected(
+                                f"vision_request_rejected: {error}"
+                            ) from error
+                        raise
         finally:
             self._model_wait(tag, started=False, attempt=attempt)
 
-        profile = llm.agent_status()
         with self._state_lock:
             sources = list(self.run.get("model_sources") or [])
         template_versions = self._template_versions(tag)
@@ -183,6 +332,12 @@ class DefaultModelGateway:
             worker=tag,
             request_characters=request_characters,
             estimated_input_tokens=estimated_input_tokens,
+            text_token_estimate=text_token_estimate,
+            image_token_estimate=image_token_estimate,
+            image_count=len(handles),
+            prepared_bytes=media_bytes,
+            prepared_pixels=media_pixels,
+            model_profile_hash=str(profile.get("profile_hash") or ""),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             latency_ms=latency_ms,
@@ -199,9 +354,27 @@ class DefaultModelGateway:
                 "purpose": tag,
                 "provider": profile.get("provider"),
                 "model": profile.get("model"),
-                "vision_used": False,
+                "profile": profile.get("name"),
+                "model_profile_hash": profile.get("profile_hash"),
+                "vision_used": bool(handles),
                 "prompt_version": hashlib.sha1(
-                    f"{system}\n{user}".encode("utf-8")
+                    json.dumps(
+                        {
+                            "system": system,
+                            "user": user,
+                            "prepared_media": [
+                                {
+                                    "prepared_sha256": item["prepared_sha256"],
+                                    "page": item["page"],
+                                    "variant": item["variant"],
+                                    "tile_order": item["tile_order"],
+                                }
+                                for item in handles
+                            ],
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
                 ).hexdigest(),
                 "template_versions": template_versions,
                 "knowledge_packs": [
@@ -245,11 +418,45 @@ class DefaultModelGateway:
                 "artifact_ref": None,
                 "disposition": "generated",
                 "latency_ms": latency_ms,
+                "input_modalities": (
+                    ["text", "image"] if handles else ["text"]
+                ),
+                "prepared_media_hashes": [
+                    item["prepared_sha256"] for item in handles
+                ],
                 **activity_fields,
             }
         )
         if token_budget_exceeded:
             raise self._limit_error("workflow token budget reached")
+        return content
+
+    def _load_prepared_media(self, handle: Mapping[str, Any]) -> bytes:
+        """Dereference a prepared-media handle immediately before provider use."""
+
+        cache_key = str(handle["cache_key"])
+        path = (
+            Path(self.workspace_root)
+            / "Documents"
+            / ".prepared"
+            / f"{cache_key}.png"
+        )
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            raise PreparedMediaError(
+                "visual_preparation_failed: prepared media is missing"
+            ) from error
+        expected = _SHA256.fullmatch(str(handle["prepared_sha256"]))
+        actual = hashlib.sha256(content).hexdigest()
+        if expected is None or actual != expected.group(1):
+            raise PreparedMediaError(
+                "visual_preparation_failed: prepared media hash mismatch"
+            )
+        if len(content) != int(handle["prepared_byte_count"]):
+            raise PreparedMediaError(
+                "visual_preparation_failed: prepared media byte count mismatch"
+            )
         return content
 
     @staticmethod
@@ -281,3 +488,13 @@ class DefaultModelGateway:
             started=started,
             attempt=attempt,
         )
+
+
+__all__ = [
+    "DefaultModelGateway",
+    "FALLBACK_IMAGE_TOKENS",
+    "ModelCapabilityError",
+    "ModelGateway",
+    "PreparedMediaError",
+    "VisionRequestRejected",
+]

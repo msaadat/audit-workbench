@@ -91,6 +91,11 @@ class RunRuntime(Protocol):
         *,
         request_characters: int,
         estimated_input_tokens: int,
+        text_token_estimate: int | None = None,
+        image_token_estimate: int = 0,
+        image_count: int = 0,
+        prepared_bytes: int = 0,
+        prepared_pixels: int = 0,
         attempt: int = 1,
     ) -> dict[str, int]: ...
 
@@ -106,6 +111,12 @@ class RunRuntime(Protocol):
         attempt: int,
         context_metrics: Any = None,
         budget: dict[str, int],
+        text_token_estimate: int | None = None,
+        image_token_estimate: int = 0,
+        image_count: int = 0,
+        prepared_bytes: int = 0,
+        prepared_pixels: int = 0,
+        model_profile_hash: str = "",
     ) -> bool: ...
 
     def checkpoint(
@@ -376,6 +387,11 @@ class DefaultRunRuntime:
         *,
         request_characters: int,
         estimated_input_tokens: int,
+        text_token_estimate: int | None = None,
+        image_token_estimate: int = 0,
+        image_count: int = 0,
+        prepared_bytes: int = 0,
+        prepared_pixels: int = 0,
         attempt: int = 1,
     ) -> dict[str, int]:
         """Charge a model request before any provider tokens are spent."""
@@ -397,11 +413,50 @@ class DefaultRunRuntime:
             )
             if projected_tokens > maximum_prompt_tokens:
                 raise self._limit_error("estimated prompt-token limit reached")
+            maximum_images = int(
+                limits.get("max_image_parts") or maximum_turns * 4
+            )
+            projected_images = int(usage.get("image_count") or 0) + image_count
+            if projected_images > maximum_images:
+                raise self._limit_error("image-count limit reached")
+            maximum_prepared_bytes = int(
+                limits.get("max_prepared_image_bytes")
+                or maximum_turns * 12 * 1024 * 1024
+            )
+            projected_bytes = (
+                int(usage.get("prepared_image_bytes") or 0) + prepared_bytes
+            )
+            if projected_bytes > maximum_prepared_bytes:
+                raise self._limit_error("prepared-image byte limit reached")
+            maximum_prepared_pixels = int(
+                limits.get("max_prepared_image_pixels")
+                or maximum_turns * 12_000_000
+            )
+            projected_pixels = (
+                int(usage.get("prepared_image_pixels") or 0) + prepared_pixels
+            )
+            if projected_pixels > maximum_prepared_pixels:
+                raise self._limit_error("prepared-image pixel limit reached")
             maximum_completion_tokens = int(
                 limits.get("max_completion_tokens") or maximum_turns * 4_000
             )
             usage["llm_turns"] = int(usage.get("llm_turns") or 0) + 1
             usage["estimated_prompt_tokens"] = projected_tokens
+            usage["estimated_text_tokens"] = (
+                int(usage.get("estimated_text_tokens") or 0)
+                + int(
+                    text_token_estimate
+                    if text_token_estimate is not None
+                    else max(1, request_characters // 4)
+                )
+            )
+            usage["estimated_image_tokens"] = (
+                int(usage.get("estimated_image_tokens") or 0)
+                + image_token_estimate
+            )
+            usage["image_count"] = projected_images
+            usage["prepared_image_bytes"] = projected_bytes
+            usage["prepared_image_pixels"] = projected_pixels
             usage["request_characters"] = (
                 int(usage.get("request_characters") or 0) + request_characters
             )
@@ -425,6 +480,12 @@ class DefaultRunRuntime:
         attempt: int,
         context_metrics: Any = None,
         budget: dict[str, int],
+        text_token_estimate: int | None = None,
+        image_token_estimate: int = 0,
+        image_count: int = 0,
+        prepared_bytes: int = 0,
+        prepared_pixels: int = 0,
+        model_profile_hash: str = "",
     ) -> bool:
         """Reconcile provider usage and indicate whether a token cap was crossed."""
         with self._state_lock:
@@ -455,6 +516,11 @@ class DefaultRunRuntime:
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "request_characters": 0,
+                    "estimated_text_tokens": 0,
+                    "estimated_image_tokens": 0,
+                    "image_count": 0,
+                    "prepared_bytes": 0,
+                    "prepared_pixels": 0,
                     "latency_ms": 0.0,
                     "retries": 0,
                 },
@@ -463,6 +529,15 @@ class DefaultRunRuntime:
             worker_totals["prompt_tokens"] += prompt_tokens
             worker_totals["completion_tokens"] += completion_tokens
             worker_totals["request_characters"] += request_characters
+            worker_totals["estimated_text_tokens"] += int(
+                text_token_estimate
+                if text_token_estimate is not None
+                else max(1, request_characters // 4)
+            )
+            worker_totals["estimated_image_tokens"] += image_token_estimate
+            worker_totals["image_count"] += image_count
+            worker_totals["prepared_bytes"] += prepared_bytes
+            worker_totals["prepared_pixels"] += prepared_pixels
             worker_totals["latency_ms"] = round(
                 float(worker_totals["latency_ms"]) + latency_ms,
                 3,
@@ -473,6 +548,16 @@ class DefaultRunRuntime:
                     "worker": worker,
                     "request_characters": request_characters,
                     "estimated_input_tokens": estimated_input_tokens,
+                    "estimated_text_tokens": (
+                        text_token_estimate
+                        if text_token_estimate is not None
+                        else max(1, request_characters // 4)
+                    ),
+                    "estimated_image_tokens": image_token_estimate,
+                    "image_count": image_count,
+                    "prepared_bytes": prepared_bytes,
+                    "prepared_pixels": prepared_pixels,
+                    "model_profile_hash": model_profile_hash,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "latency_ms": latency_ms,
