@@ -35,7 +35,6 @@ def _plain_json(value: object) -> object:
 MODEL_WAIT_LABELS = {
     "agent:command_interpreter": "Preparing the action plan",
     "agent:command_planner": "Planning the next fieldwork steps",
-    "agent:document_selection": "Selecting planning documents",
     "agent:document_context": "Analyzing planning documents",
     "agent:apm": "Drafting the audit planning memorandum",
     "agent:rcm": "Drafting the risk and control matrix",
@@ -103,10 +102,6 @@ class BaseRunner:
             stage_labels=MODEL_WAIT_LABELS,
             limit_error=LimitExceeded,
         )
-        # Temporary compatibility for existing workflow correlation call sites.
-        # The attribution state itself is owned by ModelGateway.
-        self._model_context = self.model_gateway.context
-
     def save(self) -> None:
         self.runtime.save()
 
@@ -274,18 +269,6 @@ class BaseRunner:
                 last_error = str(error)
                 attempt_user = f"{user}\n\nYour previous response could not be used: {last_error}. {prompts.JSON_RULES}"
         raise llm.LLMError(f"The model did not return usable JSON: {last_error}")
-
-    def model_adapter(self, messages: list[dict], activity: dict | None = None) -> dict:
-        """Route a nested model-assisted service call through run budgets."""
-        activity = dict(activity or {})
-        attempt = int(activity.pop("retry_number", 1) or 1)
-        content = self._llm_content(
-            str(messages[0].get("content") or ""),
-            str(messages[1].get("content") or ""),
-            activity,
-            attempt=attempt,
-        )
-        return {"content": content}
 
     def _stage(self, stage_id: str) -> dict:
         for stage in self.run["plan"]["stages"]:

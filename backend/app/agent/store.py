@@ -68,13 +68,10 @@ def is_command_run(run: dict) -> bool:
 ACTIVE_STATUSES = (
     "queued",
     "interpreting",
-    "discovering",
-    "planning",
     "executing",
     "awaiting_approval",
     "awaiting_input",
     "verifying",
-    "summarizing",
 )
 # Statuses a run can rest in with no thread attached.
 RESUMABLE_STATUSES = ("paused", "interrupted")
@@ -245,7 +242,7 @@ def new_command_run(
         "graph_revision": 0,
         "actions": [],
         "rejected_proposals": [],
-        "lifecycle_adjustments": [],
+        "target_adjustments": [],
         "interactions": [],
         "pending_commands": [],
         "status": "queued",

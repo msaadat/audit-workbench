@@ -164,13 +164,15 @@ def append_actions(
                 action["target"] = before["target"]
         raise
     if adjustments:
-        run.setdefault("lifecycle_adjustments", []).extend(adjustments)
+        run.setdefault("target_adjustments", []).extend(adjustments)
     run["graph_revision"] = int(run.get("graph_revision") or 0) + 1
-    project_legacy_plan(run)
+    project_action_plan(run)
     return created
 
 
-def project_legacy_plan(run: dict) -> None:
+def project_action_plan(run: dict) -> None:
+    """Project the action graph into the shared stage/task UI contract."""
+
     status_map = {
         "proposed": "queued", "awaiting_input": "awaiting_approval",
         "awaiting_confirmation": "awaiting_approval", "ready": "queued",

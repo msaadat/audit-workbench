@@ -18,8 +18,6 @@ proposals its siblings already paid for.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 
 from .. import document_analysis
@@ -43,7 +41,6 @@ from .context import (
     ContextResolver,
     document_chunk_scope,
     document_reduction_scope,
-    supplied_source_provenance,
 )
 from .executors import EXECUTORS
 from .executors.documents import (
@@ -55,6 +52,7 @@ from .executors.documents import (
     document_ref,
     extract_text,
 )
+from .execution_support import refresh_workspace, resolve_context, workflow_scope
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -69,34 +67,6 @@ from .runtime import (
 )
 from .workers import WORKERS
 from .workers.documents import CHUNK_WORKER_ID, REDUCTION_WORKER_ID
-
-
-def _sha256_json(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def _capability_definition_hash(capability: workflow.Capability) -> str:
-    return _sha256_json(
-        {
-            "id": capability.id,
-            "stage_id": capability.stage_id,
-            "title": capability.title,
-            "worker_kind": capability.worker_kind,
-            "depends_on": list(capability.depends_on),
-            "context": capability.context,
-            "barrier": capability.barrier,
-            "commit_policy": capability.commit_policy,
-            "approval_policy": capability.approval_policy,
-            "invalidate_on": list(capability.invalidate_on),
-        }
-    )
 
 
 class DocumentWorkflowExecution(BaseRunner):
@@ -126,18 +96,6 @@ class DocumentWorkflowExecution(BaseRunner):
         self.scheduler: WorkflowRunner | None = None
 
     # ------------------------------------------------------------- scheduling
-    def _refresh_workspace(self) -> Workspace:
-        state = self.run.setdefault("workflow", {})
-        previous = int(state.get("workspace_revision") or 0)
-        self.ws = load_workspace(self.ws.id)
-        state["workspace_revision"] = self.ws.revision
-        if self.ws.revision != previous:
-            self.emit(
-                "workspace_revision",
-                {"previous_revision": previous, "workspace_revision": self.ws.revision},
-            )
-        return self.ws
-
     def _refresh_dynamic_limits(self) -> None:
         """Size the model budget from the chunks actually in scope.
 
@@ -145,7 +103,7 @@ class DocumentWorkflowExecution(BaseRunner):
         document, so the budget follows the resolved scope and the real chunk
         count rather than a fixed constant.
         """
-        scope = self.workflow_scope()
+        scope = workflow_scope(self.run)
         document_scope = self.scope()
         chunks = sum(
             len(chunk_specs(self.ws, document_id, scope))
@@ -161,17 +119,8 @@ class DocumentWorkflowExecution(BaseRunner):
             grow_only=True,
         )
 
-    def workflow_scope(self) -> dict:
-        state = self.run.get("workflow") or {}
-        scope = dict(state.get("scope") or {})
-        scope.setdefault("target_refs", list(state.get("target_refs") or []))
-        scope.setdefault(
-            "generation_mode", state.get("generation_mode") or "reuse_existing"
-        )
-        return scope
-
     def scope(self) -> DocumentScope:
-        return resolve_document_scope(self.ws, self.workflow_scope())
+        return resolve_document_scope(self.ws, workflow_scope(self.run))
 
     def action(self) -> str:
         """``analyze`` or ``refresh`` — the placement rule for a new artifact.
@@ -180,7 +129,7 @@ class DocumentWorkflowExecution(BaseRunner):
         boundary: the new artifact becomes a candidate awaiting the auditor's
         acceptance rather than silently replacing the active one.
         """
-        if self.workflow_scope().get("generation_mode") == "force":
+        if workflow_scope(self.run).get("generation_mode") == "force":
             return "refresh"
         return str((self.run.get("workflow") or {}).get("document_action") or "analyze")
 
@@ -224,7 +173,7 @@ class DocumentWorkflowExecution(BaseRunner):
         extracted = extract_text(
             self.ws,
             document_id,
-            force=self.workflow_scope().get("generation_mode") == "force",
+            force=workflow_scope(self.run).get("generation_mode") == "force",
         )
         self.ws = load_workspace(self.ws.id)
         state = str(extracted.get("state") or "")
@@ -280,8 +229,12 @@ class DocumentWorkflowExecution(BaseRunner):
         )
 
         def context_provider():
-            return self._resolve_context(
-                capability, unit, document_chunk_scope(self.ws, document_id, chunk)
+            return resolve_context(
+                self,
+                self.context_resolver,
+                capability,
+                unit,
+                document_chunk_scope(self.ws, document_id, chunk),
             )
 
         def on_committed(_stage, _unit, _outcome) -> DeterministicUnitResult:
@@ -312,7 +265,7 @@ class DocumentWorkflowExecution(BaseRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents={},
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 # A chunk analysis is intermediate generated text, never an
                 # artifact an auditor approves; the reduced analysis is what the
                 # auditor reviews.
@@ -339,7 +292,7 @@ class DocumentWorkflowExecution(BaseRunner):
         Unit IDs are slugified, so they are matched by regenerating each current
         chunk's ID rather than by parsing the unit ID back apart.
         """
-        for chunk in chunk_specs(self.ws, document_id, self.workflow_scope()):
+        for chunk in chunk_specs(self.ws, document_id, workflow_scope(self.run)):
             if self._chunk_unit_id(document_id, str(chunk["id"])) == unit_id:
                 return chunk
         return None
@@ -367,7 +320,7 @@ class DocumentWorkflowExecution(BaseRunner):
             return DeterministicUnitResult(
                 "awaiting_confirmation", (), DOCUMENT_TEXT_UNAVAILABLE
             )
-        scope = self.workflow_scope()
+        scope = workflow_scope(self.run)
         chunks = chunk_specs(self.ws, document_id, scope)
         analyses, missing = self._chunk_analyses(document_id, chunks)
         if not analyses:
@@ -410,7 +363,7 @@ class DocumentWorkflowExecution(BaseRunner):
             },
             expected_revision=self.ws.revision,
             expected_parents=expected,
-            capability_definition_hash=_capability_definition_hash(capability),
+            capability_definition_hash=workflow.capability_definition_hash(capability),
             # A generated analysis is never approved into evidence by the agent:
             # it lands as generated content awaiting auditor review, which is the
             # separate ``documents.analysis_reviewed`` outcome.
@@ -420,7 +373,9 @@ class DocumentWorkflowExecution(BaseRunner):
         )
 
         def context_provider():
-            return self._resolve_context(
+            return resolve_context(
+                self,
+                self.context_resolver,
                 capability,
                 unit,
                 document_reduction_scope(self.ws, document_id, analyses),
@@ -602,21 +557,6 @@ class DocumentWorkflowExecution(BaseRunner):
             (analysis_ref(document_id),),
             DOCUMENT_REVIEW_REQUIRED,
         )
-
-    # ---------------------------------------------------------------- context
-    def _resolve_context(self, capability, unit, scope):
-        """Resolve declared context and record the documents it actually supplied.
-
-        Which document a turn was grounded in is durable provenance, so it is
-        derived from the manifest the resolver produced rather than from the
-        scope the binding assembled before the call.
-        """
-        manifest, bundle = self.context_resolver.resolve(
-            self.ws, capability, unit, scope
-        )
-        for source in supplied_source_provenance(self.ws, manifest):
-            self.record_model_source(source)
-        return manifest, bundle
 
     # ------------------------------------------------------------ checkpoint
     def _scope_checkpoint(self) -> None:
@@ -817,7 +757,7 @@ def build_document_capability_executions(
             executions.register(
                 CapabilityExecution(
                     capability_id=capability.id,
-                    implementation_hash=_sha256_json(
+                    implementation_hash=workflow.canonical_sha256(
                         {"capability": capability.id, **identity}
                     ),
                     pipeline_binder=getattr(adapter, binder),
@@ -828,7 +768,7 @@ def build_document_capability_executions(
         executions.register(
             CapabilityExecution(
                 capability_id=capability.id,
-                implementation_hash=_sha256_json(
+                implementation_hash=workflow.canonical_sha256(
                     {"capability": capability.id, **identity}
                 ),
                 deterministic_executor=getattr(adapter, binder),
@@ -892,7 +832,7 @@ def build_documents_workflow_runner(
         registry=DOCUMENTS_REGISTRY,
         executions=executions,
         unit_pipeline=unit_pipeline,
-        refresh_subject=adapter._refresh_workspace,
+        refresh_subject=lambda: refresh_workspace(adapter),
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,

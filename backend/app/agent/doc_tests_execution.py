@@ -22,13 +22,11 @@ scheduler's own contract, is recorded in
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 
 from .. import doc_tests
 from ..workspace_transactions import parent_hashes
-from ..workspaces import Workspace, WorkspaceConflict, load_workspace
+from ..workspaces import Workspace, WorkspaceConflict
 from . import workflow
 from .base import BaseRunner
 from .capabilities import DOC_TESTS_REGISTRY
@@ -38,7 +36,7 @@ from .capabilities.doc_tests import (
     scoped_tests,
     unexecuted_items,
 )
-from .context import ContextResolver, document_qa_scope, supplied_source_provenance
+from .context import ContextResolver, document_qa_scope
 from .executors import EXECUTORS
 from .executors.fieldwork import (
     DOCUMENT_QA_DISPOSITION_REQUIRED,
@@ -48,6 +46,7 @@ from .executors.fieldwork import (
     document_test_ref,
     run_document_test,
 )
+from .execution_support import refresh_workspace, resolve_context, workflow_scope
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -64,34 +63,6 @@ from .workers import WORKERS
 
 DEFINITION_REVIEW_REQUIRED = "document_test_definition_needs_auditor_attention"
 DISPOSITION_REQUIRED = "document_test_results_await_auditor_disposition"
-
-
-def _sha256_json(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def capability_definition_hash(capability: workflow.Capability) -> str:
-    return _sha256_json(
-        {
-            "id": capability.id,
-            "stage_id": capability.stage_id,
-            "title": capability.title,
-            "worker_kind": capability.worker_kind,
-            "depends_on": list(capability.depends_on),
-            "context": capability.context,
-            "barrier": capability.barrier,
-            "commit_policy": capability.commit_policy,
-            "approval_policy": capability.approval_policy,
-            "invalidate_on": list(capability.invalidate_on),
-        }
-    )
 
 
 def unit_ref(unit: dict, prefix: str) -> str:
@@ -127,7 +98,9 @@ def bind_document_qa(
     )
 
     def context_provider():
-        return adapter._resolve_context(
+        return resolve_context(
+            adapter,
+            adapter.context_resolver,
             capability,
             unit,
             document_qa_scope(adapter.ws, test_id, item_id, document_id),
@@ -163,7 +136,7 @@ def bind_document_qa(
             },
             expected_revision=adapter.ws.revision,
             expected_parents=expected_test,
-            capability_definition_hash=capability_definition_hash(capability),
+            capability_definition_hash=workflow.capability_definition_hash(capability),
             # A cited answer is a candidate for auditor disposition, not an
             # artifact the auditor pre-approves, so no approval batch is
             # requested even in permission mode.
@@ -256,18 +229,6 @@ class DocTestWorkflowExecution(BaseRunner):
         self.scheduler: WorkflowRunner | None = None
 
     # ------------------------------------------------------------- scheduling
-    def _refresh_workspace(self) -> Workspace:
-        state = self.run.setdefault("workflow", {})
-        previous = int(state.get("workspace_revision") or 0)
-        self.ws = load_workspace(self.ws.id)
-        state["workspace_revision"] = self.ws.revision
-        if self.ws.revision != previous:
-            self.emit(
-                "workspace_revision",
-                {"previous_revision": previous, "workspace_revision": self.ws.revision},
-            )
-        return self.ws
-
     def _refresh_dynamic_limits(self) -> None:
         """Size the model budget from the Q&A pairs actually in scope.
 
@@ -277,7 +238,7 @@ class DocTestWorkflowExecution(BaseRunner):
         """
         qa_pairs = sum(
             len(item.get("document_ids") or [])
-            for test in scoped_tests(self.ws, self.workflow_scope())
+            for test in scoped_tests(self.ws, workflow_scope(self.run))
             if test.get("kind") == "qa"
             for item in test.get("items") or []
         )
@@ -291,28 +252,8 @@ class DocTestWorkflowExecution(BaseRunner):
             grow_only=True,
         )
 
-    def workflow_scope(self) -> dict:
-        state = self.run.get("workflow") or {}
-        scope = dict(state.get("scope") or {})
-        scope.setdefault("target_refs", list(state.get("target_refs") or []))
-        scope.setdefault(
-            "generation_mode", state.get("generation_mode") or "reuse_existing"
-        )
-        return scope
-
     def scope(self) -> DocTestScope:
-        return resolve_doc_test_scope(self.ws, self.workflow_scope())
-
-    # ---------------------------------------------------------------- context
-    def _resolve_context(self, capability, unit, scope):
-        """Resolve declared context and record the documents it actually supplied."""
-
-        manifest, bundle = self.context_resolver.resolve(
-            self.ws, capability, unit, scope
-        )
-        for source in supplied_source_provenance(self.ws, manifest):
-            self.record_model_source(source)
-        return manifest, bundle
+        return resolve_doc_test_scope(self.ws, workflow_scope(self.run))
 
     # -------------------------------------------- doc_tests.definitions_ready
     def _bind_definition(
@@ -365,7 +306,7 @@ class DocTestWorkflowExecution(BaseRunner):
         # The existing execution services combine compute and mutation and check
         # the revision they were handed, so each unit runs against a freshly
         # loaded workspace rather than the subject the stage started with.
-        self._refresh_workspace()
+        refresh_workspace(self)
         task = self.add_task(
             "doc_test_execution",
             "workflow:doc_test_execution",
@@ -416,7 +357,7 @@ class DocTestWorkflowExecution(BaseRunner):
         """Close the run on real test outcomes, not on unit bookkeeping."""
 
         self.ws = subject
-        tests = scoped_tests(subject, self.workflow_scope())
+        tests = scoped_tests(subject, workflow_scope(self.run))
         units = [unit for stage in stages for unit in stage.get("units") or []]
         failed = sum(unit.get("status") in {"failed", "conflict"} for unit in units)
         open_units = sum(
@@ -526,7 +467,7 @@ def build_doc_test_capability_executions(
             executions.register(
                 CapabilityExecution(
                     capability_id=capability.id,
-                    implementation_hash=_sha256_json(
+                    implementation_hash=workflow.canonical_sha256(
                         {"capability": capability.id, **identity}
                     ),
                     pipeline_binder=getattr(adapter, binder),
@@ -537,7 +478,7 @@ def build_doc_test_capability_executions(
         executions.register(
             CapabilityExecution(
                 capability_id=capability.id,
-                implementation_hash=_sha256_json(
+                implementation_hash=workflow.canonical_sha256(
                     {"capability": capability.id, **identity}
                 ),
                 deterministic_executor=getattr(adapter, binder),
@@ -589,7 +530,7 @@ def build_doc_tests_workflow_runner(
         registry=DOC_TESTS_REGISTRY,
         executions=executions,
         unit_pipeline=unit_pipeline,
-        refresh_subject=adapter._refresh_workspace,
+        refresh_subject=lambda: refresh_workspace(adapter),
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         finish_evaluator=adapter._finish_projection,
@@ -607,6 +548,5 @@ __all__ = [
     "bind_document_test_unit",
     "build_doc_test_capability_executions",
     "build_doc_tests_workflow_runner",
-    "capability_definition_hash",
     "unit_ref",
 ]

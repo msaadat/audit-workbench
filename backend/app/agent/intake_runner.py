@@ -17,8 +17,6 @@ proposal and the accepted decision set before any file is touched.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 
 from .. import intake, llm
@@ -38,6 +36,7 @@ from .workers.model import (
     WorkerResponseValidationError,
     WorkerRunError,
 )
+from .workflow import canonical_sha256
 
 # The runner is the classification "capability" for context and proposal
 # identity. It is a stable declaration key, not a registered capability: nothing
@@ -55,14 +54,6 @@ CLASSIFICATION_FALLBACK_ERRORS = (
     WorkerContractError,
     ContextResolutionError,
 )
-
-
-def _sha256_json(value: object) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
 
 def classification_unit_id(batch_id: str) -> str:
     """Stable semantic unit for one batch's model classification."""
@@ -237,7 +228,9 @@ class IntakeRunner(BaseRunner):
                     activity={"task_id": "intake:classify"},
                     expected_revision=self.ws.revision,
                     expected_parents={},
-                    capability_definition_hash=_sha256_json(CLASSIFICATION_DECLARATION),
+                    capability_definition_hash=canonical_sha256(
+                        CLASSIFICATION_DECLARATION
+                    ),
                 ),
                 context_provider=lambda: self.context_resolver.resolve(
                     self.ws,
@@ -314,7 +307,7 @@ class IntakeRunner(BaseRunner):
                 "unit_id": apply_unit_id(batch_id),
                 "status": "accepted",
                 "origin": origin,
-                "proposal_hash": _sha256_json(payload),
+                "proposal_hash": canonical_sha256(payload),
                 "proposal": payload,
             },
         )

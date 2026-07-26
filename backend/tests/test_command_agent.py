@@ -576,7 +576,7 @@ def test_report_producer_action_reference_resolves_to_working_report(workspace_w
     assert {
         "action_id": "reconcile", "kind": "target_action_reference",
         "from": "generate", "to": "working",
-    } in run["lifecycle_adjustments"]
+    } in run["target_adjustments"]
 
 
 @pytest.mark.parametrize("proposed_kind", ["doctest_item", "doctest"])

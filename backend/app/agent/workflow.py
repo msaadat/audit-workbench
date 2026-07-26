@@ -38,6 +38,19 @@ def canonical_sha1(value: object) -> str:
     ).hexdigest()
 
 
+def canonical_sha256(value: object) -> str:
+    """Return the shared prefixed SHA-256 identity for JSON-compatible values."""
+
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def semantic_unit_id(kind: str, *refs: object) -> str:
     suffix = ":".join(slugify(str(ref)) for ref in refs if str(ref or "").strip())
     return f"{kind}:{suffix}" if suffix else kind
@@ -127,6 +140,25 @@ class Capability:
     def __post_init__(self) -> None:
         if self.barrier not in BARRIERS:
             raise ValueError(f"Unknown capability barrier '{self.barrier}'.")
+
+
+def capability_definition_hash(capability: Capability) -> str:
+    """Hash the normalized persisted declaration shared by every composition."""
+
+    return canonical_sha256(
+        {
+            "id": capability.id,
+            "stage_id": capability.stage_id,
+            "title": capability.title,
+            "worker_kind": capability.worker_kind,
+            "depends_on": list(capability.depends_on),
+            "context": capability.context,
+            "barrier": capability.barrier,
+            "commit_policy": capability.commit_policy,
+            "approval_policy": capability.approval_policy,
+            "invalidate_on": list(capability.invalidate_on),
+        }
+    )
 
 
 class CapabilityRegistry:

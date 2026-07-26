@@ -25,15 +25,6 @@ def _text_list(value: object) -> list[str]:
 
 
 class ActionRunner(BaseRunner):
-    stage_titles = {
-        "context": "Planning context",
-        "apm": "Audit planning memorandum",
-        "rcm": "Risk and control matrix",
-        # Persisted stage key kept for replay compatibility; the active
-        # artifact is now the RCM's structured planned-test collection.
-        "work_program": "RCM planned tests",
-    }
-
     def __init__(
         self,
         workspace: Workspace,
@@ -75,7 +66,7 @@ class ActionRunner(BaseRunner):
                     "proposed", "ready", "awaiting_input", "awaiting_confirmation", "blocked",
                 }:
                     ledger.transition(action, "cancelled")
-            ledger.project_legacy_plan(self.run)
+            ledger.project_action_plan(self.run)
             self.mark_finished()
             self.run["command"]["status"] = "cancelled"
             context = dict(self.handle.cancel_context or {})
@@ -336,7 +327,7 @@ class ActionRunner(BaseRunner):
                 self.emit("action_conflict", {"action_id": action["id"], "interaction_id": interaction["id"]})
             changed = True
         if changed:
-            ledger.project_legacy_plan(self.run); self.save()
+            ledger.project_action_plan(self.run); self.save()
 
     def _drive_graph(self) -> None:
         """Single-threaded scheduler over the action ledger.
@@ -451,7 +442,7 @@ class ActionRunner(BaseRunner):
             return False
         adjustments = actions.normalize_created_targets(self.run, [action])
         if adjustments:
-            self.run.setdefault("lifecycle_adjustments", []).extend(adjustments)
+            self.run.setdefault("target_adjustments", []).extend(adjustments)
         producer = self._pending_target_producer(action)
         if producer is None:
             return False
@@ -481,7 +472,7 @@ class ActionRunner(BaseRunner):
         # is resumed. New proposals are normalized by the ledger.
         adjustments = actions.normalize_created_targets(self.run, [action])
         if adjustments:
-            self.run.setdefault("lifecycle_adjustments", []).extend(adjustments)
+            self.run.setdefault("target_adjustments", []).extend(adjustments)
         if definition.target_kinds and not target.get("kind") and len(definition.target_kinds) == 1:
             target["kind"] = definition.target_kinds[0]
         definition = actions.validate_action(action)
@@ -907,7 +898,7 @@ class ActionRunner(BaseRunner):
             if any(by_id[dep]["status"] in {"failed", "blocked", "cancelled", "skipped"} for dep in action["depends_on"]):
                 ledger.transition(action, "blocked"); action["error"] = "A required action did not succeed."; changed = True
         if changed:
-            ledger.project_legacy_plan(self.run); self.save()
+            ledger.project_action_plan(self.run); self.save()
             blocked = sum(item["status"] == "blocked" for item in self.run["actions"])
             self.set_activity(
                 "actions.blocked", "Blocking dependent actions",
@@ -954,7 +945,7 @@ class ActionRunner(BaseRunner):
         return next(item for item in self.run["actions"] if item["id"] == action_id)
 
     def _save_action(self, action: dict) -> None:
-        ledger.project_legacy_plan(self.run); self.save()
+        ledger.project_action_plan(self.run); self.save()
         self.emit("action_update", {"action": {k: action.get(k) for k in ("id", "type", "status", "error", "result_refs", "attempts")}})
 
     def _finish(self, force_issue: bool = False) -> None:

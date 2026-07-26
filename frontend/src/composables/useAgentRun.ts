@@ -74,13 +74,10 @@ const refetchTimers = new Map<string, number>()
 const ACTIVE_STATUSES = new Set([
   'queued',
   'interpreting',
-  'discovering',
-  'planning',
   'executing',
   'awaiting_approval',
   'awaiting_input',
   'verifying',
-  'summarizing',
   'paused',
 ])
 

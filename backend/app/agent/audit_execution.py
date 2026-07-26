@@ -15,8 +15,6 @@ handler.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 
 from .. import doc_tests, rcm_execution
@@ -26,7 +24,6 @@ from ..workspaces import (
     Workspace,
     WorkspaceConflict,
     WorkspaceError,
-    load_workspace,
     slugify,
 )
 from . import capabilities as audit_capabilities
@@ -54,7 +51,6 @@ from .context import (
     planned_test_scope,
     planning_context_scope,
     rcm_scope,
-    supplied_source_provenance,
 )
 from .executors import EXECUTORS
 from .executors.fieldwork import (
@@ -79,6 +75,7 @@ from .executors.reporting import (
     output_issues,
     verify_audit,
 )
+from .execution_support import refresh_workspace, resolve_context
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -93,35 +90,6 @@ from .runtime import (
 from .workers import WORKERS
 
 ELIGIBLE_DISPOSITIONS = {"confirmed_control_exception", "draft_finding_candidate"}
-
-
-def _sha256_json(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def _capability_definition_hash(capability: workflow.Capability) -> str:
-    return _sha256_json(
-        {
-            "id": capability.id,
-            "stage_id": capability.stage_id,
-            "title": capability.title,
-            "worker_kind": capability.worker_kind,
-            "depends_on": list(capability.depends_on),
-            "context": capability.context,
-            "barrier": capability.barrier,
-            "commit_policy": capability.commit_policy,
-            "approval_policy": capability.approval_policy,
-            "invalidate_on": list(capability.invalidate_on),
-        }
-    )
-
 
 
 class AuditWorkflowExecution(ActionRunner):
@@ -147,17 +115,6 @@ class AuditWorkflowExecution(ActionRunner):
         self.scheduler: WorkflowRunner | None = None
 
     # ------------------------------------------------------------ ledger
-    def _refresh_workspace(self) -> Workspace:
-        previous = int(self.run["workflow"].get("workspace_revision") or 0)
-        self.ws = load_workspace(self.ws.id)
-        self.run["workflow"]["workspace_revision"] = self.ws.revision
-        if self.ws.revision != previous:
-            self.emit(
-                "workspace_revision",
-                {"previous_revision": previous, "workspace_revision": self.ws.revision},
-            )
-        return self.ws
-
     def _refresh_dynamic_limits(self) -> None:
         planned_count = sum(
             len(row.get("planned_tests") or []) for row in self.ws.rcm
@@ -185,25 +142,6 @@ class AuditWorkflowExecution(ActionRunner):
             },
             grow_only=True,
         )
-
-    def _resolve_context(
-        self,
-        capability: workflow.Capability,
-        unit: dict,
-        scope,
-    ):
-        """Resolve declared context and record its methodology provenance.
-
-        Which methodology packs informed a turn is durable provenance, so it is
-        derived from the manifest the resolver actually produced rather than from
-        a run-scoped snapshot assembled before the call.
-        """
-        manifest, bundle = self.context_resolver.resolve(
-            self.ws, capability, unit, scope
-        )
-        for source in supplied_source_provenance(self.ws, manifest):
-            self.record_model_source(source)
-        return manifest, bundle
 
     def _curated_document_ids(self) -> list[str] | None:
         """The auditor's explicit planning-document curation, if any.
@@ -266,7 +204,7 @@ class AuditWorkflowExecution(ActionRunner):
         )
 
         def context_provider():
-            return self._resolve_context(capability, unit, scope)
+            return resolve_context(self, self.context_resolver, capability, unit, scope)
 
         def approval_provider(proposal):
             accepted = self.request_approval(
@@ -315,7 +253,7 @@ class AuditWorkflowExecution(ActionRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected_context,
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=(
                     "context" if self.run["mode"] == "permission" else None
                 ),
@@ -366,7 +304,9 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("apm", "workflow:apm", "Audit planning memorandum")
 
         def context_provider():
-            return self._resolve_context(
+            return resolve_context(
+                self,
+                self.context_resolver,
                 capability,
                 unit,
                 apm_document_methodology_scope(
@@ -421,7 +361,7 @@ class AuditWorkflowExecution(ActionRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected_context,
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=("apm" if self.run["mode"] == "permission" else None),
                 proposal_reference=unit.get("proposal_sidecar"),
                 receipt_reference=unit.get("receipt_sidecar"),
@@ -465,7 +405,9 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("rcm", "workflow:rcm", "Risk and control matrix")
 
         def context_provider():
-            return self._resolve_context(
+            return resolve_context(
+                self,
+                self.context_resolver,
                 capability,
                 unit,
                 rcm_scope(
@@ -521,7 +463,7 @@ class AuditWorkflowExecution(ActionRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected_apm,
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=("rcm" if self.run["mode"] == "permission" else None),
                 proposal_reference=unit.get("proposal_sidecar"),
                 receipt_reference=unit.get("receipt_sidecar"),
@@ -566,7 +508,9 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("work_program", "workflow:planned_tests", "RCM planned tests")
 
         def context_provider():
-            return self._resolve_context(
+            return resolve_context(
+                self,
+                self.context_resolver,
                 capability,
                 unit,
                 planned_test_scope(
@@ -623,7 +567,7 @@ class AuditWorkflowExecution(ActionRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected_row,
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=(
                     "planned_tests" if self.run["mode"] == "permission" else None
                 ),
@@ -693,7 +637,9 @@ class AuditWorkflowExecution(ActionRunner):
         )
 
         def context_provider():
-            return self._resolve_context(
+            return resolve_context(
+                self,
+                self.context_resolver,
                 capability,
                 unit,
                 scope_builder(self.ws, rcm_id, planned_id),
@@ -749,7 +695,7 @@ class AuditWorkflowExecution(ActionRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected_planned,
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=(
                     "execution_definitions"
                     if self.run["mode"] == "permission"
@@ -797,7 +743,7 @@ class AuditWorkflowExecution(ActionRunner):
         # Existing execution services combine compute and mutation and check the
         # revision they were handed, so each unit runs against a freshly loaded
         # workspace rather than the subject the stage started with.
-        self._refresh_workspace()
+        refresh_workspace(self)
         artifact_ref = unit["parent_refs"][-1]
         kind, item_id = artifact_ref.split(":", 1)
         if kind != "datatest":
@@ -920,7 +866,9 @@ class AuditWorkflowExecution(ActionRunner):
         task = self.add_task("findings", "workflow:findings", "Eligible finding drafts")
 
         def context_provider():
-            return self._resolve_context(
+            return resolve_context(
+                self,
+                self.context_resolver,
                 capability,
                 unit,
                 finding_draft_scope(self.ws, observation_id),
@@ -970,7 +918,7 @@ class AuditWorkflowExecution(ActionRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected_observation,
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=(
                     "finding_drafts" if self.run["mode"] == "permission" else None
                 ),
@@ -1324,7 +1272,7 @@ def build_audit_workflow_runner(
             executions.register(
                 CapabilityExecution(
                     capability_id=capability.id,
-                    implementation_hash=_sha256_json(
+                    implementation_hash=workflow.canonical_sha256(
                         {"capability": capability.id, **identity}
                     ),
                     pipeline_binder=binder,
@@ -1335,7 +1283,7 @@ def build_audit_workflow_runner(
         executions.register(
             CapabilityExecution(
                 capability_id=capability.id,
-                implementation_hash=_sha256_json(
+                implementation_hash=workflow.canonical_sha256(
                     {"capability": capability.id, **identity}
                 ),
                 deterministic_executor=binder,
@@ -1379,7 +1327,7 @@ def build_audit_workflow_runner(
         registry=audit_capabilities.REGISTRY,
         executions=executions,
         unit_pipeline=unit_pipeline,
-        refresh_subject=adapter._refresh_workspace,
+        refresh_subject=lambda: refresh_workspace(adapter),
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
@@ -1388,4 +1336,3 @@ def build_audit_workflow_runner(
     adapter.scheduler = scheduler
     scheduler.execution_adapter = adapter
     return scheduler
-

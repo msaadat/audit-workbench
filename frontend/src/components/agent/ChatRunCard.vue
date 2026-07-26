@@ -24,7 +24,7 @@ const run = ref<AgentRun | null>(null)
 const busy = ref(false)
 const clock = ref(Date.now())
 let clockTimer: number | undefined
-const active = computed(() => ['queued','interpreting','discovering','planning','executing','awaiting_approval','awaiting_input','verifying','summarizing','paused','interrupted'].includes(props.projection.status))
+const active = computed(() => ['queued','interpreting','executing','awaiting_approval','awaiting_input','verifying','paused','interrupted'].includes(props.projection.status))
 const severity: Record<string, 'success'|'warn'|'danger'|'secondary'|'info'> = { completed:'success',completed_with_open_items:'warn',completed_with_issues:'warn',failed:'danger',cancelled:'secondary',paused:'secondary',interrupted:'warn',awaiting_approval:'warn',awaiting_input:'warn' }
 
 function duration(value: number | null | undefined) {

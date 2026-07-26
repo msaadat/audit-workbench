@@ -176,46 +176,6 @@ def validate_json_shape(
     return payload
 
 
-def parse_markdown_response(text: str, *, legacy_field: str | None = None) -> str:
-    """Extract direct Markdown or tolerate an older JSON string wrapper.
-
-    Long Markdown is fragile inside JSON because providers sometimes emit
-    literal newlines or an unescaped quote. Direct Markdown is preferred, but
-    tolerant unwrapping avoids another model turn when a provider still uses
-    the former response shape.
-    """
-    value = str(text or "").strip()
-    if not value:
-        return ""
-    fenced = re.fullmatch(
-        r"```(?:markdown|md)?\s*\n?(.*?)\n?```",
-        value,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if fenced:
-        value = fenced.group(1).strip()
-    if legacy_field:
-        try:
-            payload = parse_json_object(value)
-        except (ValueError, json.JSONDecodeError):
-            payload = None
-        if isinstance(payload, dict) and isinstance(payload.get(legacy_field), str):
-            return payload[legacy_field].strip()
-        marker = re.search(
-            rf'["\']{re.escape(legacy_field)}["\']\s*:\s*["\']',
-            value,
-        )
-        if marker:
-            body = value[marker.end():].strip()
-            body = re.sub(r'["\']\s*}\s*$', "", body, count=1).strip()
-            try:
-                return json.loads(f'"{body}"').strip()
-            except json.JSONDecodeError:
-                return body.replace(r"\n", "\n").replace(r'\"', '"').strip()
-    heading = re.search(r"(?m)^#{1,6}\s+", value)
-    return value[heading.start():].strip() if heading else value
-
-
 def checks_meta_for_model() -> list[dict]:
     """The validation check registry, minus functions/icons, for prompts."""
     meta = []

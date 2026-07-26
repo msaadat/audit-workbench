@@ -1176,13 +1176,10 @@ export interface RuleSuggestion {
 export type AgentRunStatus =
   | 'queued'
   | 'interpreting'
-  | 'discovering'
-  | 'planning'
   | 'executing'
   | 'awaiting_approval'
   | 'awaiting_input'
   | 'verifying'
-  | 'summarizing'
   | 'paused'
   | 'interrupted'
   | 'completed'
@@ -1482,7 +1479,7 @@ export interface AgentRun {
   graph_revision?: number
   actions?: AgentAction[]
   rejected_proposals?: AgentRejectedProposal[]
-  lifecycle_adjustments?: Record<string, unknown>[]
+  target_adjustments?: Record<string, unknown>[]
   interactions?: AgentInteraction[]
   workflow?: AgentWorkflow
   workflow_explanation?: string

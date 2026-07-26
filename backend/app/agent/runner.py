@@ -424,7 +424,7 @@ def cancel_run(
                 "blocked",
             }:
                 ledger.transition(action, "cancelled")
-        ledger.project_legacy_plan(run)
+        ledger.project_action_plan(run)
         run["command"]["status"] = "cancelled"
     store.save_run(workspace, run)
     store.append_event(

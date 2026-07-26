@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 import app.agent as agent_package
-from app.agent import capabilities, doc_tests_execution, ledger, runner, store
-from app.agent import documents_execution, workflow_dispatch
+from app.agent import capabilities, doc_tests_execution, ledger, prompts, runner, store
+from app.agent import documents_execution, workflow, workflow_dispatch
 from app.agent.action_runner import ActionRunner
 from app.agent.base import BaseRunner
 from app.agent.context import PRESETS
@@ -165,6 +165,49 @@ def test_no_compatibility_package_or_alias_exists():
     assert offenders == []
     assert not hasattr(agent_package, "CommandRunner")
     assert not hasattr(runner, "_Runner")
+
+
+def test_execution_cleanup_has_one_shared_support_surface():
+    import app.agent.analysis_execution as analysis_execution
+    import app.agent.audit_execution as audit_execution
+
+    execution_modules = (
+        analysis_execution,
+        audit_execution,
+        documents_execution,
+        doc_tests_execution,
+    )
+    for module in execution_modules:
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert "def _sha256_json" not in source
+        assert "def _capability_definition_hash" not in source
+        assert "def _refresh_workspace" not in source
+        assert "def workflow_scope" not in source
+        assert "def _resolve_context" not in source
+
+    assert callable(workflow.canonical_sha256)
+    assert callable(workflow.capability_definition_hash)
+    base_source = Path(inspect.getsourcefile(BaseRunner) or "").read_text(
+        encoding="utf-8"
+    )
+    assert "_model_context" not in base_source
+    assert "agent:document_selection" not in base_source
+    assert not hasattr(BaseRunner, "model_adapter")
+    assert not hasattr(prompts, "parse_markdown_response")
+
+
+def test_action_run_shape_and_statuses_use_current_names(workspace_with_data):
+    run = store.new_command_run(
+        workspace_with_data, "auto", {"source": "chat", "text": "Rename an artifact"}
+    )
+
+    assert "target_adjustments" in run
+    assert "lifecycle_adjustments" not in run
+    assert hasattr(ledger, "project_action_plan")
+    assert not hasattr(ledger, "project_legacy_plan")
+    assert "discovering" not in store.ACTIVE_STATUSES
+    assert "planning" not in store.ACTIVE_STATUSES
+    assert "summarizing" not in store.ACTIVE_STATUSES
 
 
 # --------------------------------------------------------------------------- #

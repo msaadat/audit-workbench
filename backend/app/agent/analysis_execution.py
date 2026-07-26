@@ -19,12 +19,10 @@ pipeline path would.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 
 from ..workspace_transactions import parent_hashes
-from ..workspaces import Workspace, WorkspaceConflict, load_workspace
+from ..workspaces import Workspace, WorkspaceConflict
 from . import store, workflow
 from .base import BaseRunner
 from .capabilities.analysis import (
@@ -52,6 +50,7 @@ from .executors.analysis import (
     relationship_ref,
     run_analysis,
 )
+from .execution_support import refresh_workspace, workflow_scope
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -68,40 +67,12 @@ from .runtime import (
 from .workers import WORKERS
 
 
-def _sha256_json(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
 class DeterministicCommitConflict(WorkspaceConflict):
     """A deterministic commit was reconciled to a conflict rather than repeated."""
 
     def __init__(self, reason: str, revision: int):
         super().__init__(revision, revision)
         self.args = (reason,)
-
-
-def _capability_definition_hash(capability: workflow.Capability) -> str:
-    return _sha256_json(
-        {
-            "id": capability.id,
-            "stage_id": capability.stage_id,
-            "title": capability.title,
-            "worker_kind": capability.worker_kind,
-            "depends_on": list(capability.depends_on),
-            "context": capability.context,
-            "barrier": capability.barrier,
-            "commit_policy": capability.commit_policy,
-            "approval_policy": capability.approval_policy,
-            "invalidate_on": list(capability.invalidate_on),
-        }
-    )
 
 
 class AnalysisWorkflowExecution(BaseRunner):
@@ -130,18 +101,6 @@ class AnalysisWorkflowExecution(BaseRunner):
         self.scheduler: WorkflowRunner | None = None
 
     # ------------------------------------------------------------- scheduling
-    def _refresh_workspace(self) -> Workspace:
-        state = self.run.setdefault("workflow", {})
-        previous = int(state.get("workspace_revision") or 0)
-        self.ws = load_workspace(self.ws.id)
-        state["workspace_revision"] = self.ws.revision
-        if self.ws.revision != previous:
-            self.emit(
-                "workspace_revision",
-                {"previous_revision": previous, "workspace_revision": self.ws.revision},
-            )
-        return self.ws
-
     def _refresh_dynamic_limits(self) -> None:
         """Size the model budget from the frames actually in scope.
 
@@ -161,17 +120,8 @@ class AnalysisWorkflowExecution(BaseRunner):
             grow_only=True,
         )
 
-    def workflow_scope(self) -> dict:
-        state = self.run.get("workflow") or {}
-        scope = dict(state.get("scope") or {})
-        scope.setdefault("target_refs", list(state.get("target_refs") or []))
-        scope.setdefault(
-            "generation_mode", state.get("generation_mode") or "reuse_existing"
-        )
-        return scope
-
     def scope(self) -> TableScope:
-        return resolve_table_scope(self.ws, self.workflow_scope())
+        return resolve_table_scope(self.ws, workflow_scope(self.run))
 
     # ------------------------------------------------------------- provenance
     def _analysis_record(self) -> dict:
@@ -257,7 +207,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             activity={"artifact_refs": list(unit.get("parent_refs") or [])},
             expected_revision=self.ws.revision,
             expected_parents=expected_parents,
-            capability_definition_hash=_capability_definition_hash(capability),
+            capability_definition_hash=workflow.capability_definition_hash(capability),
         )
 
         def record(field: str):
@@ -475,7 +425,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             for item in agent_analyses(self.ws, table_scope)
             if str(item.get("table") or "") == target_frame
         ]
-        if existing and self.workflow_scope().get("generation_mode") != "force":
+        if existing and workflow_scope(self.run).get("generation_mode") != "force":
             # The frame already carries workflow-authored definitions. Units are
             # durable once materialized, so a stage re-run must not spend a
             # provider turn re-deriving what already exists; only an explicit
@@ -566,7 +516,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                 },
                 expected_revision=self.ws.revision,
                 expected_parents=expected,
-                capability_definition_hash=_capability_definition_hash(capability),
+                capability_definition_hash=workflow.capability_definition_hash(capability),
                 approval_kind=(
                     "analysis_definitions"
                     if self.run["mode"] == "permission"
@@ -853,7 +803,7 @@ def build_analysis_workflow_runner(
             executions.register(
                 CapabilityExecution(
                     capability_id=capability.id,
-                    implementation_hash=_sha256_json(
+                    implementation_hash=workflow.canonical_sha256(
                         {"capability": capability.id, **identity}
                     ),
                     pipeline_binder=binder,
@@ -864,7 +814,7 @@ def build_analysis_workflow_runner(
         executions.register(
             CapabilityExecution(
                 capability_id=capability.id,
-                implementation_hash=_sha256_json(
+                implementation_hash=workflow.canonical_sha256(
                     {"capability": capability.id, **identity}
                 ),
                 deterministic_executor=binder,
@@ -904,7 +854,7 @@ def build_analysis_workflow_runner(
         registry=ANALYSIS_REGISTRY,
         executions=executions,
         unit_pipeline=unit_pipeline,
-        refresh_subject=adapter._refresh_workspace,
+        refresh_subject=lambda: refresh_workspace(adapter),
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
