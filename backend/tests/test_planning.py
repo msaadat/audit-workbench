@@ -1,6 +1,9 @@
+import csv
+import io
 import threading
 import time
 
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
@@ -701,6 +704,109 @@ def test_planning_update_includes_selected_imported_documents(monkeypatch):
     assert "The requirements need operating evidence" in supplied
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(policy["id"] in item.get("document_ids", []) for item in activity)
+
+
+def _rcm_import_csv(rows: list[dict]) -> bytes:
+    columns = [
+        "id", "process", "risk", "risk_rating", "assertion", "control",
+        "control_type", "control_owner", "criteria", "prepared_by",
+        "reviewed_by", "review_status",
+    ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({col: row.get(col, "") for col in columns})
+    return buffer.getvalue().encode()
+
+
+def test_apm_export_import_routes():
+    client = TestClient(create_app())
+    created = client.post("/api/workspaces", json={"name": "APM Export"}).json()
+    base = f"/api/workspaces/{created['id']}"
+    client.patch(f"{base}/planning", json={"apm_markdown": "# Draft APM\nSome content."})
+
+    export = client.get(f"{base}/planning/apm/export")
+    assert export.status_code == 200
+    assert export.text == "# Draft APM\nSome content."
+    assert "attachment" in export.headers["content-disposition"]
+
+    imported = client.post(
+        f"{base}/planning/apm/import",
+        files={"file": ("APM.md", b"# Edited APM\nNew content.", "text/markdown")},
+    )
+    assert imported.status_code == 200
+    assert imported.json()["apm_markdown"] == "# Edited APM\nNew content."
+    assert imported.json()["created_by"] == "user"
+
+
+def test_rcm_export_import_round_trip():
+    client = TestClient(create_app())
+    created = client.post("/api/workspaces", json={"name": "RCM Export"}).json()
+    base = f"/api/workspaces/{created['id']}"
+    row = client.post(
+        f"{base}/rcm",
+        json={"process": "Cash", "risk": "Cash is misstated", "risk_rating": "medium"},
+    ).json()
+
+    export = client.get(f"{base}/rcm/export")
+    assert export.status_code == 200
+    assert "attachment" in export.headers["content-disposition"]
+    df = pl.read_excel(io.BytesIO(export.content))
+    assert df["id"][0] == row["id"]
+    assert df["process"][0] == "Cash"
+
+    content = _rcm_import_csv([{
+        "id": row["id"], "process": "Cash", "risk": "Cash is misstated",
+        "risk_rating": "high", "assertion": "Existence",
+        "control": "Bank reconciliation", "control_type": "Manual detective",
+        "control_owner": "Controller", "review_status": "prepared",
+    }])
+    imported = client.post(f"{base}/rcm/import", files={"file": ("RCM.csv", content, "text/csv")})
+    assert imported.status_code == 200
+    body = imported.json()
+    assert body["updated"] == 1
+    assert body["unmatched"] == []
+    updated_row = next(item for item in body["rcm"] if item["id"] == row["id"])
+    assert updated_row["risk_rating"] == "high"
+    assert updated_row["control"] == "Bank reconciliation"
+    assert updated_row["review_status"] == "prepared"
+    assert updated_row["created_by"] == "user"
+
+
+def test_rcm_import_does_not_add_or_remove_rows():
+    client = TestClient(create_app())
+    created = client.post("/api/workspaces", json={"name": "RCM Import Unmatched"}).json()
+    base = f"/api/workspaces/{created['id']}"
+    row = client.post(f"{base}/rcm", json={"process": "Cash", "risk": "Cash is misstated"}).json()
+
+    content = _rcm_import_csv([
+        {"id": row["id"], "process": "Cash", "risk": "Cash is misstated", "risk_rating": "high"},
+        {"id": "RCM-UNKNOWN", "process": "Ghost", "risk": "Ghost risk", "risk_rating": "medium"},
+    ])
+    imported = client.post(f"{base}/rcm/import", files={"file": ("RCM.csv", content, "text/csv")})
+    assert imported.status_code == 200
+    body = imported.json()
+    assert body["updated"] == 1
+    assert body["unmatched"] == ["RCM-UNKNOWN"]
+    assert len(body["rcm"]) == 1
+    assert body["rcm"][0]["risk_rating"] == "high"
+
+
+def test_rcm_import_rejects_invalid_enum_values():
+    client = TestClient(create_app())
+    created = client.post("/api/workspaces", json={"name": "RCM Import Invalid"}).json()
+    base = f"/api/workspaces/{created['id']}"
+    row = client.post(f"{base}/rcm", json={"process": "Cash", "risk": "Cash is misstated"}).json()
+
+    content = _rcm_import_csv([
+        {"id": row["id"], "process": "Cash", "risk": "Cash is misstated", "risk_rating": "severe"},
+    ])
+    imported = client.post(f"{base}/rcm/import", files={"file": ("RCM.csv", content, "text/csv")})
+    assert imported.status_code == 400
+
+    unchanged = client.get(f"{base}/rcm").json()["items"][0]
+    assert unchanged["risk_rating"] == "medium"
 
 
 

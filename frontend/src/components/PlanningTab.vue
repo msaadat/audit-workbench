@@ -15,7 +15,7 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { workspaceQuery } from '../composables/useWorkspaceNavigation'
-import type { AuditObservation, MarkdownTemplate, PlanningPayload, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
@@ -36,6 +36,12 @@ const saving = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
 const selectedRcmId = ref<string | null>(null)
+const apmImportInput = ref<HTMLInputElement>()
+const rcmImportInput = ref<HTMLInputElement>()
+const apmExporting = ref(false)
+const apmImporting = ref(false)
+const rcmExporting = ref(false)
+const rcmImporting = ref(false)
 const detailOpen = ref(false)
 const paperOpen = ref(false)
 const workingPaper = ref<WorkingPaper | null>(null)
@@ -85,6 +91,26 @@ async function savePlanning() {
   } catch (error) { fail('Could not save planning', error) }
   finally { saving.value = false }
 }
+async function exportApm() {
+  apmExporting.value = true
+  try { await api.downloadGet(`/api/workspaces/${props.workspace.id}/planning/apm/export`, `${props.workspace.name}_APM.md`) }
+  catch (error) { fail('Could not export the APM', error) }
+  finally { apmExporting.value = false }
+}
+function triggerApmImport() { apmImportInput.value?.click() }
+async function importApm(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = (input.files ?? [])[0]
+  input.value = ''
+  if (!file) return
+  apmImporting.value = true
+  try {
+    data.value!.planning = await api.uploadOne<PlanningRecord>(`/api/workspaces/${props.workspace.id}/planning/apm/import`, file)
+    emit('changed')
+    toast.add({ severity: 'success', summary: 'APM imported', life: 1800 })
+  } catch (error) { fail('Could not import the APM', error) }
+  finally { apmImporting.value = false }
+}
 async function generate() {
   try {
     await savePlanning()
@@ -114,6 +140,36 @@ async function addRcm() {
 async function updateRcm(id: string, changes: Partial<RcmRow>) {
   try { await api.patch(`/api/workspaces/${props.workspace.id}/rcm/${id}`, changes); emit('changed') }
   catch (error) { fail('Could not update the risk', error) }
+}
+async function exportRcm() {
+  rcmExporting.value = true
+  try { await api.downloadGet(`/api/workspaces/${props.workspace.id}/rcm/export`, `${props.workspace.name}_RCM.xlsx`) }
+  catch (error) { fail('Could not export the RCM', error) }
+  finally { rcmExporting.value = false }
+}
+function triggerRcmImport() { rcmImportInput.value?.click() }
+async function importRcm(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = (input.files ?? [])[0]
+  input.value = ''
+  if (!file) return
+  rcmImporting.value = true
+  try {
+    const result = await api.uploadOne<{ updated: number; matched: number; unmatched: string[] }>(
+      `/api/workspaces/${props.workspace.id}/rcm/import`, file,
+    )
+    await reload()
+    emit('changed')
+    toast.add({
+      severity: result.unmatched.length ? 'warn' : 'success',
+      summary: `RCM imported — ${result.updated} row(s) updated`,
+      detail: result.unmatched.length
+        ? `${result.unmatched.length} row id(s) not found and skipped (no rows are added or removed): ${result.unmatched.join(', ')}`
+        : undefined,
+      life: 7000,
+    })
+  } catch (error) { fail('Could not import the RCM', error) }
+  finally { rcmImporting.value = false }
 }
 async function saveRcmDetail() {
   if (!selectedRcm.value) return
@@ -218,11 +274,13 @@ async function copyPaper(kind: 'markdown' | 'html') {
       <template #option="{ option }"><span class="nav-option">{{ option.label }}<span v-if="option.count !== undefined" class="nav-count">{{ option.count }}</span><i v-else-if="option.complete" class="pi pi-check nav-check"/></span></template>
     </SelectButton>
     <section v-if="view === 'apm'" class="apm-view">
-      <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
+      <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
+      <input ref="apmImportInput" type="file" accept=".md,.markdown,.txt" hidden @change="importApm"/>
       <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
     </section>
     <section v-else>
-      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
+      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
+      <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
       <RcmGrid :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm"/>
     </section>
 

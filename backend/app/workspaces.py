@@ -62,6 +62,14 @@ CONTROL_CONCLUSIONS = {
     "not_applicable",
 }
 REVIEW_STATUSES = {"draft", "prepared", "review_required", "reviewed"}
+# The plain-content RCM columns a spreadsheet export/reimport round-trips.
+# Identity (id/semantic_id), provenance, and reference fields (test_refs,
+# execution_rollup, finding_refs, evidence_refs) are deliberately excluded —
+# those are maintained by linking, not by editing free text in a cell.
+RCM_IMPORT_FIELDS = (
+    "process", "risk", "risk_rating", "assertion", "control", "control_type",
+    "control_owner", "criteria", "prepared_by", "reviewed_by", "review_status",
+)
 OBSERVATION_DISPOSITIONS = {
     "confirmed_control_exception",
     "data_quality_issue",
@@ -1294,6 +1302,66 @@ class Workspace:
         item["updated"] = self._updated_now()
         self.save()
         return item
+
+    def export_rcm_rows(self) -> list[dict]:
+        """Flatten RCM rows to the plain content columns a reimport accepts."""
+        return [
+            {"id": row["id"], **{field: row.get(field, "") for field in RCM_IMPORT_FIELDS}}
+            for row in self.rcm
+        ]
+
+    def import_rcm(self, rows: list[dict]) -> dict:
+        """Update RCM row content from a reuploaded export.
+
+        Rows are matched by ``id``; only the plain content fields are
+        accepted. No row is added or removed — an id absent from the
+        workspace is reported as unmatched rather than inserted, and any
+        existing row missing from the file is left untouched.
+        """
+        by_id = {row["id"]: row for row in self.rcm}
+        planned: list[tuple[dict, dict]] = []
+        unmatched: list[str] = []
+        for raw in rows:
+            row_id = str(raw.get("id") or "").strip()
+            if not row_id:
+                continue
+            item = by_id.get(row_id)
+            if item is None:
+                unmatched.append(row_id)
+                continue
+            changes: dict = {}
+            for field in RCM_IMPORT_FIELDS:
+                if field not in raw:
+                    continue
+                value = raw[field]
+                if field == "risk_rating":
+                    value = str(value or "medium").lower()
+                    if value not in ("low", "medium", "high", "critical"):
+                        raise WorkspaceError(
+                            f"Row {row_id}: risk rating must be low, medium, high, or critical."
+                        )
+                elif field == "review_status":
+                    value = str(value or "draft").lower()
+                    if value not in REVIEW_STATUSES:
+                        raise WorkspaceError(f"Row {row_id}: unknown review status '{value}'.")
+                elif field in ("prepared_by", "reviewed_by"):
+                    value = str(value).strip() if value not in (None, "") else None
+                else:
+                    value = str(value) if value is not None else ""
+                changes[field] = value
+            planned.append((item, changes))
+
+        now = self._updated_now()
+        changed = 0
+        for item, changes in planned:
+            if any(item.get(field) != value for field, value in changes.items()):
+                item.update(changes)
+                _user_touch(item)
+                item["updated"] = now
+                changed += 1
+        if changed:
+            self.save()
+        return {"updated": changed, "matched": len(planned), "unmatched": unmatched}
 
     def remove_rcm(self, item_id: str) -> None:
         """Delete one RCM row, unlinking — never deleting — the tests it linked.

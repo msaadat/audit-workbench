@@ -128,4 +128,24 @@ export const api = {
     link.click()
     URL.revokeObjectURL(link.href)
   },
+
+  /** GET that streams back a file and triggers a browser download. */
+  async downloadGet(url: string, filename: string): Promise<void> {
+    const response = await fetch(url)
+    if (!response.ok) {
+      let detail = `Export failed (${response.status})`
+      try {
+        detail = (await response.json()).detail ?? detail
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(detail)
+    }
+    const blob = await response.blob()
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(link.href)
+  },
 }
