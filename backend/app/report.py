@@ -237,7 +237,7 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
                         key: test.get(key)
                         for key in (
                             "id", "title", "objective", "criteria", "steps",
-                            "expected_evidence", "status", "result_summary",
+                            "status", "result_summary",
                             "conclusion", "control_conclusion", "scope_limitations",
                             "exception_count", "open_exception_count", "finding_refs",
                         )

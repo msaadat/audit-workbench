@@ -271,29 +271,33 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     assert "document_search" not in adapter_source
 
 
-def test_tests_draft_preset_declares_the_row_scoped_sources():
-    spec = PRESETS.compile("tests.draft")
+def test_tests_generate_preset_declares_the_row_scoped_sources():
+    spec = PRESETS.compile("tests.generate")
 
     assert [source.id for source in spec.sources] == [
         "planning_context",
         "rcm_row",
         "other_rcm_rows",
         "table_metadata",
+        "table_profiles",
         "documents",
         "methodology",
     ]
-    # The one target row is required; the duplicate-avoidance index is not.
+    # The one target row is required; every duplicate-avoidance and material
+    # source is not, since the model chooses source per test.
     assert [source.required for source in spec.sources] == [
-        True, True, False, False, False, False,
+        True, True, False, False, False, False, False,
     ]
-    # Test drafting reads schema metadata, never row values or profiles.
+    # Generation reads schema metadata, profiles, and document text — never a
+    # row — since it now decides both Data and Document Test sources itself.
     assert spec.privacy.allow_table_metadata is True
-    assert spec.privacy.allow_table_profiles is False
+    assert spec.privacy.allow_table_profiles is True
+    assert spec.privacy.allow_document_text is True
     assert spec.privacy.allow_table_rows is False
 
 
-def test_test_draft_scope_supplies_one_target_row_and_citable_methodology():
-    workspace = workspaces.create_workspace("Test draft scope")
+def test_test_generate_scope_supplies_one_target_row_and_citable_methodology():
+    workspace = workspaces.create_workspace("Test generate scope")
     workspace.update_planning(
         {"context": {"objective": "Assess payments", "scope": "Accounts payable"}}
     )
@@ -320,7 +324,7 @@ def test_test_draft_scope_supplies_one_target_row_and_citable_methodology():
         "# Duplicate payments\nProcedures should address duplicate-payment risk.",
     )
 
-    scope = context_adapters.test_draft_scope(workspace, target_id)
+    scope = context_adapters.test_generate_scope(workspace, target_id)
 
     rows = scope.candidates["rcm_row"]
     assert [candidate.source_ref for candidate in rows] == [f"rcm:{target_id}"]
@@ -328,7 +332,7 @@ def test_test_draft_scope_supplies_one_target_row_and_citable_methodology():
     # duplicates them.
     assert rows[0].source["existing_tests"][0]["objective"] == "Existing objective"
     assert rows[0].source["existing_tests"][0]["source"] == "document"
-    # Execution state stays out of the drafting context.
+    # Execution state stays out of the generation context.
     assert "execution_rollup" not in rows[0].source
     assert [candidate.source_ref for candidate in scope.candidates["other_rcm_rows"]] == [
         f"rcm:{other_id}"
@@ -340,81 +344,42 @@ def test_test_draft_scope_supplies_one_target_row_and_citable_methodology():
     assert section["pack_name"] == "Firm AP Guide"
     assert section["citation"].startswith("Firm AP Guide v")
     assert "duplicate-payment risk" in section["text"]
-    assert "Duplicate payments are processed" in scope.selector_context["test_draft_query"]
+    assert "Duplicate payments are processed" in scope.selector_context["test_generate_query"]
 
 
-def test_tests_spec_preset_serves_both_unit_kinds():
-    spec = PRESETS.compile("tests.spec")
-
-    assert [source.id for source in spec.sources] == [
-        "rcm_row",
-        "test",
-        "table_metadata",
-        "table_profiles",
-        "documents",
-    ]
-    # Only the two shared parents are required; each unit kind supplies its own
-    # optional sources and the rest are recorded as absent in that manifest.
-    assert [source.id for source in spec.sources if source.required] == [
-        "rcm_row",
-        "test",
-    ]
-    # Generated Data Tests are Polars code, so the spec pass sees column types
-    # and value shapes — but never a row.
-    assert spec.privacy.allow_table_metadata is True
-    assert spec.privacy.allow_table_profiles is True
-    assert spec.privacy.allow_table_rows is False
-
-
-def test_spec_scopes_supply_only_their_own_unit_kind_sources():
-    workspace = workspaces.create_workspace("Spec scopes")
+def test_test_generate_scope_supplies_table_and_document_sources_together():
+    # One RCM row's unit needs both table and document material in the same
+    # turn, since the model — not the unit — decides each test's source.
+    workspace = workspaces.create_workspace("Test generate mixed scope")
     workspace.add_table(
         "transactions.csv",
         pl.DataFrame({"invoice": [1, 1, 2]}).write_csv().encode(),
     )
-    documents.add_document(workspace, "Approval.txt", b"Management approved.")
+    # A document with no ``planning_relevant`` category flag would have been
+    # withheld by the old ``tests.draft`` preset's planning-relevant filter;
+    # the merged document source must still offer it.
+    documents.add_document(
+        workspace, "Approval.txt", b"Management approved.", category="evidence"
+    )
     row = workspace.add_rcm(
         {"process": "AP", "risk": "Duplicate payments", "control": "Duplicate check"}
     )
-    data_test = data_tests.create_draft(
-        workspace,
-        {
-            "title": "Test duplicates",
-            "objective": "Identify duplicates",
-            "steps": ["Identify repeated invoice identifiers."],
-            "rcm_id": row["id"],
-        },
-    )
-    document_test = doc_tests.create_draft(
-        workspace,
-        {
-            "title": "Inspect approvals",
-            "objective": "Inspect approvals",
-            "rcm_id": row["id"],
-        },
-    )
 
-    data_scope = context_adapters.test_spec_scope(
-        workspace, row["id"], "datatest", data_test["id"]
-    )
-    document_scope = context_adapters.test_spec_scope(
-        workspace, row["id"], "doctest", document_test["id"]
-    )
+    scope = context_adapters.test_generate_scope(workspace, row["id"])
 
-    # One declaration, two unit kinds: the sources the other kind does not need
-    # are supplied empty and recorded as absent in that unit's manifest.
-    assert {key for key, value in data_scope.candidates.items() if value} == {
+    assert {key for key, value in scope.candidates.items() if value} == {
+        "planning_context",
         "rcm_row",
-        "test",
         "table_metadata",
         "table_profiles",
-    }
-    assert {key for key, value in document_scope.candidates.items() if value} == {
-        "rcm_row",
-        "test",
         "documents",
     }
-    # A document with no analysis is still selectable evidence for an item.
-    supplied = document_scope.candidates["documents"][0].representations["summary"]
+    table_names = {
+        candidate.metadata.get("table") for candidate in scope.candidates["table_metadata"]
+    }
+    assert "transactions" in table_names
+    # A document with no analysis and no planning-relevant flag is still
+    # selectable evidence for a step.
+    supplied = scope.candidates["documents"][0].representations["summary"]
     assert supplied["summary"] == ""
     assert supplied["id"]

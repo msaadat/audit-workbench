@@ -47,25 +47,24 @@ PLANNING_RESPONSES = {
             }
         ]
     },
-    "agent:test_plan": {
+    "agent:test_generate": {
         "tests": [
             {
+                "source": "document",
                 "title": "Test duplicate payments",
                 "objective": "Determine whether duplicate payments occurred",
-                "criteria": "Each valid invoice is paid once.",
-                "steps": ["Identify repeated invoice numbers and amounts."],
-                "source": "document",
-                "expected_evidence": "Exception listing",
+                "steps": [
+                    {
+                        "label": "Approval",
+                        "instruction": "Determine who approved the duplicate payment.",
+                        "mode": "question",
+                        "document_ids": [],
+                        "question": "Who approved?",
+                        "missing_evidence": "No approval documentation available.",
+                    }
+                ],
             }
         ]
-    },
-    "agent:data_test_spec": {
-        "table_refs": ["transactions"],
-        "code": "result = transactions.filter(transactions['invoice_no'].is_duplicated())",
-    },
-    "agent:document_test_spec": {
-        "mode": "question",
-        "items": [{"label": "Approval", "document_ids": [], "question": "Who approved?"}],
     },
 }
 
@@ -166,7 +165,7 @@ def test_planning_run_without_tables_and_user_safe_rerun(monkeypatch):
     # has nothing to draft against: the RCM lands, the tests wait for material.
     assert ws.rcm[0]["test_refs"] == []
     assert {call["tag"] for call in fake.calls} >= {"agent:apm", "agent:rcm"}
-    assert "agent:test_plan" not in {call["tag"] for call in fake.calls}
+    assert "agent:test_generate" not in {call["tag"] for call in fake.calls}
 
     row_id = ws.rcm[0]["id"]
     ws.update_rcm(row_id, {"control": "Auditor-confirmed manual review"})
@@ -211,17 +210,25 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
         assert test_id in user
         return {
             "tests": [{
+                "source": "document",
                 "title": "Test duplicate payments",
                 "objective": "Determine whether duplicate payments occurred",
-                "criteria": "Each valid invoice is paid once.",
-                "steps": ["Identify repeated invoice numbers and amounts."],
-                "source": "document", "expected_evidence": "Exception listing",
+                "steps": [
+                    {
+                        "label": "Approval",
+                        "instruction": "Determine who approved the duplicate payment.",
+                        "mode": "question",
+                        "document_ids": [],
+                        "question": "Who approved?",
+                        "missing_evidence": "No approval documentation available.",
+                    }
+                ],
             }]
         }
 
     configure_planning_llm(monkeypatch, {
         "agent:apm": revised_apm, "agent:rcm": revised_rcm,
-        "agent:test_plan": revised_tests,
+        "agent:test_generate": revised_tests,
     })
     completed = wait_run(
         ws,
@@ -264,7 +271,7 @@ def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
         raise llm.LLMError("test drafting disconnected")
 
     configure_planning_llm(monkeypatch, {
-        "agent:test_plan": disconnect,
+        "agent:test_generate": disconnect,
     })
     started = runner.start_command_run(
         ws,
@@ -272,7 +279,7 @@ def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
         {
             "source": "follow_up",
             "text": "Complete the missing tests.",
-            "requested_outcomes": ["tests.drafted"],
+            "requested_outcomes": ["tests.specified"],
             "generation_mode": "reuse_existing",
         },
     )
@@ -286,7 +293,7 @@ def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
     ]
 
     assert completed["status"] == "failed"
-    assert any(unit["kind"] == "test_draft" and unit["status"] == "failed" for unit in units)
+    assert any(unit["kind"] == "test_generation" and unit["status"] == "failed" for unit in units)
     # The APM and RCM this run committed before the failure are checkpoints: a
     # later failed stage never rolls them back, and the auditor's own row
     # survives untouched alongside them.
@@ -329,20 +336,27 @@ def test_planning_repairs_a_malformed_test_plan(monkeypatch):
         nonlocal attempts
         attempts += 1
         base = {
+            "source": "document",
             "title": "Test duplicate payments",
             "objective": "Determine whether duplicate payments occurred",
-            "criteria": "Each valid invoice is paid once.",
-            "steps": ["Identify repeated invoice numbers and amounts."],
-            "source": "document",
-            "expected_evidence": "Exception listing",
+            "steps": [
+                {
+                    "label": "Approval",
+                    "instruction": "Determine who approved the duplicate payment.",
+                    "mode": "question",
+                    "document_ids": [],
+                    "question": "Who approved?",
+                    "missing_evidence": "No approval documentation available.",
+                }
+            ],
         }
         if attempts == 1:
-            # A string where the contract declares an array, and a source the
-            # workspace cannot supply: both are decidable from the bundle.
-            return {"tests": [{**base, "steps": "Identify duplicates.", "source": "data"}]}
+            # A source the workspace cannot supply is decidable from the bundle:
+            # no table is available in this document-only workspace.
+            return {"tests": [{**base, "source": "data"}]}
         return {"tests": [base]}
 
-    fake = configure_planning_llm(monkeypatch, {"agent:test_plan": drafted_tests})
+    fake = configure_planning_llm(monkeypatch, {"agent:test_generate": drafted_tests})
     ws = workspaces.create_workspace("Repair test plan")
     documents.add_document(
         ws, "Procurement Policy.txt", b"Purchases require documented approval.",
@@ -354,7 +368,7 @@ def test_planning_repairs_a_malformed_test_plan(monkeypatch):
 
     assert completed["status"] == "completed"
     assert attempts == 2
-    assert [call["tag"] for call in fake.calls].count("agent:test_plan") == 2
+    assert [call["tag"] for call in fake.calls].count("agent:test_generate") == 2
     assert len(doc_tests.list_tests(reloaded)) == 1
 
 
@@ -418,11 +432,13 @@ def test_auto_planning_selects_planning_relevant_documents_deterministically(
     supplied = context_call["messages"][-1]["content"]
     assert "Invoice 42 was paid" not in supplied
     # Provenance records the document that was actually supplied. The category
-    # rule governs the planning stages; a Document Test may still vouch to a
-    # transaction voucher, so the exclusion is asserted where the rule applies.
+    # rule governs the planning stages; test generation is deliberately not
+    # planning-relevant filtered (merge plan section 7), since a Document Test
+    # must be able to vouch to a transaction voucher, so the exclusion is
+    # asserted where the rule actually applies.
     activity = documents.activities(reloaded, limit=250)["items"]
     planning_stages = {
-        "agent:document_context", "agent:apm", "agent:rcm", "agent:test_plan",
+        "agent:document_context", "agent:apm", "agent:rcm",
     }
     planning_activity = [
         item for item in activity if item.get("stage") in planning_stages

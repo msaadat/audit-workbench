@@ -518,6 +518,8 @@ def curate_rcm_tiles(workspace: Workspace, *, run_id: str | None = None) -> dict
             spec = dict(item["spec"])
             if kind == "analytics":
                 spec = {"test": spec["test_id"], "params": spec.get("params") or {}}
+            elif kind == "python":
+                spec = {"code": data_tests.spec_as_python_code(item["spec"])}
             tile = fresh.add_tile(
                 {
                     "id": f"rcm-{item['id'].casefold()}",

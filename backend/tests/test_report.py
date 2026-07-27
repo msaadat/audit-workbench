@@ -191,8 +191,7 @@ def test_deterministic_preliminary_report_discloses_incomplete_workflow_coverage
         "title": "Test duplicate invoices",
         "objective": "Identify duplicate invoices",
         "criteria": "Each invoice is paid once.",
-        "steps": ["Inspect duplicate invoice identifiers."],
-        "expected_evidence": "Exception listing",
+        "steps": [{"label": "Inspect duplicate invoice identifiers.", "instruction": "Inspect duplicate invoice identifiers."}],
         "rcm_id": row["id"],
     })
     workflow_state = {

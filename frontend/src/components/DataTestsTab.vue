@@ -6,6 +6,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Menu from 'primevue/menu'
+import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
@@ -18,6 +19,7 @@ import type {
   DataTest,
   DataTestEngine,
   DataTestResult,
+  DataTestStep,
   FramePayload,
   PlanningPayload,
   RcmRow,
@@ -56,14 +58,21 @@ const analyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>(
 const analyticsReady = ref(false)
 const validationRules = ref<ValidationRule[]>([])
 const validationReady = ref(false)
-const polarsCode = ref('result = df.head(100)')
-const polarsResultMode = ref<'exceptions' | 'summary'>('exceptions')
+function emptyPolarsStep(): DataTestStep {
+  return { label: '', instruction: '', table_refs: [], code: 'result = df.head(100)' }
+}
+function polarsStepsValid(steps: DataTestStep[]): boolean {
+  return steps.length > 0 && steps.every(step =>
+    step.label.trim() && step.instruction.trim() && step.table_refs.length > 0 && step.code.trim())
+}
+function addPolarsStep(list: DataTestStep[]) { list.push(emptyPolarsStep()) }
+function removePolarsStep(list: DataTestStep[], index: number) { list.splice(index, 1) }
+const polarsSteps = ref<DataTestStep[]>([emptyPolarsStep()])
 const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
 const editAnalyticsReady = ref(false)
 const editValidationRules = ref<ValidationRule[]>([])
 const editValidationReady = ref(false)
-const editPolarsCode = ref('')
-const editPolarsResultMode = ref<'exceptions' | 'summary'>('exceptions')
+const editPolarsSteps = ref<DataTestStep[]>([])
 const validationView = ref<'rules' | 'results'>('rules')
 const draft = ref({
   title: '', objective: '', engine: 'analytics' as DataTestEngine,
@@ -94,16 +103,11 @@ const validationViewOptions = computed(() => [
   { label: 'Results', value: 'results', disabled: !validationRun.value },
 ])
 const createReady = computed(() => {
-  return Boolean(
-    draft.value.title.trim()
-    && draft.value.objective.trim()
-    && draft.value.table_refs[0]
-    && (
-      (draft.value.engine === 'analytics' && analyticsReady.value)
-      || (draft.value.engine === 'validation' && validationReady.value)
-      || (draft.value.engine === 'polars' && polarsCode.value.trim())
-    )
-  )
+  const tableReady = draft.value.engine === 'polars' ? true : Boolean(draft.value.table_refs[0])
+  const definitionReady = draft.value.engine === 'analytics' ? analyticsReady.value
+    : draft.value.engine === 'validation' ? validationReady.value
+      : polarsStepsValid(polarsSteps.value)
+  return Boolean(draft.value.title.trim() && draft.value.objective.trim() && tableReady && definitionReady)
 })
 function frameRecords(frame: FramePayload | null): Record<string, string | number | boolean | null>[] {
   if (!frame) return []
@@ -187,15 +191,14 @@ function openCreate(engine: DataTestEngine = 'analytics', row?: RcmRow) {
   analyticsReady.value = false
   validationRules.value = []
   validationReady.value = false
-  polarsCode.value = 'result = df.head(100)'
-  polarsResultMode.value = 'exceptions'
+  polarsSteps.value = [emptyPolarsStep()]
   createSession.value += 1
   createOpen.value = true
 }
 function createSpec(): Record<string, unknown> {
   if (draft.value.engine === 'analytics') return analyticsSpec.value
   if (draft.value.engine === 'validation') return { rules: validationRules.value }
-  return { code: polarsCode.value, result_mode: polarsResultMode.value }
+  return { schema_version: 2, steps: polarsSteps.value }
 }
 function applyAnalyticsDefaults(title: string, objective: string) {
   if (!draft.value.title.trim()) draft.value.title = title
@@ -213,8 +216,9 @@ function selectTest(item: DataTest) {
   editValidationRules.value = Array.isArray(item.spec.rules)
     ? JSON.parse(JSON.stringify(item.spec.rules)) as ValidationRule[]
     : []
-  editPolarsCode.value = String(item.spec.code ?? '')
-  editPolarsResultMode.value = item.spec.result_mode === 'summary' ? 'summary' : 'exceptions'
+  editPolarsSteps.value = Array.isArray(item.spec.steps) && item.spec.steps.length
+    ? JSON.parse(JSON.stringify(item.spec.steps)) as DataTestStep[]
+    : [emptyPolarsStep()]
   editAnalyticsReady.value = false
   editValidationReady.value = editValidationRules.value.length > 0
   validationView.value = item.engine === 'validation' && item.last_run ? 'results' : 'rules'
@@ -225,13 +229,14 @@ function selectTest(item: DataTest) {
 function editSpec(): Record<string, unknown> {
   if (selected.value?.engine === 'analytics') return editAnalyticsSpec.value
   if (selected.value?.engine === 'validation') return { rules: editValidationRules.value }
-  return { code: editPolarsCode.value, result_mode: editPolarsResultMode.value }
+  return { schema_version: 2, steps: editPolarsSteps.value }
 }
 const selectedDefinitionReady = computed(() => {
-  if (!selected.value?.table_refs[0]) return false
+  if (!selected.value) return false
+  if (selected.value.engine === 'polars') return polarsStepsValid(editPolarsSteps.value)
+  if (!selected.value.table_refs[0]) return false
   if (selected.value.engine === 'analytics') return editAnalyticsReady.value
   if (selected.value.engine === 'validation') return editValidationReady.value
-  if (selected.value.engine === 'polars') return Boolean(editPolarsCode.value.trim())
   return false
 })
 async function load() {
@@ -369,7 +374,7 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
       </aside></template>
       <section v-if="selected" class="detail">
         <div class="toolbar"><div><strong>{{ selected.id }}</strong><small>{{ selected.engine ?? 'unspecified' }} · {{ selected.rcm_id ? `RCM ${selected.rcm_id}` : 'exploratory' }}</small></div><span/><Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" outlined size="small" @click="openParent"/><Button label="Pin" icon="pi pi-thumbtack" outlined size="small" :disabled="!selected.last_run" @click="pin"/><Button label="Run" icon="pi pi-play" size="small" :loading="running" @click="runTest"/><Button icon="pi pi-trash" severity="danger" outlined rounded aria-label="Delete Data Test" :loading="deleting" @click="deleteTest"/></div>
-        <div class="form-grid"><label>Title<InputText v-model="selected.title" /></label><label>Auditor disposition<Select v-model="selected.auditor_disposition" :options="['pending','follow_up','accepted','invalid_test_or_result','not_applicable']" /></label><label class="wide">Objective<Textarea v-model="selected.objective" rows="2" autoResize /></label><label>Table<Select v-model="selected.table_refs[0]" :options="tableOptions" optionLabel="label" optionValue="value" filter/></label><label>RCM row (optional)<Select v-model="selected.rcm_id" :options="rcmOptions" optionLabel="label" optionValue="value" filter showClear/></label><label class="wide">Criteria<Textarea v-model="selected.criteria" rows="2" autoResize /></label><label class="wide">Expected evidence<Textarea v-model="selected.expected_evidence" rows="2" autoResize /></label></div>
+        <div class="form-grid"><label>Title<InputText v-model="selected.title" /></label><label>Auditor disposition<Select v-model="selected.auditor_disposition" :options="['pending','follow_up','accepted','invalid_test_or_result','not_applicable']" /></label><label class="wide">Objective<Textarea v-model="selected.objective" rows="2" autoResize /></label><label v-if="selected.engine !== 'polars'">Table<Select v-model="selected.table_refs[0]" :options="tableOptions" optionLabel="label" optionValue="value" filter/></label><label>RCM row (optional)<Select v-model="selected.rcm_id" :options="rcmOptions" optionLabel="label" optionValue="value" filter showClear/></label><label class="wide">Criteria<Textarea v-model="selected.criteria" rows="2" autoResize /></label></div>
         <AnalyticsTestAuthor
           v-if="selected.engine === 'analytics'"
           :key="selected.id"
@@ -409,19 +414,15 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
             @rebind="rebindValidationResult"
           />
         </section>
-        <div v-else-if="selected.engine === 'polars'" class="code-author">
-          <label>Polars code<CodeEditor v-model="editPolarsCode" /></label>
-          <label>Result interpretation
-            <Select
-              v-model="editPolarsResultMode"
-              :options="[
-                { label: 'Rows are exceptions', value: 'exceptions' },
-                { label: 'Rows are a summary', value: 'summary' },
-              ]"
-              optionLabel="label"
-              optionValue="value"
-            />
-          </label>
+        <div v-else-if="selected.engine === 'polars'" class="steps-author">
+          <div class="steps-header"><strong>Steps</strong><Button label="Add step" icon="pi pi-plus" text size="small" @click="addPolarsStep(editPolarsSteps)"/></div>
+          <div v-for="(step, index) in editPolarsSteps" :key="index" class="step-card">
+            <div class="step-card-head"><span>Step {{ index + 1 }}</span><Button icon="pi pi-trash" text rounded severity="danger" :disabled="editPolarsSteps.length <= 1" aria-label="Remove step" @click="removePolarsStep(editPolarsSteps, index)"/></div>
+            <label>Label<InputText v-model="step.label" /></label>
+            <label>Instruction<Textarea v-model="step.instruction" rows="2" autoResize /></label>
+            <label>Tables<MultiSelect v-model="step.table_refs" :options="tableOptions" optionLabel="label" optionValue="value" filter /></label>
+            <label>Code — each step's result rows are its exceptions<CodeEditor v-model="step.code" /></label>
+          </div>
         </div>
         <div v-else class="definition-unavailable">
           This draft does not have an executable test definition yet.
@@ -432,6 +433,15 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
           <div class="result-head"><strong>Durable result</strong><Tag :value="result.status.replaceAll('_', ' ')" :severity="severity(result.status)"/><span>{{ result.verdict_text }}</span></div>
           <div v-if="result.semantic_issues.length" class="issues"><strong>Semantic review</strong><ul><li v-for="issue in result.semantic_issues" :key="issue">{{ issue }}</li></ul></div>
           <div v-if="result.statistics.length" class="stats"><span v-for="stat in result.statistics" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span></div>
+          <div v-if="result.step_results?.length" class="step-results">
+            <strong>Step results</strong>
+            <div v-for="step in result.step_results" :key="step.step_id" class="step-result-row">
+              <Tag :value="step.status.replaceAll('_',' ')" :severity="severity(step.status)" />
+              <span>{{ step.step_label }}</span>
+              <small>{{ step.exception_count }} exception(s)</small>
+              <small v-if="step.error" class="step-error">{{ step.error }}</small>
+            </div>
+          </div>
           <details v-if="result.exception_frame" open><summary>Exception output ({{ result.exception_count }})</summary><FrameTable :frame="result.exception_frame" scrollHeight="26rem" /></details>
           <details v-if="result.summary_frame"><summary>Summary output</summary><FrameTable :frame="result.summary_frame" scrollHeight="24rem" /></details>
         </section>
@@ -447,7 +457,7 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
       :contentStyle="{ maxHeight: '78vh', overflow: 'auto' }"
     >
       <div class="dialog-form">
-        <label>Table<Select v-model="draft.table_refs[0]" :options="tableOptions" optionLabel="label" optionValue="value" filter/></label>
+        <label v-if="draft.engine !== 'polars'">Table<Select v-model="draft.table_refs[0]" :options="tableOptions" optionLabel="label" optionValue="value" filter/></label>
         <label>RCM row (optional)<Select v-model="draft.rcm_id" :options="rcmOptions" optionLabel="label" optionValue="value" filter showClear/></label>
         <div class="wide linkage-note"><strong>Audit linkage is optional</strong><span>Leave the RCM row blank for exploration. Exploratory results do not count as RCM coverage or support formal findings.</span></div>
         <label class="wide">Title<InputText v-model="draft.title"/></label>
@@ -474,19 +484,15 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
           @valid="validationReady = $event"
           @error="fail"
         />
-        <div v-else class="wide code-author">
-          <label>Polars code<CodeEditor v-model="polarsCode" /></label>
-          <label>Result interpretation
-            <Select
-              v-model="polarsResultMode"
-              :options="[
-                { label: 'Rows are exceptions', value: 'exceptions' },
-                { label: 'Rows are a summary', value: 'summary' },
-              ]"
-              optionLabel="label"
-              optionValue="value"
-            />
-          </label>
+        <div v-else class="wide steps-author">
+          <div class="steps-header"><strong>Steps</strong><Button label="Add step" icon="pi pi-plus" text size="small" @click="addPolarsStep(polarsSteps)"/></div>
+          <div v-for="(step, index) in polarsSteps" :key="index" class="step-card">
+            <div class="step-card-head"><span>Step {{ index + 1 }}</span><Button icon="pi pi-trash" text rounded severity="danger" :disabled="polarsSteps.length <= 1" aria-label="Remove step" @click="removePolarsStep(polarsSteps, index)"/></div>
+            <label>Label<InputText v-model="step.label" /></label>
+            <label>Instruction<Textarea v-model="step.instruction" rows="2" autoResize /></label>
+            <label>Tables<MultiSelect v-model="step.table_refs" :options="tableOptions" optionLabel="label" optionValue="value" filter /></label>
+            <label>Code — each step's result rows are its exceptions<CodeEditor v-model="step.code" /></label>
+          </div>
         </div>
       </div>
       <template #footer><Button label="Create definition" icon="pi pi-save" :loading="saving" :disabled="!createReady" @click="createTest"/></template>
@@ -514,8 +520,13 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
 .wide { grid-column:1/-1 }
 .linkage-note { display:flex; flex-direction:column; gap:.2rem; min-width:0; padding:.65rem .75rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas); font-size:.75rem }
 .linkage-note span { color:var(--aw-muted) }
-.code-author { display:grid; grid-template-columns:minmax(0,1fr) minmax(12rem,15rem); gap:.7rem; min-width:0 }
-.code-author>label:first-child { min-width:0 }
+.steps-author { display:flex; flex-direction:column; gap:.6rem; min-width:0 }
+.steps-header { display:flex; align-items:center; justify-content:space-between; gap:.5rem }
+.step-card { display:flex; flex-direction:column; gap:.4rem; min-width:0; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); padding:.7rem; background:var(--aw-canvas) }
+.step-card-head { display:flex; align-items:center; justify-content:space-between; font-weight:600; font-size:.75rem; color:var(--aw-muted) }
+.step-results { display:flex; flex-direction:column; gap:.4rem; min-width:0 }
+.step-result-row { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; min-width:0; padding:.4rem .55rem; border:1px solid var(--aw-border); border-radius:6px }
+.step-error { color:var(--p-red-600); overflow-wrap:anywhere }
 .definition-unavailable { padding:.8rem; border:1px solid var(--aw-border); border-radius:6px; color:var(--aw-muted); background:var(--aw-canvas) }
 .validation-detail { display:flex; flex-direction:column; gap:.7rem; min-width:0 }
 .validation-tabs { display:flex; justify-content:flex-end }
@@ -538,5 +549,5 @@ summary { cursor:pointer; font-weight:700; margin-bottom:.5rem }
 :deep(.author),:deep(.parameters),:deep(.catalog),:deep(.selected-test),:deep(.results),:deep(.rule-list),:deep(.grid) { min-width:0; max-width:100% }
 :deep(.grid),:deep(.rule-list) { overflow-x:auto }
 :deep(.p-datatable) { max-width:100% }
-@media(max-width:900px){.form-grid,.dialog-form,.code-author{grid-template-columns:1fr}.wide{grid-column:auto}.layout{min-height:0}.validation-tabs{justify-content:flex-start}}
+@media(max-width:900px){.form-grid,.dialog-form{grid-template-columns:1fr}.wide{grid-column:auto}.layout{min-height:0}.validation-tabs{justify-content:flex-start}}
 </style>

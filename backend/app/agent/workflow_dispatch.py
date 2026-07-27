@@ -40,6 +40,11 @@ def build_workflow_runner(
         from .audit_execution import build_audit_workflow_runner
 
         return build_audit_workflow_runner(workspace, run, handle)
+    if definition == "audit_workflow_v2":
+        raise WorkspaceError(
+            "This run predates the merged test capability (audit_workflow_v2) "
+            "and cannot resume against audit_workflow_v3 bindings."
+        )
     label = "missing" if not definition else repr(definition)
     raise WorkspaceError(f"Workflow definition is {label} or unsupported.")
 

@@ -65,7 +65,6 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
-        "tests.drafted",
         "tests.specified",
         # Mixed units: the document Q&A kind is model-backed and the rest are
         # deterministic, so the capability binds each unit through one binder.
@@ -90,9 +89,7 @@ def test_every_declared_worker_and_executor_key_is_registered():
         "planning.apm",
         "planning.context",
         "planning.rcm",
-        "tests.draft",
-        "tests.data_spec",
-        "tests.document_spec",
+        "tests.generate",
         "fieldwork.document_qa",
         "reporting.finding",
     } <= workers
@@ -100,9 +97,7 @@ def test_every_declared_worker_and_executor_key_is_registered():
         "planning.apm",
         "planning.context",
         "planning.rcm",
-        "tests.draft",
-        "tests.data_spec",
-        "tests.document_spec",
+        "tests.generate",
         "fieldwork.document_qa",
         "reporting.finding",
     } <= executors

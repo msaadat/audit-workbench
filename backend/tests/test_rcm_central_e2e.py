@@ -119,8 +119,7 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
                 "title": title,
                 "objective": f"Identify and assess {title.casefold()}.",
                 "criteria": "Procurement transactions must be valid, approved, and supported.",
-                "steps": ["Test the complete procurement population."],
-                "expected_evidence": "Durable population results and linked source evidence.",
+                "steps": [{"label": "Test the complete procurement population.", "instruction": "Test the complete procurement population."}],
                 "rcm_id": row["id"],
                 "engine": "analytics",
                 "table_refs": ["procurement"],
@@ -164,10 +163,16 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
             "objective": "Test approval authority only if source keys match.",
             "rcm_id": first_row["id"],
             "engine": "polars",
-            "table_refs": ["invalid_finance_authority"],
             "spec": {
-                "code": "result = invalid_finance_authority.select(pl.len())",
-                "result_mode": "summary",
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Count joined rows",
+                        "instruction": "Count rows across the invalid join.",
+                        "table_refs": ["invalid_finance_authority"],
+                        "code": "result = invalid_finance_authority.select(pl.len())",
+                    }
+                ],
             },
         },
     )

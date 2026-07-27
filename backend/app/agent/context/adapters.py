@@ -550,17 +550,10 @@ def rcm_scope(
     )
 
 
-TEST_DRAFT_PLANNING_SOURCE_ID = "planning_context"
-TEST_DRAFT_ROW_SOURCE_ID = "rcm_row"
-TEST_DRAFT_OTHER_ROWS_SOURCE_ID = "other_rcm_rows"
-TEST_DRAFT_TABLE_METADATA_SOURCE_ID = "table_metadata"
-TEST_DRAFT_DOCUMENT_SOURCE_ID = "documents"
-TEST_DRAFT_METHODOLOGY_SOURCE_ID = "methodology"
-
-# The bounded fields supplied for the one RCM row a draft unit plans against.
-# Roll-ups, evidence references, and execution state stay out; drafting needs the
-# risk/control narrative and the row's current tests so a re-run revises them
-# rather than duplicating them.
+# The bounded fields supplied for the one RCM row a generation unit plans
+# against. Roll-ups, evidence references, and execution state stay out;
+# generation needs the risk/control narrative and the row's current tests so
+# a re-run revises them rather than duplicating them.
 _TEST_DRAFT_ROW_FIELDS = (
     "id",
     "semantic_id",
@@ -579,7 +572,6 @@ _TEST_DRAFT_EXISTING_FIELDS = (
     "objective",
     "criteria",
     "steps",
-    "expected_evidence",
     "created_by",
 )
 # The duplicate-avoidance projection of every other RCM row in scope.
@@ -704,87 +696,6 @@ def test_draft_methodology_candidates(
     return tuple(candidates)
 
 
-def test_draft_scope(
-    workspace: Workspace,
-    rcm_id: str,
-    *,
-    planning_context: Mapping[str, object] | None = None,
-    document_ids: Iterable[str] | None = None,
-) -> ContextScope:
-    """Build the local candidate scope for one test-draft unit."""
-    context = dict(planning_context or workspace.planning.get("context") or {})
-    row = next(
-        (item for item in workspace.rcm if str(item.get("id")) == str(rcm_id)), None
-    )
-    if row is None:
-        raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
-    test_draft_query = " ".join(
-        str(value or "")
-        for value in (
-            row.get("process"),
-            row.get("risk"),
-            row.get("control"),
-            row.get("criteria"),
-            context.get("objective"),
-            context.get("scope"),
-        )
-    ).strip() or "internal audit risk controls procedures"
-    planning_content = {
-        "context": context,
-        "ownership": {
-            key: workspace.planning.get(key)
-            for key in ("created_by", "agent_run_id", "updated")
-        },
-    }
-    return ContextScope(
-        candidates={
-            TEST_DRAFT_PLANNING_SOURCE_ID: (
-                ContextCandidate(
-                    source_ref="planning:context",
-                    source=planning_content,
-                    representations={"planning_context": planning_content},
-                    metadata={"artifact": "planning_context"},
-                ),
-            ),
-            TEST_DRAFT_ROW_SOURCE_ID: test_draft_row_candidates(workspace, rcm_id),
-            TEST_DRAFT_OTHER_ROWS_SOURCE_ID: test_draft_other_row_candidates(
-                workspace, rcm_id
-            ),
-            TEST_DRAFT_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
-                workspace
-            ),
-            TEST_DRAFT_DOCUMENT_SOURCE_ID: apm_document_candidates(
-                workspace,
-                document_ids=document_ids,
-                excerpt_query=test_draft_query,
-            ),
-            TEST_DRAFT_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
-                workspace
-            ),
-        },
-        selector_context={**context, "test_draft_query": test_draft_query},
-    )
-
-
-TEST_SPEC_ROW_SOURCE_ID = "rcm_row"
-TEST_SPEC_TEST_SOURCE_ID = "test"
-TEST_SPEC_TABLE_METADATA_SOURCE_ID = "table_metadata"
-TEST_SPEC_TABLE_PROFILE_SOURCE_ID = "table_profiles"
-TEST_SPEC_DOCUMENT_SOURCE_ID = "documents"
-
-# The bounded RCM narrative a specification needs; the spec is derived from the
-# test's own plan, so the row supplies only the risk it must address.
-_SPEC_ROW_FIELDS = ("id", "risk", "control", "criteria", "risk_rating")
-_SPEC_TEST_FIELDS = (
-    "id",
-    "semantic_id",
-    "title",
-    "objective",
-    "criteria",
-    "steps",
-    "expected_evidence",
-)
-
 # The identity and citation fields a Document Test item must be able to
 # reference. Content still comes through the single document-context boundary.
 _DOCUMENT_TEST_DOCUMENT_FIELDS = (
@@ -800,6 +711,7 @@ _MAX_DOCUMENT_TEST_CITATIONS = 12
 
 
 def _spec_test_record(workspace: Workspace, kind: str, test_id: str) -> dict:
+    """Load one durable test record by kind, for scopes that reference it."""
     if kind == "datatest":
         record = next(
             (item for item in workspace.data_tests if str(item.get("id")) == str(test_id)),
@@ -809,37 +721,6 @@ def _spec_test_record(workspace: Workspace, kind: str, test_id: str) -> dict:
             raise WorkspaceError(f"Data Test '{test_id}' not found.")
         return record
     return doc_tests.load_test(workspace, str(test_id))
-
-
-def _spec_parents(
-    workspace: Workspace, rcm_id: str, kind: str, test_id: str
-) -> tuple[dict, dict]:
-    record = _spec_test_record(workspace, kind, test_id)
-    if str(record.get("rcm_id") or "") != str(rcm_id):
-        raise WorkspaceError(
-            f"Test '{test_id}' is not linked to RCM row '{rcm_id}'."
-        )
-    row = next(
-        (item for item in workspace.rcm if str(item.get("id")) == str(rcm_id)), None
-    )
-    if row is None:
-        raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
-    return row, record
-
-
-def _spec_query(row: Mapping[str, object], test: Mapping[str, object]) -> str:
-    return " ".join(
-        str(value or "")
-        for value in (
-            row.get("risk"),
-            row.get("control"),
-            test.get("title"),
-            test.get("objective"),
-            test.get("criteria"),
-            " ".join(str(step) for step in test.get("steps") or []),
-            test.get("expected_evidence"),
-        )
-    ).strip() or "internal audit test evidence"
 
 
 def document_test_document_candidates(
@@ -898,52 +779,85 @@ def document_test_document_candidates(
 
 
 
-def test_spec_scope(
+TEST_GENERATE_PLANNING_SOURCE_ID = "planning_context"
+TEST_GENERATE_ROW_SOURCE_ID = "rcm_row"
+TEST_GENERATE_OTHER_ROWS_SOURCE_ID = "other_rcm_rows"
+TEST_GENERATE_TABLE_METADATA_SOURCE_ID = "table_metadata"
+TEST_GENERATE_TABLE_PROFILE_SOURCE_ID = "table_profiles"
+TEST_GENERATE_DOCUMENT_SOURCE_ID = "documents"
+TEST_GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
+
+
+def test_generate_scope(
     workspace: Workspace,
     rcm_id: str,
-    kind: str,
-    test_id: str,
+    *,
+    planning_context: Mapping[str, object] | None = None,
+    document_ids: Iterable[str] | None = None,
 ) -> ContextScope:
-    """Build the local candidate scope for one test-specification unit.
+    """Build the local candidate scope for one merged test-generation unit.
 
-    One builder serves both unit kinds. A Data Test unit consumes the table
-    sources and a Document Test unit the document source; the unsupplied optional
-    sources are recorded as absent in that unit's manifest rather than each kind
-    carrying its own near-identical declaration.
+    Replaces the separate ``tests.draft``/``tests.spec`` scopes: one RCM row's
+    generation turn needs the row narrative, duplicate-avoidance context, table
+    metadata/profiles, and every candidate document in one bundle, since the
+    model chooses data vs document sources itself rather than a unit kind
+    choosing them beforehand. The document source is
+    :func:`document_test_document_candidates` only — the planning-relevant
+    filter :func:`apm_document_candidates` applies would force every Document
+    Test into ``missing_evidence``.
     """
-    row, test = _spec_parents(workspace, rcm_id, kind, test_id)
-    row_projection = {key: row.get(key) for key in _SPEC_ROW_FIELDS}
-    test_projection = {key: test.get(key) for key in _SPEC_TEST_FIELDS}
-    data = kind == "datatest"
+    context = dict(planning_context or workspace.planning.get("context") or {})
+    row = next(
+        (item for item in workspace.rcm if str(item.get("id")) == str(rcm_id)), None
+    )
+    if row is None:
+        raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
+    test_generate_query = " ".join(
+        str(value or "")
+        for value in (
+            row.get("process"),
+            row.get("risk"),
+            row.get("control"),
+            row.get("criteria"),
+            context.get("objective"),
+            context.get("scope"),
+        )
+    ).strip() or "internal audit risk controls procedures"
+    planning_content = {
+        "context": context,
+        "ownership": {
+            key: workspace.planning.get(key)
+            for key in ("created_by", "agent_run_id", "updated")
+        },
+    }
     return ContextScope(
         candidates={
-            TEST_SPEC_ROW_SOURCE_ID: (
+            TEST_GENERATE_PLANNING_SOURCE_ID: (
                 ContextCandidate(
-                    source_ref=f"rcm:{row['id']}",
-                    source=row_projection,
-                    representations={"current_artifact": row_projection},
-                    metadata={"rcm_id": str(row["id"])},
+                    source_ref="planning:context",
+                    source=planning_content,
+                    representations={"planning_context": planning_content},
+                    metadata={"artifact": "planning_context"},
                 ),
             ),
-            TEST_SPEC_TEST_SOURCE_ID: (
-                ContextCandidate(
-                    source_ref=f"{kind}:{test['id']}",
-                    source=test_projection,
-                    representations={"current_artifact": test_projection},
-                    metadata={"test_id": str(test["id"]), "kind": kind},
-                ),
+            TEST_GENERATE_ROW_SOURCE_ID: test_draft_row_candidates(workspace, rcm_id),
+            TEST_GENERATE_OTHER_ROWS_SOURCE_ID: test_draft_other_row_candidates(
+                workspace, rcm_id
             ),
-            TEST_SPEC_TABLE_METADATA_SOURCE_ID: (
-                apm_table_metadata_candidates(workspace) if data else ()
+            TEST_GENERATE_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
+                workspace
             ),
-            TEST_SPEC_TABLE_PROFILE_SOURCE_ID: (
-                apm_table_profile_candidates(workspace) if data else ()
+            TEST_GENERATE_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(
+                workspace
             ),
-            TEST_SPEC_DOCUMENT_SOURCE_ID: (
-                () if data else document_test_document_candidates(workspace)
+            TEST_GENERATE_DOCUMENT_SOURCE_ID: document_test_document_candidates(
+                workspace, document_ids=document_ids
+            ),
+            TEST_GENERATE_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
+                workspace
             ),
         },
-        selector_context={"test_spec_query": _spec_query(row, test)},
+        selector_context={**context, "test_generate_query": test_generate_query},
     )
 
 
@@ -1714,13 +1628,7 @@ def intake_classification_scope(
 
 
 __all__ = [
-    "TEST_SPEC_ROW_SOURCE_ID",
-    "TEST_SPEC_TEST_SOURCE_ID",
-    "TEST_SPEC_TABLE_METADATA_SOURCE_ID",
-    "TEST_SPEC_TABLE_PROFILE_SOURCE_ID",
-    "TEST_SPEC_DOCUMENT_SOURCE_ID",
     "FINDING_TEST_SOURCE_ID",
-    "test_spec_scope",
     "linked_test_projections",
     "ANALYSIS_CURRENT_SOURCE_ID",
     "ANALYSIS_REGISTRY_SOURCE_ID",
@@ -1752,12 +1660,14 @@ __all__ = [
     "INTAKE_STAGED_FILE_SOURCE_ID",
     "PLANNING_CONTEXT_CURRENT_SOURCE_ID",
     "PLANNING_CONTEXT_DOCUMENT_SOURCE_ID",
-    "TEST_DRAFT_DOCUMENT_SOURCE_ID",
-    "TEST_DRAFT_METHODOLOGY_SOURCE_ID",
-    "TEST_DRAFT_OTHER_ROWS_SOURCE_ID",
-    "TEST_DRAFT_PLANNING_SOURCE_ID",
-    "TEST_DRAFT_ROW_SOURCE_ID",
-    "TEST_DRAFT_TABLE_METADATA_SOURCE_ID",
+    "TEST_GENERATE_PLANNING_SOURCE_ID",
+    "TEST_GENERATE_ROW_SOURCE_ID",
+    "TEST_GENERATE_OTHER_ROWS_SOURCE_ID",
+    "TEST_GENERATE_TABLE_METADATA_SOURCE_ID",
+    "TEST_GENERATE_TABLE_PROFILE_SOURCE_ID",
+    "TEST_GENERATE_DOCUMENT_SOURCE_ID",
+    "TEST_GENERATE_METHODOLOGY_SOURCE_ID",
+    "test_generate_scope",
     "RCM_CURRENT_APM_SOURCE_ID",
     "RCM_CURRENT_ROWS_SOURCE_ID",
     "RCM_DOCUMENT_SOURCE_ID",
@@ -1787,7 +1697,6 @@ __all__ = [
     "test_draft_methodology_candidates",
     "test_draft_other_row_candidates",
     "test_draft_row_candidates",
-    "test_draft_scope",
     "rcm_current_row_candidates",
     "rcm_scope",
 ]

@@ -38,7 +38,6 @@ from ._shared import (
     apm_sha1,
     planning_basis_sha1,
     rcm_row_sha1,
-    test_plan_sha1,
 )
 
 
@@ -427,7 +426,6 @@ __all__ = [
     "grouped_document_capability_ids",
     "outcomes_for_template",
     "all_tests",
-    "test_plan_sha1",
     "planning_basis_sha1",
     "rcm_row_sha1",
     "validate_analysis_composition",

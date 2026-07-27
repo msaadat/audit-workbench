@@ -91,12 +91,11 @@ _DECLARED = {
     ),
     "planning.apm_ready": ("apm", "apm", "planning.apm", ("planning:context",)),
     "planning.rcm_ready": ("rcm", "rcm", "planning.rcm", ("planning:apm",)),
-    "tests.drafted": ("tests", "test_draft", "tests.draft", ("rcm",)),
     "tests.specified": (
         "test_specs",
-        "test_spec",
-        "tests.spec",
-        ("test",),
+        "test_generation",
+        "tests.generate",
+        ("rcm",),
     ),
     "fieldwork.executed": (
         "execution",

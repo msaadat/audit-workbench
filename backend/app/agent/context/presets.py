@@ -771,7 +771,7 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
-        preset_id="tests.draft",
+        preset_id="tests.generate",
         spec=ContextSpec(
             sources=(
                 ContextSource(
@@ -796,84 +796,7 @@ PRESETS.register(
                     required=False,
                     selector=ContextSelector(selector_id="artifacts.current"),
                     representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=200, max_characters=20_000),
-                ),
-                ContextSource(
-                    id="table_metadata",
-                    source_type="tables",
-                    required=False,
-                    selector=ContextSelector(selector_id="tables.all"),
-                    representations=(ContextRepresentation("table_metadata"),),
-                    budget=ContextBudget(max_items=12, max_characters=12_000),
-                ),
-                ContextSource(
-                    id="documents",
-                    source_type="documents",
-                    required=False,
-                    selector=AutoSelect(
-                        selector_id="documents.lexical",
-                        item_limit=12,
-                        # Planning material only: the same declared category rule
-                        # the planning-context capability uses keeps transaction
-                        # vouchers and raw evidence out of a planning turn.
-                        configuration={
-                            "query_fields": ["test_draft_query"],
-                            "planning_relevant": True,
-                        },
-                    ),
-                    # A current analysis contributes ``summary``; a document
-                    # without one still grounds the turn through locally
-                    # retrieved ``excerpt`` passages.
-                    representations=(
-                        ContextRepresentation("summary"),
-                        ContextRepresentation("excerpt"),
-                    ),
-                    budget=ContextBudget(max_items=12, max_characters=24_000),
-                ),
-                ContextSource(
-                    id="methodology",
-                    source_type="methodology",
-                    required=False,
-                    selector=AutoSelect(
-                        selector_id="methodology.lexical",
-                        item_limit=5,
-                        configuration={"query_fields": ["test_draft_query"]},
-                    ),
-                    representations=(ContextRepresentation("excerpt"),),
-                    budget=ContextBudget(max_items=5, max_characters=8_000),
-                ),
-            ),
-            budget=ContextBudget(max_items=231, max_characters=60_000),
-            privacy=ContextPrivacy(
-                allow_planning_context=True,
-                allow_document_text=True,
-                allow_table_metadata=True,
-            ),
-        ),
-    )
-)
-
-
-PRESETS.register(
-    ContextPreset(
-        preset_id="tests.spec",
-        spec=ContextSpec(
-            sources=(
-                ContextSource(
-                    id="rcm_row",
-                    source_type="artifacts",
-                    required=True,
-                    selector=ContextSelector(selector_id="artifacts.current"),
-                    representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=1, max_characters=4_000),
-                ),
-                ContextSource(
-                    id="test",
-                    source_type="artifacts",
-                    required=True,
-                    selector=ContextSelector(selector_id="artifacts.current"),
-                    representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                    budget=ContextBudget(max_items=150, max_characters=16_000),
                 ),
                 ContextSource(
                     id="table_metadata",
@@ -888,39 +811,56 @@ PRESETS.register(
                     source_type="tables",
                     required=False,
                     selector=ContextSelector(selector_id="tables.all"),
-                    # Generated Data Tests are Polars code, so the spec pass needs
-                    # to see column types and value shapes, not just names.
+                    # Generated Data Test steps are Polars code, so generation
+                    # needs to see column types and value shapes, not just names.
+                    # Supplied unconditionally: the model chooses ``source``
+                    # itself, so a unit is never known in advance to be
+                    # data-only or document-only.
                     representations=(ContextRepresentation("table_profile"),),
-                    budget=ContextBudget(max_items=6, max_characters=16_000),
+                    budget=ContextBudget(max_items=6, max_characters=14_000),
                 ),
                 ContextSource(
                     id="documents",
                     source_type="documents",
                     required=False,
+                    # The single document source for the merged capability: every
+                    # candidate document with its citation identity, not the
+                    # planning-relevant-filtered set ``tests.draft`` used. A
+                    # Document Test step must be able to name transaction-level
+                    # evidence a planning-relevant filter would withhold.
                     selector=AutoSelect(
                         selector_id="documents.lexical",
                         item_limit=12,
-                        configuration={"query_fields": ["test_spec_query"]},
+                        configuration={"query_fields": ["test_generate_query"]},
                     ),
-                    # A current analysis contributes ``summary``; a document
-                    # without one still grounds the turn through locally
-                    # retrieved ``excerpt`` passages.
                     representations=(
                         ContextRepresentation("summary"),
                         ContextRepresentation("excerpt"),
                     ),
-                    budget=ContextBudget(max_items=12, max_characters=24_000),
+                    budget=ContextBudget(max_items=12, max_characters=26_000),
+                ),
+                ContextSource(
+                    id="methodology",
+                    source_type="methodology",
+                    required=False,
+                    selector=AutoSelect(
+                        selector_id="methodology.lexical",
+                        item_limit=5,
+                        configuration={"query_fields": ["test_generate_query"]},
+                    ),
+                    representations=(ContextRepresentation("excerpt"),),
+                    budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            # The test being specified is itself the ``test`` source, so there is
-            # no separate "current definition" source to reconcile against.
-            budget=ContextBudget(max_items=32, max_characters=56_000),
-            # One declaration serves both unit kinds of the capability: a Data
-            # Test unit supplies the table sources and a Document Test unit the
-            # document sources, and the unsupplied optional sources are recorded
-            # as absent in that unit's manifest. ``current_artifact`` is governed
-            # by the document-text permission in the representation privacy map.
+            # One bounded ceiling for the merged unit, deliberately less than the
+            # sum of the two presets it replaces (231/60,000 + 32/56,000): a
+            # source-specific sub-budget already protects table metadata from a
+            # large document set, so the total does not need to be additive.
+            # This ceiling is a starting point pending the proposal-quality
+            # evaluation the cutover in section 10 of the merge plan requires.
+            budget=ContextBudget(max_items=187, max_characters=102_000),
             privacy=ContextPrivacy(
+                allow_planning_context=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
                 allow_table_profiles=True,

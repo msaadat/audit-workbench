@@ -16,8 +16,10 @@ from __future__ import annotations
 from ..workflow import canonical_sha1
 from . import documents as documents_workflow
 
-# Authoritative workflow identity persisted on every audit run.
-WORKFLOW_ID = "audit_workflow_v2"
+# Authoritative workflow identity persisted on every audit run. Bumped to v3
+# when the two-pass tests.drafted -> tests.specified flow merged into a
+# single tests.specified capability (docs/test-capability-merge-plan.md).
+WORKFLOW_ID = "audit_workflow_v3"
 
 # The baseline audit dependency graph. Each capability ID maps to its direct
 # dependencies in declaration order. Working papers, dashboard curation, and
@@ -45,8 +47,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
-    "tests.drafted": ("planning.rcm_ready",),
-    "tests.specified": ("tests.drafted",),
+    "tests.specified": ("planning.rcm_ready",),
     "fieldwork.executed": ("tests.specified",),
     "results.rolled_up": ("fieldwork.executed",),
     "findings.drafted": ("results.rolled_up",),
@@ -83,7 +84,6 @@ TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     "planning": [
         "planning.apm_ready",
         "planning.rcm_ready",
-        "tests.drafted",
         "tests.specified",
     ],
     "apm_only": ["planning.apm_ready"],

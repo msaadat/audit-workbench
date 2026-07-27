@@ -209,13 +209,12 @@ GENERATION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
         [
             "planning.apm_ready",
             "planning.rcm_ready",
-            "tests.drafted",
             "tests.specified",
         ],
     ),
-    # Declared before the test-draft rule: "prepare the next required Document
-    # Tests" is a request for executable specifications, not for the test plans
-    # those specifications come from.
+    # Historical wording from the two-pass draft/spec flow is still accepted,
+    # but every phrase now resolves to the single merged capability rather
+    # than a removed ``tests.drafted`` outcome.
     (
         (
             "translate planned",
@@ -225,14 +224,14 @@ GENERATION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
             "prepare the document tests",
             "prepare the next required document tests",
             "required document tests",
+            "testing procedures",
+            "planned procedures",
+            "planned tests",
+            "draft the tests",
+            "plan the tests",
         ),
         audit_workflow.WORKFLOW_ID,
         ["tests.specified"],
-    ),
-    (
-        ("testing procedures", "planned procedures", "planned tests", "draft the tests", "plan the tests"),
-        audit_workflow.WORKFLOW_ID,
-        ["tests.drafted", "tests.specified"],
     ),
     (
         ("draft eligible findings", "draft findings"),
@@ -315,6 +314,14 @@ SPECIFIC_TARGET_MARKERS = (
 # "Prepare the tests" is generation; "run the tests" is
 # execution and belongs to the scope-wide rule below.
 EXECUTION_VERBS = ("run ", "execute ")
+
+# Historical two-pass wording ("plan the tests", "draft the tests", ...) reads
+# as ambiguous with an execution verb in a way "translate planned"/"executable
+# tests" phrasing does not, so only this subset vetoes generation in favor of
+# scope-wide execution routing below.
+_TEST_GENERATION_EXECUTION_VETO_PHRASES = frozenset(
+    {"testing procedures", "planned procedures", "planned tests", "draft the tests", "plan the tests"}
+)
 
 # 5. Target-specific operations on one identified artifact.
 TARGET_OPERATION_MARKERS = (
@@ -576,11 +583,13 @@ def _single_intent(text: str, command: dict) -> dict | None:
     specific = _specific_artifact_operation(text)
     if not specific:
         for phrases, definition, outcomes in GENERATION_RULES:
-            if not any(phrase in text for phrase in phrases):
+            matched_phrase = next((phrase for phrase in phrases if phrase in text), None)
+            if matched_phrase is None:
                 continue
             # "Run the tests" is execution, not generation.
-            if outcomes == ["tests.drafted", "tests.specified"] and any(
-                verb in text for verb in EXECUTION_VERBS
+            if (
+                matched_phrase in _TEST_GENERATION_EXECUTION_VETO_PHRASES
+                and any(verb in text for verb in EXECUTION_VERBS)
             ):
                 continue
             return _workflow_route(

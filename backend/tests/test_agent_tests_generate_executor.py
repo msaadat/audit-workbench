@@ -1,0 +1,363 @@
+"""Focused tests for the deterministic ``tests.generate`` executor.
+
+Replaces the draft executor and both spec executors: one guarded RCM-row
+commit creates or updates complete, ready Data and Document Tests in a single
+transaction, per docs/test-capability-merge-plan.md sections 6 and 8.
+"""
+
+from __future__ import annotations
+
+import polars as pl
+import pytest
+
+from app import doc_tests, documents, workspaces
+from app.agent import capabilities as audit_capabilities
+from app.agent.executors import EXECUTORS, ExecutorRequest
+from app.agent.executors.tests import (
+    GENERATE_EXECUTOR,
+    TestGenerateExecutorTarget,
+    semantic_test_id,
+    stable_test_id,
+)
+from app.workspace_transactions import ParentConflict, parent_hashes
+
+
+def _workspace(name="Test generate executor"):
+    workspace = workspaces.create_workspace(name)
+    frame = pl.DataFrame({"invoice": ["INV-1", "INV-1", "INV-2"], "amount": [100, 100, 200]})
+    workspace.add_table("transactions.csv", frame.write_csv().encode())
+    doc = documents.add_document(
+        workspace, "Approval.txt", b"Management approved the payment.", category="evidence"
+    )
+    workspace = workspaces.load_workspace(workspace.id)
+    workspace.add_rcm(
+        {
+            "process": "Accounts payable",
+            "risk": "Duplicate payments are processed",
+            "control": "Duplicate invoice validation",
+            "risk_rating": "high",
+        }
+    )
+    return workspace, workspace.rcm[0]["id"], doc["id"]
+
+
+def _data_test(**overrides):
+    value = {
+        "source": "data",
+        "title": "Duplicate payment detection",
+        "objective": "Determine whether duplicate payments were prevented.",
+        "steps": [
+            {
+                "label": "Find duplicate invoice keys",
+                "instruction": "Compare invoice numbers for duplicates.",
+                "table_refs": ["transactions"],
+                "code": "result = transactions.filter(pl.col('invoice').is_duplicated())",
+            }
+        ],
+        "methodology_refs": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def _document_test(doc_id, **overrides):
+    value = {
+        "source": "document",
+        "title": "Payment approval review",
+        "objective": "Determine whether selected payments were approved.",
+        "steps": [
+            {
+                "label": "Inspect approval evidence",
+                "instruction": "Determine whether the payment was approved.",
+                "mode": "question",
+                "document_ids": [doc_id],
+                "question": "Was this payment approved before release?",
+                "missing_evidence": "",
+            }
+        ],
+        "methodology_refs": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def _request(workspace, rcm_id, tests):
+    return ExecutorRequest(
+        executor_id="tests.generate",
+        capability_id="tests.specified",
+        unit_id=f"test_generation:{rcm_id.lower()}",
+        proposal={"tests": tests},
+        expected_revision=workspace.revision,
+        expected_parents=parent_hashes(workspace, [f"rcm:{rcm_id}"]),
+        activity={"artifact_refs": [f"rcm:{rcm_id}"]},
+    )
+
+
+def test_generate_executor_creates_ready_data_and_document_tests_atomically():
+    workspace, rcm_id, doc_id = _workspace()
+    request = _request(workspace, rcm_id, [_data_test(), _document_test(doc_id)])
+    target = TestGenerateExecutorTarget(workspace, "run-mixed", rcm_id)
+    before = workspace.revision
+
+    receipt = EXECUTORS.execute(request, target)
+
+    data_test = target.workspace.data_tests[0]
+    doc_test = doc_tests.list_tests(target.workspace)[0]
+    assert data_test["status"] == "ready"
+    assert data_test["created_by"] == "agent"
+    assert doc_test["status"] == "ready"
+    assert doc_test["created_by"] == "agent"
+    assert data_test["rcm_id"] == rcm_id
+    assert doc_test["rcm_id"] == rcm_id
+    refs = set(target.workspace.rcm[0]["test_refs"])
+    assert refs == {f"datatest:{data_test['id']}", f"doctest:{doc_test['id']}"}
+    assert receipt.workspace_revision_before == before
+    assert len(receipt.artifact_refs) == 2
+    assert {item["action"] for item in receipt.output["tests"]} == {"created"}
+
+
+def test_generate_executor_data_step_retains_its_own_tables_and_code():
+    workspace, rcm_id, doc_id = _workspace()
+    request = _request(workspace, rcm_id, [_data_test()])
+    target = TestGenerateExecutorTarget(workspace, "run-data", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    committed = target.workspace.data_tests[0]
+    assert committed["engine"] == "polars"
+    assert committed["table_refs"] == ["transactions"]
+    steps = committed["spec"]["steps"]
+    assert steps[0]["label"] == "Find duplicate invoice keys"
+    assert steps[0]["table_refs"] == ["transactions"]
+    assert steps[0]["step_id"]
+    assert "result" in steps[0]["code"]
+
+
+def test_generate_executor_document_item_retains_its_own_documents_and_question():
+    workspace, rcm_id, doc_id = _workspace()
+    request = _request(workspace, rcm_id, [_document_test(doc_id)])
+    target = TestGenerateExecutorTarget(workspace, "run-doc", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    committed = doc_tests.load_test(target.workspace, doc_tests.list_tests(target.workspace)[0]["id"])
+    assert committed["kind"] == "qa"
+    item = committed["items"][0]
+    assert item["document_ids"] == [doc_id]
+    assert item["question"] == "Was this payment approved before release?"
+    assert item["instruction"] == "Determine whether the payment was approved."
+
+
+def test_generate_executor_vouch_test_produces_a_vouching_kind():
+    workspace, rcm_id, doc_id = _workspace()
+    vouch = _document_test(
+        doc_id,
+        steps=[
+            {
+                "label": "Compare approved amount",
+                "instruction": "Compare the approved amount with the payment record.",
+                "mode": "vouch",
+                "document_ids": [doc_id],
+                "checks": [{"field": "approved_amount", "expected": "12500.00"}],
+                "missing_evidence": "",
+            }
+        ],
+    )
+    request = _request(workspace, rcm_id, [vouch])
+    target = TestGenerateExecutorTarget(workspace, "run-vouch", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    committed = doc_tests.load_test(target.workspace, doc_tests.list_tests(target.workspace)[0]["id"])
+    assert committed["kind"] == "vouching"
+    assert committed["items"][0]["checks"][0]["field"] == "approved_amount"
+
+
+def test_generate_executor_missing_evidence_blocks_the_test_and_creates_a_request():
+    workspace, rcm_id, doc_id = _workspace()
+    blocked = _document_test(
+        doc_id,
+        steps=[
+            {
+                "label": "Inspect approval evidence",
+                "instruction": "Determine whether the payment was approved.",
+                "mode": "question",
+                "document_ids": [],
+                "question": "Was this payment approved before release?",
+                "missing_evidence": "Signed approval memo",
+            }
+        ],
+    )
+    request = _request(workspace, rcm_id, [blocked])
+    target = TestGenerateExecutorTarget(workspace, "run-blocked", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    committed = doc_tests.load_test(target.workspace, doc_tests.list_tests(target.workspace)[0]["id"])
+    assert committed["status"] == "blocked"
+    assert committed["scope_limitations"] == "Signed approval memo"
+    assert len(target.workspace.evidence_requests) == 1
+    request_record = target.workspace.evidence_requests[0]
+    assert request_record["reason"] == "Signed approval memo"
+    assert request_record["document_test_id"] == committed["id"]
+    assert committed["items"][0]["evidence_request_ids"] == [request_record["id"]]
+
+
+def test_generate_executor_updates_a_matched_test_and_preserves_its_id():
+    workspace, rcm_id, doc_id = _workspace()
+    first = _request(workspace, rcm_id, [_data_test()])
+    target = TestGenerateExecutorTarget(workspace, "run-update", rcm_id)
+    EXECUTORS.execute(first, target)
+    committed_id = target.workspace.data_tests[0]["id"]
+
+    second = _request(
+        target.workspace, rcm_id, [_data_test(objective="Revised objective")]
+    )
+    receipt = EXECUTORS.execute(second, target)
+
+    assert len(target.workspace.data_tests) == 1
+    assert target.workspace.data_tests[0]["id"] == committed_id
+    assert target.workspace.data_tests[0]["objective"] == "Revised objective"
+    assert receipt.output["tests"][0]["action"] == "updated"
+
+
+def test_generate_executor_upgrades_a_matching_agent_created_draft_in_place():
+    workspace, rcm_id, doc_id = _workspace()
+    semantic = semantic_test_id("doctest", rcm_id, "Payment approval review")
+    doc_tests.create_draft(
+        workspace,
+        {
+            "id": stable_test_id("doctest", semantic),
+            "semantic_id": semantic,
+            "title": "Payment approval review",
+            "objective": "Determine whether selected payments were approved.",
+            "rcm_id": rcm_id,
+            "agent_run_id": "prior-run",
+        },
+    )
+    draft_id = doc_tests.list_tests(workspace)[0]["id"]
+    assert doc_tests.list_tests(workspace)[0]["status"] == "draft"
+
+    request = _request(workspace, rcm_id, [_document_test(doc_id)])
+    target = TestGenerateExecutorTarget(workspace, "run-upgrade", rcm_id)
+    receipt = EXECUTORS.execute(request, target)
+
+    upgraded = doc_tests.list_tests(target.workspace)
+    assert len(upgraded) == 1
+    assert upgraded[0]["id"] == draft_id
+    assert upgraded[0]["status"] == "ready"
+    assert receipt.output["tests"][0]["action"] == "updated"
+
+
+def test_generate_executor_preserves_an_auditor_owned_test_without_permission():
+    workspace, rcm_id, doc_id = _workspace()
+    semantic = semantic_test_id("datatest", rcm_id, "Duplicate payment detection")
+    from app import data_tests
+
+    data_tests.create_draft(
+        workspace,
+        {
+            "id": stable_test_id("datatest", semantic),
+            "semantic_id": semantic,
+            "title": "Auditor test",
+            "objective": "Auditor objective",
+            "rcm_id": rcm_id,
+        },
+    )
+    request = _request(workspace, rcm_id, [_data_test()])
+    target = TestGenerateExecutorTarget(workspace, "run-preserve", rcm_id)
+
+    receipt = EXECUTORS.execute(request, target)
+
+    assert target.workspace.data_tests[0]["objective"] == "Auditor objective"
+    assert receipt.output["tests"][0]["action"] == "preserved"
+
+
+def test_generate_executor_replaces_an_auditor_test_with_permission():
+    workspace, rcm_id, doc_id = _workspace()
+    semantic = semantic_test_id("datatest", rcm_id, "Duplicate payment detection")
+    from app import data_tests
+
+    data_tests.create_draft(
+        workspace,
+        {
+            "id": stable_test_id("datatest", semantic),
+            "semantic_id": semantic,
+            "title": "Auditor test",
+            "objective": "Auditor objective",
+            "rcm_id": rcm_id,
+        },
+    )
+    request = _request(workspace, rcm_id, [_data_test()])
+    target = TestGenerateExecutorTarget(
+        workspace, "run-permission", rcm_id, allow_auditor_overwrite=True
+    )
+
+    receipt = EXECUTORS.execute(request, target)
+
+    assert target.workspace.data_tests[0]["objective"] == (
+        "Determine whether duplicate payments were prevented."
+    )
+    assert receipt.output["tests"][0]["action"] == "updated"
+
+
+def test_generate_executor_parent_hash_rejects_a_concurrent_rcm_change():
+    workspace, rcm_id, doc_id = _workspace()
+    request = _request(workspace, rcm_id, [_data_test()])
+    workspace.update_rcm(rcm_id, {"control": "Auditor rewrote the control"})
+    target = TestGenerateExecutorTarget(workspace, "run-parent", rcm_id)
+
+    with pytest.raises(ParentConflict):
+        GENERATE_EXECUTOR.implementation(request, target)
+
+
+def test_generate_executor_reconciles_an_interrupted_commit():
+    workspace, rcm_id, doc_id = _workspace()
+    request = _request(workspace, rcm_id, [_data_test()])
+    target = TestGenerateExecutorTarget(workspace, "run-reconcile", rcm_id)
+
+    assert GENERATE_EXECUTOR.reconciler(request, target).disposition == "not_applied"
+
+    GENERATE_EXECUTOR.implementation(request, target)
+    committed_id = target.workspace.data_tests[0]["id"]
+
+    recovered = GENERATE_EXECUTOR.reconciler(request, target)
+    assert recovered.disposition == "already_applied"
+    assert recovered.result.postcondition_hashes == parent_hashes(
+        target.workspace, [f"datatest:{committed_id}"]
+    )
+
+
+def test_generate_executor_rejects_regenerating_a_settled_document_test():
+    # Regeneration over an already-executed test is an accepted, deferred gap
+    # (merge plan section 13): the row commit fails rather than silently
+    # discarding auditor-settled work.
+    workspace, rcm_id, doc_id = _workspace()
+    semantic = semantic_test_id("doctest", rcm_id, "Payment approval review")
+    existing = doc_tests.create_test(
+        workspace,
+        {
+            "id": stable_test_id("doctest", semantic),
+            "semantic_id": semantic,
+            "kind": "qa",
+            "title": "Payment approval review",
+            "objective": "Determine whether selected payments were approved.",
+            "rcm_id": rcm_id,
+            "agent_run_id": "prior-run",
+            "items": [
+                {
+                    "label": "Inspect approval evidence",
+                    "question": "Was this approved?",
+                    "document_ids": [doc_id],
+                }
+            ],
+        },
+    )
+    doc_tests.update_item(
+        workspace, existing["id"], existing["items"][0]["id"], {"auditor_disposition": "accepted"}
+    )
+    request = _request(workspace, rcm_id, [_document_test(doc_id)])
+    target = TestGenerateExecutorTarget(workspace, "run-settled", rcm_id)
+
+    with pytest.raises(Exception, match="auditor-settled items"):
+        EXECUTORS.execute(request, target)

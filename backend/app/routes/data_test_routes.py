@@ -71,6 +71,8 @@ async def pin_data_test(
     spec = dict(item["spec"])
     if kind == "analytics":
         spec = {"test": spec["test_id"], "params": spec.get("params") or {}}
+    elif kind == "python":
+        spec = {"code": data_tests.spec_as_python_code(item["spec"])}
     tile = ws.add_tile(
         {
             "kind": kind,

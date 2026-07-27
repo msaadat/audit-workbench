@@ -298,6 +298,7 @@ export interface DocTest extends TestPlan, TestOutcome {
   procedure_refs: string[]
   rcm_id: string | null
   spec: Record<string, unknown>
+  steps: DocTestStep[]
   items: DocTestItem[]
   item_count?: number
   state_counts?: Record<string, number>
@@ -383,9 +384,39 @@ export interface TestPlan {
   title: string
   objective: string
   criteria: string
-  steps: string[]
-  expected_evidence: string
   methodology_refs: Array<Record<string, unknown>>
+}
+
+export interface DataTestStep {
+  step_id?: string
+  label: string
+  instruction: string
+  table_refs: string[]
+  code: string
+}
+
+export interface DocTestStepCheck {
+  field: string
+  expected: string
+}
+
+export interface DocTestStep {
+  step_id?: string
+  label: string
+  instruction: string
+  mode: 'question' | 'vouch'
+  document_ids: string[]
+  missing_evidence: string
+  question?: string
+  checks?: DocTestStepCheck[]
+}
+
+export interface DataTestStepResult {
+  step_id: string
+  step_label: string
+  status: TestStatus | 'error'
+  exception_count: number
+  error: string | null
 }
 
 /** The outcome roll-up computes onto every test. */
@@ -456,6 +487,7 @@ export interface DataTest extends TestPlan, TestOutcome {
   objective: string
   engine: DataTestEngine | null
   table_refs: string[]
+  steps: DataTestStep[]
   spec: Record<string, unknown>
   status: TestStatus
   semantic_warnings: string[]
@@ -480,6 +512,7 @@ export interface DataTestResult extends DataTestRunSummary {
   exception_frame: FramePayload | null
   semantic_issues: string[]
   join_diagnostics: Array<Record<string, unknown>>
+  step_results: DataTestStepResult[]
   error: string | null
 }
 

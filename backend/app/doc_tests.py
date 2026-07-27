@@ -75,6 +75,29 @@ def test_sha1(test: dict) -> str:
     return _sha1({key: value for key, value in test.items() if key != "sha1"})
 
 
+def _normalize_steps(values: object) -> list[dict]:
+    """Preserve declared step fields as objects; reject a step that is not an object."""
+    steps: list[dict] = []
+    for value in values or []:
+        if not value:
+            continue
+        if not isinstance(value, dict):
+            raise WorkspaceError("Each test step must be an object.")
+        steps.append(dict(value))
+    return steps
+
+
+def kind_from_steps(steps: list[dict]) -> str:
+    """Derive a Document Test's durable kind from its homogeneous step mode."""
+    modes = {str(step.get("mode") or "") for step in steps if isinstance(step, dict)}
+    modes.discard("")
+    if modes == {"question"}:
+        return "qa"
+    if modes == {"vouch"}:
+        return "vouching"
+    raise WorkspaceError("Document Test steps must share one execution mode (question or vouch).")
+
+
 def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     # A drafted test has no kind until its spec pass runs, so ``kind`` stays
     # None rather than defaulting to a builder the plan never chose.
@@ -88,7 +111,6 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     test.setdefault("objective", "")
     test.setdefault("criteria", "")
     test.setdefault("steps", [])
-    test.setdefault("expected_evidence", "")
     test.setdefault("methodology_refs", [])
     # Outcome.
     test.setdefault("conclusion", "")
@@ -111,6 +133,7 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     test.setdefault("updated", test["created"])
     for item in test["items"]:
         item.setdefault("id", f"ITEM-{uuid.uuid4().hex[:8].upper()}")
+        item.setdefault("instruction", "")
         item.setdefault("state", "pending")
         item.setdefault("auditor_disposition", "pending")
         item.setdefault("auditor_note", "")
@@ -123,7 +146,7 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
             check["evidence_refs"] = normalize_many(check.get("evidence_refs") or [])
     test["kind"] = kind
     test["evidence_refs"] = normalize_many(test.get("evidence_refs") or [])
-    test["steps"] = [str(step).strip() for step in test.get("steps") or [] if str(step).strip()]
+    test["steps"] = _normalize_steps(test.get("steps"))
     test["sha1"] = test_sha1(test)
     return test
 
@@ -203,7 +226,7 @@ def list_tests(workspace: Workspace) -> list[dict]:
                 "procedure_refs", "rcm_id", "spec", "created",
                 "updated", "sha1", "created_by", "agent_run_id",
                 "workflow_parent_sha1", "objective", "criteria", "steps",
-                "expected_evidence", "conclusion", "control_conclusion",
+                "conclusion", "control_conclusion",
                 "exception_count", "open_exception_count", "scope_limitations",
             )},
             "item_count": len(states),
@@ -297,8 +320,7 @@ def _base_test(workspace: Workspace, payload: dict, kind: str | None) -> dict:
         "rcm_id": rcm_id,
         "objective": str(payload.get("objective") or ""),
         "criteria": str(payload.get("criteria") or ""),
-        "steps": [str(step).strip() for step in (payload.get("steps") or []) if str(step).strip()],
-        "expected_evidence": str(payload.get("expected_evidence") or ""),
+        "steps": _normalize_steps(payload.get("steps")),
         "methodology_refs": list(payload.get("methodology_refs") or []),
         "spec": dict(payload.get("spec") or {}),
         "items": [],
@@ -315,6 +337,7 @@ def _new_item(payload: dict | None = None) -> dict:
     item = {
         "id": str(payload.get("id") or f"ITEM-{uuid.uuid4().hex[:8].upper()}"),
         "label": str(payload.get("label") or "Test item"),
+        "instruction": str(payload.get("instruction") or ""),
         "state": str(payload.get("state") or "pending"),
         "auditor_disposition": str(payload.get("auditor_disposition") or "pending"),
         "auditor_note": str(payload.get("auditor_note") or ""),
@@ -394,7 +417,6 @@ PLAN_FIELDS = (
     "objective",
     "criteria",
     "steps",
-    "expected_evidence",
     "methodology_refs",
 )
 
@@ -410,9 +432,7 @@ def update_plan(workspace: Workspace, test_id: str, payload: dict) -> dict:
         if key not in payload:
             continue
         if key == "steps":
-            test["steps"] = [
-                str(step).strip() for step in (payload["steps"] or []) if str(step).strip()
-            ]
+            test["steps"] = _normalize_steps(payload["steps"])
         elif key == "methodology_refs":
             test["methodology_refs"] = list(payload["methodology_refs"] or [])
         else:
@@ -597,15 +617,18 @@ def _required_document_types(workspace: Workspace, payload: dict) -> list[str]:
     ]
     if explicit:
         return list(dict.fromkeys(explicit))
-    # Otherwise derive them from the test's own plan, which is where the
-    # expected evidence now lives.
-    source = " ".join(
-        [
-            str(payload.get("expected_evidence") or ""),
-            str(payload.get("criteria") or ""),
-            *[str(step) for step in payload.get("steps") or []],
-        ]
-    ).casefold()
+    # Otherwise derive them from the test's own plan: each document step names
+    # its own evidence via ``missing_evidence``/``question``, which is where
+    # the expected evidence now lives.
+    text_parts = [str(payload.get("criteria") or "")]
+    for step in payload.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        text_parts.extend(
+            str(step.get(field) or "")
+            for field in ("missing_evidence", "instruction", "question", "label")
+        )
+    source = " ".join(text_parts).casefold()
     if not source.strip():
         return []
     return [
@@ -864,7 +887,7 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
     test = load_test(workspace, test_id)
     allowed = {
         "title", "status", "rcm_refs", "procedure_refs", "rcm_id", "spec",
-        "objective", "criteria", "steps", "expected_evidence", "conclusion",
+        "objective", "criteria", "steps", "conclusion",
         "control_conclusion", "scope_limitations", "next_action",
     }
     if set(changes) - allowed:
@@ -892,10 +915,8 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
             raise WorkspaceError("Unknown control conclusion.")
         test["control_conclusion"] = conclusion
     if "steps" in changes:
-        test["steps"] = [
-            str(step).strip() for step in (changes["steps"] or []) if str(step).strip()
-        ]
-    for key in ("objective", "criteria", "expected_evidence", "conclusion", "scope_limitations", "next_action"):
+        test["steps"] = _normalize_steps(changes["steps"])
+    for key in ("objective", "criteria", "conclusion", "scope_limitations", "next_action"):
         if key in changes:
             test[key] = str(changes[key] or "")
     test["rcm_refs"], test["procedure_refs"] = rcm_refs, procedure_refs

@@ -20,11 +20,20 @@ def _data_test(ws, row):
             "title": "Large transaction screening",
             "objective": "Identify purchases above 500 for follow-up.",
             "criteria": "No purchase above 500 lacks approval.",
-            "steps": ["Analyze approval fields."],
+            "steps": [{"label": "Analyze approval fields.", "instruction": "Analyze approval fields."}],
             "rcm_id": row["id"],
             "engine": "polars",
-            "table_refs": ["transactions"],
-            "spec": {"code": "result = transactions.filter(pl.col('amount') > 500)"},
+            "spec": {
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Large transactions",
+                        "instruction": "Filter transactions greater than 500.",
+                        "table_refs": ["transactions"],
+                        "code": "result = transactions.filter(pl.col('amount') > 500)",
+                    }
+                ],
+            },
         },
     )
 
@@ -38,7 +47,7 @@ def _document_test(ws, row, *, exception=False):
             "kind": "attribute",
             "title": "Approval evidence",
             "objective": "Determine whether purchases were approved.",
-            "steps": ["Inspect supporting documents."],
+            "steps": [{"label": "Inspect supporting documents.", "instruction": "Inspect supporting documents."}],
             "rcm_id": row["id"],
             "items": [
                 {
@@ -89,8 +98,17 @@ def test_an_unlinked_test_is_exploration_not_a_coverage_defect(workspace_with_da
             "title": "Exploratory scan",
             "objective": "Look at the population.",
             "engine": "polars",
-            "table_refs": ["transactions"],
-            "spec": {"code": "result = transactions.head(1)"},
+            "spec": {
+                "schema_version": 2,
+                "steps": [
+                    {
+                        "label": "Scan",
+                        "instruction": "Look at the first row.",
+                        "table_refs": ["transactions"],
+                        "code": "result = transactions.head(1)",
+                    }
+                ],
+            },
         },
     )
 
@@ -121,7 +139,7 @@ def test_test_manifest_carries_the_plan_and_the_specification_state(
     assert specified["rcm_id"] == row["id"]
     assert specified["kind"] == "datatest"
     assert specified["specified"] is True
-    assert specified["steps"] == ["Analyze approval fields."]
+    assert specified["steps"] == [{"label": "Analyze approval fields.", "instruction": "Analyze approval fields."}]
     unspecified = next(value for value in manifest if value["test_id"] == draft["id"])
     assert unspecified["kind"] == "doctest"
     assert unspecified["specified"] is False

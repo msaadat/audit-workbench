@@ -189,7 +189,7 @@ def test_derived_phases_can_reach_complete(workspace_with_data):
     row = ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
     test = data_tests.create(ws, {
         "title": "Required transaction identifiers", "objective": "Identify missing IDs.",
-        "steps": ["Scan transaction amounts."],
+        "steps": [{"label": "Scan transaction amounts.", "instruction": "Scan transaction amounts."}],
         "engine": "analytics", "table_refs": ["transactions"],
         "rcm_id": row["id"],
         "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
@@ -223,7 +223,7 @@ def test_rcm_dashboard_curation_scores_and_pins_four_to_six_results(workspace_wi
         item = data_tests.create(ws, {
             "title": f"Vendor integrity result {index}",
             "objective": "Identify management-relevant vendor integrity signals.",
-            "steps": ["Scan the amount population."],
+            "steps": [{"label": "Scan the amount population.", "instruction": "Scan the amount population."}],
             "engine": "analytics", "table_refs": ["transactions"],
             "rcm_id": row["id"],
             "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},

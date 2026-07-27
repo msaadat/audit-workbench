@@ -667,7 +667,8 @@ def test_compact_artifact_index_exposes_bare_ids_and_canonicalizes_typed_refs(
     row = workspace_with_data.add_rcm({"risk": "Duplicate invoices may be paid"})
     data_test = data_tests.create(workspace_with_data, {
         "title": "Test duplicates", "objective": "Test duplicate invoices",
-        "steps": ["Identify duplicate invoice numbers."], "rcm_id": row["id"],
+        "steps": [{"label": "Identify duplicate invoice numbers.", "instruction": "Identify duplicate invoice numbers."}],
+        "rcm_id": row["id"],
         "engine": "analytics", "table_refs": ["transactions"],
         "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
     })
@@ -1359,21 +1360,19 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
             "control_type": "Manual preventive",
             "new_risk_reason": "No existing RCM row covers procurement approvals.",
         }]},
-        "agent:test_plan": {"tests": [{
+        "agent:test_generate": {"tests": [{
+            "source": "document",
             "title": "Test procurement approval compliance",
             "objective": "Determine whether purchases were approved",
-            "criteria": "Approval is documented before commitment.",
-            "steps": ["Select purchases and inspect approval evidence."],
-            "source": "document", "expected_evidence": "Approved requisitions",
-        }]},
-        "agent:document_test_spec": {
-            "mode": "question",
-            "items": [{
+            "steps": [{
                 "label": "Review approval evidence",
+                "instruction": "Determine whether requisitions carry documented approval.",
+                "mode": "question",
                 "document_ids": [policy["id"]],
                 "question": "Do the requisitions carry documented approval?",
+                "missing_evidence": "",
             }],
-        },
+        }]},
         "agent:document_qa": {
             "answer": "Requisitions require approval before commitment.",
             "citations": [{"page": 1, "excerpt": "requisitions require approval"}],
@@ -1391,14 +1390,15 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     assert completed["status"] == "completed_with_open_items"
     call_tags = [call["tag"] for call in fake.calls]
     assert "agent:command_interpreter" not in call_tags
-    assert "agent:document_test_spec" in call_tags
+    assert "agent:test_generate" in call_tags
     assert completed["workflow"]["requested_outcomes"] == audit_capabilities.FULL_AUDIT_OUTCOMES
     assert completed["actions"] == []
     assert "## Key risks and planned response" in reloaded.planning["apm_markdown"]
     assert reloaded.rcm[-1]["control"] == "Approval before commitment"
     assert reloaded.work_program == []
     drafted = doc_tests.load_test(reloaded, doc_tests.list_tests(reloaded)[0]["id"])
-    assert drafted["steps"] == ["Select purchases and inspect approval evidence."]
+    assert drafted["steps"][0]["label"] == "Review approval evidence"
+    assert drafted["steps"][0]["mode"] == "question"
     assert drafted["kind"] == "qa"
     assert completed["audit_outcome"]["tests_completed"] == 0
     assert completed["audit_outcome"]["document_tests_executed"] == 0

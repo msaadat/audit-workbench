@@ -51,6 +51,22 @@ def _sha1(value: object) -> str:
     return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
 
 
+def _step_id(semantic_id: str, label: str, ordinal: int) -> str:
+    return f"STEP-{_sha1([semantic_id, label, ordinal])[:10].upper()}"
+
+
+def _normalize_steps(values: object) -> list[dict]:
+    """Preserve declared step fields as objects; reject a step that is not an object."""
+    steps: list[dict] = []
+    for value in values or []:
+        if not value:
+            continue
+        if not isinstance(value, dict):
+            raise WorkspaceError("Each test step must be an object.")
+        steps.append(dict(value))
+    return steps
+
+
 def results_dir(workspace: Workspace, data_test_id: str | None = None) -> Path:
     path = workspace.root / "DataTestResults"
     if data_test_id:
@@ -78,7 +94,6 @@ def _record(workspace: Workspace, data_test_id: str) -> dict:
     item.setdefault("evidence_refs", [])
     item.setdefault("criteria", "")
     item.setdefault("steps", [])
-    item.setdefault("expected_evidence", "")
     item.setdefault("methodology_refs", [])
     item.setdefault("conclusion", "")
     item.setdefault("control_conclusion", "no_conclusion")
@@ -113,7 +128,9 @@ def _table_refs(workspace: Workspace, values: object, *, required: bool = True) 
     return refs
 
 
-def _validate_spec(workspace: Workspace, engine: str, refs: list[str], spec: object) -> tuple[dict, list[str]]:
+def _validate_spec(
+    workspace: Workspace, engine: str, refs: list[str], spec: object, *, semantic_id: str = ""
+) -> tuple[dict, list[str], list[str]]:
     value = dict(spec or {})
     warnings: list[str] = []
     if engine == "analytics":
@@ -146,15 +163,46 @@ def _validate_spec(workspace: Workspace, engine: str, refs: list[str], spec: obj
         value = {**value, "rules": rules}
         warnings.extend(validation.generated_rule_issues(frame, rules, workspace.get_frame))
     else:
-        code = str(value.get("code") or "").strip()
-        if not code:
-            raise WorkspaceError("A Polars Data Test needs code.")
-        try:
-            sandbox.validate(code)
-        except ValueError as error:
-            raise WorkspaceError(str(error)) from error
-        value["code"] = code
-    return value, warnings
+        if "code" in value:
+            raise WorkspaceError("A Polars Data Test uses spec.steps, not a single spec.code.")
+        if value.get("schema_version") != 2:
+            raise WorkspaceError("A Polars Data Test needs spec.schema_version 2.")
+        raw_steps = value.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise WorkspaceError("A Polars Data Test needs at least one step.")
+        steps: list[dict] = []
+        derived_refs: list[str] = []
+        for index, raw_step in enumerate(raw_steps):
+            if not isinstance(raw_step, dict):
+                raise WorkspaceError("Each Polars Data Test step must be an object.")
+            label = str(raw_step.get("label") or "").strip()
+            instruction = str(raw_step.get("instruction") or "").strip()
+            if not label:
+                raise WorkspaceError(f"Data Test step {index + 1} needs a label.")
+            if not instruction:
+                raise WorkspaceError(f"Data Test step '{label}' needs an instruction.")
+            step_refs = _table_refs(workspace, raw_step.get("table_refs"))
+            code = str(raw_step.get("code") or "").strip()
+            if not code:
+                raise WorkspaceError(f"Data Test step '{label}' needs code.")
+            try:
+                sandbox.validate(code)
+            except ValueError as error:
+                raise WorkspaceError(str(error)) from error
+            step_id = str(raw_step.get("step_id") or "").strip() or _step_id(semantic_id, label, index)
+            steps.append(
+                {
+                    "step_id": step_id,
+                    "label": label,
+                    "instruction": instruction,
+                    "table_refs": step_refs,
+                    "code": code,
+                }
+            )
+            derived_refs.extend(step_refs)
+        value = {"schema_version": 2, "steps": steps}
+        refs = list(dict.fromkeys(derived_refs))
+    return value, warnings, refs
 
 
 def _link(workspace: Workspace, item: dict) -> None:
@@ -185,8 +233,7 @@ def _base_record(workspace: Workspace, payload: dict, *, title: str, now: str) -
         "objective": str(payload.get("objective") or "").strip(),
         # Audit plan — the fields that used to live on the RCM planned test.
         "criteria": str(payload.get("criteria") or ""),
-        "steps": [str(step).strip() for step in (payload.get("steps") or []) if str(step).strip()],
-        "expected_evidence": str(payload.get("expected_evidence") or ""),
+        "steps": _normalize_steps(payload.get("steps")),
         "methodology_refs": list(payload.get("methodology_refs") or []),
         # Outcome.
         "conclusion": "",
@@ -217,10 +264,13 @@ def create(workspace: Workspace, payload: dict) -> dict:
     engine = str(payload.get("engine") or "").strip().lower()
     if engine not in ENGINES:
         raise WorkspaceError("Data Test engine must be analytics, validation, or polars.")
-    refs = _table_refs(workspace, payload.get("table_refs"))
-    spec, warnings = _validate_spec(workspace, engine, refs, payload.get("spec"))
+    semantic_id = str(payload.get("semantic_id") or f"datatest:{slugify(title)}")
+    refs = [] if engine == "polars" else _table_refs(workspace, payload.get("table_refs"))
+    spec, warnings, refs = _validate_spec(
+        workspace, engine, refs, payload.get("spec"), semantic_id=semantic_id
+    )
     item = {
-        **_base_record(workspace, payload, title=title, now=utcnow()),
+        **_base_record(workspace, {**payload, "semantic_id": semantic_id}, title=title, now=utcnow()),
         "engine": engine,
         "table_refs": refs,
         "spec": spec,
@@ -263,7 +313,6 @@ PLAN_FIELDS = (
     "objective",
     "criteria",
     "steps",
-    "expected_evidence",
     "methodology_refs",
 )
 
@@ -279,9 +328,7 @@ def update_plan(workspace: Workspace, data_test_id: str, payload: dict) -> dict:
         if key not in payload:
             continue
         if key == "steps":
-            item["steps"] = [
-                str(step).strip() for step in (payload["steps"] or []) if str(step).strip()
-            ]
+            item["steps"] = _normalize_steps(payload["steps"])
         elif key == "methodology_refs":
             item["methodology_refs"] = list(payload["methodology_refs"] or [])
         else:
@@ -307,8 +354,10 @@ def apply_spec(workspace: Workspace, data_test_id: str, payload: dict) -> dict:
     engine = str(payload.get("engine") or "polars").strip().lower()
     if engine not in ENGINES:
         raise WorkspaceError("Data Test engine must be analytics, validation, or polars.")
-    refs = _table_refs(workspace, payload.get("table_refs"))
-    spec, warnings = _validate_spec(workspace, engine, refs, payload.get("spec"))
+    refs = [] if engine == "polars" else _table_refs(workspace, payload.get("table_refs"))
+    spec, warnings, refs = _validate_spec(
+        workspace, engine, refs, payload.get("spec"), semantic_id=item["semantic_id"]
+    )
     item.update(
         engine=engine,
         table_refs=refs,
@@ -338,7 +387,7 @@ def update(
     allowed = {
         "title", "objective", "engine", "table_refs", "spec", "rcm_id",
         "auditor_disposition", "workflow_parent_sha1", "criteria", "steps",
-        "expected_evidence", "conclusion", "control_conclusion",
+        "methodology_refs", "conclusion", "control_conclusion",
         "scope_limitations", "next_action",
     }
     unknown = set(changes) - allowed
@@ -354,9 +403,13 @@ def update(
     if engine not in ENGINES:
         raise WorkspaceError("Data Test engine must be analytics, validation, or polars.")
     rcm_id = _validate_rcm_id(workspace, changes.get("rcm_id", item["rcm_id"]))
-    refs = _table_refs(workspace, changes.get("table_refs", item["table_refs"]))
-    spec, warnings = _validate_spec(
-        workspace, engine, refs, changes.get("spec", item["spec"])
+    refs = (
+        []
+        if engine == "polars"
+        else _table_refs(workspace, changes.get("table_refs", item["table_refs"]))
+    )
+    spec, warnings, refs = _validate_spec(
+        workspace, engine, refs, changes.get("spec", item["spec"]), semantic_id=item["semantic_id"]
     )
     disposition = str(
         changes.get("auditor_disposition", item.get("auditor_disposition") or "pending")
@@ -379,14 +432,8 @@ def update(
         auditor_disposition=disposition,
         control_conclusion=conclusion,
         criteria=str(changes.get("criteria", item.get("criteria") or "")),
-        steps=[
-            str(step).strip()
-            for step in (changes.get("steps", item.get("steps")) or [])
-            if str(step).strip()
-        ],
-        expected_evidence=str(
-            changes.get("expected_evidence", item.get("expected_evidence") or "")
-        ),
+        steps=_normalize_steps(changes.get("steps", item.get("steps"))),
+        methodology_refs=list(changes.get("methodology_refs", item.get("methodology_refs")) or []),
         conclusion=str(changes.get("conclusion", item.get("conclusion") or "")),
         scope_limitations=str(
             changes.get("scope_limitations", item.get("scope_limitations") or "")
@@ -457,6 +504,79 @@ def _all_null_columns(frame: pl.DataFrame | None) -> list[str]:
     return [name for name in frame.columns if frame[name].null_count() == frame.height]
 
 
+def _run_polars_steps(
+    workspace: Workspace, item: dict
+) -> tuple[dict, pl.DataFrame | None, pl.DataFrame | None, int, list[str]]:
+    """Run every step independently and roll the results up deterministically."""
+    steps = item["spec"]["steps"]
+    issues: list[str] = []
+    step_results: list[dict] = []
+    summary_frames: list[pl.DataFrame] = []
+    exception_frames: list[pl.DataFrame] = []
+    stdout_parts: list[str] = []
+    total_exceptions = 0
+    any_step_failed = False
+    for step in steps:
+        step_frames = {name: workspace.get_frame(name) for name in step["table_refs"]}
+        try:
+            result, stdout = sandbox.run(step["code"], step_frames)
+        except Exception as exc:
+            any_step_failed = True
+            issues.append(f"Step '{step['label']}' failed to execute: {exc}")
+            step_results.append(
+                {
+                    "step_id": step["step_id"],
+                    "step_label": step["label"],
+                    "status": "error",
+                    "exception_count": 0,
+                    "error": str(exc),
+                }
+            )
+            continue
+        stdout_parts.append(stdout)
+        step_null_columns = _all_null_columns(result)
+        if step_null_columns:
+            issues.append(
+                f"Step '{step['label']}' result columns are entirely null: "
+                f"{', '.join(step_null_columns)}."
+            )
+        step_exception_count = result.height
+        total_exceptions += step_exception_count
+        summary_frames.append(result)
+        if step_exception_count:
+            exception_frames.append(
+                result.with_columns(
+                    pl.lit(step["step_id"]).alias("_step_id"),
+                    pl.lit(step["label"]).alias("_step_label"),
+                )
+            )
+        step_results.append(
+            {
+                "step_id": step["step_id"],
+                "step_label": step["label"],
+                "status": "completed_with_exception" if step_exception_count else "completed_no_exception",
+                "exception_count": step_exception_count,
+                "error": None,
+            }
+        )
+    summary = pl.concat(summary_frames, how="diagonal_relaxed") if summary_frames else None
+    exceptions = pl.concat(exception_frames, how="diagonal_relaxed") if exception_frames else None
+    if any_step_failed:
+        issues.append("One or more steps failed to execute; see step results for detail.")
+    output = {
+        "verdict": "error" if any_step_failed else ("fail" if total_exceptions else "ok"),
+        "statistics": [
+            {"label": "Steps", "value": str(len(steps))},
+            {"label": "Exception rows", "value": str(total_exceptions)},
+        ],
+        "verdict_text": f"{total_exceptions} exception row(s) across {len(steps)} step(s).",
+        "viz": {"type": "table"},
+        "stdout": "\n".join(part for part in stdout_parts if part),
+        "step_results": step_results,
+    }
+    return output, summary, exceptions, total_exceptions, issues
+
+
 def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | None, pl.DataFrame | None, int, list[str]]:
     engine = item["engine"]
     frame = workspace.get_frame(item["table_refs"][0])
@@ -497,18 +617,9 @@ def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | 
         }
         issues.extend(validation.generated_rule_issues(frame, rules, workspace.get_frame))
     else:
-        frames = {name: workspace.get_frame(name) for name in item["table_refs"]}
-        result, stdout = sandbox.run(item["spec"]["code"], frames)
-        summary = result
-        exceptions = result if item["spec"].get("result_mode", "exceptions") == "exceptions" else None
-        exception_count = result.height if exceptions is not None else int(item["spec"].get("exception_count") or 0)
-        output = {
-            "verdict": "fail" if exception_count else "ok",
-            "statistics": [{"label": "Result rows", "value": str(result.height)}],
-            "verdict_text": f"{exception_count} exception row(s).",
-            "viz": dict(item["spec"].get("viz") or {"type": "table"}),
-            "stdout": stdout,
-        }
+        output, summary, exceptions, exception_count, step_issues = _run_polars_steps(workspace, item)
+        issues.extend(step_issues)
+        return output, summary, exceptions, exception_count, list(dict.fromkeys(issues))
     null_columns = _all_null_columns(summary)
     if engine == "validation":
         # ``validation.summary_frame`` always includes the optional diagnostic
@@ -544,6 +655,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
             or "naturally unique" in issue
             or "conditional trigger matches zero" in issue
             or "allowed values have no overlap" in issue
+            or "failed to execute" in issue
             for issue in semantic_issues
         )
         status = (
@@ -581,6 +693,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         "semantic_valid": semantic_valid,
         "semantic_issues": semantic_issues,
         "join_diagnostics": diagnostics,
+        "step_results": output.get("step_results") or [],
         "error": error,
     }
     result["result_sha1"] = _sha1(result)
@@ -706,6 +819,21 @@ def result_artifact(workspace: Workspace, source_id: str) -> dict | None:
     except WorkspaceError:
         return None
     return {"item": result, "sha1": result["result_sha1"]}
+
+
+def spec_as_python_code(spec: dict) -> str:
+    """Flatten a Polars spec's steps into one script for ad-hoc dashboard tiles.
+
+    Dashboard tiles run one code block; a multi-step Data Test has none, so
+    this is a display convenience only, not a second executable definition.
+    """
+    steps = (spec or {}).get("steps") or []
+    if not steps:
+        return str((spec or {}).get("code") or "")
+    return "\n\n".join(
+        f"# Step: {step.get('label') or index + 1}\n{step.get('code') or ''}"
+        for index, step in enumerate(steps)
+    )
 
 
 def list_payload(workspace: Workspace) -> list[dict]:

@@ -69,24 +69,6 @@ def rcm_row_sha1(row: dict) -> str:
     )
 
 
-def test_plan_sha1(test: dict) -> str:
-    """The provenance identity of one test's audit plan.
-
-    Only the plan is covered — the executable spec is written by a later pass
-    over the same record, so including it would make a specified test look like
-    a changed parent to the pass that drafted it.
-    """
-    return canonical_sha1(
-        {
-            key: test.get(key)
-            for key in (
-                "id", "title", "objective", "criteria", "steps",
-                "expected_evidence", "methodology_refs",
-            )
-        }
-    )
-
-
 # Dispositions that make an observation eligible to become a finding draft.
 ELIGIBLE_DISPOSITIONS = frozenset(
     {"confirmed_control_exception", "draft_finding_candidate"}

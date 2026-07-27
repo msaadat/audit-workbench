@@ -961,7 +961,7 @@ _register(
     required=("title", "objective", "engine", "table_refs", "spec"),
     properties={
         "rcm_id": STR, "title": STR, "objective": STR, "criteria": STR,
-        "steps": ARR_STR, "expected_evidence": STR,
+        "steps": ARR,
         "engine": {"type": "string", "enum": sorted(data_tests.ENGINES)},
         "table_refs": ARR_STR, "spec": OBJ,
     },
@@ -993,7 +993,7 @@ _register(
     properties={
         "kind": {"type": "string", "enum": ["vouching", "attribute", "review", "qa"]},
         "title": STR, "items": ARR, "rcm_id": STR, "objective": STR,
-        "criteria": STR, "steps": ARR_STR, "expected_evidence": STR,
+        "criteria": STR, "steps": ARR,
         "table": STR, "frozen_fields": ARR_STR, "identifier_fields": ARR_STR,
         "size": {"type": "integer"}, "seed": {"type": "integer"},
         "direction": {"type": "string", "enum": ["vouching", "tracing"]},

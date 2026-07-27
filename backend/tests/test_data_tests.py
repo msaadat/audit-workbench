@@ -24,11 +24,25 @@ def _analytics_payload(row):
         "title": "Duplicate invoice numbers",
         "objective": "Identify repeated invoice numbers.",
         "criteria": "Invoice identifiers must be unique.",
-        "steps": ["Analyze the full population."],
+        "steps": [{"label": "Analyze the full population.", "instruction": "Analyze the full population."}],
         "rcm_id": row["id"],
         "engine": "analytics",
         "table_refs": ["transactions"],
         "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+    }
+
+
+def _polars_spec(*, label="Filter", instruction="Filter the population.", table_refs, code):
+    return {
+        "schema_version": 2,
+        "steps": [
+            {
+                "label": label,
+                "instruction": instruction,
+                "table_refs": table_refs,
+                "code": code,
+            }
+        ],
     }
 
 
@@ -103,14 +117,19 @@ def test_validation_and_polars_engines_persist_bounded_exception_results(workspa
             "title": "Large transactions",
             "objective": "Identify transactions greater than 500.",
             "rcm_id": row["id"],
-                "engine": "polars",
-            "table_refs": ["transactions"],
-            "spec": {"code": "result = transactions.filter(pl.col('amount') > 500)"},
+            "engine": "polars",
+            "spec": _polars_spec(
+                label="Large transactions",
+                instruction="Filter transactions greater than 500.",
+                table_refs=["transactions"],
+                code="result = transactions.filter(pl.col('amount') > 500)",
+            ),
         },
     )
     polars_run = data_tests.run(ws, polars_test["id"])
     assert polars_run["exception_count"] == 2
-    assert polars_run["exception_frame"]["columns"] == ws.get_frame("transactions").columns
+    assert polars_run["exception_frame"]["columns"] == [*ws.get_frame("transactions").columns, "_step_id", "_step_label"]
+    assert polars_run["step_results"][0]["exception_count"] == 2
 
 
 def test_zero_match_join_is_rejected_as_semantically_invalid(workspace_with_data):
@@ -134,9 +153,13 @@ def test_zero_match_join_is_rejected_as_semantically_invalid(workspace_with_data
             "title": "Finance approval authority",
             "objective": "Test whether requesters had sufficient approval authority.",
             "rcm_id": row["id"],
-                "engine": "polars",
-            "table_refs": ["invalid_finance_authority"],
-            "spec": {"code": "result = invalid_finance_authority.select(pl.len())", "result_mode": "summary"},
+            "engine": "polars",
+            "spec": _polars_spec(
+                label="Count joined rows",
+                instruction="Count rows across the invalid join.",
+                table_refs=["invalid_finance_authority"],
+                code="result = invalid_finance_authority.select(pl.len())",
+            ),
         },
     )
 
@@ -156,9 +179,13 @@ def test_null_only_result_is_not_accepted_as_success(workspace_with_data):
             "title": "Null output",
             "objective": "Exercise the semantic output gate.",
             "rcm_id": row["id"],
-                "engine": "polars",
-            "table_refs": ["transactions"],
-            "spec": {"code": "result = pl.DataFrame({'outcome': [None, None]})"},
+            "engine": "polars",
+            "spec": _polars_spec(
+                label="Null output",
+                instruction="Produce an all-null result.",
+                table_refs=["transactions"],
+                code="result = pl.DataFrame({'outcome': [None, None]})",
+            ),
         },
     )
 
@@ -211,8 +238,12 @@ def test_exploratory_data_test_runs_without_counting_as_rcm_execution(workspace_
             "title": "Explore large transactions",
             "objective": "Understand the population before planning fieldwork.",
             "engine": "polars",
-            "table_refs": ["transactions"],
-            "spec": {"code": "result = transactions.filter(pl.col('amount') > 500)"},
+            "spec": _polars_spec(
+                label="Large transactions",
+                instruction="Filter transactions greater than 500.",
+                table_refs=["transactions"],
+                code="result = transactions.filter(pl.col('amount') > 500)",
+            ),
         },
     )
 
@@ -236,8 +267,11 @@ def test_data_test_rejects_a_link_to_a_row_that_does_not_exist(workspace_with_da
                 "objective": "Invalid audit link.",
                 "rcm_id": "RCM-MISSING",
                 "engine": "polars",
-                "table_refs": ["transactions"],
-                "spec": {"code": "result = transactions.head(1)"},
+                "spec": _polars_spec(
+                    instruction="Take the first row.",
+                    table_refs=["transactions"],
+                    code="result = transactions.head(1)",
+                ),
             },
         )
 
@@ -324,8 +358,11 @@ def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
             "title": "Explore transaction values",
             "objective": "Inspect the population without asserting audit coverage.",
             "engine": "polars",
-            "table_refs": ["transactions"],
-            "spec": {"code": "result = transactions.select('amount')", "result_mode": "summary"},
+            "spec": _polars_spec(
+                instruction="Select the amount column.",
+                table_refs=["transactions"],
+                code="result = transactions.select('amount')",
+            ),
         },
     )
     assert exploratory.status_code == 200

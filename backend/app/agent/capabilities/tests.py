@@ -1,15 +1,15 @@
 """Test capability group of the audit workflow.
 
-Owns ``tests.drafted`` and ``tests.specified`` — the two passes that turn an RCM
-row into the durable Document and Data Tests that cover it.
+Owns ``tests.specified`` — the single pass that generates the complete,
+executable tests one RCM row needs and decides each test's source in one
+model turn, per docs/test-capability-merge-plan.md.
 
-A test is one record with one source. The draft pass writes the audit plan for
-each test an RCM row needs and chooses its source; the spec pass writes the
-executable part — generated Polars code for a Data Test, items and checks for a
-Document Test — onto the same record. Nothing in between is durable, and the RCM
-row holds only ``test_refs``.
+A test is one record with one source. Generation writes the audit plan and
+the executable part — Polars steps for a Data Test, items and checks for a
+Document Test — onto the same record in one commit. Nothing in between is
+durable, and the RCM row holds only ``test_refs``.
 
-Each capability is declared here: its readiness (existence and structural
+The capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry keys for its
 declared context. The dependency edges come from the authoritative graph in
 :mod:`agent.workflows.audit`; this module never restates them.
@@ -24,10 +24,7 @@ from ..workflows import audit as audit_workflow
 from ._shared import rows as _rows
 from ._shared import target_rcm_ids as _target_rcm_ids
 
-CAPABILITY_IDS: tuple[str, ...] = (
-    "tests.drafted",
-    "tests.specified",
-)
+CAPABILITY_IDS: tuple[str, ...] = ("tests.specified",)
 
 
 def _scoped_manifest(workspace: Workspace, scope: dict) -> list[dict]:
@@ -39,27 +36,45 @@ def _scoped_manifest(workspace: Workspace, scope: dict) -> list[dict]:
     ]
 
 
-# --------------------------------------------------------------------------- #
-# tests.drafted
-# --------------------------------------------------------------------------- #
 def _testable(workspace: Workspace) -> bool:
     """Whether the workspace holds anything a test could actually be run against.
 
     A test is executable work, not a description, so with no imported table and
-    no document there is nothing to draft: the row would get a plan that could
-    never be specified.
+    no document there is nothing to generate: the row would get a plan that
+    could never be executed.
     """
     return bool(workspace.tables or workspace.documents)
 
 
-def _drafted_ready(workspace: Workspace, scope: dict) -> Readiness:
+def _by_row(manifest: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for item in manifest:
+        grouped.setdefault(item["rcm_id"], []).append(item)
+    return grouped
+
+
+# --------------------------------------------------------------------------- #
+# tests.specified
+# --------------------------------------------------------------------------- #
+def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
     rows = _rows(workspace, scope)
     total = len(rows)
-    linked = {item["rcm_id"] for item in _scoped_manifest(workspace, scope)}
-    ready = sum(row["id"] in linked for row in rows)
-    # Existence only: every row in scope has at least one test. Whether a test is
-    # current with respect to its row is not assessed; the auditor forces a
-    # regeneration instead.
+    grouped = _by_row(_scoped_manifest(workspace, scope))
+    ready = 0
+    review_required = 0
+    for row in rows:
+        tests = grouped.get(row["id"], [])
+        if any(item["executable"] for item in tests):
+            ready += 1
+            continue
+        # A linked agent-created draft is missing generation work, not a
+        # blocker; an auditor-created draft agent generation cannot overwrite
+        # surfaces for review instead of looking like ordinary missing work.
+        if any(
+            item["status"] == "draft" and item.get("created_by") != "agent"
+            for item in tests
+        ):
+            review_required += 1
     if total and ready == total:
         return Readiness("satisfied", details={"ready": ready, "total": total})
     if not _testable(workspace):
@@ -68,81 +83,53 @@ def _drafted_ready(workspace: Workspace, scope: dict) -> Readiness:
             ("no imported data or documents are available to test against",),
             details={"ready": ready, "total": total},
         )
+    if review_required and ready + review_required == total:
+        return Readiness(
+            "review_required",
+            (
+                f"{review_required} RCM row(s) carry an auditor-owned test that "
+                "cannot be overwritten",
+            ),
+            details={"ready": ready, "total": total},
+        )
     return Readiness(
         "missing",
-        (f"{total - ready} RCM row(s) need at least one test",),
+        (f"{total - ready} RCM row(s) need at least one executable test",),
         details={"ready": ready, "total": total},
     )
 
 
-def _draft_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+def _generation_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     if not _testable(workspace):
         return []
-    linked = {item["rcm_id"] for item in _scoped_manifest(workspace, scope)}
-    return [
-        UnitSpec(
-            semantic_unit_id("test_draft", row["id"]),
-            "test_draft",
-            f"Draft tests — {row.get('risk') or row['id']}",
-            (f"rcm:{row['id']}",),
-            row,
-        )
-        for row in _rows(workspace, scope)
-        if row["id"] not in linked or scope.get("generation_mode") == "force"
-    ]
-
-
-def _tests_drafted() -> Capability:
-    return Capability(
-        "tests.drafted",
-        "tests",
-        "RCM tests",
-        "test_draft",
-        audit_workflow.dependencies("tests.drafted"),
-        _drafted_ready,
-        _draft_units,
-        context="tests.draft",
-        invalidate_on=("rcm",),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# tests.specified
-# --------------------------------------------------------------------------- #
-def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
-    manifest = _scoped_manifest(workspace, scope)
-    if not manifest:
-        return Readiness("missing", ("no tests are available to specify",))
-    pending = [item["test_id"] for item in manifest if not item["specified"]]
-    if pending:
-        return Readiness(
-            "missing",
-            (f"{len(pending)} test(s) have no executable specification",),
-            details={"pending": len(pending), "total": len(manifest)},
-        )
-    # Every linked test is executable; currency relative to its plan is not
-    # assessed. Parent hashes remain for executor CAS.
-    return Readiness("satisfied", details={"total": len(manifest)})
-
-
-def _spec_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    grouped = _by_row(_scoped_manifest(workspace, scope))
+    force = scope.get("generation_mode") == "force"
     units = []
-    for item in _scoped_manifest(workspace, scope):
-        # Specify only what is still a draft, or everything on explicit force. A
-        # spec that predates a plan edit is not regenerated automatically; the
-        # auditor forces a regeneration instead.
-        if item["specified"] and scope.get("generation_mode") != "force":
-            continue
-        worker_kind = (
-            "data_test_spec" if item["kind"] == "datatest" else "document_test_spec"
+    for row in _rows(workspace, scope):
+        tests = grouped.get(row["id"], [])
+        covered = any(item["executable"] for item in tests)
+        upgradeable_draft = any(
+            item["status"] == "draft" and item.get("created_by") == "agent"
+            for item in tests
         )
+        auditor_draft_blocks = any(
+            item["status"] == "draft" and item.get("created_by") != "agent"
+            for item in tests
+        )
+        if covered:
+            if not force and not upgradeable_draft:
+                continue
+        elif auditor_draft_blocks:
+            # Review-required, not a generation gap the executor can fix
+            # without explicit overwrite permission.
+            continue
         units.append(
             UnitSpec(
-                semantic_unit_id(worker_kind, item["test_id"]),
-                worker_kind,
-                f"Specify {item['kind']} — {item['title']}",
-                (f"rcm:{item['rcm_id']}", f"{item['kind']}:{item['test_id']}"),
-                item,
+                semantic_unit_id("test_generation", row["id"]),
+                "test_generation",
+                f"Generate tests — {row.get('risk') or row['id']}",
+                (f"rcm:{row['id']}",),
+                row,
             )
         )
     return units
@@ -153,17 +140,16 @@ def _tests_specified() -> Capability:
         "tests.specified",
         "test_specs",
         "Executable test specifications",
-        "test_spec",
+        "test_generation",
         audit_workflow.dependencies("tests.specified"),
         _specified_ready,
-        _spec_units,
-        context="tests.spec",
-        invalidate_on=("test",),
+        _generation_units,
+        context="tests.generate",
+        invalidate_on=("rcm",),
     )
 
 
 _BUILDERS = {
-    "tests.drafted": _tests_drafted,
     "tests.specified": _tests_specified,
 }
 

@@ -593,18 +593,21 @@ npm run build
 - Legacy `work_program` and legacy working-paper behavior remain only for
   compatibility and rollback paths. The active audit model is RCM-first.
 - A test is a single durable record with a single source. The former
-  `rcm[].planned_tests` layer is gone: `tests.drafted` writes the audit plan
-  (title, objective, criteria, steps, expected evidence) straight onto a
-  Document or Data Test in `draft` status, and `tests.specified` writes that
-  test's executable part — generated Polars code, or document items and checks —
-  onto the same record. An RCM row carries only `test_refs`, and its
-  `execution_rollup` is the tally over them (`tests`, `completed`, `passed`,
-  `failed`, `findings`). The rationale and the schema-size measurements are in
-  `docs/simplified-test-model-plan.md`.
+  `rcm[].planned_tests` layer is gone, and the two-pass `tests.drafted` ->
+  `tests.specified` flow was merged into one capability: `tests.specified`
+  decides each test's source and writes its complete executable definition —
+  Polars steps, or document steps with checks/questions — in a single model
+  turn per RCM row via the `tests.generate` worker/executor. Nothing durable
+  is left in an intermediate `draft` status by the audit workflow (`draft`
+  stays a valid status only for manually authored or historical tests). An
+  RCM row carries only `test_refs`, and its `execution_rollup` is the tally
+  over them (`tests`, `completed`, `passed`, `failed`, `findings`). The
+  rationale is in `docs/test-capability-merge-plan.md`.
 - Generation deliberately emits a narrow slice of what the stores support:
-  Data Tests as Polars code (the analytics and validation engines stay for
-  auditor-authored tests) and Document Tests as `qa` or `vouching` only (the
-  `attribute` and `review` builders always route to manual review, so
+  Data Tests as multi-step Polars code under `spec.steps` (the analytics and
+  validation engines, and the single top-level `spec.code` shape, stay only
+  for auditor-authored tests) and Document Tests as `qa` or `vouching` only
+  (the `attribute` and `review` builders always route to manual review, so
   generating them buys nothing). `SCHEMA_VERSION` is 3 and there is no
   migration — a pre-3 workspace keeps its rows and loses its planned tests.
 - Exploratory data analysis is a declared workflow too. `POST /agent/runs`

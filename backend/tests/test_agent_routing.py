@@ -24,7 +24,7 @@ from app.workspaces import WorkspaceError
 from conftest import FakeAgentLLM, wait_run
 
 
-AUDIT = "audit_workflow_v2"
+AUDIT = "audit_workflow_v3"
 ANALYSIS = "analysis_workflow_v1"
 DOCUMENTS = "documents_workflow_v1"
 DOC_TESTS = "doc_tests_workflow_v1"
