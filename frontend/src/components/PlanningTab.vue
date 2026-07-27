@@ -15,7 +15,7 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { workspaceQuery } from '../composables/useWorkspaceNavigation'
-import type { AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AgentRun, AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
@@ -42,6 +42,8 @@ const apmExporting = ref(false)
 const apmImporting = ref(false)
 const rcmExporting = ref(false)
 const rcmImporting = ref(false)
+const generatingTests = ref(false)
+const runningAllDataTests = ref(false)
 const detailOpen = ref(false)
 const paperOpen = ref(false)
 const workingPaper = ref<WorkingPaper | null>(null)
@@ -56,6 +58,8 @@ const viewOptions = computed(() => [
 ])
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
 const selectedObservations = computed(() => (data.value?.observations ?? []).filter(item => item.rcm_id === selectedRcmId.value))
+const rowsWithoutTests = computed(() => (data.value?.rcm ?? []).filter(row => (row.execution_rollup.tests ?? row.test_refs.length) === 0))
+const linkedDataTestCount = computed(() => (data.value?.data_tests ?? []).filter(test => test.rcm_id).length)
 
 function fail(summary: string, error: unknown) {
   toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
@@ -255,6 +259,38 @@ async function refreshRollup() {
   }
   catch (error) { fail('Could not refresh the roll-up', error) }
 }
+async function generatePlannedTests(rowIds: string[] = rowsWithoutTests.value.map(row => row.id)) {
+  if (!rowIds.length) return
+  generatingTests.value = true
+  try {
+    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/agent/runs`, {
+      mode: launchMode.value,
+      requested_outcomes: ['tests.specified'],
+      target_refs: rowIds.map(id => `rcm:${id}`),
+      generation_mode: 'reuse_existing',
+    })
+    await agent.openRun(run.id)
+    toast.add({ severity: 'success', summary: `Generating planned test${rowIds.length === 1 ? '' : 's'} for ${rowIds.length} RCM row${rowIds.length === 1 ? '' : 's'}`, life: 3000 })
+  } catch (error) { fail('Could not start planned test generation', error) }
+  finally { generatingTests.value = false }
+}
+async function runAllDataTests() {
+  runningAllDataTests.value = true
+  try {
+    const result = await api.post<{ total: number; completed: Array<Record<string, unknown>>; failed: Array<{ data_test_id: string; error: string }> }>(
+      `/api/workspaces/${props.workspace.id}/data-tests/run-all-rcm`,
+    )
+    await reload()
+    emit('changed')
+    toast.add({
+      severity: result.failed.length ? 'warn' : 'success',
+      summary: `Ran ${result.completed.length} of ${result.total} RCM Data Test${result.total === 1 ? '' : 's'}`,
+      detail: result.failed.length ? `${result.failed.length} test(s) could not run: ${result.failed.map(item => item.data_test_id).join(', ')}` : undefined,
+      life: 6000,
+    })
+  } catch (error) { fail('Could not run RCM Data Tests', error) }
+  finally { runningAllDataTests.value = false }
+}
 async function openWorkingPaper() {
   if (!selectedRcm.value) return
   try { workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/working-paper`); paperOpen.value = true }
@@ -279,9 +315,9 @@ async function copyPaper(kind: 'markdown' | 'html') {
       <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
     </section>
     <section v-else>
-      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
+      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
-      <RcmGrid :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm"/>
+      <RcmGrid :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
     </section>
 
     <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">

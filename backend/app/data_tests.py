@@ -790,6 +790,46 @@ def run(workspace: Workspace, data_test_id: str) -> dict:
     )
 
 
+def run_all_rcm_linked(workspace: Workspace) -> dict:
+    """Run every Data Test linked to an RCM row, one at a time.
+
+    Each test has its own durable result and guarded commit, so a bad or
+    incomplete definition must not prevent the other RCM-linked tests from
+    running.  The returned payload is intentionally a compact batch summary;
+    callers can open individual results through the normal test endpoint.
+    """
+    test_ids = [
+        str(item["id"])
+        for item in workspace.data_tests
+        if item.get("rcm_id")
+    ]
+    completed: list[dict] = []
+    failed: list[dict] = []
+    for data_test_id in test_ids:
+        try:
+            result = run(workspace, data_test_id)
+            completed.append(
+                {
+                    "data_test_id": data_test_id,
+                    "status": result["status"],
+                    "exception_count": result["exception_count"],
+                }
+            )
+        except Exception as error:
+            failed.append({"data_test_id": data_test_id, "error": str(error)})
+
+    # Keep the central RCM projection current even when a subset of tests
+    # could not run.  Import here to avoid a module-level cycle.
+    from . import rcm_execution
+
+    rcm_execution.rollup(workspace)
+    return {
+        "total": len(test_ids),
+        "completed": completed,
+        "failed": failed,
+    }
+
+
 def load_result(workspace: Workspace, data_test_id: str, run_id: str) -> dict:
     _record(workspace, data_test_id)
     path = _result_path(workspace, data_test_id, run_id)

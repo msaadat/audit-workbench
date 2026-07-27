@@ -376,3 +376,30 @@ def test_data_test_api_create_run_reopen_and_pin(workspace_with_data):
     )
     assert exploratory_pin.status_code == 200
     assert exploratory_pin.json().get("rcm_id") is None
+
+
+def test_data_test_api_runs_all_rcm_linked_tests_and_skips_exploratory(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    linked = data_tests.create(ws, _analytics_payload(row))
+    exploratory = data_tests.create(
+        ws,
+        {
+            "title": "Exploratory duplicates",
+            "objective": "Inspect duplicates without RCM coverage.",
+            "engine": "analytics",
+            "table_refs": ["transactions"],
+            "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+        },
+    )
+    client = TestClient(create_app())
+
+    response = client.post(f"/api/workspaces/{ws.id}/data-tests/run-all-rcm")
+
+    assert response.status_code == 200
+    batch = response.json()
+    assert batch["total"] == 1
+    assert batch["failed"] == []
+    assert batch["completed"][0]["data_test_id"] == linked["id"]
+    assert linked["last_run"] is not None
+    assert exploratory["last_run"] is None

@@ -10,12 +10,20 @@ import Tag from 'primevue/tag'
 import type { DataTest, DocTest, FindingRollups, RcmRow } from '../../types'
 import { workspaceQuery } from '../../composables/useWorkspaceNavigation'
 
-defineProps<{ rows: RcmRow[]; dataTests?: DataTest[]; documentTests?: Array<Pick<DocTest, 'id' | 'title' | 'status'>>; findingRollups?: FindingRollups }>()
+const props = defineProps<{
+  rows: RcmRow[]
+  dataTests?: DataTest[]
+  documentTests?: Array<Pick<DocTest, 'id' | 'title' | 'status'>>
+  findingRollups?: FindingRollups
+  generating?: boolean
+  canGenerate?: boolean
+}>()
 const emit = defineEmits<{
   add: []
   remove: [string]
   update: [string, Partial<RcmRow>]
   open: [RcmRow]
+  generate: [string[]]
 }>()
 
 const ratings = ['low', 'medium', 'high', 'critical']
@@ -53,7 +61,7 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
       <Column header="Conclusion" style="min-width: 10rem"><template #body="{ data }"><Tag :value="data.execution_rollup.control_conclusion ?? 'no conclusion'" :severity="statusSeverity(data.execution_rollup.control_conclusion)"/></template></Column>
       <Column header="Findings" style="min-width: 9rem"><template #body="{ data }"><span class="refs"><button v-for="finding in findingRollups?.by_rcm[data.id] ?? []" :key="finding.id" type="button" class="finding" @click="openFinding(finding.id)">{{ finding.id }} · {{ finding.severity }}</button><span v-if="!(findingRollups?.by_rcm[data.id]?.length)" class="muted">None</span></span></template></Column>
       <Column header="Review" style="min-width: 8rem"><template #body="{ data }"><Tag :value="data.review_status.replaceAll('_', ' ')" severity="secondary"/></template></Column>
-      <Column frozen alignFrozen="right" style="width: 6rem"><template #body="{ data }"><div class="row-actions"><Button icon="pi pi-eye" text size="small" @click="emit('open', data)"/><Button icon="pi pi-trash" text severity="danger" size="small" @click="emit('remove', data.id)" /></div></template></Column>
+      <Column frozen alignFrozen="right" style="min-width: 12rem"><template #body="{ data }"><div class="row-actions"><Button v-if="!testCount(data)" label="Generate test" icon="pi pi-sparkles" text size="small" :loading="props.generating" :disabled="!props.canGenerate" @click="emit('generate', [data.id])"/><Button icon="pi pi-eye" text size="small" @click="emit('open', data)"/><Button icon="pi pi-trash" text severity="danger" size="small" @click="emit('remove', data.id)" /></div></template></Column>
     </DataTable>
   </div>
 </template>
