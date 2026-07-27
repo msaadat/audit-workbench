@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -45,6 +46,92 @@ class TransactionResult:
 class LinkedWrite:
     journal_path: Path
     target_path: Path
+
+
+@dataclass(frozen=True)
+class ArtifactWrite:
+    journal_path: Path
+
+
+def _write_text_atomic(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:6]}.tmp")
+    temporary.write_text(value, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def prepare_artifact_writes(
+    workspace: Workspace,
+    writes: list[tuple[Path, str, object]],
+) -> ArtifactWrite:
+    """Journal a group of JSON/text sidecars for one workspace revision.
+
+    The manifest revision is the commit marker. If the process stops before it
+    advances, recovery restores all recorded preimages; if it advanced, the
+    sidecars are the committed state and only the journal is discarded.
+    """
+    root = workspace.root.resolve()
+    entries = []
+    for target, kind, _ in writes:
+        target = target.resolve()
+        if root not in target.parents or kind not in {"json", "text", "delete"}:
+            raise WorkspaceError("Linked transaction target is invalid.")
+        restore_kind = "json" if kind in {"json", "delete"} else "text"
+        before_exists = target.is_file()
+        before: object = None
+        if before_exists:
+            try:
+                before = (
+                    json.loads(target.read_text(encoding="utf-8"))
+                    if restore_kind == "json"
+                    else target.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                raise WorkspaceError(f"Linked artifact '{target.name}' is unreadable.") from error
+        entries.append({
+            "target": str(target.relative_to(root)), "kind": restore_kind,
+            "before_exists": before_exists, "before": before,
+        })
+    journal_dir = root / JOURNAL_DIRNAME
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    journal_path = journal_dir / f"txn-{uuid.uuid4().hex}.json"
+    write_json_atomic(journal_path, {
+        "state": "prepared", "expected_revision": workspace.revision,
+        "targets": entries,
+    })
+    return ArtifactWrite(journal_path)
+
+
+def apply_artifact_writes(writes: list[tuple[Path, str, object]]) -> None:
+    for target, kind, value in writes:
+        if kind == "delete":
+            target.unlink(missing_ok=True)
+        elif kind == "json":
+            write_json_atomic(target, value)
+        else:
+            _write_text_atomic(target, str(value))
+
+
+def rollback_artifact_writes(root: Path, write: ArtifactWrite) -> None:
+    try:
+        journal = json.loads(write.journal_path.read_text(encoding="utf-8"))
+        for entry in reversed(journal.get("targets") or []):
+            target = (root / str(entry.get("target") or "")).resolve()
+            if root not in target.parents:
+                continue
+            if entry.get("before_exists"):
+                if entry.get("kind") == "json":
+                    write_json_atomic(target, entry.get("before") or {})
+                else:
+                    _write_text_atomic(target, str(entry.get("before") or ""))
+            else:
+                target.unlink(missing_ok=True)
+    finally:
+        write.journal_path.unlink(missing_ok=True)
+
+
+def complete_artifact_writes(write: ArtifactWrite) -> None:
+    write.journal_path.unlink(missing_ok=True)
 
 
 def prepare_linked_write(workspace: Workspace, target: Path, payload: dict) -> LinkedWrite:
@@ -109,6 +196,13 @@ def recover_linked_writes(root: Path) -> None:
         for journal_path in sorted(journal_dir.glob("txn-*.json")):
             try:
                 journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                if journal.get("targets") is not None:
+                    write = ArtifactWrite(journal_path)
+                    if current_revision <= int(journal.get("expected_revision") or 0):
+                        rollback_artifact_writes(root, write)
+                    else:
+                        complete_artifact_writes(write)
+                    continue
                 target = (root / str(journal.get("target") or "")).resolve()
                 if root not in target.parents:
                     journal_path.unlink(missing_ok=True)

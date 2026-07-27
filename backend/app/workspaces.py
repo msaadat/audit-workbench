@@ -4,8 +4,10 @@ A workspace is the unit of an engagement: a folder holding the auditor's data
 files plus a JSON definition of the tables and joins built on them::
 
     Workspaces/<id>/
-        workspace.json   ← meta + table entries + join definitions
+        workspace.json   ← engagement manifest + table/join definitions
         Data/            ← the uploaded data files
+        Planning/        ← APM, planning context, and RCM row sidecars
+        DataTests/       ← independently persisted Data Test definitions
 
 Base tables map 1:1 to files; joins are named, derived tables that can
 reference base tables or other joins. Frames are resolved lazily through
@@ -36,7 +38,7 @@ from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
 from . import loader, profiler
 from .field_names import resolve_columns
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 JOIN_TYPES = ("inner", "left", "full", "semi", "anti", "cross")
 
 # The one status vocabulary shared by Document Tests and Data Tests. ``draft`` is
@@ -212,6 +214,176 @@ def workspace_write_lock(root: Path) -> threading.RLock:
     key = str(Path(root).resolve())
     with _workspace_write_locks_guard:
         return _workspace_write_locks.setdefault(key, threading.RLock())
+
+
+# Audit artifacts are deliberately stored as independently replaceable files.
+# ``workspace.json`` is now the engagement manifest: it owns identity, the
+# optimistic-concurrency revision, and data-workbench configuration.  The
+# collections below are hydrated into the same in-memory shape the rest of the
+# application already consumes, which keeps read-side call sites simple while
+# avoiding a monolithic audit-record write for every edit.
+_ARTIFACT_COLLECTIONS: dict[str, tuple[str, str]] = {
+    "tiles": ("Dashboard/Tiles", "id"),
+    "analyses": ("Analyses", "id"),
+    "rulesets": ("Validation/Rulesets", "id"),
+    "documents": ("Documents/.inventory", "id"),
+    "rcm": ("Planning/RCM", "id"),
+    "data_tests": ("DataTests", "id"),
+    "work_program": ("Planning/Procedures", "id"),
+    "observations": ("Observations", "id"),
+    "evidence_requests": ("EvidenceRequests", "id"),
+    "findings": ("Findings", "id"),
+}
+_ARTIFACT_OBJECTS: dict[str, str] = {
+    "report": "Reports/current.json",
+    "dashboard_advice": "Dashboard/advice.json",
+}
+_MANIFEST_FIELDS = (
+    "schema_version", "revision", "id", "name", "description", "created",
+    "tables", "joins",
+)
+_PLANNING_DEFAULT = {
+    "context": {
+        "objective": "", "entity": "", "period": "", "scope": "",
+        "materiality": "", "key_contacts": "", "background_notes": "",
+        "interview_answers": {},
+    },
+    "created_by": "user", "agent_run_id": None, "updated": None,
+}
+_ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _artifact_path(root: Path, collection: str, item_id: str) -> Path:
+    directory, _ = _ARTIFACT_COLLECTIONS[collection]
+    item_id = str(item_id or "")
+    if not _ARTIFACT_ID_RE.fullmatch(item_id):
+        raise WorkspaceError(f"Invalid {collection} artifact ID.")
+    return root / directory / f"{item_id}.json"
+
+
+def _artifact_index_path(root: Path, collection: str) -> Path:
+    directory, _ = _ARTIFACT_COLLECTIONS[collection]
+    return root / directory / ".index.json"
+
+
+def _artifact_object_path(root: Path, name: str) -> Path:
+    return root / _ARTIFACT_OBJECTS[name]
+
+
+def _load_artifact_collection(root: Path, collection: str) -> list[dict]:
+    directory, identity_key = _ARTIFACT_COLLECTIONS[collection]
+    path = root / directory
+    if not path.exists():
+        return []
+    if not path.is_dir():
+        raise WorkspaceError(f"Artifact directory '{directory}' is not readable.")
+    by_id: dict[str, dict] = {}
+    for item_path in sorted(path.glob("*.json")):
+        if item_path.name.startswith("."):
+            continue
+        try:
+            item = json.loads(item_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise WorkspaceError(f"Artifact '{item_path.relative_to(root)}' is unreadable.") from error
+        if not isinstance(item, dict) or str(item.get(identity_key) or "") != item_path.stem:
+            raise WorkspaceError(f"Artifact '{item_path.relative_to(root)}' has an invalid identity.")
+        by_id[item_path.stem] = item
+    index_path = _artifact_index_path(root, collection)
+    if not index_path.exists():
+        return list(by_id.values())
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        ordered_ids = list(index.get("ids") or [])
+    except (OSError, json.JSONDecodeError, AttributeError) as error:
+        raise WorkspaceError(f"Artifact index '{index_path.relative_to(root)}' is unreadable.") from error
+    if len(ordered_ids) != len(set(ordered_ids)) or any(
+        not isinstance(item_id, str) or item_id not in by_id for item_id in ordered_ids
+    ):
+        raise WorkspaceError(f"Artifact index '{index_path.relative_to(root)}' is invalid.")
+    return [by_id.pop(item_id) for item_id in ordered_ids] + list(by_id.values())
+
+
+def _load_artifact_object(root: Path, name: str) -> dict:
+    path = _artifact_object_path(root, name)
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise WorkspaceError(f"Artifact '{path.relative_to(root)}' is unreadable.") from error
+    if not isinstance(value, dict):
+        raise WorkspaceError(f"Artifact '{path.relative_to(root)}' must be an object.")
+    return value
+
+
+def _load_planning_artifact(root: Path) -> dict:
+    context_path = root / "Planning" / "context.json"
+    apm_path = root / "Planning" / "APM.md"
+    value: dict = {}
+    if context_path.exists():
+        try:
+            value = json.loads(context_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise WorkspaceError("Planning context is unreadable.") from error
+        if not isinstance(value, dict):
+            raise WorkspaceError("Planning context must be an object.")
+    return {**value, "apm_markdown": apm_path.read_text(encoding="utf-8") if apm_path.exists() else ""}
+
+
+def _write_planning_artifact(root: Path, planning: dict) -> None:
+    stored = {key: value for key, value in planning.items() if key != "apm_markdown"}
+    write_json_atomic(root / "Planning" / "context.json", stored)
+    apm_path = root / "Planning" / "APM.md"
+    apm_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = apm_path.with_name(f".{apm_path.name}.{uuid.uuid4().hex[:6]}.tmp")
+    tmp.write_text(str(planning.get("apm_markdown") or ""), encoding="utf-8")
+    os.replace(tmp, apm_path)
+
+
+def _migrate_artifacts(root: Path, definition: dict) -> dict:
+    """Move v1-v3 embedded audit records to v4 sidecars before loading.
+
+    The manifest is replaced last. A crash before that point leaves the legacy
+    source intact, so the next open safely repeats the idempotent migration.
+    """
+    if int(definition.get("schema_version") or 1) >= SCHEMA_VERSION:
+        return definition
+    with workspace_write_lock(root):
+        # Another opener may have completed the migration while we waited.
+        definition = json.loads((root / "workspace.json").read_text(encoding="utf-8"))
+        if int(definition.get("schema_version") or 1) >= SCHEMA_VERSION:
+            return definition
+        planning = {**_PLANNING_DEFAULT, **dict(definition.get("planning") or {})}
+        planning["context"] = {
+            **_PLANNING_DEFAULT["context"], **dict(planning.get("context") or {}),
+        }
+        _write_planning_artifact(root, planning)
+        for collection, (_, identity_key) in _ARTIFACT_COLLECTIONS.items():
+            seen: set[str] = set()
+            ordered_ids: list[str] = []
+            superseded = (
+                {str(item.get("supersedes")) for item in definition.get("documents") or []
+                 if isinstance(item, dict) and item.get("supersedes")}
+                if collection == "documents" else set()
+            )
+            for item in definition.get(collection) or []:
+                if not isinstance(item, dict):
+                    raise WorkspaceError(f"Legacy {collection} artifact must be an object.")
+                item_id = str(item.get(identity_key) or "")
+                if not item_id or item_id in seen:
+                    raise WorkspaceError(f"Legacy {collection} artifacts have invalid identities.")
+                seen.add(item_id)
+                if item_id in superseded:
+                    continue
+                write_json_atomic(_artifact_path(root, collection, item_id), item)
+                ordered_ids.append(item_id)
+            write_json_atomic(_artifact_index_path(root, collection), {"ids": ordered_ids})
+        for name in _ARTIFACT_OBJECTS:
+            write_json_atomic(_artifact_object_path(root, name), dict(definition.get(name) or {}))
+        manifest = {key: definition.get(key) for key in _MANIFEST_FIELDS if key in definition}
+        manifest["schema_version"] = SCHEMA_VERSION
+        write_json_atomic(root / "workspace.json", manifest)
+        return manifest
 
 
 def sync_workspace(target: "Workspace", source: "Workspace") -> "Workspace":
@@ -430,7 +602,9 @@ class Workspace:
     def __init__(self, root: Path):
         self.root = Path(root)
         self.definition_path = self.root / "workspace.json"
-        definition = json.loads(self.definition_path.read_text(encoding="utf-8"))
+        definition = _migrate_artifacts(
+            self.root, json.loads(self.definition_path.read_text(encoding="utf-8"))
+        )
         self.schema_version = int(definition.get("schema_version") or 1)
         self.revision = int(definition.get("revision") or 0)
         self.id: str = definition.get("id") or self.root.name
@@ -439,12 +613,12 @@ class Workspace:
         self.created: str = definition.get("created") or ""
         self.tables: list[dict] = list(definition.get("tables") or [])
         self.joins: list[dict] = list(definition.get("joins") or [])
-        self.tiles: list[dict] = list(definition.get("tiles") or [])
-        self.analyses: list[dict] = list(definition.get("analyses") or [])
-        self.rulesets: list[dict] = list(definition.get("rulesets") or [])
+        self.tiles: list[dict] = _load_artifact_collection(self.root, "tiles")
+        self.analyses: list[dict] = _load_artifact_collection(self.root, "analyses")
+        self.rulesets: list[dict] = _load_artifact_collection(self.root, "rulesets")
         # Full-audit-cycle records hydrate defensively so every pre-extension
         # workspace remains readable without a migration step.
-        stored_documents = list(definition.get("documents") or [])
+        stored_documents = _load_artifact_collection(self.root, "documents")
         # Document versions were removed in favor of explicit in-place
         # replacement. Keep only the current member of each legacy chain and
         # hydrate it into the simpler document shape. A later save persists the
@@ -464,44 +638,25 @@ class Workspace:
             document.setdefault("updated", None)
             self.documents.append(document)
         self.planning: dict = {
-            "context": {
-                "objective": "",
-                "entity": "",
-                "period": "",
-                "scope": "",
-                "materiality": "",
-                "key_contacts": "",
-                "background_notes": "",
-                "interview_answers": {},
-            },
+            **_PLANNING_DEFAULT,
             "apm_markdown": "",
-            "created_by": "user",
-            "agent_run_id": None,
-            "updated": None,
-            **dict(definition.get("planning") or {}),
+            **_load_planning_artifact(self.root),
         }
         self.planning["context"] = {
-            "objective": "",
-            "entity": "",
-            "period": "",
-            "scope": "",
-            "materiality": "",
-            "key_contacts": "",
-            "background_notes": "",
-            "interview_answers": {},
+            **_PLANNING_DEFAULT["context"],
             **dict(self.planning.get("context") or {}),
         }
         hydrated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.rcm: list[dict] = [
             _normalize_rcm_row(dict(row), now=hydrated_at)
-            for row in (definition.get("rcm") or [])
+            for row in _load_artifact_collection(self.root, "rcm")
         ]
-        self.work_program: list[dict] = list(definition.get("work_program") or [])
-        self.data_tests: list[dict] = list(definition.get("data_tests") or [])
-        self.observations: list[dict] = list(definition.get("observations") or [])
-        self.evidence_requests: list[dict] = list(definition.get("evidence_requests") or [])
-        self.findings: list[dict] = list(definition.get("findings") or [])
-        self.dashboard_advice: dict = dict(definition.get("dashboard_advice") or {})
+        self.work_program: list[dict] = _load_artifact_collection(self.root, "work_program")
+        self.data_tests: list[dict] = _load_artifact_collection(self.root, "data_tests")
+        self.observations: list[dict] = _load_artifact_collection(self.root, "observations")
+        self.evidence_requests: list[dict] = _load_artifact_collection(self.root, "evidence_requests")
+        self.findings: list[dict] = _load_artifact_collection(self.root, "findings")
+        self.dashboard_advice: dict = _load_artifact_object(self.root, "dashboard_advice")
         # Legacy evidence strings remain represented through a typed wrapper;
         # all subsequent writes validate the durable anchor shape.
         from .evidence import normalize_many
@@ -522,9 +677,10 @@ class Workspace:
             item.pop("planned_test_refs", None)
             item.pop("status", None)
             item.setdefault("source", "manual")
-        self.report: dict = dict(definition.get("report") or {})
+        self.report: dict = _load_artifact_object(self.root, "report")
         self.planning.pop("status", None)
         self.report.pop("status", None)
+        self._artifact_snapshot = self._artifact_state()
 
     # ------------------------------------------------------------- persistence
     @property
@@ -561,31 +717,15 @@ class Workspace:
                 current = 0
         if current != expected:
             raise WorkspaceConflict(expected, current)
-        self.revision = current + 1
-        if request_state is not None:
-            request_state["revision"] = self.revision
         definition = {
             "schema_version": SCHEMA_VERSION,
-            "revision": self.revision,
+            "revision": current + 1,
             "id": self.id,
             "name": self.name,
             "description": self.description,
             "created": self.created,
             "tables": self.tables,
             "joins": self.joins,
-            "tiles": self.tiles,
-            "analyses": self.analyses,
-            "rulesets": self.rulesets,
-            "documents": self.documents,
-            "planning": self.planning,
-            "rcm": self.rcm,
-            "data_tests": self.data_tests,
-            "observations": self.observations,
-            "evidence_requests": self.evidence_requests,
-            "work_program": self.work_program,
-            "findings": self.findings,
-            "report": self.report,
-            "dashboard_advice": self.dashboard_advice,
         }
         before = None
         if self.definition_path.exists():
@@ -593,7 +733,32 @@ class Workspace:
                 before = json.loads(self.definition_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 before = None
-        write_json_atomic(self.definition_path, definition)
+        before_artifacts = self._artifact_snapshot
+        after_artifacts = self._artifact_state()
+        writes = self._changed_artifact_writes(before_artifacts, after_artifacts)
+        transaction = None
+        try:
+            if writes:
+                from .workspace_transactions import apply_artifact_writes, prepare_artifact_writes
+
+                transaction = prepare_artifact_writes(self, writes)
+                apply_artifact_writes(writes)
+            write_json_atomic(self.definition_path, definition)
+        except Exception:
+            if transaction is not None:
+                from .workspace_transactions import rollback_artifact_writes
+
+                rollback_artifact_writes(self.root.resolve(), transaction)
+            raise
+        if transaction is not None:
+            from .workspace_transactions import complete_artifact_writes
+
+            complete_artifact_writes(transaction)
+        self.revision = current + 1
+        self.schema_version = SCHEMA_VERSION
+        self._artifact_snapshot = after_artifacts
+        if request_state is not None:
+            request_state["revision"] = self.revision
         # Debug telemetry is best-effort and must never make the auditor's
         # primary workspace write fail. Import lazily to avoid a storage cycle.
         try:
@@ -602,6 +767,41 @@ class Workspace:
                 debug_store.record_workspace_save(self.id, before, definition)
         except Exception:
             pass
+
+    def _artifact_state(self) -> dict:
+        """Canonical in-memory projection of sidecar-backed audit artifacts."""
+        return json.loads(json.dumps({
+            "planning": self.planning,
+            **{name: getattr(self, name) for name in _ARTIFACT_COLLECTIONS},
+            **{name: getattr(self, name) for name in _ARTIFACT_OBJECTS},
+        }, sort_keys=True, default=str))
+
+    def _changed_artifact_writes(self, before: dict, after: dict) -> list[tuple[Path, str, object]]:
+        writes: list[tuple[Path, str, object]] = []
+        if before.get("planning") != after.get("planning"):
+            writes.extend([
+                (self.root / "Planning" / "context.json", "json", {
+                    key: value for key, value in self.planning.items() if key != "apm_markdown"
+                }),
+                (self.root / "Planning" / "APM.md", "text", self.planning.get("apm_markdown") or ""),
+            ])
+        for collection, (_, identity_key) in _ARTIFACT_COLLECTIONS.items():
+            prior = {str(item[identity_key]): item for item in before.get(collection, [])}
+            current = {str(item[identity_key]): item for item in after.get(collection, [])}
+            removed = prior.keys() - current.keys()
+            for item_id in removed:
+                writes.append((_artifact_path(self.root, collection, item_id), "delete", None))
+            for item_id, item in current.items():
+                if prior.get(item_id) != item:
+                    writes.append((_artifact_path(self.root, collection, item_id), "json", item))
+            if before.get(collection) != after.get(collection):
+                writes.append((_artifact_index_path(self.root, collection), "json", {
+                    "ids": [str(item[identity_key]) for item in after.get(collection, [])],
+                }))
+        for name in _ARTIFACT_OBJECTS:
+            if before.get(name) != after.get(name):
+                writes.append((_artifact_object_path(self.root, name), "json", getattr(self, name)))
+        return writes
 
     # ------------------------------------------------------------------ tables
     def table_names(self) -> list[str]:

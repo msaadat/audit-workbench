@@ -506,13 +506,8 @@ def test_report_is_multi_sheet(workspace_with_data):
 
 
 def test_workspace_without_rulesets_key_loads(workspace_with_data):
-    # Pre-existing workspace.json files predate the rulesets collection.
+    # Rulesets are sidecars in v4, so an empty manifest has none to hydrate.
     ws = workspace_with_data
     definition = ws.definition_path.read_text(encoding="utf-8")
-    assert '"rulesets"' in definition
-    import json
-
-    data = json.loads(definition)
-    del data["rulesets"]
-    ws.definition_path.write_text(json.dumps(data), encoding="utf-8")
+    assert '"rulesets"' not in definition
     assert workspaces.load_workspace(ws.id).rulesets == []
