@@ -69,4 +69,73 @@ onBeforeUnmount(() => void unmount())
   overflow: auto;
   background: #fff;
 }
+
+/* Compact the Crepe top bar (toolbar) and halve the editor's text margins. */
+.markdown-editor :deep(.milkdown-top-bar) {
+  min-height: 32px;
+  padding: 0 8px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-divider) {
+  height: 18px;
+  margin: 7px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-heading-selector) {
+  padding: 4px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-heading-button) {
+  height: 24px;
+  padding: 2px 2px 2px 6px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-heading-label) {
+  font-size: 12px;
+  line-height: 16px;
+  min-width: 60px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-chevron) {
+  width: 18px;
+  height: 18px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-chevron svg) {
+  width: 12px;
+  height: 12px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-item) {
+  width: 24px;
+  height: 24px;
+  margin: 4px;
+  padding: 2px;
+}
+
+.markdown-editor :deep(.milkdown-top-bar .top-bar-item svg) {
+  width: 18px;
+  height: 18px;
+}
+
+.markdown-editor :deep(.milkdown-toolbar .toolbar-item) {
+  width: 24px;
+  height: 24px;
+  margin: 4px;
+  padding: 2px;
+}
+
+.markdown-editor :deep(.milkdown-toolbar .toolbar-item svg) {
+  width: 18px;
+  height: 18px;
+}
+
+.markdown-editor :deep(.milkdown-toolbar .divider) {
+  height: 18px;
+  margin: 7px;
+}
+
+.markdown-editor :deep(.ProseMirror) {
+  padding: 30px 60px;
+}
 </style>
