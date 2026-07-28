@@ -208,6 +208,32 @@ def _observation(
         (item for item in workspace.observations if item.get("execution_ref") == execution_ref),
         None,
     )
+    # Data Tests retain only their current durable result. Older workspaces may
+    # still point an observation at the pre-current result ID, which otherwise
+    # makes a read-only rollup project the same test result as a second
+    # observation. Reuse that test's observation and refresh its reference.
+    if execution_ref.startswith(f"datatest:{test_id}:"):
+        matches = [
+            item
+            for item in workspace.observations
+            if item.get("rcm_id") == rcm_id
+            and item.get("test_id") == test_id
+            and str(item.get("execution_ref") or "").startswith(
+                f"datatest:{test_id}:"
+            )
+        ]
+        if matches:
+            # An auditor's disposition belongs to the result, not to an
+            # obsolete result-file name. Prefer it when reconciling duplicates.
+            existing = next(
+                (item for item in matches if item.get("disposition") or item.get("status") == "disposed"),
+                existing or matches[0],
+            )
+            if len(matches) > 1:
+                duplicate_ids = {id(item) for item in matches if item is not existing}
+                workspace.observations[:] = [
+                    item for item in workspace.observations if id(item) not in duplicate_ids
+                ]
     if existing is None:
         existing = {
             "id": f"OBS-{uuid.uuid4().hex[:10].upper()}",
@@ -226,6 +252,7 @@ def _observation(
         workspace.observations.append(existing)
     else:
         existing.update(
+            execution_ref=execution_ref,
             exception_count=exception_count,
             summary=summary,
             suggested_disposition=suggested_disposition,

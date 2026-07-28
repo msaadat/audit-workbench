@@ -219,6 +219,28 @@ def test_disposition_closes_observation_and_reduces_open_rollup(workspace_with_d
     assert data_tests._record(ws, item["id"])["open_exception_count"] == 0
 
 
+def test_rollup_reconciles_a_legacy_data_test_observation_reference(workspace_with_data):
+    ws = workspace_with_data
+    row = _row(ws)
+    item = _data_test(ws, row)
+    result = data_tests.run(ws, item["id"])
+    rcm_execution.rollup(ws)
+    observation = ws.observations[0]
+    observation["execution_ref"] = f"datatest:{item['id']}:DTR-LEGACY"
+    ws.observations.append(
+        {
+            **observation,
+            "id": "OBS-DUPLICATE",
+            "execution_ref": f"datatest:{item['id']}:{result['id']}",
+        }
+    )
+
+    rcm_execution.rollup(ws, persist=False)
+
+    assert len(ws.observations) == 1
+    assert ws.observations[0]["execution_ref"] == f"datatest:{item['id']}:{result['id']}"
+
+
 def test_completed_test_without_durable_execution_is_rejected(workspace_with_data):
     ws = workspace_with_data
     row = _row(ws)
