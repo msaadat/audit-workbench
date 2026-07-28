@@ -156,12 +156,12 @@ watch(() => route.query.tab, tab => {
   if (value && value !== activeTab.value) activeTab.value = value
 })
 
-// Agent mutations can change both workspace counts and engagement status.
-const unsubscribe = agent.onWorkspaceChanged((change) => {
-  if (change.kind === 'join' || change.kind === 'table') void reload()
-  if (['table', 'join', 'planning', 'rcm', 'datatest', 'doctest', 'observation', 'evidence_request', 'ruleset', 'analysis', 'tile', 'finding', 'report'].includes(change.kind)) {
-    void loadEngagementStatus()
-  }
+// A workspace revision is the universal invalidation boundary for agent
+// commits. Refresh the shell counts/status and the dashboard if it is visible.
+const unsubscribe = agent.onWorkspaceInvalidated(() => {
+  void Promise.all([reload(), loadEngagementStatus()]).then(() => {
+    if (activeTab.value === 'dashboard') return dashboardRef.value?.load()
+  })
 })
 onUnmounted(() => {
   unsubscribe()

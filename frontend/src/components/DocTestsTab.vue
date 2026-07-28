@@ -247,7 +247,9 @@ onMounted(() => void Promise.all([loadList(), loadDocuments(), loadPlanning()]).
     openManualCreate()
   }
 }).catch(error => fail('Could not load document tests', error)))
-const unsubscribe = agent.onWorkspaceChanged(change => { if (change.kind === 'doctest') void loadList(current.value?.id) })
+const unsubscribe = agent.onWorkspaceInvalidated(() => {
+  void Promise.all([loadList(current.value?.id), loadDocuments(), loadPlanning()])
+})
 onUnmounted(unsubscribe)
 </script>
 

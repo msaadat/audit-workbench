@@ -32,6 +32,7 @@ interface AgentState {
 }
 
 type ChangeListener = (change: WorkspaceChange) => void
+type InvalidationListener = () => void
 export type AgentMode = 'auto' | 'permission'
 
 const MODE_STORAGE_KEY = 'audit-workbench:agent-mode'
@@ -68,8 +69,10 @@ watch(launchMode, (mode) => {
 
 const stores = new Map<string, AgentState>()
 const listeners = new Map<string, Set<ChangeListener>>()
+const invalidationListeners = new Map<string, Set<InvalidationListener>>()
 const sources = new Map<string, EventSource>()
 const refetchTimers = new Map<string, number>()
+const invalidationTimers = new Map<string, number>()
 
 const ACTIVE_STATUSES = new Set([
   'queued',
@@ -105,6 +108,21 @@ function state(workspaceId: string): AgentState {
 function emitChange(workspaceId: string, change: WorkspaceChange) {
   state(workspaceId).lastChange = { ...change, at: Date.now() }
   for (const listener of listeners.get(workspaceId) ?? []) listener(change)
+  scheduleInvalidation(workspaceId)
+}
+
+function scheduleInvalidation(workspaceId: string) {
+  // A single commit can emit an artifact event, a revision event, and several
+  // run-projection events. Collapse that burst into one workspace reload.
+  const existing = invalidationTimers.get(workspaceId)
+  if (existing) window.clearTimeout(existing)
+  invalidationTimers.set(
+    workspaceId,
+    window.setTimeout(() => {
+      invalidationTimers.delete(workspaceId)
+      for (const listener of invalidationListeners.get(workspaceId) ?? []) listener()
+    }, 180),
+  )
 }
 
 function disconnect(workspaceId: string) {
@@ -192,11 +210,14 @@ function connect(workspaceId: string, runId: string) {
     'checkpoint_resolved',
     'interaction_response_stored',
     'approval_response_stored',
-    'workspace_revision',
     'evidence_available',
   ]) {
     source.addEventListener(type, refetch)
   }
+  source.addEventListener('workspace_revision', () => {
+    refetch()
+    scheduleInvalidation(workspaceId)
+  })
   source.addEventListener('workspace_changed', (event) => {
     refetch()
     try {
@@ -367,6 +388,21 @@ export function useAgentRun(workspaceId: string) {
     return () => set!.delete(listener)
   }
 
+  /**
+   * Subscribe to durable workspace mutations. Unlike the detailed change
+   * stream, this also fires when a commit only exposes a revision advance.
+   * Notifications are debounced across a burst of related agent events.
+   */
+  function onWorkspaceInvalidated(listener: InvalidationListener): () => void {
+    let set = invalidationListeners.get(workspaceId)
+    if (!set) {
+      set = new Set()
+      invalidationListeners.set(workspaceId, set)
+    }
+    set.add(listener)
+    return () => set!.delete(listener)
+  }
+
   return {
     state: readonly(store) as Readonly<AgentState>,
     launchMode,
@@ -385,6 +421,7 @@ export function useAgentRun(workspaceId: string) {
     decide,
     respond,
     onWorkspaceChanged,
+    onWorkspaceInvalidated,
     toggleDrawer: () => {
       store.drawerOpen = !store.drawerOpen
       store.drawerAutoOpened = false

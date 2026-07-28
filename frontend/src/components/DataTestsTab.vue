@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -11,6 +11,7 @@ import Textarea from 'primevue/textarea'
 import type { MenuItem } from 'primevue/menuitem'
 
 import { api, ApiError } from '../api'
+import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { workspaceQuery } from '../composables/useWorkspaceNavigation'
 import type {
@@ -35,6 +36,7 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const assistantChat = useAssistantChat(props.workspace.id)
+const agent = useAgentRun(props.workspace.id)
 
 const tests = ref<DataTest[]>([])
 const planning = ref<PlanningPayload | null>(null)
@@ -253,6 +255,10 @@ function openParent() {
 }
 
 onMounted(() => void load().catch(error => fail('Could not load Data Tests', error)))
+const unsubscribe = agent.onWorkspaceInvalidated(() => {
+  void load().catch(error => fail('Could not refresh Data Tests', error))
+})
+onUnmounted(unsubscribe)
 </script>
 
 <template>

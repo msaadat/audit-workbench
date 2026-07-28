@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -9,6 +9,7 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
+import { useAgentRun } from '../composables/useAgentRun'
 import type { AuditReport, MarkdownTemplate, ReportContext, ReportQuality, ReportQualityIssue, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ReportReconcileDialog from './ReportReconcileDialog.vue'
@@ -19,6 +20,7 @@ const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const router = useRouter()
+const agent = useAgentRun(props.workspace.id)
 const report = ref<AuditReport | null>(null)
 const context = ref<ReportContext | null>(null)
 const view = ref<'editor' | 'quality'>('editor')
@@ -46,6 +48,10 @@ async function reload() {
   ])
 }
 onMounted(() => void reload().catch(error => fail('Could not load the report', error)))
+const unsubscribe = agent.onWorkspaceInvalidated(() => {
+  void reload().catch(error => fail('Could not refresh the report', error))
+})
+onUnmounted(unsubscribe)
 
 async function save(showToast = true) {
   if (!report.value) return

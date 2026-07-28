@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -10,6 +10,7 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
+import { useAgentRun } from '../composables/useAgentRun'
 import { workspaceQuery } from '../composables/useWorkspaceNavigation'
 import type { AuditFinding, EvidenceRef, FindingsPayload, FindingSeverity, WorkspaceSummary } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
@@ -22,6 +23,7 @@ const emit = defineEmits<{ changed: [] }>()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const agent = useAgentRun(props.workspace.id)
 
 const data = ref<FindingsPayload | null>(null)
 const selectedId = ref<string | null>(String(route.query.finding || '') || null)
@@ -66,6 +68,10 @@ async function reload(preferred?: string) {
 }
 
 onMounted(() => void reload().catch(error => fail('Could not load findings', error)))
+const unsubscribe = agent.onWorkspaceInvalidated(() => {
+  void reload().catch(error => fail('Could not refresh findings', error))
+})
+onUnmounted(unsubscribe)
 watch(() => route.query.finding, value => {
   const id = String(value || '')
   if (id && data.value?.items.some(item => item.id === id)) selectedId.value = id

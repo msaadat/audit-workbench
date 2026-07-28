@@ -70,8 +70,8 @@ async function reload() {
   else if (observationParent) openRcm(observationParent)
 }
 onMounted(() => void reload().catch(error => fail('Could not load planning', error)))
-const unsubscribe = agent.onWorkspaceChanged(change => {
-  if (['planning', 'rcm', 'datatest', 'doctest', 'observation', 'evidence_request'].includes(change.kind)) void reload()
+const unsubscribe = agent.onWorkspaceInvalidated(() => {
+  void reload().catch(error => fail('Could not refresh planning', error))
 })
 onUnmounted(unsubscribe)
 

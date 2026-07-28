@@ -52,9 +52,10 @@ async function load() {
 }
 watch(() => props.workspace.id, load, { immediate: true })
 
-// Live-refresh the rail while an agent run saves analyses into it.
-const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceChanged((change) => {
-  if (change.kind === 'analysis') void onChanged()
+// Live-refresh the rail after any durable agent commit. Revision-based
+// invalidation also covers commits that do not expose a typed artifact event.
+const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceInvalidated(() => {
+  void onChanged()
 })
 onUnmounted(unsubscribe)
 

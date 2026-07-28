@@ -534,11 +534,9 @@ onMounted(async () => {
   loadRailPrefs()
   await loadDocuments()
   await refreshIndexingStatus()
-  unsubscribeWorkspaceChanged = agent.onWorkspaceChanged(change => {
-    if (change.kind === 'document') {
-      void loadDocuments()
-      scheduleIndexingPoll(150)
-    }
+  unsubscribeWorkspaceChanged = agent.onWorkspaceInvalidated(() => {
+    void loadDocuments().then(() => loadDetail())
+    scheduleIndexingPoll(150)
   })
   if (selectedId.value) await selectDocument(selectedId.value, Number(route.query.page || 1))
 })

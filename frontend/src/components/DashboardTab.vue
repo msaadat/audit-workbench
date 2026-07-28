@@ -150,10 +150,7 @@ onMounted(async () => {
 })
 defineExpose({ load })
 
-const unsubscribe = agent.onWorkspaceChanged(async (change) => {
-  const refreshKinds = new Set(['tile', 'table', 'join', 'planning', 'rcm', 'datatest', 'doctest', 'finding', 'report'])
-  if (!refreshKinds.has(change.kind)) return
-  await load()
+const unsubscribe = agent.onWorkspaceChanged((change) => {
   if (change.kind === 'tile' && change.action !== 'removed') {
     flashed.value = { ...flashed.value, [change.id]: true }
     window.setTimeout(() => {

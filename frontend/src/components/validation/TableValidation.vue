@@ -49,9 +49,9 @@ async function load() {
 }
 void load()
 
-// Live-refresh while an agent run creates or updates rule sets.
-const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceChanged((change) => {
-  if (change.kind === 'ruleset') void onChanged()
+// Live-refresh after durable agent commits, including revision-only commits.
+const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceInvalidated(() => {
+  void onChanged()
 })
 onUnmounted(unsubscribe)
 
