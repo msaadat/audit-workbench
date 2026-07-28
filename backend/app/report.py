@@ -277,13 +277,25 @@ def _finding_link(item: dict) -> str:
 
 
 def _finding_citations(markdown: str) -> set[str]:
+    # Report text may have been edited by a Markdown editor, which can escape
+    # the ampersand in the canonical in-app URL.  Also accept any Markdown
+    # link whose visible label is a finding ID: the destination may be an
+    # in-report anchor (``#f-...``), an app route (``finding:F-...``), or the
+    # canonical query route.  Citation status is based on the visible finding
+    # reference, not on the link target.
+    # Treat the Markdown escape as equivalent to a literal ampersand for
+    # citation matching; it is presentation syntax, not a different route.
+    searchable = str(markdown).replace(r"\&", "&")
     citations = {
         match.group(1)
-        for match in re.finditer(r"\?tab=findings&finding=([A-Za-z0-9_-]+)", markdown)
+        for match in re.finditer(r"\?tab=findings&finding=([A-Za-z0-9_-]+)", searchable)
     }
     citations.update(
         match.group(1)
-        for match in re.finditer(r"\[\s*(?:Finding\s+)?(F-[A-Za-z0-9_-]+)\s*\](?!\s*\()", markdown)
+        for match in re.finditer(
+            r"\[\s*(?:Finding\s+)?(F-[A-Za-z0-9_-]+)\s*\](?:\s*\([^)]*\))?",
+            searchable,
+        )
     )
     return citations
 

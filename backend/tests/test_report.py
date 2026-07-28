@@ -293,6 +293,26 @@ def test_bare_markdown_finding_reference_is_a_citation_and_model_output_is_norma
     assert f"[Finding {item['id']}](?tab=findings&finding={item['id']})" in generated["markdown"]
 
 
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "[F-{id}](#f-{id_lower})",
+        "[F-{id}](finding:F-{id})",
+        "[Finding F-{id}](?tab=findings\\&finding=F-{id})",
+    ],
+)
+def test_linked_markdown_finding_references_satisfy_report_quality(
+    workspace_with_data, reference
+):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    item = findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
+    markdown = reference.format(id=item["id"], id_lower=item["id"].lower())
+
+    checked = report.quality_checks(ws, f"# Report\n\n{markdown}")
+
+    assert "finding_missing_from_report" not in {issue["code"] for issue in checked["issues"]}
+
+
 def test_report_html_escapes_content_and_only_allows_safe_links():
     value = report.markdown_to_html(
         "# <script>alert(1)</script>\n\n[Bad](javascript:alert(1)) [Finding](?tab=findings&finding=F-1)"
