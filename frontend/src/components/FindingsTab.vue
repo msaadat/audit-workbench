@@ -123,7 +123,7 @@ function removeEvidence(id: string) {
   if (selected.value) selected.value.evidence_refs = selected.value.evidence_refs.filter(item => item.id !== id)
 }
 function openPlanning(rcmId: string) {
-  void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: rcmId }) })
+  void router.replace({ query: workspaceQuery('rcm', { rcm: rcmId }) })
 }
 function openEvidence(value: EvidenceRef) {
   if (value.source_kind === 'doctest') {

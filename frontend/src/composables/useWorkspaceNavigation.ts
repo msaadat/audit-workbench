@@ -3,7 +3,8 @@ import type { LocationQuery, LocationQueryRaw } from 'vue-router'
 type QueryValue = string | number | null | undefined
 
 const ownedKeys: Record<string, readonly string[]> = {
-  planning: ['view', 'rcm', 'observation'],
+  apm: [],
+  rcm: ['rcm', 'observation'],
   documents: ['doc', 'page'],
   'doc-tests': ['test', 'item', 'create', 'rcm'],
   'data-tests': ['test', 'create', 'rcm'],

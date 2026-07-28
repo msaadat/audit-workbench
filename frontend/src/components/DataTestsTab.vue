@@ -239,7 +239,7 @@ async function pin() {
 }
 function openParent() {
   if (!selected.value?.rcm_id) return
-  void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: selected.value.rcm_id }) })
+  void router.replace({ query: workspaceQuery('rcm', { rcm: selected.value.rcm_id }) })
 }
 
 onMounted(() => void load().catch(error => fail('Could not load Data Tests', error)))

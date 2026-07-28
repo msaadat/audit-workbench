@@ -127,8 +127,8 @@ function openIssueRef(ref: string) {
   if (kind === 'finding') void router.replace({ query: { tab: 'findings', finding: id } })
   else if (kind === 'doctest') void router.replace({ query: { tab: 'doc-tests', test: id } })
   else if (kind === 'datatest') void router.replace({ query: { tab: 'data-tests', test: id } })
-  else if (kind === 'observation') void router.replace({ query: { tab: 'planning', view: 'rcm', observation: id } })
-  else if (kind === 'rcm') void router.replace({ query: { tab: 'planning', view: 'rcm', rcm: id } })
+  else if (kind === 'observation') void router.replace({ query: { tab: 'rcm', observation: id } })
+  else if (kind === 'rcm') void router.replace({ query: { tab: 'rcm', rcm: id } })
   else if (kind === 'analysis' || kind === 'ruleset') void router.replace({ query: { tab: 'data-tests' } })
 }
 function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.issues ?? []), ...(report.value?.quality.editorial ?? [])] }

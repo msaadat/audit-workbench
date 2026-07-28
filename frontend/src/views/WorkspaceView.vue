@@ -36,6 +36,8 @@ const requestedTab = String(route.query.tab || 'dashboard')
 const activeTab = ref(
   requestedTab === 'validation' ? 'data'
     : requestedTab === 'analysis' ? 'data-tests'
+      : requestedTab === 'planning' && route.query.view === 'rcm' ? 'rcm'
+        : requestedTab === 'planning' ? 'apm'
       : requestedTab,
 )
 const initialized = ref(false)
@@ -148,7 +150,10 @@ watch(activeTab, tab => {
 })
 watch(() => route.query.tab, tab => {
   const raw = String(tab || '')
-  const value = raw === 'validation' ? 'data' : raw === 'analysis' ? 'data-tests' : raw
+  const value = raw === 'validation' ? 'data'
+    : raw === 'analysis' ? 'data-tests'
+      : raw === 'planning' && route.query.view === 'rcm' ? 'rcm'
+        : raw === 'planning' ? 'apm' : raw
   if (value && value !== activeTab.value) activeTab.value = value
 })
 
@@ -193,13 +198,15 @@ onUnmounted(() => {
           <TabList class="workspace-nav">
             <p class="nav-label">Overview</p>
             <Tab value="dashboard"><i class="pi pi-th-large" /><span>Dashboard</span></Tab>
-            <p class="nav-label nav-group">Plan</p>
-            <Tab value="planning" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'Planning'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'Planning'"><i class="pi pi-map" /><span>Planning</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
+            <p class="nav-label nav-group">Data</p>
             <Tab value="documents"><i class="pi pi-folder" /><span>Documents</span></Tab>
+            <Tab value="data"><i class="pi pi-database" /><span>Tables</span></Tab>
+            <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
+            <p class="nav-label nav-group">Plan</p>
+            <Tab value="apm" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'APM'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'APM'"><i class="pi pi-map" /><span>APM</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
+            <Tab value="rcm" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'RCM'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'RCM'"><i class="pi pi-table" /><span>RCM</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
             <p class="nav-label nav-group">Fieldwork</p>
             <Tab value="doc-tests" :aria-label="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'" v-tooltip.right="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'"><i class="pi pi-verified" /><span>Document tests</span><i v-if="phaseStatus.fieldwork" class="phase-status" :class="phaseStateIcon[phaseStatus.fieldwork.state]" :data-state="phaseStatus.fieldwork.state" aria-hidden="true" /></Tab>
-            <Tab value="data"><i class="pi pi-database" /><span>Data</span></Tab>
-            <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
             <Tab value="data-tests"><i class="pi pi-shield" /><span>Data tests</span></Tab>
             <p class="nav-label nav-group output-label">Output</p>
             <Tab value="findings"><i class="pi pi-flag" /><span>Findings</span><small v-if="workspace.finding_count">{{ workspace.finding_count }}</small></Tab>
@@ -209,8 +216,11 @@ onUnmounted(() => {
           <TabPanel value="dashboard">
             <DashboardTab v-if="activeTab === 'dashboard'" ref="dashboardRef" :workspace="workspace" @import-requested="folderImportOpen = true" />
           </TabPanel>
-          <TabPanel value="planning">
-            <PlanningTab v-if="activeTab === 'planning'" :workspace="workspace" @changed="loadEngagementStatus" />
+          <TabPanel value="apm">
+            <PlanningTab v-if="activeTab === 'apm'" :workspace="workspace" section="apm" @changed="loadEngagementStatus" />
+          </TabPanel>
+          <TabPanel value="rcm">
+            <PlanningTab v-if="activeTab === 'rcm'" :workspace="workspace" section="rcm" @changed="loadEngagementStatus" />
           </TabPanel>
           <TabPanel value="documents">
             <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" @import-requested="folderImportOpen = true" />
@@ -243,7 +253,7 @@ onUnmounted(() => {
       v-model="folderImportOpen"
       :workspaceId="props.id"
       @imported="handleImported"
-      @planning-started="activeTab = 'planning'"
+      @planning-started="activeTab = 'apm'"
     />
     <div v-if="dropActive" class="drop-overlay" aria-hidden="true">
       <div class="drop-overlay-card">

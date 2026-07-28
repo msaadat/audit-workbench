@@ -7,7 +7,6 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
-import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
@@ -20,7 +19,7 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 
-const props = defineProps<{ workspace: WorkspaceSummary }>()
+const props = defineProps<{ workspace: WorkspaceSummary; section: 'apm' | 'rcm' }>()
 const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const confirm = useConfirm()
@@ -31,7 +30,6 @@ const assistantChat = useAssistantChat(props.workspace.id)
 const { isActive, launchMode } = agent
 
 const data = ref<PlanningPayload | null>(null)
-const view = ref<'apm' | 'rcm'>('apm')
 const saving = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
@@ -52,10 +50,6 @@ const observationDispositions = [
   'confirmed_control_exception', 'data_quality_issue', 'expected_or_benign',
   'screening_follow_up', 'invalid_test_or_result', 'duplicate', 'draft_finding_candidate',
 ]
-const viewOptions = computed(() => [
-  { label: 'APM', value: 'apm', complete: Boolean(data.value?.planning.apm_markdown.trim()) },
-  { label: 'Risk & Control Matrix', value: 'rcm', count: data.value?.rcm.length ?? 0 },
-])
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
 const selectedObservations = computed(() => (data.value?.observations ?? []).filter(item => item.rcm_id === selectedRcmId.value))
 const rowsWithoutTests = computed(() => (data.value?.rcm ?? []).filter(row => (row.execution_rollup.tests ?? row.test_refs.length) === 0))
@@ -66,8 +60,6 @@ function fail(summary: string, error: unknown) {
 }
 async function reload() {
   data.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
-  const requestedView = String(route.query.view || '')
-  if (requestedView === 'rcm') view.value = 'rcm'
   const requestedRcm = String(route.query.rcm || '')
   const requestedObservation = String(route.query.observation || '')
   const observationParent = requestedObservation
@@ -212,7 +204,7 @@ function openRcm(row: RcmRow) {
   const current = data.value?.rcm.find(item => item.id === row.id) ?? row
   selectedRcmId.value = current.id
   detailOpen.value = true
-  void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: current.id }) })
+  void router.replace({ query: workspaceQuery('rcm', { rcm: current.id }) })
 }
 function linkedTests(row: RcmRow): TestRollup[] {
   return row.execution_rollup.test_rollups ?? []
@@ -303,13 +295,10 @@ async function copyPaper(kind: 'markdown' | 'html') {
 
 <template>
   <div v-if="data" class="planning-tab">
-    <UiPageHeader title="Planning" description="The APM defines engagement context; the RCM is the single planning and fieldwork spine">
+    <UiPageHeader :title="section === 'apm' ? 'APM' : 'RCM'" :description="section === 'apm' ? 'Define the engagement context and audit approach.' : 'Manage risks, controls, coverage, and linked test execution.'">
       <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate" />
     </UiPageHeader>
-    <SelectButton class="planning-nav" v-model="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" dataKey="value">
-      <template #option="{ option }"><span class="nav-option">{{ option.label }}<span v-if="option.count !== undefined" class="nav-count">{{ option.count }}</span><i v-else-if="option.complete" class="pi pi-check nav-check"/></span></template>
-    </SelectButton>
-    <section v-if="view === 'apm'" class="apm-view">
+    <section v-if="section === 'apm'" class="apm-view">
       <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
       <input ref="apmImportInput" type="file" accept=".md,.markdown,.txt" hidden @change="importApm"/>
       <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
@@ -340,5 +329,5 @@ async function copyPaper(kind: 'markdown' | 'html') {
 </template>
 
 <style scoped>
-.planning-tab { display:flex; flex-direction:column; gap:1rem; min-height:100% }.planning-nav { align-self:flex-start }.nav-option { display:inline-flex; align-items:center; gap:.4rem }.nav-count { display:inline-grid; place-items:center; min-width:1.25rem; height:1.25rem; border:1px solid var(--aw-border); border-radius:999px; font-size:.68rem }.nav-check { color:var(--aw-ok) }.muted { color:var(--aw-muted); font-size:.78rem }.section-toolbar,.rollup-bar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span,.rollup-bar>span { flex:1 }.rollup-bar { padding:.6rem .8rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas); color:var(--aw-muted); font-size:.78rem }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:.8rem }.rcm-detail { display:flex; flex-direction:column; gap:1rem }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:.75rem }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:#fff; border-radius:999px; padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:6px }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:6px }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
+.planning-tab { display:flex; flex-direction:column; gap:1rem; min-height:100% }.muted { color:var(--aw-muted); font-size:.78rem }.section-toolbar,.rollup-bar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span,.rollup-bar>span { flex:1 }.rollup-bar { padding:.6rem .8rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas); color:var(--aw-muted); font-size:.78rem }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:.8rem }.rcm-detail { display:flex; flex-direction:column; gap:1rem }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:.75rem }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:#fff; border-radius:999px; padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:6px }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:6px }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
 </style>
