@@ -23,6 +23,7 @@ import type {
 } from '../types'
 import ChartView from './ChartView.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
+import UiVerdictStatus from './ui/UiVerdictStatus.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ 'import-requested': [] }>()
@@ -51,7 +52,6 @@ const verdictCounts = computed(() => ({
   fail: tiles.value.filter((tile) => tile.verdict === 'fail' || tile.error).length,
 }))
 
-const verdictSeverity: Record<string, string> = { ok: 'success', warn: 'warn', fail: 'danger', info: 'info' }
 const tileIcon: Record<string, string> = {
   analytics: 'pi pi-shield', query: 'pi pi-search', python: 'pi pi-code',
   pivot: 'pi pi-table', validation: 'pi pi-check-square',
@@ -257,7 +257,7 @@ onUnmounted(unsubscribe)
       <div v-else class="tile-grid">
         <div v-for="(tile, index) in tiles" :key="tile.id" class="tile" :class="{ 'tile-error': tile.error, 'tile-flash': flashed[tile.id] }" :data-verdict="tile.error ? 'fail' : tile.verdict">
           <div class="tile-head">
-            <div class="tile-title"><i :class="tileIcon[tile.kind]" v-tooltip.bottom="tileKindLabel[tile.kind]" /><strong>{{ tile.title }}</strong><Tag v-if="tile.verdict" :value="tile.verdict_text || tile.verdict" :severity="verdictSeverity[tile.verdict]" class="verdict-tag" /></div>
+            <div class="tile-title"><i :class="tileIcon[tile.kind]" v-tooltip.bottom="tileKindLabel[tile.kind]" /><strong>{{ tile.title }}</strong><span v-if="tile.verdict" class="verdict-inline"><UiVerdictStatus :verdict="tile.verdict" /><small v-if="tile.verdict_text">{{ tile.verdict_text }}</small></span></div>
             <div class="tile-actions">
               <UiOverflowMenu :items="tileActions(tile, index)" tooltip="Tile actions" />
             </div>
@@ -300,7 +300,7 @@ onUnmounted(unsubscribe)
 .monitoring-heading { align-items:flex-end }.tile-summary { display:flex; gap:.65rem; color:var(--aw-muted); font-size:.68rem }.tile-summary .ok { color:#15805c }.tile-summary .warn { color:#b45309 }.tile-summary .fail { color:#b42318 }
 .pin-empty { display:flex; align-items:center; gap:.85rem; padding:1rem; border:1px dashed var(--aw-border); border-radius:9px; background:rgb(255 255 255 / 55%) }.pin-empty > i { color:var(--aw-teal); font-size:1.3rem }.pin-empty > div { flex:1 }.pin-empty strong { font-size:.8rem }.pin-empty p { margin:.15rem 0 0; color:var(--aw-muted); font-size:.7rem }
 .tile-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(420px,1fr)); gap:1rem }.tile { min-width:0; padding:.9rem 1rem 1rem; border:1px solid var(--p-surface-200); border-top:3px solid #94a3b8; border-radius:8px; background:var(--p-surface-0); box-shadow:var(--aw-shadow) }.tile[data-verdict='ok'] { border-top-color:#16855b }.tile[data-verdict='warn'] { border-top-color:#d97706 }.tile[data-verdict='fail'] { border-top-color:#dc2626 }.tile[data-verdict='info'] { border-top-color:#3b82f6 }.tile-flash { animation:tile-flash 2.4s ease-out }@keyframes tile-flash { 0% { box-shadow:0 0 0 3px var(--p-primary-300) } 100% { box-shadow:var(--aw-shadow) } }.tile-error { border-color:var(--p-red-200) }
-.tile-head { justify-content:space-between; align-items:flex-start; gap:.5rem }.tile-title { gap:.5rem; flex-wrap:wrap; min-width:0 }.tile-title i { color:var(--p-primary-500) }.verdict-tag { font-size:.7rem }.tile-actions { flex-shrink:0 }.tile:not(:hover) .tile-actions { opacity:.35 }.tile-actions { transition:opacity .15s }.tile-meta { margin:.15rem 0 .4rem; font-size:.78rem }.tile-note { margin:0 0 .5rem; color:var(--p-surface-600); font-size:.85rem; font-style:italic }.tile-stats { display:flex; flex-wrap:wrap; gap:.4rem 1.1rem; margin-bottom:.6rem }.tile-stat { display:flex; flex-direction:column }.tile-stat .label { color:var(--p-surface-500); font-size:.68rem; letter-spacing:.04em; text-transform:uppercase }.tile-stat .value { font-size:.95rem; font-weight:600 }.tile-error-body { display:flex; align-items:flex-start; gap:.5rem; padding:.75rem 0; color:var(--p-red-600); font-size:.9rem }.edit-note { margin-top:.75rem }
+.tile-head { justify-content:space-between; align-items:flex-start; gap:.5rem }.tile-title { gap:.5rem; flex-wrap:wrap; min-width:0 }.tile-title i { color:var(--p-primary-500) }.verdict-inline { display:flex; align-items:center; gap:.35rem; min-width:0 }.verdict-inline small { color:var(--aw-muted); font-size:.75rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }.tile-actions { flex-shrink:0 }.tile:not(:hover) .tile-actions { opacity:.35 }.tile-actions { transition:opacity .15s }.tile-meta { margin:.15rem 0 .4rem; font-size:.78rem }.tile-note { margin:0 0 .5rem; color:var(--p-surface-600); font-size:.85rem; font-style:italic }.tile-stats { display:flex; flex-wrap:wrap; gap:.4rem 1.1rem; margin-bottom:.6rem }.tile-stat { display:flex; flex-direction:column }.tile-stat .label { color:var(--p-surface-500); font-size:.68rem; letter-spacing:.04em; text-transform:uppercase }.tile-stat .value { font-size:.95rem; font-weight:600 }.tile-error-body { display:flex; align-items:flex-start; gap:.5rem; padding:.75rem 0; color:var(--p-red-600); font-size:.9rem }.edit-note { margin-top:.75rem }
 @media (max-width:1100px) { .dashboard-columns { grid-template-columns:1fr } }
 @media (max-width:760px) { .dashboard-heading,.next-action-card { align-items:flex-start; flex-direction:column }.monitoring-heading { align-items:flex-start; flex-direction:column }.tile-summary { flex-wrap:wrap }.tile-grid { grid-template-columns:1fr }.onboarding-card { padding:1.25rem }.onboarding-copy { flex-direction:column }.pin-empty { align-items:flex-start; flex-wrap:wrap } }
 </style>

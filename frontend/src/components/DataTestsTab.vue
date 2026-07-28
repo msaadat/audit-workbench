@@ -7,7 +7,6 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Menu from 'primevue/menu'
 import Select from 'primevue/select'
-import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import type { MenuItem } from 'primevue/menuitem'
 
@@ -28,6 +27,7 @@ import AnalyticsTestAuthor from './data-tests/AnalyticsTestAuthor.vue'
 import FrameTable from './FrameTable.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import UiTestStatus from './ui/UiTestStatus.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -92,11 +92,6 @@ const createReady = computed(() => {
     : polarsStepsValid(polarsSteps.value)
   return Boolean(draft.value.title.trim() && draft.value.objective.trim() && tableReady && definitionReady)
 })
-function severity(value: string) {
-  return value.includes('exception') || value === 'fail' || value === 'error' ? 'danger'
-    : value === 'completed_no_exception' || value === 'ok' ? 'success'
-      : value === 'review_required' || value === 'blocked' || value === 'warn' ? 'warn' : 'secondary'
-}
 function fail(summary: string, error: unknown) {
   toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
 }
@@ -281,7 +276,7 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
     <UiMasterDetail railWidth="18rem" class="layout">
       <template #rail><aside class="rail">
         <button v-for="item in filtered" :key="item.id" :class="{ active: item.id === selectedId }" @click="selectTest(item)">
-          <span><strong>{{ item.title }}</strong><Tag :value="item.status.replaceAll('_', ' ')" :severity="severity(item.status)" /></span>
+          <span><strong>{{ item.title }}</strong><UiTestStatus :status="item.status" /></span>
           <small>{{ item.engine }} · {{ item.rcm_id || 'Exploratory' }}</small>
         </button>
         <p v-if="!filtered.length" class="muted">No Data Tests match these filters.</p>
@@ -313,13 +308,13 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
         </div>
         <div class="save-row"><span class="muted">Saving validates the definition but does not execute it.</span><Button label="Save definition" icon="pi pi-save" outlined :loading="saving" :disabled="!selectedDefinitionReady" @click="saveTest"/></div>
         <section v-if="result" class="result">
-          <div class="result-head"><strong>Durable result</strong><Tag :value="result.status.replaceAll('_', ' ')" :severity="severity(result.status)"/><span>{{ result.verdict_text }}</span></div>
+          <div class="result-head"><strong>Durable result</strong><UiTestStatus :status="result.status" /><span>{{ result.verdict_text }}</span></div>
           <div v-if="result.semantic_issues.length" class="issues"><strong>Semantic review</strong><ul><li v-for="issue in result.semantic_issues" :key="issue">{{ issue }}</li></ul></div>
           <div v-if="result.statistics.length" class="stats"><span v-for="stat in result.statistics" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span></div>
           <div v-if="result.step_results?.length" class="step-results">
             <strong>Step results</strong>
             <div v-for="step in result.step_results" :key="step.step_id" class="step-result-row">
-              <Tag :value="step.status.replaceAll('_',' ')" :severity="severity(step.status)" />
+              <UiTestStatus :status="step.status" />
               <span>{{ step.step_label }}</span>
               <small>{{ step.exception_count }} exception(s)</small>
               <small v-if="step.error" class="step-error">{{ step.error }}</small>

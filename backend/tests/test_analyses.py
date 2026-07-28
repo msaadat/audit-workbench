@@ -95,6 +95,27 @@ def test_python_analysis_computes(workspace_with_data):
     assert payload["total_rows"] == 1
 
 
+def test_analysis_payload_includes_persisted_workflow_result(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis["last_result"] = {
+        "run_id": "run-123",
+        "executed_at": "2026-07-28T16:22:41+00:00",
+        "status": "ok",
+        "verdict": "warn",
+        "verdict_text": "2 duplicate values",
+        "row_count": 4,
+        "column_count": 2,
+        "stat_count": 1,
+        "stats": [{"label": "Rows", "value": "4"}],
+    }
+
+    payload = analysis_payload(ws, analysis)
+
+    assert payload["last_result"] == analysis["last_result"]
+    assert analyses_payload(ws)["analyses"][0]["last_result"] == analysis["last_result"]
+
+
 def test_broken_analysis_degrades_to_error(workspace_with_data):
     ws = workspace_with_data
     lib = _library_analysis(ws)

@@ -625,8 +625,20 @@ Prefer specific, non-duplicative advice that adds judgment beyond the determinis
 
 
 def analysis_payload(workspace: Workspace, analysis: dict) -> dict:
-    return compute_payload(workspace, analysis)
+    payload = compute_payload(workspace, analysis)
+    # Workflow execution retains a deliberately bounded result record on the
+    # saved analysis.  Keep it distinct from the live, rerunnable payload
+    # above: a live recomputation can fail after a successful execution (or
+    # vice versa), and the UI needs to present the outcome the run recorded.
+    last_result = analysis.get("last_result")
+    if isinstance(last_result, dict):
+        payload["last_result"] = dict(last_result)
+    return payload
 
 
 def analyses_payload(workspace: Workspace) -> dict:
-    return {"analyses": [compute_payload(workspace, a) for a in workspace.analyses]}
+    # Keep the collection endpoint consistent with the single-analysis
+    # endpoint. The Analysis tab loads this collection, so omitting
+    # ``last_result`` here made an executed workflow appear unrun after a
+    # refresh even though its bounded result was safely persisted.
+    return {"analyses": [analysis_payload(workspace, a) for a in workspace.analyses]}

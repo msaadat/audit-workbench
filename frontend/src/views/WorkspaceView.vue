@@ -16,6 +16,7 @@ import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import DashboardTab from '../components/DashboardTab.vue'
 import DataTab from '../components/DataTab.vue'
 import QueryTab from '../components/QueryTab.vue'
+import AnalysisTab from '../components/AnalysisTab.vue'
 import DataTestsTab from '../components/DataTestsTab.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
@@ -35,8 +36,7 @@ const workspace = ref<WorkspaceSummary | null>(null)
 const requestedTab = String(route.query.tab || 'dashboard')
 const activeTab = ref(
   requestedTab === 'validation' ? 'data'
-    : requestedTab === 'analysis' ? 'data-tests'
-      : requestedTab === 'planning' && route.query.view === 'rcm' ? 'rcm'
+    : requestedTab === 'planning' && route.query.view === 'rcm' ? 'rcm'
         : requestedTab === 'planning' ? 'apm'
       : requestedTab,
 )
@@ -151,8 +151,7 @@ watch(activeTab, tab => {
 watch(() => route.query.tab, tab => {
   const raw = String(tab || '')
   const value = raw === 'validation' ? 'data'
-    : raw === 'analysis' ? 'data-tests'
-      : raw === 'planning' && route.query.view === 'rcm' ? 'rcm'
+    : raw === 'planning' && route.query.view === 'rcm' ? 'rcm'
         : raw === 'planning' ? 'apm' : raw
   if (value && value !== activeTab.value) activeTab.value = value
 })
@@ -202,6 +201,7 @@ onUnmounted(() => {
             <Tab value="documents"><i class="pi pi-folder" /><span>Documents</span></Tab>
             <Tab value="data"><i class="pi pi-database" /><span>Tables</span></Tab>
             <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
+            <Tab value="analysis"><i class="pi pi-chart-bar" /><span>Analysis</span></Tab>
             <p class="nav-label nav-group">Plan</p>
             <Tab value="apm" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'APM'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'APM'"><i class="pi pi-map" /><span>APM</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
             <Tab value="rcm" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'RCM'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'RCM'"><i class="pi pi-table" /><span>RCM</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
@@ -233,6 +233,9 @@ onUnmounted(() => {
           </TabPanel>
           <TabPanel value="query">
             <QueryTab :workspace="workspace" />
+          </TabPanel>
+          <TabPanel value="analysis">
+            <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
           </TabPanel>
           <TabPanel value="data-tests">
             <DataTestsTab v-if="activeTab === 'data-tests'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" />

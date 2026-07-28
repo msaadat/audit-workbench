@@ -956,6 +956,21 @@ export interface SavedAnalysis {
   code?: string
   stdout?: string | null
   spec?: Record<string, unknown>
+  last_result?: AnalysisLastResult
+}
+
+/** Bounded outcome persisted by an exploratory-analysis workflow run. */
+export interface AnalysisLastResult {
+  run_id: string
+  executed_at: string
+  status: 'ok' | 'error'
+  error: string | null
+  verdict: 'ok' | 'warn' | 'fail' | 'info' | null
+  verdict_text: string | null
+  row_count: number
+  column_count: number
+  stat_count: number
+  stats: StatChip[]
 }
 
 // ------------------------------------------------------------- validation

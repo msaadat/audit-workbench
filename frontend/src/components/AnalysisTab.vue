@@ -2,7 +2,6 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
-import Tag from 'primevue/tag'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
@@ -11,6 +10,7 @@ import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
 import AnalysisCode from './analysis/AnalysisCode.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
+import UiVerdictStatus from './ui/UiVerdictStatus.vue'
 
 // The Analysis tab: a rail of saved analyses on the left, an editor on the
 // right. Two creation paths — the predefined Library or Code (hand-written
@@ -25,9 +25,6 @@ const selectedId = ref<string | null>(null)
 const creating = ref<'library' | 'code' | null>(null)
 const loading = ref(false)
 
-const verdictSeverity: Record<string, string> = {
-  ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
-}
 const sourceIcon: Record<string, string> = {
   library: 'pi pi-book', ai: 'pi pi-sparkles', code: 'pi pi-code',
 }
@@ -111,21 +108,14 @@ async function onDeleted() {
       >
         <div class="rail-item-head">
           <span class="rail-item-title">{{ a.title }}</span>
-          <Tag
-            v-if="a.error"
-            value="error"
-            severity="danger"
-          />
-          <Tag
-            v-else-if="a.verdict"
-            :value="a.verdict"
-            :severity="verdictSeverity[a.verdict]"
-          />
+          <UiVerdictStatus v-if="a.error || a.last_result?.status === 'error'" verdict="error" />
+          <UiVerdictStatus v-else-if="a.last_result?.verdict ?? a.verdict" :verdict="a.last_result?.verdict ?? a.verdict!" />
         </div>
         <div class="rail-item-meta">
           <i :class="sourceIcon[a.source] ?? 'pi pi-book'" />
           {{ sourceLabel[a.source] ?? a.source }}
           <span v-if="a.table"> · {{ a.table }}</span>
+          <span v-if="a.last_result"> · executed</span>
         </div>
       </button>
     </div></template>

@@ -55,6 +55,8 @@ const verdictSeverity: Record<string, string> = {
   ok: 'success', warn: 'warn', fail: 'danger', info: 'info',
 }
 
+const storedResult = computed(() => props.analysis?.last_result ?? null)
+
 const testGroups = computed(() => {
   const groups: { name: string; tests: AnalyticsTest[] }[] = []
   for (const test of tests.value) {
@@ -254,9 +256,10 @@ async function preloadFromAnalysis() {
   const test = tests.value.find((t) => t.id === spec.test)
   if (test) {
     pick(test, spec.params ?? {})
-    // Results-first for a saved analysis: keep the config folded away.
+    // A workflow may already have executed this saved analysis. Show that
+    // durable, bounded outcome first; Run test remains the explicit path to
+    // recompute current detail rows.
     paramsOpen.value = false
-    await run()
   }
 }
 
@@ -411,6 +414,28 @@ watch(table, () => {
       </h4>
       <FrameTable :frame="result.detail" scrollHeight="34vh" />
     </template>
+  </div>
+
+  <div v-else-if="storedResult" class="result stored-result">
+    <div class="result-head" :data-verdict="storedResult.verdict ?? (storedResult.status === 'error' ? 'fail' : 'info')">
+      <span class="result-icon"><i :class="storedResult.status === 'error' ? 'pi pi-times-circle' : storedResult.verdict === 'ok' ? 'pi pi-check-circle' : storedResult.verdict === 'fail' ? 'pi pi-times-circle' : storedResult.verdict === 'warn' ? 'pi pi-exclamation-triangle' : 'pi pi-info-circle'" /></span>
+      <div>
+        <p class="eyebrow">Last workflow execution</p>
+        <h3>{{ storedResult.status === 'error' ? 'Analysis could not run' : (storedResult.verdict_text || 'Analysis completed') }}</h3>
+      </div>
+      <span class="grow" />
+      <Tag :value="storedResult.status === 'error' ? 'error' : (storedResult.verdict ?? 'completed')" :severity="storedResult.status === 'error' ? 'danger' : verdictSeverity[storedResult.verdict ?? 'info']" />
+    </div>
+
+    <p v-if="storedResult.error" class="stored-error"><i class="pi pi-exclamation-triangle" /> {{ storedResult.error }}</p>
+    <div v-else class="stat-cards" style="margin: 0.75rem 0 1rem">
+      <div v-for="stat in storedResult.stats" :key="stat.label" class="stat-card">
+        <div class="label">{{ stat.label }}</div>
+        <div class="value">{{ stat.value }}</div>
+      </div>
+      <div class="stat-card"><div class="label">Result rows</div><div class="value">{{ storedResult.row_count.toLocaleString() }}</div></div>
+    </div>
+    <p class="muted stored-meta">Executed {{ new Date(storedResult.executed_at).toLocaleString() }} · run {{ storedResult.run_id }}. Select <strong>Run test</strong> to recompute current detail rows.</p>
   </div>
 
   <PinDialog

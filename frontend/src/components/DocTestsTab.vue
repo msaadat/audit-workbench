@@ -20,6 +20,7 @@ import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import UiTestStatus from './ui/UiTestStatus.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -262,7 +263,7 @@ onUnmounted(unsubscribe)
       <aside class="test-rail card">
         <div class="rail-title"><strong>Tests</strong><Tag :value="String(tests.length)" severity="secondary"/></div>
         <button v-for="test in tests" :key="test.id" :class="{ active: current?.id === test.id }" @click="selectTest(test.id)">
-          <span><strong>{{ test.title }}</strong><Tag :value="test.status.replace('_', ' ')" :severity="severity(test.status)"/></span>
+          <span><strong>{{ test.title }}</strong><UiTestStatus :status="test.status" /></span>
           <small>{{ test.kind }} · {{ test.item_count }} item(s)</small>
         </button>
         <p v-if="!tests.length" class="empty">No document tests yet.</p>
@@ -275,7 +276,7 @@ onUnmounted(unsubscribe)
         <div v-if="view === 'worklist'" class="work-layout">
           <section class="worklist card">
             <button v-for="item in current.items" :key="item.id" :class="{ active: selectedItemId === item.id }" @click="selectedItemId = item.id">
-              <span><strong>{{ item.label }}</strong><Tag :value="item.state.replace('_', ' ')" :severity="severity(item.state)"/></span>
+              <span><strong>{{ item.label }}</strong><UiTestStatus :status="item.state" /></span>
               <small v-if="item.frozen">{{ Object.entries(item.frozen).slice(0, 3).map(([key,value]) => `${key}: ${value}`).join(' · ') }}</small>
               <small v-else-if="item.attributes">{{ item.attributes.length }} attribute(s)</small>
               <small v-else-if="item.page">Page {{ item.page }} · {{ item.review_kind }}</small>

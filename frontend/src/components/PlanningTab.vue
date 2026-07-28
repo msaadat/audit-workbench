@@ -18,6 +18,7 @@ import type { AgentRun, AuditObservation, MarkdownTemplate, PlanningPayload, Pla
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import UiTestStatus from './ui/UiTestStatus.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary; section: 'apm' | 'rcm' }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -318,7 +319,7 @@ async function copyPaper(kind: 'markdown' | 'html') {
         <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Assertion<InputText v-model="selectedRcm.assertion"/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/></label></div>
         <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
         <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
-          <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><Tag :value="item.status.replaceAll('_',' ')" :severity="item.status.includes('exception') || item.status === 'blocked' ? 'danger' : item.status === 'completed_no_exception' ? 'success' : item.status === 'review_required' ? 'warn' : 'secondary'"/></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>
+          <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>
           <p class="planned-title">{{ item.title }}</p>
           <p class="muted">{{ item.result_summary || 'Not executed yet.' }}</p>
           <p v-if="item.scope_limitations" class="muted">Limitation: {{ item.scope_limitations }}</p>
