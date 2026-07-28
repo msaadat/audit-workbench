@@ -181,11 +181,15 @@ class ActionRunner(BaseRunner):
                 except (TypeError, ValueError, json.JSONDecodeError):
                     args = {}
                 tool_calls += 1
-                result = (
-                    session.dispatch(name, args)
-                    if tool_calls <= action_tools.MAX_TOOL_CALLS
-                    else {"error": "Action-planning tool-call limit reached; return the action graph now."}
-                )
+                if tool_calls <= action_tools.MAX_TOOL_CALLS:
+                    self.set_activity(
+                        "command.interpret",
+                        action_tools.describe_tool_call(name, args),
+                        detail="Reviewing the command, available artifacts, and table schemas…",
+                    )
+                    result = session.dispatch(name, args)
+                else:
+                    result = {"error": "Action-planning tool-call limit reached; return the action graph now."}
                 conversation.append({
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or f"action-tool-{tool_calls}"),

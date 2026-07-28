@@ -85,6 +85,43 @@ TOOL_SCHEMAS = [
 ]
 
 
+TOOL_LABELS = {
+    # Every schema in TOOL_SCHEMAS needs a line here; an unmapped name falls
+    # back to a generic "Reading workspace data" label.
+    "list_artifacts": "Listing current artifacts",
+    "get_artifact": "Reading an artifact",
+    "get_table_schemas": "Reading table schemas",
+    "get_table_profile": "Profiling a table",
+    "get_action_definitions": "Reading action definitions",
+    "get_validation_checks": "Reading validation checks",
+    "get_analytics_tests": "Reading analytics tests",
+}
+
+
+def describe_tool_call(name: str, args: dict) -> str:
+    """One safe, user-facing description of a single tool call in flight."""
+    label = TOOL_LABELS.get(name, "Reading workspace data")
+    if name == "get_artifact":
+        ref = args.get("ref")
+        if isinstance(ref, str) and ref:
+            return f"Reading artifact {ref}"
+    elif name in ("get_table_schemas", "get_table_profile"):
+        tables = args.get("table_names") or args.get("tables")
+        if isinstance(tables, list) and tables:
+            names = ", ".join(str(item) for item in tables[:3])
+            if len(tables) > 3:
+                names += ", …"
+            return f"{label}: {names}"
+        table = args.get("table_name") or args.get("table")
+        if isinstance(table, str) and table:
+            return f"{label}: {table}"
+    elif name == "list_artifacts":
+        kinds = args.get("kinds")
+        if isinstance(kinds, list) and kinds:
+            return f"{label} ({', '.join(str(item) for item in kinds[:3])})"
+    return label
+
+
 def workspace_manifest(workspace: Workspace) -> dict:
     """A small initial view that lets the model choose its first read."""
     index = artifact_index.build(workspace)
