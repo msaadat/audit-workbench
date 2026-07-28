@@ -163,8 +163,9 @@ def document_test_units(
     * a worklist waiting on requested evidence stays one execution unit, so the
       run records the block against the evidence request instead of pretending to
       test;
-    * a Q&A test fans out one unit per unanswered item/document pair, because
-      each answer is a separate bounded model turn against declared page context;
+    * Q&A, attribute, and review tests fan out one unit per unanswered
+      item/document pair, because each assessment is a separate bounded model
+      turn against declared page context;
     * a test the agent has already checked end to end becomes a review unit, which
       only an auditor can settle;
     * anything else is one deterministic local execution unit.
@@ -176,7 +177,7 @@ def document_test_units(
     test = doc_test_service.load_test(workspace, test_id)
     prefix = tuple(parent_refs)
     test_refs = prefix + (f"doctest:{test_id}",)
-    if test.get("kind") == "qa":
+    if test.get("kind") in {"qa", "attribute", "review"}:
         if doc_test_service.evidence_blocked(test):
             return [
                 UnitSpec(
@@ -187,22 +188,23 @@ def document_test_units(
                     {"test_id": test_id},
                 )
             ]
-        qa_units = []
+        llm_units = []
         for item in test.get("items") or []:
-            answered = set((item.get("qa_answers") or {}).keys())
+            answered = set((item.get("llm_answers") or item.get("qa_answers") or {}).keys())
             for document_id in item.get("document_ids") or []:
                 if document_id in answered and not forced:
                     continue
-                qa_units.append(
+                unit_kind = "document_qa_execution" if test.get("kind") == "qa" else "document_llm_execution"
+                llm_units.append(
                     UnitSpec(
                         semantic_unit_id(
-                            "document_qa_execution",
+                            unit_kind,
                             test_id,
                             item["id"],
                             document_id,
                         ),
-                        "document_qa_execution",
-                        f"Answer {item.get('label') or item['id']} — {document_id}",
+                        unit_kind,
+                        f"Assess {item.get('label') or item['id']} — {document_id}",
                         test_refs
                         + (f"docitem:{item['id']}", f"document:{document_id}"),
                         {
@@ -219,13 +221,13 @@ def document_test_units(
                         },
                     )
                 )
-        if qa_units:
-            return qa_units
+        if llm_units:
+            return llm_units
         return [
             UnitSpec(
                 semantic_unit_id("document_test_review", test_id),
                 "document_test_review",
-                f"Review document Q&A — {title}",
+                f"Review LLM-assisted document test — {title}",
                 test_refs,
                 {"test_id": test_id},
             )

@@ -843,7 +843,11 @@ def build_attribute(workspace: Workspace, payload: dict) -> dict:
         for value in (payload.get("attributes") or [])
     ]
     items = []
-    for raw in payload.get("items") or [{"label": "Attribute test item"}]:
+    default_item = {
+        "label": "Attribute test item",
+        "document_ids": [str(value) for value in (payload.get("document_ids") or [])],
+    }
+    for raw in payload.get("items") or [default_item]:
         items.append({**raw, "attributes": raw.get("attributes") or attributes})
     built["items"] = items
     return create_test(workspace, built)
@@ -1263,6 +1267,36 @@ def commit_qa_answer(
             "Cited answers were generated from the attached pages in stable document order; "
             "auditor disposition is still required."
         ),
+    )
+    test["status"] = "review_required"
+    save_test(workspace, test)
+    return item
+
+
+def commit_llm_assessment(
+    workspace: Workspace, test_id: str, item_id: str, document_id: str, answer: dict,
+) -> dict:
+    """Persist one cited LLM assessment for a Q&A, attribute, or review item."""
+    test = load_test(workspace, test_id)
+    if test.get("kind") not in {"qa", "attribute", "review"}:
+        raise WorkspaceError("This Document Test kind does not support an LLM assessment.")
+    if test.get("kind") == "qa":
+        return commit_qa_answer(workspace, test_id, item_id, document_id, answer)
+    item = _item(test, item_id)
+    if document_id not in item.get("document_ids", []):
+        raise WorkspaceError(f"Document '{document_id}' is not attached to Document Test item '{item_id}'.")
+    answers = item.setdefault("llm_answers", {})
+    answers[document_id] = {
+        "answer": str(answer.get("answer") or ""),
+        "citations": normalize_many(answer.get("citations") or []),
+    }
+    ordered = [answers[value] for value in item.get("document_ids") or [] if value in answers]
+    item.update(
+        response="\n\n".join(value["answer"] for value in ordered if value["answer"]),
+        citations=[citation for value in ordered for citation in value["citations"]],
+        evidence_refs=[citation for value in ordered for citation in value["citations"]],
+        state="agent_checked", auditor_disposition="pending",
+        runner_note="Cited LLM assessment generated from the attached pages; auditor disposition is still required.",
     )
     test["status"] = "review_required"
     save_test(workspace, test)

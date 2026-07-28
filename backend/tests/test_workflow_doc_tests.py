@@ -389,6 +389,37 @@ def test_forced_qa_execution_answers_the_pair_again(monkeypatch, fake_agent_llm)
     assert len(fake_agent_llm.calls) == 2
 
 
+@pytest.mark.parametrize("kind", ["attribute", "review"])
+def test_attribute_and_review_execution_use_the_cited_model_pipeline(
+    monkeypatch, fake_agent_llm, kind
+):
+    ws = _workspace(f"LLM {kind}")
+    document = documents.add_document(ws, "evidence.txt", EVIDENCE)
+    if kind == "attribute":
+        test = doc_tests.build_attribute(
+            ws,
+            {"title": "Approval attribute", "document_ids": [document["id"]],
+             "attributes": [{"name": "approval", "expected": "present"}]},
+        )
+    else:
+        test = doc_tests.build_review(
+            ws, {"title": "Invoice review", "document_id": document["id"]},
+        )
+    fake_agent_llm.overrides["agent:document_qa"] = {
+        "answer": "The supplied evidence supports the requested assessment.",
+        "citations": [{"page": 1, "excerpt": "Approved by: the controller"}],
+    }
+
+    finished = wait_run(ws, _run(ws, test["id"])["id"])
+
+    unit = _units(finished, "doc_tests.executed")[0]
+    assert unit["kind"] == "document_llm_execution"
+    assert unit["status"] == "awaiting_confirmation"
+    saved = doc_tests.load_test(ws, test["id"])
+    assert saved["items"][0]["llm_answers"][document["id"]]["answer"]
+    assert saved["items"][0]["state"] == "agent_checked"
+
+
 # --------------------------------------------------------------------------- #
 # One implementation, two graphs — and the deletion
 # --------------------------------------------------------------------------- #

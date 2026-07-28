@@ -181,7 +181,7 @@ def bind_document_test_unit(
             (unit_ref(unit, "doctest:"),),
             DOCUMENT_REVIEW_REQUIRED,
         )
-    if unit["kind"] == "document_qa_execution":
+    if unit["kind"] in {"document_qa_execution", "document_llm_execution"}:
         return bind_document_qa(adapter, capability, unit, task=task)
     test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
     try:

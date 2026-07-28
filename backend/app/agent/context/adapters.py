@@ -949,7 +949,7 @@ def document_qa_scope(
     item_id: str,
     document_id: str,
 ) -> ContextScope:
-    """Build the local candidate scope for one document Q&A unit."""
+    """Build the local candidate scope for one bounded document-assessment unit."""
     test = doc_tests.load_test(workspace, str(test_id))
     item = next(
         (
@@ -968,13 +968,23 @@ def document_qa_scope(
             f"Document '{document_id}' is not attached to Document Test item "
             f"'{item_id}'."
         )
+    kind = str(test.get("kind") or "")
     question = str(item.get("question") or "").strip()
+    if kind == "attribute":
+        requested = "; ".join(
+            f"{value.get('name')}: expected {value.get('expected', 'present')}"
+            for value in item.get("attributes") or []
+        )
+        question = "Assess these document attributes and cite supporting pages: " + requested
+    elif kind == "review":
+        question = str(item.get("instruction") or item.get("label") or "Review this document evidence.")
     if not question:
-        raise WorkspaceError(f"Document Test item '{item_id}' has no question.")
+        raise WorkspaceError(f"Document Test item '{item_id}' has no assessable instruction.")
     projection = {
         **{key: item.get(key) for key in _DOCUMENT_QA_ITEM_FIELDS},
         "document_test_id": str(test_id),
         "document_id": str(document_id),
+        "question": question,
     }
     return ContextScope(
         candidates={

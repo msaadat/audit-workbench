@@ -1,7 +1,7 @@
 """Registered model worker for audit fieldwork execution.
 
-The document Q&A worker answers one attached document's question from the pages
-it was supplied. It owns its prompt, its bounded bundle-to-message
+The document-assessment worker answers one attached document's bounded request
+from the pages it was supplied. It owns its prompt, its bounded bundle-to-message
 transformation, and the part of its contract that can be decided from the
 supplied context: response shape and citation binding against the exact pages it
 received.
@@ -52,11 +52,12 @@ def _resolved_item(request: WorkerRequest, source_id: str) -> object:
 # --------------------------------------------------------------------------- #
 DOCUMENT_QA_WORKER_ID = "fieldwork.document_qa"
 DOCUMENT_QA_SYSTEM = """[agent:document_qa]
-Answer only from the included pages. Return one JSON object only, with `answer`
-as a string and `citations` as an array of objects. Each citation object has
-`page` as an integer and `excerpt` as a short verbatim string. If the answer is
-absent, say so. Do not invent facts. Do not return prose outside the JSON object
-or a Markdown fence."""
+Answer or assess only from the included pages. Return one JSON object only, with
+`answer` as a string and `citations` as an array of objects. Each citation object
+has `page` as an integer and `excerpt` as a short verbatim string. If the
+evidence is absent or inconclusive, say so. Do not invent facts or make the
+auditor's final disposition. Do not return prose outside the JSON object or a
+Markdown fence."""
 
 DOCUMENT_QA_QUESTION_SOURCE_ID = "qa_item"
 DOCUMENT_QA_PAGE_SOURCE_ID = "document_pages"

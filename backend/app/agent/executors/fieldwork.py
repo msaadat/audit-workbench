@@ -351,7 +351,7 @@ def execute_document_qa(request: ExecutorRequest, raw_target: object) -> Executo
             )
             for citation in citations
         ]
-        return doc_tests.commit_qa_answer(
+        return doc_tests.commit_llm_assessment(
             fresh,
             target.test_id,
             target.item_id,
@@ -410,7 +410,7 @@ def reconcile_document_qa(
         ),
         None,
     )
-    durable = ((item or {}).get("qa_answers") or {}).get(target.document_id) or {}
+    durable = ((item or {}).get("llm_answers") or (item or {}).get("qa_answers") or {}).get(target.document_id) or {}
     if str(durable.get("answer") or "") != answer:
         return ExecutorReconciliation(
             "conflict",

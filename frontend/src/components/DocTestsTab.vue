@@ -61,10 +61,18 @@ const tableOptions = computed(() => props.workspace.tables.map(table => table.na
 const documentOptions = computed(() => documents.value.map(doc => ({ label: doc.title, value: doc.id })))
 const rcmOptions = computed(() => (planning.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
+const runLabel = computed(() => {
+  if (!current.value) return 'Run selected'
+  if (current.value.kind === 'qa') return 'Run cited LLM Q&A'
+  if (current.value.kind === 'attribute') return 'Run LLM attribute test'
+  if (current.value.kind === 'review') return 'Run LLM document review'
+  return 'Run local comparison'
+})
+const executionMode = computed(() => current.value?.kind === 'vouching' ? 'Local deterministic comparison' : 'LLM-assisted, cited assessment')
 const draftReady = computed(() => {
   if (!draft.value.rcmId) return false
   if (draft.value.kind === 'vouching') return Boolean(draft.value.table)
-  if (draft.value.kind === 'review' || draft.value.kind === 'qa') return Boolean(draft.value.documentId)
+  if (draft.value.kind === 'attribute' || draft.value.kind === 'review' || draft.value.kind === 'qa') return Boolean(draft.value.documentId)
   return true
 })
 
@@ -118,7 +126,7 @@ async function createTest() {
       })
     } else if (draft.value.kind === 'attribute') {
       created = await api.post(`/api/workspaces/${props.workspace.id}/doc-tests/build/attribute`, {
-        ...common, attributes: draft.value.attributes.split(',').map(name => ({ name: name.trim(), expected: 'present' })).filter(value => value.name),
+        ...common, document_ids: [draft.value.documentId], attributes: draft.value.attributes.split(',').map(name => ({ name: name.trim(), expected: 'present' })).filter(value => value.name),
       })
     } else if (draft.value.kind === 'review') {
       const pages = draft.value.pages.split(',').map(value => Number(value.trim())).filter(Boolean)
@@ -247,7 +255,7 @@ onUnmounted(unsubscribe)
     <UiPageHeader title="Document tests" description="Execute and document evidence-based fieldwork">
       <Button v-if="tests.length" label="Prepare with assistant" icon="pi pi-sparkles" :disabled="assistantUnavailable" @click="prepareTests"/>
       <Button label="Create manually" icon="pi pi-plus" outlined @click="openManualCreate"/>
-      <Button v-if="current" label="Run selected" icon="pi pi-play" severity="secondary" :loading="running" :disabled="agent.isActive.value" @click="runTest"/>
+      <Button v-if="current" :label="runLabel" icon="pi pi-play" severity="secondary" :loading="running" :disabled="agent.isActive.value" @click="runTest"/>
     </UiPageHeader>
 
     <div v-if="tests.length" class="test-layout">
@@ -261,7 +269,7 @@ onUnmounted(unsubscribe)
       </aside>
 
       <main v-if="current" class="test-detail">
-        <div class="detail-title card"><div><span class="eyebrow">{{ current.id }} · {{ current.kind }}</span><h3>{{ current.title }}</h3><small class="muted">{{ current.rcm_id ? `RCM ${current.rcm_id}` : 'unlinked' }}</small></div><div class="rollups"><Tag :value="`${current.rollup?.matched ?? 0} matched`" severity="success"/><Tag :value="`${current.rollup?.mismatched ?? 0} mismatch / missing`" :severity="current.rollup?.mismatched ? 'danger' : 'secondary'"/><Tag :value="`${current.rollup?.manual_review ?? 0} manual`" :severity="current.rollup?.manual_review ? 'warn' : 'secondary'"/><Button icon="pi pi-trash" severity="danger" outlined rounded aria-label="Delete document test" :loading="deleting" @click="deleteTest"/></div></div>
+        <div class="detail-title card"><div><span class="eyebrow">{{ current.id }} · {{ current.kind }}</span><h3>{{ current.title }}</h3><small class="muted">{{ current.rcm_id ? `RCM ${current.rcm_id}` : 'unlinked' }} · {{ executionMode }}</small></div><div class="rollups"><Tag :value="`${current.rollup?.matched ?? 0} matched`" severity="success"/><Tag :value="`${current.rollup?.mismatched ?? 0} mismatch / missing`" :severity="current.rollup?.mismatched ? 'danger' : 'secondary'"/><Tag :value="`${current.rollup?.manual_review ?? 0} manual`" :severity="current.rollup?.manual_review ? 'warn' : 'secondary'"/><Button icon="pi pi-trash" severity="danger" outlined rounded aria-label="Delete document test" :loading="deleting" @click="deleteTest"/></div></div>
         <SelectButton v-model="view" :options="[{label:'Worklist & setup',value:'worklist'},{label:'Working paper',value:'working-paper'}]" optionLabel="label" optionValue="value" :allowEmpty="false" @change="view === 'working-paper' && openWorkingPaper()"/>
 
         <div v-if="view === 'worklist'" class="work-layout">
@@ -295,6 +303,7 @@ onUnmounted(unsubscribe)
             <div v-else-if="selectedItem.attributes" class="attributes"><article v-for="attribute in selectedItem.attributes" :key="attribute.name"><strong>{{ attribute.name }}</strong><Tag :value="attribute.verdict" :severity="severity(attribute.verdict)"/><InputText v-model="attribute.note" placeholder="Auditor note"/></article></div>
             <blockquote v-else-if="selectedItem.excerpt">{{ selectedItem.excerpt }}</blockquote>
             <div v-else-if="selectedItem.question" class="qa"><strong>{{ selectedItem.question }}</strong><p>{{ selectedItem.response || 'No response recorded yet.' }}</p><div class="attached"><Button v-for="citation in selectedItem.citations" :key="citation.id" :label="`Page ${citation.page || '—'}`" icon="pi pi-link" size="small" text @click="showAnchor(citation)"/></div></div>
+            <div v-if="selectedItem.response && !selectedItem.question" class="qa"><strong>LLM-assisted assessment</strong><p>{{ selectedItem.response }}</p><div class="attached"><Button v-for="citation in selectedItem.citations" :key="citation.id" :label="`Page ${citation.page || '—'}`" icon="pi pi-link" size="small" text @click="showAnchor(citation)"/></div></div>
 
             <label>Auditor note<Textarea v-model="selectedItem.auditor_note" rows="3" autoResize/></label>
             <div class="dispositions"><Button label="Accept result" icon="pi pi-check" severity="success" outlined @click="disposition('accepted')"/><Button label="Needs manual check" icon="pi pi-eye" severity="warn" outlined @click="disposition('needs_manual_check')"/><Button label="Mark exception" icon="pi pi-exclamation-triangle" severity="danger" outlined @click="disposition('exception')"/></div>
@@ -318,7 +327,7 @@ onUnmounted(unsubscribe)
       <div v-if="createStep === 1" class="create-form"><label>Test kind<Select v-model="draft.kind" :options="kinds" optionLabel="label" optionValue="value"/></label><label>Title<InputText v-model="draft.title" placeholder="e.g. Invoice vouching"/></label></div>
       <div v-else-if="createStep === 2" class="create-form">
         <template v-if="draft.kind === 'vouching'"><div class="two"><label>Direction<Select v-model="draft.direction" :options="['vouching','tracing']"/></label><label>Population table<Select v-model="draft.table" :options="tableOptions"/></label></div><div class="two"><label>Sample size<InputNumber v-model="draft.size" :min="1"/></label><label>Seed<InputNumber v-model="draft.seed"/></label></div><label><span><input v-model="draft.evidenceAware" type="checkbox"/> Prioritize evidence-covered transactions</span></label><label>Identifier fields (comma separated)<InputText v-model="draft.identifierFields" placeholder="requisition_id, po_id, grn_id, invoice_id"/></label><label>Required document types (comma separated)<InputText v-model="draft.requiredDocumentTypes" placeholder="requisition, purchase_order, goods_receipt, invoice"/></label><label>Frozen fields (comma separated)<InputText v-model="draft.frozenFields" placeholder="invoice_no, amount, tx_date"/></label></template>
-        <label v-else-if="draft.kind === 'attribute'">Attributes (comma separated)<InputText v-model="draft.attributes" placeholder="approval, signature, date"/></label>
+        <template v-else-if="draft.kind === 'attribute'"><label>Document<Select v-model="draft.documentId" :options="documentOptions" optionLabel="label" optionValue="value" filter/></label><label>Attributes (comma separated)<InputText v-model="draft.attributes" placeholder="approval, signature, date"/></label></template>
         <template v-else-if="draft.kind === 'review'"><label>Document<Select v-model="draft.documentId" :options="documentOptions" optionLabel="label" optionValue="value" filter/></label><label>Pages (comma separated; blank = all)<InputText v-model="draft.pages" placeholder="1, 3, 4"/></label></template>
         <template v-else><label>Document<Select v-model="draft.documentId" :options="documentOptions" optionLabel="label" optionValue="value" filter/></label><label>Questions (one per line)<Textarea v-model="draft.questions" rows="5"/></label></template>
       </div>
