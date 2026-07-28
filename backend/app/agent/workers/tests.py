@@ -185,7 +185,9 @@ _GENERATE_DOCUMENT_STEP_FIELDS = (
     "missing_evidence",
 )
 _GENERATE_MODES = {"question", "vouch"}
-_COLUMN_REF_RE = re.compile(r"pl\.col\(\s*['\"]([^'\"]+)['\"]\s*\)")
+_UNKNOWN_COLUMN_ERROR_RE = re.compile(
+    r"ColumnNotFoundError: unable to find column [\"']([^\"']+)[\"']"
+)
 
 
 def _generate_rcm_id(request: WorkerRequest) -> str:
@@ -224,9 +226,14 @@ def _generate_methodology_refs(request: WorkerRequest) -> list[dict]:
     return refs
 
 
-def _generate_supplied_tables(request: WorkerRequest) -> dict[str, set[str]]:
-    """Return the supplied table names and their exact column spellings."""
-    tables: dict[str, set[str]] = {}
+def _generate_supplied_tables(request: WorkerRequest) -> dict[str, dict[str, str]]:
+    """Return supplied table schemas without loading workspace rows.
+
+    The generation worker only receives declared context, never a workspace.  The
+    dtype strings are enough to construct empty frames for a schema-only Polars
+    validation pass below.
+    """
+    tables: dict[str, dict[str, str]] = {}
     for item in request.context.items:
         if item.source_id != GENERATE_TABLE_SOURCE_ID:
             continue
@@ -237,11 +244,41 @@ def _generate_supplied_tables(request: WorkerRequest) -> dict[str, set[str]]:
         if not name:
             continue
         tables[name] = {
-            str(column.get("name") or "")
+            str(column.get("name") or ""): str(column.get("dtype") or "")
             for column in content.get("columns") or []
-            if isinstance(column, Mapping)
+            if isinstance(column, Mapping) and str(column.get("name") or "")
         }
     return tables
+
+
+def _empty_frame_dtype(dtype: str):
+    """Map the compact context dtype into a safe, useful empty-frame dtype."""
+    normalized = dtype.casefold().replace(" ", "")
+    if normalized.startswith("uint"):
+        return sandbox.pl.UInt64
+    if normalized.startswith("int"):
+        return sandbox.pl.Int64
+    if normalized.startswith(("float", "decimal")):
+        return sandbox.pl.Float64
+    if normalized in {"bool", "boolean"}:
+        return sandbox.pl.Boolean
+    if normalized == "date":
+        return sandbox.pl.Date
+    if normalized.startswith("datetime"):
+        return sandbox.pl.Datetime
+    if normalized == "time":
+        return sandbox.pl.Time
+    return sandbox.pl.String
+
+
+def _empty_schema_frames(tables: Mapping[str, Mapping[str, str]]) -> dict:
+    """Build zero-row frames that preserve the supplied table schemas only."""
+    return {
+        table: sandbox.pl.DataFrame(
+            schema={column: _empty_frame_dtype(dtype) for column, dtype in columns.items()}
+        )
+        for table, columns in tables.items()
+    }
 
 
 def _generate_supplied_document_ids(request: WorkerRequest) -> set[str]:
@@ -268,7 +305,7 @@ def _generate_response_schema(response: str) -> Mapping[str, Any]:
 
 
 def _validate_generate_data_step(
-    path: str, raw_step: object, known_tables: dict[str, set[str]], errors: list[str]
+    path: str, raw_step: object, known_tables: Mapping[str, Mapping[str, str]], errors: list[str]
 ) -> dict | None:
     if not isinstance(raw_step, Mapping):
         errors.append(f"{path} must be an object")
@@ -281,20 +318,36 @@ def _validate_generate_data_step(
         if not isinstance(step.get(key), str) or not step[key].strip():
             errors.append(f"{path}.{key} must be a non-empty string")
     code = step.get("code")
-    known_columns = set().union(*known_tables.values()) if known_tables else set()
     if not isinstance(code, str) or not code.strip():
         errors.append(f"{path}.code must be non-empty Polars code")
     else:
+        safe_code = True
         try:
             sandbox.validate(code)
         except ValueError as error:
             errors.append(f"{path}.code is not allowed in the sandbox: {error}")
+            safe_code = False
         if "result" not in code:
             errors.append(f"{path}.code must assign the exception rows to `result`")
-        if known_columns:
-            unknown_columns = sorted(set(_COLUMN_REF_RE.findall(code)) - known_columns)
-            if unknown_columns:
-                errors.append(f"{path}.code references unknown column '{unknown_columns[0]}'")
+        if safe_code and known_tables:
+            try:
+                # Use Polars itself to resolve schemas created by the snippet.
+                # A flat source-column check cannot see aliases introduced by
+                # joins (for example, ``ITEM_DESCRIPTION_right``), which are
+                # valid only after the preceding join expression.  Frames have
+                # no rows, so this validates schema and expression semantics
+                # without reading or exposing table data.
+                sandbox.run(code, _empty_schema_frames(known_tables))
+            except sandbox.SandboxError as error:
+                unknown_column = _UNKNOWN_COLUMN_ERROR_RE.search(str(error))
+                if unknown_column:
+                    errors.append(
+                        f"{path}.code references unknown column '{unknown_column.group(1)}'"
+                    )
+                else:
+                    errors.append(
+                        f"{path}.code cannot run against the supplied table schemas: {error}"
+                    )
     return {
         "label": str(step.get("label") or "").strip(),
         "instruction": str(step.get("instruction") or "").strip(),

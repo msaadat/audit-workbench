@@ -78,6 +78,11 @@ def _bundle(
             )
         )
     for table in tables:
+        columns = (
+            table_columns.get(table, ())
+            if isinstance(table_columns, dict)
+            else table_columns
+        )
         values.append(
             (
                 "table_metadata",
@@ -86,7 +91,7 @@ def _bundle(
                 {
                     "table": table,
                     "rows": 3,
-                    "columns": [{"name": column} for column in table_columns],
+                    "columns": [{"name": column} for column in columns],
                 },
             )
         )
@@ -324,6 +329,35 @@ def test_generate_worker_rejects_an_unknown_column():
 
     with pytest.raises(WorkerRunError, match="unknown column 'ghost_column'"):
         WORKERS.execute(_request(), gateway)
+
+
+def test_generate_worker_accepts_columns_introduced_by_a_join():
+    bundle = _bundle(
+        tables=("requisitions", "po_data"),
+        table_columns={
+            "requisitions": ("REQUISITION_ID", "ITEM_DESCRIPTION"),
+            "po_data": ("REQUISITION_ID", "ITEM_DESCRIPTION"),
+        },
+    )
+    proposed = _data_test(
+        steps=[
+            _data_step(
+                code=(
+                    'joined = requisitions.join(po_data, on="REQUISITION_ID", how="inner")\n'
+                    'result = joined.filter(pl.col("ITEM_DESCRIPTION") '
+                    '!= pl.col("ITEM_DESCRIPTION_right"))'
+                )
+            )
+        ]
+    )
+
+    result = WORKERS.execute(
+        _request(bundle), _Gateway([json.dumps({"tests": [proposed]})])
+    )
+
+    assert result.proposal["tests"][0]["steps"][0]["code"].endswith(
+        'pl.col("ITEM_DESCRIPTION_right"))'
+    )
 
 
 def test_generate_worker_rejects_an_unknown_document_id():
