@@ -1375,6 +1375,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         }]},
         "agent:document_qa": {
             "answer": "Requisitions require approval before commitment.",
+            "outcome": "accepted",
             "citations": [{"page": 1, "excerpt": "requisitions require approval"}],
         },
     })
@@ -1400,10 +1401,10 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     assert drafted["steps"][0]["label"] == "Review approval evidence"
     assert drafted["steps"][0]["mode"] == "question"
     assert drafted["kind"] == "qa"
-    assert completed["audit_outcome"]["tests_completed"] == 0
+    assert completed["audit_outcome"]["tests_completed"] == 1
     assert completed["audit_outcome"]["document_tests_executed"] == 0
-    assert completed["audit_outcome"]["tests_review_required"] == 1
-    assert "Open workflow units: 2" in completed["summary_markdown"]
+    assert completed["audit_outcome"]["tests_review_required"] == 0
+    assert "Open workflow units: 1" in completed["summary_markdown"]
     assert call_tags.count("agent:apm") == 2
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(item["stage"] == "agent:apm" and policy["id"] in item["document_ids"] for item in activity)

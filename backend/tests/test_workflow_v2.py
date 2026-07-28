@@ -1119,7 +1119,7 @@ def test_data_test_execution_runs_through_the_mixed_execution_binding(
 def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch):
     # P7F.3: the one model-backed unit kind of ``fieldwork.executed`` runs
     # through the registered worker on the injected gateway and the registered
-    # executor, and folds to auditor disposition rather than to succeeded.
+    # executor, and auto mode applies the worker's supported outcome.
     ws = _planning_workspace("Live document Q&A binding")
     row = ws.rcm[0]
     document = documents.add_document(
@@ -1150,6 +1150,7 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
         captured["user"] = user
         return {
             "answer": "The controller approved it.",
+            "outcome": "accepted",
             "citations": [
                 {"page": 1, "excerpt": "approved by the controller"},
                 {"page": 42, "excerpt": "a page that was never supplied"},
@@ -1168,12 +1169,11 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
 
     unit = stage["units"][0]
     assert unit["kind"] == "document_qa_execution"
-    # A cited answer is a candidate for auditor judgment, not a conclusion.
-    assert unit["status"] == "awaiting_confirmation"
+    assert unit["status"] == "succeeded"
     assert unit["result_refs"] == [
         f"doctest:{test['id']}:item:{item_id}:document:{document['id']}"
     ]
-    assert stage["status"] == "review_required"
+    assert stage["status"] == "succeeded"
     committed = doc_tests.load_test(workspaces.load_workspace(ws.id), test["id"])
     stored = committed["items"][0]["qa_answers"][document["id"]]
     assert stored["answer"] == "The controller approved it."
@@ -1230,6 +1230,7 @@ def test_document_qa_resume_reuses_the_durable_proposal_without_rebilling(monkey
         {
             "agent:document_qa": {
                 "answer": "The controller approved it.",
+                "outcome": "accepted",
                 "citations": [{"page": 1, "excerpt": "The controller approved"}],
             }
         }
@@ -1260,7 +1261,7 @@ def test_document_qa_resume_reuses_the_durable_proposal_without_rebilling(monkey
     command._refresh()
     command._run_stage(stage)
 
-    assert unit["status"] == "awaiting_confirmation"
+    assert unit["status"] == "succeeded"
     assert command.run["usage"]["llm_turns"] == turns_after_generation
 
 

@@ -51,13 +51,20 @@ def _resolved_item(request: WorkerRequest, source_id: str) -> object:
 # fieldwork.document_qa worker (P7F.3)
 # --------------------------------------------------------------------------- #
 DOCUMENT_QA_WORKER_ID = "fieldwork.document_qa"
+DOCUMENT_QA_OUTCOMES = frozenset(
+    {"accepted", "exception", "needs_manual_check"}
+)
 DOCUMENT_QA_SYSTEM = """[agent:document_qa]
 Answer or assess only from the included pages. Return one JSON object only, with
-`answer` as a string and `citations` as an array of objects. Each citation object
-has `page` as an integer and `excerpt` as a short verbatim string. If the
-evidence is absent or inconclusive, say so. Do not invent facts or make the
-auditor's final disposition. Do not return prose outside the JSON object or a
-Markdown fence."""
+`answer` as a string, `outcome` as one of `accepted`, `exception`, or
+`needs_manual_check`, and `citations` as an array of objects. Each citation
+object has `page` as an integer and `excerpt` as a short verbatim string.
+
+Choose `accepted` when the evidence affirmatively satisfies the question or
+expected condition, `exception` when it affirmatively does not, and
+`needs_manual_check` when the evidence is absent, ambiguous, or inconclusive.
+Do not invent facts. Do not return prose outside the JSON object or a Markdown
+fence."""
 
 DOCUMENT_QA_QUESTION_SOURCE_ID = "qa_item"
 DOCUMENT_QA_PAGE_SOURCE_ID = "document_pages"
@@ -108,6 +115,10 @@ def _document_qa_response_schema(response: str) -> Mapping[str, Any]:
         raise WorkerResponseValidationError("the response must be a JSON object")
     if not isinstance(payload.get("answer"), str):
         raise WorkerResponseValidationError("`answer` must be a string")
+    outcome = str(payload.get("outcome") or "").strip()
+    if outcome not in DOCUMENT_QA_OUTCOMES:
+        choices = ", ".join(sorted(DOCUMENT_QA_OUTCOMES))
+        raise WorkerResponseValidationError(f"`outcome` must be one of: {choices}")
     citations = payload.get("citations")
     if citations is None:
         citations = []
@@ -115,7 +126,11 @@ def _document_qa_response_schema(response: str) -> Mapping[str, Any]:
         not isinstance(item, dict) for item in citations
     ):
         raise WorkerResponseValidationError("`citations` must be an array of objects")
-    return {"answer": payload["answer"], "citations": citations}
+    return {
+        "answer": payload["answer"],
+        "outcome": outcome,
+        "citations": citations,
+    }
 
 
 def validate_document_qa_proposal(
@@ -147,8 +162,14 @@ def validate_document_qa_proposal(
             continue
         seen.add(page)
         citations.append({"page": page, "excerpt": excerpt})
+    outcome = str(proposal.get("outcome") or "needs_manual_check")
+    if outcome not in DOCUMENT_QA_OUTCOMES:
+        outcome = "needs_manual_check"
+    if outcome in {"accepted", "exception"} and not citations:
+        outcome = "needs_manual_check"
     return {
         "answer": str(proposal.get("answer") or ""),
+        "outcome": outcome,
         "citations": sorted(citations, key=lambda item: item["page"]),
     }
 
@@ -174,9 +195,10 @@ def run_document_qa_worker(
         user += (
             "\n\nYour previous response could not be used: "
             + "; ".join(attempt.validation_errors)
-            + ". Return exactly one JSON object with a string `answer` and an "
-            "array of citation objects containing integer `page` and string "
-            "`excerpt`."
+            + ". Return exactly one JSON object with a string `answer`, an "
+            "`outcome` of `accepted`, `exception`, or `needs_manual_check`, "
+            "and an array of citation objects containing integer `page` and "
+            "string `excerpt`."
         )
     activity = dict(request.activity)
     activity.setdefault(
@@ -198,7 +220,9 @@ def run_document_qa_worker(
 
 DOCUMENT_QA_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="fieldwork.document_qa.response",
-    schema_hash=_sha256_text("document-qa-response:json-object-with-answer-citations"),
+    schema_hash=_sha256_text(
+        "document-qa-response:json-object-with-answer-outcome-citations"
+    ),
     validator=_document_qa_response_schema,
 )
 DOCUMENT_QA_WORKER = WorkerDefinition(
@@ -223,6 +247,7 @@ WORKERS.register(DOCUMENT_QA_WORKER)
 
 
 __all__ = [
+    "DOCUMENT_QA_OUTCOMES",
     "DOCUMENT_QA_PAGE_SOURCE_ID",
     "DOCUMENT_QA_QUESTION_SOURCE_ID",
     "DOCUMENT_QA_RESPONSE_SCHEMA",

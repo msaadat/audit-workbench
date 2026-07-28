@@ -10,7 +10,8 @@ capability IDs declared here; they do not redefine the edges.
 perform even its bounded local work, ``doc_tests.executed`` runs the outstanding
 items — deterministic comparisons locally, cited Q&A answers through the
 registered ``fieldwork.document_qa`` worker — and ``doc_tests.dispositioned`` is
-the separate outcome an auditor, never the agent, settles.
+the separate settlement outcome. Auto mode can apply a cited worker outcome;
+deterministic, inconclusive, and permission-mode results remain with the auditor.
 
 `P10.5` replaced ``DocTestRunner`` with this graph. The audit lifecycle continues
 to schedule document tests through ``fieldwork.executed``; both graphs bind the
@@ -39,8 +40,9 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "doc_tests.dispositioned": ("doc_tests.executed",),
 }
 
-# "Run this document test" requests execution. Auditor disposition is never
-# requested on the agent's behalf.
+# "Run this document test" requests execution. Auto-mode disposition is part of
+# the model-backed execution binding; remaining auditor disposition is not added
+# to the requested outcomes.
 FULL_DOC_TEST_OUTCOMES = ["doc_tests.executed"]
 
 # Goal-template routing to requested outcome sets.

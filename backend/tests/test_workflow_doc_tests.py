@@ -203,7 +203,7 @@ def test_an_auditor_dispositioned_item_is_not_re_run():
     assert saved["items"][0]["auditor_note"] == "Agrees to the ledger."
 
 
-def test_disposition_is_an_outcome_only_the_auditor_can_settle():
+def test_a_remaining_disposition_is_an_outcome_only_the_auditor_can_settle():
     ws = _workspace("Doc test disposition outcome")
     _document, test = _vouching(ws)
     wait_run(ws, _run(ws, test["id"])["id"])
@@ -220,8 +220,8 @@ def test_disposition_is_an_outcome_only_the_auditor_can_settle():
     )
     finished = wait_run(ws, requested["id"])
 
-    # The agent executed everything it could and still cannot satisfy this
-    # outcome: the unit settles for auditor judgment, never as succeeded.
+    # A deterministic comparison has no model-worker outcome to apply, so this
+    # remaining unit settles for auditor judgment rather than succeeding.
     assert finished["status"] == "completed_with_open_items", finished.get("error")
     units = _units(finished, "doc_tests.dispositioned")
     assert [unit["status"] for unit in units] == ["awaiting_confirmation"]
@@ -329,6 +329,7 @@ def _qa_workspace(monkeypatch, fake_agent_llm):
     )
     fake_agent_llm.overrides["agent:document_qa"] = {
         "answer": "The controller approved it.",
+        "outcome": "accepted",
         "citations": [{"page": 1, "excerpt": "Approved by: the controller"}],
     }
     return ws, document, test
@@ -341,11 +342,11 @@ def test_qa_execution_fans_out_per_item_document_pair_through_the_pipeline(
 
     finished = wait_run(ws, _run(ws, test["id"])["id"])
 
-    assert finished["status"] == "completed_with_open_items", finished.get("error")
+    assert finished["status"] == "completed", finished.get("error")
     executed = _units(finished, "doc_tests.executed")
     assert [unit["kind"] for unit in executed] == ["document_qa_execution"]
     unit = executed[0]
-    assert unit["status"] == "awaiting_confirmation"
+    assert unit["status"] == "succeeded"
     # The pipeline persisted a content-free manifest, a proposal, and a receipt.
     assert unit["context_manifest"]["unit_id"] == unit["id"]
     assert unit["proposal_sidecar"]["unit_id"] == unit["id"]
@@ -360,7 +361,30 @@ def test_qa_execution_fans_out_per_item_document_pair_through_the_pipeline(
     saved = doc_tests.load_test(ws, test["id"])
     stored = saved["items"][0]["qa_answers"][document["id"]]
     assert stored["answer"] == "The controller approved it."
-    assert saved["items"][0]["state"] == "agent_checked"
+    assert saved["items"][0]["state"] == "confirmed"
+    assert saved["items"][0]["auditor_disposition"] == "accepted"
+    assert saved["items"][0]["evidence_refs"][0]["confirmed_by"] == "agent"
+
+
+def test_auto_mode_applies_the_workers_exception_outcome(
+    monkeypatch, fake_agent_llm
+):
+    ws, _document, test = _qa_workspace(monkeypatch, fake_agent_llm)
+    fake_agent_llm.overrides["agent:document_qa"] = {
+        "answer": "No, the supplied policy does not establish the required approval.",
+        "outcome": "exception",
+        "citations": [{"page": 1, "excerpt": "Approved by: the controller"}],
+    }
+
+    finished = wait_run(ws, _run(ws, test["id"])["id"])
+
+    assert finished["status"] == "completed", finished.get("error")
+    saved = doc_tests.load_test(ws, test["id"])
+    item = saved["items"][0]
+    assert item["state"] == "exception"
+    assert item["auditor_disposition"] == "exception"
+    assert item["qa_answers"][_document["id"]]["outcome"] == "exception"
+    assert item["evidence_refs"][0]["confirmed_by"] == "agent"
 
 
 def test_an_answered_qa_pair_is_not_re_billed_on_a_later_run(
@@ -375,6 +399,21 @@ def test_an_answered_qa_pair_is_not_re_billed_on_a_later_run(
     assert second["status"] == "completed", second.get("error")
     assert len(fake_agent_llm.calls) == 1
     assert _units(second, "doc_tests.executed") == []
+
+
+def test_permission_mode_keeps_a_cited_qa_answer_for_auditor_disposition(
+    monkeypatch, fake_agent_llm
+):
+    ws, _document, test = _qa_workspace(monkeypatch, fake_agent_llm)
+
+    finished = wait_run(ws, _run(ws, test["id"], mode="permission")["id"])
+
+    unit = _units(finished, "doc_tests.executed")[0]
+    assert finished["status"] == "completed_with_open_items", finished.get("error")
+    assert unit["status"] == "awaiting_confirmation"
+    saved = doc_tests.load_test(ws, test["id"])
+    assert saved["items"][0]["state"] == "agent_checked"
+    assert saved["items"][0]["auditor_disposition"] == "pending"
 
 
 def test_forced_qa_execution_answers_the_pair_again(monkeypatch, fake_agent_llm):
@@ -407,6 +446,7 @@ def test_attribute_and_review_execution_use_the_cited_model_pipeline(
         )
     fake_agent_llm.overrides["agent:document_qa"] = {
         "answer": "The supplied evidence supports the requested assessment.",
+        "outcome": "accepted",
         "citations": [{"page": 1, "excerpt": "Approved by: the controller"}],
     }
 
@@ -414,10 +454,10 @@ def test_attribute_and_review_execution_use_the_cited_model_pipeline(
 
     unit = _units(finished, "doc_tests.executed")[0]
     assert unit["kind"] == "document_llm_execution"
-    assert unit["status"] == "awaiting_confirmation"
+    assert unit["status"] == "succeeded"
     saved = doc_tests.load_test(ws, test["id"])
     assert saved["items"][0]["llm_answers"][document["id"]]["answer"]
-    assert saved["items"][0]["state"] == "agent_checked"
+    assert saved["items"][0]["state"] == "confirmed"
 
 
 # --------------------------------------------------------------------------- #

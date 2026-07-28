@@ -265,7 +265,7 @@ class DocumentQaExecutorTarget:
 def _validated_document_qa(
     request: ExecutorRequest,
     target: object,
-) -> tuple[DocumentQaExecutorTarget, str, list[dict]]:
+) -> tuple[DocumentQaExecutorTarget, str, str, list[dict]]:
     if not isinstance(target, DocumentQaExecutorTarget):
         raise WorkspaceError(
             "Document Q&A executor requires a DocumentQaExecutorTarget."
@@ -278,12 +278,15 @@ def _validated_document_qa(
     answer = request.proposal.get("answer")
     if not isinstance(answer, str):
         raise WorkspaceError("The accepted document Q&A proposal has no answer.")
+    outcome = str(request.proposal.get("outcome") or "")
+    if outcome not in {"accepted", "exception", "needs_manual_check"}:
+        raise WorkspaceError("The accepted document Q&A proposal has no valid outcome.")
     citations = [
         {"page": int(citation["page"]), "excerpt": str(citation.get("excerpt") or "")}
         for citation in _plain_json(request.proposal.get("citations") or [])
         if isinstance(citation, Mapping) and citation.get("page") is not None
     ]
-    return target, answer, citations
+    return target, answer, outcome, citations
 
 
 def _document_qa_result(
@@ -327,7 +330,9 @@ def execute_document_qa(request: ExecutorRequest, raw_target: object) -> Executo
     citation to a document or hash it never saw. The commit is a merge in stable
     document order, so answering one attached document never discards another's.
     """
-    target, answer, citations = _validated_document_qa(request, raw_target)
+    target, answer, outcome, citations = _validated_document_qa(
+        request, raw_target
+    )
     state: dict[str, int] = {}
 
     def commit(fresh: Workspace) -> dict:
@@ -356,7 +361,7 @@ def execute_document_qa(request: ExecutorRequest, raw_target: object) -> Executo
             target.test_id,
             target.item_id,
             target.document_id,
-            {"answer": answer, "citations": anchors},
+            {"answer": answer, "outcome": outcome, "citations": anchors},
         )
 
     committed = mutate(
@@ -385,7 +390,9 @@ def reconcile_document_qa(
     changed parent is reconcilable only when this exact answer is already the
     durable one for that item and document; anything else is a real conflict.
     """
-    target, answer, _citations = _validated_document_qa(request, raw_target)
+    target, answer, outcome, _citations = _validated_document_qa(
+        request, raw_target
+    )
     parent_ref = document_test_ref(target.test_id)
     current = Workspace(target.workspace.root)
     current_parent = parent_hashes(current, [parent_ref])[parent_ref]
@@ -417,6 +424,14 @@ def reconcile_document_qa(
             reason=(
                 "The Document Test changed before the interrupted Q&A commit was "
                 "reconciled."
+            ),
+        )
+    if str(durable.get("outcome") or "") != outcome:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=(
+                "The Document Test outcome changed before the interrupted Q&A "
+                "commit was reconciled."
             ),
         )
     target.workspace = current

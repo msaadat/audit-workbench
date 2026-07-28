@@ -248,7 +248,7 @@ def test_document_qa_worker_answers_only_from_the_supplied_pages():
     ws, test, item_id, document_id = _qa_workspace()
     unit, bundle = _qa_bundle(ws, test, item_id, document_id)
     gateway = _Gateway(
-        '{"answer": "The controller approved it.", "citations": '
+        '{"answer": "The controller approved it.", "outcome": "accepted", "citations": '
         '[{"page": 1, "excerpt": "approved by the controller"}]}'
     )
 
@@ -268,6 +268,7 @@ def test_document_qa_worker_answers_only_from_the_supplied_pages():
     assert "Who approved the purchase order?" in user
     assert "--- Page 1 ---" in user
     assert result.proposal["answer"] == "The controller approved it."
+    assert result.proposal["outcome"] == "accepted"
     assert [dict(item) for item in result.proposal["citations"]] == [
         {"page": 1, "excerpt": "approved by the controller"}
     ]
@@ -349,6 +350,7 @@ def test_document_qa_worker_drops_a_citation_to_a_page_it_never_saw():
     proposal = validate_document_qa_proposal(
         {
             "answer": "The controller approved it.",
+            "outcome": "accepted",
             "citations": [
                 {"page": 99, "excerpt": "fabricated"},
                 {"page": 1, "excerpt": "not verbatim in the page at all"},
@@ -370,7 +372,8 @@ def test_document_qa_worker_repairs_one_invalid_response_then_succeeds():
     unit, bundle = _qa_bundle(ws, test, item_id, document_id)
     gateway = _Gateway(
         "Sorry, no JSON here.",
-        '{"answer": "The controller approved it.", "citations": []}',
+        '{"answer": "The controller approved it.", '
+        '"outcome": "needs_manual_check", "citations": []}',
     )
 
     result = WORKERS.execute(
@@ -418,6 +421,7 @@ def _qa_request(ws, test, item_id, document_id, *, answer="The controller approv
         unit_id=f"document_qa_execution:{test['id']}:{item_id}:{document_id}",
         proposal={
             "answer": answer,
+            "outcome": "accepted",
             "citations": [{"page": 1, "excerpt": "approved by the controller"}],
         },
         expected_revision=ws.revision,
@@ -436,6 +440,7 @@ def test_document_qa_executor_commits_the_answer_with_derived_evidence_anchors()
     committed = doc_tests.load_test(target.workspace, test["id"])
     item = committed["items"][0]
     assert item["qa_answers"][document_id]["answer"] == "The controller approved it."
+    assert item["qa_answers"][document_id]["outcome"] == "accepted"
     assert item["state"] == "agent_checked"
     assert item["auditor_disposition"] == "pending"
     # The anchor is built from the document at commit time, so it carries the

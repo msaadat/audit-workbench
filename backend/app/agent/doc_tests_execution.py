@@ -85,9 +85,9 @@ def bind_document_qa(
 
     The answer comes from the registered ``fieldwork.document_qa`` worker through
     the injected gateway and the declared page context, and the registered
-    executor owns the guarded merge into the Document Test. An answer is never a
-    finished conclusion, so the post-commit callback folds the unit to
-    ``awaiting_confirmation`` instead of ``succeeded``.
+    executor owns the guarded merge into the Document Test. In permission mode a
+    cited answer remains an auditor checkpoint. In auto mode, the worker's
+    complete cited outcome is applied and a conclusive unit settles successfully.
     """
     test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
     item_id = unit_ref(unit, "docitem:").split(":", 1)[1]
@@ -112,6 +112,29 @@ def bind_document_qa(
             "workspace_changed",
             {"kind": "doctest", "id": test_id, "action": "qa_answered"},
         )
+        if adapter.run["mode"] == "auto":
+            disposed = doc_tests.auto_dispose_llm_assessment(
+                adapter.ws, test_id, item_id
+            )
+            if disposed is not None:
+                target.workspace = adapter.ws
+                adapter.emit(
+                    "workspace_changed",
+                    {"kind": "doctest", "id": test_id, "action": "auto_disposed"},
+                )
+            outcome = doc_tests.llm_assessment_outcome(
+                adapter.ws, test_id, item_id, document_id
+            )
+            if outcome in {"accepted", "exception"}:
+                return DeterministicUnitResult(
+                    "succeeded",
+                    (document_qa_answer_ref(test_id, item_id, document_id),),
+                )
+            return DeterministicUnitResult(
+                "awaiting_confirmation",
+                (document_qa_answer_ref(test_id, item_id, document_id),),
+                DOCUMENT_REVIEW_REQUIRED,
+            )
         return DeterministicUnitResult(
             "awaiting_confirmation",
             (document_qa_answer_ref(test_id, item_id, document_id),),
@@ -137,9 +160,8 @@ def bind_document_qa(
             expected_revision=adapter.ws.revision,
             expected_parents=expected_test,
             capability_definition_hash=workflow.capability_definition_hash(capability),
-            # A cited answer is a candidate for auditor disposition, not an
-            # artifact the auditor pre-approves, so no approval batch is
-            # requested even in permission mode.
+            # The assessment is not an artifact the auditor pre-approves, so no
+            # approval batch is requested even in permission mode.
             approval_kind=None,
             proposal_reference=unit.get("proposal_sidecar"),
             receipt_reference=unit.get("receipt_sidecar"),
@@ -323,7 +345,7 @@ class DocTestWorkflowExecution(BaseRunner):
         stage: dict,
         unit: dict,
     ) -> DeterministicUnitResult:
-        """Nothing the agent does can satisfy this outcome."""
+        """Return any disposition still requiring authoritative auditor input."""
 
         self.ws = subject
         test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
@@ -413,7 +435,10 @@ class DocTestWorkflowExecution(BaseRunner):
                 ("Manual review", totals["manual_review"]),
                 ("Unchecked items", unexecuted),
             ],
-            "Automated results remain subject to auditor disposition.",
+            (
+                "Auto mode applies conclusive cited worker outcomes; unresolved "
+                "results remain subject to auditor disposition."
+            ),
         )
         return FinishProjection(
             next_outcomes=tuple(dict.fromkeys(next_outcomes)),

@@ -38,8 +38,8 @@ CAPABILITY_IDS: tuple[str, ...] = (
 # request from turning a whole worklist library into an unbounded provider bill.
 MAX_SCOPE_TESTS = 12
 
-# Item states that represent the auditor's own decision. Nothing the agent does
-# produces one.
+# Item states that represent a settled decision. The auditor can always produce
+# one; auto mode can also apply a registered assessment worker's cited outcome.
 DISPOSED_STATES = frozenset({"confirmed", "exception"})
 # Item states that mean the agent has already done what it can for the item.
 CHECKED_STATES = frozenset({"agent_checked", "manual_review"}) | DISPOSED_STATES
@@ -429,8 +429,9 @@ def _doc_tests_executed() -> Capability:
 def _dispositioned_ready(workspace: Workspace, scope: dict) -> Readiness:
     """Executed and dispositioned are separate outcomes, deliberately.
 
-    A deterministic comparison or a cited answer is a candidate for auditor
-    judgment, never the judgment. Nothing the agent does satisfies this outcome.
+    Deterministic comparisons and unresolved assessments remain candidates for
+    auditor judgment. A complete cited assessment can already be dispositioned
+    when auto mode applied the registered worker's structured outcome.
     """
     test_scope = resolve_doc_test_scope(workspace, scope)
     blocked = _unknown_tests(test_scope)

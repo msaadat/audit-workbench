@@ -988,10 +988,21 @@ def update_comparisons(workspace: Workspace, test_id: str, item_id: str, checks:
     return save_test(workspace, test)
 
 
-def update_item(workspace: Workspace, test_id: str, item_id: str, changes: dict) -> dict:
+def update_item(
+    workspace: Workspace,
+    test_id: str,
+    item_id: str,
+    changes: dict,
+    *,
+    disposition_actor: str = "auditor",
+    runner_note: str | None = None,
+) -> dict:
     test = load_test(workspace, test_id)
     item = _item(test, item_id)
-    allowed = {"auditor_disposition", "auditor_note", "state", "attributes", "summary", "excerpt", "response", "citations"}
+    allowed = {
+        "auditor_disposition", "auditor_note", "state", "attributes",
+        "summary", "excerpt", "response", "citations",
+    }
     if set(changes) - allowed:
         raise WorkspaceError("Unknown document-test item field.")
     disposition = str(changes.get("auditor_disposition", item.get("auditor_disposition") or "pending"))
@@ -1013,13 +1024,78 @@ def update_item(workspace: Workspace, test_id: str, item_id: str, changes: dict)
             item[key] = normalize_many(value or [], require_hash=True)
         elif key not in {"auditor_disposition"}:
             item[key] = value
+    if runner_note is not None:
+        item["runner_note"] = runner_note
     for anchor in item.get("evidence_refs") or []:
         if disposition != "pending":
-            anchor["confirmed_by"] = "auditor"
+            anchor["confirmed_by"] = disposition_actor
             anchor["confirmed_at"] = utcnow()
     states = [value.get("state") for value in test["items"]]
     test["status"] = "completed" if states and all(state in {"confirmed", "exception"} for state in states) else "in_progress"
     return save_test(workspace, test)
+
+
+def auto_dispose_llm_assessment(
+    workspace: Workspace, test_id: str, item_id: str,
+) -> dict | None:
+    """Apply the worker's outcome to a complete auto-mode LLM assessment.
+
+    Multiple attached documents settle conservatively: any exception wins,
+    otherwise any manual-check outcome wins, otherwise every answer must be
+    accepted. Incomplete results remain available for an auditor.
+    """
+    test = load_test(workspace, test_id)
+    item = _item(test, item_id)
+    answer_key = "qa_answers" if test.get("kind") == "qa" else "llm_answers"
+    answers = item.get(answer_key) or {}
+    document_ids = list(item.get("document_ids") or [])
+    if (
+        item.get("state") != "agent_checked"
+        or not document_ids
+        or any(document_id not in answers for document_id in document_ids)
+    ):
+        return None
+    outcomes = {
+        str(answers[document_id].get("outcome") or "")
+        for document_id in document_ids
+    }
+    if "exception" in outcomes:
+        disposition = "exception"
+    elif "needs_manual_check" in outcomes or outcomes != {"accepted"}:
+        disposition = "needs_manual_check"
+    else:
+        disposition = "accepted"
+    return update_item(
+        workspace,
+        test_id,
+        item_id,
+        {
+            "auditor_disposition": disposition,
+            "auditor_note": (
+                "Automatically dispositioned from the document-assessment "
+                f"worker outcome: {disposition}."
+            ),
+        },
+        disposition_actor="agent",
+        runner_note=(
+            "Auto mode applied the document-assessment worker outcome: "
+            f"{disposition}."
+        ),
+    )
+
+
+def llm_assessment_outcome(
+    workspace: Workspace,
+    test_id: str,
+    item_id: str,
+    document_id: str,
+) -> str:
+    """Return the persisted worker outcome for one item/document assessment."""
+    test = load_test(workspace, test_id)
+    item = _item(test, item_id)
+    answer_key = "qa_answers" if test.get("kind") == "qa" else "llm_answers"
+    answer = (item.get(answer_key) or {}).get(document_id) or {}
+    return str(answer.get("outcome") or "needs_manual_check")
 
 
 def normalize_value(value: object) -> str:
@@ -1248,6 +1324,7 @@ def commit_qa_answer(
         )
     candidate = {
         "answer": str(answer.get("answer") or ""),
+        "outcome": str(answer.get("outcome") or "needs_manual_check"),
         "citations": normalize_many(answer.get("citations") or []),
     }
     answers = item.setdefault("qa_answers", {})
@@ -1288,6 +1365,7 @@ def commit_llm_assessment(
     answers = item.setdefault("llm_answers", {})
     answers[document_id] = {
         "answer": str(answer.get("answer") or ""),
+        "outcome": str(answer.get("outcome") or "needs_manual_check"),
         "citations": normalize_many(answer.get("citations") or []),
     }
     ordered = [answers[value] for value in item.get("document_ids") or [] if value in answers]
