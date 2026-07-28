@@ -387,6 +387,26 @@ def test_auto_mode_applies_the_workers_exception_outcome(
     assert item["evidence_refs"][0]["confirmed_by"] == "agent"
 
 
+def test_auto_mode_settles_a_workers_manual_check_outcome(
+    monkeypatch, fake_agent_llm
+):
+    ws, _document, test = _qa_workspace(monkeypatch, fake_agent_llm)
+    fake_agent_llm.overrides["agent:document_qa"] = {
+        "answer": "The evidence is inconclusive.",
+        "outcome": "needs_manual_check",
+        "citations": [{"page": 1, "excerpt": "Approved by: the controller"}],
+    }
+
+    finished = wait_run(ws, _run(ws, test["id"])["id"])
+
+    assert finished["status"] == "completed", finished.get("error")
+    assert _units(finished, "doc_tests.executed")[0]["status"] == "succeeded"
+    item = doc_tests.load_test(ws, test["id"])["items"][0]
+    assert item["state"] == "manual_review"
+    assert item["auditor_disposition"] == "needs_manual_check"
+    assert item["evidence_refs"][0]["confirmed_by"] == "agent"
+
+
 def test_an_answered_qa_pair_is_not_re_billed_on_a_later_run(
     monkeypatch, fake_agent_llm
 ):

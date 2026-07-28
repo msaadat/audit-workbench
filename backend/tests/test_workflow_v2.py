@@ -800,7 +800,10 @@ def test_planning_context_commit_merges_unrelated_concurrent_write(monkeypatch):
     completed = wait_run(ws, started["id"])
     current = workspaces.load_workspace(ws.id)
 
-    assert completed["status"] == "completed"
+    # The generated finding remains a draft until an auditor confirms it, so
+    # report-quality verification correctly leaves the run open.  Auto mode
+    # must nevertheless disposition the source observation and draft the finding.
+    assert completed["status"] == "completed_with_open_items"
     assert current.planning["context"]["objective"] == (
         "Assess procurement approval compliance"
     )
@@ -2604,7 +2607,7 @@ def test_observation_checkpoint_pauses_and_resumes_before_findings(monkeypatch):
     assert refreshed.findings[0]["source_observation_id"] == observation["id"]
 
 
-def test_full_workflow_runs_capability_closure_and_stops_for_auditor_judgment(monkeypatch):
+def test_full_workflow_runs_capability_closure_and_auto_disposes_observations(monkeypatch):
     ws = workspaces.create_workspace("Workflow integration")
     ws.add_table(
         "transactions.csv",
@@ -2656,6 +2659,18 @@ def test_full_workflow_runs_capability_closure_and_stops_for_auditor_judgment(mo
                     }
                 ]
             },
+            "agent:finding": {
+                "finding": {
+                    "title": "Duplicate invoice processing",
+                    "severity": "medium",
+                    "condition": "A duplicate invoice identifier was processed.",
+                    "criteria": "Invoice identifiers should be unique.",
+                    "cause_pending": True,
+                    "effect": "Duplicate payment risk.",
+                    "recommendation": "Prevent duplicate invoice identifiers.",
+                    "severity_rationale": "The exception can cause financial loss.",
+                }
+            },
         }
     )
     monkeypatch.setattr(llm, "chat", fake)
@@ -2677,16 +2692,18 @@ def test_full_workflow_runs_capability_closure_and_stops_for_auditor_judgment(mo
     completed = wait_run(ws, started["id"])
     current = workspaces.load_workspace(ws.id)
 
+    # The generated finding remains a draft until an auditor confirms it, so
+    # report-quality verification correctly leaves the run open.  Auto mode
+    # must nevertheless disposition the source observation and draft the finding.
     assert completed["status"] == "completed_with_open_items"
     assert "agent:command_interpreter" not in {call["tag"] for call in fake.calls}
     assert {call["tag"] for call in fake.calls} >= {
         "agent:apm", "agent:rcm", "agent:test_generate",
     }
     assert current.data_tests[0]["last_run"]
-    assert current.observations and current.observations[0]["status"] != "disposed"
-    assert not current.findings
+    assert current.observations and current.observations[0]["status"] == "disposed"
+    assert current.findings
     assert current.report.get("markdown")
-    assert completed["workflow"]["next_outcomes"][0] == "findings.drafted"
     assert completed["usage"]["model_call_metrics"]
     assert completed["usage"]["request_characters"] > 0
     assert completed["usage"]["prompt_tokens"] >= completed["usage"]["estimated_prompt_tokens"]

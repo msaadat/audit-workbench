@@ -113,27 +113,23 @@ def bind_document_qa(
             {"kind": "doctest", "id": test_id, "action": "qa_answered"},
         )
         if adapter.run["mode"] == "auto":
-            disposed = doc_tests.auto_dispose_llm_assessment(
+            doc_tests.auto_dispose_llm_assessment(
                 adapter.ws, test_id, item_id
             )
-            if disposed is not None:
-                target.workspace = adapter.ws
-                adapter.emit(
-                    "workspace_changed",
-                    {"kind": "doctest", "id": test_id, "action": "auto_disposed"},
-                )
-            outcome = doc_tests.llm_assessment_outcome(
-                adapter.ws, test_id, item_id, document_id
+            target.workspace = adapter.ws
+            adapter.emit(
+                "workspace_changed",
+                {"kind": "doctest", "id": test_id, "action": "auto_disposed"},
             )
-            if outcome in {"accepted", "exception"}:
-                return DeterministicUnitResult(
-                    "succeeded",
-                    (document_qa_answer_ref(test_id, item_id, document_id),),
-                )
+            # A complete worker assessment is the auto-mode disposition for
+            # this pair, including ``needs_manual_check``.  The latter is a
+            # durable outcome (and leaves the item in manual_review), not an
+            # instruction to wait for a human.  For multi-document items the
+            # last pair applies the aggregate disposition; earlier pairs still
+            # settle successfully so the stage does not retain stale open units.
             return DeterministicUnitResult(
-                "awaiting_confirmation",
+                "succeeded",
                 (document_qa_answer_ref(test_id, item_id, document_id),),
-                DOCUMENT_REVIEW_REQUIRED,
             )
         return DeterministicUnitResult(
             "awaiting_confirmation",

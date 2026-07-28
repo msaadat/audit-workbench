@@ -760,6 +760,54 @@ class AuditWorkflowExecution(ActionRunner):
         self._resolve_interaction_record(interaction, response)
         self.emit("checkpoint_resolved", {"interaction_id": interaction["id"], "count": len(result.value)})
 
+    def _auto_dispose_observations(self) -> None:
+        """Apply each valid generated observation disposition in auto mode.
+
+        Observation roll-up already records a bounded suggested disposition.
+        Permission mode deliberately asks the auditor to confirm it, while auto
+        mode must use it so eligible observations can progress into findings.
+        """
+        open_items = [
+            item
+            for item in scoped_observations(self.ws, workflow_scope(self.run))
+            if item.get("status") != "disposed"
+            and item.get("suggested_disposition") in OBSERVATION_DISPOSITIONS
+        ]
+        if not open_items:
+            return
+
+        suggested = {
+            str(item["id"]): str(item["suggested_disposition"])
+            for item in open_items
+        }
+
+        def commit(fresh: Workspace) -> list[dict]:
+            changed = []
+            for observation_id, disposition in suggested.items():
+                current = next(
+                    (item for item in fresh.observations if item.get("id") == observation_id),
+                    None,
+                )
+                if current is None or current.get("status") == "disposed":
+                    continue
+                changed.append(
+                    rcm_execution.disposition(
+                        fresh,
+                        observation_id,
+                        disposition,
+                        "Automatically dispositioned from the generated observation outcome.",
+                    )
+                )
+            return changed
+
+        result = mutate(self.ws, commit)
+        self.ws = result.workspace
+        if result.value:
+            self.emit(
+                "workspace_changed",
+                {"kind": "observation", "action": "auto_disposed", "count": len(result.value)},
+            )
+
     def _bind_finding(
         self,
         subject: Workspace,
@@ -1231,8 +1279,11 @@ def build_audit_workflow_runner(
         adapter.ws = subject
         document_adapter.ws = subject
         checkpoint = stage_checkpoints.get(capability.id)
-        if checkpoint is not None and run.get("mode") == "permission":
-            checkpoint_handlers[checkpoint]()
+        if checkpoint is not None:
+            if run.get("mode") == "permission":
+                checkpoint_handlers[checkpoint]()
+            elif checkpoint == OBSERVATION_DISPOSITION_CHECKPOINT:
+                adapter._auto_dispose_observations()
 
     scheduler = WorkflowRunner(
         subject=workspace,
