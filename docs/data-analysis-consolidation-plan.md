@@ -2,19 +2,19 @@
 
 **Status:** Proposed; ready for implementation  
 **Date:** 2026-07-28  
-**Primary objective:** Replace the separate Analysis and Data Tests tabs with one
-**Data Analysis** tab backed by one durable Data Test model and one local execution
+**Primary objective:** Replace the separate Analysis and former Data Tests tabs with one
+**Data Analysis** tab backed by one durable Data Analysis model and one local execution
 path.
 
 ## 1. Executive decision
 
 Audit Workbench will expose one user-facing **Data Analysis** tab.
 
-Every saved data procedure will be a durable Data Test. Its scope is derived
+Every saved data procedure will be a durable Data Analysis record. Its scope is derived
 from RCM linkage:
 
-- `rcm_id == null` means the Data Test is **exploratory**;
-- a valid `rcm_id` means the Data Test is an **RCM-linked audit test**.
+- `rcm_id == null` means the record is **exploratory**;
+- a valid `rcm_id` means the record is an **Audit Test**.
 
 There will be no persisted `purpose`, `scope`, or `is_exploratory` flag. API
 responses may expose a derived `scope` value for display and filtering, but
@@ -24,19 +24,19 @@ from disagreeing.
 The consolidation is not a cosmetic tab merge. The active `analyses` artifact
 collection, saved-analysis CRUD, separate analysis execution contract, and
 Analysis-tab editors will be retired after their definitions are migrated to
-unlinked Data Tests. The exploratory data-analysis workflow will generate and
-execute unlinked Data Tests through the same services used by auditor-authored
-and RCM-linked tests.
+unlinked Data Analysis records. The exploratory data-analysis workflow will
+generate and execute unlinked records through the same services used by
+auditor-authored Audit Tests.
 
 The following distinctions remain deliberate:
 
 - exploratory analysis generation and RCM test generation use different model
   workers and different context;
-- both workers write the same durable Data Test artifact;
+- both workers write the same durable Data Analysis artifact;
 - every execution is local and deterministic after the definition exists;
-- only a current, RCM-linked execution may satisfy RCM coverage or support a
+- only a current Audit Test execution may satisfy RCM coverage or support a
   formal finding;
-- any Data Test, exploratory or linked, may be pinned to the dashboard;
+- any Data Analysis record, exploratory or Audit Test, may be pinned to the dashboard;
 - linking, unlinking, or moving a test to another RCM row changes its audit
   meaning and therefore requires a new execution before it can count as current.
 
@@ -45,7 +45,7 @@ The following distinctions remain deliberate:
 The product currently presents two surfaces with nearly identical authoring and
 execution affordances:
 
-| Capability | Analysis | Data Tests |
+| Capability | Analysis | Data Analysis |
 | --- | --- | --- |
 | Library analytics | Yes | Yes |
 | Custom Polars/Python | Yes | Yes |
@@ -62,17 +62,17 @@ execution affordances:
 The overlap is structural:
 
 - `frontend/src/components/AnalysisTab.vue` exposes Library and Code creation;
-- `frontend/src/components/DataTestsTab.vue` exposes Library analytics and
+- `frontend/src/components/DataAnalysisTab.vue` exposes Library analytics and
   Polars code creation;
 - both use the analytics registry and guarded local sandbox;
-- `workspace.analyses` and `workspace.data_tests` persist two representations of
+- `workspace.analyses` and `workspace.data_analysis` persist two representations of
   rerunnable data procedures;
 - the exploratory workflow commits `workspace.analyses`, while the audit
-  workflow commits `workspace.data_tests`;
-- the Data Tests UI already labels an unlinked record “Exploratory,” so the
+  workflow commits `workspace.data_analysis`;
+- the Data Analysis UI already labels an unlinked record “Exploratory,” so the
   separate Analysis tab no longer owns a unique user intent.
 
-The durable Data Test contract is the stronger base. It already owns definition
+The durable Data Analysis contract is the stronger base. It already owns definition
 validation, current execution metadata, dataset fingerprints, semantic issues,
 bounded result frames, RCM linkage, dispositions, evidence, and finding
 integration. Saved analyses should be migrated into that contract rather than
@@ -85,8 +85,8 @@ Implementation must preserve the following invariants.
 ### 3.1 One classification rule
 
 ```text
-rcm_id is null       -> exploratory
-rcm_id is valid      -> RCM-linked
+rcm_id is null       -> Exploratory Analysis
+rcm_id is valid      -> Audit Test
 anything else        -> invalid record
 ```
 
@@ -96,15 +96,15 @@ curation, and workflow readiness must use that rule.
 
 ### 3.2 One active durable collection
 
-After migration, new data procedures are stored only under `DataTests/`.
+After migration, new data procedures are stored only under `DataAnalysis/`.
 
 `Workspace.analyses`, `Analyses/`, and `/api/workspaces/{id}/analyses` are not
 valid active write targets. No compatibility layer may dual-write an Analysis
-and a Data Test.
+and a Data Analysis record.
 
 ### 3.3 One execution service
 
-All saved procedures execute through `backend/app/data_tests.py`:
+All saved procedures execute through `backend/app/data_analysis.py`:
 
 - definition validation happens before save;
 - execution is explicit and never implied by save;
@@ -120,16 +120,16 @@ must be labelled **Preview** and must never count as a durable execution.
 
 ### 3.4 RCM linkage is the audit boundary
 
-An exploratory Data Test:
+An exploratory Data Analysis record:
 
 - does not appear in RCM coverage;
-- is not included by “Run all RCM Data Tests”;
+- is not included by “Run all Audit Tests”;
 - cannot supply a formal finding execution reference;
 - cannot be selected by deterministic RCM dashboard curation;
 - may still be run, edited, exported, and manually pinned;
 - may be linked to an RCM row without cloning the definition.
 
-An RCM-linked Data Test:
+An Audit Test:
 
 - appears in the linked RCM row’s `test_refs`;
 - participates in fieldwork readiness and rollup;
@@ -154,7 +154,7 @@ The execution identity must therefore include the current `rcm_id`, including
 null, in `source_sha1` or a dedicated `scope_sha1`. Comparing only engine,
 tables, and spec is insufficient.
 
-If a Data Test is already referenced by a formal finding, changing or clearing
+If a Data Analysis record is already referenced by a formal finding, changing or clearing
 its RCM link must fail with an actionable error until the finding references are
 removed or reconciled. A mutation must not silently break an existing evidence
 chain.
@@ -164,17 +164,22 @@ chain.
 The exploratory worker:
 
 - receives declared table metadata, bounded profiles, value-free aggregates,
-  relationship evidence, the analytics registry, and current unlinked tests;
+  relationship evidence, the analytics registry, and current unlinked records;
 - never receives table rows;
-- proposes unlinked Data Tests only;
+- proposes unlinked Data Analysis records only;
 - cannot set `rcm_id`, auditor disposition, conclusion, or finding fields.
+
+It may separately propose validation rules for the Data tab's profiling
+workflow. Those rules are not Data Analysis records, do not appear in the Data
+Analysis tab, and never participate in Data Analysis execution or audit
+coverage.
 
 The RCM test worker:
 
 - receives one RCM row plus its declared methodology, table metadata, and
   document inventory context;
-- produces linked Data or Document Tests;
-- continues to generate exception-oriented Polars steps for Data Tests.
+- produces Audit Tests or Document Tests;
+- continues to generate exception-oriented Polars steps for Data Analysis.
 
 These are two generation intents, not two artifact types.
 
@@ -212,31 +217,31 @@ Fieldwork
 
 `Data Analysis` lives in the Data group because it is the common home for
 exploration and formal data testing. RCM and dashboard actions deep-link into
-the RCM-linked view, so moving the navigation entry does not hide fieldwork.
+the Audit Tests view, so moving the navigation entry does not hide fieldwork.
 
 The canonical query-string tab is:
 
 ```text
-tab=data-analysis
+tab=analysis
 ```
 
 Supported destination-owned query values are:
 
 ```text
 test=<DAT-id>
-scope=all|exploratory|rcm
-create=analytics|validation|polars
+scope=all|exploratory|audit
+create=analytics|polars
 rcm=<RCM-id>
 ```
 
 Compatibility redirects:
 
-- `tab=analysis` redirects to `tab=data-analysis&scope=exploratory`;
-- `tab=data-tests` redirects to `tab=data-analysis`, retaining `test`, `create`,
+- `tab=data-analysis` redirects to `tab=analysis&scope=exploratory`;
+- `tab=data-tests` redirects to `tab=analysis`, retaining `test`, `create`,
   and `rcm`;
 - a deep link with a concrete `test` takes precedence over the requested scope
   filter so the target is always visible;
-- RCM actions use `scope=rcm` and pass the target `rcm` or `test`.
+- RCM actions use `scope=audit` and pass the target `rcm` or `test`.
 
 ### 4.2 Page structure
 
@@ -245,16 +250,16 @@ The page uses one master-detail layout.
 Header:
 
 - title: **Data Analysis**;
-- description: “Explore imported data or execute RCM-linked audit tests with
+- description: “Explore imported data or execute Audit Tests with
   durable local results”;
 - primary action: **New analysis**;
-- secondary action, when an RCM filter is active: **Run RCM tests**.
+- secondary action, when an RCM filter is active: **Run Audit Tests**.
 
 Scope switch:
 
 - **All**;
 - **Exploratory**;
-- **RCM-linked**.
+- **Audit Tests**.
 
 Filters:
 
@@ -268,7 +273,7 @@ Filters:
 Rail item:
 
 - title;
-- `Exploratory` or `RCM <id>` badge derived from `rcm_id`;
+- `Exploratory` or `Audit Test · RCM <id>` badge derived from `rcm_id`;
 - engine badge;
 - execution/staleness status;
 - latest verdict when current;
@@ -278,9 +283,9 @@ Rail item:
 The rail sorts by:
 
 1. items requiring review;
-2. stale linked tests;
-3. ready linked tests;
-4. completed linked tests;
+2. stale Audit Tests;
+3. ready Audit Tests;
+4. completed Audit Tests;
 5. exploratory tests;
 6. most recently updated within each group.
 
@@ -289,7 +294,6 @@ The rail sorts by:
 The create menu contains:
 
 - **Library analytic**;
-- **Validation rules**;
 - **Polars procedure**.
 
 Every creation flow shows an optional **RCM row** selector at the top.
@@ -305,7 +309,7 @@ If no RCM row is selected:
 
 If an RCM row is selected:
 
-- the dialog labels the record **RCM-linked audit test**;
+- the dialog labels the record **Audit Test**;
 - objective and criteria are required;
 - the parent risk and control are summarized above the definition;
 - helper text states that saving validates the definition but execution is
@@ -344,9 +348,9 @@ Exploratory-only presentation:
 - a warning explains that pinning is presentational and does not create audit
   evidence.
 
-RCM-linked presentation:
+Audit Test presentation:
 
-- prominent `RCM <id>` badge;
+- prominent `Audit Test · RCM <id>` badge;
 - **Open RCM** and **Change RCM link** actions;
 - criteria, methodology, scope limitations, next action, disposition, and
   control conclusion;
@@ -360,14 +364,14 @@ RCM-linked presentation:
 **Link to RCM** opens a confirmation dialog containing:
 
 - selected RCM risk and control;
-- the Data Test objective;
+- the Data Analysis objective;
 - the fact that the existing result will not count until re-run;
-- validation issues that must be fixed before linking.
+- definition issues that must be fixed before linking.
 
 On success:
 
 - the existing record is updated in place;
-- the page switches to the RCM-linked scope;
+- the page switches to the Audit Tests scope;
 - status becomes ready;
 - **Run now** is the primary next action.
 
@@ -383,7 +387,7 @@ new execution.
 The durable result JSON may continue to use `exception_count` for compatibility,
 but the UI language depends on linkage:
 
-| Stored field | Exploratory label | RCM-linked label |
+| Stored field | Exploratory label | Audit Test label |
 | --- | --- | --- |
 | `exception_frame` | Result rows | Exceptions |
 | `exception_count` | Result row count | Exception count |
@@ -396,14 +400,14 @@ separate deterministic predicate.
 
 ## 5. Target durable model
 
-### 5.1 Data Test definition
+### 5.1 Data Analysis definition
 
-The existing Data Test remains the authoritative record:
+The existing Data Analysis record remains the authoritative record:
 
 ```json
 {
   "id": "DAT-...",
-  "semantic_id": "datatest:...",
+  "semantic_id": "data_analysis:...",
   "rcm_id": null,
   "title": "Duplicate invoice identifiers",
   "objective": "Identify repeated invoice identifiers.",
@@ -441,7 +445,7 @@ Model changes:
   visualizations survive migration and dashboard pinning;
 - add system-owned optional `migration` provenance containing only legacy ID,
   legacy semantic ID, and migration version;
-- expose derived `scope: "exploratory" | "rcm"` in list/detail payloads;
+- expose derived `scope: "exploratory" | "audit"` in list/detail payloads;
 - expose derived `result_current`, `result_stale_reasons`, and
   `finding_eligible`;
 - do not add a persisted purpose or scope flag;
@@ -455,13 +459,13 @@ Model changes:
 Common validation:
 
 - title and objective are required;
-- engine must be `analytics`, `validation`, or `polars`;
-- analytics and validation require valid table references;
+- engine must be `analytics` or `polars`;
+- analytics requires valid table references;
 - Polars code must pass the sandbox validator;
 - referenced tables and columns must exist;
-- a definition must contain at least one executable analytic, rule, or step.
+- a definition must contain at least one executable analytic or Polars step.
 
-Additional RCM-linked validation:
+Additional Audit Test validation:
 
 - `rcm_id` must exist;
 - criteria must be non-empty before the test may count as specified;
@@ -479,7 +483,7 @@ language. They still use safe Polars and bounded results.
 Continue storing one replaceable current result under:
 
 ```text
-DataTestResults/<DAT-id>/DTR-CURRENT.json
+DataAnalysisResults/<DAT-id>/DAR-CURRENT.json
 ```
 
 Add or enforce:
@@ -487,7 +491,7 @@ Add or enforce:
 - `rcm_id` captured at execution, including null;
 - a definition/source hash that includes `rcm_id`;
 - dataset fingerprints for every frame the code could access;
-- `scope_at_run: exploratory|rcm` as a derived snapshot for diagnostics;
+- `scope_at_run: exploratory|audit` as a derived snapshot for diagnostics;
 - result eligibility computed from current definition, current linkage, current
   input fingerprints, semantic validity, and run status;
 - no result history claim: the active model retains one current result, except
@@ -501,7 +505,7 @@ engine, table references, executable spec, or `rcm_id` does.
 Create one backend predicate, for example:
 
 ```python
-data_tests.result_eligibility(workspace, item, result) -> {
+data_analysis.result_eligibility(workspace, item, result) -> {
     "current": bool,
     "rcm_eligible": bool,
     "finding_eligible": bool,
@@ -533,25 +537,24 @@ logic.
 
 ### 6.1 Canonical resource routes
 
-Keep Data Tests as the backend resource name. The user-facing tab is Data
-Analysis, but every saved record remains a Data Test:
+Use `analysis` as the canonical backend resource route. Every saved record is a
+Data Analysis record:
 
 ```text
-GET    /api/workspaces/{workspace_id}/data-tests
-POST   /api/workspaces/{workspace_id}/data-tests
-GET    /api/workspaces/{workspace_id}/data-tests/{data_test_id}
-PATCH  /api/workspaces/{workspace_id}/data-tests/{data_test_id}
-DELETE /api/workspaces/{workspace_id}/data-tests/{data_test_id}
-POST   /api/workspaces/{workspace_id}/data-tests/{data_test_id}/run
-GET    /api/workspaces/{workspace_id}/data-tests/{data_test_id}/runs/{run_id}
-GET    /api/workspaces/{workspace_id}/data-tests/{data_test_id}/runs/{run_id}/export
-POST   /api/workspaces/{workspace_id}/data-tests/{data_test_id}/pin
-POST   /api/workspaces/{workspace_id}/data-tests/run-all-rcm
+GET    /api/workspaces/{workspace_id}/analysis
+POST   /api/workspaces/{workspace_id}/analysis
+GET    /api/workspaces/{workspace_id}/analysis/{analysis_id}
+PATCH  /api/workspaces/{workspace_id}/analysis/{analysis_id}
+DELETE /api/workspaces/{workspace_id}/analysis/{analysis_id}
+POST   /api/workspaces/{workspace_id}/analysis/{analysis_id}/run
+GET    /api/workspaces/{workspace_id}/analysis/{analysis_id}/runs/{run_id}
+GET    /api/workspaces/{workspace_id}/analysis/{analysis_id}/runs/{run_id}/export
+POST   /api/workspaces/{workspace_id}/analysis/{analysis_id}/pin
+POST   /api/workspaces/{workspace_id}/analysis/run-all-audit
 ```
 
-Do not add a parallel `/data-analysis` resource namespace. The tab name is an
-information-architecture label, while `data-tests` is the durable domain
-resource.
+Do not add a parallel `/data-analysis` resource namespace. `analysis` is the
+retained navigation and durable-domain route.
 
 ### 6.2 List response
 
@@ -563,7 +566,7 @@ The list endpoint returns:
   "counts": {
     "all": 0,
     "exploratory": 0,
-    "rcm": 0,
+    "audit": 0,
     "review_required": 0,
     "stale": 0
   }
@@ -595,10 +598,9 @@ Update:
 
 ### 6.4 Export
 
-Preserve Analysis-tab export capability by adding a Data Test result export:
+Preserve export capability by adding a Data Analysis result export:
 
 - analytics exports the deterministic analytic result;
-- validation exports rule summaries and bounded failures;
 - Polars exports the current bounded summary/result frame;
 - export uses the current saved definition and verifies its source identity;
 - a stale result may be exported only with a filename and workbook note that
@@ -613,7 +615,7 @@ Remove mutating saved-analysis routes after workspace migration:
 GET/POST/PATCH/DELETE /api/workspaces/{workspace_id}/analyses...
 ```
 
-Keep the stateless analytics catalog and execution helpers because Data Test
+Keep the stateless analytics catalog and execution helpers because Data Analysis
 authoring uses them:
 
 ```text
@@ -623,7 +625,7 @@ POST /api/workspaces/{workspace_id}/tables/{table}/analytics/{test_id}
 
 The local `/run-python` endpoint may remain for unsaved previews and assistant
 artifacts, but the Data Analysis UI must clearly distinguish preview from a
-durable Data Test run.
+durable Data Analysis run.
 
 ## 7. Exploratory workflow target
 
@@ -656,7 +658,7 @@ rather than being dispatched into incompatible executors.
 
 ### 7.2 Worker
 
-Replace the saved-analysis response contract with an exploratory Data Test
+Replace the saved-analysis response contract with an exploratory Data Analysis
 contract.
 
 The worker returns one to four definitions containing:
@@ -682,7 +684,7 @@ contains a linkage field.
 
 For model-generated Polars definitions:
 
-- emit Data Test schema-version-2 steps directly;
+- emit Data Analysis schema-version-2 steps directly;
 - every step has a label, instruction, and safe code;
 - code assigns a DataFrame to `result`;
 - the prompt may describe the output as relevant rows rather than confirmed
@@ -692,9 +694,9 @@ For model-generated Polars definitions:
 ### 7.3 Context
 
 Rename or replace the current-analysis context source with current exploratory
-Data Tests:
+Data Analysis records:
 
-- include only `workspace.data_tests` where `rcm_id is None`;
+- include only `workspace.data_analysis` where `rcm_id is None`;
 - include definition metadata and canonical spec, never results or rows;
 - include legacy-migrated definitions so generation does not duplicate them;
 - continue supplying schema, bounded profile, value-free aggregates, analytics
@@ -705,28 +707,28 @@ Data Tests:
 
 The definition executor:
 
-- validates proposals through the Data Test service;
+- validates proposals through the Data Analysis service;
 - assigns stable `DAT-...` IDs;
-- writes `DataTests/`, not `Analyses/`;
+- writes `DataAnalysis/`, not `Analyses/`;
 - reconciles by semantic ID;
 - preserves auditor-edited records unless overwrite was explicitly approved;
-- emits artifact references `datatest:<id>`;
-- records `workspace_changed.kind = "datatest"`.
+- emits artifact references `data_analysis:<id>`;
+- records `workspace_changed.kind = "data_analysis"`.
 
 The execution capability:
 
-- expands only workflow-authored unlinked Data Tests in scope;
-- calls `data_tests.compute` and `data_tests.commit_result`;
-- persists the normal current Data Test result, not a second bounded
+- expands only workflow-authored unlinked Data Analysis records in scope;
+- calls `data_analysis.compute` and `data_analysis.commit_result`;
+- persists the normal current Data Analysis result, not a second bounded
   `last_result` shape;
-- does not run RCM-linked tests merely because they share a table;
+- does not run Audit Tests merely because they share a table;
 - settles an invalid result as review-required without converting it into audit
   coverage.
 
 ### 7.5 Audit workflow
 
 The audit workflow’s `tests.specified` worker and fieldwork executors remain
-separate and continue to create RCM-linked Data Tests.
+separate and continue to create Audit Tests.
 
 Required integration changes:
 
@@ -736,14 +738,14 @@ Required integration changes:
 - an exploratory test linked by the auditor becomes eligible for the audit
   workflow only after it is re-run;
 - test generation must not overwrite a linked auditor-owned definition;
-- forcing exploratory analysis must not regenerate or edit RCM-linked tests.
+- forcing exploratory analysis must not regenerate or edit Audit Tests.
 
 ## 8. Workspace migration
 
 ### 8.1 Migration policy
 
 Existing saved Analysis definitions are valuable and must be migrated. Existing
-Analysis execution metadata is not sufficient to fabricate a durable Data Test
+Analysis execution metadata is not sufficient to fabricate a durable Data Analysis
 result because it may omit dataset fingerprints, the executable scope identity,
 bounded exception frames, and the RCM scope snapshot.
 
@@ -751,9 +753,9 @@ Therefore:
 
 - migrate definitions;
 - preserve visualization and provenance;
-- do not claim prior Analysis execution as a current Data Test run;
+- do not claim prior Analysis execution as a current Data Analysis run;
 - set migrated tests to `ready`;
-- require an explicit new Data Test run;
+- require an explicit new Data Analysis run;
 - keep dashboard tiles unchanged because they are independent copies;
 - preserve legacy evidence anchors through a read-only archive when necessary.
 
@@ -765,12 +767,12 @@ the workspace write lock:
 1. bump `SCHEMA_VERSION`;
 2. detect an active `Analyses/.index.json` or legacy inline `analyses` collection;
 3. build the complete migration projection without writing;
-4. validate every target Data Test;
+4. validate every target Data Analysis record;
 5. detect ID and semantic collisions;
-6. stage all new Data Test files and the new index;
+6. stage all new Data Analysis files and the new index;
 7. write a migration mapping;
 8. rewrite supported references;
-9. atomically publish the Data Test collection;
+9. atomically publish the Data Analysis collection;
 10. archive only legacy definitions needed for evidence compatibility;
 11. remove the active Analyses index and unreferenced files;
 12. update the workspace schema version last.
@@ -795,7 +797,7 @@ choose a random ID.
 Use a unique migrated semantic ID:
 
 ```text
-datatest:legacy-analysis:<lowercase legacy id>
+data_analysis:legacy-analysis:<lowercase legacy id>
 ```
 
 Preserve the legacy semantic ID in system-owned migration metadata so the new
@@ -804,7 +806,7 @@ migrated identity.
 
 ### 8.4 Field mapping
 
-| Legacy Analysis | Data Test |
+| Legacy Analysis | Data Analysis |
 | --- | --- |
 | `id` | deterministic new `DAT-...`; old ID stored in `migration` |
 | `semantic_id` | stored in `migration.legacy_semantic_id` |
@@ -843,7 +845,7 @@ Some older workspaces may contain typed evidence anchors with
 `source_kind="analysis"`.
 
 Because a saved Analysis anchor identifies a definition rather than a
-fingerprinted Data Test execution, it cannot be rewritten to a `datatest`
+fingerprinted Data Analysis execution, it cannot be rewritten to a `data_analysis`
 execution anchor without inventing evidence.
 
 Migration must:
@@ -874,20 +876,20 @@ At upgrade:
 - paused, awaiting-approval, or interrupted `analysis_workflow_v1` runs are
   closed as interrupted with a migration reason;
 - proposal and receipt sidecars remain under their original run;
-- retry creates a new workflow run against migrated Data Tests;
+- retry creates a new workflow run against migrated Data Analysis records;
 - no new executor attempts to reconcile an `analysis:<id>` receipt against a
-  `datatest:<id>` parent.
+  `data_analysis:<id>` parent.
 
 ### 8.7 Migration verification
 
 For each workspace, verify:
 
-- migrated Data Test count equals legacy Analysis count, excluding only
+- migrated Data Analysis count equals legacy Analysis count, excluding only
   explicitly diagnosed collisions;
 - every migrated record is unlinked;
 - every migrated analytics spec canonicalizes;
 - every migrated Polars spec is either valid or a visible draft with a warning;
-- no current Data Test result was fabricated;
+- no current Data Analysis result was fabricated;
 - every legacy evidence anchor resolves to the archive;
 - dashboard tiles are byte-for-byte unchanged except normal workspace revision;
 - `Analyses/.index.json` is no longer active;
@@ -909,11 +911,11 @@ For each workspace, verify:
 **Gate:** the tests describe the target contract and fail only where the current
 dual model is expected to change.
 
-### WP1 — Strengthen the Data Test domain service
+### WP1 — Strengthen the Data Analysis domain service
 
 Touchpoints:
 
-- `backend/app/data_tests.py`
+- `backend/app/data_analysis.py`
 - `backend/app/rcm_execution.py`
 - `backend/app/findings.py`
 - `backend/app/dashboard.py`
@@ -924,7 +926,7 @@ Tasks:
 
 - [ ] Add the single derived-scope helper.
 - [ ] Add `viz` and system-owned migration provenance validation.
-- [ ] Separate common definition validation from RCM-linked eligibility.
+- [ ] Separate common definition validation from Audit Test eligibility.
 - [ ] Include `rcm_id` in execution/source identity.
 - [ ] Add the shared result-eligibility predicate.
 - [ ] Return current/stale/eligibility projections from `list_payload`.
@@ -937,18 +939,17 @@ Tasks:
       linked definitions stale consistently.
 - [ ] Make RCM rollup call the shared eligibility predicate.
 - [ ] Make finding support and dashboard curation call the same predicate.
-- [ ] Keep `run_all_rcm_linked` restricted to non-null RCM IDs and skip drafts.
+- [ ] Keep `run_all_audit` restricted to non-null RCM IDs and skip drafts.
 
-**Gate:** Data Tests alone can represent, execute, filter, link, unlink, roll up,
+**Gate:** Data Analysis records alone can represent, execute, filter, link, unlink, roll up,
 and pin both scopes without reading `workspace.analyses`.
 
 ### WP2 — Consolidate APIs
 
 Touchpoints:
 
-- `backend/app/routes/data_test_routes.py`
-- `backend/app/routes/analyses_routes.py`
 - `backend/app/routes/analysis_routes.py`
+- `backend/app/routes/analyses_routes.py`
 - `backend/app/routes/assistant_routes.py`
 - `backend/app/main.py`
 
@@ -958,14 +959,14 @@ Tasks:
 - [ ] Add current result export.
 - [ ] Enforce linkage transition errors through the patch route.
 - [ ] Preserve stateless analytics metadata and preview routes.
-- [ ] Update OpenAPI tags/descriptions to “Data Analysis” while keeping the
-      `data-tests` resource path.
+- [ ] Update OpenAPI tags and descriptions for the retained `analysis` resource
+      path.
 - [ ] Remove the saved-analysis router from `main.py` after migration is active.
 - [ ] Delete saved-analysis mutating routes.
 - [ ] Return actionable not-found/migrated errors for stale external requests if
       a temporary compatibility response is required.
 
-**Gate:** the frontend needs only Data Test CRUD plus stateless authoring helpers.
+**Gate:** the frontend needs only Data Analysis CRUD plus stateless authoring helpers.
 
 ### WP3 — Migrate workspace storage
 
@@ -979,7 +980,7 @@ Touchpoints:
 Tasks:
 
 - [ ] Bump the workspace schema version.
-- [ ] Implement deterministic Analysis-to-Data-Test mapping.
+- [ ] Implement deterministic Analysis-to-Data-Analysis mapping.
 - [ ] Stage and publish migration atomically.
 - [ ] Persist the legacy-to-new ID mapping.
 - [ ] Archive only evidence-referenced definitions.
@@ -1013,11 +1014,11 @@ Tasks:
 - [ ] Register `data_analysis_workflow_v1`.
 - [ ] Register `data_analysis.tests_ready` and
       `data_analysis.executed`.
-- [ ] Change current-definition context to unlinked Data Tests.
-- [ ] Change the worker schema to Data Test definitions.
-- [ ] Change executor refs from `analysis:` to `datatest:`.
-- [ ] Commit definitions through Data Test validation and transactions.
-- [ ] Execute through Data Test compute/commit.
+- [ ] Change current-definition context to unlinked Data Analysis records.
+- [ ] Change the worker schema to Data Analysis definitions.
+- [ ] Change executor refs from historical `analysis:` to `data_analysis:`.
+- [ ] Commit definitions through Data Analysis validation and transactions.
+- [ ] Execute through Data Analysis compute/commit.
 - [ ] Preserve semantic de-duplication and auditor-edit protection.
 - [ ] Keep relationship and join inference unchanged.
 - [ ] Keep one bounded model turn per target frame.
@@ -1026,7 +1027,7 @@ Tasks:
 - [ ] Close live legacy workflow runs safely during migration.
 - [ ] Update run projections, artifact labels, and UI stage labels.
 
-**Gate:** “analyze these tables” creates and runs only unlinked Data Tests, and
+**Gate:** “analyze these tables” creates and runs only unlinked Data Analysis records, and
 the run uses the same result artifacts as manual Data Analysis execution.
 
 ### WP5 — Update isolated actions and assistant artifacts
@@ -1041,13 +1042,13 @@ Touchpoints:
 
 Tasks:
 
-- [ ] Retarget “run this saved analysis” to an unlinked Data Test.
-- [ ] Retarget “pin this analysis” to the Data Test pin endpoint.
-- [ ] Save assistant-generated code/analytic artifacts as unlinked Data Tests.
+- [ ] Retarget “run this saved analysis” to an unlinked Data Analysis record.
+- [ ] Retarget “pin this analysis” to the Data Analysis pin endpoint.
+- [ ] Save assistant-generated code/analytic artifacts as unlinked Data Analysis records.
 - [ ] Require a title and objective when saving an artifact.
 - [ ] Convert one-code artifacts into schema-version-2 Polars steps.
-- [ ] Replace `analysis:<id>` action refs with `datatest:<id>`.
-- [ ] Preserve query artifacts as queries; do not force them into Data Tests.
+- [ ] Replace active `analysis:<id>` action refs with `data_analysis:<id>`.
+- [ ] Preserve query artifacts as queries; do not force them into Data Analysis.
 - [ ] Update action target resolution and artifact labels.
 - [ ] Remove action access to `workspace.analyses`.
 
@@ -1058,9 +1059,9 @@ Analysis.
 
 Touchpoints:
 
-- replace `frontend/src/components/DataTestsTab.vue` with a renamed or new
-  `frontend/src/components/DataAnalysisTab.vue`;
-- reuse/refactor `frontend/src/components/data-tests/AnalyticsTestAuthor.vue`;
+- rename or reuse `frontend/src/components/AnalysisTab.vue` as the combined
+  `frontend/src/components/DataAnalysisTab.vue` surface;
+- reuse/refactor `frontend/src/components/data-analysis/AnalyticsAuthor.vue`;
 - migrate useful editor and visualization pieces from
   `frontend/src/components/analysis/`;
 - `frontend/src/views/WorkspaceView.vue`;
@@ -1077,7 +1078,8 @@ Tasks:
 - [ ] Add legacy query-string redirects.
 - [ ] Add scope switch, counts, and granular filters.
 - [ ] Show derived linkage badges and result currency.
-- [ ] Restore Validation as a visible creation mode.
+- [ ] Do not expose Validation as a Data Analysis creation mode; keep its
+      profiling workflow in the Data tab.
 - [ ] Reuse one analytics catalog component.
 - [ ] Reuse one Polars step editor.
 - [ ] Preserve useful Analysis visualization, preview, and export affordances.
@@ -1086,7 +1088,7 @@ Tasks:
 - [ ] Hide formal audit controls for exploratory records.
 - [ ] Disable finding actions when shared eligibility says false.
 - [ ] Deep-link RCM and dashboard actions into the correct scope.
-- [ ] Update workspace-changed subscriptions to `datatest`.
+- [ ] Update workspace-changed subscriptions to `data_analysis`.
 - [ ] Update empty states, tooltips, keyboard labels, and responsive layout.
 - [ ] Remove `SavedAnalysis` frontend types.
 
@@ -1111,10 +1113,10 @@ Delete only after WP1–WP6 gates pass:
 Then:
 
 - [ ] replace deleted-model tests with consolidation and migration tests;
-- [ ] run static searches for active `workspace.analyses`, `/analyses`, and
-      `analysis:<id>` writes;
-- [ ] retain only intentional uses of the word analysis, such as Data Analysis,
-      document analysis, debug labels, historical runs, and legacy evidence.
+- [ ] run static searches for active `workspace.analyses`, `/analyses`,
+      `data_tests`, and `datatest:<id>` writes;
+- [ ] retain historical `analysis:<id>` only where required for old runs and
+      evidence; active consolidated artifacts use `data_analysis:<id>`.
 
 **Gate:** no production write path, UI route, workflow executor, or current
 artifact reference uses the retired saved-analysis model.
@@ -1136,12 +1138,12 @@ system.
 
 ## 10. Test plan
 
-### 10.1 Data Test service tests
+### 10.1 Data Analysis service tests
 
-Extend `backend/tests/test_data_tests.py` to prove:
+Extend `backend/tests/test_data_analysis.py` to prove:
 
 - unlinked create returns derived exploratory scope;
-- linked create returns derived RCM scope;
+- linked create returns derived Audit Test scope;
 - a supplied contradictory scope cannot alter classification;
 - both scopes execute through the same service;
 - exploratory runs never enter RCM rollup;
@@ -1152,7 +1154,7 @@ Extend `backend/tests/test_data_tests.py` to prove:
 - finding-dependent linkage changes are rejected;
 - table/spec/link changes invalidate currency;
 - narrative conclusion changes do not invalidate execution;
-- validation engine remains supported;
+- validation is excluded from Data Analysis engines and creation controls;
 - Polars step table references are rewritten on table rename;
 - dashboard pinning works for both scopes;
 - automatic curation considers linked eligible results only.
@@ -1194,17 +1196,17 @@ Replace or rewrite `backend/tests/test_workflow_analysis.py` to prove:
 - deterministic relationship evidence is unchanged;
 - joins are still materialized only under the existing evidence gate;
 - the worker receives no rows;
-- proposals create only unlinked Data Tests;
-- executor refs are `datatest:`;
+- proposals create only unlinked Data Analysis records;
+- executor refs are `data_analysis:`;
 - definitions resume from sidecars without re-billing;
-- executions use Data Test current results;
+- executions use Data Analysis current results;
 - auditor edits are preserved;
 - force regeneration remains scoped;
-- RCM-linked tests are never picked up by exploratory execution;
+- Audit Tests are never picked up by exploratory execution;
 - model budgets and concurrency remain bounded;
 - old live workflow runs do not dispatch into the new executors.
 
-Keep audit workflow tests proving RCM generation still creates linked tests.
+Keep audit workflow tests proving RCM generation still creates Audit Tests.
 
 ### 10.4 API tests
 
@@ -1214,7 +1216,7 @@ Cover:
 - derived scope;
 - create/update/run/result/export/pin;
 - optimistic concurrency during linkage changes;
-- validation errors for missing RCM and broken findings;
+- linkage errors for missing RCM and broken findings;
 - removed saved-analysis routes;
 - stateless analytics and preview routes still work;
 - legacy tab redirects are frontend behavior, not duplicate APIs.
@@ -1239,12 +1241,12 @@ At minimum:
 - production Vite build;
 - manual desktop verification at wide and narrow breakpoints;
 - keyboard navigation through scope switch, rail, create menu, and RCM dialogs;
-- legacy `tab=analysis` redirect;
+- legacy `tab=data-analysis` redirect;
 - legacy `tab=data-tests&test=...` redirect;
-- RCM deep link to a linked test;
-- creation and execution of all three engines;
+- RCM deep link to an Audit Test;
+- creation and execution of both Data Analysis engines;
 - link, re-run, unlink, and blocked-unlink flows;
-- exploratory versus linked terminology;
+- exploratory versus Audit Test terminology;
 - dashboard pin navigation;
 - finding-action eligibility.
 
@@ -1264,11 +1266,13 @@ Also run focused static searches:
 
 ```bash
 rg -n "workspace\\.analyses|/analyses|analysis:<" backend/app frontend/src
-rg -n "AnalysisTab|SavedAnalysis|AnalysisLastResult" frontend/src backend/app
+rg -n "data_tests|DataTests|data-tests|datatest:<" backend/app frontend/src
+rg -n "SavedAnalysis|AnalysisLastResult" frontend/src backend/app
 ```
 
-Every remaining match must be documented as Data Analysis terminology,
-document analysis, historical compatibility, or legacy evidence.
+Every remaining match must be documented as historical compatibility or legacy
+evidence. Active consolidated references use `data_analysis`, `DataAnalysis/`,
+and the retained `/analysis` route.
 
 ## 11. End-to-end acceptance scenarios
 
@@ -1295,7 +1299,7 @@ document analysis, historical compatibility, or legacy evidence.
 ### Scenario C — RCM-generated test
 
 1. Generate tests for an RCM row.
-2. Confirm the Data Test appears in Data Analysis under RCM-linked.
+2. Confirm the Data Analysis record appears in Data Analysis under Audit Tests.
 3. Confirm model-generated Polars steps are visible.
 4. Run locally.
 5. Confirm exceptions, semantic diagnostics, disposition, and RCM rollup.
@@ -1304,14 +1308,14 @@ document analysis, historical compatibility, or legacy evidence.
 
 1. Ask the assistant to infer joins and analyze selected tables.
 2. Confirm deterministic relationship handling.
-3. Confirm generated definitions are unlinked Data Tests.
-4. Confirm their results use `DataTestResults/`.
+3. Confirm generated definitions are unlinked Data Analysis records.
+4. Confirm their results use `DataAnalysisResults/`.
 5. Confirm no `Analyses/` artifact is created.
 
 ### Scenario E — Migration
 
 1. Open a pre-consolidation workspace containing saved analyses.
-2. Confirm each appears as an exploratory Data Test.
+2. Confirm each appears as an exploratory Data Analysis record.
 3. Confirm titles, code/analytic specs, visualizations, and provenance.
 4. Confirm old bounded results are not misrepresented as current executions.
 5. Run one migrated definition successfully.
@@ -1319,7 +1323,7 @@ document analysis, historical compatibility, or legacy evidence.
 
 ### Scenario F — Evidence protection
 
-1. Create a formal finding supported by a linked current Data Test result.
+1. Create a formal finding supported by a current Audit Test result.
 2. Attempt to remove or change the test’s RCM link.
 3. Confirm the mutation is rejected with the dependent finding identified.
 4. Reconcile the finding, then repeat the linkage change successfully.
@@ -1329,16 +1333,16 @@ document analysis, historical compatibility, or legacy evidence.
 The consolidation is complete only when:
 
 - one Data Analysis tab is visible;
-- all saved data procedures are Data Tests;
-- `rcm_id` alone determines exploratory versus RCM-linked scope;
+- all saved data procedures are Data Analysis records;
+- `rcm_id` alone determines exploratory versus Audit Test scope;
 - the same local execution path serves both scopes;
 - linkage changes cannot reuse an execution under a different audit meaning;
 - exploratory definitions and results cannot satisfy RCM or finding gates;
-- exploratory workflow output lands in `DataTests/`;
-- RCM test-generation output continues to land in `DataTests/`;
+- exploratory workflow output lands in `DataAnalysis/`;
+- RCM test-generation output continues to land in `DataAnalysis/`;
 - migrated saved Analysis definitions remain usable;
 - no prior Analysis execution is fabricated into stronger evidence;
-- dashboard pinning, validation authoring, visualization, and export are
+- dashboard pinning, visualization, and export are
   preserved;
 - old navigation links redirect correctly;
 - no active saved-analysis CRUD, storage, workflow executor, or frontend model
@@ -1354,11 +1358,11 @@ Deliver in four reviewable changes:
 1. **Domain and migration foundation**
    - WP0–WP3;
    - no navigation change yet;
-   - prove the Data Test model and migration independently.
+   - prove the Data Analysis model and migration independently.
 
 2. **Workflow convergence**
    - WP4–WP5;
-   - new exploratory runs create Data Tests;
+   - new exploratory runs create Data Analysis records;
    - old Analysis UI may temporarily be read-only during this change.
 
 3. **Data Analysis UI cutover**
