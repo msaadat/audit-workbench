@@ -12,6 +12,7 @@ import Textarea from 'primevue/textarea'
 import type { MenuItem } from 'primevue/menuitem'
 
 import { api, ApiError } from '../api'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import { workspaceQuery } from '../composables/useWorkspaceNavigation'
 import type {
   DataTest,
@@ -33,6 +34,7 @@ const emit = defineEmits<{ changed: [] }>()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const assistantChat = useAssistantChat(props.workspace.id)
 
 const tests = ref<DataTest[]>([])
 const planning = ref<PlanningPayload | null>(null)
@@ -237,6 +239,19 @@ async function pin() {
     emit('changed')
   } catch (error) { fail('Could not pin result', error) }
 }
+async function draftFinding() {
+  if (!selected.value?.rcm_id || !selected.value.last_run) return
+  try {
+    await assistantChat.send(
+      `Draft findings for RCM row ${selected.value.rcm_id}.`,
+      'act', 'permission', {
+        goalTemplate: 'finding_draft', source: 'tab_button',
+        runContext: { rcm_id: selected.value.rcm_id },
+      },
+    )
+    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'The assistant will request an auditor disposition if one is needed.', life: 3600 })
+  } catch (error) { fail('Could not start the finding-draft workflow', error) }
+}
 function openParent() {
   if (!selected.value?.rcm_id) return
   void router.replace({ query: workspaceQuery('rcm', { rcm: selected.value.rcm_id }) })
@@ -272,7 +287,7 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
         <p v-if="!filtered.length" class="muted">No Data Tests match these filters.</p>
       </aside></template>
       <section v-if="selected" class="detail">
-        <div class="toolbar"><div><strong>{{ selected.id }}</strong><small>{{ selected.engine ?? 'unspecified' }} · {{ selected.rcm_id ? `RCM ${selected.rcm_id}` : 'exploratory' }}</small></div><span/><Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" outlined size="small" @click="openParent"/><Button label="Pin" icon="pi pi-thumbtack" outlined size="small" :disabled="!selected.last_run" @click="pin"/><Button label="Run" icon="pi pi-play" size="small" :loading="running" @click="runTest"/><Button icon="pi pi-trash" severity="danger" outlined rounded aria-label="Delete Data Test" :loading="deleting" @click="deleteTest"/></div>
+        <div class="toolbar"><div><strong>{{ selected.id }}</strong><small>{{ selected.engine ?? 'unspecified' }} · {{ selected.rcm_id ? `RCM ${selected.rcm_id}` : 'exploratory' }}</small></div><span/><Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" outlined size="small" @click="openParent"/><Button v-if="selected.rcm_id" label="Draft finding" icon="pi pi-sparkles" outlined size="small" :disabled="!selected.last_run" title="Run the linked Data Test first, then draft through the assistant" @click="draftFinding"/><Button label="Pin" icon="pi pi-thumbtack" outlined size="small" :disabled="!selected.last_run" @click="pin"/><Button label="Run" icon="pi pi-play" size="small" :loading="running" @click="runTest"/><Button icon="pi pi-trash" severity="danger" outlined rounded aria-label="Delete Data Test" :loading="deleting" @click="deleteTest"/></div>
         <div class="form-grid"><label>Title<InputText v-model="selected.title" /></label><label>Auditor disposition<Select v-model="selected.auditor_disposition" :options="['pending','follow_up','accepted','invalid_test_or_result','not_applicable']" /></label><label class="wide">Objective<Textarea v-model="selected.objective" rows="2" autoResize /></label><label v-if="selected.engine !== 'polars'">Table<Select v-model="selected.table_refs[0]" :options="tableOptions" optionLabel="label" optionValue="value" filter/></label><label>RCM row (optional)<Select v-model="selected.rcm_id" :options="rcmOptions" optionLabel="label" optionValue="value" filter showClear/></label><label class="wide">Criteria<Textarea v-model="selected.criteria" rows="2" autoResize /></label></div>
         <AnalyticsTestAuthor
           v-if="selected.engine === 'analytics'"

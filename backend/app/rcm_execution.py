@@ -373,7 +373,12 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
     }
 
 
-def rollup(workspace: Workspace, *, persist: bool = True) -> dict:
+def rollup(
+    workspace: Workspace,
+    *,
+    persist: bool = True,
+    rcm_ids: set[str] | None = None,
+) -> dict:
     """Recompute RCM outcomes, persisting only material changes.
 
     Status surfaces call this with ``persist=False`` so GET requests remain
@@ -387,7 +392,10 @@ def rollup(workspace: Workspace, *, persist: bool = True) -> dict:
     )
     document_tests: dict[str, dict] = {}
     rows = []
+    selected_rcm_ids = None if rcm_ids is None else set(rcm_ids)
     for row in workspace.rcm:
+        if selected_rcm_ids is not None and row["id"] not in selected_rcm_ids:
+            continue
         tests = _tests(workspace, row["id"])
         test_rollups = [_rollup_test(workspace, row, test) for test in tests]
         for test in tests:

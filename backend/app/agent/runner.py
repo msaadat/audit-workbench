@@ -476,6 +476,7 @@ def steer(
     chat_id: str | None = None,
     source_message_id: str | None = None,
     context_refs: list[dict] | None = None,
+    target_refs: list[str] | None = None,
     run_context: dict | None = None,
     goal_template: str | None = None,
 ) -> dict:
@@ -492,7 +493,8 @@ def steer(
             {"source": "follow_up", "text": content, "goal_template": goal_template,
              "parent_command_id": (run.get("command") or {}).get("id"),
              "chat_id": chat_id, "source_message_id": source_message_id,
-             "context_refs": list(context_refs or [])},
+             "context_refs": list(context_refs or []),
+             "target_refs": list(target_refs or [])},
             parent_run_id=run_id,
             context=run_context,
         )
@@ -505,6 +507,7 @@ def steer(
             "status": "queued", "parent_command_id": (run.get("command") or {}).get("id"),
             "chat_id": chat_id, "source_message_id": source_message_id,
             "context_refs": list(context_refs or []),
+            "target_refs": list(target_refs or []),
             "run_context": dict(run_context or {}),
         }
         handle = get_handle(run_id)

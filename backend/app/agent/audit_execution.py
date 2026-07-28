@@ -39,6 +39,7 @@ from .capabilities.reporting import (
     OBSERVATION_DISPOSITION_CHECKPOINT,
     STAGE_CHECKPOINTS,
 )
+from .capabilities._shared import scoped_observations, target_rcm_ids
 from .doc_tests_execution import bind_document_test_unit
 from .documents_execution import (
     DocumentWorkflowExecution,
@@ -70,7 +71,7 @@ from .executors.reporting import (
     output_issues,
     verify_audit,
 )
-from .execution_support import refresh_workspace, resolve_context
+from .execution_support import refresh_workspace, resolve_context, workflow_scope
 from .runtime import (
     BoundUnitPipeline,
     CapabilityExecution,
@@ -690,7 +691,10 @@ class AuditWorkflowExecution(ActionRunner):
         """
         self.ws = subject
         try:
-            refs = roll_up_results(self.ws)
+            refs = roll_up_results(
+                self.ws,
+                rcm_ids=set(target_rcm_ids(self.ws, workflow_scope(self.run))),
+            )
         except WorkspaceConflict as error:
             return DeterministicUnitResult("conflict", error=str(error))
         self.emit(
@@ -699,7 +703,11 @@ class AuditWorkflowExecution(ActionRunner):
         return DeterministicUnitResult("succeeded", tuple(refs))
 
     def _observation_checkpoint(self) -> None:
-        open_items = [item for item in self.ws.observations if item.get("status") != "disposed"]
+        open_items = [
+            item
+            for item in scoped_observations(self.ws, workflow_scope(self.run))
+            if item.get("status") != "disposed"
+        ]
         if not open_items:
             return
         interaction = next((item for item in self.run.get("interactions") or [] if item.get("type") == "observation_disposition" and item.get("status") == "pending"), None)
@@ -744,7 +752,10 @@ class AuditWorkflowExecution(ActionRunner):
 
         result = mutate(self.ws, commit)
         self.ws = result.workspace
-        rcm_execution.rollup(self.ws)
+        rcm_execution.rollup(
+            self.ws,
+            rcm_ids=set(target_rcm_ids(self.ws, workflow_scope(self.run))),
+        )
         self.run["workflow"]["pending_checkpoint"] = None
         self._resolve_interaction_record(interaction, response)
         self.emit("checkpoint_resolved", {"interaction_id": interaction["id"], "count": len(result.value)})
@@ -981,7 +992,11 @@ class AuditWorkflowExecution(ActionRunner):
         completion = rcm_execution.completion(subject)
         failed = sum(unit.get("status") in {"failed", "conflict"} for stage in stages for unit in stage.get("units") or [])
         open_units = sum(unit.get("status") in {"blocked", "awaiting_input", "awaiting_confirmation"} for stage in stages for unit in stage.get("units") or [])
-        open_observations = [item for item in subject.observations if item.get("status") != "disposed"]
+        open_observations = [
+            item
+            for item in scoped_observations(subject, workflow_scope(self.run))
+            if item.get("status") != "disposed"
+        ]
         open_evidence = [item for item in subject.evidence_requests if item.get("status") == "open"]
         next_outcomes = []
         execution_open = bool(open_evidence) or any(

@@ -79,12 +79,27 @@ def target_rcm_ids(workspace: Workspace, scope: dict) -> list[str]:
     """RCM row IDs in the requested scope (all rows when no target is given)."""
 
     refs = [str(value) for value in scope.get("target_refs") or []]
-    selected = {
+    selected_rcm_ids = {
         value.split(":", 1)[1]
         for value in refs
         if value.startswith("rcm:") and ":" in value
     }
-    return [row["id"] for row in workspace.rcm if not selected or row["id"] in selected]
+    selected_observation_ids = {
+        value.split(":", 1)[1]
+        for value in refs
+        if value.startswith("observation:") and ":" in value
+    }
+    selected_rcm_ids.update(
+        str(item.get("rcm_id") or "")
+        for item in workspace.observations
+        if item.get("id") in selected_observation_ids
+    )
+    has_explicit_scope = bool(selected_rcm_ids or selected_observation_ids)
+    return [
+        row["id"]
+        for row in workspace.rcm
+        if not has_explicit_scope or row["id"] in selected_rcm_ids
+    ]
 
 
 def rows(workspace: Workspace, scope: dict) -> list[dict]:
@@ -108,12 +123,33 @@ def all_tests(workspace: Workspace) -> list[dict]:
     ]
 
 
-def eligible_observations(workspace: Workspace) -> list[dict]:
-    """Disposed observations whose disposition makes them finding-eligible."""
+def scoped_observations(workspace: Workspace, scope: dict) -> list[dict]:
+    """Observations in the explicit observation or RCM scope."""
+
+    refs = [str(value) for value in scope.get("target_refs") or []]
+    selected_observation_ids = {
+        value.split(":", 1)[1]
+        for value in refs
+        if value.startswith("observation:") and ":" in value
+    }
+    if selected_observation_ids:
+        return [
+            item for item in workspace.observations
+            if item.get("id") in selected_observation_ids
+        ]
+    selected_rcm_ids = set(target_rcm_ids(workspace, scope))
+    return [
+        item for item in workspace.observations
+        if item.get("rcm_id") in selected_rcm_ids
+    ]
+
+
+def eligible_observations(workspace: Workspace, scope: dict | None = None) -> list[dict]:
+    """Disposed observations in scope whose disposition permits a finding draft."""
 
     return [
         item
-        for item in workspace.observations
+        for item in scoped_observations(workspace, scope or {})
         if item.get("status") == "disposed"
         and item.get("disposition") in ELIGIBLE_DISPOSITIONS
     ]

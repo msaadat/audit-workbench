@@ -196,6 +196,34 @@ def test_planning_action_passes_structured_run_context(workspace_with_data, monk
     assert launched["context"] == {"document_ids": ["doc-1", "doc-2"]}
 
 
+def test_finding_draft_tab_button_keeps_selected_observation_scope(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None, context=None):
+        launched.update(command=command, context=context)
+        run = store.new_command_run(
+            workspace, mode, command, parent_run_id=parent_run_id, context=context
+        )
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    assistant_chats.send_message(ws, chat["id"], {
+        "content": "Draft a finding from observation OBS-1.",
+        "intent": "act", "mode": "auto", "request_id": "request-finding-scope",
+        "source": "tab_button", "goal_template": "finding_draft",
+        "run_context": {"observation_id": "OBS-1"},
+    })
+
+    assert launched["command"]["goal_template"] == "finding_draft"
+    assert launched["command"]["target_refs"] == ["observation:OBS-1"]
+    assert launched["context"] == {"observation_id": "OBS-1"}
+
+
 def test_run_projection_uses_durable_activity_instead_of_coarse_status(workspace_with_data):
     run = store.new_command_run(
         workspace_with_data, "auto",

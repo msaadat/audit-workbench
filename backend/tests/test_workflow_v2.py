@@ -95,6 +95,47 @@ def test_full_template_materializes_locally_without_command_interpreter():
     assert persisted["usage"]["llm_turns"] == 0
 
 
+def test_finding_draft_scope_expands_only_the_selected_observation():
+    ws = _planning_workspace("Scoped finding drafts")
+    first_row = ws.rcm[0]
+    second_row = ws.add_rcm(
+        {
+            "process": "Payroll",
+            "risk": "Unauthorized payroll changes",
+            "control": "Payroll changes require independent approval",
+            "risk_rating": "high",
+        }
+    )
+    ws.observations.extend([
+        {
+            "id": "OBS-ONE", "rcm_id": first_row["id"], "test_id": "DT-ONE",
+            "execution_ref": "datatest:DT-ONE:RUN-ONE", "summary": "First exception",
+            "status": "disposed", "disposition": "confirmed_control_exception",
+        },
+        {
+            "id": "OBS-TWO", "rcm_id": second_row["id"], "test_id": "DT-TWO",
+            "execution_ref": "datatest:DT-TWO:RUN-TWO", "summary": "Second exception",
+            "status": "disposed", "disposition": "confirmed_control_exception",
+        },
+    ])
+
+    capability = audit_capabilities.REGISTRY.get("findings.drafted")
+    units = capability.expand_units(
+        ws, {"target_refs": ["observation:OBS-ONE"]}
+    )
+
+    assert [unit.id for unit in units] == ["finding:obs-one"]
+    assert units[0].parent_refs[0] == "observation:OBS-ONE"
+
+    rcm_units = capability.expand_units(
+        ws, {"target_refs": [f"rcm:{second_row['id']}"]}
+    )
+    assert [unit.parent_refs[0] for unit in rcm_units] == ["observation:OBS-TWO"]
+
+    rolled = rcm_execution.rollup(ws, rcm_ids={first_row["id"]})
+    assert [item["rcm_id"] for item in rolled["rows"]] == [first_row["id"]]
+
+
 @pytest.mark.parametrize(
     ("template", "route", "outcomes"),
     [
@@ -109,6 +150,7 @@ def test_full_template_materializes_locally_without_command_interpreter():
             ],
         ),
         ("apm_only", "workflow", ["planning.apm_ready"]),
+        ("finding_draft", "workflow", ["findings.drafted"]),
         ("report", "workflow", ["report.working_draft", "audit.verified"]),
         # Phase 8 made data analysis a declared workflow goal; Phase 11 did the
         # same for both halves of the former ``document_testing`` template.
@@ -129,6 +171,7 @@ def test_every_registered_goal_template_has_a_deterministic_local_route(
         "full_audit_working_draft",
         "planning",
         "apm_only",
+        "finding_draft",
         "data_analysis",
         "table_relationships",
         "document_analysis",

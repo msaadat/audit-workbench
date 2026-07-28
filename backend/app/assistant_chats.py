@@ -743,12 +743,21 @@ def _process_message(
         artifact = _artifact(workspace, chat_id, ids[0])
         refs = [{"kind": "assistant_artifact", "id": artifact["id"], "title": artifact.get("title")}]
 
+    planning_context = dict(run_context or {})
+    target_refs: list[str] = []
+    if goal_template == "finding_draft":
+        observation_id = str(planning_context.get("observation_id") or "").strip()
+        rcm_id = str(planning_context.get("rcm_id") or "").strip()
+        if observation_id:
+            target_refs = [f"observation:{observation_id}"]
+        elif rcm_id:
+            target_refs = [f"rcm:{rcm_id}"]
     command = {
         "source": "goal_template" if goal_template else ("tab_button" if user.get("source") != "composer" else "chat"),
         "text": user["content"], "goal_template": goal_template,
         "chat_id": chat_id, "source_message_id": user["id"], "context_refs": refs,
+        "target_refs": target_refs,
     }
-    planning_context = dict(run_context or {})
     if goal_template == "planning" and not planning_context.get("document_ids"):
         planning_context["document_ids"] = list(
             (user.get("document_context") or {}).get("document_ids") or []
@@ -756,7 +765,7 @@ def _process_message(
     if active:
         response = runner.steer(
             workspace, active["id"], user["content"], chat_id=chat_id,
-            source_message_id=user["id"], context_refs=refs,
+            source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
             run_context=planning_context, goal_template=goal_template,
         )
         queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
@@ -793,7 +802,7 @@ def _process_message(
                 raise
             response = runner.steer(
                 workspace, raced["id"], user["content"], chat_id=chat_id,
-                source_message_id=user["id"], context_refs=refs,
+                source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
                 run_context=planning_context, goal_template=goal_template,
             )
             queued = response.get("command") or {}

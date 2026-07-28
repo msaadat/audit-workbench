@@ -26,6 +26,7 @@ from ..workflow import (
 from ..workflows import audit as audit_workflow
 from ._shared import all_tests as _all_tests
 from ._shared import eligible_observations as _eligible_observations
+from ._shared import scoped_observations as _scoped_observations
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
 
@@ -56,7 +57,7 @@ STAGE_CHECKPOINTS: dict[str, str] = {
 # --------------------------------------------------------------------------- #
 def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     open_observations = [
-        item for item in workspace.observations if item.get("status") != "disposed"
+        item for item in _scoped_observations(workspace, scope) if item.get("status") != "disposed"
     ]
     if open_observations and scope.get("permission_mode"):
         return Readiness(
@@ -64,7 +65,7 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
             (f"{len(open_observations)} observation(s) require auditor disposition",),
             details={"open_observations": len(open_observations)},
         )
-    eligible = _eligible_observations(workspace)
+    eligible = _eligible_observations(workspace, scope)
     linked = {
         str(item.get("source_observation_id") or ""): item
         for item in workspace.findings
@@ -93,7 +94,7 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     return Readiness("satisfied", details={"eligible": len(eligible), "drafted": len(eligible)})
 
 
-def _finding_units(workspace: Workspace, _scope: dict) -> list[UnitSpec]:
+def _finding_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     existing = {str(item.get("source_observation_id") or "") for item in workspace.findings}
     return [
         UnitSpec(
@@ -109,7 +110,7 @@ def _finding_units(workspace: Workspace, _scope: dict) -> list[UnitSpec]:
             ),
             item,
         )
-        for item in _eligible_observations(workspace)
+        for item in _eligible_observations(workspace, scope)
         if item["id"] not in existing
     ]
 

@@ -221,15 +221,19 @@ async function saveObservation(item: AuditObservation) {
 }
 async function promoteObservation(item: AuditObservation) {
   try {
-    const finding = await api.post<{ id: string }>(`/api/workspaces/${props.workspace.id}/findings`, {
-      title: item.summary.slice(0, 120) || `Observation ${item.id}`,
-      condition: item.summary, rcm_refs: [item.rcm_id],
-      test_refs: [item.test_id], execution_refs: [item.execution_ref],
-      auditor_confirmed: false,
-    })
-    emit('changed')
-    void router.replace({ query: { tab: 'findings', finding: finding.id } })
-  } catch (error) { fail('Could not create a draft finding', error) }
+    await assistantChat.send(
+      `Draft a finding from observation ${item.id}.`,
+      'act', 'permission', {
+        goalTemplate: 'finding_draft', source: 'tab_button',
+        runContext: { observation_id: item.id },
+      },
+    )
+    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'Review the proposed finding in the assistant before it is saved.', life: 3200 })
+  } catch (error) { fail('Could not start the finding-draft workflow', error) }
+}
+function canDraftFinding(item: AuditObservation) {
+  return item.status === 'disposed'
+    && ['confirmed_control_exception', 'draft_finding_candidate'].includes(item.disposition ?? '')
 }
 function openTest(rollup: TestRollup) {
   void router.replace({
@@ -320,7 +324,7 @@ async function copyPaper(kind: 'markdown' | 'html') {
           <p v-if="item.scope_limitations" class="muted">Limitation: {{ item.scope_limitations }}</p>
           <div class="card-actions"><Button label="Open test" icon="pi pi-arrow-up-right" size="small" outlined @click="openTest(item)"/></div>
         </article><p v-if="!linkedTests(selectedRcm).length" class="empty">This RCM row has no linked test and cannot pass coverage.</p></section>
-        <section v-if="selectedObservations.length" class="observations"><strong>Observation triage</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.status" :severity="item.status === 'open' ? 'warn' : 'success'"/><span>{{ item.summary }}</span><small>Suggested: {{ item.suggested_disposition }}</small><Select v-model="item.disposition" :options="observationDispositions" placeholder="Auditor disposition"/><Textarea v-model="item.auditor_note" rows="2" placeholder="Auditor note"/><span class="observation-actions"><Button label="Save disposition" size="small" :disabled="!item.disposition" @click="saveObservation(item)"/><Button label="Draft finding" icon="pi pi-arrow-right" size="small" severity="secondary" @click="promoteObservation(item)"/></span></div></section>
+        <section v-if="selectedObservations.length" class="observations"><strong>Observation triage</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.status" :severity="item.status === 'open' ? 'warn' : 'success'"/><span>{{ item.summary }}</span><small>Suggested: {{ item.suggested_disposition }}</small><Select v-model="item.disposition" :options="observationDispositions" placeholder="Auditor disposition"/><Textarea v-model="item.auditor_note" rows="2" placeholder="Auditor note"/><span class="observation-actions"><Button label="Save disposition" size="small" :disabled="!item.disposition" @click="saveObservation(item)"/><Button label="Draft finding" icon="pi pi-sparkles" size="small" severity="secondary" :disabled="!canDraftFinding(item)" title="Save an eligible auditor disposition before drafting with the assistant" @click="promoteObservation(item)"/></span></div></section>
       </div>
     </Dialog>
     <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>

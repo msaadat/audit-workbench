@@ -80,11 +80,13 @@ def result_ref(rcm_id: str) -> str:
     return f"{RESULT_REF_PREFIX}:{rcm_id}"
 
 
-def roll_up_results(workspace: Workspace) -> list[str]:
+def roll_up_results(
+    workspace: Workspace, *, rcm_ids: set[str] | None = None
+) -> list[str]:
     """Recompute RCM results and observations; return stable per-row refs.
 
-    Deterministic and self-committing: ``rcm_execution.rollup`` recomputes every
-    RCM row's derived result and its observations from the current execution
+    Deterministic and self-committing: ``rcm_execution.rollup`` recomputes the
+    selected RCM rows' derived results and observations from the current execution
     artifacts and persists only material changes. Observation identities are keyed
     on ``execution_ref``, so a repeated roll-up reuses the same observation rows
     rather than creating duplicates — the result and observation identities stay
@@ -92,7 +94,7 @@ def roll_up_results(workspace: Workspace) -> list[str]:
     disposition runs as a declared checkpoint before finding creation, not here.
     """
 
-    result = rcm_execution.rollup(workspace)
+    result = rcm_execution.rollup(workspace, rcm_ids=rcm_ids)
     return [result_ref(row["rcm_id"]) for row in result["rows"]]
 
 

@@ -87,6 +87,7 @@ TEMPLATE_OUTCOMES: dict[str, list[str]] = {
         "tests.specified",
     ],
     "apm_only": ["planning.apm_ready"],
+    "finding_draft": ["findings.drafted"],
     # Preparing an RCM row's Document Tests is the ``tests.specified``
     # deliverable, not a document-test run.
     "document_test_preparation": ["tests.specified"],
