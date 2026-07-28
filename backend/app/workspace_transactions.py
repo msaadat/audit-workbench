@@ -244,6 +244,25 @@ def material_projection(value: object) -> object:
     return value
 
 
+_RCM_MATERIAL_FIELDS = (
+    "id", "process", "risk", "risk_rating", "assertion", "control",
+    "control_type", "control_owner", "criteria", "criteria_refs",
+    "evidence_refs", "review_status",
+)
+
+
+def rcm_material_projection(row: dict | None) -> dict | None:
+    """Return the auditor-editable basis of an RCM row.
+
+    Links to generated tests, execution rollups, and finding links are derived
+    workflow output.  They must not invalidate work that was generated from the
+    row's risk-and-control definition.
+    """
+    if row is None:
+        return None
+    return {field: row.get(field) for field in _RCM_MATERIAL_FIELDS}
+
+
 def artifact_projection(workspace: Workspace, ref: str) -> object:
     kind, separator, item_id = str(ref).partition(":")
     if not separator:
@@ -283,7 +302,7 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
             next((item for item in workspace.analyses if item.get("id") == item_id), None)
         )
     if kind == "rcm":
-        return material_projection(
+        return rcm_material_projection(
             next((item for item in workspace.rcm if item.get("id") == item_id), None)
         )
     if kind == "document":

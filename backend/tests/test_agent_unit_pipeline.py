@@ -274,6 +274,74 @@ def test_runtime_scheduler_resolves_capability_through_registered_unit_pipeline(
     assert run["status"] == "completed"
 
 
+def test_serial_pipeline_units_rebind_after_each_commit():
+    workspace = workspaces.create_workspace("Scheduler serial refresh")
+    events = []
+    pipeline, run = _pipeline(workspace, events)
+    pipeline.runtime.handle = agent_runner.RunHandle(workspace.id, run["id"])
+    registry = workflow.CapabilityRegistry()
+    registry.register(
+        workflow.Capability(
+            id="planning.apm_ready",
+            stage_id="stage:planning-apm",
+            title="Draft the APM",
+            worker_kind="planning.apm",
+            depends_on=(),
+            readiness=lambda _subject, _scope: workflow.Readiness("missing"),
+            expand_units=lambda _subject, _scope: [
+                workflow.UnitSpec(
+                    id="planning.apm:first",
+                    kind="apm",
+                    title="Draft the first APM",
+                    input_payload={"input_sha1": "first"},
+                ),
+                workflow.UnitSpec(
+                    id="planning.apm:second",
+                    kind="apm",
+                    title="Draft the second APM",
+                    input_payload={"input_sha1": "second"},
+                ),
+            ],
+            context="planning.apm",
+        )
+    )
+    bound_subject_ids = []
+    executions = CapabilityExecutionRegistry()
+    executions.register(
+        CapabilityExecution(
+            capability_id="planning.apm_ready",
+            implementation_hash=HASH_A,
+            pipeline_binder=lambda subject, _run, _capability, _stage, unit: (
+                bound_subject_ids.append(id(subject))
+                or BoundUnitPipeline(
+                    request=UnitPipelineRequest(
+                        **{**_request(subject).__dict__, "unit_id": unit["id"]}
+                    ),
+                    context_provider=lambda: _context(unit=unit["id"]),
+                    context_identity_provider=_context_identity,
+                    target=subject,
+                    readiness_provider=lambda: {"state": "satisfied"},
+                )
+            ),
+        )
+    )
+    scheduler = WorkflowRunner(
+        subject=workspace,
+        run=run,
+        runtime=pipeline.runtime,
+        registry=registry,
+        executions=executions,
+        unit_pipeline=pipeline,
+        refresh_subject=lambda: workspaces.load_workspace(workspace.id),
+    )
+
+    scheduler.materialize(["planning.apm_ready"])
+    scheduler.execute()
+
+    assert len(bound_subject_ids) == 2
+    assert len(set(bound_subject_ids)) == 2
+
+
 def test_pipeline_percent_encodes_windows_reserved_semantic_unit_characters():
     workspace = workspaces.create_workspace("Portable unit sidecars")
     events = []

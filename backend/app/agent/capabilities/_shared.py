@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from ... import methodology
 from ...workspaces import Workspace
+from ...workspace_transactions import rcm_material_projection
 from ..workflow import UnitSpec, canonical_sha1
 
 
@@ -57,16 +58,7 @@ def apm_sha1(workspace: Workspace) -> str:
 
 
 def rcm_row_sha1(row: dict) -> str:
-    return canonical_sha1(
-        {
-            key: row.get(key)
-            for key in (
-                "id", "process", "risk", "risk_rating", "assertion", "control",
-                "control_type", "control_owner", "criteria", "criteria_refs",
-                "evidence_refs", "review_status",
-            )
-        }
-    )
+    return canonical_sha1(rcm_material_projection(row))
 
 
 # Dispositions that make an observation eligible to become a finding draft.

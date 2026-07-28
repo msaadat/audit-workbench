@@ -238,6 +238,36 @@ def test_null_only_result_is_not_accepted_as_success(workspace_with_data):
     assert any("entirely null" in issue for issue in result["semantic_issues"])
 
 
+def test_null_exception_field_with_populated_identifier_is_valid(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Missing approval identifiers",
+            "objective": "Identify transactions without an approval identifier.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": _polars_spec(
+                label="Select transactions with a missing approval",
+                instruction="Return identifiers and the missing approval value.",
+                table_refs=["transactions"],
+                code=(
+                    "result = transactions.select([pl.col('invoice_no'), "
+                    "pl.lit(None).cast(pl.String).alias('missing_approval')])"
+                ),
+            ),
+        },
+    )
+
+    result = data_tests.run(ws, item["id"])
+
+    assert result["semantic_valid"] is True
+    assert result["status"] == "completed_with_exception"
+    assert result["exception_count"] > 0
+    assert not any("entirely null" in issue for issue in result["semantic_issues"])
+
+
 def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
@@ -443,5 +473,10 @@ def test_data_test_api_runs_all_rcm_linked_tests_and_skips_exploratory(workspace
     assert batch["total"] == 1
     assert batch["failed"] == []
     assert batch["completed"][0]["data_test_id"] == linked["id"]
-    assert linked["last_run"] is not None
-    assert exploratory["last_run"] is None
+    persisted = workspaces.load_workspace(ws.id)
+    persisted_linked = next(item for item in persisted.data_tests if item["id"] == linked["id"])
+    persisted_exploratory = next(
+        item for item in persisted.data_tests if item["id"] == exploratory["id"]
+    )
+    assert persisted_linked["last_run"] is not None
+    assert persisted_exploratory["last_run"] is None

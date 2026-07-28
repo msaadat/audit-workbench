@@ -453,7 +453,21 @@ def reconcile_test_generation(
     current = Workspace(target.workspace.root)
     current_parent = parent_hashes(current, [parent_ref])[parent_ref]
     expected_parent = request.expected_parents[parent_ref]
-    if current_parent == expected_parent:
+
+    def changed_parent_reason() -> str:
+        return (
+            "The RCM row's material fields changed after this test proposal was "
+            "generated; no commit was applied. Regenerate the unit. "
+            f"Expected parent hash {expected_parent[:12]}, current parent hash "
+            f"{current_parent[:12]}."
+        )
+
+    # Test creation changes only derived RCM links, which deliberately do not
+    # participate in the material parent hash. A same-parent, same-revision
+    # record therefore proves no commit landed; a later revision must still
+    # inspect the generated tests to distinguish a completed commit from an
+    # unrelated workspace write.
+    if current_parent == expected_parent and current.revision <= request.expected_revision:
         return ExecutorReconciliation("not_applied")
     row = next(
         (item for item in current.rcm if str(item.get("id")) == target.rcm_id), None
@@ -467,7 +481,6 @@ def reconcile_test_generation(
                 )
             ),
         )
-    parent_sha1 = audit_hashes.rcm_row_sha1(row)
     outcomes: list[dict] = []
     for spec in specs:
         kind = str(spec["kind"])
@@ -485,15 +498,17 @@ def reconcile_test_generation(
         applied = (
             record is not None
             and str(record.get("title") or "") == str(spec.get("title") or "")
-            and record.get("workflow_parent_sha1") == parent_sha1
+            # The generated record is stamped with the proposal's parent, not
+            # the current row. This also recognizes a commit that landed just
+            # before a later auditor edit changed the material RCM row.
+            and record.get("workflow_parent_sha1") == expected_parent
         )
         if not applied:
+            if current_parent == expected_parent:
+                return ExecutorReconciliation("not_applied")
             return ExecutorReconciliation(
                 "conflict",
-                reason=(
-                    "The RCM row changed before the interrupted test-generation "
-                    "commit was reconciled."
-                ),
+                reason=changed_parent_reason(),
             )
         outcomes.append(
             {
@@ -510,10 +525,7 @@ def reconcile_test_generation(
     if not changed or current.revision <= request.expected_revision:
         return ExecutorReconciliation(
             "conflict",
-            reason=(
-                "The RCM row changed before the interrupted test-generation "
-                "commit was reconciled."
-            ),
+            reason=changed_parent_reason(),
         )
     target.workspace = current
     return ExecutorReconciliation(

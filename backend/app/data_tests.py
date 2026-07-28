@@ -564,10 +564,13 @@ def _run_polars_steps(
             continue
         stdout_parts.append(stdout)
         step_null_columns = _all_null_columns(result)
-        if step_null_columns:
+        # Exception queries commonly select the field that is expected to be
+        # null (for example, ``GRN_ID_LINK.is_null()``).  That is substantive
+        # evidence when identifiers or other fields are populated. Only reject
+        # a frame whose *every* output column is null.
+        if result.width and len(step_null_columns) == result.width:
             issues.append(
-                f"Step '{step['label']}' result columns are entirely null: "
-                f"{', '.join(step_null_columns)}."
+                f"Step '{step['label']}' result is entirely null."
             )
         step_exception_count = result.height
         total_exceptions += step_exception_count

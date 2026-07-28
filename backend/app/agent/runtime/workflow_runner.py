@@ -537,6 +537,10 @@ class WorkflowRunner:
             self.runtime.checkpoint()
             self.set_unit(stage, unit, "running")
             self._run_one_pipeline_unit(execution, capability, stage, unit)
+            # Serialized units can commit workspace state. Rebind the next
+            # unit against that committed state instead of retaining a stale
+            # stage-start subject and producing a false parent conflict.
+            self._refresh()
 
     def _run_parallel_pipeline_units(
         self,

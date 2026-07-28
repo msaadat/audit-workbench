@@ -310,6 +310,35 @@ def test_generate_executor_parent_hash_rejects_a_concurrent_rcm_change():
         GENERATE_EXECUTOR.implementation(request, target)
 
 
+def test_generate_executor_allows_derived_rcm_state_to_change():
+    workspace, rcm_id, doc_id = _workspace()
+    request = _request(workspace, rcm_id, [_data_test()])
+
+    # These are workflow projections, not the auditor's RCM definition. A
+    # sibling unit may update them before this serialized unit commits.
+    workspace.rcm[0]["execution_rollup"] = {"status": "in_progress"}
+    workspace.rcm[0]["finding_refs"] = ["finding:FND-001"]
+    workspace.save()
+
+    target = TestGenerateExecutorTarget(workspace, "run-derived", rcm_id)
+    receipt = EXECUTORS.execute(request, target)
+
+    assert receipt.output["tests"][0]["action"] == "created"
+
+
+def test_generate_reconciliation_explains_a_precommit_rcm_conflict():
+    workspace, rcm_id, doc_id = _workspace()
+    request = _request(workspace, rcm_id, [_data_test()])
+    workspace.update_rcm(rcm_id, {"control": "Auditor rewrote the control"})
+    target = TestGenerateExecutorTarget(workspace, "run-precommit-conflict", rcm_id)
+
+    reconciliation = GENERATE_EXECUTOR.reconciler(request, target)
+
+    assert reconciliation.disposition == "conflict"
+    assert "material fields changed" in reconciliation.reason
+    assert "no commit was applied" in reconciliation.reason
+
+
 def test_generate_executor_reconciles_an_interrupted_commit():
     workspace, rcm_id, doc_id = _workspace()
     request = _request(workspace, rcm_id, [_data_test()])
