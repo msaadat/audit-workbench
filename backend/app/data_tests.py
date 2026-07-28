@@ -1,10 +1,10 @@
-"""Durable Data Tests and immutable execution results.
+"""Durable Data Tests and their current execution result.
 
 Definitions live in ``workspace.json`` so they participate in engagement
-migration and reconciliation. Each run is written separately under
-``DataTestResults``; the workspace stores only bounded latest-run metadata and
-history references. A test may be exploratory or linked to one RCM row.
-Creating or editing a definition never counts as execution.
+migration and reconciliation. Each test owns one replaceable result under
+``DataTestResults``; the workspace stores only its latest-run metadata. A test
+may be exploratory or linked to one RCM row. Creating or editing a definition
+never counts as execution.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ AUDITOR_DISPOSITIONS = {
     "invalid_test_or_result",
     "not_applicable",
 }
-RUN_HISTORY_MAX = 20
+CURRENT_RESULT_ID = "DTR-CURRENT"
 SUMMARY_ROWS = 500
 EXCEPTION_ROWS = 200
 
@@ -81,6 +81,30 @@ def _result_path(workspace: Workspace, data_test_id: str, run_id: str) -> Path:
     return results_dir(workspace, data_test_id) / f"{run_id}.json"
 
 
+def _finding_result_ids(workspace: Workspace, data_test_id: str) -> set[str]:
+    """Legacy result IDs that must remain available as finding evidence."""
+    ids: set[str] = set()
+    for finding in workspace.findings:
+        for anchor in finding.get("evidence_refs") or []:
+            if not isinstance(anchor, dict) or anchor.get("source_kind") != "datatest":
+                continue
+            test_id, separator, result_id = str(anchor.get("source_id") or "").partition(":")
+            if separator and test_id == data_test_id and result_id:
+                ids.add(result_id)
+    return ids
+
+
+def _discard_superseded_results(workspace: Workspace, data_test_id: str) -> None:
+    """Remove prior non-evidence results after the current result is committed."""
+    retained = _finding_result_ids(workspace, data_test_id)
+    folder = workspace.root / "DataTestResults" / data_test_id
+    if not folder.is_dir():
+        return
+    for path in folder.glob("DTR-*.json"):
+        if path.stem != CURRENT_RESULT_ID and path.stem not in retained:
+            path.unlink()
+
+
 def _record(workspace: Workspace, data_test_id: str) -> dict:
     item = next(
         (value for value in workspace.data_tests if value.get("id") == data_test_id),
@@ -88,7 +112,9 @@ def _record(workspace: Workspace, data_test_id: str) -> dict:
     )
     if item is None:
         raise WorkspaceError(f"Data Test '{data_test_id}' not found.")
-    item.setdefault("runs", [])
+    # Execution history was retired. Old workspaces can still carry this field
+    # until their next mutation, but it is never returned or persisted again.
+    item.pop("runs", None)
     item.setdefault("last_run", None)
     item.setdefault("auditor_disposition", "pending")
     item.setdefault("evidence_refs", [])
@@ -171,7 +197,6 @@ def _validate_spec(
         if not isinstance(raw_steps, list) or not raw_steps:
             raise WorkspaceError("A Polars Data Test needs at least one step.")
         steps: list[dict] = []
-        derived_refs: list[str] = []
         for index, raw_step in enumerate(raw_steps):
             if not isinstance(raw_step, dict):
                 raise WorkspaceError("Each Polars Data Test step must be an object.")
@@ -181,7 +206,6 @@ def _validate_spec(
                 raise WorkspaceError(f"Data Test step {index + 1} needs a label.")
             if not instruction:
                 raise WorkspaceError(f"Data Test step '{label}' needs an instruction.")
-            step_refs = _table_refs(workspace, raw_step.get("table_refs"))
             code = str(raw_step.get("code") or "").strip()
             if not code:
                 raise WorkspaceError(f"Data Test step '{label}' needs code.")
@@ -195,13 +219,10 @@ def _validate_spec(
                     "step_id": step_id,
                     "label": label,
                     "instruction": instruction,
-                    "table_refs": step_refs,
                     "code": code,
                 }
             )
-            derived_refs.extend(step_refs)
         value = {"schema_version": 2, "steps": steps}
-        refs = list(dict.fromkeys(derived_refs))
     return value, warnings, refs
 
 
@@ -245,7 +266,6 @@ def _base_record(workspace: Workspace, payload: dict, *, title: str, now: str) -
         "open_exception_count": 0,
         "finding_refs": [],
         "last_run": None,
-        "runs": [],
         "auditor_disposition": "pending",
         "evidence_refs": [],
         "created_by": "agent" if payload.get("agent_run_id") else "user",
@@ -347,8 +367,7 @@ def update_plan(workspace: Workspace, data_test_id: str, payload: dict) -> dict:
 def apply_spec(workspace: Workspace, data_test_id: str, payload: dict) -> dict:
     """Write the executable spec onto an existing test.
 
-    Execution history is immutable and stays put; the definition change simply
-    means the test must be run again.
+    The current result is retained until the updated definition is run again.
     """
     item = _record(workspace, data_test_id)
     engine = str(payload.get("engine") or "polars").strip().lower()
@@ -448,7 +467,7 @@ def update(
         item["created_by"] = "user"
     # A changed *definition* must be executed again; history remains immutable.
     # Editing the plan or recording an outcome is not a definition change, so it
-    # must not discard the status a durable run established.
+    # must not discard the status the current result established.
     if any(key in changes for key in ("engine", "table_refs", "spec")):
         item["status"] = "ready"
     _link(workspace, item)
@@ -458,8 +477,6 @@ def update(
 
 def remove(workspace: Workspace, data_test_id: str) -> None:
     item = _record(workspace, data_test_id)
-    if item.get("runs"):
-        raise WorkspaceError("A Data Test with execution history cannot be removed.")
     workspace.data_tests.remove(item)
     ref = f"datatest:{data_test_id}"
     for row in workspace.rcm:
@@ -469,6 +486,18 @@ def remove(workspace: Workspace, data_test_id: str) -> None:
 
 def _dataset_fingerprints(workspace: Workspace, refs: list[str]) -> dict[str, str]:
     return {name: _sha1(workspace._table_signature(name)) for name in refs}
+
+
+def _execution_table_refs(workspace: Workspace, item: dict) -> list[str]:
+    """Return every frame available to a Polars test at execution time.
+
+    A Polars definition deliberately carries no table selection. This keeps its
+    sandbox environment in step with the workspace as tables and joins change,
+    and makes the result provenance cover every frame that its code could read.
+    """
+    if item.get("engine") == "polars":
+        return workspace.table_names()
+    return list(item.get("table_refs") or [])
 
 
 def _join_issues(workspace: Workspace, refs: list[str]) -> tuple[list[str], list[dict]]:
@@ -516,10 +545,10 @@ def _run_polars_steps(
     stdout_parts: list[str] = []
     total_exceptions = 0
     any_step_failed = False
+    frames = {name: workspace.get_frame(name) for name in workspace.table_names()}
     for step in steps:
-        step_frames = {name: workspace.get_frame(name) for name in step["table_refs"]}
         try:
-            result, stdout = sandbox.run(step["code"], step_frames)
+            result, stdout = sandbox.run(step["code"], frames)
         except Exception as exc:
             any_step_failed = True
             issues.append(f"Step '{step['label']}' failed to execute: {exc}")
@@ -579,9 +608,9 @@ def _run_polars_steps(
 
 def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | None, pl.DataFrame | None, int, list[str]]:
     engine = item["engine"]
-    frame = workspace.get_frame(item["table_refs"][0])
     issues = list(item.get("semantic_warnings") or [])
     if engine == "analytics":
+        frame = workspace.get_frame(item["table_refs"][0])
         result = analytics.run_test(frame, item["spec"]["test_id"], item["spec"].get("params") or {})
         payload = result.payload()
         summary, exceptions = result.summary, result.detail
@@ -596,6 +625,7 @@ def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | 
             "viz": payload.get("viz"),
         }
     elif engine == "validation":
+        frame = workspace.get_frame(item["table_refs"][0])
         rules = item["spec"]["rules"]
         run = validation.run_rules(frame, rules, item["table_refs"][0], workspace.get_frame)
         summary = validation.summary_frame(run)
@@ -638,13 +668,14 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         raise WorkspaceError(
             f"Data Test '{data_test_id}' has no executable specification yet."
         )
-    run_id = f"DTR-{uuid.uuid4().hex[:12].upper()}"
+    run_id = CURRENT_RESULT_ID
     run_at = utcnow()
-    fingerprints = _dataset_fingerprints(workspace, item["table_refs"])
+    execution_refs = _execution_table_refs(workspace, item)
+    fingerprints = _dataset_fingerprints(workspace, execution_refs)
     source_sha1 = _sha1(
-        {"engine": item["engine"], "table_refs": item["table_refs"], "spec": item["spec"]}
+        {"engine": item["engine"], "table_refs": execution_refs, "spec": item["spec"]}
     )
-    join_issues, diagnostics = _join_issues(workspace, item["table_refs"])
+    join_issues, diagnostics = _join_issues(workspace, execution_refs)
     try:
         output, summary, exceptions, exception_count, semantic_issues = _run_engine(workspace, item)
         semantic_issues = list(dict.fromkeys([*join_issues, *semantic_issues]))
@@ -739,16 +770,18 @@ def commit_result(
         linked_write = prepare_linked_write(fresh, result_path, candidate)
         linked_writes.append(linked_write)
         write_json_atomic(result_path, candidate)
-        history = {
+        latest = {
             key: candidate[key]
             for key in (
                 "id", "run_at", "status", "verdict", "exception_count", "semantic_valid",
                 "dataset_fingerprints", "source_sha1", "result_sha1",
             )
         }
-        item.setdefault("runs", []).append(history)
-        del item["runs"][:-RUN_HISTORY_MAX]
-        item["last_run"] = history
+        item.pop("runs", None)
+        item["last_run"] = latest
+        for tile in fresh.tiles:
+            if tile.get("data_test_id") == data_test_id:
+                tile["result_ref"] = f"datatest:{data_test_id}:{candidate['id']}"
         item["status"] = candidate["status"]
         item["updated"] = candidate["run_at"]
         return candidate
@@ -766,6 +799,7 @@ def commit_result(
     else:
         for linked_write in linked_writes:
             complete_linked_write(linked_write)
+        _discard_superseded_results(committed.workspace, data_test_id)
     from .workspaces import sync_workspace
 
     # Preserve the long-standing service contract for callers that retain row,
@@ -831,7 +865,14 @@ def run_all_rcm_linked(workspace: Workspace) -> dict:
 
 
 def load_result(workspace: Workspace, data_test_id: str, run_id: str) -> dict:
-    _record(workspace, data_test_id)
+    item = _record(workspace, data_test_id)
+    if not item.get("last_run") or run_id != item["last_run"].get("id"):
+        raise WorkspaceError(f"Data Test result '{run_id}' is not the current result.")
+    return _read_result(workspace, data_test_id, run_id)
+
+
+def _read_result(workspace: Workspace, data_test_id: str, run_id: str) -> dict:
+    """Read a result file, including a legacy result retained as evidence."""
     path = _result_path(workspace, data_test_id, run_id)
     if not path.exists():
         raise WorkspaceError(f"Data Test result '{run_id}' not found.")
@@ -855,7 +896,7 @@ def result_artifact(workspace: Workspace, source_id: str) -> dict | None:
         run_id = item["last_run"]["id"]
         data_test_id = item["id"]
     try:
-        result = load_result(workspace, data_test_id, run_id)
+        result = _read_result(workspace, data_test_id, run_id)
     except WorkspaceError:
         return None
     return {"item": result, "sha1": result["result_sha1"]}
@@ -877,4 +918,7 @@ def spec_as_python_code(spec: dict) -> str:
 
 
 def list_payload(workspace: Workspace) -> list[dict]:
-    return sorted(workspace.data_tests, key=lambda item: item.get("updated") or "", reverse=True)
+    return [
+        {key: value for key, value in item.items() if key != "runs"}
+        for item in sorted(workspace.data_tests, key=lambda item: item.get("updated") or "", reverse=True)
+    ]

@@ -184,8 +184,7 @@ def _render_test_step(step: object) -> list[str]:
         if step.get("missing_evidence"):
             lines.append(f"  - Missing evidence: {step['missing_evidence']}")
     else:
-        tables = ", ".join(step.get("table_refs") or []) or "none"
-        lines.append(f"  - Tables: {tables}")
+        lines.append("  - Tables: all workspace tables and joins")
     return lines
 
 

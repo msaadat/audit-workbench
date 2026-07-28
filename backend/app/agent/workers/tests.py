@@ -148,13 +148,12 @@ comparison, return two Document Tests.
 A "data" test's steps are Polars only. Each step is an object:
   label         short name for the step
   instruction   what the step determines
-  table_refs    array of exact table names the step's code reads
   code          Polars code assigning the exception rows to `result`
-Each supplied table is available as a DataFrame variable under its exact
-name, and `pl` is the Polars module. `result` must be a DataFrame holding the
-rows that fail the step — an empty result means no exception. Use exact
-column and table names from the supplied schemas. No imports, no file or
-network access, and no printing.
+All workspace tables and joins are available as DataFrame variables under
+their exact names, and in the `tables` mapping; `pl` is the Polars module.
+`result` must be a DataFrame holding the rows that fail the step — an empty
+result means no exception. Use exact column and table names from the supplied
+schemas. No imports, no file or network access, and no printing.
 
 A "document" test's steps use only "question" or "vouch" mode, the same mode
 on every step in one test. Each step is an object:
@@ -180,7 +179,7 @@ GENERATE_TABLE_SOURCE_ID = "table_metadata"
 GENERATE_DOCUMENT_SOURCE_ID = "documents"
 _GENERATE_SOURCES = {"data", "document"}
 _GENERATE_COMMON_FIELDS = ("source", "title", "objective", "steps")
-_GENERATE_DATA_STEP_FIELDS = ("label", "instruction", "table_refs", "code")
+_GENERATE_DATA_STEP_FIELDS = ("label", "instruction", "code")
 _GENERATE_DOCUMENT_STEP_FIELDS = (
     "label", "instruction", "mode", "document_ids", "question", "checks",
     "missing_evidence",
@@ -281,20 +280,8 @@ def _validate_generate_data_step(
     for key in ("label", "instruction"):
         if not isinstance(step.get(key), str) or not step[key].strip():
             errors.append(f"{path}.{key} must be a non-empty string")
-    refs = step.get("table_refs")
-    if isinstance(refs, str):
-        refs = [refs]
-    if not isinstance(refs, (list, tuple)) or not refs:
-        errors.append(f"{path}.table_refs must be a non-empty array of table names")
-        refs = []
-    refs = [str(ref) for ref in refs]
-    for ref in refs:
-        if ref not in known_tables:
-            errors.append(f"{path}.table_refs references unknown table '{ref}'")
     code = step.get("code")
-    known_columns: set[str] = set()
-    for ref in refs:
-        known_columns |= known_tables.get(ref, set())
+    known_columns = set().union(*known_tables.values()) if known_tables else set()
     if not isinstance(code, str) or not code.strip():
         errors.append(f"{path}.code must be non-empty Polars code")
     else:
@@ -311,7 +298,6 @@ def _validate_generate_data_step(
     return {
         "label": str(step.get("label") or "").strip(),
         "instruction": str(step.get("instruction") or "").strip(),
-        "table_refs": refs,
         "code": str(code).strip() if isinstance(code, str) else "",
     }
 

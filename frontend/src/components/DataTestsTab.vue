@@ -6,9 +6,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Menu from 'primevue/menu'
-import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
-import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import type { MenuItem } from 'primevue/menuitem'
@@ -20,18 +18,13 @@ import type {
   DataTestEngine,
   DataTestResult,
   DataTestStep,
-  FramePayload,
   PlanningPayload,
   RcmRow,
-  ValidationRule,
-  ValidationRun,
   WorkspaceSummary,
 } from '../types'
 import CodeEditor from './CodeEditor.vue'
 import AnalyticsTestAuthor from './data-tests/AnalyticsTestAuthor.vue'
-import ValidationTestAuthor from './data-tests/ValidationTestAuthor.vue'
 import FrameTable from './FrameTable.vue'
-import RunResults from './validation/RunResults.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 
@@ -56,24 +49,19 @@ const filterStatus = ref<string | null>(null)
 const filterEngine = ref<string | null>(null)
 const analyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
 const analyticsReady = ref(false)
-const validationRules = ref<ValidationRule[]>([])
-const validationReady = ref(false)
 function emptyPolarsStep(): DataTestStep {
-  return { label: '', instruction: '', table_refs: [], code: 'result = df.head(100)' }
+  return { label: '', instruction: '', code: 'result = df.head(100)' }
 }
 function polarsStepsValid(steps: DataTestStep[]): boolean {
   return steps.length > 0 && steps.every(step =>
-    step.label.trim() && step.instruction.trim() && step.table_refs.length > 0 && step.code.trim())
+    step.label.trim() && step.instruction.trim() && step.code.trim())
 }
 function addPolarsStep(list: DataTestStep[]) { list.push(emptyPolarsStep()) }
 function removePolarsStep(list: DataTestStep[], index: number) { list.splice(index, 1) }
 const polarsSteps = ref<DataTestStep[]>([emptyPolarsStep()])
 const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
 const editAnalyticsReady = ref(false)
-const editValidationRules = ref<ValidationRule[]>([])
-const editValidationReady = ref(false)
 const editPolarsSteps = ref<DataTestStep[]>([])
-const validationView = ref<'rules' | 'results'>('rules')
 const draft = ref({
   title: '', objective: '', engine: 'analytics' as DataTestEngine,
   rcm_id: '', table_refs: [] as string[],
@@ -81,12 +69,10 @@ const draft = ref({
 
 const engines = [
   { label: 'Library analytics', value: 'analytics' },
-  { label: 'Validation', value: 'validation' },
   { label: 'Polars code', value: 'polars' },
 ]
 const createItems: MenuItem[] = [
   { label: 'Library analytics', icon: 'pi pi-chart-bar', command: () => openCreate('analytics') },
-  { label: 'Validation rules', icon: 'pi pi-check-square', command: () => openCreate('validation') },
   { label: 'Polars code', icon: 'pi pi-code', command: () => openCreate('polars') },
 ]
 const selected = computed(() => tests.value.find(item => item.id === selectedId.value) ?? null)
@@ -98,80 +84,11 @@ const filtered = computed(() => tests.value.filter(item =>
   && (!filterEngine.value || item.engine === filterEngine.value),
 ))
 const statuses = computed(() => [...new Set(tests.value.map(item => item.status))])
-const validationViewOptions = computed(() => [
-  { label: 'Rules', value: 'rules', disabled: false },
-  { label: 'Results', value: 'results', disabled: !validationRun.value },
-])
 const createReady = computed(() => {
   const tableReady = draft.value.engine === 'polars' ? true : Boolean(draft.value.table_refs[0])
   const definitionReady = draft.value.engine === 'analytics' ? analyticsReady.value
-    : draft.value.engine === 'validation' ? validationReady.value
-      : polarsStepsValid(polarsSteps.value)
+    : polarsStepsValid(polarsSteps.value)
   return Boolean(draft.value.title.trim() && draft.value.objective.trim() && tableReady && definitionReady)
-})
-function frameRecords(frame: FramePayload | null): Record<string, string | number | boolean | null>[] {
-  if (!frame) return []
-  return frame.rows.map(row => Object.fromEntries(frame.columns.map((column, index) => [column, row[index] ?? null])))
-}
-function textValue(value: unknown, fallback = ''): string {
-  return value === null || value === undefined ? fallback : String(value)
-}
-function numberValue(value: unknown, fallback = 0): number {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : fallback
-}
-function nullableNumber(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-function validationVerdict(value: unknown): 'ok' | 'warn' | 'fail' | 'info' {
-  return value === 'ok' || value === 'warn' || value === 'info' ? value : 'fail'
-}
-function ruleVerdict(value: unknown): 'ok' | 'warn' | 'fail' | 'error' | 'skipped' {
-  return value === 'ok' || value === 'warn' || value === 'fail' || value === 'error' || value === 'skipped' ? value : 'error'
-}
-function ruleSeverity(value: unknown): 'fail' | 'warn' {
-  return value === 'warn' ? 'warn' : 'fail'
-}
-const validationRunRules = computed(() => {
-  if (selected.value?.engine !== 'validation' || !Array.isArray(selected.value.spec.rules)) return []
-  return selected.value.spec.rules as ValidationRule[]
-})
-const validationRun = computed<ValidationRun | null>(() => {
-  if (selected.value?.engine !== 'validation' || !result.value?.summary_frame) return null
-  const rules = validationRunRules.value
-  const results = frameRecords(result.value.summary_frame).map((row, index) => {
-    const rule = rules[index]
-    const field = textValue(row.field)
-    return {
-      rule_id: rule?.id ?? null,
-      column: field === '(table)' || !field ? null : field,
-      check: rule?.check ?? '',
-      label: textValue(row.rule, rule?.check ?? 'Rule'),
-      severity: ruleSeverity(row.severity),
-      verdict: ruleVerdict(row.verdict),
-      fail_count: numberValue(row.failing_rows),
-      checked_rows: numberValue(row.rows_checked),
-      pass_pct: nullableNumber(row.pass_pct),
-      error: row.error ? String(row.error) : null,
-    }
-  })
-  const counts = {
-    passed: results.filter(item => item.verdict === 'ok').length,
-    warned: results.filter(item => item.verdict === 'warn').length,
-    failed: results.filter(item => item.verdict === 'fail').length,
-    errored: results.filter(item => item.verdict === 'error').length,
-    skipped: results.filter(item => item.verdict === 'skipped').length,
-  }
-  return {
-    table: Object.keys(result.value.dataset_fingerprints)[0] ?? selected.value.table_refs[0] ?? '',
-    rows: results.reduce((max, item) => Math.max(max, item.checked_rows), 0),
-    run_at: result.value.run_at,
-    verdict: validationVerdict(result.value.verdict),
-    counts,
-    results,
-  }
 })
 function severity(value: string) {
   return value.includes('exception') || value === 'fail' || value === 'error' ? 'danger'
@@ -189,15 +106,12 @@ function openCreate(engine: DataTestEngine = 'analytics', row?: RcmRow) {
   }
   analyticsSpec.value = { test_id: '', params: {} }
   analyticsReady.value = false
-  validationRules.value = []
-  validationReady.value = false
   polarsSteps.value = [emptyPolarsStep()]
   createSession.value += 1
   createOpen.value = true
 }
 function createSpec(): Record<string, unknown> {
   if (draft.value.engine === 'analytics') return analyticsSpec.value
-  if (draft.value.engine === 'validation') return { rules: validationRules.value }
   return { schema_version: 2, steps: polarsSteps.value }
 }
 function applyAnalyticsDefaults(title: string, objective: string) {
@@ -213,22 +127,16 @@ function selectTest(item: DataTest) {
       ? JSON.parse(JSON.stringify(params)) as Record<string, unknown>
       : {},
   }
-  editValidationRules.value = Array.isArray(item.spec.rules)
-    ? JSON.parse(JSON.stringify(item.spec.rules)) as ValidationRule[]
-    : []
   editPolarsSteps.value = Array.isArray(item.spec.steps) && item.spec.steps.length
     ? JSON.parse(JSON.stringify(item.spec.steps)) as DataTestStep[]
     : [emptyPolarsStep()]
   editAnalyticsReady.value = false
-  editValidationReady.value = editValidationRules.value.length > 0
-  validationView.value = item.engine === 'validation' && item.last_run ? 'results' : 'rules'
   result.value = null
   void router.replace({ query: workspaceQuery('data-tests', { test: item.id }) })
   if (item.last_run) void loadResult(item, item.last_run.id)
 }
 function editSpec(): Record<string, unknown> {
   if (selected.value?.engine === 'analytics') return editAnalyticsSpec.value
-  if (selected.value?.engine === 'validation') return { rules: editValidationRules.value }
   return { schema_version: 2, steps: editPolarsSteps.value }
 }
 const selectedDefinitionReady = computed(() => {
@@ -236,7 +144,6 @@ const selectedDefinitionReady = computed(() => {
   if (selected.value.engine === 'polars') return polarsStepsValid(editPolarsSteps.value)
   if (!selected.value.table_refs[0]) return false
   if (selected.value.engine === 'analytics') return editAnalyticsReady.value
-  if (selected.value.engine === 'validation') return editValidationReady.value
   return false
 })
 async function load() {
@@ -249,7 +156,7 @@ async function load() {
   if (route.query.create && !createOpen.value) {
     const row = planning.value.rcm.find(item => item.id === String(route.query.rcm || ''))
     const requestedEngine = String(route.query.create)
-    const engine = ['analytics', 'validation', 'polars'].includes(requestedEngine)
+    const engine = ['analytics', 'polars'].includes(requestedEngine)
       ? requestedEngine as DataTestEngine
       : 'analytics'
     openCreate(engine, row)
@@ -295,7 +202,6 @@ async function runTest() {
   running.value = true
   try {
     result.value = await api.post<DataTestResult>(`/api/workspaces/${props.workspace.id}/data-tests/${selected.value.id}/run`)
-    if (selected.value.engine === 'validation') validationView.value = 'results'
     await load()
     emit('changed')
   } catch (error) { fail('Could not run Data Test', error) }
@@ -304,8 +210,7 @@ async function runTest() {
 async function deleteTest() {
   if (!selected.value) return
   const item = selected.value
-  const runText = item.runs.length === 1 ? '1 execution result' : `${item.runs.length} execution results`
-  if (!window.confirm(`Delete "${item.title}" and its ${runText}? This cannot be undone.`)) return
+  if (!window.confirm(`Delete "${item.title}"? This cannot be undone.`)) return
   deleting.value = true
   try {
     await api.del(`/api/workspaces/${props.workspace.id}/data-tests/${item.id}`)
@@ -321,7 +226,6 @@ async function deleteTest() {
 async function loadResult(item: DataTest, runId: string) {
   try {
     result.value = await api.get(`/api/workspaces/${props.workspace.id}/data-tests/${item.id}/runs/${runId}`)
-    if (item.engine === 'validation') validationView.value = 'results'
   }
   catch (error) { fail('Could not reopen the result', error) }
 }
@@ -337,18 +241,13 @@ function openParent() {
   if (!selected.value?.rcm_id) return
   void router.replace({ query: workspaceQuery('planning', { view: 'rcm', rcm: selected.value.rcm_id }) })
 }
-function rebindValidationResult(table: string) {
-  if (!selected.value) return
-  selected.value.table_refs = [table]
-  toast.add({ severity: 'info', summary: `Now bound to ${table}`, detail: 'Save the definition to keep the new binding.', life: 3600 })
-}
 
 onMounted(() => void load().catch(error => fail('Could not load Data Tests', error)))
 </script>
 
 <template>
   <div class="data-tests">
-    <UiPageHeader title="Data Tests" description="Exploratory or RCM-linked analytics, validation, and visible Polars code with durable execution history">
+    <UiPageHeader title="Data Tests" description="Exploratory or RCM-linked analytics and visible Polars code with the current execution result">
       <Button
         label="New Data Test"
         icon="pi pi-plus"
@@ -384,43 +283,13 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
           @valid="editAnalyticsReady = $event"
           @error="fail"
         />
-        <section v-else-if="selected.engine === 'validation'" class="validation-detail">
-          <div class="validation-tabs">
-            <SelectButton
-              v-model="validationView"
-              :options="validationViewOptions"
-              optionLabel="label"
-              optionValue="value"
-              optionDisabled="disabled"
-              :allowEmpty="false"
-              size="small"
-            />
-          </div>
-          <ValidationTestAuthor
-            v-if="validationView === 'rules'"
-            :key="selected.id"
-            v-model="editValidationRules"
-            :workspace="workspace"
-            :table="selected.table_refs[0] || null"
-            @valid="editValidationReady = $event"
-            @error="fail"
-          />
-          <RunResults
-            v-else-if="validationRun"
-            :workspace="workspace"
-            :run="validationRun"
-            :rules="validationRunRules"
-            :boundTable="selected.table_refs[0] || null"
-            @rebind="rebindValidationResult"
-          />
-        </section>
         <div v-else-if="selected.engine === 'polars'" class="steps-author">
           <div class="steps-header"><strong>Steps</strong><Button label="Add step" icon="pi pi-plus" text size="small" @click="addPolarsStep(editPolarsSteps)"/></div>
           <div v-for="(step, index) in editPolarsSteps" :key="index" class="step-card">
             <div class="step-card-head"><span>Step {{ index + 1 }}</span><Button icon="pi pi-trash" text rounded severity="danger" :disabled="editPolarsSteps.length <= 1" aria-label="Remove step" @click="removePolarsStep(editPolarsSteps, index)"/></div>
             <label>Label<InputText v-model="step.label" /></label>
             <label>Instruction<Textarea v-model="step.instruction" rows="2" autoResize /></label>
-            <label>Tables<MultiSelect v-model="step.table_refs" :options="tableOptions" optionLabel="label" optionValue="value" filter /></label>
+            <small class="muted">All workspace tables and joins are available to this code.</small>
             <label>Code — each step's result rows are its exceptions<CodeEditor v-model="step.code" /></label>
           </div>
         </div>
@@ -428,8 +297,7 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
           This draft does not have an executable test definition yet.
         </div>
         <div class="save-row"><span class="muted">Saving validates the definition but does not execute it.</span><Button label="Save definition" icon="pi pi-save" outlined :loading="saving" :disabled="!selectedDefinitionReady" @click="saveTest"/></div>
-        <div v-if="selected.runs.length" class="history"><strong>Execution history</strong><button v-for="run in [...selected.runs].reverse()" :key="run.id" @click="loadResult(selected, run.id)"><span>{{ new Date(run.run_at).toLocaleString() }}</span><Tag :value="run.verdict" :severity="severity(run.verdict)"/><small>{{ run.exception_count }} exception(s) · {{ run.result_sha1.slice(0, 10) }}</small></button></div>
-        <section v-if="result && selected.engine !== 'validation'" class="result">
+        <section v-if="result" class="result">
           <div class="result-head"><strong>Durable result</strong><Tag :value="result.status.replaceAll('_', ' ')" :severity="severity(result.status)"/><span>{{ result.verdict_text }}</span></div>
           <div v-if="result.semantic_issues.length" class="issues"><strong>Semantic review</strong><ul><li v-for="issue in result.semantic_issues" :key="issue">{{ issue }}</li></ul></div>
           <div v-if="result.statistics.length" class="stats"><span v-for="stat in result.statistics" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span></div>
@@ -474,23 +342,13 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
           @selected="applyAnalyticsDefaults"
           @error="fail"
         />
-        <ValidationTestAuthor
-          v-else-if="draft.engine === 'validation'"
-          :key="`validation-${createSession}`"
-          v-model="validationRules"
-          class="wide"
-          :workspace="workspace"
-          :table="draft.table_refs[0] || null"
-          @valid="validationReady = $event"
-          @error="fail"
-        />
         <div v-else class="wide steps-author">
           <div class="steps-header"><strong>Steps</strong><Button label="Add step" icon="pi pi-plus" text size="small" @click="addPolarsStep(polarsSteps)"/></div>
           <div v-for="(step, index) in polarsSteps" :key="index" class="step-card">
             <div class="step-card-head"><span>Step {{ index + 1 }}</span><Button icon="pi pi-trash" text rounded severity="danger" :disabled="polarsSteps.length <= 1" aria-label="Remove step" @click="removePolarsStep(polarsSteps, index)"/></div>
             <label>Label<InputText v-model="step.label" /></label>
             <label>Instruction<Textarea v-model="step.instruction" rows="2" autoResize /></label>
-            <label>Tables<MultiSelect v-model="step.table_refs" :options="tableOptions" optionLabel="label" optionValue="value" filter /></label>
+            <small class="muted">All workspace tables and joins are available to this code.</small>
             <label>Code — each step's result rows are its exceptions<CodeEditor v-model="step.code" /></label>
           </div>
         </div>
@@ -528,16 +386,11 @@ onMounted(() => void load().catch(error => fail('Could not load Data Tests', err
 .step-result-row { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; min-width:0; padding:.4rem .55rem; border:1px solid var(--aw-border); border-radius:6px }
 .step-error { color:var(--p-red-600); overflow-wrap:anywhere }
 .definition-unavailable { padding:.8rem; border:1px solid var(--aw-border); border-radius:6px; color:var(--aw-muted); background:var(--aw-canvas) }
-.validation-detail { display:flex; flex-direction:column; gap:.7rem; min-width:0 }
-.validation-tabs { display:flex; justify-content:flex-end }
 label { display:flex; flex-direction:column; gap:.3rem; min-width:0; color:#46576d; font-size:.75rem; font-weight:600 }
 label :deep(.p-inputtext),label :deep(.p-textarea),label :deep(.p-select),label :deep(.p-multiselect) { width:100%; min-width:0 }
 .code { font-family:var(--aw-font-mono); font-size:.78rem }
 .save-row,.result-head { display:flex; align-items:center; justify-content:space-between; gap:.6rem; flex-wrap:wrap; min-width:0 }
 .result-head span { min-width:0; overflow-wrap:anywhere }
-.history { display:flex; gap:.4rem; flex-wrap:wrap; min-width:0; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm) }
-.history>strong { width:100% }
-.history button { display:grid; gap:.2rem; min-width:0; max-width:100%; text-align:left; border:1px solid var(--aw-border); background:#fff; border-radius:6px; padding:.5rem; cursor:pointer }
 .result { display:flex; flex-direction:column; gap:.7rem; min-width:0; max-width:100%; border-top:1px solid var(--aw-border); padding-top:.8rem }
 .issues { padding:.7rem; border:1px solid var(--p-orange-200); background:var(--p-orange-50); border-radius:6px }
 .issues ul { margin:.35rem 0 0 }
@@ -549,5 +402,5 @@ summary { cursor:pointer; font-weight:700; margin-bottom:.5rem }
 :deep(.author),:deep(.parameters),:deep(.catalog),:deep(.selected-test),:deep(.results),:deep(.rule-list),:deep(.grid) { min-width:0; max-width:100% }
 :deep(.grid),:deep(.rule-list) { overflow-x:auto }
 :deep(.p-datatable) { max-width:100% }
-@media(max-width:900px){.form-grid,.dialog-form{grid-template-columns:1fr}.wide{grid-column:auto}.layout{min-height:0}.validation-tabs{justify-content:flex-start}}
+@media(max-width:900px){.form-grid,.dialog-form{grid-template-columns:1fr}.wide{grid-column:auto}.layout{min-height:0}}
 </style>

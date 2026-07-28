@@ -29,7 +29,7 @@ import { newRuleId } from './rules'
 // checks grid, and the results of the latest run. All edits mutate a local
 // draft; Save persists the spec. Run always validates the *draft* rules, so
 // unsaved edits can be tried before committing.
-const props = defineProps<{ workspace: WorkspaceSummary; ruleset: RuleSet | null }>()
+const props = defineProps<{ workspace: WorkspaceSummary; ruleset: RuleSet | null; defaultTable?: string }>()
 const emit = defineEmits<{
   saved: [RuleSet]
   changed: []
@@ -40,7 +40,7 @@ const toast = useToast()
 const confirm = useConfirm()
 
 const title = ref(props.ruleset?.title ?? '')
-const table = ref<string | null>(props.ruleset?.table ?? null)
+const table = ref<string | null>(props.ruleset?.table ?? props.defaultTable ?? null)
 const rules = ref<ValidationRule[]>(
   JSON.parse(JSON.stringify(props.ruleset?.rules ?? [])) as ValidationRule[],
 )

@@ -141,7 +141,6 @@ def _data_step(**overrides):
     value = {
         "label": "Find duplicate invoice keys",
         "instruction": "Compare invoice numbers for duplicates.",
-        "table_refs": ["transactions"],
         "code": "result = transactions.filter(pl.col('invoice').is_duplicated())",
     }
     value.update(overrides)
@@ -205,7 +204,7 @@ def test_generate_worker_produces_a_ready_data_test():
     assert [item["title"] for item in proposed] == ["Duplicate payment detection"]
     assert proposed[0]["source"] == "data"
     assert proposed[0]["rcm_id"] == "RCM-1"
-    assert list(proposed[0]["steps"][0]["table_refs"]) == ["transactions"]
+    assert "table_refs" not in proposed[0]["steps"][0]
     assert "result" in proposed[0]["steps"][0]["code"]
     assert gateway.calls[0]["system"] == tests_workers.GENERATE_SYSTEM
     assert (
@@ -299,14 +298,12 @@ def test_generate_worker_rejects_mixed_document_modes_within_one_test():
         WORKERS.execute(_request(), gateway)
 
 
-def test_generate_worker_rejects_an_unknown_table():
-    invalid = json.dumps(
-        {"tests": [_data_test(steps=[_data_step(table_refs=["ghost_table"])])]}
-    )
-    gateway = _Gateway([invalid, invalid, invalid])
+def test_generate_worker_discards_legacy_step_table_refs():
+    proposed = _data_test(steps=[_data_step(table_refs=["ghost_table"])])
 
-    with pytest.raises(WorkerRunError, match="unknown table 'ghost_table'"):
-        WORKERS.execute(_request(), gateway)
+    result = WORKERS.execute(_request(), _Gateway([json.dumps({"tests": [proposed]})]))
+
+    assert "table_refs" not in result.proposal["tests"][0]["steps"][0]
 
 
 def test_generate_worker_rejects_an_unknown_column():
@@ -407,7 +404,10 @@ def test_generate_worker_reports_every_contract_error_in_one_repair():
             json.dumps(
                 {
                     "tests": [
-                        _data_test(objective="", steps=[_data_step(table_refs=["ghost"])]),
+                        _data_test(
+                            objective="",
+                            steps=[_data_step(code="result = transactions.filter(pl.col('ghost') > 0)")],
+                        ),
                         _document_test(
                             steps=[_question_step(question=""), _vouch_step()]
                         ),
@@ -423,7 +423,7 @@ def test_generate_worker_reports_every_contract_error_in_one_repair():
     assert result.repaired is True
     guidance = gateway.calls[1]["user"]
     assert "tests[0].objective" in guidance
-    assert "unknown table 'ghost'" in guidance
+    assert "unknown column 'ghost'" in guidance
     assert "mixes document modes" in guidance
 
 

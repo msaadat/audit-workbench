@@ -453,9 +453,10 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
             if rcm_id and any(row.get("id") == rcm_id for row in workspace.rcm):
                 data_tests._validate_rcm_id(workspace, rcm_id)
             if type_ == "create_data_test":
-                refs = data_tests._table_refs(workspace, args.get("table_refs"))
-                spec, _warnings = data_tests._validate_spec(
-                    workspace, str(args.get("engine") or "").strip().lower(), refs,
+                engine = str(args.get("engine") or "").strip().lower()
+                refs = [] if engine == "polars" else data_tests._table_refs(workspace, args.get("table_refs"))
+                spec, _warnings, refs = data_tests._validate_spec(
+                    workspace, engine, refs,
                     args.get("spec"),
                 )
                 args["table_refs"] = refs
@@ -463,9 +464,10 @@ def canonicalize_action_fields(workspace: Workspace, action: dict) -> None:
             elif current is not None and any(
                 key in parent_args for key in ("engine", "table_refs", "spec")
             ):
-                refs = data_tests._table_refs(workspace, values.get("table_refs"))
-                spec, _warnings = data_tests._validate_spec(
-                    workspace, str(values.get("engine") or "").strip().lower(), refs,
+                engine = str(values.get("engine") or "").strip().lower()
+                refs = [] if engine == "polars" else data_tests._table_refs(workspace, values.get("table_refs"))
+                spec, _warnings, refs = data_tests._validate_spec(
+                    workspace, engine, refs,
                     values.get("spec"),
                 )
                 if "table_refs" in parent_args:

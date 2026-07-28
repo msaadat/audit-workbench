@@ -54,12 +54,12 @@ def test_create_validates_but_does_not_count_as_execution(workspace_with_data):
 
     assert item["status"] == "ready"
     assert item["last_run"] is None
-    assert item["runs"] == []
+    assert "runs" not in item
     assert f"datatest:{item['id']}" in row["test_refs"]
     assert not (ws.root / "DataTestResults").exists()
 
 
-def test_analytics_run_is_durable_reopenable_and_history_preserving(workspace_with_data):
+def test_analytics_run_replaces_the_current_durable_result(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
     item = data_tests.create(ws, _analytics_payload(row))
@@ -72,12 +72,26 @@ def test_analytics_run_is_durable_reopenable_and_history_preserving(workspace_wi
     assert first["result_sha1"]
     assert data_tests.load_result(ws, item["id"], first["id"]) == first
     assert item["last_run"]["id"] == first["id"]
-    assert len(item["runs"]) == 1
+    assert item["last_run"]["id"] == first["id"]
 
     second = data_tests.run(ws, item["id"])
-    assert second["id"] != first["id"]
-    assert len(item["runs"]) == 2
-    assert data_tests.load_result(ws, item["id"], first["id"])["result_sha1"] == first["result_sha1"]
+    assert second["id"] == first["id"] == data_tests.CURRENT_RESULT_ID
+    assert data_tests.load_result(ws, item["id"], first["id"])["result_sha1"] == second["result_sha1"]
+    assert [path.name for path in (ws.root / "DataTestResults" / item["id"]).glob("*.json")] == [
+        "DTR-CURRENT.json"
+    ]
+
+
+def test_rerun_discards_unreferenced_legacy_result_files(workspace_with_data):
+    ws = workspace_with_data
+    item = data_tests.create(ws, _analytics_payload(_rcm_row(ws)))
+    first = data_tests.run(ws, item["id"])
+    legacy_path = ws.root / "DataTestResults" / item["id"] / "DTR-OLD.json"
+    legacy_path.write_text(json.dumps({**first, "id": "DTR-OLD"}), encoding="utf-8")
+
+    data_tests.run(ws, item["id"])
+
+    assert not legacy_path.exists()
 
 
 def test_validation_and_polars_engines_persist_bounded_exception_results(workspace_with_data):
@@ -130,6 +144,34 @@ def test_validation_and_polars_engines_persist_bounded_exception_results(workspa
     assert polars_run["exception_count"] == 2
     assert polars_run["exception_frame"]["columns"] == [*ws.get_frame("transactions").columns, "_step_id", "_step_label"]
     assert polars_run["step_results"][0]["exception_count"] == 2
+
+
+def test_polars_steps_expose_every_workspace_table_without_table_refs(workspace_with_data):
+    ws = workspace_with_data
+    ws.add_table("limits.csv", pl.DataFrame({"threshold": [500]}).write_csv().encode())
+
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Amounts over the workspace limit",
+            "objective": "Identify transactions above the configured limit.",
+            "engine": "polars",
+            "spec": {
+                "schema_version": 2,
+                "steps": [{
+                    "label": "Compare to limit",
+                    "instruction": "Return transactions above the configured limit.",
+                    "code": "result = transactions.filter(pl.col('amount') > limits['threshold'][0])",
+                }],
+            },
+        },
+    )
+
+    assert item["table_refs"] == []
+    assert "table_refs" not in item["spec"]["steps"][0]
+    result = data_tests.run(ws, item["id"])
+    assert result["exception_count"] == 2
+    assert set(result["dataset_fingerprints"]) == set(ws.table_names())
 
 
 def test_zero_match_join_is_rejected_as_semantically_invalid(workspace_with_data):

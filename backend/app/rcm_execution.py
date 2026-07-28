@@ -67,15 +67,16 @@ def test_manifest(workspace: Workspace) -> list[dict]:
             item = test["item"]
             if test["kind"] == "datatest":
                 has_result = bool(item.get("last_run"))
+                execution_refs = data_tests._execution_table_refs(workspace, item)
                 current_source_sha1 = data_tests._sha1(
                     {
                         "engine": item.get("engine"),
-                        "table_refs": item.get("table_refs") or [],
+                        "table_refs": execution_refs,
                         "spec": item.get("spec") or {},
                     }
                 )
                 current_fingerprints = data_tests._dataset_fingerprints(
-                    workspace, item.get("table_refs") or []
+                    workspace, execution_refs
                 )
                 result_stale = bool(
                     item.get("last_run")

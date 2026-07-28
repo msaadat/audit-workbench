@@ -8,6 +8,7 @@ import Column from 'primevue/column'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import ProgressBar from 'primevue/progressbar'
+import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 
@@ -23,6 +24,7 @@ import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import FrameTable from './FrameTable.vue'
 import JoinDialog from './JoinDialog.vue'
+import TableValidation from './validation/TableValidation.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
@@ -45,6 +47,11 @@ const selected = ref<string | null>(null)
 const profile = ref<TableProfile | null>(null)
 const profiling = ref(false)
 const expandedRows = ref({})
+const tableView = ref<'profile' | 'validation'>('profile')
+const tableViewOptions = [
+  { label: 'Profile', value: 'profile' },
+  { label: 'Validation', value: 'validation' },
+]
 // dup-row count per table once profiled, so rows can show a health signal.
 const dupCache = ref<Record<string, number>>({})
 const filter = ref('')
@@ -280,7 +287,10 @@ function selectTable(table: TableInfo) {
   selected.value = table.name
 }
 
-watch(selected, loadProfile)
+watch(selected, () => {
+  tableView.value = 'profile'
+  void loadProfile()
+})
 watch(
   () => props.workspace.tables,
   (tables) => {
@@ -445,13 +455,20 @@ function rangeText(p: ColumnProfile): string {
     </aside>
 
     <section class="profile-panel surface-panel">
-      <p v-if="profiling" class="muted loading-profile"><i class="pi pi-spinner pi-spin" /> Profiling {{ selected }}…</p>
-
-      <template v-else-if="profile && selectedTable">
+      <template v-if="selectedTable">
         <div class="profile-head">
           <div><p class="eyebrow">Selected table</p><h3 class="profile-title">{{ selectedTable.name }}</h3></div>
           <div class="profile-head-actions">
+            <SelectButton
+              v-model="tableView"
+              :options="tableViewOptions"
+              optionLabel="label"
+              optionValue="value"
+              :allowEmpty="false"
+              size="small"
+            />
             <Button
+              v-if="tableView === 'profile'"
               label="Preview"
               icon="pi pi-eye"
               size="small"
@@ -460,83 +477,102 @@ function rangeText(p: ColumnProfile): string {
               :loading="previewLoading"
               @click="openPreview(selectedTable)"
             />
-            <Tag :value="profile.duplicate_rows ? 'Review data health' : 'Profile complete'" :severity="profile.duplicate_rows ? 'warn' : 'success'" />
+            <Tag
+              v-if="tableView === 'profile' && profile"
+              :value="profile.duplicate_rows ? 'Review data health' : 'Profile complete'"
+              :severity="profile.duplicate_rows ? 'warn' : 'success'"
+            />
           </div>
         </div>
 
-        <div class="stat-cards" style="margin-bottom: 1rem">
-          <div class="stat-card" :data-tone="profile.duplicate_rows > 0 ? 'warn' : 'ok'">
-            <div class="label">Rows</div>
-            <div class="value">{{ profile.rows.toLocaleString() }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="label">Columns</div>
-            <div class="value">{{ profile.columns }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="label">Duplicate rows</div>
-            <div class="value" :class="{ warn: profile.duplicate_rows > 0 }">
-              {{ profile.duplicate_rows.toLocaleString() }}
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="label">In-memory size</div>
-            <div class="value">{{ profile.estimated_size_mb.toLocaleString() }} MB</div>
-          </div>
-        </div>
+        <TableValidation
+          v-if="tableView === 'validation'"
+          :key="selectedTable.name"
+          :workspace="workspace"
+          :table="selectedTable.name"
+        />
 
-        <Message v-if="profile.sampled" severity="info" :closable="false" style="margin-bottom: 1rem">
-          Column statistics are computed on the first {{ profile.sample_rows.toLocaleString() }} rows.
-        </Message>
+        <template v-else>
+          <p v-if="profiling" class="muted loading-profile"><i class="pi pi-spinner pi-spin" /> Profiling {{ selected }}…</p>
 
-        <DataTable
-          :value="profile.column_profiles"
-          v-model:expandedRows="expandedRows"
-          dataKey="name"
-          size="small"
-          stripedRows
-        >
-          <Column expander style="width: 3rem" />
-          <Column field="name" header="Column">
-            <template #body="{ data }">
-              <strong>{{ data.name }}</strong>
-              <span class="muted dtype"> {{ data.dtype }}</span>
-            </template>
-          </Column>
-          <Column field="inferred_type" header="Type">
-            <template #body="{ data }">
-              <Tag :value="data.inferred_type" :severity="typeSeverity[data.inferred_type] ?? 'secondary'" />
-            </template>
-          </Column>
-          <Column field="blank_pct" header="Blank" style="width: 14rem">
-            <template #body="{ data }">
-              <div class="blank-cell">
-                <ProgressBar :value="data.blank_pct" :showValue="false" style="height: 6px; flex: 1" />
-                <span>{{ data.blank_pct }}%</span>
+          <template v-else-if="profile">
+            <div class="stat-cards" style="margin-bottom: 1rem">
+              <div class="stat-card" :data-tone="profile.duplicate_rows > 0 ? 'warn' : 'ok'">
+                <div class="label">Rows</div>
+                <div class="value">{{ profile.rows.toLocaleString() }}</div>
               </div>
-            </template>
-          </Column>
-          <Column field="distinct_count" header="Distinct">
-            <template #body="{ data }">
-              {{ data.distinct_count.toLocaleString() }}
-              <span class="muted">({{ data.distinct_pct }}%)</span>
-            </template>
-          </Column>
-          <Column header="Range / Mean">
-            <template #body="{ data }">{{ rangeText(data) }}</template>
-          </Column>
-
-          <template #expansion="{ data }">
-            <div class="top-values">
-              <p v-if="data.top_values.length === 0" class="muted">No values.</p>
-              <div v-for="tv in data.top_values" :key="tv.value ?? ''" class="tv-row">
-                <span class="tv-value">{{ tv.value ?? '∅' }}</span>
-                <ProgressBar :value="tv.pct" :showValue="false" style="height: 6px; flex: 1" />
-                <span class="tv-count">{{ tv.count.toLocaleString() }} ({{ tv.pct }}%)</span>
+              <div class="stat-card">
+                <div class="label">Columns</div>
+                <div class="value">{{ profile.columns }}</div>
+              </div>
+              <div class="stat-card">
+                <div class="label">Duplicate rows</div>
+                <div class="value" :class="{ warn: profile.duplicate_rows > 0 }">
+                  {{ profile.duplicate_rows.toLocaleString() }}
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="label">In-memory size</div>
+                <div class="value">{{ profile.estimated_size_mb.toLocaleString() }} MB</div>
               </div>
             </div>
+
+            <Message v-if="profile.sampled" severity="info" :closable="false" style="margin-bottom: 1rem">
+              Column statistics are computed on the first {{ profile.sample_rows.toLocaleString() }} rows.
+            </Message>
+
+            <DataTable
+              :value="profile.column_profiles"
+              v-model:expandedRows="expandedRows"
+              dataKey="name"
+              size="small"
+              stripedRows
+            >
+              <Column expander style="width: 3rem" />
+              <Column field="name" header="Column">
+                <template #body="{ data }">
+                  <strong>{{ data.name }}</strong>
+                  <span class="muted dtype"> {{ data.dtype }}</span>
+                </template>
+              </Column>
+              <Column field="inferred_type" header="Type">
+                <template #body="{ data }">
+                  <Tag :value="data.inferred_type" :severity="typeSeverity[data.inferred_type] ?? 'secondary'" />
+                </template>
+              </Column>
+              <Column field="blank_pct" header="Blank" style="width: 14rem">
+                <template #body="{ data }">
+                  <div class="blank-cell">
+                    <ProgressBar :value="data.blank_pct" :showValue="false" style="height: 6px; flex: 1" />
+                    <span>{{ data.blank_pct }}%</span>
+                  </div>
+                </template>
+              </Column>
+              <Column field="distinct_count" header="Distinct">
+                <template #body="{ data }">
+                  {{ data.distinct_count.toLocaleString() }}
+                  <span class="muted">({{ data.distinct_pct }}%)</span>
+                </template>
+              </Column>
+              <Column header="Range / Mean">
+                <template #body="{ data }">{{ rangeText(data) }}</template>
+              </Column>
+
+              <template #expansion="{ data }">
+                <div class="top-values">
+                  <p v-if="data.top_values.length === 0" class="muted">No values.</p>
+                  <div v-for="tv in data.top_values" :key="tv.value ?? ''" class="tv-row">
+                    <span class="tv-value">{{ tv.value ?? '∅' }}</span>
+                    <ProgressBar :value="tv.pct" :showValue="false" style="height: 6px; flex: 1" />
+                    <span class="tv-count">{{ tv.count.toLocaleString() }} ({{ tv.pct }}%)</span>
+                  </div>
+                </div>
+              </template>
+            </DataTable>
           </template>
-        </DataTable>
+
+          <p v-else class="muted">Select a table above to profile it.</p>
+        </template>
       </template>
 
       <p v-else class="muted">Select a table above to profile it.</p>

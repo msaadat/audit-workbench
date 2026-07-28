@@ -33,7 +33,11 @@ const router = useRouter()
 
 const workspace = ref<WorkspaceSummary | null>(null)
 const requestedTab = String(route.query.tab || 'dashboard')
-const activeTab = ref(['analysis', 'validation'].includes(requestedTab) ? 'data-tests' : requestedTab)
+const activeTab = ref(
+  requestedTab === 'validation' ? 'data'
+    : requestedTab === 'analysis' ? 'data-tests'
+      : requestedTab,
+)
 const initialized = ref(false)
 const folderImportOpen = ref(false)
 const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
@@ -143,7 +147,8 @@ watch(activeTab, tab => {
   void loadEngagementStatus()
 })
 watch(() => route.query.tab, tab => {
-  const value = ['analysis', 'validation'].includes(String(tab)) ? 'data-tests' : String(tab || '')
+  const raw = String(tab || '')
+  const value = raw === 'validation' ? 'data' : raw === 'analysis' ? 'data-tests' : raw
   if (value && value !== activeTab.value) activeTab.value = value
 })
 

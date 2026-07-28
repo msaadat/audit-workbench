@@ -50,7 +50,6 @@ def _data_test(**overrides):
             {
                 "label": "Find duplicate invoice keys",
                 "instruction": "Compare invoice numbers for duplicates.",
-                "table_refs": ["transactions"],
                 "code": "result = transactions.filter(pl.col('invoice').is_duplicated())",
             }
         ],
@@ -116,7 +115,7 @@ def test_generate_executor_creates_ready_data_and_document_tests_atomically():
     assert {item["action"] for item in receipt.output["tests"]} == {"created"}
 
 
-def test_generate_executor_data_step_retains_its_own_tables_and_code():
+def test_generate_executor_data_step_exposes_all_workspace_tables_and_retains_code():
     workspace, rcm_id, doc_id = _workspace()
     request = _request(workspace, rcm_id, [_data_test()])
     target = TestGenerateExecutorTarget(workspace, "run-data", rcm_id)
@@ -125,10 +124,10 @@ def test_generate_executor_data_step_retains_its_own_tables_and_code():
 
     committed = target.workspace.data_tests[0]
     assert committed["engine"] == "polars"
-    assert committed["table_refs"] == ["transactions"]
+    assert committed["table_refs"] == []
     steps = committed["spec"]["steps"]
     assert steps[0]["label"] == "Find duplicate invoice keys"
-    assert steps[0]["table_refs"] == ["transactions"]
+    assert "table_refs" not in steps[0]
     assert steps[0]["step_id"]
     assert "result" in steps[0]["code"]
 

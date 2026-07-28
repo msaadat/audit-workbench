@@ -391,7 +391,6 @@ export interface DataTestStep {
   step_id?: string
   label: string
   instruction: string
-  table_refs: string[]
   code: string
 }
 
@@ -492,7 +491,6 @@ export interface DataTest extends TestPlan, TestOutcome {
   status: TestStatus
   semantic_warnings: string[]
   last_run: DataTestRunSummary | null
-  runs: DataTestRunSummary[]
   auditor_disposition: string
   evidence_refs: EvidenceRef[]
   created_by: 'agent' | 'user'
