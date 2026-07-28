@@ -235,6 +235,29 @@ class BaseRunner:
             attempt=attempt,
         )
 
+    def _llm_message(
+        self,
+        system: str,
+        conversation: list[dict],
+        tools: list[dict],
+        activity: dict | None = None,
+        *,
+        attempt: int = 1,
+    ) -> dict:
+        """Run one budgeted tool-capable turn and preserve its wire message."""
+        message = self.model_gateway.complete(
+            system,
+            "",
+            activity,
+            attempt=attempt,
+            tools=tools,
+            conversation=conversation,
+            return_message=True,
+        )
+        if not isinstance(message, dict):
+            raise llm.LLMError("The model gateway did not return a tool-capable message.")
+        return message
+
     def _append_model_provenance(self, fields: dict) -> None:
         from ..documents import append_activity
 

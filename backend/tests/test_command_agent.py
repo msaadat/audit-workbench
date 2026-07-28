@@ -5,8 +5,8 @@ import time
 import polars as pl
 import pytest
 
-from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, report, workspaces
-from app.agent import action_runner, actions, artifact_index, ledger, prompts, runner, store
+from app import assistant, data_tests, doc_tests, documents, findings, llm, model_context, rcm_execution, report, tooling, workspaces
+from app.agent import action_runner, action_tools, actions, artifact_index, ledger, prompts, runner, store
 from app.agent import capabilities as audit_capabilities
 from conftest import FakeAgentLLM, wait_run
 
@@ -114,25 +114,52 @@ def test_command_interpreter_repairs_semantically_invalid_action_graph(monkeypat
 def test_command_interpreter_receives_schema_and_canonicalizes_fields(
     monkeypatch, workspace_with_data
 ):
+    turns = 0
+
     def interpret(user):
-        payload = json.loads(user)
-        assert "prepared_planning" not in payload
-        schemas = {item["table"]: item for item in payload["table_schemas"]}
-        profiles = {item["table"]: item for item in payload["table_profiles"]}
-        transaction_fields = {item["name"] for item in schemas["transactions"]["columns"]}
-        assert {"cust_id", "invoice_no", "amount"} <= transaction_fields
-        amount = next(
-            item for item in profiles["transactions"]["columns"] if item["name"] == "amount"
-        )
-        assert amount["min"] == "99.5" and amount["max"] == "2,000"
-        analytics_ids = {item["id"] for item in payload["analytics_tests"]}
-        assert {"duplicates", "benford", "sampling"} <= analytics_ids
-        run_analytics = next(
-            item for item in payload["action_catalog"]
-            if item["type"] == "run_analytics"
-        )
-        test_schema = run_analytics["input_schema"]["properties"]["test"]
-        assert set(test_schema["enum"]) == analytics_ids
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            payload = json.loads(user)
+            assert "workspace_manifest" in payload
+            assert "workspace_index" not in payload
+            assert "table_schemas" not in payload
+            assert "table_profiles" not in payload
+            assert "action_catalog" not in payload
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "schemas",
+                        "function": {
+                            "name": "get_table_schemas",
+                            "arguments": json.dumps({"tables": ["transactions", "customers"]}),
+                        },
+                    },
+                    {
+                        "id": "profile",
+                        "function": {
+                            "name": "get_table_profile",
+                            "arguments": json.dumps({"table": "transactions"}),
+                        },
+                    },
+                    {
+                        "id": "analytics",
+                        "function": {
+                            "name": "get_analytics_tests",
+                            "arguments": json.dumps({"test_ids": ["duplicates"]}),
+                        },
+                    },
+                    {
+                        "id": "actions",
+                        "function": {
+                            "name": "get_action_definitions",
+                            "arguments": json.dumps({"action_types": ["create_join", "run_analytics"]}),
+                        },
+                    },
+                ],
+            }
+        assert "actions" in json.loads(user)
         return {
             "objective": "Join transactions to customers",
             "constraints": [],
@@ -162,7 +189,7 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
             ],
         }
 
-    configured(monkeypatch, interpret)
+    fake = configured(monkeypatch, interpret)
     started = runner.start_command_run(
         workspace_with_data, "auto", {"source": "chat", "text": "join customer data"}
     )
@@ -175,24 +202,50 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
     assert completed["actions"][1]["args"]["test"] == "duplicates"
     assert completed["actions"][1]["args"]["params"]["columns"] == ["invoice_no"]
     assert workspaces.load_workspace(workspace_with_data.id).joins[0]["name"] == "enriched"
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:command_interpreter", "agent:command_interpreter",
+    ]
+    assert fake.calls[0]["tools"] is not None
+    assert tooling.TABLE_SCHEMAS_TOOL in action_tools.TOOL_SCHEMAS
+    assert tooling.TABLE_PROFILE_TOOL in action_tools.TOOL_SCHEMAS
 
 
 def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
     monkeypatch, workspace_with_data
 ):
+    turns = 0
+
     def interpret(user):
-        payload = json.loads(user)
-        check_ids = {item["id"] for item in payload["validation_checks"]}
-        assert {"required", "range", "unique", "referential"} <= check_ids
-        create_rules = next(
-            item for item in payload["action_catalog"]
-            if item["type"] == "create_validation_rules"
-        )
-        check_schema = (
-            create_rules["input_schema"]["properties"]["rules"]
-            ["items"]["properties"]["check"]
-        )
-        assert set(check_schema["enum"]) == check_ids
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "checks",
+                        "function": {
+                            "name": "get_validation_checks",
+                            "arguments": json.dumps({"check_ids": ["required"]}),
+                        },
+                    },
+                    {
+                        "id": "definition",
+                        "function": {
+                            "name": "get_action_definitions",
+                            "arguments": json.dumps({"action_types": ["create_validation_rules"]}),
+                        },
+                    },
+                    {
+                        "id": "schema",
+                        "function": {
+                            "name": "get_table_schemas",
+                            "arguments": json.dumps({"tables": ["transactions"]}),
+                        },
+                    },
+                ],
+            }
+        assert "tables" in json.loads(user)
         return {
             "objective": "Validate transaction completeness",
             "constraints": [],
@@ -222,7 +275,10 @@ def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
     assert completed["actions"][0]["args"]["rules"][0]["check"] == "required"
     saved = workspaces.load_workspace(workspace_with_data.id).rulesets[0]
     assert saved["rules"][0]["check"] == "required"
-    assert [call["tag"] for call in fake.calls] == ["agent:command_interpreter"]
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:command_interpreter", "agent:command_interpreter",
+    ]
+    assert fake.calls[0]["tools"] is not None
 
 
 def test_command_interpreter_repair_lists_supported_validation_checks():

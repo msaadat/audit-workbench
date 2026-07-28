@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from . import analytics, debug_store, document_context as document_context_module, document_search, documents, explore, llm, model_context, profiler, sandbox
+from . import analytics, debug_store, document_context as document_context_module, document_search, documents, explore, llm, model_context, sandbox, tooling
 from .workspaces import Workspace, WorkspaceError
 
 MAX_STEPS = 8
@@ -28,23 +28,11 @@ MAX_STEPS = 8
 MODEL_PREVIEW_ROWS = 40
 # Full results streamed to the browser (local) are capped only to stay light.
 ARTIFACT_ROWS = 200
-# Low-cardinality string columns get their category labels surfaced as metadata.
-CATEGORY_SAMPLE_MAX = 30
 
 # Conversation history is text-only and deliberately small.
 HISTORY_MAX_MESSAGES = 8
 HISTORY_MAX_CHARACTERS = 12_000
 HISTORY_MAX_MESSAGE_CHARACTERS = 2_000
-
-# ============================================================ metadata context
-def _column_meta(profile: dict, *, include_category_values: bool = True) -> dict:
-    """Compact profiler metadata for one column."""
-    return model_context.project_column_profile(
-        profile,
-        category_limit=CATEGORY_SAMPLE_MAX,
-        include_category_values=include_category_values,
-    )
-
 
 def table_metadata(
     workspace: Workspace,
@@ -52,38 +40,15 @@ def table_metadata(
     *,
     include_category_values: bool = True,
 ) -> dict:
-    """Return a compact profile, optionally withholding row-derived literals."""
-    profile = workspace.get_profile(table)
-    return {
-        "table": table,
-        "rows": profile["rows"],
-        "columns": [
-            _column_meta(c, include_category_values=include_category_values)
-            for c in profile["column_profiles"]
-        ],
-    }
+    """Compatibility wrapper for the shared bounded profile handler."""
+    return tooling.table_profile(
+        workspace, table, include_category_values=include_category_values,
+    )
 
 
 def schema_brief(workspace: Workspace) -> list[dict]:
-    """A light table/column listing for the opening system prompt."""
-    brief = []
-    for name in workspace.table_names():
-        try:
-            frame = workspace.get_frame(name)
-        except Exception as error:
-            brief.append({"table": name, "error": str(error)})
-            continue
-        brief.append(
-            {
-                "table": name,
-                "rows": frame.height,
-                "columns": [
-                    {"name": c["name"], "dtype": c["dtype"], "type": c["kind"]}
-                    for c in profiler.schema_payload(frame)
-                ],
-            }
-        )
-    return brief
+    """Compatibility wrapper for the shared schema handler."""
+    return tooling.table_schemas(workspace)
 
 
 def workspace_manifest(workspace: Workspace) -> dict:
@@ -150,6 +115,8 @@ def _artifact_frame(df: pl.DataFrame) -> dict:
 
 # ====================================================================== tools
 _TOOL_SCHEMAS = [
+    tooling.TABLE_SCHEMAS_TOOL,
+    tooling.TABLE_PROFILE_TOOL,
     {
         "type": "function",
         "function": {
@@ -369,6 +336,8 @@ class ReadTool:
 
 
 _TOOL_HANDLERS = {
+    "get_table_schemas": "get_table_schemas",
+    "get_table_profile": "get_table_profile",
     "get_audit_progress": "get_audit_progress",
     "get_latest_run": "get_latest_run",
     "inspect_audit_artifacts": "inspect_audit_artifacts",
@@ -676,6 +645,13 @@ class _Session:
     def list_tables(self, _args: dict):
         return {"tables": schema_brief(self.workspace)}, None
 
+    def get_table_schemas(self, args: dict):
+        return {
+            "tables": tooling.table_schemas(
+                self.workspace, args.get("tables"),
+            )
+        }, None
+
     def search_documents(self, args: dict):
         query = str(args.get("query") or "")
         result = document_search.search(
@@ -704,6 +680,9 @@ class _Session:
     def describe_table(self, args: dict):
         table = args.get("table")
         return table_metadata(self.workspace, table), None
+
+    def get_table_profile(self, args: dict):
+        return tooling.table_profile(self.workspace, str(args.get("table") or "")), None
 
     def query_table(self, args: dict):
         table = args.get("table")

@@ -7,7 +7,7 @@ import time
 
 from .. import analytics, assistant, debug_store, llm, sandbox, validation
 from ..workspaces import Workspace, WorkspaceError
-from . import actions, artifact_index, ledger, prompts, routing, store
+from . import action_tools, actions, artifact_index, ledger, prompts, routing, store
 from .base import BaseRunner, Cancelled, LimitExceeded
 from .runtime import RunRuntime
 
@@ -130,28 +130,96 @@ class ActionRunner(BaseRunner):
                 self.warn(f"Could not profile '{name}' for command planning: {error}")
         return profiles
 
-    def _interpret(self) -> None:
-        """Turn one command into a validated action DAG in a single model turn.
+    def _command_interpreter_json(self, user: str) -> dict:
+        """Run a bounded local-read tool loop for one command proposal."""
+        session = action_tools.ActionToolSession(self.ws, self._catalog())
+        conversation = [{"role": "user", "content": user}]
+        tool_calls = 0
+        parse_attempts = 0
+        tool_limit_announced = False
+        while True:
+            message = self._llm_message(
+                prompts.COMMAND_INTERPRETER_SYSTEM,
+                conversation,
+                action_tools.TOOL_SCHEMAS,
+                attempt=tool_calls + parse_attempts + 1,
+            )
+            raw_calls = message.get("tool_calls")
+            calls = raw_calls if isinstance(raw_calls, list) else []
+            conversation.append({
+                "role": "assistant",
+                "content": str(message.get("content") or ""),
+                **({"tool_calls": calls} if calls else {}),
+            })
+            if not calls:
+                try:
+                    return prompts.parse_json_object(str(message.get("content") or ""))
+                except (ValueError, json.JSONDecodeError) as error:
+                    parse_attempts += 1
+                    if parse_attempts >= 2:
+                        raise llm.LLMError(f"The model did not return usable JSON: {error}") from error
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous response could not be used: "
+                            f"{error}. {prompts.JSON_RULES}"
+                        ),
+                    })
+                    continue
+            if tool_limit_announced:
+                raise llm.LLMError(
+                    "Action-planning tool-call limit reached before a usable action graph was returned."
+                )
+            for call in calls:
+                function = call.get("function") if isinstance(call, dict) else {}
+                name = str(function.get("name") or "") if isinstance(function, dict) else ""
+                raw_args = function.get("arguments") if isinstance(function, dict) else "{}"
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    if not isinstance(args, dict):
+                        raise ValueError("Tool arguments must be an object.")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    args = {}
+                tool_calls += 1
+                result = (
+                    session.dispatch(name, args)
+                    if tool_calls <= action_tools.MAX_TOOL_CALLS
+                    else {"error": "Action-planning tool-call limit reached; return the action graph now."}
+                )
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": str(call.get("id") or f"action-tool-{tool_calls}"),
+                    "content": json.dumps(result, default=str),
+                })
+            self.run.setdefault("usage", {}).setdefault("tool_calls", 0)
+            self.run["usage"]["tool_calls"] += len(calls)
+            self.save()
+            if tool_calls >= action_tools.MAX_TOOL_CALLS:
+                tool_limit_announced = True
+                conversation.append({
+                    "role": "user",
+                    "content": "The local read limit is reached. Return the complete action graph now without more tool calls.",
+                })
 
-        There is no tool loop: the model sees the workspace index, table
-        schemas/profiles, and the action catalog once, and returns the whole
-        graph. Everything after that is deterministic — the ledger, not the
-        model, decides what is legal and in what order it runs.
+    def _interpret(self) -> None:
+        """Turn one command into a validated action DAG through bounded reads.
+
+        The interpreter starts from a compact manifest and uses only the local
+        read tools it needs. Everything after its proposal remains deterministic
+        — the ledger, not the model, decides what is legal and in what order it
+        runs.
         """
         self.set_status("interpreting")
         self.set_activity(
             "command.interpret", "Preparing the action plan",
             detail="Reviewing the command, available artifacts, and table schemas…",
         )
-        index = artifact_index.build(self.ws)
         command = self.run["command"]
         template = GOAL_TEMPLATES.get(command.get("goal_template"))
         if command.get("goal_template") and template is None:
             raise WorkspaceError("Unknown goal template.")
         base_user = prompts.command_interpreter_user(
-            command, template, artifact_index.compact(index), self._catalog(), self.run["limits"],
-            assistant.schema_brief(self.ws),
-            self._table_profiles(),
+            command, template, action_tools.workspace_manifest(self.ws), self.run["limits"],
         )
         # One repair round: a batch rejected by the action contracts or graph
         # validator is fed back with the specific error rather than discarded.
@@ -165,7 +233,7 @@ class ActionRunner(BaseRunner):
                     detail="The first proposal did not satisfy the registered action contracts.",
                     attempt=attempt + 1,
                 )
-            payload = self.llm_json(prompts.COMMAND_INTERPRETER_SYSTEM, attempt_user)
+            payload = self._command_interpreter_json(attempt_user)
             objective = str(payload.get("objective") or (template or {}).get("objective") or command.get("text") or "").strip()
             goal = {
                 "objective": objective,

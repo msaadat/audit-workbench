@@ -122,7 +122,10 @@ class ModelGateway(Protocol):
         attempt: int = 1,
         media: tuple[Mapping[str, Any], ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
-    ) -> str: ...
+        tools: list[dict[str, Any]] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
+        return_message: bool = False,
+    ) -> str | dict[str, Any]: ...
 
 
 class DefaultModelGateway:
@@ -174,7 +177,10 @@ class DefaultModelGateway:
         attempt: int = 1,
         media: tuple[Mapping[str, Any], ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
-    ) -> str:
+        tools: list[dict[str, Any]] | None = None,
+        conversation: list[dict[str, Any]] | None = None,
+        return_message: bool = False,
+    ) -> str | dict[str, Any]:
         """Execute and provenance-log one model turn."""
         self._checkpoint()
         handles = tuple(_media_handle(item) for item in (media or ()))
@@ -226,7 +232,17 @@ class DefaultModelGateway:
             self._load_prepared_media(handle) for handle in handles
         ]
 
-        request_characters = len(system) + len(user)
+        if conversation is not None and handles:
+            raise ValueError("A tool conversation cannot include prepared media.")
+        conversation_messages = list(conversation or [{"role": "user", "content": user}])
+        if not conversation_messages:
+            raise ValueError("A model conversation needs at least one message.")
+        request_user = (
+            json.dumps(conversation_messages, default=str, ensure_ascii=False)
+            if conversation is not None
+            else user
+        )
+        request_characters = len(system) + len(request_user)
         text_token_estimate = max(1, request_characters // 4)
         image_token_estimate = len(handles) * FALLBACK_IMAGE_TOKENS
         estimated_input_tokens = text_token_estimate + image_token_estimate
@@ -287,19 +303,26 @@ class DefaultModelGateway:
             ):
                 with _provider_semaphore(profile):
                     try:
-                        message = llm.chat(
-                            [
+                        provider_messages = (
+                            [{"role": "system", "content": system}, *conversation_messages]
+                            if conversation is not None
+                            else [
                                 {"role": "system", "content": system},
                                 {"role": "user", "content": user_parts},
-                            ],
-                            profile=(
+                            ]
+                        )
+                        chat_kwargs = {
+                            "profile": (
                                 profile
                                 if durable_snapshot
                                 else "vision"
                                 if snapshot_key == "vision"
                                 else "agent"
                             ),
-                        )
+                        }
+                        if tools:
+                            chat_kwargs["tools"] = tools
+                        message = llm.chat(provider_messages, **chat_kwargs)
                     except llm.LLMError as error:
                         if handles:
                             raise VisionRequestRejected(
@@ -361,7 +384,7 @@ class DefaultModelGateway:
                     json.dumps(
                         {
                             "system": system,
-                            "user": user,
+                            "user": request_user,
                             "prepared_media": [
                                 {
                                     "prepared_sha256": item["prepared_sha256"],
@@ -429,7 +452,7 @@ class DefaultModelGateway:
         )
         if token_budget_exceeded:
             raise self._limit_error("workflow token budget reached")
-        return content
+        return message if return_message else content
 
     def _load_prepared_media(self, handle: Mapping[str, Any]) -> bytes:
         """Dereference a prepared-media handle immediately before provider use."""

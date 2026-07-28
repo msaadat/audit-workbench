@@ -114,12 +114,17 @@ class FakeAgentLLM:
     def __call__(self, messages, tools=None, temperature=0.0, profile="assistant"):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
-        self.calls.append({"tag": tag, "profile": profile, "messages": messages})
+        self.calls.append({"tag": tag, "profile": profile, "messages": messages, "tools": tools})
         response = self.overrides.get(tag, self.DEFAULTS.get(tag))
         if callable(response):
             response = response(messages[-1]["content"])
         if response is None:
             raise llm.LLMError(f"FakeAgentLLM has no script for '{tag}'.")
+        if isinstance(response, dict) and (
+            "tool_calls" in response
+            or set(response).issubset({"content", "tool_calls", "usage"})
+        ):
+            return response
         return {"content": json.dumps(response)}
 
 

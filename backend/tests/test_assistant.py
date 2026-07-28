@@ -5,7 +5,7 @@ import urllib.error
 import polars as pl
 import pytest
 
-from app import assistant, assistant_settings, documents, llm, workspaces
+from app import assistant, assistant_settings, documents, llm, tooling, workspaces
 from app.agent import store
 from app.dashboard import tile_payload
 from app.routes import assistant_routes
@@ -88,6 +88,8 @@ def test_read_tools_are_registered_once_with_matching_handlers():
     assert len(names) == len(set(names))
     assert set(names) == set(assistant.READ_TOOL_REGISTRY)
     assert {
+        "get_table_schemas",
+        "get_table_profile",
         "get_audit_progress",
         "get_latest_run",
         "inspect_audit_artifacts",
@@ -99,6 +101,8 @@ def test_read_tools_are_registered_once_with_matching_handlers():
         "run_python",
     } == set(names)
     assert [schema["function"]["name"] for schema in assistant.TOOLS] == names
+    assert tooling.TABLE_SCHEMAS_TOOL in assistant.TOOLS
+    assert tooling.TABLE_PROFILE_TOOL in assistant.TOOLS
 
 
 def test_latest_run_tool_prefers_the_current_chat(workspace_with_data):
