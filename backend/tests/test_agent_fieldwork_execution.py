@@ -14,8 +14,16 @@ import pathlib
 
 import pytest
 
-from app import data_tests, doc_tests, documents, workspaces
-from app.agent.context import ContextResolver, document_qa_scope
+from app import data_tests, doc_tests, document_context, documents, workspaces
+from app.agent.context import (
+    ContextBundle,
+    ContextBundleItem,
+    ContextRepresentation,
+    ContextResolver,
+    document_qa_scope,
+    supplied_size,
+    total_supplied_size,
+)
 from app.agent.executors import EXECUTORS, ExecutorRequest
 from app.agent.executors.fieldwork import (
     DOCUMENT_QA_EXECUTOR,
@@ -24,7 +32,7 @@ from app.agent.executors.fieldwork import (
     run_data_test,
     run_document_test,
 )
-from app.agent.workers import WORKERS, WorkerRequest
+from app.agent.workers import WORKERS, WorkerContractError, WorkerRequest
 from app.agent.workers.fieldwork import (
     DOCUMENT_QA_SYSTEM,
     DOCUMENT_QA_WORKER,
@@ -193,7 +201,7 @@ def test_run_document_test_refuses_a_model_backed_qa_test(workspace_with_data):
 # --------------------------------------------------------------------------- #
 # P7F.3: document Q&A worker
 # --------------------------------------------------------------------------- #
-def _qa_workspace():
+def _qa_workspace(*, pages: tuple[int, ...] | None = (1,)):
     ws = workspaces.create_workspace("Document Q&A execution")
     rcm_id = _rcm_row(ws, method="inquiry")
     document = documents.add_document(
@@ -201,20 +209,20 @@ def _qa_workspace():
         "Approval.txt",
         b"The purchase order was approved by the controller on 3 March.",
     )
+    item = {
+        "label": "Who approved the order?",
+        "question": "Who approved the purchase order?",
+        "document_ids": [document["id"]],
+    }
+    if pages is not None:
+        item["pages"] = list(pages)
     test = doc_tests.create_test(
         ws,
         {
             "title": "Approval Q&A",
             "kind": "qa",
             "rcm_id": rcm_id,
-            "items": [
-                {
-                    "label": "Who approved the order?",
-                    "question": "Who approved the purchase order?",
-                    "document_ids": [document["id"]],
-                    "pages": [1],
-                }
-            ],
+            "items": [item],
         },
     )
     return ws, test, test["items"][0]["id"], document["id"]
@@ -263,6 +271,69 @@ def test_document_qa_worker_answers_only_from_the_supplied_pages():
     assert [dict(item) for item in result.proposal["citations"]] == [
         {"page": 1, "excerpt": "approved by the controller"}
     ]
+
+
+def test_document_qa_scope_coalesces_unscoped_excerpts_by_page(monkeypatch):
+    ws, test, item_id, document_id = _qa_workspace(pages=None)
+    monkeypatch.setattr(
+        document_context,
+        "get_document_context",
+        lambda *_args, **_kwargs: {
+            "source_sha1": "source-sha1",
+            "citations": [
+                {"page": 1, "excerpt": "The controller approved the order."},
+                {"page": 1, "excerpt": "Approval was retained in the file."},
+                {"page": 2, "excerpt": "The CFO reviews exceptions."},
+            ],
+        },
+    )
+
+    _unit, bundle = _qa_bundle(ws, test, item_id, document_id)
+    pages = [item for item in bundle.items if item.source_id == "document_pages"]
+
+    assert [item.source_ref for item in pages] == [
+        f"document:{document_id}:page:00001",
+        f"document:{document_id}:page:00002",
+    ]
+    assert pages[0].content == {
+        "page": 1,
+        "text": (
+            "The controller approved the order.\n\n"
+            "Approval was retained in the file."
+        ),
+    }
+
+
+def test_document_qa_worker_rejects_duplicate_pages_in_a_bundle():
+    contents = (
+        {"page": 1, "text": "First excerpt."},
+        {"page": 1, "text": "Second excerpt."},
+    )
+    items = tuple(
+        ContextBundleItem(
+            source_id="document_pages",
+            source_ref=f"document:approval:page:00001:excerpt:{index}",
+            representation=ContextRepresentation("excerpt"),
+            content=content,
+            supplied_size=supplied_size(content),
+        )
+        for index, content in enumerate(contents, start=1)
+    )
+    bundle = ContextBundle(
+        capability_id=CAPABILITY_ID,
+        unit_id="document_qa_execution:duplicate-pages",
+        items=items,
+        supplied_size=total_supplied_size(item.supplied_size for item in items),
+    )
+    request = WorkerRequest(
+        worker_id="fieldwork.document_qa",
+        capability_id=CAPABILITY_ID,
+        unit_id=bundle.unit_id,
+        context=bundle,
+    )
+
+    with pytest.raises(WorkerContractError, match="same page more than once"):
+        validate_document_qa_proposal({"answer": "", "citations": []}, request)
 
 
 def test_document_qa_worker_drops_a_citation_to_a_page_it_never_saw():

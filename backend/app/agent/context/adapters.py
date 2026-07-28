@@ -905,12 +905,26 @@ def document_qa_page_candidates(
         ]
         representation = "raw_pages"
     else:
+        # Search returns passage-level results, and several non-overlapping
+        # passages may legitimately belong to the same page.  The Q&A worker
+        # and its evidence contract are page-oriented, so preserve every
+        # distinct passage while collapsing them into one candidate per page.
+        # This also keeps ``source_ref`` unique within the declared source.
+        excerpts_by_page: dict[int, list[str]] = {}
+        seen_text_by_page: dict[int, set[str]] = {}
+        for citation in context.get("citations") or []:
+            page_number = int(citation["page"])
+            text = str(citation.get("excerpt") or "").strip()
+            if not text:
+                continue
+            seen_text = seen_text_by_page.setdefault(page_number, set())
+            if text in seen_text:
+                continue
+            seen_text.add(text)
+            excerpts_by_page.setdefault(page_number, []).append(text)
         included = [
-            {
-                "page": int(citation["page"]),
-                "text": str(citation.get("excerpt") or ""),
-            }
-            for citation in context.get("citations") or []
+            {"page": page_number, "text": "\n\n".join(excerpts)}
+            for page_number, excerpts in sorted(excerpts_by_page.items())
         ]
         representation = "excerpt"
     return tuple(

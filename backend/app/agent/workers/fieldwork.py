@@ -78,6 +78,10 @@ def _supplied_pages(request: WorkerRequest) -> dict[int, str]:
             page = int(content.get("page"))
         except (TypeError, ValueError):
             raise WorkerContractError("Document page context requires a page number.")
+        if page in pages:
+            raise WorkerContractError(
+                "Document page context must not supply the same page more than once."
+            )
         pages[page] = str(content.get("text") or "")
     if not pages:
         raise WorkerContractError(
