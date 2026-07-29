@@ -23,10 +23,21 @@ from disagreeing.
 
 The consolidation is not a cosmetic tab merge. The active `analyses` artifact
 collection, saved-analysis CRUD, separate analysis execution contract, and
-Analysis-tab editors will be retired after their definitions are migrated to
-unlinked Data Analysis records. The exploratory data-analysis workflow will
-generate and execute unlinked records through the same services used by
-auditor-authored Audit Tests.
+Analysis-tab editors are retired outright. The exploratory data-analysis
+workflow will generate and execute unlinked records through the same services
+used by auditor-authored Audit Tests.
+
+The consolidation also renames the surviving durable model. Today that model is
+named "Data Test" throughout the stack — `backend/app/data_tests.py`,
+`DataTests/`, `workspace.data_tests`, `datatest:<id>`, `DataTestsTab.vue`. The
+consolidated product name is **Data Analysis**, so the rename is part of this
+work and is delivered first, mechanically, as WP-1 in section 9. Every
+target-state name in this document is the post-rename name; section 2, which
+describes the current problem, uses the current names.
+
+This plan assumes a **clean cutover**. Pre-consolidation workspaces are not
+migrated, and no legacy definition, result, evidence anchor, or run record is
+carried forward. See section 8.
 
 The following distinctions remain deliberate:
 
@@ -45,7 +56,7 @@ The following distinctions remain deliberate:
 The product currently presents two surfaces with nearly identical authoring and
 execution affordances:
 
-| Capability | Analysis | Data Analysis |
+| Capability | Analysis tab | Data Tests tab |
 | --- | --- | --- |
 | Library analytics | Yes | Yes |
 | Custom Polars/Python | Yes | Yes |
@@ -62,21 +73,21 @@ execution affordances:
 The overlap is structural:
 
 - `frontend/src/components/AnalysisTab.vue` exposes Library and Code creation;
-- `frontend/src/components/DataAnalysisTab.vue` exposes Library analytics and
+- `frontend/src/components/DataTestsTab.vue` exposes Library analytics and
   Polars code creation;
 - both use the analytics registry and guarded local sandbox;
-- `workspace.analyses` and `workspace.data_analysis` persist two representations of
+- `workspace.analyses` and `workspace.data_tests` persist two representations of
   rerunnable data procedures;
 - the exploratory workflow commits `workspace.analyses`, while the audit
-  workflow commits `workspace.data_analysis`;
-- the Data Analysis UI already labels an unlinked record “Exploratory,” so the
+  workflow commits `workspace.data_tests`;
+- the Data Tests UI already labels an unlinked record “Exploratory,” so the
   separate Analysis tab no longer owns a unique user intent.
 
-The durable Data Analysis contract is the stronger base. It already owns definition
+The durable Data Test contract is the stronger base. It already owns definition
 validation, current execution metadata, dataset fingerprints, semantic issues,
 bounded result frames, RCM linkage, dispositions, evidence, and finding
-integration. Saved analyses should be migrated into that contract rather than
-preserved as a second active model.
+integration. It survives the consolidation, renamed to Data Analysis. Saved
+analyses are retired rather than preserved as a second active model.
 
 ## 3. Product invariants
 
@@ -96,7 +107,7 @@ curation, and workflow readiness must use that rule.
 
 ### 3.2 One active durable collection
 
-After migration, new data procedures are stored only under `DataAnalysis/`.
+After cutover, data procedures are stored only under `DataAnalysis/`.
 
 `Workspace.analyses`, `Analyses/`, and `/api/workspaces/{id}/analyses` are not
 valid active write targets. No compatibility layer may dual-write an Analysis
@@ -222,7 +233,7 @@ the Audit Tests view, so moving the navigation entry does not hide fieldwork.
 The canonical query-string tab is:
 
 ```text
-tab=analysis
+tab=data-analysis
 ```
 
 Supported destination-owned query values are:
@@ -234,14 +245,30 @@ create=analytics|polars
 rcm=<RCM-id>
 ```
 
-Compatibility redirects:
+All four must be registered in `ownedKeys` in
+`frontend/src/composables/useWorkspaceNavigation.ts`:
 
-- `tab=data-analysis` redirects to `tab=analysis&scope=exploratory`;
-- `tab=data-tests` redirects to `tab=analysis`, retaining `test`, `create`,
-  and `rcm`;
+```ts
+'data-analysis': ['test', 'create', 'rcm', 'scope'],
+```
+
+Without the `scope` entry, `cleanWorkspaceQuery` strips it and every redirect
+below loses its scope on arrival.
+
+Compatibility redirects map the two tab keys that exist today. The old Analysis
+tab was exploratory-only, so it maps to the exploratory scope; the old Data
+Tests tab carried both scopes, so it maps to the unfiltered view:
+
+- `tab=analysis` redirects to `tab=data-analysis&scope=exploratory`;
+- `tab=data-tests` redirects to `tab=data-analysis`, retaining `test`,
+  `create`, and `rcm`;
 - a deep link with a concrete `test` takes precedence over the requested scope
   filter so the target is always visible;
 - RCM actions use `scope=audit` and pass the target `rcm` or `test`.
+
+Both redirects reuse the tab-key normalizer that already exists in
+`frontend/src/views/WorkspaceView.vue` for `validation -> data`. Do not
+introduce a second redirect mechanism.
 
 ### 4.2 Page structure
 
@@ -402,7 +429,8 @@ separate deterministic predicate.
 
 ### 5.1 Data Analysis definition
 
-The existing Data Analysis record remains the authoritative record:
+The existing durable record remains authoritative, renamed and with one added
+field. The full shape, including the outcome fields section 4.4 binds to:
 
 ```json
 {
@@ -427,13 +455,20 @@ The existing Data Analysis record remains the authoritative record:
   "methodology_refs": [],
   "status": "ready",
   "semantic_warnings": [],
+  "conclusion": "",
+  "control_conclusion": "no_conclusion",
+  "result_summary": "",
+  "scope_limitations": "",
+  "next_action": "",
+  "exception_count": 0,
+  "open_exception_count": 0,
+  "finding_refs": [],
   "last_run": null,
   "auditor_disposition": "pending",
   "evidence_refs": [],
   "created_by": "agent",
   "agent_run_id": "...",
   "workflow_parent_sha1": "...",
-  "migration": null,
   "created": "...",
   "updated": "..."
 }
@@ -441,18 +476,19 @@ The existing Data Analysis record remains the authoritative record:
 
 Model changes:
 
-- add a validated `viz` definition field so existing saved-analysis
-  visualizations survive migration and dashboard pinning;
-- add system-owned optional `migration` provenance containing only legacy ID,
-  legacy semantic ID, and migration version;
+- add a validated `viz` definition field so a saved visualization survives
+  re-runs and dashboard pinning;
 - expose derived `scope: "exploratory" | "audit"` in list/detail payloads;
 - expose derived `result_current`, `result_stale_reasons`, and
   `finding_eligible`;
 - do not add a persisted purpose or scope flag;
 - keep `created_by` and `agent_run_id` as the authoritative author/generation
-  provenance.
+  provenance;
+- keep every existing outcome field above; the consolidation does not narrow
+  the record.
 
-`migration` is not accepted from normal create or patch APIs.
+There is no `migration` provenance field. Clean cutover means there is no
+legacy identity to record.
 
 ### 5.2 Definition validation by scope
 
@@ -478,6 +514,17 @@ Additional Audit Test validation:
 Exploratory records may have blank criteria and may use broader informational
 language. They still use safe Polars and bounded results.
 
+Rule-based validation is not a Data Analysis engine. It remains a Data-tab
+ruleset capability backed by `backend/app/validation.py`,
+`backend/app/routes/validation_routes.py`, `workspace.rulesets`, and
+`frontend/src/components/validation/TableValidation.vue`, none of which this
+plan touches. The current durable service carries a third `validation` engine
+that duplicates that capability inside the module being consolidated; it has no
+producer — neither the Data Tests UI nor any agent worker emits it, and it is
+reachable only by a direct API POST. It is removed in WP1. Dashboard tile kind
+`validation`, which the Data tab's own pin path produces, is unaffected and
+stays.
+
 ### 5.3 Current result
 
 Continue storing one replaceable current result under:
@@ -486,16 +533,22 @@ Continue storing one replaceable current result under:
 DataAnalysisResults/<DAT-id>/DAR-CURRENT.json
 ```
 
-Add or enforce:
+Already present, to be confirmed rather than added:
 
 - `rcm_id` captured at execution, including null;
-- a definition/source hash that includes `rcm_id`;
-- dataset fingerprints for every frame the code could access;
-- `scope_at_run: exploratory|audit` as a derived snapshot for diagnostics;
-- result eligibility computed from current definition, current linkage, current
+- dataset fingerprints for every frame the code could access.
+
+Actual changes:
+
+- fold `rcm_id` into the definition/source hash. `source_sha1` currently hashes
+  only `{engine, table_refs, spec}`, which is why a linkage change silently
+  reuses an execution under a different audit meaning. This one line is the
+  substance of invariant 3.5;
+- add `scope_at_run: exploratory|audit` as a derived snapshot for diagnostics;
+- compute result eligibility from current definition, current linkage, current
   input fingerprints, semantic validity, and run status;
-- no result history claim: the active model retains one current result, except
-  older immutable files that remain referenced by findings.
+- make no result history claim: the active model retains one current result,
+  except older immutable files that remain referenced by findings.
 
 Changing only narrative outcome fields does not invalidate execution. Changing
 engine, table references, executable spec, or `rcm_id` does.
@@ -537,24 +590,28 @@ logic.
 
 ### 6.1 Canonical resource routes
 
-Use `analysis` as the canonical backend resource route. Every saved record is a
-Data Analysis record:
+Use `data-analysis` as the canonical durable resource route, served from
+`backend/app/routes/data_analysis_routes.py` (renamed from
+`data_test_routes.py` in WP-1). Every saved record is a Data Analysis record:
 
 ```text
-GET    /api/workspaces/{workspace_id}/analysis
-POST   /api/workspaces/{workspace_id}/analysis
-GET    /api/workspaces/{workspace_id}/analysis/{analysis_id}
-PATCH  /api/workspaces/{workspace_id}/analysis/{analysis_id}
-DELETE /api/workspaces/{workspace_id}/analysis/{analysis_id}
-POST   /api/workspaces/{workspace_id}/analysis/{analysis_id}/run
-GET    /api/workspaces/{workspace_id}/analysis/{analysis_id}/runs/{run_id}
-GET    /api/workspaces/{workspace_id}/analysis/{analysis_id}/runs/{run_id}/export
-POST   /api/workspaces/{workspace_id}/analysis/{analysis_id}/pin
-POST   /api/workspaces/{workspace_id}/analysis/run-all-audit
+GET    /api/workspaces/{workspace_id}/data-analysis
+POST   /api/workspaces/{workspace_id}/data-analysis
+GET    /api/workspaces/{workspace_id}/data-analysis/{analysis_id}
+PATCH  /api/workspaces/{workspace_id}/data-analysis/{analysis_id}
+DELETE /api/workspaces/{workspace_id}/data-analysis/{analysis_id}
+POST   /api/workspaces/{workspace_id}/data-analysis/{analysis_id}/run
+GET    /api/workspaces/{workspace_id}/data-analysis/{analysis_id}/runs/{run_id}
+GET    /api/workspaces/{workspace_id}/data-analysis/{analysis_id}/runs/{run_id}/export
+POST   /api/workspaces/{workspace_id}/data-analysis/{analysis_id}/pin
+POST   /api/workspaces/{workspace_id}/data-analysis/run-all-audit
 ```
 
-Do not add a parallel `/data-analysis` resource namespace. `analysis` is the
-retained navigation and durable-domain route.
+`data-analysis` is the durable namespace. `analysis` is **not** available for
+it: `backend/app/routes/analysis_routes.py` is the stateless router — table
+schema, preview, profile, explore queries, the analytics catalog, and Excel
+export — and section 6.5 retains it unchanged. The two have different lifetimes
+and must not share a name or a module.
 
 ### 6.2 List response
 
@@ -609,19 +666,23 @@ Preserve export capability by adding a Data Analysis result export:
 
 ### 6.5 Retired routes
 
-Remove mutating saved-analysis routes after workspace migration:
+Delete `backend/app/routes/analyses_routes.py` outright and drop its router
+import and mount from `backend/app/main.py`:
 
 ```text
 GET/POST/PATCH/DELETE /api/workspaces/{workspace_id}/analyses...
 ```
 
-Keep the stateless analytics catalog and execution helpers because Data Analysis
-authoring uses them:
+Keep `backend/app/routes/analysis_routes.py` unchanged. Its stateless analytics
+catalog and execution helpers are what Data Analysis authoring uses:
 
 ```text
 GET  /api/analytics
 POST /api/workspaces/{workspace_id}/tables/{table}/analytics/{test_id}
 ```
+
+Validation routes under `backend/app/routes/validation_routes.py` are also
+unchanged and out of scope.
 
 The local `/run-python` endpoint may remain for unsaved previews and assistant
 artifacts, but the Data Analysis UI must clearly distinguish preview from a
@@ -650,11 +711,10 @@ data_analysis -> data_analysis.executed
 table_relationships -> data.joins_ready
 ```
 
-Completed `analysis_workflow_v1` runs remain readable history. They are not
-resumed or retried in place after cutover. A retry creates a new
-`data_analysis_workflow_v1` run. Any live legacy workflow run encountered during
-upgrade is marked interrupted with an actionable “restart data analysis” reason
-rather than being dispatched into incompatible executors.
+`analysis_workflow_v1` is retired with the workspaces that contained its runs.
+Under clean cutover there is no legacy run history to keep readable, resume, or
+close as interrupted, and no executor needs to recognize an `analysis:<id>`
+receipt.
 
 ### 7.2 Worker
 
@@ -698,7 +758,6 @@ Data Analysis records:
 
 - include only `workspace.data_analysis` where `rcm_id is None`;
 - include definition metadata and canonical spec, never results or rows;
-- include legacy-migrated definitions so generation does not duplicate them;
 - continue supplying schema, bounded profile, value-free aggregates, analytics
   registry, and deterministic relationship evidence;
 - preserve all current character, token, item, and table-scope bounds.
@@ -740,162 +799,98 @@ Required integration changes:
 - test generation must not overwrite a linked auditor-owned definition;
 - forcing exploratory analysis must not regenerate or edit Audit Tests.
 
-## 8. Workspace migration
+## 8. Cutover policy
 
-### 8.1 Migration policy
+### 8.1 No workspace migration
 
-Existing saved Analysis definitions are valuable and must be migrated. Existing
-Analysis execution metadata is not sufficient to fabricate a durable Data Analysis
-result because it may omit dataset fingerprints, the executable scope identity,
-bounded exception frames, and the RCM scope snapshot.
+This consolidation is a clean cutover. Pre-consolidation workspaces are not
+migrated and are not supported by the consolidated build.
 
-Therefore:
+- no saved Analysis definition is carried forward;
+- no legacy Analysis execution, bounded `last_result`, or dashboard-tile
+  history is carried forward;
+- no legacy evidence anchor is carried forward or archived;
+- no `analysis_workflow_v1` run record, proposal, or receipt sidecar is carried
+  forward;
+- there is no compatibility reader, no `Legacy/` archive, no ID mapping, and no
+  migration provenance anywhere in the target model.
 
-- migrate definitions;
-- preserve visualization and provenance;
-- do not claim prior Analysis execution as a current Data Analysis run;
-- set migrated tests to `ready`;
-- require an explicit new Data Analysis run;
-- keep dashboard tiles unchanged because they are independent copies;
-- preserve legacy evidence anchors through a read-only archive when necessary.
+A workspace produced before the cutover must be recreated. Release notes must
+say so plainly.
 
-### 8.2 Schema/version gate
+### 8.2 Schema version gate
 
-Implement migration through the existing workspace artifact migration path under
-the workspace write lock:
+Clean cutover still requires one deliberate change, because the existing
+migration path is unsafe to leave in place while the schema version moves.
+
+`_migrate_artifacts` in `backend/app/workspaces.py` is a single v1-to-v4
+inline-to-sidecar migration, not a versioned chain. It is guarded only by
+`schema_version >= SCHEMA_VERSION`, and it rebuilds every collection by reading
+that collection out of `workspace.json`. A v4 `workspace.json` holds only
+`_MANIFEST_FIELDS` — no collections and no `planning`. So bumping
+`SCHEMA_VERSION` without touching that function makes every existing v4
+workspace re-enter the loop, find nothing, and rewrite each `.index.json` as
+`{"ids": []}` while resetting `Planning/context.json` and `Planning/APM.md` to
+defaults. The artifact files survive on disk but become unreachable.
+
+The correct clean-cutover behavior is a hard, actionable stop:
 
 1. bump `SCHEMA_VERSION`;
-2. detect an active `Analyses/.index.json` or legacy inline `analyses` collection;
-3. build the complete migration projection without writing;
-4. validate every target Data Analysis record;
-5. detect ID and semantic collisions;
-6. stage all new Data Analysis files and the new index;
-7. write a migration mapping;
-8. rewrite supported references;
-9. atomically publish the Data Analysis collection;
-10. archive only legacy definitions needed for evidence compatibility;
-11. remove the active Analyses index and unreferenced files;
-12. update the workspace schema version last.
+2. change `_migrate_artifacts` to raise `WorkspaceError` for any workspace
+   below `SCHEMA_VERSION`, with a message naming the workspace and instructing
+   the user to recreate it;
+3. write nothing on the rejection path — the workspace directory must be
+   byte-identical after a refused open.
 
-The migration must be idempotent after interruption. Reopening a workspace must
-either finish the same deterministic mapping or recognize that each target
-already exists.
-
-### 8.3 Deterministic ID mapping
-
-For every legacy Analysis ID:
-
-```text
-DAT-<first 10 uppercase hex characters of
-     SHA1("legacy-analysis:" + legacy_analysis_id)>
-```
-
-If that ID already belongs to a record whose migration metadata names the same
-legacy ID, reuse it. Any other collision is a migration error; do not silently
-choose a random ID.
-
-Use a unique migrated semantic ID:
-
-```text
-data_analysis:legacy-analysis:<lowercase legacy id>
-```
-
-Preserve the legacy semantic ID in system-owned migration metadata so the new
-exploratory worker can de-duplicate against the canonical spec as well as the
-migrated identity.
-
-### 8.4 Field mapping
-
-| Legacy Analysis | Data Analysis |
-| --- | --- |
-| `id` | deterministic new `DAT-...`; old ID stored in `migration` |
-| `semantic_id` | stored in `migration.legacy_semantic_id` |
-| `title` | `title` |
-| `note` | `objective` when non-empty |
-| blank `note` | objective `"Explore: <title>"` |
-| `kind=analytics` | `engine=analytics` |
-| `spec.test` | `spec.test_id` |
-| `spec.params` | `spec.params` |
-| analytics `table` | `table_refs=[table]` |
-| `kind=python` | `engine=polars` |
-| Python `spec.code` | one schema-version-2 Polars step |
-| Python table label | no restrictive `table_refs`; code keeps access to workspace frames |
-| `viz` | `viz` |
-| `source=ai` | `created_by=agent` |
-| `source=library|code` | `created_by=user`, unless existing provenance proves agent creation |
-| `agent_run_id` | `agent_run_id` |
-| `created` | `created` |
-| `last_result` | not migrated as a current execution |
-| any prior execution timestamp | optional diagnostic in `migration`, not execution evidence |
-| no RCM field | `rcm_id=null` |
-
-The migrated Polars step uses:
-
-- label: legacy title;
-- instruction: migrated objective;
-- code: unchanged after sandbox validation;
-- a deterministic step ID.
-
-If legacy code fails current sandbox validation, migrate it as a visible draft
-with a specific semantic warning. Do not drop the record and do not execute it.
-
-### 8.5 Evidence compatibility
-
-Some older workspaces may contain typed evidence anchors with
-`source_kind="analysis"`.
-
-Because a saved Analysis anchor identifies a definition rather than a
-fingerprinted Data Analysis execution, it cannot be rewritten to a `data_analysis`
-execution anchor without inventing evidence.
-
-Migration must:
-
-- identify every legacy Analysis referenced by an evidence anchor;
-- copy its exact canonical JSON into
-  `Legacy/AnalysisEvidence/<analysis-id>.json`;
-- retain its original hash;
-- teach the evidence resolver to read this directory only for existing
-  `source_kind="analysis"` anchors;
-- remove Analysis from new evidence-picker options;
-- forbid creation of new Analysis anchors;
-- mark the legacy anchor as definition-only support in report QA;
-- allow the compatibility reader to be removed only after no workspace contains
-  such anchors.
-
-This archive is not an active collection: it is not listable, editable,
-runnable, or supplied to a model.
-
-### 8.6 Agent-run compatibility
-
-Existing run records and sidecars may contain `analysis:<id>` artifact refs.
-They remain historical records and are not rewritten.
-
-At upgrade:
-
-- completed legacy runs remain readable;
-- paused, awaiting-approval, or interrupted `analysis_workflow_v1` runs are
-  closed as interrupted with a migration reason;
-- proposal and receipt sidecars remain under their original run;
-- retry creates a new workflow run against migrated Data Analysis records;
-- no new executor attempts to reconcile an `analysis:<id>` receipt against a
-  `data_analysis:<id>` parent.
-
-### 8.7 Migration verification
-
-For each workspace, verify:
-
-- migrated Data Analysis count equals legacy Analysis count, excluding only
-  explicitly diagnosed collisions;
-- every migrated record is unlinked;
-- every migrated analytics spec canonicalizes;
-- every migrated Polars spec is either valid or a visible draft with a warning;
-- no current Data Analysis result was fabricated;
-- every legacy evidence anchor resolves to the archive;
-- dashboard tiles are byte-for-byte unchanged except normal workspace revision;
-- `Analyses/.index.json` is no longer active;
-- a second load performs no writes.
+Step 2 is not optional and must land in the same change as step 1.
 
 ## 9. Backend implementation work packages
+
+### WP-1 — Rename Data Test to Data Analysis
+
+Mechanical, behaviour-free, and delivered on its own before any other work
+package. Every other section of this plan is written against the post-rename
+names.
+
+| Current | Target |
+| --- | --- |
+| `backend/app/data_tests.py` | `backend/app/data_analysis.py` |
+| `backend/app/routes/data_test_routes.py` | `backend/app/routes/data_analysis_routes.py` |
+| `/api/workspaces/{id}/data-tests` | `/api/workspaces/{id}/data-analysis` |
+| `.../data-tests/run-all-rcm` | `.../data-analysis/run-all-audit` |
+| `_ARTIFACT_COLLECTIONS["data_tests"] = ("DataTests", "id")` | `["data_analysis"] = ("DataAnalysis", "id")` |
+| `Workspace.data_tests` | `Workspace.data_analysis` |
+| `DataTestResults/` | `DataAnalysisResults/` |
+| `CURRENT_RESULT_ID = "DTR-CURRENT"` | `"DAR-CURRENT"` |
+| `DAT-` record ID prefix | unchanged |
+| `semantic_id` prefix `datatest:` | `data_analysis:` |
+| artifact and evidence ref `datatest:<id>` | `data_analysis:<id>` |
+| `rcm[].test_refs` values written by `_link` | `data_analysis:<id>` |
+| `tile.data_test_id` | `tile.data_analysis_id` |
+| `tile.result_ref` `datatest:<id>:<run>` | `data_analysis:<id>:<run>` |
+| `SOURCE_KINDS` member `"datatest"` | `"data_analysis"` |
+| `findings` kind set `{"datatest", "doctest"}` | `{"data_analysis", "doctest"}` |
+| `frontend/src/components/DataTestsTab.vue` | `DataAnalysisTab.vue` |
+| `components/data-tests/AnalyticsTestAuthor.vue` | `components/data-analysis/AnalyticsAuthor.vue` |
+| `DataTest*`, `DataTestEngine`, `DataTestStep` types | `DataAnalysis*` |
+| tab key `data-tests` | `data-analysis` |
+| agent action `create_data_test` | `create_data_analysis` |
+| capabilities `analysis.definitions_ready`, `analysis.executed` | `data_analysis.tests_ready`, `data_analysis.executed` |
+| workflow `analysis_workflow_v1` | `data_analysis_workflow_v1` |
+
+Scope is roughly 520 references across `backend/app` and `frontend/src`.
+
+Two coupling constraints, both of which break evidence resolution if split
+across commits:
+
+- `_link` writes the ref into `rcm[].test_refs` and `commit_result` writes
+  `tile.result_ref`; both must change in the same commit as `SOURCE_KINDS`;
+- the capability, workflow, and action renames must land together with the
+  registry that dispatches them.
+
+**Gate:** the full backend suite and the frontend production build pass with no
+behaviour change, and `rg -n "datatest:|data_tests|DataTests|DataTestResults"
+backend/app frontend/src` returns nothing.
 
 ### WP0 — Pin contracts before mutation
 
@@ -904,8 +899,6 @@ For each workspace, verify:
 - [ ] Add tests for exploratory exclusion from RCM coverage and findings.
 - [ ] Add tests for linkage-change result invalidation.
 - [ ] Add tests for finding-dependent unlink rejection.
-- [ ] Add a migration fixture containing analytics and Python analyses,
-      visualizations, provenance, a pinned tile, and a legacy evidence anchor.
 - [ ] Capture current analysis-workflow routing and privacy behavior.
 
 **Gate:** the tests describe the target contract and fail only where the current
@@ -918,6 +911,7 @@ Touchpoints:
 - `backend/app/data_analysis.py`
 - `backend/app/rcm_execution.py`
 - `backend/app/findings.py`
+- `backend/app/evidence.py`
 - `backend/app/dashboard.py`
 - `backend/app/workspaces.py`
 - `backend/app/workspace_transactions.py`
@@ -925,7 +919,7 @@ Touchpoints:
 Tasks:
 
 - [ ] Add the single derived-scope helper.
-- [ ] Add `viz` and system-owned migration provenance validation.
+- [ ] Add `viz` definition validation.
 - [ ] Separate common definition validation from Audit Test eligibility.
 - [ ] Include `rcm_id` in execution/source identity.
 - [ ] Add the shared result-eligibility predicate.
@@ -941,6 +935,26 @@ Tasks:
 - [ ] Make finding support and dashboard curation call the same predicate.
 - [ ] Keep `run_all_audit` restricted to non-null RCM IDs and skip drafts.
 
+Remove the orphaned `validation` engine (section 5.2):
+
+- [ ] Reduce `ENGINES` to `{"analytics", "polars"}`.
+- [ ] Delete the `validation` branch in `_validate_spec`.
+- [ ] Delete the `validation` branch in `_run_engine` and its null-column
+      special case.
+- [ ] Drop the `"validation"` entry from the pin route's engine-to-tile-kind
+      map, leaving dashboard tile kind `validation` intact for the Data tab.
+- [ ] Drop the `validation` import from `data_analysis.py`.
+- [ ] Narrow the frontend engine type to `'analytics' | 'polars'`.
+
+Retire the Analysis evidence source kind (clean cutover, section 8.1):
+
+- [ ] Remove `"analysis"` from `evidence.SOURCE_KINDS`.
+- [ ] Delete the `source_kind == "analysis"` branch in `findings.artifact`; it
+      reads `workspace.analyses`, which WP3 removes.
+- [ ] Change `evidence.legacy_anchor` to raise instead of defaulting an
+      unrecognized ref to `kind="analysis"`, which would otherwise keep minting
+      anchors for a source kind that no longer resolves.
+
 **Gate:** Data Analysis records alone can represent, execute, filter, link, unlink, roll up,
 and pin both scopes without reading `workspace.analyses`.
 
@@ -948,8 +962,9 @@ and pin both scopes without reading `workspace.analyses`.
 
 Touchpoints:
 
-- `backend/app/routes/analysis_routes.py`
-- `backend/app/routes/analyses_routes.py`
+- `backend/app/routes/data_analysis_routes.py` — the durable CRUD router
+- `backend/app/routes/analyses_routes.py` — deleted
+- `backend/app/routes/analysis_routes.py` — unchanged, stateless helpers only
 - `backend/app/routes/assistant_routes.py`
 - `backend/app/main.py`
 
@@ -958,41 +973,42 @@ Tasks:
 - [ ] Add derived list counts and eligibility fields.
 - [ ] Add current result export.
 - [ ] Enforce linkage transition errors through the patch route.
-- [ ] Preserve stateless analytics metadata and preview routes.
-- [ ] Update OpenAPI tags and descriptions for the retained `analysis` resource
+- [ ] Reject `engine=validation` with an actionable error.
+- [ ] Leave `analysis_routes.py` and `validation_routes.py` untouched; they own
+      the stateless authoring helpers and the Data-tab ruleset capability.
+- [ ] Update OpenAPI tags and descriptions for the `data-analysis` resource
       path.
-- [ ] Remove the saved-analysis router from `main.py` after migration is active.
-- [ ] Delete saved-analysis mutating routes.
-- [ ] Return actionable not-found/migrated errors for stale external requests if
-      a temporary compatibility response is required.
+- [ ] Delete `analyses_routes.py` and drop its import and mount from
+      `main.py`.
 
 **Gate:** the frontend needs only Data Analysis CRUD plus stateless authoring helpers.
 
-### WP3 — Migrate workspace storage
+### WP3 — Retire the Analyses collection and gate the schema version
 
 Touchpoints:
 
 - `backend/app/workspaces.py`
 - `backend/tests/test_workspace_artifact_storage.py`
 - `backend/tests/test_workspaces.py`
-- new focused migration tests
 
 Tasks:
 
-- [ ] Bump the workspace schema version.
-- [ ] Implement deterministic Analysis-to-Data-Analysis mapping.
-- [ ] Stage and publish migration atomically.
-- [ ] Persist the legacy-to-new ID mapping.
-- [ ] Archive only evidence-referenced definitions.
+- [ ] Bump `SCHEMA_VERSION`.
+- [ ] Convert `_migrate_artifacts` from a migrating path into a rejecting gate:
+      any workspace below `SCHEMA_VERSION` raises an actionable
+      "recreate this workspace" error and writes nothing. See section 8.2 —
+      bumping the version without this change blanks every artifact index in
+      every existing workspace.
 - [ ] Stop hydrating `Workspace.analyses`.
 - [ ] Remove `analyses` from `_ARTIFACT_COLLECTIONS`.
 - [ ] Remove `analyses` from save, sync, table-rename, table-delete, and
       semantic-lookup paths.
-- [ ] Update workspace summaries and mutation counters.
-- [ ] Prove idempotence after simulated interruption at each publish boundary.
+- [ ] Remove saved-analysis counts from workspace summaries and mutation
+      counters.
 
-**Gate:** every supported workspace loads with one active data-procedure
-collection and no definition loss.
+**Gate:** a current-version workspace loads with one active data-procedure
+collection; an older workspace is refused without being modified.
+
 
 ### WP4 — Replace the exploratory workflow persistence target
 
@@ -1011,12 +1027,11 @@ Touchpoints:
 
 Tasks:
 
-- [ ] Register `data_analysis_workflow_v1`.
-- [ ] Register `data_analysis.tests_ready` and
-      `data_analysis.executed`.
+The workflow identity, capability IDs, and ref prefix are renamed in WP-1. This
+package changes what they persist.
+
 - [ ] Change current-definition context to unlinked Data Analysis records.
 - [ ] Change the worker schema to Data Analysis definitions.
-- [ ] Change executor refs from historical `analysis:` to `data_analysis:`.
 - [ ] Commit definitions through Data Analysis validation and transactions.
 - [ ] Execute through Data Analysis compute/commit.
 - [ ] Preserve semantic de-duplication and auditor-edit protection.
@@ -1024,7 +1039,6 @@ Tasks:
 - [ ] Keep one bounded model turn per target frame.
 - [ ] Update model budgets from the same resolved table scope.
 - [ ] Route `data_analysis` goals only to the new workflow.
-- [ ] Close live legacy workflow runs safely during migration.
 - [ ] Update run projections, artifact labels, and UI stage labels.
 
 **Gate:** “analyze these tables” creates and runs only unlinked Data Analysis records, and
@@ -1059,9 +1073,11 @@ Analysis.
 
 Touchpoints:
 
-- rename or reuse `frontend/src/components/AnalysisTab.vue` as the combined
-  `frontend/src/components/DataAnalysisTab.vue` surface;
-- reuse/refactor `frontend/src/components/data-analysis/AnalyticsAuthor.vue`;
+- `frontend/src/components/DataAnalysisTab.vue` (renamed from
+  `DataTestsTab.vue` in WP-1) becomes the combined surface; `AnalysisTab.vue`
+  contributes its reusable pieces and is then deleted in WP7;
+- reuse/refactor `frontend/src/components/data-analysis/AnalyticsAuthor.vue`
+  (renamed from `data-tests/AnalyticsTestAuthor.vue` in WP-1);
 - migrate useful editor and visualization pieces from
   `frontend/src/components/analysis/`;
 - `frontend/src/views/WorkspaceView.vue`;
@@ -1075,7 +1091,11 @@ Touchpoints:
 Tasks:
 
 - [ ] Add the single Data Analysis navigation entry and panel.
-- [ ] Add legacy query-string redirects.
+- [ ] Register `'data-analysis': ['test', 'create', 'rcm', 'scope']` in
+      `ownedKeys`; without `scope`, `cleanWorkspaceQuery` strips it and the
+      redirects below lose their scope on arrival.
+- [ ] Add the `tab=analysis` and `tab=data-tests` redirects from section 4.1,
+      reusing the existing `WorkspaceView.vue` tab-key normalizer.
 - [ ] Add scope switch, counts, and granular filters.
 - [ ] Show derived linkage badges and result currency.
 - [ ] Do not expose Validation as a Data Analysis creation mode; keep its
@@ -1110,13 +1130,16 @@ Delete only after WP1–WP6 gates pass:
 - [ ] `SavedAnalysis` and `AnalysisLastResult` frontend interfaces;
 - [ ] tests whose sole purpose was the retired model.
 
+`backend/app/routes/data_test_routes.py` is **not** on this list. It is renamed
+to `data_analysis_routes.py` in WP-1 and retained as the durable CRUD router.
+
 Then:
 
-- [ ] replace deleted-model tests with consolidation and migration tests;
-- [ ] run static searches for active `workspace.analyses`, `/analyses`,
-      `data_tests`, and `datatest:<id>` writes;
-- [ ] retain historical `analysis:<id>` only where required for old runs and
-      evidence; active consolidated artifacts use `data_analysis:<id>`.
+- [ ] replace deleted-model tests with consolidation tests;
+- [ ] run static searches for any remaining `workspace.analyses`, `/analyses`,
+      `analysis:<id>`, `data_tests`, or `datatest:<id>` reference;
+- [ ] confirm every match is zero. Clean cutover leaves no historical
+      compatibility surface: all active artifacts use `data_analysis:<id>`.
 
 **Gate:** no production write path, UI route, workflow executor, or current
 artifact reference uses the retired saved-analysis model.
@@ -1130,8 +1153,10 @@ artifact reference uses the retired saved-analysis model.
 - [ ] Mark section 6.1 of `docs/rcm-central-workflow-plan.md` implemented and
       record the final Data Analysis label.
 - [ ] Document the linkage-derived scope rule in API and user help.
-- [ ] Add release notes explaining redirects and migrated definitions.
-- [ ] Add a recovery note for interrupted legacy analysis runs.
+- [ ] Document the Data Test to Data Analysis rename, including the changed
+      route, collection directory, and artifact ref prefix.
+- [ ] Add release notes stating plainly that pre-consolidation workspaces are
+      not migrated and must be recreated, and explaining the tab redirects.
 
 **Gate:** architecture, product copy, and code describe the same one-model
 system.
@@ -1154,39 +1179,23 @@ Extend `backend/tests/test_data_analysis.py` to prove:
 - finding-dependent linkage changes are rejected;
 - table/spec/link changes invalidate currency;
 - narrative conclusion changes do not invalidate execution;
-- validation is excluded from Data Analysis engines and creation controls;
+- `engine=validation` is rejected by create and update, and absent from the
+  creation controls;
 - Polars step table references are rewritten on table rename;
 - dashboard pinning works for both scopes;
 - automatic curation considers linked eligible results only.
 
-### 10.2 Migration tests
+### 10.2 Schema gate tests
 
-Add a focused migration suite with fixtures for:
+Clean cutover replaces the migration suite with one focused test in
+`backend/tests/test_workspace_artifact_storage.py`:
 
-- library analytics analysis;
-- hand-written Python analysis;
-- agent-generated Python analysis;
-- saved visualization;
-- blank and nonblank notes;
-- valid and now-invalid code;
-- prior bounded `last_result`;
-- pinned dashboard copy;
-- legacy evidence anchor;
-- duplicate titles;
-- partial previous migration;
-- deterministic ID collision;
-- crash after staged files but before schema bump.
-
-Assertions:
-
-- every definition is represented exactly once;
-- all migrated tests are unlinked;
-- none has a fabricated current result;
-- provenance and visualization survive;
-- invalid code remains visible as draft;
-- evidence archives retain original hashes;
-- dashboard tiles do not change;
-- repeat load is write-free.
+- opening a workspace whose `schema_version` is below `SCHEMA_VERSION` raises an
+  actionable error naming the workspace;
+- the refused workspace directory is byte-identical afterwards — in particular
+  every `.index.json`, `Planning/context.json`, and `Planning/APM.md` is
+  untouched;
+- opening a current-version workspace performs no migration work.
 
 ### 10.3 Workflow tests
 
@@ -1203,8 +1212,7 @@ Replace or rewrite `backend/tests/test_workflow_analysis.py` to prove:
 - auditor edits are preserved;
 - force regeneration remains scoped;
 - Audit Tests are never picked up by exploratory execution;
-- model budgets and concurrency remain bounded;
-- old live workflow runs do not dispatch into the new executors.
+- model budgets and concurrency remain bounded.
 
 Keep audit workflow tests proving RCM generation still creates Audit Tests.
 
@@ -1218,7 +1226,8 @@ Cover:
 - optimistic concurrency during linkage changes;
 - linkage errors for missing RCM and broken findings;
 - removed saved-analysis routes;
-- stateless analytics and preview routes still work;
+- the durable resource is served at `/data-analysis`, not `/analysis`;
+- stateless analytics, preview, and validation routes still work;
 - legacy tab redirects are frontend behavior, not duplicate APIs.
 
 ### 10.5 Evidence and report tests
@@ -1228,9 +1237,9 @@ Cover:
 - exploratory results cannot satisfy formal finding execution refs;
 - linked current results can;
 - stale linkage results cannot;
-- legacy Analysis anchors still resolve read-only;
-- new Analysis anchors are rejected;
-- report QA distinguishes legacy definition-only support;
+- `analysis` is not a valid `source_kind` and is rejected on create;
+- `legacy_anchor` raises on an unrecognized ref instead of defaulting it to an
+  Analysis anchor;
 - RCM working papers include only eligible linked results.
 
 ### 10.6 Frontend verification
@@ -1241,8 +1250,8 @@ At minimum:
 - production Vite build;
 - manual desktop verification at wide and narrow breakpoints;
 - keyboard navigation through scope switch, rail, create menu, and RCM dialogs;
-- legacy `tab=data-analysis` redirect;
-- legacy `tab=data-tests&test=...` redirect;
+- `tab=analysis` redirects to `tab=data-analysis&scope=exploratory`;
+- `tab=data-tests&test=...` redirects to `tab=data-analysis&test=...`;
 - RCM deep link to an Audit Test;
 - creation and execution of both Data Analysis engines;
 - link, re-run, unlink, and blocked-unlink flows;
@@ -1266,13 +1275,17 @@ Also run focused static searches:
 
 ```bash
 rg -n "workspace\\.analyses|/analyses|analysis:<" backend/app frontend/src
-rg -n "data_tests|DataTests|data-tests|datatest:<" backend/app frontend/src
-rg -n "SavedAnalysis|AnalysisLastResult" frontend/src backend/app
+rg -n "data_tests|DataTests|data-tests|datatest:" backend/app frontend/src
+rg -n "SavedAnalysis|AnalysisLastResult|DataTestEngine" frontend/src backend/app
 ```
 
-Every remaining match must be documented as historical compatibility or legacy
-evidence. Active consolidated references use `data_analysis`, `DataAnalysis/`,
-and the retained `/analysis` route.
+Under clean cutover every one of these must return zero matches, with exactly
+one documented exception: the `'data-tests'` string literal in the frontend tab
+redirect from section 4.1. There is no other historical-compatibility surface to
+exempt. Active references use `data_analysis`, `DataAnalysis/`,
+`DataAnalysisResults/`, and the `/data-analysis` route; `analysis_routes.py` and
+`validation_routes.py` remain as stateless helpers and are the only surviving
+uses of those words.
 
 ## 11. End-to-end acceptance scenarios
 
@@ -1312,14 +1325,14 @@ and the retained `/analysis` route.
 4. Confirm their results use `DataAnalysisResults/`.
 5. Confirm no `Analyses/` artifact is created.
 
-### Scenario E — Migration
+### Scenario E — Pre-cutover workspace refusal
 
-1. Open a pre-consolidation workspace containing saved analyses.
-2. Confirm each appears as an exploratory Data Analysis record.
-3. Confirm titles, code/analytic specs, visualizations, and provenance.
-4. Confirm old bounded results are not misrepresented as current executions.
-5. Run one migrated definition successfully.
-6. Restart and confirm the migration does not run again.
+1. Open a pre-consolidation workspace.
+2. Confirm the open is refused with an actionable message naming the workspace
+   and instructing the user to recreate it.
+3. Confirm the workspace directory is unchanged on disk, including every
+   `.index.json` and the Planning artifacts.
+4. Create a fresh workspace and confirm normal operation.
 
 ### Scenario F — Evidence protection
 
@@ -1340,10 +1353,11 @@ The consolidation is complete only when:
 - exploratory definitions and results cannot satisfy RCM or finding gates;
 - exploratory workflow output lands in `DataAnalysis/`;
 - RCM test-generation output continues to land in `DataAnalysis/`;
-- migrated saved Analysis definitions remain usable;
-- no prior Analysis execution is fabricated into stronger evidence;
-- dashboard pinning, visualization, and export are
-  preserved;
+- the Data Test naming is gone from every active path — module, route,
+  collection, result directory, semantic ID, artifact ref, component, and type;
+- rule-based validation is unchanged and remains a Data-tab ruleset capability;
+- a pre-cutover workspace is refused without being modified;
+- dashboard pinning, visualization, and export are preserved;
 - old navigation links redirect correctly;
 - no active saved-analysis CRUD, storage, workflow executor, or frontend model
   remains;
@@ -1353,28 +1367,37 @@ The consolidation is complete only when:
 
 ## 13. Recommended delivery sequence
 
-Deliver in four reviewable changes:
+Deliver in five reviewable changes:
 
-1. **Domain and migration foundation**
+1. **Rename**
+   - WP-1 alone;
+   - no behaviour change, no new tests, no product change;
+   - reviewable as a pure diff of names.
+
+2. **Domain foundation**
    - WP0–WP3;
    - no navigation change yet;
-   - prove the Data Analysis model and migration independently.
+   - prove the Data Analysis model and the schema gate independently.
 
-2. **Workflow convergence**
+3. **Workflow convergence**
    - WP4–WP5;
    - new exploratory runs create Data Analysis records;
    - old Analysis UI may temporarily be read-only during this change.
 
-3. **Data Analysis UI cutover**
+4. **Data Analysis UI cutover**
    - WP6;
    - one navigation entry and redirects;
    - full authoring, execution, linking, export, and pinning.
 
-4. **Retirement and documentation**
+5. **Retirement and documentation**
    - WP7–WP8;
    - delete the old active model only after all prior gates pass;
    - run the full regression and static-boundary suite.
 
-Do not combine the migration, workflow persistence change, and old-model
+Keep the rename out of every other delivery. A rename mixed with behaviour
+changes is not reviewable, and the rename is the one change that touches every
+file this plan mentions.
+
+Do not combine the schema gate, workflow persistence change, and old-model
 deletion into one unreviewable change. Each delivery must leave workspace
 storage valid and must have an explicit rollback boundary.
