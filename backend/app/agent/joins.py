@@ -233,7 +233,15 @@ def pair_candidates(workspace: Workspace, left: str, right: str) -> list[dict]:
             )
     order = {"strong": 0, "moderate": 1, "weak": 2}
     candidates.sort(
-        key=lambda c: (order[c["strength"]], -c["diagnostics"]["match_rate"])
+        key=lambda c: (
+            order[c["strength"]],
+            -c["diagnostics"]["match_rate"],
+            c["diagnostics"]["row_multiplication"],
+            str(c["left"]),
+            str(c["right"]),
+            tuple(str(value) for value in c["left_on"]),
+            tuple(str(value) for value in c["right_on"]),
+        )
     )
     return candidates
 

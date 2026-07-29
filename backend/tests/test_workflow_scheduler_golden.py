@@ -42,6 +42,7 @@ class SyntheticRuntime:
     def __init__(self, run: dict):
         self.run = run
         self.events: list[tuple[str, dict]] = []
+        self.activities: list[dict] = []
         self.saves = 0
         self.clock = 0
 
@@ -65,6 +66,11 @@ class SyntheticRuntime:
 
     def set_status(self, status: str) -> None:
         self.run["status"] = status
+
+    def set_activity(self, phase: str, label: str, **fields) -> None:
+        activity = {"phase": phase, "label": label, **fields}
+        self.run["activity"] = activity
+        self.activities.append(activity)
 
     def checkpoint(self, **_kwargs) -> None:
         return None
@@ -553,6 +559,12 @@ def test_extracted_scheduler_materializes_transitions_and_finishes_generically()
     assert run["status"] == "completed"
     assert run["command"]["status"] == "completed"
     assert run["summary_markdown"] == "# Synthetic catalog complete\n"
+    assert [activity["label"] for activity in runtime.activities] == [
+        "Normalize catalog records",
+        "Render catalog preview",
+        "Build catalog index",
+        "Publish catalog",
+    ]
     assert runtime.events[-1] == ("summary_ready", {"run_id": "run_synthetic"})
 
 

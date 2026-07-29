@@ -1108,6 +1108,12 @@ class AuditWorkflowExecution(ActionRunner):
 
 
 _PARTIAL_DEPENDENCIES = {
+    # A safe auto-selected join, a skipped unrelatable pair, or an
+    # auditor-held join choice must not withhold analysis of the frames that
+    # remain usable. Later analysis capabilities re-expand from the joins that
+    # actually committed, matching the standalone analysis workflow.
+    "analysis.definitions_ready": {"data.joins_ready"},
+    "analysis.executed": {"analysis.definitions_ready"},
     # A document the run could not extract or analyze must never stop the audit:
     # planning consumes the document material that exists, which is exactly what
     # the scoped document dependency is for. The document chain's own edges are

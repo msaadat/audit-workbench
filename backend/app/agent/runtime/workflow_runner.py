@@ -823,6 +823,19 @@ class WorkflowRunner:
         stage["status"] = status
         if status == "running":
             stage["started_at"] = stage.get("started_at") or self.runtime.utcnow()
+            # Model waits retain the current activity.  Publish a new activity
+            # at each workflow boundary so a completed legacy task cannot keep
+            # labelling later capability work (for example, joins while
+            # analysis definitions are being generated).
+            units = stage.get("units") or []
+            stage_id = str(stage.get("id") or stage.get("capability") or "workflow")
+            self.runtime.set_activity(
+                f"workflow.{stage_id}",
+                str(stage.get("title") or "Workflow"),
+                current=0,
+                total=len(units) if units else None,
+                task_id=f"workflow:{stage_id}",
+            )
         if status in {
             "succeeded",
             "failed",

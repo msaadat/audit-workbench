@@ -17,7 +17,7 @@ import polars as pl
 import pytest
 
 from app import dashboard, llm, workspaces
-from app.agent import runner, store, workflow
+from app.agent import narration, runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent import joins as join_diagnostics
 from app.agent.analysis_execution import build_analysis_workflow_runner
@@ -437,7 +437,7 @@ def test_strong_evidence_materializes_exactly_one_guarded_join(
     assert fake.calls == []
 
 
-def test_moderate_evidence_is_reported_and_never_silently_applied(monkeypatch):
+def test_auto_mode_materializes_the_top_ranked_moderate_join(monkeypatch):
     ws = _moderate_pair_workspace()
     _fake_model(monkeypatch)
     run = _analysis_run(ws)
@@ -449,9 +449,28 @@ def test_moderate_evidence_is_reported_and_never_silently_applied(monkeypatch):
 
     _drive(ws, run, "data.joins_ready")
     unit = _stage(run, "data.joins_ready")["units"][0]
-    assert unit["status"] == "awaiting_confirmation"
-    assert unit["error"] == analysis_executors.AMBIGUOUS_RELATIONSHIP
-    assert workspaces.load_workspace(ws.id).joins == []
+    assert unit["status"] == "succeeded"
+    fresh = workspaces.load_workspace(ws.id)
+    assert len(fresh.joins) == 1
+    assert fresh.joins[0]["left_on"] == ["order_ref"]
+    assert fresh.joins[0]["right_on"] == ["order_ref"]
+    assert any(
+        "Auto-selected the top-ranked join candidate" in warning
+        for warning in run["warnings"]
+    )
+
+
+def test_audit_analysis_dependencies_are_partial_when_join_review_is_open():
+    # The audit composition must preserve the standalone analysis workflow's
+    # ability to derive analyses from frames and joins that are already usable.
+    from app.agent import audit_execution
+
+    assert audit_execution._PARTIAL_DEPENDENCIES["analysis.definitions_ready"] == {
+        "data.joins_ready"
+    }
+    assert audit_execution._PARTIAL_DEPENDENCIES["analysis.executed"] == {
+        "analysis.definitions_ready"
+    }
 
 
 def test_unrelatable_tables_are_skipped_rather_than_joined(monkeypatch):
@@ -466,9 +485,14 @@ def test_unrelatable_tables_are_skipped_rather_than_joined(monkeypatch):
     _drive(ws, run, "data.relationships_inferred")
     _drive(ws, run, "data.joins_ready")
 
+    relationship = _stage(run, "data.relationships_inferred")["units"][0]
+    assert relationship["status"] == "succeeded"
+    assert relationship["error"] is None
     unit = _stage(run, "data.joins_ready")["units"][0]
     assert unit["status"] == "skipped"
-    assert unit["error"] == analysis_executors.NO_SAFE_RELATIONSHIP
+    assert unit["error"] is None
+    assert run["warnings"] == []
+    assert narration.skipped(run) == []
     assert workspaces.load_workspace(ws.id).joins == []
 
 

@@ -186,11 +186,6 @@ _BLOCKERS: dict[str, dict] = {
         "fallback_subject": "these tables",
         "where": "data",
     },
-    "no_safe_join_evidence": {
-        "message": "I found no evidence for a safe join on {subject}, so I stopped rather than invent one.",
-        "fallback_subject": "these tables",
-        "where": "data",
-    },
     "auditor_owned_apm_preserved": {
         "message": "You have edited the audit planning memorandum, so I kept your version instead of overwriting it.",
         "severity": "review",

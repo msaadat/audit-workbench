@@ -40,7 +40,6 @@ from .executors import EXECUTORS, ExecutorReceipt
 from .executors.analysis import (
     AMBIGUOUS_RELATIONSHIP,
     AUDITOR_ANALYSIS_PRESERVED,
-    NO_SAFE_RELATIONSHIP,
     AnalysisDefinitionExecutorTarget,
     AnalysisExecutionExecutorTarget,
     JoinExecutorTarget,
@@ -273,8 +272,10 @@ class AnalysisWorkflowExecution(BaseRunner):
         )
         self.task_status(task, "completed")
         if not record["candidates"] and record["join"] is None:
-            self.warn(f"No plausible key relates '{left}' and '{right}'.")
-            return DeterministicUnitResult("succeeded", refs, NO_SAFE_RELATIONSHIP)
+            # Unrelated table pairs are normal in a broad workspace. The
+            # relationship record retains the evidence locally, but there is
+            # nothing useful to surface to the auditor or narrate repeatedly.
+            return DeterministicUnitResult("succeeded", refs)
         return DeterministicUnitResult("succeeded", refs)
 
     # ------------------------------------------------------ data.joins_ready
@@ -288,11 +289,11 @@ class AnalysisWorkflowExecution(BaseRunner):
     ) -> DeterministicUnitResult:
         """Deterministic execution for ``data.joins_ready``.
 
-        A join is created automatically only when exactly one *strong* candidate
-        exists for the pair — unique right key, near-total match rate, and no row
-        multiplication. Weaker or competing evidence is reported (permission mode
-        asks) rather than silently applied, which is the whole reason
-        relationship inference and join materialization are separate outcomes.
+        Permission mode asks the auditor to select among competing candidates.
+        Auto mode instead materializes the highest-ranked safe candidate — a
+        strong candidate first, then a moderate one — and records that choice.
+        Every safe candidate has a unique right key and no material row
+        multiplication; candidates below that threshold are never applied.
         """
         self.ws = subject
         left = unit["parent_refs"][0].split(":", 1)[1]
@@ -308,17 +309,28 @@ class AnalysisWorkflowExecution(BaseRunner):
         strong = list(record["strong"])
         moderate = list(record["moderate"])
         if not strong and not moderate:
-            self.task_detail(task, f"No safe join evidence for {left} ↔ {right}.")
-            self.task_status(task, "skipped")
-            return DeterministicUnitResult("skipped", (), NO_SAFE_RELATIONSHIP)
+            self.task_status(task, "completed")
+            return DeterministicUnitResult("skipped")
 
         candidate = None
+        joinable = strong or moderate
         if len(strong) == 1:
             candidate = strong[0]
         elif self.run.get("mode") == "permission":
-            candidate = self._approve_join(task, left, right, strong or moderate)
+            candidate = self._approve_join(task, left, right, joinable)
+        elif joinable:
+            candidate = joinable[0]
+            diagnostics = candidate["diagnostics"]
+            self.warn(
+                "Auto-selected the top-ranked join candidate for "
+                f"'{left}' and '{right}': "
+                f"{candidate['left_on'][0]} → {candidate['right_on'][0]} "
+                f"({candidate['strength']} evidence, "
+                f"{diagnostics['match_rate']:.0%} match rate, "
+                f"row multiplication {diagnostics['row_multiplication']})."
+            )
         if candidate is None:
-            reported = strong or moderate
+            reported = joinable
             self.warn(
                 f"{len(reported)} join candidate(s) for '{left}' and '{right}' need "
                 "confirmation; none was applied."
