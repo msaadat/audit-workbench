@@ -62,6 +62,7 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
         # through the same document implementation the standalone workflow uses.
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
+        "analysis.definitions_ready",
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",
@@ -73,6 +74,9 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
     }
     assert {cid for cid, kind in kinds.items() if kind == "deterministic"} == {
         "documents.text_ready",
+        "data.relationships_inferred",
+        "data.joins_ready",
+        "analysis.executed",
         "results.rolled_up",
         "working_papers.generated",
         "dashboard.curated",

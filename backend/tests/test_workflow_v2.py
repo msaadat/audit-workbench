@@ -394,6 +394,10 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "documents.text_ready": (),
         "documents.analysis_chunks_ready": ("documents.text_ready",),
         "documents.analysis_generated": ("documents.analysis_chunks_ready",),
+        "data.relationships_inferred": (),
+        "data.joins_ready": ("data.relationships_inferred",),
+        "analysis.definitions_ready": ("data.joins_ready",),
+        "analysis.executed": ("analysis.definitions_ready",),
         "planning.context_ready": ("documents.analysis_generated",),
         "planning.apm_ready": ("planning.context_ready",),
         "planning.rcm_ready": ("planning.apm_ready",),
@@ -427,6 +431,10 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
     )
 
     assert resolved == [
+        "data.relationships_inferred",
+        "data.joins_ready",
+        "analysis.definitions_ready",
+        "analysis.executed",
         "documents.text_ready",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
@@ -443,6 +451,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "audit.verified",
     ]
     position = {capability_id: index for index, capability_id in enumerate(resolved)}
+    assert position["analysis.executed"] < position["planning.apm_ready"]
     assert all(
         position[dependency] < position[capability.id]
         for capability in audit_capabilities.REGISTRY.all()

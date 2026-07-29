@@ -26,6 +26,10 @@ EXPECTED_DEPENDENCIES = {
     "documents.text_ready": (),
     "documents.analysis_chunks_ready": ("documents.text_ready",),
     "documents.analysis_generated": ("documents.analysis_chunks_ready",),
+    "data.relationships_inferred": (),
+    "data.joins_ready": ("data.relationships_inferred",),
+    "analysis.definitions_ready": ("data.joins_ready",),
+    "analysis.executed": ("analysis.definitions_ready",),
     "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
@@ -64,6 +68,10 @@ def test_full_audit_closure_is_topological():
     resolved = registry.closure(audit.FULL_AUDIT_OUTCOMES)
 
     assert resolved == [
+        "data.relationships_inferred",
+        "data.joins_ready",
+        "analysis.definitions_ready",
+        "analysis.executed",
         "documents.text_ready",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
@@ -85,6 +93,7 @@ def test_full_audit_closure_is_topological():
         for capability_id, deps in audit.DEPENDENCIES.items()
         for dependency in deps
     )
+    assert resolved.index("analysis.executed") < resolved.index("planning.apm_ready")
 
 
 def test_rollup_fans_out_into_parallel_branches():
@@ -105,6 +114,9 @@ def test_template_outcomes_reference_declared_capabilities():
     assert audit_capabilities.FULL_AUDIT_OUTCOMES == audit.FULL_AUDIT_OUTCOMES
     assert audit_capabilities.outcomes_for_template("apm_only") == ["planning.apm_ready"]
     assert audit_capabilities.outcomes_for_template("unknown-template") is None
+    # APM keeps its semantic planning-only dependency; analysis is scheduled
+    # earlier in the full-audit stage order rather than made a prerequisite.
+    assert audit.dependencies("planning.apm_ready") == ("planning.context_ready",)
 
 
 def test_definition_hash_is_stable_and_covers_identity_and_edges():

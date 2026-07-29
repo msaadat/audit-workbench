@@ -91,11 +91,13 @@ doc_test_outcomes_for_template = doc_tests_workflow.outcomes_for_template
 # slice of its workflow graph and exposes ``CAPABILITY_IDS`` plus
 # ``capabilities()``. Order matters: a group's dependencies must be registered
 # before its dependents so the readiness projection can resolve them, which is
-# why the audit composition starts with the document capabilities that
-# ``planning.context_ready`` depends on.
+# why the audit composition includes both document analysis and the independent
+# data-analysis branch that the full-audit outcome order completes before APM
+# preparation.
 AUDIT_DOCUMENT_GROUP = CapabilityGroupView(documents, documents.AUDIT_CAPABILITY_IDS)
 CAPABILITY_GROUPS = (
     AUDIT_DOCUMENT_GROUP,
+    analysis,
     planning,
     tests_group,
     fieldwork,
@@ -339,15 +341,15 @@ REGISTRY_BY_WORKFLOW = {
 def workflow_for_outcomes(outcomes) -> str | None:
     """The workflow definition ID that declares every requested outcome.
 
-    Returns ``None`` when the outcomes are unknown or span two workflows, so a
-    caller fails closed instead of materializing a mixed closure.
+    Returns ``None`` when no registered workflow declares every requested
+    outcome, so a caller fails closed instead of materializing a mixed closure.
 
     The document capabilities are declared by two graphs — their own workflow and,
     for generation only, the audit graph that depends on them — so a match is
     resolved to the *narrowest* workflow that declares everything requested.
     "Analyze these documents" is then the document workflow rather than an audit
-    whose other twelve outcomes were never asked for, while "prepare the RCM"
-    still resolves to the audit graph that alone declares it.
+    whose other outcomes were never asked for, while an APM-plus-analysis set
+    resolves to the audit graph that deliberately declares both.
     """
 
     requested = set(str(value) for value in outcomes or [])

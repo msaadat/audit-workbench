@@ -215,12 +215,13 @@ def test_the_two_workflows_are_separately_addressable():
         capability_registries.workflow_for_outcomes(["planning.apm_ready"])
         == audit_workflow.WORKFLOW_ID
     )
-    # A closure may never span two workflows.
+    # The audit composition deliberately owns this combined scope so a full
+    # audit can schedule analysis before APM without making APM depend on it.
     assert (
         capability_registries.workflow_for_outcomes(
             ["planning.apm_ready", "analysis.executed"]
         )
-        is None
+        == audit_workflow.WORKFLOW_ID
     )
 
 

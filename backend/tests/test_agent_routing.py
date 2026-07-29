@@ -257,8 +257,6 @@ def test_router_result_schema_accepts_the_four_declared_results():
         _router_payload(route="generic_action"),
         _router_payload(requested_outcomes=["planning.not_a_capability"]),
         _router_payload(requested_outcomes=[]),
-        # Outcomes that span two registered workflows.
-        _router_payload(requested_outcomes=["planning.apm_ready", "analysis.executed"]),
         _router_payload(generation_mode="always"),
         _router_payload(route="clarification", requested_outcomes=[], clarification=""),
         _router_payload(
@@ -269,6 +267,17 @@ def test_router_result_schema_accepts_the_four_declared_results():
 def test_router_result_schema_rejects_unsupported_results(payload):
     with pytest.raises(ValueError):
         routing.validate_router_result(payload, routing.supported_outcomes())
+
+
+def test_router_result_accepts_the_audit_owned_apm_and_analysis_scope():
+    resolved = routing.validate_router_result(
+        _router_payload(
+            requested_outcomes=["planning.apm_ready", "analysis.executed"]
+        ),
+        routing.supported_outcomes(),
+    )
+
+    assert resolved["workflow_definition"] == AUDIT
 
 
 def test_action_intent_is_validated_against_the_action_registry():

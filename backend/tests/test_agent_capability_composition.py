@@ -83,6 +83,25 @@ def test_build_audit_registry_is_deterministic_and_matches_the_startup_registry(
 # Pinning them here is the golden test that a later refactor cannot silently
 # change a stage id, worker kind, declared context preset, or invalidation set.
 _DECLARED = {
+    "data.relationships_inferred": (
+        "relationships",
+        "relationship_inference",
+        None,
+        ("tables",),
+    ),
+    "data.joins_ready": ("joins", "join_materialization", None, ("tables",)),
+    "analysis.definitions_ready": (
+        "analysis_definitions",
+        "analysis_definition",
+        "analysis.definitions",
+        ("tables", "joins"),
+    ),
+    "analysis.executed": (
+        "analysis_execution",
+        "analysis_execution",
+        None,
+        ("analyses",),
+    ),
     "planning.context_ready": (
         "planning_context",
         "planning_context",

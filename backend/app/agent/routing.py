@@ -976,11 +976,11 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
     elif document_route:
         calculated_model_turns = _document_model_turns(workspace, scope)
     else:
-        # An audit run also pays for the scoped document analyses planning
-        # depends on, so its budget covers both.
+        # A full audit pays for its scoped document analyses and the independent
+        # data-analysis branch it schedules before APM preparation.
         calculated_model_turns = _audit_model_turns(workspace) + _document_model_turns(
             workspace, scope
-        )
+        ) + _analysis_model_turns(workspace, scope)
     run.setdefault("limits", {}).update(
         max_llm_concurrency=int(
             run.get("limits", {}).get("max_llm_concurrency") or 4

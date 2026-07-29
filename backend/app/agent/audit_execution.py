@@ -29,6 +29,11 @@ from ..workspaces import (
 from . import capabilities as audit_capabilities
 from . import narration, store, workflow
 from .action_runner import ActionRunner
+from .analysis_execution import AnalysisWorkflowExecution
+from .capabilities.analysis import (
+    ANALYSIS_SCOPE_CHECKPOINT,
+    STAGE_CHECKPOINTS as ANALYSIS_STAGE_CHECKPOINTS,
+)
 from .capabilities.documents import (
     DOCUMENT_SCOPE_CHECKPOINT,
     STAGE_CHECKPOINTS as DOCUMENT_STAGE_CHECKPOINTS,
@@ -1208,6 +1213,37 @@ def build_audit_workflow_runner(
             {"deterministic": "reporting.verify"},
         ),
     }
+    # Full-audit runs include the same exploratory analysis capability branch as
+    # the standalone analysis workflow. The audit graph schedules this branch
+    # before planning, but does not make APM semantically depend on it.
+    analysis_adapter = AnalysisWorkflowExecution(
+        workspace,
+        run,
+        handle,
+        runtime=adapter.runtime,
+        context_resolver=adapter.context_resolver,
+    )
+    analysis_adapter.unit_pipeline = unit_pipeline
+    _ANALYSIS_PIPELINE_BINDERS = {
+        "analysis.definitions_ready": (
+            analysis_adapter._bind_definitions,
+            {"worker": "analysis.definitions", "executor": "analysis.definitions"},
+        ),
+    }
+    _ANALYSIS_DETERMINISTIC_BINDERS = {
+        "data.relationships_inferred": (
+            analysis_adapter._bind_relationships,
+            {"deterministic": "analysis.relationships"},
+        ),
+        "data.joins_ready": (
+            analysis_adapter._bind_join,
+            {"deterministic": "analysis.join"},
+        ),
+        "analysis.executed": (
+            analysis_adapter._bind_execution,
+            {"deterministic": "analysis.execution"},
+        ),
+    }
     # The three document generation capabilities ``planning.context_ready``
     # depends on are declared and implemented once, in the document group. The
     # audit composition binds them through the same execution adapter rather than
@@ -1227,6 +1263,32 @@ def build_audit_workflow_runner(
     )
     for capability in audit_capabilities.REGISTRY.all():
         if capability.id in audit_capabilities.AUDIT_DOCUMENT_GROUP.CAPABILITY_IDS:
+            continue
+        analysis_pipeline_binding = _ANALYSIS_PIPELINE_BINDERS.get(capability.id)
+        if analysis_pipeline_binding is not None:
+            binder, identity = analysis_pipeline_binding
+            executions.register(
+                CapabilityExecution(
+                    capability_id=capability.id,
+                    implementation_hash=workflow.canonical_sha256(
+                        {"capability": capability.id, **identity}
+                    ),
+                    pipeline_binder=binder,
+                )
+            )
+            continue
+        analysis_binder = _ANALYSIS_DETERMINISTIC_BINDERS.get(capability.id)
+        if analysis_binder is not None:
+            binder, identity = analysis_binder
+            executions.register(
+                CapabilityExecution(
+                    capability_id=capability.id,
+                    implementation_hash=workflow.canonical_sha256(
+                        {"capability": capability.id, **identity}
+                    ),
+                    deterministic_executor=binder,
+                )
+            )
             continue
         pipeline_binding = _PIPELINE_BINDERS.get(capability.id)
         if pipeline_binding is not None:
@@ -1268,8 +1330,13 @@ def build_audit_workflow_runner(
     checkpoint_handlers = {
         OBSERVATION_DISPOSITION_CHECKPOINT: adapter._observation_checkpoint,
         DOCUMENT_SCOPE_CHECKPOINT: document_adapter._scope_checkpoint,
+        ANALYSIS_SCOPE_CHECKPOINT: analysis_adapter._scope_checkpoint,
     }
-    stage_checkpoints = {**DOCUMENT_STAGE_CHECKPOINTS, **STAGE_CHECKPOINTS}
+    stage_checkpoints = {
+        **DOCUMENT_STAGE_CHECKPOINTS,
+        **ANALYSIS_STAGE_CHECKPOINTS,
+        **STAGE_CHECKPOINTS,
+    }
 
     def before_stage(
         subject: Workspace,
@@ -1278,6 +1345,7 @@ def build_audit_workflow_runner(
     ) -> None:
         adapter.ws = subject
         document_adapter.ws = subject
+        analysis_adapter.ws = subject
         checkpoint = stage_checkpoints.get(capability.id)
         if checkpoint is not None:
             if run.get("mode") == "permission":

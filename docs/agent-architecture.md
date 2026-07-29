@@ -257,6 +257,11 @@ and `capabilities/documents.py`; the audit registry composes that same
 declaration rather than restating it. The authoritative executable audit
 lifecycle exists only in `workflows/audit.py`.
 
+A full-audit request also includes the exploratory-analysis chain below. Its
+stages are materialized before APM preparation as an audit scheduling policy,
+but `planning.apm_ready` does not depend on that chain: a standalone APM request
+still needs only `planning.context_ready`.
+
 ### Exploratory Analysis Workflow
 
 ```text

@@ -14,6 +14,7 @@ grouped ``capabilities`` package reads the graph.
 from __future__ import annotations
 
 from ..workflow import canonical_sha1
+from . import analysis as analysis_workflow
 from . import documents as documents_workflow
 
 # Authoritative workflow identity persisted on every audit run. Bumped to v3
@@ -36,6 +37,12 @@ WORKFLOW_ID = "audit_workflow_v3"
 # is not a universal prerequisite: with no planning-relevant document in scope
 # every document capability's readiness is satisfied and no unit expands, so an
 # audit that carries no documents runs exactly as before.
+#
+# A full audit also schedules the exploratory data-analysis branch. The full
+# outcome set requests that branch before the planning outcomes, so the
+# sequential workflow scheduler completes it before APM preparation. It is *not*
+# a dependency of either planning capability: an APM request on its own remains
+# independent of data analysis.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "documents.text_ready": documents_workflow.dependencies("documents.text_ready"),
     "documents.analysis_chunks_ready": documents_workflow.dependencies(
@@ -44,6 +51,14 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "documents.analysis_generated": documents_workflow.dependencies(
         "documents.analysis_generated"
     ),
+    "data.relationships_inferred": analysis_workflow.dependencies(
+        "data.relationships_inferred"
+    ),
+    "data.joins_ready": analysis_workflow.dependencies("data.joins_ready"),
+    "analysis.definitions_ready": analysis_workflow.dependencies(
+        "analysis.definitions_ready"
+    ),
+    "analysis.executed": analysis_workflow.dependencies("analysis.executed"),
     "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
@@ -68,6 +83,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
 # Complete-audit outcome set requested by "complete the audit" style goals. The
 # transitive closure of these outcomes is the whole graph above.
 FULL_AUDIT_OUTCOMES = [
+    "analysis.executed",
     "findings.drafted",
     "working_papers.generated",
     "dashboard.curated",
