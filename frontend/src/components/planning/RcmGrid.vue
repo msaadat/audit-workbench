@@ -13,7 +13,7 @@ import { workspaceQuery } from '../../composables/useWorkspaceNavigation'
 const props = defineProps<{
   rows: RcmRow[]
   dataTests?: DataTest[]
-  documentTests?: Array<Pick<DocTest, 'id' | 'title' | 'status'>>
+  documentTests?: Array<Pick<DocTest, 'id' | 'title' | 'status' | 'rcm_id' | 'rcm_refs'>>
   findingRollups?: FindingRollups
   generating?: boolean
   canGenerate?: boolean

@@ -43,6 +43,7 @@ const rcmExporting = ref(false)
 const rcmImporting = ref(false)
 const generatingTests = ref(false)
 const runningAllDataTests = ref(false)
+const runningAllDocumentTests = ref(false)
 const detailOpen = ref(false)
 const paperOpen = ref(false)
 const workingPaper = ref<WorkingPaper | null>(null)
@@ -55,6 +56,9 @@ const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === sele
 const selectedObservations = computed(() => (data.value?.observations ?? []).filter(item => item.rcm_id === selectedRcmId.value))
 const rowsWithoutTests = computed(() => (data.value?.rcm ?? []).filter(row => (row.execution_rollup.tests ?? row.test_refs.length) === 0))
 const linkedDataTestCount = computed(() => (data.value?.data_tests ?? []).filter(test => test.rcm_id).length)
+const linkedDocumentTestIds = computed(() => (data.value?.document_tests ?? [])
+  .filter(test => Boolean(test.rcm_id || test.rcm_refs?.length))
+  .map(test => test.id))
 
 function fail(summary: string, error: unknown) {
   toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
@@ -288,6 +292,29 @@ async function runAllDataTests() {
   } catch (error) { fail('Could not run RCM Data Tests', error) }
   finally { runningAllDataTests.value = false }
 }
+async function runAllDocumentTests() {
+  const testIds = linkedDocumentTestIds.value
+  if (!testIds.length) return
+  runningAllDocumentTests.value = true
+  try {
+    await assistantChat.send(
+      `Run all ${testIds.length} RCM-linked Document Test${testIds.length === 1 ? '' : 's'} and preserve the results.`,
+      'act', launchMode.value,
+      {
+        goalTemplate: 'document_test_execution',
+        source: 'tab_button',
+        runContext: { test_ids: testIds },
+      },
+    )
+    toast.add({
+      severity: 'info',
+      summary: `Running ${testIds.length} RCM Document Test${testIds.length === 1 ? '' : 's'}`,
+      detail: 'Progress and any required decisions are visible in the assistant drawer.',
+      life: 4000,
+    })
+  } catch (error) { fail('Could not start RCM Document Tests', error) }
+  finally { runningAllDocumentTests.value = false }
+}
 async function openWorkingPaper() {
   if (!selectedRcm.value) return
   try { workingPaper.value = await api.get(`/api/workspaces/${props.workspace.id}/rcm/${selectedRcm.value.id}/working-paper`); paperOpen.value = true }
@@ -309,7 +336,7 @@ async function copyPaper(kind: 'markdown' | 'html') {
       <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
     </section>
     <section v-else>
-      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
+      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Run all Document Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDocumentTestIds.length || isActive" :loading="runningAllDocumentTests" @click="runAllDocumentTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
       <RcmGrid :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
     </section>

@@ -540,7 +540,7 @@ export interface PlanningPayload {
   procedures: AuditProcedure[]
   data_tests: DataTest[]
   observations: AuditObservation[]
-  document_tests: Array<Pick<DocTest, 'id' | 'title' | 'status'>>
+  document_tests: Array<Pick<DocTest, 'id' | 'title' | 'status' | 'rcm_id' | 'rcm_refs'>>
   findings: AuditFinding[]
   finding_rollups: FindingRollups
 }
