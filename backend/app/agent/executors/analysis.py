@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from ... import dashboard
+from ... import dashboard, sandbox
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import joins as join_diagnostics
@@ -410,6 +410,36 @@ def _validated_definitions(
     return target, accepted
 
 
+def _validate_generated_python_definitions(
+    workspace: Workspace, definitions: list[dict]
+) -> None:
+    """Run generated Polars snippets locally before making them durable.
+
+    Static sandbox validation prevents unsafe code, but it cannot detect a
+    Polars API mismatch, an invalid expression, or a join-schema collision.
+    Execute each accepted generated snippet against the local workspace frames
+    before it becomes an analysis record.  This is local-only and uses exactly
+    the same guarded sandbox that later renders and runs saved analyses.
+    """
+    frames = {}
+    for name in workspace.table_names():
+        try:
+            frames[name] = workspace.get_frame(name)
+        except Exception:
+            continue
+    for definition in definitions:
+        if definition.get("kind") != "python":
+            continue
+        code = str((definition.get("spec") or {}).get("code") or "")
+        try:
+            sandbox.run(code, frames)
+        except sandbox.SandboxError as error:
+            title = str(definition.get("title") or "generated Python analysis")
+            raise WorkspaceError(
+                f"Generated Python analysis '{title}' failed local validation: {error}"
+            ) from error
+
+
 def _existing_analysis(workspace: Workspace, semantic_id: str) -> dict | None:
     stable = analysis_stable_id(semantic_id)
     return next(
@@ -468,6 +498,7 @@ def execute_analysis_definitions(
     preserved unless the run explicitly permits replacement.
     """
     target, accepted = _validated_definitions(request, raw_target)
+    _validate_generated_python_definitions(target.workspace, accepted)
     state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> dict:

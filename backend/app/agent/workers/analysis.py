@@ -9,9 +9,10 @@ response shape, kind enum, registry-ID membership, exact column spelling against
 the supplied schema, the static Polars sandbox contract, and de-duplication
 against the analyses it was shown.
 
-The authoritative, frame-dependent validation — analytics parameter
-canonicalization against real Polars dtypes and actual execution — stays with
-the registered executor, which owns the workspace frames. Importing the
+The authoritative execution stays with the registered executor, which owns the
+workspace frames.  This worker nevertheless validates the complete library-test
+contract it supplied to the model: parameter names, required fields, select
+options, number values, and schema-visible column types. Importing the
 ``analytics`` registry payload and the static ``sandbox`` validator here is
 deliberate and follows the fieldwork precedent: both are application catalogs
 and static contracts rather than engagement content, so they belong to the
@@ -54,7 +55,11 @@ test (an analytics_registry id) and params using exact supplied column names.
 For python, spec contains code: safe Polars that reads the supplied frames
 through the `tables` mapping or their bare table variables and assigns the
 result DataFrame to `result`; imports and any file or network access are
-forbidden. Every analysis must be relevant to the supplied schema, profile,
+forbidden. Use `series.len()` (not `series.height`), use
+`.dt.total_days()` for duration values (not `.dt.days()`), and specify a join
+suffix or select columns before joining frames with overlapping column names.
+Every generated Python analysis is run locally against its supplied workspace
+tables before it can be saved. Every analysis must be relevant to the supplied schema, profile,
 aggregates, and relationship evidence, and must not repeat an analysis already
 supplied in current_analyses. You are never shown table rows and must not invent
 values, counts, or relationships. {JSON_RULES}"""
@@ -116,25 +121,31 @@ def analysis_semantic_id(kind: str, table: str, spec: Mapping[str, Any]) -> str:
     return "analysis:" + hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _analytics_ids(request: WorkerRequest) -> set[str]:
-    """Registry IDs the worker was actually supplied, not a global import.
-
-    The catalog is supplied as declared context so the worker validates against
-    exactly what the model was shown; the imported registry is only the fallback
-    membership check for an ID the supplied payload does not describe.
-    """
+def _analytics_contract(request: WorkerRequest) -> dict[str, dict[str, Any]]:
+    """Return the complete test contract that was supplied to the worker."""
     registry = _plain_json(_resolved_item(request, ANALYTICS_REGISTRY_SOURCE_ID))
     supplied = {
-        str(item.get("id"))
+        str(item.get("id")): dict(item)
         for item in (registry if isinstance(registry, list) else [])
         if isinstance(item, Mapping) and item.get("id")
     }
-    return supplied or set(analytics.ANALYTICS)
+    return supplied or {
+        str(item["id"]): item for item in analytics.registry_payload()
+    }
 
 
 def _column_names(schema: Mapping[str, Any]) -> set[str]:
     return {
         str(column.get("name"))
+        for column in schema.get("columns") or []
+        if str(column.get("name") or "").strip()
+    }
+
+
+def _column_types(schema: Mapping[str, Any]) -> dict[str, str]:
+    """Map exact source columns to the type visible in the model's schema."""
+    return {
+        str(column.get("name")): str(column.get("type") or "")
         for column in schema.get("columns") or []
         if str(column.get("name") or "").strip()
     }
@@ -191,28 +202,50 @@ def _analysis_response_schema(response: str) -> Mapping[str, Any]:
 
 def _validate_analytics_spec(
     spec: Mapping[str, Any],
-    registry_ids: set[str],
+    registry: Mapping[str, Mapping[str, Any]],
     columns: set[str],
+    column_types: Mapping[str, str],
     label: str,
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     test_id = analytics.canonical_test_id(spec.get("test") or spec.get("test_id"))
-    if test_id not in registry_ids:
+    if test_id not in registry:
         errors.append(f"{label} names unknown analytics test '{test_id or ''}'")
         return {"test": test_id, "params": {}}, errors
-    params = spec.get("params")
-    params = dict(params) if isinstance(params, Mapping) else {}
-    meta = analytics.ANALYTICS.get(test_id) or {}
-    for parameter in meta.get("params") or []:
+    raw_params = spec.get("params")
+    if raw_params is not None and not isinstance(raw_params, Mapping):
+        errors.append(f"{label} params must be an object")
+    params = dict(raw_params) if isinstance(raw_params, Mapping) else {}
+    meta = registry[test_id]
+    definitions = list(meta.get("params") or [])
+    allowed = {
+        str(parameter.get("name"))
+        for parameter in definitions
+        if isinstance(parameter, Mapping) and str(parameter.get("name") or "").strip()
+    }
+    unexpected = sorted(str(name) for name in params if str(name) not in allowed)
+    if unexpected:
+        errors.append(f"{label} has unsupported parameter '{unexpected[0]}' for '{test_id}'")
+    for parameter in definitions:
+        if not isinstance(parameter, Mapping):
+            continue
         name = str(parameter.get("name"))
         kind = parameter.get("kind")
+        has_value = name in params and params[name] not in (None, "", [])
         value = params.get(name)
+        if not has_value:
+            if not parameter.get("optional") and "default" not in parameter:
+                errors.append(f"{label} is missing the required '{name}' parameter")
+            continue
         if kind == "column":
-            if not str(value or "").strip():
-                errors.append(f"{label} is missing the '{name}' column parameter")
-            elif str(value) not in columns:
+            if str(value) not in columns:
                 errors.append(
                     f"{label} names column '{value}' which is not in the supplied schema"
+                )
+            elif parameter.get("column_kind") and column_types.get(str(value)) != parameter["column_kind"]:
+                errors.append(
+                    f"{label} requires a {parameter['column_kind']} column for '{name}', "
+                    f"but '{value}' is {column_types.get(str(value)) or 'unknown'}"
                 )
         elif kind == "columns":
             values = value if isinstance(value, list) else []
@@ -225,6 +258,23 @@ def _validate_analytics_spec(
                         f"{label} names column '{unknown[0]}' which is not in the "
                         "supplied schema"
                     )
+        elif kind == "select":
+            allowed_values = [
+                option.get("value")
+                for option in parameter.get("options") or []
+                if isinstance(option, Mapping) and "value" in option
+            ]
+            if not any(
+                type(value) is type(allowed_value) and value == allowed_value
+                for allowed_value in allowed_values
+            ):
+                errors.append(
+                    f"{label} parameter '{name}' must be one of {allowed_values!r}"
+                )
+        elif kind == "number" and (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+        ):
+            errors.append(f"{label} parameter '{name}' must be a number")
     return {"test": test_id, "params": params}, errors
 
 
@@ -266,7 +316,8 @@ def validate_analysis_proposal(
     schema = _target_schema(request)
     target = str(schema["table"])
     columns = _column_names(schema)
-    registry_ids = _analytics_ids(request)
+    column_types = _column_types(schema)
+    registry = _analytics_contract(request)
     existing = _existing_semantic_ids(request)
     related = {
         str((_plain_json(item) or {}).get("table"))
@@ -304,7 +355,7 @@ def validate_analysis_proposal(
         raw_spec = raw_spec if isinstance(raw_spec, Mapping) else {}
         if kind == "analytics":
             spec, spec_errors = _validate_analytics_spec(
-                raw_spec, registry_ids, columns, label
+                raw_spec, registry, columns, column_types, label
             )
         else:
             spec, spec_errors = _validate_python_spec(raw_spec, frames, label)

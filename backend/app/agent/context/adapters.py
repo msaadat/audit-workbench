@@ -1342,23 +1342,15 @@ def analysis_definition_scope(
         for candidate in apm_table_metadata_candidates(workspace)
         if candidate.metadata.get("table") in set(related_names)
     )
-    # A compact projection of the analytics catalog: enough for the worker to
-    # name a real test with real parameters, without spending the declaration's
-    # character budget on prose descriptions.
+    # The complete public contract for every library test.  The worker must be
+    # able to produce a runnable spec, so it receives parameter defaults,
+    # allowed select values, optionality, and column type constraints — not
+    # merely parameter names.  ``registry_payload`` excludes the callable
+    # implementation and remains comfortably inside this source's budget.
     registry = (
         analytics_registry
         if analytics_registry is not None
-        else [
-            {
-                "id": item["id"],
-                "label": item.get("label"),
-                "params": [
-                    {"name": parameter.get("name"), "kind": parameter.get("kind")}
-                    for parameter in item.get("params") or []
-                ],
-            }
-            for item in analytics_module.registry_payload()
-        ]
+        else analytics_module.registry_payload()
     )
     current = [
         {

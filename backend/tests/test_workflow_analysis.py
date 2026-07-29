@@ -16,7 +16,7 @@ import json
 import polars as pl
 import pytest
 
-from app import dashboard, llm, workspaces
+from app import analytics, dashboard, llm, workspaces
 from app.agent import narration, runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent import joins as join_diagnostics
@@ -28,6 +28,7 @@ from app.agent.executors import ExecutorRequest
 from app.agent.executors import analysis as analysis_executors
 from app.agent.routing import classify_command, resolve_route
 from app.agent.workers import analysis as analysis_worker
+from app.agent.workers.model import WorkerRequest, WorkerResponseValidationError
 from app.agent.workflow_dispatch import build_workflow_runner
 from app.agent.workflows import analysis as analysis_workflow
 from app.agent.workflows import audit as audit_workflow
@@ -634,6 +635,129 @@ def test_analysis_context_supplies_metadata_and_aggregates_without_row_values(
     assert relationship and relationship[0]["diagnostics"]["match_rate"] == 1.0
 
 
+def test_analysis_context_supplies_the_complete_library_test_contract(workspace_with_data):
+    ws = workspace_with_data
+    capability = capability_registries.ANALYSIS_REGISTRY.get("analysis.definitions_ready")
+    _manifest, bundle = ContextResolver().resolve(
+        ws,
+        capability,
+        {"id": "analysis_definitions:transactions"},
+        analysis_definition_scope(ws, "transactions"),
+    )
+    supplied_registry = next(
+        item.content for item in bundle.items if item.source_id == "analytics_registry"
+    )
+    assert supplied_registry == analytics.registry_payload()
+    benford = next(item for item in supplied_registry if item["id"] == "benford")
+    assert next(item for item in benford["params"] if item["name"] == "digits") == {
+        "name": "digits",
+        "kind": "select",
+        "label": "Digits",
+        "options": [
+            {"label": "First digit", "value": 1},
+            {"label": "First two digits", "value": 2},
+        ],
+        "default": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("params", "error"),
+    [
+        ({"column": "amount", "digits": "first"}, "must be one of"),
+        ({"column": "amount", "digits": 1, "made_up": True}, "unsupported parameter"),
+        ({"column": "amount", "digits": True}, "must be one of"),
+        ({"column": "cust_id", "digits": 1}, "requires a numeric column"),
+    ],
+)
+def test_analysis_worker_enforces_library_test_contract(
+    workspace_with_data, params, error
+):
+    ws = workspace_with_data
+    capability = capability_registries.ANALYSIS_REGISTRY.get("analysis.definitions_ready")
+    _manifest, bundle = ContextResolver().resolve(
+        ws,
+        capability,
+        {"id": "analysis_definitions:transactions"},
+        analysis_definition_scope(ws, "transactions"),
+    )
+    request = WorkerRequest(
+        worker_id=analysis_worker.ANALYSIS_DEFINITION_WORKER_ID,
+        capability_id=capability.id,
+        unit_id="analysis_definitions:transactions",
+        context=bundle,
+    )
+    with pytest.raises(WorkerResponseValidationError, match=error):
+        analysis_worker.validate_analysis_proposal(
+            {
+                "analyses": [
+                    {
+                        "title": "Benford test",
+                        "kind": "analytics",
+                        "spec": {"test": "benford", "params": params},
+                    }
+                ]
+            },
+            request,
+        )
+
+
+@pytest.mark.parametrize(
+    ("title", "code", "error"),
+    [
+        (
+            "Date lag",
+            "df = tables['transactions']\nresult = (df['tx_date'] - df['tx_date']).dt.days()",
+            "DateTimeNameSpace.*days",
+        ),
+        (
+            "Outlier count",
+            "values = tables['transactions']['amount']\nresult = pl.DataFrame({'count': [values.height]})",
+            "Series.*height",
+        ),
+        (
+            "Ambiguous join",
+            "left = tables['transactions'].rename({'cust_id': 'VENDOR_ID', 'amount': 'VENDOR_ID_right'})\nright = tables['transactions'].rename({'cust_id': 'VENDOR_ID'})\nresult = left.join(right, on='invoice_no', how='left')",
+            "DuplicateError.*VENDOR_ID_right",
+        ),
+    ],
+)
+def test_generated_python_analysis_must_run_before_it_is_saved(
+    workspace_with_data, title, code, error
+):
+    ws = workspace_with_data
+    parent_ref = "table:transactions"
+    semantic_id = analysis_worker.analysis_semantic_id(
+        "python", "transactions", {"code": code}
+    )
+    request = ExecutorRequest(
+        executor_id=analysis_executors.DEFINITIONS_EXECUTOR_ID,
+        capability_id="analysis.definitions_ready",
+        unit_id="analysis_definitions:transactions",
+        proposal={
+            "analyses": [
+                {
+                    "title": title,
+                    "kind": "python",
+                    "table": "transactions",
+                    "spec": {"code": code},
+                    "semantic_id": semantic_id,
+                }
+            ]
+        },
+        expected_revision=ws.revision,
+        expected_parents=parent_hashes(ws, [parent_ref]),
+    )
+    target = analysis_executors.AnalysisDefinitionExecutorTarget(
+        ws, "run-python-validation", "transactions", parent_ref
+    )
+
+    with pytest.raises(workspaces.WorkspaceError, match=error):
+        analysis_executors.execute_analysis_definitions(request, target)
+
+    assert not ws.analyses
+
+
 def test_the_declared_preset_denies_row_level_table_data():
     spec = PRESETS.compile("analysis.definitions")
     assert spec.privacy.allow_table_rows is False
@@ -822,7 +946,7 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
     assert dashboard.compute_payload(fresh, duplicates)["error"] is None
 
 
-def test_a_broken_definition_records_its_error_without_failing_the_run(
+def test_a_broken_definition_is_rejected_before_it_is_saved(
     workspace_with_data, monkeypatch
 ):
     ws = workspace_with_data
@@ -850,11 +974,11 @@ def test_a_broken_definition_records_its_error_without_failing_the_run(
     _drive(ws, run, "analysis.definitions_ready")
     _drive(ws, run, "analysis.executed")
 
-    unit = _stage(run, "analysis.executed")["units"][0]
-    assert unit["status"] == "awaiting_confirmation"
-    recorded = workspaces.load_workspace(ws.id).analyses[0]["last_result"]
-    assert recorded["status"] == "error"
-    assert recorded["error"]
+    definition_unit = _stage(run, "analysis.definitions_ready")["units"][0]
+    assert definition_unit["status"] == "failed"
+    assert "failed local validation" in definition_unit["error"]
+    assert _stage(run, "analysis.executed")["units"] == []
+    assert not workspaces.load_workspace(ws.id).analyses
 
 
 # --------------------------------------------------------------------------- #
