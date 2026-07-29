@@ -1,0 +1,63 @@
+line_id,claim_id,expense_date,expense_category,merchant,description,amount_pkr,receipt_id,receipt_available,business_purpose,country
+EXP-2025-001-L1,EXP-2025-001,2025-04-03,Local transport,Careem,Local transport - Client meeting travel,1630,RCP-001-1,Yes,Client meeting travel,Pakistan
+EXP-2025-001-L2,EXP-2025-001,2025-04-03,Local transport,Careem,Local transport - Client meeting travel,760,RCP-001-2,Yes,Client meeting travel,Pakistan
+EXP-2025-002-L1,EXP-2025-002,2025-04-05,Meals,Serena Hotel,Meals - Client meeting travel,1800,RCP-002-1,Yes,Client meeting travel,Pakistan
+EXP-2025-002-L2,EXP-2025-002,2025-04-05,Meals,Serena Hotel,Meals - Client meeting travel,1070,RCP-002-2,Yes,Client meeting travel,Pakistan
+EXP-2025-003-L1,EXP-2025-003,2025-04-07,Accommodation,Blue Moon Guest House,Accommodation - Business travel support,4800,RCP-003-1,No,Business travel support,Pakistan
+EXP-2025-004-L1,EXP-2025-004,2025-04-09,Air travel,Coffee Wala,Air travel - Business travel support,3820,RCP-77820,Yes,Business travel support,Pakistan
+EXP-2025-004-L2,EXP-2025-004,2025-04-09,Air travel,Coffee Wala,Air travel - Business travel support,1690,RCP-004-2,Yes,Business travel support,Pakistan
+EXP-2025-005-L1,EXP-2025-005,2025-04-11,Mobile data,AirSial,Mobile data - Business travel support,4550,RCP-005-1,Yes,Business travel support,Pakistan
+EXP-2025-005-L2,EXP-2025-005,2025-04-11,Mobile data,AirSial,Mobile data - Business travel support,2000,RCP-005-2,Yes,Business travel support,Pakistan
+EXP-2025-006-L1,EXP-2025-006,2025-04-13,Local transport,Telenor,Local transport - Client meeting travel,1080,RCP-006-1,Yes,Client meeting travel,Pakistan
+EXP-2025-007-L1,EXP-2025-007,2025-04-15,Meals,Lahore Grill,Meals - Client meeting travel,6200,RCP-007-1,Yes,Client meeting travel,Pakistan
+EXP-2025-008-L1,EXP-2025-008,2025-04-17,Accommodation,Serena Hotel,Accommodation - Business travel support,2540,RCP-008-1,Yes,Business travel support,Pakistan
+EXP-2025-008-L2,EXP-2025-008,2025-04-17,Accommodation,Serena Hotel,Accommodation - Business travel support,1030,RCP-008-2,Yes,Business travel support,Pakistan
+EXP-2025-009-L1,EXP-2025-009,2025-04-19,Air travel,Pakistan Railways,Air travel - Business travel support,3270,RCP-009-1,Yes,Business travel support,Pakistan
+EXP-2025-010-L1,EXP-2025-010,2025-04-21,Mobile data,Coffee Wala,Mobile data - Business travel support,4000,RCP-010-1,Yes,Business travel support,Pakistan
+EXP-2025-010-L2,EXP-2025-010,2025-04-21,Mobile data,Coffee Wala,Mobile data - Business travel support,1650,RCP-010-2,Yes,Business travel support,Pakistan
+EXP-2025-011-L1,EXP-2025-011,2025-04-23,Local transport,AirSial,Local transport - Client meeting travel,4730,RCP-011-1,Yes,Client meeting travel,Pakistan
+EXP-2025-011-L2,EXP-2025-011,2025-04-23,Local transport,AirSial,Local transport - Client meeting travel,1960,RCP-011-2,Yes,Client meeting travel,Pakistan
+EXP-2025-012-L1,EXP-2025-012,2025-04-25,Air travel,AirSial,Air travel - Business travel support,47500,RCP-012-1,Yes,Business travel support,Pakistan
+EXP-2025-013-L1,EXP-2025-013,2025-04-27,Accommodation,Careem,Accommodation - Business travel support,1990,RCP-013-1,Yes,Business travel support,Pakistan
+EXP-2025-013-L2,EXP-2025-013,2025-04-27,Accommodation,Careem,Accommodation - Business travel support,680,RCP-013-2,Yes,Business travel support,Pakistan
+EXP-2025-014-L1,EXP-2025-014,2025-04-29,Air travel,Serena Hotel,Air travel - Business travel support,2720,RCP-014-1,Yes,Business travel support,Pakistan
+EXP-2025-014-L2,EXP-2025-014,2025-04-29,Air travel,Serena Hotel,Air travel - Business travel support,990,RCP-014-2,Yes,Business travel support,Pakistan
+EXP-2025-015-L1,EXP-2025-015,2025-05-01,Mobile data,Pakistan Railways,Mobile data - Business travel support,3450,RCP-015-1,Yes,Business travel support,Pakistan
+EXP-2025-016-L1,EXP-2025-016,2025-05-03,Local transport,Coffee Wala,Local transport - Client meeting travel,4180,RCP-016-1,Yes,Client meeting travel,Pakistan
+EXP-2025-016-L2,EXP-2025-016,2025-05-03,Local transport,Coffee Wala,Local transport - Client meeting travel,1610,RCP-016-2,Yes,Client meeting travel,Pakistan
+EXP-2025-017-L1,EXP-2025-017,2025-05-05,Meals,AirSial,Meals - Client meeting travel,1800,RCP-017-1,Yes,Client meeting travel,Pakistan
+EXP-2025-017-L2,EXP-2025-017,2025-05-05,Meals,AirSial,Meals - Client meeting travel,1800,RCP-017-2,Yes,Client meeting travel,Pakistan
+EXP-2025-018-L1,EXP-2025-018,2025-05-07,Local transport,Careem,Local transport - Client meeting travel,3200,RCP-77820,Yes,Client meeting travel,Pakistan
+EXP-2025-019-L1,EXP-2025-019,2025-05-09,Air travel,Careem,Air travel - Business travel support,2170,RCP-019-1,Yes,Business travel support,Pakistan
+EXP-2025-019-L2,EXP-2025-019,2025-05-09,Air travel,Careem,Air travel - Business travel support,640,RCP-019-2,Yes,Business travel support,Pakistan
+EXP-2025-020-L1,EXP-2025-020,2025-05-11,Mobile data,Serena Hotel,Mobile data - Business travel support,2900,RCP-020-1,Yes,Business travel support,Pakistan
+EXP-2025-020-L2,EXP-2025-020,2025-05-11,Mobile data,Serena Hotel,Mobile data - Business travel support,950,RCP-020-2,Yes,Business travel support,Pakistan
+EXP-2025-021-L1,EXP-2025-021,2025-05-13,Local transport,Pakistan Railways,Local transport - Client meeting travel,3630,RCP-021-1,Yes,Client meeting travel,Pakistan
+EXP-2025-022-L1,EXP-2025-022,2025-05-15,Meals,Coffee Wala,Meals - Client meeting travel,1800,RCP-022-1,Yes,Client meeting travel,Pakistan
+EXP-2025-022-L2,EXP-2025-022,2025-05-15,Meals,Coffee Wala,Meals - Client meeting travel,1570,RCP-022-2,Yes,Client meeting travel,Pakistan
+EXP-2025-023-L1,EXP-2025-023,2025-05-17,Accommodation,Serena Hotel,Accommodation - Business travel support,13800,RCP-023-1,Yes,Business travel support,Pakistan
+EXP-2025-024-L1,EXP-2025-024,2025-05-19,Air travel,Telenor,Air travel - Business travel support,1620,RCP-024-1,Yes,Business travel support,Pakistan
+EXP-2025-025-L1,EXP-2025-025,2025-05-21,Mobile data,Careem,Mobile data - Business travel support,2350,RCP-025-1,Yes,Business travel support,Pakistan
+EXP-2025-025-L2,EXP-2025-025,2025-05-21,Mobile data,Careem,Mobile data - Business travel support,600,RCP-025-2,Yes,Business travel support,Pakistan
+EXP-2025-026-L1,EXP-2025-026,2025-05-23,Local transport,Serena Hotel,Local transport - Client meeting travel,3080,RCP-026-1,Yes,Client meeting travel,Pakistan
+EXP-2025-026-L2,EXP-2025-026,2025-05-23,Local transport,Serena Hotel,Local transport - Client meeting travel,910,RCP-026-2,Yes,Client meeting travel,Pakistan
+EXP-2025-027-L1,EXP-2025-027,2025-05-25,Meals,Pakistan Railways,Meals - Client meeting travel,1800,RCP-027-1,Yes,Client meeting travel,Pakistan
+EXP-2025-028-L1,EXP-2025-028,2025-05-27,Accommodation,Coffee Wala,Accommodation - Business travel support,4540,RCP-028-1,Yes,Business travel support,Pakistan
+EXP-2025-028-L2,EXP-2025-028,2025-05-27,Accommodation,Coffee Wala,Accommodation - Business travel support,1530,RCP-028-2,Yes,Business travel support,Pakistan
+EXP-2025-029-L1,EXP-2025-029,2025-05-29,Local transport,Careem,Local transport - Client meeting travel,5400,RCP-029-1,Yes,Client meeting travel,Pakistan
+EXP-2025-030-L1,EXP-2025-030,2025-05-31,Mobile data,Telenor,Mobile data - Business travel support,1800,RCP-030-1,Yes,Business travel support,Pakistan
+EXP-2025-031-L1,EXP-2025-031,2025-06-02,Local transport,Careem,Local transport - Client meeting travel,2530,RCP-031-1,Yes,Client meeting travel,Pakistan
+EXP-2025-031-L2,EXP-2025-031,2025-06-02,Local transport,Careem,Local transport - Client meeting travel,560,RCP-031-2,Yes,Client meeting travel,Pakistan
+EXP-2025-032-L1,EXP-2025-032,2025-06-04,Meals,Serena Hotel,Meals - Client meeting travel,1800,RCP-032-1,Yes,Client meeting travel,Pakistan
+EXP-2025-032-L2,EXP-2025-032,2025-06-04,Meals,Serena Hotel,Meals - Client meeting travel,870,RCP-032-2,Yes,Client meeting travel,Pakistan
+EXP-2025-033-L1,EXP-2025-033,2025-06-06,Accommodation,Pakistan Railways,Accommodation - Business travel support,3990,RCP-033-1,Yes,Business travel support,Pakistan
+EXP-2025-034-L1,EXP-2025-034,2025-06-08,Air travel,Coffee Wala,Air travel - Business travel support,4720,RCP-034-1,Yes,Business travel support,Pakistan
+EXP-2025-034-L2,EXP-2025-034,2025-06-08,Air travel,Coffee Wala,Air travel - Business travel support,1490,RCP-034-2,Yes,Business travel support,Pakistan
+EXP-2025-035-L1,EXP-2025-035,2025-06-10,Alcohol,The Courtyard,Alcohol - Business travel support,1750,RCP-035-1,Yes,Business travel support,Pakistan
+EXP-2025-036-L1,EXP-2025-036,2025-06-12,Local transport,Telenor,Local transport - Client meeting travel,1980,RCP-036-1,Yes,Client meeting travel,Pakistan
+EXP-2025-037-L1,EXP-2025-037,2025-06-14,Meals,Careem,Meals - Client meeting travel,1800,RCP-037-1,Yes,Client meeting travel,Pakistan
+EXP-2025-037-L2,EXP-2025-037,2025-06-14,Meals,Careem,Meals - Client meeting travel,520,RCP-037-2,Yes,Client meeting travel,Pakistan
+EXP-2025-038-L1,EXP-2025-038,2025-06-16,Accommodation,Serena Hotel,Accommodation - Business travel support,3440,RCP-038-1,Yes,Business travel support,Pakistan
+EXP-2025-038-L2,EXP-2025-038,2025-06-16,Accommodation,Serena Hotel,Accommodation - Business travel support,830,RCP-038-2,Yes,Business travel support,Pakistan
+EXP-2025-039-L1,EXP-2025-039,2025-06-18,Air travel,Pakistan Railways,Air travel - Business travel support,4170,RCP-039-1,Yes,Business travel support,Pakistan
+EXP-2025-040-L1,EXP-2025-040,2025-06-20,Local transport,Careem,Local transport - Ride to personal residence,2850,RCP-040-1,Yes,Ride to personal residence,Pakistan

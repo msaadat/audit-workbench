@@ -1,0 +1,13 @@
+employee_id,employee_name,department,cost_center,job_title,currency,employment_status
+EMP-001,Ayesha Khan,Sales,CC-110,Sales Executive,PKR,Active
+EMP-002,Bilal Ahmed,Operations,CC-120,Operations Officer,PKR,Active
+EMP-003,Sana Malik,Finance,CC-130,Accounts Officer,PKR,Active
+EMP-004,Hamza Ali,Sales,CC-110,Regional Sales Lead,PKR,Active
+EMP-005,Fatima Noor,Human Resources,CC-140,HR Business Partner,PKR,Active
+EMP-006,Usman Tariq,Information Technology,CC-150,Systems Analyst,PKR,Active
+EMP-007,Hira Shah,Operations,CC-120,Warehouse Supervisor,PKR,Active
+EMP-008,Omar Farooq,Marketing,CC-160,Marketing Executive,PKR,Active
+EMP-009,Zainab Iqbal,Finance,CC-130,Financial Analyst,PKR,Active
+EMP-010,Danish Raza,Sales,CC-110,Sales Executive,PKR,Active
+EMP-011,Mariam Siddiqui,Operations,CC-120,Procurement Officer,PKR,Active
+EMP-012,Saad Mehmood,Information Technology,CC-150,IT Support Engineer,PKR,Active

@@ -1,0 +1,41 @@
+claim_id,employee_id,employee_name,department,cost_center,expense_start_date,expense_end_date,submission_date,total_claimed_pkr,currency,claim_status,approval_status,payment_voucher_id,policy_self_assessment
+EXP-2025-001,EMP-001,Ayesha Khan,Sales,CC-110,2025-04-03,2025-04-03,2025-04-08,2390,PKR,Paid,Approved,PV-2025-001,Compliant
+EXP-2025-002,EMP-002,Bilal Ahmed,Operations,CC-120,2025-04-05,2025-04-05,2025-04-11,2870,PKR,Paid,Approved,PV-2025-002,Compliant
+EXP-2025-003,EMP-003,Sana Malik,Finance,CC-130,2025-04-07,2025-04-07,2025-04-15,4800,PKR,Paid,Approved,PV-2025-003,Review required
+EXP-2025-004,EMP-004,Hamza Ali,Sales,CC-110,2025-04-09,2025-04-09,2025-04-17,5510,PKR,Paid,Approved,PV-2025-004,Compliant
+EXP-2025-005,EMP-005,Fatima Noor,Human Resources,CC-140,2025-04-11,2025-04-11,2025-04-20,6550,PKR,Paid,Approved,PV-2025-005,Compliant
+EXP-2025-006,EMP-006,Usman Tariq,Information Technology,CC-150,2025-04-13,2025-04-13,2025-04-23,1080,PKR,Paid,Approved,PV-2025-006,Compliant
+EXP-2025-007,EMP-007,Hira Shah,Operations,CC-120,2025-04-15,2025-04-15,2025-04-22,6200,PKR,Paid,Approved,PV-2025-007,Review required
+EXP-2025-008,EMP-008,Omar Farooq,Marketing,CC-160,2025-04-17,2025-04-17,2025-04-29,3570,PKR,Paid,Approved,PV-2025-008,Compliant
+EXP-2025-009,EMP-009,Zainab Iqbal,Finance,CC-130,2025-04-19,2025-04-19,2025-05-02,3270,PKR,Paid,Approved,PV-2025-009,Compliant
+EXP-2025-010,EMP-010,Danish Raza,Sales,CC-110,2025-04-21,2025-04-21,2025-04-25,5650,PKR,Paid,Approved,PV-2025-010,Compliant
+EXP-2025-011,EMP-011,Mariam Siddiqui,Operations,CC-120,2025-04-23,2025-04-23,2025-04-28,6690,PKR,Paid,Approved,PV-2025-011,Compliant
+EXP-2025-012,EMP-012,Saad Mehmood,Information Technology,CC-150,2025-04-25,2025-04-25,2025-05-04,47500,PKR,Paid,Approved,PV-2025-012,Review required
+EXP-2025-013,EMP-001,Ayesha Khan,Sales,CC-110,2025-04-27,2025-04-27,2025-05-04,2670,PKR,Paid,Approved,PV-2025-013,Compliant
+EXP-2025-014,EMP-002,Bilal Ahmed,Operations,CC-120,2025-04-29,2025-04-29,2025-05-07,3710,PKR,Paid,Approved,PV-2025-014,Compliant
+EXP-2025-015,EMP-003,Sana Malik,Finance,CC-130,2025-05-01,2025-05-01,2025-05-10,3450,PKR,Paid,Approved,PV-2025-015,Compliant
+EXP-2025-016,EMP-004,Hamza Ali,Sales,CC-110,2025-05-03,2025-05-03,2025-05-13,5790,PKR,Paid,Approved,PV-2025-016,Compliant
+EXP-2025-017,EMP-005,Fatima Noor,Human Resources,CC-140,2025-05-05,2025-05-05,2025-05-16,3600,PKR,Paid,Approved,PV-2025-017,Compliant
+EXP-2025-018,EMP-006,Usman Tariq,Information Technology,CC-150,2025-05-07,2025-05-07,2025-05-18,3200,PKR,Paid,Approved,PV-2025-018,Review required
+EXP-2025-019,EMP-007,Hira Shah,Operations,CC-120,2025-05-09,2025-05-09,2025-05-22,2810,PKR,Paid,Approved,PV-2025-019,Compliant
+EXP-2025-020,EMP-008,Omar Farooq,Marketing,CC-160,2025-05-11,2025-05-11,2025-05-15,3850,PKR,Paid,Approved,PV-2025-020,Compliant
+EXP-2025-021,EMP-009,Zainab Iqbal,Finance,CC-130,2025-05-13,2025-05-13,2025-05-18,3630,PKR,Paid,Approved,PV-2025-021,Compliant
+EXP-2025-022,EMP-010,Danish Raza,Sales,CC-110,2025-05-15,2025-05-15,2025-05-21,3370,PKR,Paid,Approved,PV-2025-022,Compliant
+EXP-2025-023,EMP-011,Mariam Siddiqui,Operations,CC-120,2025-05-17,2025-05-17,2025-05-23,13800,PKR,Paid,Approved,PV-2025-023,Review required
+EXP-2025-024,EMP-012,Saad Mehmood,Information Technology,CC-150,2025-05-19,2025-05-19,2025-05-27,1620,PKR,Paid,Approved,PV-2025-024,Compliant
+EXP-2025-025,EMP-001,Ayesha Khan,Sales,CC-110,2025-05-21,2025-05-21,2025-05-30,2950,PKR,Paid,Approved,PV-2025-025,Compliant
+EXP-2025-026,EMP-002,Bilal Ahmed,Operations,CC-120,2025-05-23,2025-05-23,2025-06-02,3990,PKR,Paid,Approved,PV-2025-026,Compliant
+EXP-2025-027,EMP-003,Sana Malik,Finance,CC-130,2025-05-25,2025-05-25,2025-06-05,1800,PKR,Paid,Approved,PV-2025-027,Compliant
+EXP-2025-028,EMP-004,Hamza Ali,Sales,CC-110,2025-05-27,2025-05-27,2025-06-08,6070,PKR,Paid,Approved,PV-2025-028,Compliant
+EXP-2025-029,EMP-005,Fatima Noor,Human Resources,CC-140,2025-05-29,2025-05-29,2025-08-03,5400,PKR,Paid,Approved,PV-2025-029,Review required
+EXP-2025-030,EMP-006,Usman Tariq,Information Technology,CC-150,2025-05-31,2025-05-31,2025-06-04,1800,PKR,Paid,Approved,PV-2025-030,Compliant
+EXP-2025-031,EMP-007,Hira Shah,Operations,CC-120,2025-06-02,2025-06-02,2025-06-07,3090,PKR,Paid,Approved,PV-2025-031,Compliant
+EXP-2025-032,EMP-008,Omar Farooq,Marketing,CC-160,2025-06-04,2025-06-04,2025-06-10,2670,PKR,Paid,Approved,PV-2025-032,Compliant
+EXP-2025-033,EMP-009,Zainab Iqbal,Finance,CC-130,2025-06-06,2025-06-06,2025-06-13,3990,PKR,Paid,Approved,PV-2025-033,Compliant
+EXP-2025-034,EMP-010,Danish Raza,Sales,CC-110,2025-06-08,2025-06-08,2025-06-16,6210,PKR,Paid,Approved,PV-2025-034,Compliant
+EXP-2025-035,EMP-011,Mariam Siddiqui,Operations,CC-120,2025-06-10,2025-06-10,2025-06-15,1750,PKR,Paid,Approved,PV-2025-035,Review required
+EXP-2025-036,EMP-012,Saad Mehmood,Information Technology,CC-150,2025-06-12,2025-06-12,2025-06-22,1980,PKR,Paid,Approved,PV-2025-036,Compliant
+EXP-2025-037,EMP-001,Ayesha Khan,Sales,CC-110,2025-06-14,2025-06-14,2025-06-25,2320,PKR,Paid,Approved,PV-2025-037,Compliant
+EXP-2025-038,EMP-002,Bilal Ahmed,Operations,CC-120,2025-06-16,2025-06-16,2025-06-28,4270,PKR,Paid,Approved,PV-2025-038,Compliant
+EXP-2025-039,EMP-003,Sana Malik,Finance,CC-130,2025-06-18,2025-06-18,2025-07-01,4170,PKR,Paid,Approved,PV-2025-039,Compliant
+EXP-2025-040,EMP-004,Hamza Ali,Sales,CC-110,2025-06-20,2025-06-20,2025-06-24,2850,PKR,Paid,Approved,PV-2025-040,Review required

@@ -1,0 +1,7 @@
+policy_ref,control_area,requirement,threshold,applies_to
+POL-01,Receipt requirement,"Any single item at or above PKR 1,000 requires an original or scanned receipt.",1000,Per line item
+POL-02,Domestic meals,"Daily domestic meal reimbursement may not exceed PKR 4,000.",4000,Per employee per day
+POL-03,Local transport,Local business transport is reimbursable with business purpose and receipt.,No monetary cap,Per line item
+POL-04,Submission timing,Claims must be submitted within 60 calendar days after the last expense date.,60 days,Per claim
+POL-05,Approval before payment,A claim must have recorded delegated approval before Finance releases payment.,Required,Per claim
+POL-06,Ineligible expenditure,"Alcohol, personal expenditure, fines, and family costs are not reimbursable.",Not reimbursable,Per line item
