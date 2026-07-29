@@ -971,6 +971,47 @@ export interface AnalysisLastResult {
   column_count: number
   stat_count: number
   stats: StatChip[]
+  input_sha1?: string
+}
+
+export type AnalysisSummaryClassification =
+  | 'exception'
+  | 'unusual'
+  | 'execution_error'
+  | 'clear'
+  | 'informational'
+  | 'stale'
+  | 'not_run'
+
+export interface AnalysisSummaryItem {
+  analysis_id: string
+  title: string
+  table: string | null
+  kind: 'analytics' | 'python'
+  source: 'library' | 'ai' | 'code'
+  classification: AnalysisSummaryClassification
+  state: 'current' | 'stale' | 'not_run'
+  run_id: string | null
+  executed_at: string | null
+  status: 'ok' | 'error' | null
+  verdict: 'ok' | 'warn' | 'fail' | 'info' | null
+  verdict_text: string | null
+  error: string | null
+  row_count: number
+  stats: StatChip[]
+  result_sha1: string | null
+}
+
+export interface AnalysisSummaryPayload {
+  counts: {
+    needs_review: number
+    errors: number
+    clear: number
+    informational: number
+    stale: number
+    not_run: number
+  }
+  items: AnalysisSummaryItem[]
 }
 
 // ------------------------------------------------------------- validation

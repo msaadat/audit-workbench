@@ -1073,6 +1073,7 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
         "column_count",
         "stat_count",
         "stats",
+        "input_sha1",
         "result_sha1",
     }
     assert len(result["stats"]) <= analysis_executors.MAX_RESULT_STATS

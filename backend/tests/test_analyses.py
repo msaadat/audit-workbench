@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import workspaces
+from app.analysis_results import analyses_summary_payload, analysis_input_sha1
+from app.agent.executors.analysis import run_analysis
 from app.dashboard import analyses_payload, analysis_payload
 from app.main import create_app
 from app.workspaces import WorkspaceError
@@ -116,6 +118,86 @@ def test_analysis_payload_includes_persisted_workflow_result(workspace_with_data
     assert analyses_payload(ws)["analyses"][0]["last_result"] == analysis["last_result"]
 
 
+def test_analysis_summary_projects_only_bounded_outcomes(workspace_with_data):
+    ws = workspace_with_data
+    flagged = _library_analysis(ws)
+    clear = _python_analysis(ws)
+    flagged["last_result"] = {
+        "run_id": "run-123",
+        "executed_at": "2026-07-28T16:22:41+00:00",
+        "status": "ok",
+        "verdict": "fail",
+        "verdict_text": "2 duplicate values",
+        "row_count": 2,
+        "stats": [{"label": "Duplicates", "value": "2"}],
+        "input_sha1": analysis_input_sha1(ws, flagged),
+        "result_sha1": "result-1",
+    }
+    clear["last_result"] = {
+        "run_id": "run-124",
+        "executed_at": "2026-07-28T16:22:42+00:00",
+        "status": "ok",
+        "verdict": "ok",
+        "verdict_text": "No potential exception rows returned.",
+        "row_count": 0,
+        "stats": [],
+        "input_sha1": analysis_input_sha1(ws, clear),
+        "result_sha1": "result-2",
+    }
+
+    payload = analyses_summary_payload(ws)
+
+    assert payload["counts"] == {
+        "needs_review": 1,
+        "errors": 0,
+        "clear": 1,
+        "informational": 0,
+        "stale": 0,
+        "not_run": 0,
+    }
+    item = next(item for item in payload["items"] if item["analysis_id"] == flagged["id"])
+    assert item["classification"] == "exception"
+    assert item["stats"] == [{"label": "Duplicates", "value": "2"}]
+    assert "spec" not in item and "code" not in item and "frame" not in item
+
+
+def test_analysis_summary_marks_changed_inputs_stale_and_spec_edits_clear_result(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis["last_result"] = {
+        "run_id": "run-123",
+        "executed_at": "2026-07-28T16:22:41+00:00",
+        "status": "ok",
+        "verdict": "warn",
+        "verdict_text": "Possible duplicates",
+        "row_count": 2,
+        "stats": [],
+        "input_sha1": "outdated",
+        "result_sha1": "result-1",
+    }
+    assert analyses_summary_payload(ws)["counts"]["stale"] == 1
+
+    ws.update_analysis(analysis["id"], {"spec": {"test": "duplicates", "params": {"columns": ["amount"]}}})
+    assert "last_result" not in ws._analysis(analysis["id"])
+
+
+def test_python_exception_policy_turns_nonempty_result_into_a_review_signal(workspace_with_data):
+    ws = workspace_with_data
+    analysis = ws.add_analysis(
+        {
+            "kind": "python",
+            "table": "transactions",
+            "title": "Potential exception rows",
+            "spec": {"code": "result = df.head(2)"},
+            "outcome_policy": {"mode": "exception_rows"},
+        }
+    )
+    result = run_analysis(ws, analysis, run_id="run-summary")
+    assert result["verdict"] == "warn"
+    assert result["verdict_text"] == "2 potential exception row(s) returned."
+    assert result["input_sha1"] == analysis_input_sha1(ws, analysis)
+
+
 def test_broken_analysis_degrades_to_error(workspace_with_data):
     ws = workspace_with_data
     lib = _library_analysis(ws)
@@ -145,6 +227,9 @@ def test_analyses_api_roundtrip(workspace_with_data):
 
     listed = client.get(f"/api/workspaces/{ws.id}/analyses").json()
     assert len(listed["analyses"]) == 1
+    summary = client.get(f"/api/workspaces/{ws.id}/analyses/summary")
+    assert summary.status_code == 200
+    assert summary.json()["counts"]["not_run"] == 1
 
     renamed = client.patch(
         f"/api/workspaces/{ws.id}/analyses/{analysis_id}", json={"title": "Duplicates"}

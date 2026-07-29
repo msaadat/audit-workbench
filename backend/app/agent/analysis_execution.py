@@ -49,6 +49,7 @@ from .executors.analysis import (
     relationship_ref,
     run_analysis,
 )
+from ..analysis_results import analysis_result_state
 from .execution_support import refresh_workspace, workflow_scope
 from .runtime import (
     BoundUnitPipeline,
@@ -722,7 +723,9 @@ class AnalysisWorkflowExecution(BaseRunner):
             for unit in units
         )
         analyses = agent_analyses(subject, table_scope)
-        executed = [item for item in analyses if item.get("last_result")]
+        executed = [
+            item for item in analyses if analysis_result_state(subject, item) == "current"
+        ]
         next_outcomes = [
             str(stage["capability"])
             for stage in stages

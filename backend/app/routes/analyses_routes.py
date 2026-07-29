@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body
 
-from .. import dashboard, workspaces
+from .. import analysis_results, dashboard, workspaces
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["analyses"])
 
@@ -18,6 +18,13 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["analyses"])
 async def get_analyses(workspace_id: str):
     ws = workspaces.load_workspace(workspace_id)
     return dashboard.analyses_payload(ws)
+
+
+@router.get("/analyses/summary")
+async def get_analyses_summary(workspace_id: str):
+    """Read persisted execution metadata without re-running any procedure."""
+    ws = workspaces.load_workspace(workspace_id)
+    return analysis_results.analyses_summary_payload(ws)
 
 
 @router.post("/analyses")

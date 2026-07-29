@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
+import SelectButton from 'primevue/selectbutton'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { workspaceQuery } from '../composables/useWorkspaceNavigation'
 import type { SavedAnalysis, WorkspaceSummary } from '../types'
 import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
 import AnalysisCode from './analysis/AnalysisCode.vue'
+import AnalysisSummary from './analysis/AnalysisSummary.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiVerdictStatus from './ui/UiVerdictStatus.vue'
 
@@ -19,11 +23,19 @@ import UiVerdictStatus from './ui/UiVerdictStatus.vue'
 // promotes a copy to the dashboard.
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
+const route = useRoute()
+const router = useRouter()
 
 const analyses = ref<SavedAnalysis[]>([])
 const selectedId = ref<string | null>(null)
 const creating = ref<'library' | 'code' | null>(null)
 const loading = ref(false)
+const view = ref<'summary' | 'procedures'>(route.query.view === 'procedures' ? 'procedures' : 'summary')
+const summaryRef = ref<InstanceType<typeof AnalysisSummary> | null>(null)
+const views = [
+  { label: 'Summary', value: 'summary' },
+  { label: 'Procedures', value: 'procedures' },
+]
 
 const sourceIcon: Record<string, string> = {
   library: 'pi pi-book', ai: 'pi pi-sparkles', code: 'pi pi-code',
@@ -50,7 +62,22 @@ async function load() {
     loading.value = false
   }
 }
-watch(() => props.workspace.id, load, { immediate: true })
+watch(() => props.workspace.id, () => {
+  if (view.value === 'procedures') void load()
+}, { immediate: true })
+
+watch(() => [route.query.view, route.query.analysis], () => {
+  const analysisId = String(route.query.analysis || '')
+  const target: 'summary' | 'procedures' = analysisId || String(route.query.view || 'summary') === 'procedures'
+    ? 'procedures'
+    : 'summary'
+  if (target !== view.value) view.value = target
+  if (analysisId) {
+    selectedId.value = analysisId
+    creating.value = null
+    if (!analyses.value.some(item => item.id === analysisId)) void load()
+  }
+}, { immediate: true })
 
 // Live-refresh the rail after any durable agent commit. Revision-based
 // invalidation also covers commits that do not expose a typed artifact event.
@@ -60,16 +87,36 @@ const unsubscribe = useAgentRun(props.workspace.id).onWorkspaceInvalidated(() =>
 onUnmounted(unsubscribe)
 
 function startLibrary() {
+  void setView('procedures')
   creating.value = 'library'
   selectedId.value = null
 }
 function startCode() {
+  void setView('procedures')
   creating.value = 'code'
   selectedId.value = null
 }
 function select(a: SavedAnalysis) {
   selectedId.value = a.id
   creating.value = null
+  void router.replace({ query: workspaceQuery('analysis', { view: 'procedures', analysis: a.id }) })
+}
+
+async function setView(raw: string) {
+  const next: 'summary' | 'procedures' = raw === 'procedures' ? 'procedures' : 'summary'
+  view.value = next
+  if (next === 'procedures') await load()
+  await router.replace({
+    query: workspaceQuery('analysis', next === 'procedures'
+      ? { view: next, analysis: selectedId.value || undefined }
+      : { view: next }),
+  })
+}
+
+async function openAnalysis(analysisId: string) {
+  selectedId.value = analysisId
+  creating.value = null
+  await setView('procedures')
 }
 
 async function onSaved(created: SavedAnalysis) {
@@ -78,19 +125,27 @@ async function onSaved(created: SavedAnalysis) {
 }
 async function onChanged() {
   const keep = selectedId.value
-  await load()
+  if (view.value === 'procedures') await load()
+  await summaryRef.value?.load()
   selectedId.value = keep
 }
 async function onDeleted() {
   selectedId.value = null
   creating.value = null
-  await load()
+  if (view.value === 'procedures') await load()
+  await summaryRef.value?.load()
 }
 
 </script>
 
 <template>
-  <UiMasterDetail railWidth="17rem" class="analysis">
+  <section class="analysis-shell">
+    <div class="analysis-nav">
+      <SelectButton :modelValue="view" :options="views" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" @update:modelValue="setView" />
+      <span v-if="view === 'procedures'" class="muted">Create, edit, and run saved procedures.</span>
+    </div>
+    <AnalysisSummary v-if="view === 'summary'" ref="summaryRef" :workspace="workspace" @open="openAnalysis" />
+  <UiMasterDetail v-if="view === 'procedures'" railWidth="17rem" class="analysis">
     <template #rail><div class="rail">
       <div class="rail-heading"><p class="eyebrow">Analysis library</p><strong>Saved procedures</strong></div>
       <div class="rail-actions">
@@ -151,6 +206,7 @@ async function onDeleted() {
       </div>
     </section>
   </UiMasterDetail>
+  </section>
 </template>
 
 <style scoped>
@@ -160,6 +216,7 @@ async function onDeleted() {
      page scrolling as one. */
   min-height: 32rem;
 }
+.analysis-shell { min-width:0; }.analysis-nav { display:flex; align-items:center; gap:.75rem; margin:0 0 1rem; }.muted { color:var(--aw-muted); font-size:.82rem; }
 
 .rail {
   display: flex;

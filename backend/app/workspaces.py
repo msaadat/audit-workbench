@@ -1226,6 +1226,11 @@ class Workspace:
                 "note": str(payload.get("note") or "").strip(),
                 "source": payload.get("source") or ("ai" if kind == "python" else "library"),
                 "created": date.today().isoformat(),
+                **(
+                    {"outcome_policy": dict(payload["outcome_policy"])}
+                    if isinstance(payload.get("outcome_policy"), dict)
+                    else {}
+                ),
             },
             payload,
         )
@@ -1257,6 +1262,12 @@ class Workspace:
             if analysis["kind"] == "python" and not str(changes["spec"].get("code") or "").strip():
                 raise WorkspaceError("A Python analysis needs code.")
             analysis["spec"] = dict(changes["spec"])
+            # A result belongs to an exact procedure definition.  Do not carry
+            # an old conclusion forward after changing its code or parameters.
+            analysis.pop("last_result", None)
+        if "outcome_policy" in changes and isinstance(changes["outcome_policy"], dict):
+            analysis["outcome_policy"] = dict(changes["outcome_policy"])
+            analysis.pop("last_result", None)
         self.save()
         return analysis
 

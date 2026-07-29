@@ -8,6 +8,7 @@ const ownedKeys: Record<string, readonly string[]> = {
   documents: ['doc', 'page'],
   'doc-tests': ['test', 'item', 'create', 'rcm'],
   'data-tests': ['test', 'create', 'rcm'],
+  analysis: ['view', 'analysis'],
   findings: ['finding'],
 }
 

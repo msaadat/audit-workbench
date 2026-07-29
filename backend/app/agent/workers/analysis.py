@@ -59,7 +59,9 @@ forbidden. Use `series.len()` (not `series.height`), use
 `.dt.total_days()` for duration values (not `.dt.days()`), and specify a join
 suffix or select columns before joining frames with overlapping column names.
 Every generated Python analysis is run locally against its supplied workspace
-tables before it can be saved. Every analysis must be relevant to the supplied schema, profile,
+tables before it can be saved. Set outcome_policy to ``exception_rows`` only
+when every returned row is a potential exception; otherwise use
+``informational``. Every analysis must be relevant to the supplied schema, profile,
 aggregates, and relationship evidence, and must not repeat an analysis already
 supplied in current_analyses. You are never shown table rows and must not invent
 values, counts, or relationships. {JSON_RULES}"""
@@ -293,6 +295,17 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                     "additionalProperties": False,
                 },
                 "note": {"type": "string"},
+                "outcome_policy": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["exception_rows", "informational"],
+                        }
+                    },
+                    "required": ["mode"],
+                    "additionalProperties": False,
+                },
             },
             "required": ["title", "kind", "spec"],
             "additionalProperties": False,
@@ -536,6 +549,15 @@ def validate_analysis_proposal(
             )
         else:
             spec, spec_errors = _validate_python_spec(raw_spec, frames, label)
+        outcome_policy = item.get("outcome_policy")
+        if kind == "python":
+            outcome_policy = dict(outcome_policy) if isinstance(outcome_policy, Mapping) else {"mode": "informational"}
+            if outcome_policy.get("mode") not in {"exception_rows", "informational"}:
+                spec_errors.append(
+                    f"{label} outcome_policy.mode must be exception_rows or informational"
+                )
+        else:
+            outcome_policy = None
         errors.extend(spec_errors)
         if spec_errors or not title:
             continue
@@ -558,6 +580,7 @@ def validate_analysis_proposal(
                 "table": target,
                 "spec": spec,
                 "note": str(item.get("note") or "").strip(),
+                **({"outcome_policy": outcome_policy} if outcome_policy else {}),
                 "semantic_id": semantic,
             }
         )

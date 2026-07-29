@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from ... import dashboard, sandbox
+from ... import analysis_results, dashboard, sandbox
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import joins as join_diagnostics
@@ -340,7 +340,7 @@ def reconcile_join(
 # --------------------------------------------------------------------------- #
 # The declared fields an accepted analysis proposal may write. Provenance,
 # identity, and result state are owned by the executor, never the proposal.
-ANALYSIS_FIELDS = ("title", "kind", "table", "spec", "note")
+ANALYSIS_FIELDS = ("title", "kind", "table", "spec", "note", "outcome_policy")
 
 
 def analysis_ref(analysis_id: str) -> str:
@@ -525,11 +525,17 @@ def execute_analysis_definitions(
                     "table": definition["table"],
                     "spec": dict(definition.get("spec") or {}),
                     "note": str(definition.get("note") or ""),
+                    **(
+                        {"outcome_policy": dict(definition["outcome_policy"])}
+                        if isinstance(definition.get("outcome_policy"), Mapping)
+                        else {}
+                    ),
                     "semantic_id": semantic,
                     "agent_run_id": target.run_id,
                     "created_by": "agent",
                 }
             )
+            existing.pop("last_result", None)
             written.append({**existing, "action": "updated"})
         if not written and not creates:
             raise AnalysisEditPreserved(AUDITOR_ANALYSIS_PRESERVED)
@@ -643,7 +649,13 @@ class AnalysisExecutionExecutorTarget:
             setattr(self, field_name, value)
 
 
-def bounded_result(payload: Mapping[str, object], *, run_id: str) -> dict:
+def bounded_result(
+    payload: Mapping[str, object],
+    *,
+    run_id: str,
+    workspace: Workspace,
+    analysis: Mapping[str, object],
+) -> dict:
     """Project a computed analysis payload onto the durable result contract.
 
     Only shape, verdict, and the analytics service's own bounded label/value
@@ -658,20 +670,46 @@ def bounded_result(payload: Mapping[str, object], *, run_id: str) -> dict:
         if isinstance(item, Mapping)
     ]
     error = payload.get("error")
+    verdict = str(payload.get("verdict") or "") or None
+    verdict_text = str(payload.get("verdict_text") or "") or None
+    row_count = int(payload.get("total_rows") or 0)
+    if not error and analysis.get("kind") == "python":
+        policy = str((analysis.get("outcome_policy") or {}).get("mode") or "informational")
+        if policy == "exception_rows":
+            verdict = "warn" if row_count else "ok"
+            verdict_text = (
+                f"{row_count:,} potential exception row(s) returned."
+                if row_count
+                else "No potential exception rows returned."
+            )
+        else:
+            verdict = "info"
+            verdict_text = f"{row_count:,} result row(s) returned."
     record = {
         "run_id": run_id,
         "executed_at": _utcnow(),
         "status": "error" if error else "ok",
         "error": str(error) if error else None,
-        "verdict": str(payload.get("verdict") or "") or None,
-        "verdict_text": str(payload.get("verdict_text") or "") or None,
-        "row_count": int(payload.get("total_rows") or 0),
+        "verdict": verdict,
+        "verdict_text": verdict_text,
+        "row_count": row_count,
         "column_count": len(list((frame or {}).get("columns") or [])),
         "stat_count": len(stats),
         "stats": stats[:MAX_RESULT_STATS],
+        "input_sha1": analysis_results.analysis_input_sha1(workspace, analysis),
     }
     record["result_sha1"] = _canonical_sha1(
-        {key: record[key] for key in ("status", "verdict", "row_count", "column_count", "stats")}
+        {
+            key: record[key]
+            for key in (
+                "status",
+                "verdict",
+                "row_count",
+                "column_count",
+                "stats",
+                "input_sha1",
+            )
+        }
     )
     return record
 
@@ -685,7 +723,7 @@ def run_analysis(workspace: Workspace, analysis: Mapping[str, object], *, run_id
     sandbox. Nothing leaves the machine.
     """
     payload = dashboard.compute_payload(workspace, dict(analysis))
-    return bounded_result(payload, run_id=run_id)
+    return bounded_result(payload, run_id=run_id, workspace=workspace, analysis=analysis)
 
 
 def _validated_execution(

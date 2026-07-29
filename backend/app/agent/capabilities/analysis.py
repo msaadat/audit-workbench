@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from ... import analytics
+from ...analysis_results import analysis_result_state
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import analysis as analysis_workflow
@@ -430,7 +431,9 @@ def _executed_ready(workspace: Workspace, scope: dict) -> Readiness:
             ("no analysis definitions exist for the requested scope",),
             details={"definitions": 0, "executed": 0},
         )
-    executed = [item for item in items if item.get("last_result")]
+    executed = [
+        item for item in items if analysis_result_state(workspace, item) == "current"
+    ]
     details = {"definitions": len(items), "executed": len(executed)}
     if len(executed) == len(items):
         return Readiness("satisfied", details=details)
@@ -453,7 +456,7 @@ def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             {"analysis_id": str(item["id"]), "table": item.get("table")},
         )
         for item in agent_analyses(workspace, table_scope)
-        if forced or not item.get("last_result")
+        if forced or analysis_result_state(workspace, item) != "current"
     ]
 
 
