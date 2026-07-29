@@ -28,6 +28,14 @@ from ..workflow import canonical_sha1
 # Authoritative workflow identity persisted on every analysis run.
 WORKFLOW_ID = "analysis_workflow_v1"
 
+# These tests remain available in the manual analytics library but are not
+# proposed or re-executed by the autonomous analysis workflow. Their audit
+# signal is generally weaker than relationship, duplicate, timing, threshold,
+# completeness, and outlier tests.
+EXCLUDED_ANALYTICS_TEST_IDS = frozenset(
+    {"benford", "round_numbers", "last_two_digits"}
+)
+
 # The analysis dependency graph. Each capability ID maps to its direct
 # dependencies in declaration order. Unlike the audit graph this one is a linear
 # chain: every later outcome consumes the artifacts the previous one made
@@ -77,6 +85,7 @@ def definition_hash() -> str:
     return canonical_sha1(
         {
             "workflow_id": WORKFLOW_ID,
+            "excluded_analytics_test_ids": sorted(EXCLUDED_ANALYTICS_TEST_IDS),
             "dependencies": {
                 capability_id: list(deps)
                 for capability_id, deps in DEPENDENCIES.items()

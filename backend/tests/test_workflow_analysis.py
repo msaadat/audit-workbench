@@ -23,7 +23,12 @@ from app.agent import joins as join_diagnostics
 from app.agent.analysis_execution import build_analysis_workflow_runner
 from app.agent.audit_execution import build_audit_workflow_runner
 from app.agent.capabilities import analysis as analysis_capabilities
-from app.agent.context import PRESETS, ContextResolver, analysis_definition_scope
+from app.agent.context import (
+    ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS,
+    PRESETS,
+    ContextResolver,
+    analysis_definition_scope,
+)
 from app.agent.executors import ExecutorRequest
 from app.agent.executors import analysis as analysis_executors
 from app.agent.routing import classify_command, resolve_route
@@ -635,7 +640,9 @@ def test_analysis_context_supplies_metadata_and_aggregates_without_row_values(
     assert relationship and relationship[0]["diagnostics"]["match_rate"] == 1.0
 
 
-def test_analysis_context_supplies_the_complete_library_test_contract(workspace_with_data):
+def test_analysis_context_supplies_the_complete_workflow_library_contract(
+    workspace_with_data,
+):
     ws = workspace_with_data
     capability = capability_registries.ANALYSIS_REGISTRY.get("analysis.definitions_ready")
     _manifest, bundle = ContextResolver().resolve(
@@ -647,27 +654,70 @@ def test_analysis_context_supplies_the_complete_library_test_contract(workspace_
     supplied_registry = next(
         item.content for item in bundle.items if item.source_id == "analytics_registry"
     )
-    assert supplied_registry == analytics.registry_payload()
-    benford = next(item for item in supplied_registry if item["id"] == "benford")
-    assert next(item for item in benford["params"] if item["name"] == "digits") == {
-        "name": "digits",
+    expected = [
+        item
+        for item in analytics.registry_payload()
+        if item["id"] not in ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS
+    ]
+    assert supplied_registry == expected
+    supplied_ids = {item["id"] for item in supplied_registry}
+    assert ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS.isdisjoint(supplied_ids)
+    outliers = next(item for item in supplied_registry if item["id"] == "outliers")
+    assert next(item for item in outliers["params"] if item["name"] == "method") == {
+        "name": "method",
         "kind": "select",
-        "label": "Digits",
+        "label": "Method",
         "options": [
-            {"label": "First digit", "value": 1},
-            {"label": "First two digits", "value": 2},
+            {"label": "Z-score (mean ± kσ)", "value": "zscore"},
+            {"label": "IQR (Tukey fence)", "value": "iqr"},
         ],
-        "default": 1,
+        "default": "zscore",
     }
+
+
+def test_low_impact_digit_tests_are_not_workflow_analyses(workspace_with_data):
+    ws = workspace_with_data
+    for test_id in sorted(ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS):
+        ws.add_analysis(
+            {
+                "title": f"Excluded {test_id}",
+                "kind": "analytics",
+                "table": "transactions",
+                "spec": {"test": test_id, "params": {}},
+                "agent_run_id": "run-exclusions",
+            }
+        )
+    included = ws.add_analysis(
+        {
+            "title": "Included duplicate test",
+            "kind": "analytics",
+            "table": "transactions",
+            "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+            "agent_run_id": "run-exclusions",
+        }
+    )
+    table_scope = analysis_capabilities.resolve_table_scope(
+        ws, {"target_refs": ["table:transactions"]}
+    )
+
+    assert [
+        item["id"] for item in analysis_capabilities.agent_analyses(ws, table_scope)
+    ] == [included["id"]]
 
 
 @pytest.mark.parametrize(
     ("params", "error"),
     [
-        ({"column": "amount", "digits": "first"}, "must be one of"),
-        ({"column": "amount", "digits": 1, "made_up": True}, "unsupported parameter"),
-        ({"column": "amount", "digits": True}, "must be one of"),
-        ({"column": "cust_id", "digits": 1}, "requires a numeric column"),
+        ({"column": "amount", "method": "tukey"}, "must be one of"),
+        (
+            {"column": "amount", "method": "iqr", "made_up": True},
+            "unsupported parameter",
+        ),
+        (
+            {"column": "amount", "method": "iqr", "threshold": True},
+            "must be a number",
+        ),
+        ({"column": "cust_id", "method": "iqr"}, "requires a numeric column"),
     ],
 )
 def test_analysis_worker_enforces_library_test_contract(
@@ -692,14 +742,99 @@ def test_analysis_worker_enforces_library_test_contract(
             {
                 "analyses": [
                     {
-                        "title": "Benford test",
+                        "title": "Outlier test",
                         "kind": "analytics",
-                        "spec": {"test": "benford", "params": params},
+                        "spec": {"test": "outliers", "params": params},
                     }
                 ]
             },
             request,
         )
+
+
+def test_analysis_worker_rejects_repeated_columns_locally(workspace_with_data):
+    ws = workspace_with_data
+    capability = capability_registries.ANALYSIS_REGISTRY.get(
+        "analysis.definitions_ready"
+    )
+    _manifest, bundle = ContextResolver().resolve(
+        ws,
+        capability,
+        {"id": "analysis_definitions:transactions"},
+        analysis_definition_scope(ws, "transactions"),
+    )
+    request = WorkerRequest(
+        worker_id=analysis_worker.ANALYSIS_DEFINITION_WORKER_ID,
+        capability_id=capability.id,
+        unit_id="analysis_definitions:transactions",
+        context=bundle,
+    )
+
+    with pytest.raises(WorkerResponseValidationError, match="repeats a column"):
+        analysis_worker.validate_analysis_proposal(
+            {
+                "analyses": [
+                    {
+                        "title": "Duplicate test",
+                        "kind": "analytics",
+                        "spec": {
+                            "test": "duplicates",
+                            "params": {
+                                "columns": ["invoice_no", "invoice_no"],
+                            },
+                        },
+                    }
+                ]
+            },
+            request,
+        )
+
+
+def test_analysis_generation_is_constrained_by_a_forced_target_specific_tool(
+    workspace_with_data, monkeypatch
+):
+    ws = workspace_with_data
+    fake = _fake_model(monkeypatch)
+    run = _analysis_run(
+        ws,
+        command={
+            "source": "chat",
+            "text": "Explore the data in this workspace",
+            "target_refs": ["table:transactions"],
+        },
+    )
+    _drive(ws, run, "analysis.definitions_ready")
+
+    call = next(item for item in fake.calls if item["tag"] == ANALYSIS_TAG)
+    assert call["tool_choice"] == {
+        "type": "function",
+        "function": {"name": analysis_worker.ANALYSIS_SUBMISSION_TOOL},
+    }
+    assert len(call["tools"]) == 1
+    tool = call["tools"][0]
+    assert tool["function"]["name"] == analysis_worker.ANALYSIS_SUBMISSION_TOOL
+    assert "uniqueItems" not in json.dumps(tool)
+    item_branches = tool["function"]["parameters"]["properties"]["analyses"]["items"][
+        "oneOf"
+    ]
+    analytics_branch = next(
+        item
+        for item in item_branches
+        if item["properties"]["kind"]["enum"] == ["analytics"]
+    )
+    spec_branches = analytics_branch["properties"]["spec"]["oneOf"]
+    allowed_ids = {
+        item["properties"]["test"]["enum"][0] for item in spec_branches
+    }
+    assert ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS.isdisjoint(allowed_ids)
+    outliers = next(
+        item
+        for item in spec_branches
+        if item["properties"]["test"]["enum"] == ["outliers"]
+    )
+    amount_columns = outliers["properties"]["params"]["properties"]["column"]["enum"]
+    assert "amount" in amount_columns
+    assert "cust_id" not in amount_columns
 
 
 @pytest.mark.parametrize(

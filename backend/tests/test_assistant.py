@@ -574,6 +574,48 @@ def test_llm_empty_choices_exhaustion_is_explicit(monkeypatch):
     assert calls == llm.MAX_REQUEST_ATTEMPTS
 
 
+def test_llm_surfaces_http_success_provider_error_without_retrying(monkeypatch):
+    calls = 0
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "error": {
+                        "code": 502,
+                        "message": (
+                            "Upstream error from Nvidia: ValueError: The provided "
+                            "JSON schema contains features not supported by xgrammar."
+                        ),
+                    }
+                }
+            ).encode()
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(
+        llm.LLMError,
+        match=r"request failed \(502\).*not supported by xgrammar",
+    ):
+        llm.chat([{"role": "user", "content": "hello"}])
+    assert calls == 1
+
+
 def test_llm_error_detail_keeps_plain_text_body():
     error = urllib.error.HTTPError(
         url="https://example.test",

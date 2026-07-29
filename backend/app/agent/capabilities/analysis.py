@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import combinations
 
+from ... import analytics
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import analysis as analysis_workflow
@@ -208,7 +209,15 @@ def agent_analyses(workspace: Workspace, table_scope: TableScope) -> list[dict]:
     return [
         item
         for item in workspace.analyses
-        if item.get("created_by") == AGENT_OWNER and str(item.get("table") or "") in targets
+        if item.get("created_by") == AGENT_OWNER
+        and str(item.get("table") or "") in targets
+        and not (
+            item.get("kind") == "analytics"
+            and analytics.canonical_test_id(
+                (item.get("spec") or {}).get("test")
+            )
+            in analysis_workflow.EXCLUDED_ANALYTICS_TEST_IDS
+        )
     ]
 
 

@@ -123,6 +123,7 @@ class ModelGateway(Protocol):
         media: tuple[Mapping[str, Any], ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
         conversation: list[dict[str, Any]] | None = None,
         return_message: bool = False,
     ) -> str | dict[str, Any]: ...
@@ -178,6 +179,7 @@ class DefaultModelGateway:
         media: tuple[Mapping[str, Any], ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
         conversation: list[dict[str, Any]] | None = None,
         return_message: bool = False,
     ) -> str | dict[str, Any]:
@@ -234,6 +236,8 @@ class DefaultModelGateway:
 
         if conversation is not None and handles:
             raise ValueError("A tool conversation cannot include prepared media.")
+        if tool_choice is not None and not tools:
+            raise ValueError("tool_choice requires tools.")
         conversation_messages = list(conversation or [{"role": "user", "content": user}])
         if not conversation_messages:
             raise ValueError("A model conversation needs at least one message.")
@@ -322,6 +326,8 @@ class DefaultModelGateway:
                         }
                         if tools:
                             chat_kwargs["tools"] = tools
+                            if tool_choice is not None:
+                                chat_kwargs["tool_choice"] = tool_choice
                         message = llm.chat(provider_messages, **chat_kwargs)
                     except llm.LLMError as error:
                         if handles:

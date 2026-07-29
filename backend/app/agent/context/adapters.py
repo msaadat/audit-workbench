@@ -19,6 +19,7 @@ from ... import (
     templates_store,
 )
 from ...workspaces import Workspace, WorkspaceError
+from ..workflows import analysis as analysis_workflow
 from .resolver import ContextCandidate, ContextScope
 
 
@@ -1168,6 +1169,9 @@ ANALYSIS_RELATED_FRAMES_SOURCE_ID = "related_frames"
 ANALYSIS_RELATIONSHIP_SOURCE_ID = "relationship_evidence"
 ANALYSIS_REGISTRY_SOURCE_ID = "analytics_registry"
 ANALYSIS_CURRENT_SOURCE_ID = "current_analyses"
+ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS = (
+    analysis_workflow.EXCLUDED_ANALYTICS_TEST_IDS
+)
 
 # Aggregate columns are bounded so a wide table cannot consume the declaration's
 # whole character budget before the resolver even sees it.
@@ -1342,15 +1346,19 @@ def analysis_definition_scope(
         for candidate in apm_table_metadata_candidates(workspace)
         if candidate.metadata.get("table") in set(related_names)
     )
-    # The complete public contract for every library test.  The worker must be
-    # able to produce a runnable spec, so it receives parameter defaults,
-    # allowed select values, optionality, and column type constraints — not
-    # merely parameter names.  ``registry_payload`` excludes the callable
-    # implementation and remains comfortably inside this source's budget.
+    # The complete public contract for every workflow-eligible library test.
+    # Low-impact digit-pattern scans remain available in the manual analytics
+    # library, but the autonomous workflow does not propose them.  The worker
+    # receives parameter defaults, allowed select values, optionality, and
+    # column type constraints — not merely parameter names.
     registry = (
         analytics_registry
         if analytics_registry is not None
-        else analytics_module.registry_payload()
+        else [
+            item
+            for item in analytics_module.registry_payload()
+            if item["id"] not in ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS
+        ]
     )
     current = [
         {
@@ -1648,6 +1656,7 @@ __all__ = [
     "linked_test_projections",
     "ANALYSIS_CURRENT_SOURCE_ID",
     "ANALYSIS_REGISTRY_SOURCE_ID",
+    "ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS",
     "ANALYSIS_RELATED_FRAMES_SOURCE_ID",
     "ANALYSIS_RELATIONSHIP_SOURCE_ID",
     "ANALYSIS_TARGET_AGGREGATE_SOURCE_ID",

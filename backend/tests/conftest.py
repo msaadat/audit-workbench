@@ -111,10 +111,25 @@ class FakeAgentLLM:
         self.overrides = overrides or {}
         self.calls: list[dict] = []
 
-    def __call__(self, messages, tools=None, temperature=0.0, profile="assistant"):
+    def __call__(
+        self,
+        messages,
+        tools=None,
+        temperature=0.0,
+        profile="assistant",
+        tool_choice=None,
+    ):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
-        self.calls.append({"tag": tag, "profile": profile, "messages": messages, "tools": tools})
+        self.calls.append(
+            {
+                "tag": tag,
+                "profile": profile,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            }
+        )
         response = self.overrides.get(tag, self.DEFAULTS.get(tag))
         if callable(response):
             response = response(messages[-1]["content"])

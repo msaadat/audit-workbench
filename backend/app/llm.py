@@ -400,8 +400,13 @@ def image_part(content: bytes, mime: str) -> dict:
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
 
 
-def chat(messages: list[dict], tools: list[dict] | None = None,
-         temperature: float = 0.0, profile: str | dict = "assistant") -> dict:
+def chat(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    temperature: float = 0.0,
+    profile: str | dict = "assistant",
+    tool_choice: str | dict | None = None,
+) -> dict:
     """One chat/completions round-trip. Returns the assistant message dict.
 
     The returned message may contain ``content`` and/or ``tool_calls``; the
@@ -437,7 +442,7 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
     }
     if tools:
         body["tools"] = tools
-        body["tool_choice"] = "auto"
+        body["tool_choice"] = tool_choice or "auto"
     call_id, _ = debug_store.start_call(
         body, settings, extra={"profile": settings.profile_name}
     )
@@ -571,9 +576,32 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
                                         started_monotonic=call_started)
             raise terminal from error
 
+        provider_error = _response_error(payload)
+        if provider_error is not None:
+            error_code, detail = provider_error
+            attempt_record["error"] = detail
+            attempt_record["error_response"] = debug_store.sanitize(payload)
+            terminal = LLMError(
+                f"LLM request failed ({error_code}): {detail}"
+                if error_code is not None
+                else f"LLM request failed: {detail}"
+            )
+            _finish_attempt(attempt_record, attempt_started)
+            if call_id:
+                debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                debug_store.finish_call(
+                    trace_workspace_id,
+                    call_id,
+                    payload=payload,
+                    error=str(terminal),
+                    headers=response_headers,
+                    started_monotonic=call_started,
+                )
+            raise terminal
+
         _finish_attempt(attempt_record, attempt_started)
         if call_id: debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
-        choices = payload.get("choices") or []
+        choices = (payload.get("choices") or []) if isinstance(payload, dict) else []
         if choices:
             message = choices[0].get("message") or {}
             if call_id:
@@ -595,6 +623,23 @@ def chat(messages: list[dict], tools: list[dict] | None = None,
                                     started_monotonic=call_started)
         raise terminal
     raise LLMError("LLM request failed after retrying.")
+
+
+def _response_error(payload: object) -> tuple[object | None, str] | None:
+    """Extract an in-band provider error from an HTTP-success response."""
+    if not isinstance(payload, dict) or "error" not in payload:
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        message = str(error.get("message") or "unknown provider error")
+        metadata = error.get("metadata")
+        error_type = (
+            metadata.get("error_type") if isinstance(metadata, dict) else None
+        )
+        detail = f"{message} ({error_type})" if error_type else message
+        return code, detail
+    return None, str(error or "unknown provider error")
 
 
 def _finish_attempt(attempt: dict, started: float) -> None:

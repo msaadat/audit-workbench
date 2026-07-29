@@ -48,10 +48,10 @@ from .model import (
 
 ANALYSIS_DEFINITION_WORKER_ID = "analysis.definitions"
 ANALYSIS_DEFINITION_SYSTEM = f"""[agent:analysis_definitions]
-Propose rerunnable data analyses for exactly one supplied target frame. Return
-an object with analyses: an array of 1 to 4 objects, each with title, kind
-(analytics|python), spec, and an optional note. For analytics, spec contains
-test (an analytics_registry id) and params using exact supplied column names.
+Propose rerunnable data analyses for exactly one supplied target frame. Submit
+1 to 4 objects through the required function tool; its JSON Schema is the
+authoritative output contract. For analytics, use only a test ID and parameters
+permitted by that schema, with exact supplied column names.
 For python, spec contains code: safe Polars that reads the supplied frames
 through the `tables` mapping or their bare table variables and assigns the
 result DataFrame to `result`; imports and any file or network access are
@@ -67,6 +67,7 @@ values, counts, or relationships. {JSON_RULES}"""
 TARGET_SCHEMA_SOURCE_ID = "target_schema"
 ANALYTICS_REGISTRY_SOURCE_ID = "analytics_registry"
 CURRENT_ANALYSES_SOURCE_ID = "current_analyses"
+ANALYSIS_SUBMISSION_TOOL = "submit_analysis_definitions"
 
 MAX_PROPOSED_ANALYSES = 4
 ANALYSIS_KINDS = ("analytics", "python")
@@ -171,6 +172,179 @@ def _existing_semantic_ids(request: WorkerRequest) -> set[str]:
     return ids
 
 
+def _parameter_json_schema(
+    parameter: Mapping[str, Any],
+    columns: set[str],
+    column_types: Mapping[str, str],
+) -> dict[str, Any] | None:
+    """Translate one library parameter contract into provider JSON Schema."""
+    kind = str(parameter.get("kind") or "")
+    if kind in {"column", "columns"}:
+        expected = str(parameter.get("column_kind") or "")
+        eligible = sorted(
+            column
+            for column in columns
+            if not expected or column_types.get(column) == expected
+        )
+        if not eligible:
+            return None
+        if kind == "column":
+            return {"type": "string", "enum": eligible}
+        return {
+            "type": "array",
+            "items": {"type": "string", "enum": eligible},
+            "minItems": 1,
+        }
+    if kind == "select":
+        values = [
+            option.get("value")
+            for option in parameter.get("options") or []
+            if isinstance(option, Mapping) and "value" in option
+        ]
+        return {"enum": values}
+    if kind == "number":
+        return {"type": "number"}
+    return {}
+
+
+def _analytics_spec_schemas(
+    request: WorkerRequest,
+) -> list[dict[str, Any]]:
+    """Build exact per-test schemas from the contract and target columns."""
+    schema = _target_schema(request)
+    columns = _column_names(schema)
+    column_types = _column_types(schema)
+    branches: list[dict[str, Any]] = []
+    for test_id, metadata in sorted(_analytics_contract(request).items()):
+        properties: dict[str, Any] = {}
+        required: list[str] = []
+        usable = True
+        for raw in metadata.get("params") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                continue
+            parameter_schema = _parameter_json_schema(raw, columns, column_types)
+            is_required = not raw.get("optional") and "default" not in raw
+            if parameter_schema is None:
+                if is_required:
+                    usable = False
+                    break
+                continue
+            if "default" in raw:
+                parameter_schema["default"] = _plain_json(raw["default"])
+            properties[name] = parameter_schema
+            if is_required:
+                required.append(name)
+        if not usable:
+            continue
+        params_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+        if required:
+            params_schema["required"] = required
+        branches.append(
+            {
+                "type": "object",
+                "properties": {
+                    "test": {"type": "string", "enum": [test_id]},
+                    "params": params_schema,
+                },
+                "required": ["test", "params"],
+                "additionalProperties": False,
+            }
+        )
+    return branches
+
+
+def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
+    """One forced function tool whose schema constrains every generated spec."""
+    analytics_specs = _analytics_spec_schemas(request)
+    item_branches: list[dict[str, Any]] = []
+    if analytics_specs:
+        item_branches.append(
+            {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "minLength": 1},
+                    "kind": {"type": "string", "enum": ["analytics"]},
+                    "spec": {"oneOf": analytics_specs},
+                    "note": {"type": "string"},
+                },
+                "required": ["title", "kind", "spec"],
+                "additionalProperties": False,
+            }
+        )
+    item_branches.append(
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "minLength": 1},
+                "kind": {"type": "string", "enum": ["python"]},
+                "spec": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["code"],
+                    "additionalProperties": False,
+                },
+                "note": {"type": "string"},
+            },
+            "required": ["title", "kind", "spec"],
+            "additionalProperties": False,
+        }
+    )
+    return {
+        "type": "function",
+        "function": {
+            "name": ANALYSIS_SUBMISSION_TOOL,
+            "description": (
+                "Submit one to four rerunnable analysis definitions. The schema "
+                "contains every permitted analytics ID, parameter, and column."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "analyses": {
+                        "type": "array",
+                        "items": {"oneOf": item_branches},
+                        "minItems": 1,
+                        "maxItems": MAX_PROPOSED_ANALYSES,
+                    }
+                },
+                "required": ["analyses"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _submission_response(message: object) -> str:
+    """Extract forced-tool arguments, with a text fallback for weak providers."""
+    if not isinstance(message, Mapping):
+        return str(message or "")
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        matches = [
+            item
+            for item in tool_calls
+            if isinstance(item, Mapping)
+            and isinstance(item.get("function"), Mapping)
+            and item["function"].get("name") == ANALYSIS_SUBMISSION_TOOL
+        ]
+        if len(matches) == 1:
+            arguments = matches[0]["function"].get("arguments")
+            if isinstance(arguments, str):
+                return arguments
+            if isinstance(arguments, Mapping):
+                return json.dumps(arguments, ensure_ascii=False)
+    return str(message.get("content") or "")
+
+
 def _analysis_response_schema(response: str) -> Mapping[str, Any]:
     value = str(response or "").strip()
     fenced = re.fullmatch(
@@ -252,7 +426,10 @@ def _validate_analytics_spec(
             if not values:
                 errors.append(f"{label} is missing the '{name}' column list")
             else:
-                unknown = [str(item) for item in values if str(item) not in columns]
+                normalized_values = [str(item) for item in values]
+                if len(normalized_values) != len(set(normalized_values)):
+                    errors.append(f"{label} repeats a column in the '{name}' column list")
+                unknown = [item for item in normalized_values if item not in columns]
                 if unknown:
                     errors.append(
                         f"{label} names column '{unknown[0]}' which is not in the "
@@ -401,20 +578,35 @@ def run_analysis_definition_worker(
 ) -> str:
     """Transform only the supplied bundle into one budgeted model request."""
     schema = _target_schema(request)
+    tool = _analysis_submission_tool(request)
+    item_branches = tool["function"]["parameters"]["properties"]["analyses"]["items"][
+        "oneOf"
+    ]
+    analytics_branch = next(
+        (
+            item
+            for item in item_branches
+            if item["properties"]["kind"]["enum"] == ["analytics"]
+        ),
+        None,
+    )
+    eligible_ids = (
+        [
+            item["properties"]["test"]["enum"][0]
+            for item in analytics_branch["properties"]["spec"]["oneOf"]
+        ]
+        if analytics_branch is not None
+        else []
+    )
     user = json.dumps(
         {
             "TARGET FRAME": schema,
             "RESOLVED CONTEXT": request.context.to_dict(),
-            "REQUIRED OUTPUT": {
-                "analyses": [
-                    {
-                        "title": "string",
-                        "kind": "|".join(ANALYSIS_KINDS),
-                        "spec": "analytics: {test, params} | python: {code}",
-                        "note": "string (optional)",
-                    }
-                ]
-            },
+            "ALLOWED ANALYTICS IDS FOR THIS FRAME": eligible_ids,
+            "REQUIRED OUTPUT": (
+                f"Call {ANALYSIS_SUBMISSION_TOOL} exactly once. Its JSON Schema "
+                "is authoritative; do not invent test IDs or parameters."
+            ),
         },
         indent=1,
         ensure_ascii=False,
@@ -423,7 +615,9 @@ def run_analysis_definition_worker(
         user += (
             "\n\nYour previous response could not be used: "
             + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
+            + ". Allowed analytics IDs are: "
+            + ", ".join(eligible_ids)
+            + f". Call {ANALYSIS_SUBMISSION_TOOL} once with a complete correction."
         )
     activity = dict(request.activity)
     activity.setdefault(
@@ -435,12 +629,19 @@ def run_analysis_definition_worker(
             "selected_items": request.context.supplied_size.items,
         },
     )
-    return gateway.complete(
+    message = gateway.complete(
         ANALYSIS_DEFINITION_SYSTEM,
         user,
         activity,
         attempt=attempt.number,
+        tools=[tool],
+        tool_choice={
+            "type": "function",
+            "function": {"name": ANALYSIS_SUBMISSION_TOOL},
+        },
+        return_message=True,
     )
+    return _submission_response(message)
 
 
 ANALYSIS_DEFINITION_RESPONSE_SCHEMA = WorkerResponseSchema(
