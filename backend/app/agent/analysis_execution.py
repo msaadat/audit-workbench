@@ -49,7 +49,7 @@ from .executors.analysis import (
     relationship_ref,
     run_analysis,
 )
-from ..analysis_results import analysis_result_state
+from ..analysis_results import analyses_summary_payload, analysis_result_state
 from .execution_support import refresh_workspace, workflow_scope
 from .runtime import (
     BoundUnitPipeline,
@@ -122,6 +122,131 @@ class AnalysisWorkflowExecution(BaseRunner):
 
     def scope(self) -> TableScope:
         return resolve_table_scope(self.ws, workflow_scope(self.run))
+
+    def milestone_projection(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+    ) -> dict | None:
+        """Summarize a meaningful analysis boundary from bounded result data."""
+        self.ws = subject
+        requested = set((run.get("workflow") or {}).get("requested_outcomes") or [])
+        if capability.id == "data.joins_ready":
+            if capability.id not in requested:
+                return None
+            scope = self.scope()
+            records = self.relationship_records()
+            ambiguous = sum(
+                str(item.get("status") or "") == "ambiguous" for item in records
+            )
+            supported = sum(
+                bool(item.get("join") or item.get("recommended")) for item in records
+            )
+            return {
+                "headline": "Table relationships analyzed",
+                "summary": (
+                    f"Compared {len(scope.pairs())} table pair(s) across "
+                    f"{len(scope.tables)} scoped table(s). "
+                    f"{len(scope.joins)} join(s) are available; "
+                    f"{ambiguous} pair(s) still need confirmation."
+                ),
+                "metrics": [
+                    {"label": "Scoped tables", "value": len(scope.tables)},
+                    {"label": "Pairs compared", "value": len(scope.pairs())},
+                    {"label": "Supported relationships", "value": supported},
+                    {"label": "Available joins", "value": len(scope.joins)},
+                ],
+                "artifact_refs": [
+                    ref
+                    for unit in stage.get("units") or []
+                    for ref in unit.get("result_refs") or []
+                ],
+            }
+        if capability.id != "analysis.executed":
+            return None
+
+        scope = self.scope()
+        targets = set(scope.targets)
+        payload = analyses_summary_payload(subject)
+        items = [
+            item
+            for item in payload["items"]
+            if item.get("run_id") == run.get("id")
+            and str(item.get("table") or "") in targets
+        ]
+        counts = {
+            "needs_review": sum(
+                item["classification"] in {"exception", "unusual"} for item in items
+            ),
+            "errors": sum(item["classification"] == "execution_error" for item in items),
+            "clear": sum(item["classification"] == "clear" for item in items),
+            "informational": sum(
+                item["classification"] == "informational" for item in items
+            ),
+        }
+        table_word = (
+            "all eligible tables"
+            if not scope.explicit and scope.ambiguity is None
+            else f"{len(scope.tables)} scoped table(s)"
+        )
+        parts = [
+            f"Analyzed {table_word} with {len(items)} completed check(s).",
+            f"{counts['needs_review']} need review",
+            f"{counts['clear']} were clear",
+        ]
+        if counts["errors"]:
+            parts.append(f"{counts['errors']} could not run")
+        summary = " ".join([parts[0], "; ".join(parts[1:]) + "."])
+        issue_items = [
+            item
+            for item in items
+            if item["classification"] in {"exception", "unusual", "execution_error"}
+        ]
+        issue_items.sort(
+            key=lambda item: (
+                {"exception": 0, "unusual": 1, "execution_error": 2}.get(
+                    item["classification"], 9
+                ),
+                str(item.get("title") or "").casefold(),
+                str(item.get("analysis_id") or ""),
+            )
+        )
+        return {
+            "status": (
+                "completed_with_issues"
+                if counts["needs_review"] or counts["errors"]
+                else "completed"
+            ),
+            "headline": "Data analysis complete",
+            "summary": summary,
+            "metrics": [
+                {"label": "Tables", "value": len(scope.tables)},
+                {"label": "Checks executed", "value": len(items)},
+                {"label": "Needs review", "value": counts["needs_review"]},
+                {"label": "Clear", "value": counts["clear"]},
+                {"label": "Execution errors", "value": counts["errors"]},
+            ],
+            "highlights": [
+                {
+                    "severity": (
+                        "error"
+                        if item["classification"] == "execution_error"
+                        else "warning"
+                    ),
+                    "label": item["title"],
+                    "detail": item.get("error")
+                    or item.get("verdict_text")
+                    or f"{item.get('row_count', 0)} result row(s).",
+                    "artifact_ref": f"analysis:{item['analysis_id']}",
+                }
+                for item in issue_items[:3]
+            ],
+            "artifact_refs": [
+                f"analysis:{item['analysis_id']}" for item in items
+            ],
+        }
 
     # ------------------------------------------------------------- provenance
     def _analysis_record(self) -> dict:
@@ -875,6 +1000,7 @@ def build_analysis_workflow_runner(
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
+        milestone_projector=adapter.milestone_projection,
         finish_evaluator=adapter._finish_projection,
     )
     adapter.scheduler = scheduler

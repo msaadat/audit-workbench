@@ -21,6 +21,7 @@ import threading
 
 from .. import intake, llm
 from ..workspaces import Workspace
+from . import narration
 from .base import BaseRunner, Cancelled, LimitExceeded
 from .context import (
     ContextResolutionError,
@@ -180,6 +181,34 @@ class IntakeRunner(BaseRunner):
                 "for manual classification."
             )
             self.task_status(summary, "completed")
+            narration.milestone(
+                self.run,
+                self.emit,
+                capability="intake.apply",
+                stage_id="intake:summary",
+                status=(
+                    "completed_with_issues"
+                    if counts.get("ambiguous", 0)
+                    else "completed"
+                ),
+                headline="Folder intake complete",
+                summary=(
+                    f"Imported {counts.get('imported', 0)} file(s), ignored "
+                    f"{counts.get('ignored', 0)}, and left "
+                    f"{counts.get('ambiguous', 0)} for manual classification."
+                ),
+                metrics=[
+                    {"label": "Classified", "value": counts.get("classified", 0)},
+                    {"label": "Imported", "value": counts.get("imported", 0)},
+                    {"label": "Ignored", "value": counts.get("ignored", 0)},
+                    {"label": "Needs classification", "value": counts.get("ambiguous", 0)},
+                ],
+                artifact_refs=[
+                    f"{item['kind']}:{item['id']}"
+                    for item in self.run.get("artifacts") or []
+                    if item.get("kind") and item.get("id")
+                ],
+            )
             self.mark_finished()
             self.set_status("completed")
             self.emit("summary_ready", {"run_id": self.run["id"]})

@@ -157,6 +157,94 @@ class DocumentWorkflowExecution(BaseRunner):
     def scope(self) -> DocumentScope:
         return resolve_document_scope(self.ws, workflow_scope(self.run))
 
+    def milestone_projection(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+    ) -> dict | None:
+        """Project the completed document outcome without exposing document text."""
+        self.ws = subject
+        requested = set((run.get("workflow") or {}).get("requested_outcomes") or [])
+        if capability.id not in {"documents.analysis_generated", "documents.text_ready"}:
+            return None
+        if (
+            capability.id == "documents.text_ready"
+            and capability.id not in requested
+        ):
+            return None
+        scope = self.scope()
+        if capability.id == "documents.text_ready":
+            done = sum(
+                unit.get("status") == "succeeded"
+                for unit in stage.get("units") or []
+            )
+            skipped = sum(
+                unit.get("status") == "skipped"
+                for unit in stage.get("units") or []
+            )
+            return {
+                "headline": "Document content prepared",
+                "summary": (
+                    f"Prepared extractable content for {done} of "
+                    f"{len(scope.document_ids)} scoped document(s); "
+                    f"{skipped} were skipped."
+                ),
+                "metrics": [
+                    {"label": "Documents in scope", "value": len(scope.document_ids)},
+                    {"label": "Prepared", "value": done},
+                    {"label": "Skipped", "value": skipped},
+                ],
+            }
+
+        analyzed: list[str] = []
+        partial: list[str] = []
+        for document_id in scope.document_ids:
+            if not has_generated_analysis(subject, document_id):
+                continue
+            analyzed.append(document_id)
+            try:
+                coverage = (
+                    document_analysis.load_analysis(subject, document_id).get("coverage")
+                    or {}
+                )
+            except WorkspaceError:
+                coverage = {}
+            if coverage.get("state") != "complete":
+                partial.append(document_id)
+        skipped = max(0, len(scope.document_ids) - len(analyzed))
+        return {
+            "status": (
+                "completed_with_issues" if partial or skipped else "completed"
+            ),
+            "headline": "Document analysis complete",
+            "summary": (
+                f"Generated analyses for {len(analyzed)} of "
+                f"{len(scope.document_ids)} scoped document(s). "
+                f"{len(partial)} have partial coverage and {skipped} were not analyzed. "
+                "Generated analyses remain subject to auditor review."
+            ),
+            "metrics": [
+                {"label": "Documents in scope", "value": len(scope.document_ids)},
+                {"label": "Analyses generated", "value": len(analyzed)},
+                {"label": "Partial coverage", "value": len(partial)},
+                {"label": "Not analyzed", "value": skipped},
+            ],
+            "highlights": [
+                {
+                    "severity": "warning",
+                    "label": self._title(document_id),
+                    "detail": "Only part of this document was covered.",
+                    "artifact_ref": f"document:{document_id}",
+                }
+                for document_id in partial[:3]
+            ],
+            "artifact_refs": [
+                f"document_analysis:{document_id}" for document_id in analyzed
+            ],
+        }
+
     def action(self) -> str:
         """``analyze`` or ``refresh`` — the placement rule for a new artifact.
 
@@ -1142,6 +1230,7 @@ def build_documents_workflow_runner(
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
+        milestone_projector=adapter.milestone_projection,
         finish_evaluator=adapter._finish_projection,
     )
     adapter.scheduler = scheduler

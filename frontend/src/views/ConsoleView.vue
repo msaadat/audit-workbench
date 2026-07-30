@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { inject } from 'vue'
+import { inject, ref } from 'vue'
+import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 
 import ConsoleThread from '../components/agent/ConsoleThread.vue'
 import EngagementState from '../components/agent/EngagementState.vue'
@@ -12,13 +14,21 @@ import { workspaceContextKey } from '../composables/useWorkspaceContext'
  */
 
 const { workspace, phases } = inject(workspaceContextKey)!
+const planOpen = ref(false)
 </script>
 
 <template>
   <div class="console-body">
     <PlanSpine :workspaceId="workspace.id" />
-    <ConsoleThread :workspace="workspace" />
+    <ConsoleThread :workspace="workspace">
+      <template #head-actions>
+        <Button class="mobile-plan" label="Plan" icon="pi pi-list-check" text size="small" severity="secondary" @click="planOpen = true" />
+      </template>
+    </ConsoleThread>
     <EngagementState :workspace="workspace" :phases="phases" />
+    <Dialog v-model:visible="planOpen" modal header="Plan" :style="{ width: 'min(92vw, 28rem)' }">
+      <PlanSpine :workspaceId="workspace.id" overlay />
+    </Dialog>
   </div>
 </template>
 
@@ -32,5 +42,9 @@ const { workspace, phases } = inject(workspaceContextKey)!
   min-height: 0;
   overflow: hidden;
   background: var(--aw-canvas);
+}
+.mobile-plan{display:none}
+@container console-body (max-width: 52rem) {
+  .mobile-plan{display:inline-flex}
 }
 </style>

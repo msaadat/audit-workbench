@@ -181,6 +181,273 @@ class AuditWorkflowExecution(ActionRunner):
             grow_only=True,
         )
 
+    def milestone_projection(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+    ) -> dict | None:
+        """Build compact audit-deliverable summaries from durable local state."""
+        self.ws = subject
+        capability_id = capability.id
+        if capability_id in {
+            "documents.text_ready",
+            "documents.analysis_chunks_ready",
+            "documents.analysis_generated",
+            "data.relationships_inferred",
+            "data.joins_ready",
+            "analysis.definitions_ready",
+            "analysis.executed",
+            "planning.context_ready",
+        }:
+            return None
+        units = list(stage.get("units") or [])
+        done = sum(unit.get("status") in {"succeeded", "skipped"} for unit in units)
+        attention = sum(
+            unit.get("status")
+            in {
+                "failed",
+                "conflict",
+                "blocked",
+                "awaiting_input",
+                "awaiting_confirmation",
+            }
+            for unit in units
+        )
+        refs = list(dict.fromkeys(
+            ref for unit in units for ref in unit.get("result_refs") or []
+        ))
+        state = "completed_with_issues" if attention else "completed"
+        changes = run.get("planning_changes") or {}
+
+        if capability_id == "planning.apm_ready":
+            updated = int(changes.get("apm_updated") or 0)
+            proposed = int(changes.get("apm_proposed") or 0)
+            context = (subject.planning or {}).get("context") or {}
+            missing = [
+                name for name in ("objective", "scope")
+                if not str(context.get(name) or "").strip()
+            ]
+            return {
+                "status": "completed_with_issues" if missing or attention else state,
+                "headline": "Audit planning memorandum ready",
+                "summary": (
+                    f"Prepared the audit planning memorandum from "
+                    f"{len([value for value in context.values() if str(value).strip()])} "
+                    f"planning field(s). {len(missing)} required planning field(s) "
+                    f"remain incomplete."
+                ),
+                "metrics": [
+                    {"label": "Updated", "value": updated},
+                    {"label": "Proposed for approval", "value": proposed},
+                    {"label": "Missing required fields", "value": len(missing)},
+                ],
+                "artifact_refs": refs or ["planning:apm"],
+            }
+        if capability_id == "planning.rcm_ready":
+            high = sum(
+                str(item.get("risk_rating") or "").casefold()
+                in {"critical", "high"}
+                for item in subject.rcm
+            )
+            gaps = sum(
+                not str(item.get("risk") or item.get("risk_description") or "").strip()
+                or not str(item.get("control") or item.get("control_description") or "").strip()
+                for item in subject.rcm
+            )
+            return {
+                "status": "completed_with_issues" if gaps or attention else state,
+                "headline": "Risk and control matrix ready",
+                "summary": (
+                    f"The RCM now contains {len(subject.rcm)} row(s), including "
+                    f"{high} high or critical risk row(s). {gaps} row(s) have a "
+                    f"missing risk or control description."
+                ),
+                "metrics": [
+                    {"label": "RCM rows", "value": len(subject.rcm)},
+                    {"label": "Created", "value": int(changes.get("rcm_created") or 0)},
+                    {"label": "Updated", "value": int(changes.get("rcm_updated") or 0)},
+                    {"label": "Preserved", "value": int(changes.get("rcm_preserved") or 0)},
+                    {"label": "High or critical", "value": high},
+                ],
+                "artifact_refs": refs,
+            }
+        if capability_id == "tests.specified":
+            doc_count = len(doc_tests.list_tests(subject))
+            total = len(subject.data_tests) + doc_count
+            uncovered = sum(not (row.get("test_refs") or []) for row in subject.rcm)
+            return {
+                "status": "completed_with_issues" if uncovered or attention else state,
+                "headline": "Executable test specifications ready",
+                "summary": (
+                    f"Prepared {total} executable test(s): {len(subject.data_tests)} "
+                    f"data test(s) and {doc_count} document test(s). "
+                    f"{uncovered} RCM row(s) still have no linked test."
+                ),
+                "metrics": [
+                    {"label": "Tests", "value": total},
+                    {"label": "Created", "value": int(changes.get("test_created") or 0)},
+                    {"label": "Updated", "value": int(changes.get("test_updated") or 0)},
+                    {"label": "Preserved", "value": int(changes.get("test_preserved") or 0)},
+                    {"label": "RCM rows without tests", "value": uncovered},
+                ],
+                "artifact_refs": refs,
+            }
+        if capability_id == "fieldwork.executed":
+            return {
+                "status": state,
+                "headline": "Fieldwork execution complete",
+                "summary": (
+                    f"Completed {done} of {len(units)} scheduled fieldwork unit(s). "
+                    f"{attention} unit(s) failed or need auditor attention."
+                ),
+                "metrics": [
+                    {"label": "Scheduled", "value": len(units)},
+                    {"label": "Completed", "value": done},
+                    {"label": "Needs attention", "value": attention},
+                    {
+                        "label": "Open evidence requests",
+                        "value": sum(
+                            item.get("status") in {"open", "requested"}
+                            for item in subject.evidence_requests
+                        ),
+                    },
+                ],
+                "artifact_refs": refs,
+            }
+        if capability_id == "results.rolled_up":
+            rows = [
+                row.get("execution_rollup") or {}
+                for row in subject.rcm
+            ]
+            exceptions = sum(int(row.get("exceptions") or 0) for row in rows)
+            open_observations = sum(
+                item.get("status") != "disposed" for item in subject.observations
+            )
+            return {
+                "status": (
+                    "completed_with_issues"
+                    if exceptions or open_observations or attention
+                    else state
+                ),
+                "headline": "Results and observations updated",
+                "summary": (
+                    f"Rolled results into {len(rows)} RCM row(s). Recorded "
+                    f"{exceptions} exception(s); {open_observations} observation(s) "
+                    f"still need disposition."
+                ),
+                "metrics": [
+                    {"label": "RCM rows", "value": len(rows)},
+                    {"label": "Exceptions", "value": exceptions},
+                    {"label": "Open observations", "value": open_observations},
+                ],
+                "artifact_refs": refs,
+            }
+        if capability_id == "findings.drafted":
+            findings = [
+                item for item in subject.findings
+                if item.get("agent_run_id") == run.get("id")
+            ]
+            by_severity: dict[str, int] = {}
+            for item in findings:
+                severity = str(item.get("severity") or "unspecified")
+                by_severity[severity] = by_severity.get(severity, 0) + 1
+            distribution = ", ".join(
+                f"{count} {severity}" for severity, count in sorted(by_severity.items())
+            ) or "no new drafts"
+            return {
+                "status": state,
+                "headline": "Finding drafts prepared",
+                "summary": (
+                    f"Prepared {len(findings)} evidence-linked finding draft(s) "
+                    f"({distribution}). {attention} item(s) need attention."
+                ),
+                "metrics": [
+                    {"label": "Drafts prepared", "value": len(findings)},
+                    {"label": "Needs attention", "value": attention},
+                ],
+                "artifact_refs": refs,
+            }
+        if capability_id == "working_papers.generated":
+            return {
+                "status": state,
+                "headline": "RCM working papers generated",
+                "summary": (
+                    f"Generated {done} of {len(units)} scheduled working paper(s). "
+                    f"{attention} could not be completed."
+                ),
+                "metrics": [
+                    {"label": "Generated", "value": done},
+                    {"label": "Needs attention", "value": attention},
+                ],
+                "artifact_refs": refs,
+            }
+        if capability_id == "dashboard.curated":
+            return {
+                "status": state,
+                "headline": "Dashboard curated",
+                "summary": (
+                    f"Updated the engagement dashboard with {len(refs)} "
+                    f"result-backed tile reference(s)."
+                ),
+                "metrics": [{"label": "Tile references", "value": len(refs)}],
+                "artifact_refs": refs,
+            }
+        if capability_id == "report.working_draft":
+            reconciliation = any(
+                unit.get("status") == "awaiting_confirmation" for unit in units
+            )
+            supported = sum(
+                bool(item.get("auditor_confirmed"))
+                for item in subject.findings
+            )
+            return {
+                "status": "needs_review" if reconciliation else state,
+                "headline": "Report working draft ready",
+                "summary": (
+                    f"Prepared the report working draft using {supported} "
+                    f"auditor-confirmed finding(s). "
+                    + (
+                        "An auditor-edited draft was preserved and needs reconciliation."
+                        if reconciliation
+                        else "No draft reconciliation is pending."
+                    )
+                ),
+                "metrics": [
+                    {"label": "Confirmed findings represented", "value": supported},
+                    {"label": "Reconciliation required", "value": reconciliation},
+                ],
+                "artifact_refs": refs or ["report:draft"],
+            }
+        if capability_id == "audit.verified":
+            outcome = run.get("audit_outcome") or {}
+            output_gate_count = len(output_issues(outcome)) if outcome else 0
+            return {
+                "status": "completed" if outcome.get("audit_complete") else "needs_review",
+                "headline": (
+                    "Audit verification complete"
+                    if outcome.get("audit_complete")
+                    else "Audit verification found open items"
+                ),
+                "summary": (
+                    f"Completion status: {outcome.get('completion_status') or 'unknown'}. "
+                    f"Report quality errors: "
+                    f"{outcome.get('report_quality_errors') or 0}; "
+                    f"open output gates: {output_gate_count}."
+                ),
+                "metrics": [
+                    {"label": "Audit complete", "value": bool(outcome.get("audit_complete"))},
+                    {
+                        "label": "Report quality errors",
+                        "value": int(outcome.get("report_quality_errors") or 0),
+                    },
+                    {"label": "Open output gates", "value": output_gate_count},
+                ],
+                "artifact_refs": refs or [VERIFICATION_REF],
+            }
+        return None
+
     def _curated_document_ids(self) -> list[str] | None:
         """The auditor's explicit planning-document curation, if any.
 
@@ -1370,6 +1637,24 @@ def build_audit_workflow_runner(
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
         before_stage=before_stage,
+        milestone_projector=lambda subject, current_run, capability, stage: (
+            document_adapter.milestone_projection(
+                subject, current_run, capability, stage
+            )
+            if capability.id in audit_capabilities.AUDIT_DOCUMENT_GROUP.CAPABILITY_IDS
+            else analysis_adapter.milestone_projection(
+                subject, current_run, capability, stage
+            )
+            if capability.id in {
+                "data.relationships_inferred",
+                "data.joins_ready",
+                "analysis.definitions_ready",
+                "analysis.executed",
+            }
+            else adapter.milestone_projection(
+                subject, current_run, capability, stage
+            )
+        ),
         finish_evaluator=adapter._finish_projection,
     )
     adapter.scheduler = scheduler

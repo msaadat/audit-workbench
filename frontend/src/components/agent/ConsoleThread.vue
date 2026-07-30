@@ -62,6 +62,7 @@ watch(() => [
   // Narration and the agent's own turns are the live content of the transcript,
   // so they have to pull a chat refresh the same way status changes do.
   agent.state.run?.narration?.length ?? 0,
+  agent.state.run?.milestones?.length ?? 0,
   agent.state.run?.messages?.length ?? 0,
 ].join(':'), () => {
   if (chats.state.activeChatId) void chats.refresh()

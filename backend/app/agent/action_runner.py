@@ -7,7 +7,7 @@ import time
 
 from .. import analytics, assistant, debug_store, llm, sandbox, validation
 from ..workspaces import Workspace, WorkspaceError
-from . import action_tools, actions, artifact_index, ledger, prompts, routing, store
+from . import action_tools, actions, artifact_index, ledger, narration, prompts, routing, store
 from .base import BaseRunner, Cancelled, LimitExceeded
 from .runtime import RunRuntime
 
@@ -1040,6 +1040,34 @@ class ActionRunner(BaseRunner):
             lines.extend(["", "### Issues", *[f"- {item['type']}: {item.get('error') or item['status']}" for item in failed]])
         lines.extend(["", "This is assistant working content, not a formal audit-stage conclusion or audit opinion."])
         self.run["summary_markdown"] = "\n".join(lines)
+        narration.milestone(
+            self.run,
+            self.emit,
+            capability="action.command",
+            stage_id="action:result",
+            status="completed_with_issues" if force_issue or failed else "completed",
+            headline="Requested action complete",
+            summary=(
+                f"Completed {len(succeeded)} action(s); {len(failed)} failed or "
+                f"were blocked; {len(skipped)} were skipped."
+            ),
+            metrics=[
+                {"label": "Completed", "value": len(succeeded)},
+                {"label": "Failed or blocked", "value": len(failed)},
+                {"label": "Skipped", "value": len(skipped)},
+            ],
+            highlights=[
+                {
+                    "severity": "error",
+                    "label": str(item.get("type") or "Action"),
+                    "detail": str(item.get("error") or item.get("status") or ""),
+                }
+                for item in failed[:3]
+            ],
+            artifact_refs=[
+                ref for item in succeeded for ref in item.get("result_refs") or []
+            ],
+        )
         self.mark_finished(); self.run["command"]["status"] = "completed"
         status = "completed_with_issues" if force_issue or failed else "completed"
         self.set_status(status); self.emit("summary_ready", {"run_id": self.run["id"]})

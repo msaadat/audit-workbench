@@ -14,6 +14,8 @@ against live runs, interrupted runs, and records written by older builds.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 
 from . import store
@@ -71,6 +73,75 @@ def say(run: dict, emit, text: str) -> dict | None:
     run.setdefault("messages", []).append(message)
     emit("message", {"message": message})
     return message
+
+
+def milestone(
+    run: dict,
+    emit,
+    *,
+    capability: str,
+    stage_id: str,
+    status: str,
+    headline: str,
+    summary: str,
+    metrics: list[dict] | None = None,
+    highlights: list[dict] | None = None,
+    artifact_refs: list[str] | None = None,
+) -> dict | None:
+    """Persist one deterministic, idempotent workflow milestone.
+
+    A milestone is a structured transcript item rather than a model-authored
+    message. Its hash deliberately excludes time, so replaying a settled stage
+    after a restart cannot duplicate the same result. A materially different
+    projection for the same stage is retained as a later update.
+    """
+    headline = str(headline or "").strip()
+    summary = str(summary or "").strip()
+    if not headline or not summary:
+        return None
+    body = {
+        "capability": str(capability or "").strip(),
+        "stage_id": str(stage_id or "").strip(),
+        "status": str(status or "").strip(),
+        "headline": headline[:160],
+        "summary": summary[:1200],
+        "metrics": [
+            {
+                "label": str(item.get("label") or "")[:80],
+                "value": item.get("value"),
+            }
+            for item in (metrics or [])[:8]
+            if isinstance(item, dict) and str(item.get("label") or "").strip()
+        ],
+        "highlights": [
+            {
+                "severity": str(item.get("severity") or "info"),
+                "label": str(item.get("label") or "")[:160],
+                "detail": str(item.get("detail") or "")[:320],
+                "artifact_ref": str(item.get("artifact_ref") or "") or None,
+            }
+            for item in (highlights or [])[:3]
+            if isinstance(item, dict) and str(item.get("label") or "").strip()
+        ],
+        "artifact_refs": list(dict.fromkeys(
+            str(item) for item in (artifact_refs or []) if str(item).strip()
+        ))[:20],
+    }
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+    milestone_id = f"{body['stage_id']}:{body['status']}:{digest[:12]}"
+    existing = run.setdefault("milestones", [])
+    if any(str(item.get("id") or "") == milestone_id for item in existing):
+        return None
+    entry = {
+        "id": milestone_id,
+        **body,
+        "summary_sha1": digest,
+        "created_at": store.utcnow(),
+    }
+    existing.append(entry)
+    emit("milestone", {"milestone": entry})
+    return entry
 
 
 # --------------------------------------------------------------------------- #
@@ -380,6 +451,12 @@ def closing_text(run: dict, status: str | None = None) -> str:
         lines.append("Stopped, as you asked.")
         if produced:
             lines.append(f"Work that had already committed is kept: {_joined(produced, 'and')}.")
+    elif produced and run.get("milestones"):
+        lines.append(
+            "The requested work is complete."
+            if status == "completed"
+            else "I completed the work that could be finished on this pass."
+        )
     elif produced:
         lines.append(f"Done — {_joined(produced, 'and')}.")
     elif open_items or stepped_over:

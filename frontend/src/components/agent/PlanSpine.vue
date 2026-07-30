@@ -18,7 +18,7 @@ import { capabilityClause } from './capabilityLabels'
  * instead of an empty timeline.
  */
 
-const props = defineProps<{ workspaceId: string }>()
+const props = defineProps<{ workspaceId: string; overlay?: boolean }>()
 const agent = useAgentRun(props.workspaceId)
 
 const run = computed(() => agent.state.run)
@@ -114,7 +114,7 @@ const note = computed(() => {
 </script>
 
 <template>
-  <aside class="plan-spine">
+  <aside class="plan-spine" :class="{ overlay }">
     <p class="rail-label">Plan</p>
 
     <ol v-if="rows.length" class="spine">
@@ -258,6 +258,8 @@ const note = computed(() => {
 .reused i { padding-top: 0.15rem; font-size: 0.62rem; }
 
 @container console-body (max-width: 52rem) {
-  .plan-spine { display: none; }
+  .plan-spine:not(.overlay) { display: none; }
 }
+
+.plan-spine.overlay{width:100%;min-height:auto;max-height:70vh;border-right:0}
 </style>

@@ -1200,6 +1200,16 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     assert len(fresh.analyses) == 6
     assert all(item["last_result"]["status"] == "ok" for item in fresh.analyses)
     assert "Analyses executed: 6" in completed["summary_markdown"]
+    assert [item["capability"] for item in completed["milestones"]] == [
+        "analysis.executed"
+    ]
+    milestone = completed["milestones"][0]
+    assert milestone["headline"] == "Data analysis complete"
+    assert next(
+        item["value"] for item in milestone["metrics"]
+        if item["label"] == "Checks executed"
+    ) == 6
+    assert "rows" not in milestone and "table_rows" not in milestone
     first_turns = len(fake.calls)
     assert first_turns == 3
 

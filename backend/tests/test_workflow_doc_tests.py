@@ -165,6 +165,15 @@ def test_deterministic_comparison_records_anchors_and_awaits_disposition():
     anchors = [anchor["source_sha1"] for anchor in item["evidence_refs"]]
     assert anchors and set(anchors) == {document["sha1"]}
     assert finished["doc_tests"]["rollup"]["matched"] == 2
+    milestone = next(
+        item for item in finished["milestones"]
+        if item["capability"] == "doc_tests.executed"
+    )
+    assert milestone["headline"] == "Document testing complete"
+    assert next(
+        item["value"] for item in milestone["metrics"]
+        if item["label"] == "Matches"
+    ) == 2
 
 
 def test_a_second_run_reuses_the_executed_result_and_re_runs_nothing():

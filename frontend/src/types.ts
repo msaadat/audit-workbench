@@ -1298,6 +1298,25 @@ export interface AgentNarrationEntry {
   unit_id: string | null
 }
 
+export interface AgentMilestone {
+  id: string
+  capability: string
+  stage_id: string
+  status: 'completed' | 'completed_with_issues' | 'needs_review' | string
+  headline: string
+  summary: string
+  metrics: Array<{ label: string; value: string | number | boolean | null }>
+  highlights: Array<{
+    severity: 'info' | 'warning' | 'error' | string
+    label: string
+    detail: string
+    artifact_ref: string | null
+  }>
+  artifact_refs: string[]
+  summary_sha1: string
+  created_at: string
+}
+
 /**
  * A unit that stopped because it needs a person, already turned into a
  * question. `suggestions` are ordinary chat commands, so answering a blocker
@@ -1357,6 +1376,15 @@ export interface AssistantApprovalProjection {
   approval: AgentApproval
 }
 
+export interface AssistantMilestoneProjection {
+  id: string
+  type: 'milestone'
+  derived: true
+  run_id: string
+  created_at: string
+  milestone: AgentMilestone
+}
+
 export interface AssistantCapabilities {
   ask: boolean
   act: boolean
@@ -1369,7 +1397,7 @@ export interface AssistantChat extends Omit<AssistantChatSummary, 'message_count
   next_ordinal: number
   composer_context: { document_ids: string[] }
   messages: AssistantChatMessage[]
-  transcript: Array<AssistantChatMessage | AssistantRunProjection | AssistantInteractionProjection | AssistantApprovalProjection>
+  transcript: Array<AssistantChatMessage | AssistantRunProjection | AssistantInteractionProjection | AssistantApprovalProjection | AssistantMilestoneProjection>
   artifacts: Record<string, AssistantArtifact>
   artifact_errors: Array<{ id: string; error: string }>
   runs: AssistantRunProjection[]
@@ -1715,6 +1743,8 @@ export interface AgentRun {
   messages: AgentMessage[]
   /** Absent on runs recorded before narration existed. */
   narration?: AgentNarrationEntry[]
+  /** Deterministic workflow result messages, absent on older runs. */
+  milestones?: AgentMilestone[]
   artifacts: { kind: string; id: string; semantic_id: string; action: string }[]
   findings: AgentFinding[]
   finding_refs?: string[]

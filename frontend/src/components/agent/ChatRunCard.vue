@@ -20,9 +20,9 @@ import AgentWorkflowList from './AgentWorkflowList.vue'
 const props = defineProps<{ workspaceId: string; projection: AssistantRunProjection; showAttention?: boolean }>()
 const emit = defineEmits<{ changed: []; command: [string] }>()
 const agent = useAgentRun(props.workspaceId)
-// The narration block above the card carries the plan, the live log and the
-// phase line, so the card is the receipt: one collapsed strip, opened only when
-// someone wants the stage-by-stage detail.
+// The left rail carries the plan and the transcript carries milestone results,
+// so this card is the receipt: one collapsed strip, opened only when someone
+// wants the stage-by-stage detail or is on a narrow layout without the rail.
 const expanded = ref(false)
 const run = ref<AgentRun | null>(null)
 const busy = ref(false)

@@ -270,6 +270,79 @@ class DocTestWorkflowExecution(BaseRunner):
             grow_only=True,
         )
 
+    def milestone_projection(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+    ) -> dict | None:
+        """Summarize standalone Document Test readiness or execution."""
+        self.ws = subject
+        requested = set((run.get("workflow") or {}).get("requested_outcomes") or [])
+        if capability.id == "doc_tests.definitions_ready":
+            if capability.id not in requested:
+                return None
+            ready = sum(
+                unit.get("status") == "succeeded"
+                for unit in stage.get("units") or []
+            )
+            attention = sum(
+                unit.get("status")
+                in {"blocked", "awaiting_input", "awaiting_confirmation", "failed"}
+                for unit in stage.get("units") or []
+            )
+            return {
+                "status": "needs_review" if attention else "completed",
+                "headline": "Document tests prepared",
+                "summary": (
+                    f"{ready} test definition(s) are ready; "
+                    f"{attention} still need attention."
+                ),
+                "metrics": [
+                    {"label": "Ready", "value": ready},
+                    {"label": "Needs attention", "value": attention},
+                ],
+            }
+        if capability.id != "doc_tests.executed":
+            return None
+        tests = scoped_tests(subject, workflow_scope(run))
+        rollups = [doc_tests.result_rollup(test) for test in tests]
+        totals = {
+            key: sum(item[key] for item in rollups)
+            for key in (
+                "items",
+                "matched",
+                "mismatched",
+                "confirmed",
+                "exceptions",
+                "manual_review",
+            )
+        }
+        unexecuted = sum(unexecuted_items(test) for test in tests)
+        needs_review = totals["exceptions"] + totals["manual_review"] + unexecuted
+        return {
+            "status": "completed_with_issues" if needs_review else "completed",
+            "headline": "Document testing complete",
+            "summary": (
+                f"Ran {totals['items'] - unexecuted} of {totals['items']} item(s) "
+                f"across {len(tests)} test(s). {totals['exceptions']} exception(s), "
+                f"{totals['mismatched']} mismatch or missing result(s), and "
+                f"{totals['manual_review']} item(s) need manual review."
+            ),
+            "metrics": [
+                {"label": "Tests", "value": len(tests)},
+                {"label": "Items", "value": totals["items"]},
+                {"label": "Matches", "value": totals["matched"]},
+                {"label": "Exceptions", "value": totals["exceptions"]},
+                {"label": "Manual review", "value": totals["manual_review"]},
+                {"label": "Unchecked", "value": unexecuted},
+            ],
+            "artifact_refs": [
+                f"document_test:{test['id']}" for test in tests
+            ],
+        }
+
     def scope(self) -> DocTestScope:
         return resolve_doc_test_scope(self.ws, workflow_scope(self.run))
 
@@ -556,6 +629,7 @@ def build_doc_tests_workflow_runner(
         refresh_subject=lambda: refresh_workspace(adapter),
         refresh_limits=lambda _subject: adapter._refresh_dynamic_limits(),
         dependency_policy=dependency_policy,
+        milestone_projector=adapter.milestone_projection,
         finish_evaluator=adapter._finish_projection,
     )
     adapter.scheduler = scheduler

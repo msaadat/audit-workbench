@@ -243,6 +243,17 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
     assert doc_tests.list_tests(reloaded)[0]["id"] == test_id
     assert completed["planning_changes"]["rcm_updated"] == 1
     assert completed["planning_changes"]["test_updated"] == 1
+    milestones = {
+        item["capability"]: item for item in completed["milestones"]
+    }
+    assert {
+        "planning.apm_ready",
+        "planning.rcm_ready",
+        "tests.specified",
+    } <= set(milestones)
+    assert milestones["planning.rcm_ready"]["headline"] == (
+        "Risk and control matrix ready"
+    )
 
 
 def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
@@ -823,6 +834,5 @@ def test_rcm_import_rejects_invalid_enum_values():
 
     unchanged = client.get(f"{base}/rcm").json()["items"][0]
     assert unchanged["risk_rating"] == "medium"
-
 
 

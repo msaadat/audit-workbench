@@ -191,6 +191,7 @@ function connect(workspaceId: string, runId: string) {
     'approval_resolved',
     'message',
     'narration',
+    'milestone',
     'warning',
     'summary_ready',
     'command_queued',

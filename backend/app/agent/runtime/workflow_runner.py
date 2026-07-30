@@ -28,6 +28,10 @@ RefreshSubject = Callable[[], Any]
 RefreshLimits = Callable[[Any], None]
 DependencyPolicy = Callable[[str, str, str], bool]
 BeforeStage = Callable[[Any, workflow.Capability, dict[str, Any]], None]
+StageMilestoneProjector = Callable[
+    [Any, dict[str, Any], workflow.Capability, dict[str, Any]],
+    Mapping[str, Any] | None,
+]
 
 
 @dataclass(frozen=True)
@@ -206,6 +210,7 @@ class WorkflowRunner:
         refresh_limits: RefreshLimits | None = None,
         dependency_policy: DependencyPolicy | None = None,
         before_stage: BeforeStage | None = None,
+        milestone_projector: StageMilestoneProjector | None = None,
         finish_evaluator: FinishEvaluator | None = None,
     ) -> None:
         self.subject = subject
@@ -221,6 +226,7 @@ class WorkflowRunner:
         self.refresh_limits = refresh_limits
         self.dependency_policy = dependency_policy
         self.before_stage = before_stage
+        self.milestone_projector = milestone_projector
         self.finish_evaluator = finish_evaluator
 
     def materialize(
@@ -503,6 +509,10 @@ class WorkflowRunner:
         else:
             self._run_deterministic_units(execution, capability, stage, units)
         final = self._fold_stage(units)
+        # Serialized units may have committed a newer workspace revision. The
+        # milestone must summarize the durable result, not the stage-start
+        # snapshot.
+        self._refresh()
         self._set_stage(stage, final)
         self.runtime.emit(
             "stage_summary",
@@ -865,8 +875,51 @@ class WorkflowRunner:
                     kind="stage_settled",
                     stage_id=str(stage.get("id") or ""),
                 )
+                self._project_milestone(stage, status)
         self.runtime.save()
         self.runtime.emit("stage_update", {"stage": copy.deepcopy(stage)})
+
+    def _project_milestone(self, stage: dict[str, Any], status: str) -> None:
+        if self.milestone_projector is None:
+            return
+        if status in {"blocked", "cancelled"}:
+            return
+        if status == "failed" and not any(
+            unit.get("status") in {"succeeded", "skipped"}
+            for unit in stage.get("units") or []
+        ):
+            return
+        capability = self.registry.get(str(stage.get("capability") or ""))
+        try:
+            projection = self.milestone_projector(
+                self.subject, self.run, capability, stage
+            )
+            if not projection:
+                return
+            narration.milestone(
+                self.run,
+                self.runtime.emit,
+                capability=capability.id,
+                stage_id=str(stage.get("id") or capability.id),
+                status=str(projection.get("status") or status),
+                headline=str(projection.get("headline") or capability.title),
+                summary=str(projection.get("summary") or ""),
+                metrics=list(projection.get("metrics") or []),
+                highlights=list(projection.get("highlights") or []),
+                artifact_refs=list(projection.get("artifact_refs") or []),
+            )
+        except Exception as error:
+            # Milestones are a read-only conversational projection. A summary
+            # bug must never turn successfully committed audit work into a
+            # failed run.
+            self.runtime.emit(
+                "milestone_projection_failed",
+                {
+                    "stage_id": str(stage.get("id") or ""),
+                    "capability": capability.id,
+                    "error": str(error),
+                },
+            )
 
     def _finish(self) -> None:
         self._refresh()

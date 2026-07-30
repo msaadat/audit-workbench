@@ -230,6 +230,42 @@ def test_say_ignores_empty_text():
     assert run["messages"] == []
 
 
+def test_milestone_is_structured_bounded_and_idempotent():
+    run = _run()
+    events = []
+    payload = {
+        "capability": "analysis.executed",
+        "stage_id": "analysis_execution",
+        "status": "completed_with_issues",
+        "headline": "Data analysis complete",
+        "summary": "Analyzed two scoped tables.",
+        "metrics": [{"label": f"Metric {index}", "value": index} for index in range(12)],
+        "highlights": [
+            {
+                "severity": "warning",
+                "label": f"Issue {index}",
+                "detail": "Potential exception rows.",
+                "artifact_ref": f"analysis:a{index}",
+            }
+            for index in range(6)
+        ],
+        "artifact_refs": ["analysis:a1", "analysis:a1", "analysis:a2"],
+    }
+    first = narration.milestone(
+        run, lambda type_, data: events.append((type_, data)), **payload
+    )
+    second = narration.milestone(
+        run, lambda type_, data: events.append((type_, data)), **payload
+    )
+
+    assert first is not None and second is None
+    assert len(run["milestones"]) == 1
+    assert len(first["metrics"]) == 8
+    assert len(first["highlights"]) == 3
+    assert first["artifact_refs"] == ["analysis:a1", "analysis:a2"]
+    assert [item[0] for item in events] == ["milestone"]
+
+
 # --------------------------------------------------------------------------- #
 # Projection
 # --------------------------------------------------------------------------- #
@@ -286,6 +322,33 @@ def test_projection_carries_the_narration_tail_not_the_whole_log():
     projection = assistant_chats._run_projection(run)
     assert len(projection["narration"]) == 12
     assert projection["narration"][-1]["text"] == "line 29"
+
+
+def test_chat_projects_durable_milestones_as_transcript_items(workspace_with_data):
+    ws = workspace_with_data
+    chat = assistant_chats.create_chat(ws)
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {"source": "chat", "text": "analyze the data", "chat_id": chat["id"]},
+    )
+    narration.milestone(
+        run,
+        lambda *_: None,
+        capability="analysis.executed",
+        stage_id="analysis_execution",
+        status="completed",
+        headline="Data analysis complete",
+        summary="Analyzed two scoped tables.",
+    )
+    store.save_run(ws, run)
+
+    loaded = assistant_chats.get_chat(ws, chat["id"])
+    milestones = [
+        item for item in loaded["transcript"] if item["type"] == "milestone"
+    ]
+    assert len(milestones) == 1
+    assert milestones[0]["milestone"]["headline"] == "Data analysis complete"
 
 
 def test_deleting_a_chat_stops_the_runs_it_started(workspace_with_data):

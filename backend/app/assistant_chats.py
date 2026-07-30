@@ -1069,6 +1069,15 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 "reply_to_id": None, "artifact_ids": [], "outcome": None, "error": None,
                 "run_id": run["id"],
             })
+        for item in run.get("milestones") or []:
+            transcript.append({
+                "id": f"run:{run['id']}:milestone:{item.get('id')}",
+                "type": "milestone",
+                "derived": True,
+                "run_id": run["id"],
+                "created_at": item.get("created_at") or run.get("created"),
+                "milestone": dict(item),
+            })
         for interaction in run.get("interactions") or []:
             transcript.append({
                 "id": f"run:{run['id']}:interaction:{interaction['id']}", "type": "interaction",
