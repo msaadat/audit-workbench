@@ -3,13 +3,12 @@ import { inject } from 'vue'
 
 import ConsoleThread from '../components/agent/ConsoleThread.vue'
 import EngagementState from '../components/agent/EngagementState.vue'
+import PlanSpine from '../components/agent/PlanSpine.vue'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 
 /**
- * The workspace landing surface: the agent, at full width, with the engagement
- * state beside it. The plan spine takes the left column in phase 2 of
- * docs/agentic-ux-plan.md; until it can render the real capability graph the
- * console is a two-column layout rather than a placeholder three.
+ * The workspace landing surface: what the agent plans to do, what it is saying,
+ * and where the engagement stands — left to right.
  */
 
 const { workspace, phases } = inject(workspaceContextKey)!
@@ -17,6 +16,7 @@ const { workspace, phases } = inject(workspaceContextKey)!
 
 <template>
   <div class="console-body">
+    <PlanSpine :workspaceId="workspace.id" />
     <ConsoleThread :workspace="workspace" />
     <EngagementState :workspace="workspace" :phases="phases" />
   </div>

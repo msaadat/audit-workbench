@@ -1,6 +1,6 @@
 # Agentic UX Plan
 
-**Status:** Phase 1 implemented; phases 2–7 proposed
+**Status:** Phases 1–3 implemented; phases 4–7 proposed
 **Date:** 2026-07-30
 **Visual mockups:** <https://claude.ai/code/artifact/edccf5ca-da17-401e-aa61-7bade42b3f83>
 **Primary objective:** Reshape the SPA so its information architecture matches the agent runtime's outcome graph rather than the storage taxonomy, moving the auditor from *operator* to *director, reviewer, and signatory* — without removing any manual capability.
@@ -280,17 +280,37 @@ The cheapest change with the largest perceptual shift, and the prerequisite for 
 - Pause / resume / cancel / steer, SSE reattach after reload, and drawer resize persistence all behave as before.
 - `npm run build` clean; no backend change, so pytest is unchanged.
 
-### Phase 2 — Plan spine
+### Phase 2 — Plan spine — **done (2026-07-30)**
 
 Render `AgentWorkflow.stages[]` in `PlanSpine.vue`. No new endpoints. Makes the agent legible immediately and is the highest ratio of perceived intelligence to code written.
 
 **Acceptance:** the spine reflects live `stage_update` / `unit_update` SSE events; blocked stages show `blocking_on` in auditor language; a run with no workflow (action or intake engine) degrades to a sensible non-graph state rather than rendering empty.
 
-### Phase 3 — Decisions queue
+### Phase 3 — Decisions queue — **done (2026-07-30)**
 
 `GET /decisions` (§6.1), `unblocked_by()` (§6.4), `DecisionsView.vue`, keyboard handling, and a count badge in the surface switcher.
 
 **Acceptance:** the queue's count equals the sum of the five sources it replaces; resolving an item from the queue produces the identical backend effect as resolving it in its original surface; the consequence line is correct for every audit-workflow capability (unit-tested against `DEPENDENCIES`).
+
+**As-built**
+
+- `app/decisions.py` merges six sources and owns no state. `app/routes/decisions_routes.py` exposes one read-only `GET`.
+- `unblocked_by()` names the direct dependents; `downstream_of()` counts the whole tail. The queue sorts on severity, then downstream count, then age — so clearing it top-down releases the most work soonest.
+- Resolution adds no endpoints. Approvals and interactions render the console's own `AgentApprovalCard` / `AgentInteractionCard` and post to the same agent routes; a blocker's suggestions go through `chats.send` exactly as the composer does; everything else deep-links to the surface that owns it.
+
+**The count is not a naive sum, and could not be**
+
+Two sources genuinely overlapped, both found against real workspaces rather than by inspection:
+
+1. Dashboard attention's `doctest:` rows restate document-test items the queue already carries per item. The whole prefix is dropped.
+2. Report quality raises `unresolved_exception` once per open observation *and* once per document test whose exceptions lack an RCM observation. On the `exp` workspace that was 9 duplicate rows against 9 observations — every pending disposition appeared twice, once actionable and once as an inert report warning. Filtered by issue code, not by id prefix, because the code is what identifies the duplication.
+
+The honest statement of the acceptance criterion is therefore: **no source loses an item, and no item arrives twice.** `test_decisions_queue.py` holds both, plus id uniqueness and item-shape stability.
+
+**Deferred**
+
+- Inline resolution was verified for the deep-link and blocker-steering paths. Neither workspace had a pending approval or interaction to exercise live, so those two cards are wired but unproven against a real gate; they fall back to the console when the run in the store is not the run the decision came from.
+- Batch actions (approve several items at once) are not built. The queue is keyboard-navigable (`j`/`k`/`Enter`) but resolves one decision at a time.
 
 ### Phase 4 — Coverage board
 

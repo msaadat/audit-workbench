@@ -11,6 +11,7 @@ import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { useDecisions } from '../composables/useDecisions'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 
 /**
@@ -39,10 +40,12 @@ const agent = useAgentRun(props.id)
 // sidecar so a question is always one click away without leaving the record.
 const onConsole = computed(() => route.name === 'workspace')
 const surface = computed(() => {
+  if (route.name === 'workspace-decisions') return 'decisions'
   if (route.name === 'workspace-file') return 'file'
   if (route.name === 'workspace-bench') return 'bench'
   return 'console'
 })
+const decisions = useDecisions(props.id)
 
 async function loadEngagementStatus() {
   try {
@@ -117,7 +120,8 @@ onMounted(async () => {
   window.addEventListener('dragover', onWindowDragOver)
   window.addEventListener('dragleave', onWindowDragLeave)
   window.addEventListener('drop', onWindowDrop)
-  await reload()
+  decisions.watchWorkspace()
+  await Promise.all([reload(), decisions.load()])
   if (route.query.import === '1') {
     folderImportOpen.value = true
     const query = { ...route.query }
@@ -155,6 +159,10 @@ onUnmounted(() => {
       <nav class="surface-switcher" aria-label="Workspace surfaces">
         <router-link :to="nav.to('console')" :class="{ active: surface === 'console' }">
           <i class="pi pi-sparkles" /><span>Console</span>
+        </router-link>
+        <router-link :to="nav.to('decisions')" :class="{ active: surface === 'decisions' }">
+          <i class="pi pi-inbox" /><span>Decisions</span>
+          <em v-if="decisions.total.value">{{ decisions.total.value }}</em>
         </router-link>
         <router-link :to="nav.to('dashboard')" :class="{ active: surface === 'file' }">
           <i class="pi pi-book" /><span>Audit file</span>
@@ -244,6 +252,21 @@ onUnmounted(() => {
 .surface-switcher a:hover { background: rgb(255 255 255 / 10%); color: #fff; }
 .surface-switcher a.active { background: #fff; color: var(--aw-navy-900); box-shadow: var(--aw-shadow-sm); }
 .surface-switcher i { font-size: 0.8rem; }
+/* The count is the point of the Decisions entry, so it survives the narrow
+   breakpoint that drops the labels. */
+.surface-switcher em {
+  min-width: 1.15rem;
+  padding: 0.02rem 0.3rem;
+  border-radius: 999px;
+  background: var(--aw-mint);
+  color: var(--aw-navy-950);
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.surface-switcher a.active em { background: var(--aw-navy-900); color: #fff; }
 
 .workspace-header :deep(.p-button-secondary) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: #fff; }
 .header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-sm); color: #e6edf6; text-decoration: none; transition: background .15s; }

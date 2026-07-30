@@ -7,7 +7,9 @@ import ConfirmDialog from 'primevue/confirmdialog'
 const route = useRoute()
 // Every workspace surface brings its own engagement header; the debug console
 // deliberately keeps the global one.
-const WORKSPACE_ROUTES = ['workspace', 'workspace-file', 'workspace-bench']
+const WORKSPACE_ROUTES = [
+  'workspace', 'workspace-decisions', 'workspace-file', 'workspace-bench',
+]
 const inWorkspace = computed(() => WORKSPACE_ROUTES.includes(String(route.name ?? '')))
 </script>
 

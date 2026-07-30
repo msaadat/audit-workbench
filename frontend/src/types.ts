@@ -1870,3 +1870,69 @@ export interface AgentInteraction {
   created_at: string
   resolved_at: string | null
 }
+
+// --------------------------------------------------------------------------
+// Decisions — the one queue for everything waiting on the auditor.
+// Assembled by the backend from approvals, interactions, run blockers,
+// document-test items, open observations, and report quality.
+// --------------------------------------------------------------------------
+export type DecisionKind =
+  | 'approval'
+  | 'interaction'
+  | 'blocker'
+  | 'doc_test_item'
+  | 'observation'
+  | 'quality'
+
+export type DecisionSeverity = 'critical' | 'warning' | 'info'
+
+export interface DecisionUnblocks {
+  /** The audit-graph capability this decision sits on, when it has one. */
+  capability: string
+  /** Capabilities released the moment it is resolved. */
+  next: string[]
+  /** Everything downstream, including `next` — the "holds up N steps" number. */
+  downstream: number
+}
+
+/**
+ * Where a decision lives. Wider than `DashboardTarget` because a decision can
+ * point at surfaces the dashboard never linked to — the console and an RCM row.
+ * Both resolve through the same destination map in useWorkspaceNavigation.
+ */
+export interface WorkspaceTarget {
+  tab: DashboardTarget['tab'] | 'console' | 'decisions' | 'rcm' | 'apm'
+  query: Record<string, string>
+}
+
+export interface DecisionItem {
+  id: string
+  kind: DecisionKind
+  severity: DecisionSeverity
+  title: string
+  context: string
+  created_at: string | null
+  target: WorkspaceTarget
+  unblocks: DecisionUnblocks
+  source_ref: {
+    run_id?: string
+    approval_id?: string
+    interaction_id?: string
+    unit_ids?: string[]
+    stage_title?: string
+    suggestions?: Array<{ label: string; command: string }>
+    test_id?: string
+    item_id?: string
+    rcm_id?: string
+    observation_id?: string
+    attention_id?: string
+  }
+}
+
+export interface DecisionsPayload {
+  items: DecisionItem[]
+  total: number
+  by_kind: Record<DecisionKind, number>
+  by_severity: Record<DecisionSeverity, number>
+  run: { id: string; status: string; waiting: boolean }
+}

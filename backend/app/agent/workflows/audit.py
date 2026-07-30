@@ -117,6 +117,40 @@ def dependencies(capability_id: str) -> tuple[str, ...]:
     return DEPENDENCIES[capability_id]
 
 
+def unblocked_by(capability_id: str) -> tuple[str, ...]:
+    """Capabilities that name this one as a direct dependency.
+
+    The reverse of :data:`DEPENDENCIES`, used to tell an auditor what a pending
+    decision actually releases. Direct dependents only: the transitive closure
+    of a mid-graph capability is most of the workflow, which says nothing useful
+    about the decision in front of them.
+    """
+
+    return tuple(
+        dependent
+        for dependent, deps in DEPENDENCIES.items()
+        if capability_id in deps
+    )
+
+
+def downstream_of(capability_id: str) -> tuple[str, ...]:
+    """Every capability reachable from this one, in declaration order.
+
+    Used for "this blocks N later steps" counts, where the whole tail is the
+    honest number even though only the direct dependents are worth naming.
+    """
+
+    seen: set[str] = set()
+    frontier = [capability_id]
+    while frontier:
+        for dependent in unblocked_by(frontier.pop()):
+            if dependent in seen:
+                continue
+            seen.add(dependent)
+            frontier.append(dependent)
+    return tuple(item for item in DEPENDENCIES if item in seen)
+
+
 def outcomes_for_template(template: str) -> list[str] | None:
     values = TEMPLATE_OUTCOMES.get(str(template or ""))
     return list(values) if values is not None else None
