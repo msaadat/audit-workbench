@@ -58,6 +58,7 @@ body {
   --aw-radius-sm: 8px;
   --aw-radius-md: 10px;
   --aw-radius-lg: 14px;
+  --aw-button-radius: 4px;
 
   /* Elevation scale */
   --aw-shadow-sm: 0 1px 2px rgb(13 35 64 / 6%), 0 1px 3px rgb(13 35 64 / 4%);
@@ -326,7 +327,7 @@ button, input, textarea, select { font: inherit; }
 .empty-state p { max-width: 32rem; margin: 0.4rem 0 1rem; color: var(--aw-muted); }
 
 /* PrimeVue: one restrained, audit-console visual language. */
-.p-button { min-height: 2rem; border-radius: var(--aw-radius-sm); font-weight: 600; letter-spacing: 0.005em; }
+.p-button { min-height: 2rem; border-radius: var(--aw-button-radius); font-weight: 600; letter-spacing: 0.005em; }
 .p-card, .p-dialog { border-radius: var(--aw-radius-md); }
 .p-card { box-shadow: var(--aw-shadow-sm); border: 1px solid var(--aw-border); }
 .p-dialog { box-shadow: var(--aw-shadow-lg); }
