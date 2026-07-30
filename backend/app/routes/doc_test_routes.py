@@ -23,6 +23,19 @@ async def list_document_tests(workspace_id: str):
     return {"items": doc_tests.list_tests(_ws(workspace_id))}
 
 
+@router.get("/doc-tests/summary")
+async def get_document_tests_summary(workspace_id: str):
+    """Every worklist item across the engagement, bucketed for triage."""
+    return doc_tests.summary_payload(_ws(workspace_id))
+
+
+@router.get("/doc-tests/meta")
+async def get_document_test_meta(workspace_id: str):
+    """Closed vocabularies the create form binds its pickers to."""
+    _ws(workspace_id)
+    return doc_tests.meta_payload()
+
+
 @router.post("/doc-tests/build/vouching")
 async def build_vouching_test(workspace_id: str, payload: dict = Body(...)):
     return await asyncio.to_thread(doc_tests.build_vouching, _ws(workspace_id), payload)

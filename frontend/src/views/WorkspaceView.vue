@@ -353,7 +353,10 @@ onUnmounted(() => {
 .workspace-nav :deep(.phase-status[data-state='in_progress']) { color:#2563eb; }
 .workspace-nav :deep(.phase-status[data-state='complete']) { color:#16855b; }
 .workspace-nav :deep(.phase-status[data-state='attention']) { color:#d97706; }
-.workspace-panels { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1rem 1.25rem 1.35rem; background: var(--aw-canvas); }
+/* Tabs size their own layout against this box, not the viewport. The viewport
+   is a bad proxy: the nav rail and the assistant drawer both take width out of
+   it, so viewport-keyed breakpoints fired hundreds of pixels too late. */
+.workspace-panels { container: workspace-panel / inline-size; flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1rem 1.25rem 1.35rem; background: var(--aw-canvas); }
 :deep(.workspace-nav .p-tab) {
   display: flex;
   align-items: center;
@@ -375,24 +378,4 @@ onUnmounted(() => {
 :deep(.workspace-nav .p-tablist-active-bar) { display: none; }
 :deep(.workspace-panels .p-tabpanel) { padding: 0; }
 
-@media (max-width: 900px) {
-  .workspace-page { height: 100%; overflow: hidden; }
-  .workspace-header { padding-inline: 0.85rem; }
-  .header-divider, .engagement-title small { display: none; }
-  .engagement-title h1 { max-width: 11rem; }
-  .workspace-layout { overflow: hidden; }
-  .workspace-tabs { width: 100%; }
-  .workspace-body { flex-direction: column; }
-  .workspace-nav { flex: none; display: block; width: 100%; padding: 0.45rem 0.65rem; border-right: 0; border-bottom: 1px solid #d5dde7; }
-  .nav-label { display: none; }
-  :deep(.workspace-nav .p-tablist-content) { overflow-x: auto; scrollbar-width: thin; }
-  :deep(.workspace-nav .p-tablist-tab-list) { display: flex; flex-direction: row; gap: 0.16rem; width: max-content; }
-  :deep(.workspace-nav .p-tab) { flex: 0 0 auto; width: auto; white-space: nowrap; }
-  .workspace-panels { padding: 1rem 1rem calc(4.25rem); }
-}
-
-@media (max-width: 640px) {
-  .brand, .workspace-header > .p-button { display: none; }
-  .engagement-title h1 { max-width: none; }
-}
 </style>

@@ -226,7 +226,7 @@ def list_tests(workspace: Workspace) -> list[dict]:
                 "procedure_refs", "rcm_id", "spec", "created",
                 "updated", "sha1", "created_by", "agent_run_id",
                 "workflow_parent_sha1", "objective", "criteria", "steps",
-                "conclusion", "control_conclusion",
+                "conclusion", "control_conclusion", "result_summary", "next_action",
                 "exception_count", "open_exception_count", "scope_limitations",
             )},
             "item_count": len(states),
@@ -1438,3 +1438,120 @@ def result_rollup(test: dict) -> dict:
         "manual_review": sum(item.get("state") == "manual_review" for item in items),
         "pending": sum(item.get("state") in {"pending", "agent_checked"} for item in items),
     }
+
+
+def meta_payload() -> dict:
+    """The closed vocabularies the create form binds to.
+
+    Exposing them keeps the UI from asking auditors to type comma-separated
+    document types and column names it already knows.
+    """
+    return {
+        "kinds": sorted(KINDS),
+        "directions": sorted(DIRECTIONS),
+        "document_types": sorted(_DOCUMENT_TYPE_ALIASES),
+        "comparison_methods": sorted(METHODS),
+        "dispositions": sorted(DISPOSITIONS),
+    }
+
+
+SUMMARY_CLASSES = ("exception", "needs_review", "awaiting_evidence", "confirmed", "not_run")
+_SUMMARY_RANK = {name: index for index, name in enumerate(SUMMARY_CLASSES)}
+
+
+def _item_classification(item: dict) -> str:
+    """Bucket one worklist item by what the auditor has to do about it."""
+    state = str(item.get("state") or "pending")
+    disposition = str(item.get("auditor_disposition") or "pending")
+    coverage = item.get("evidence_coverage") or {}
+    if state == "exception":
+        return "exception"
+    if state == "manual_review":
+        return "needs_review"
+    # The agent has assessed it but nobody has signed off yet.
+    if state in {"agent_checked", "confirmed"} and disposition == "pending":
+        return "needs_review"
+    if state == "confirmed":
+        return "confirmed"
+    if item.get("evidence_request_ids") or coverage.get("missing_document_types"):
+        return "awaiting_evidence"
+    return "not_run"
+
+
+def summary_payload(workspace: Workspace) -> dict:
+    """Return every worklist item across the engagement, flattened and bucketed.
+
+    Document tests carry very few items each (commonly one or two), so the
+    engagement-level unit of review is the item, not the test.  This keeps the
+    tab to one request and lets it show a single triage list instead of nesting
+    a rail inside a rail.
+    """
+    counts = {name: 0 for name in SUMMARY_CLASSES}
+    items: list[dict] = []
+    tests: list[dict] = []
+    for path in tests_dir(workspace).glob("*.json"):
+        try:
+            test = _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
+        except (OSError, json.JSONDecodeError, WorkspaceError):
+            continue
+        test_counts = {name: 0 for name in SUMMARY_CLASSES}
+        for item in test.get("items") or []:
+            classification = _item_classification(item)
+            counts[classification] += 1
+            test_counts[classification] += 1
+            coverage = item.get("evidence_coverage") or {}
+            checks = item.get("checks") or []
+            conflicts = item.get("document_conflicts") or {}
+            items.append({
+                "test_id": test.get("id"),
+                "test_title": test.get("title") or "Untitled test",
+                "test_kind": test.get("kind"),
+                "test_status": test.get("status"),
+                "rcm_id": test.get("rcm_id"),
+                "item_id": item.get("id"),
+                "label": item.get("label") or "",
+                "instruction": item.get("instruction") or "",
+                "state": item.get("state"),
+                "auditor_disposition": item.get("auditor_disposition"),
+                "auditor_note": item.get("auditor_note") or "",
+                "classification": classification,
+                "question": item.get("question") or "",
+                "response": item.get("response") or "",
+                "runner_note": item.get("runner_note") or "",
+                "document_count": len(item.get("document_ids") or []),
+                "citation_count": len(item.get("citations") or []),
+                "evidence_count": len(item.get("evidence_refs") or []),
+                "checks_total": len(checks),
+                "checks_matched": sum(check.get("verdict") == "match" for check in checks),
+                "checks_failed": sum(
+                    check.get("verdict") in {"mismatch", "missing", "invalid"} for check in checks
+                ),
+                "missing_document_types": list(coverage.get("missing_document_types") or []),
+                "image_only": bool(coverage.get("image_only")),
+                "evidence_request_count": len(item.get("evidence_request_ids") or []),
+                "has_conflict": bool(conflicts.get("duplicate_documents")),
+                "updated": test.get("updated"),
+            })
+        tests.append({
+            "test_id": test.get("id"),
+            "title": test.get("title") or "Untitled test",
+            "kind": test.get("kind"),
+            "status": test.get("status"),
+            "rcm_id": test.get("rcm_id"),
+            "item_count": len(test.get("items") or []),
+            "counts": test_counts,
+            "objective": test.get("objective") or "",
+            "result_summary": test.get("result_summary") or "",
+            "conclusion": test.get("conclusion") or "",
+            "control_conclusion": test.get("control_conclusion"),
+            "scope_limitations": test.get("scope_limitations") or "",
+            "next_action": test.get("next_action") or "",
+            "exception_count": test.get("exception_count") or 0,
+            "open_exception_count": test.get("open_exception_count") or 0,
+            "updated": test.get("updated"),
+        })
+    # Stable sorts: newest engagement work first, then severity on top.
+    items.sort(key=lambda item: (str(item.get("test_title") or ""), str(item.get("label") or "")))
+    items.sort(key=lambda item: _SUMMARY_RANK[item["classification"]])
+    tests.sort(key=lambda test: str(test.get("updated") or ""), reverse=True)
+    return {"counts": counts, "items": items, "tests": tests}

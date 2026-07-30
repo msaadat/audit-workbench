@@ -251,6 +251,8 @@ export interface DocTestCheck {
 export interface DocTestItem {
   id: string
   label: string
+  /** The procedure being performed on this item, always populated. */
+  instruction: string
   state: DocTestItemState
   auditor_disposition: 'pending' | 'accepted' | 'exception' | 'needs_manual_check'
   auditor_note: string
@@ -266,6 +268,8 @@ export interface DocTestItem {
   question?: string
   response?: string
   citations?: EvidenceRef[]
+  /** Per-document assessment, keyed by document id. */
+  qa_answers?: Record<string, { answer: string; outcome: string; citations: EvidenceRef[] }>
   runner_note?: string
   document_conflicts?: { duplicate_documents: string[][] }
   transaction_identifiers?: string[]
@@ -286,6 +290,71 @@ export interface DocTestRollup {
   exceptions: number
   manual_review: number
   pending: number
+}
+
+/** What the auditor still has to do about one worklist item. */
+export type DocTestClassification =
+  | 'exception'
+  | 'needs_review'
+  | 'awaiting_evidence'
+  | 'confirmed'
+  | 'not_run'
+
+export type DocTestCounts = Record<DocTestClassification, number>
+
+/** One worklist item, flattened across tests for engagement-level triage. */
+export interface DocTestSummaryItem {
+  test_id: string
+  test_title: string
+  test_kind: DocTestKind | null
+  test_status: TestStatus
+  rcm_id: string | null
+  item_id: string
+  label: string
+  instruction: string
+  state: DocTestItemState
+  auditor_disposition: string
+  auditor_note: string
+  classification: DocTestClassification
+  question: string
+  response: string
+  runner_note: string
+  document_count: number
+  citation_count: number
+  evidence_count: number
+  checks_total: number
+  checks_matched: number
+  checks_failed: number
+  missing_document_types: string[]
+  image_only: boolean
+  evidence_request_count: number
+  has_conflict: boolean
+  updated: string
+}
+
+export interface DocTestSummaryTest {
+  test_id: string
+  title: string
+  kind: DocTestKind | null
+  status: TestStatus
+  rcm_id: string | null
+  item_count: number
+  counts: DocTestCounts
+  objective: string
+  result_summary: string
+  conclusion: string
+  control_conclusion: ControlConclusion
+  scope_limitations: string
+  next_action: string
+  exception_count: number
+  open_exception_count: number
+  updated: string
+}
+
+export interface DocTestSummaryPayload {
+  counts: DocTestCounts
+  items: DocTestSummaryItem[]
+  tests: DocTestSummaryTest[]
 }
 
 export interface DocTest extends TestPlan, TestOutcome {

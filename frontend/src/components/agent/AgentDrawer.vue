@@ -32,6 +32,8 @@ const drawerWidth = ref(416)
 const resizing = ref(false)
 const MIN_WIDTH = 340
 const MAX_WIDTH = 680
+// 12.5rem nav rail + a two-pane tab layout that still reads.
+const MIN_CONTENT_WIDTH = 880
 const WIDTH_KEY = `audit-workbench:agent-drawer-width:${props.workspace.id}`
 
 const activeChat = computed(() => chats.state.chat)
@@ -134,8 +136,10 @@ async function decide(runId: string, approval: AgentApproval, decisions: AgentDe
   } catch (error) { fail('Decision failed', error) }
   finally { actionBusy.value = false }
 }
-function clamp(value: number) { return Math.min(Math.max(value, MIN_WIDTH), MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - 480)) }
-function startResize(event: PointerEvent) { if (!agent.state.drawerOpen || window.innerWidth <= 900) return; event.preventDefault(); resizing.value = true; document.body.classList.add('agent-drawer-resizing'); window.addEventListener('pointermove', resize); window.addEventListener('pointerup', stopResize) }
+// The drawer pushes rather than overlays, so its width is capped to leave the
+// nav rail plus a workable two-pane content area standing.
+function clamp(value: number) { return Math.min(Math.max(value, MIN_WIDTH), MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - MIN_CONTENT_WIDTH)) }
+function startResize(event: PointerEvent) { if (!agent.state.drawerOpen) return; event.preventDefault(); resizing.value = true; document.body.classList.add('agent-drawer-resizing'); window.addEventListener('pointermove', resize); window.addEventListener('pointerup', stopResize) }
 function resize(event: PointerEvent) { drawerWidth.value = clamp(window.innerWidth - event.clientX) }
 function stopResize() { if (!resizing.value) return; resizing.value = false; document.body.classList.remove('agent-drawer-resizing'); window.removeEventListener('pointermove', resize); window.removeEventListener('pointerup', stopResize); window.localStorage.setItem(WIDTH_KEY, String(drawerWidth.value)) }
 function fail(summary: string, error: unknown) { toast.add({ severity: 'error', summary, detail: error instanceof ApiError ? error.message : String(error), life: 6500 }) }
@@ -195,5 +199,8 @@ function fail(summary: string, error: unknown) { toast.add({ severity: 'error', 
 </template>
 
 <style scoped>
-.agent-drawer{position:relative;display:flex;flex-direction:column;min-width:0;overflow:hidden;border-left:1px solid var(--aw-border);background:var(--p-surface-0)}.agent-drawer.collapsed{flex:0 0 3.25rem}.agent-drawer.resizing{transition:none;user-select:none}:global(body.agent-drawer-resizing){cursor:col-resize;user-select:none}.resize-handle{position:absolute;z-index:7;inset:0 auto 0 -.3rem;width:.6rem;cursor:col-resize}.drawer-head{display:flex;align-items:center;gap:.45rem;min-height:3.1rem;padding:.55rem .7rem;border-bottom:1px solid var(--aw-border)}.collapsed-toggle{flex:1;display:grid;place-items:center;width:100%;border:0;background:transparent;color:var(--aw-teal);font-size:1.05rem;cursor:pointer}.collapsed-toggle:hover{background:var(--aw-teal-soft)}.drawer-head>i{color:var(--aw-teal)}.title{display:flex;align-items:center;gap:.3rem;min-width:0;padding:.2rem;border:0;background:transparent;color:inherit;cursor:pointer}.title strong{max-width:12rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.82rem}.title i{font-size:.6rem}.grow{flex:1}.live-dot{width:.5rem;height:.5rem;border-radius:50%;background:#22c55e}.live-dot.off{background:var(--p-amber-500)}.loading{display:grid;place-content:center;place-items:center;gap:.4rem;flex:1;color:var(--aw-muted);font-size:.78rem}.rename-input{width:100%}@media(max-width:1536px) and (min-width:901px){.agent-drawer:not(.collapsed){position:absolute;z-index:30;inset:0 0 0 auto;max-width:min(38rem,calc(100% - 12.5rem));box-shadow:-10px 0 30px rgb(7 22 43/14%)}}@media(max-width:900px){.agent-drawer{position:absolute;z-index:30;inset:auto 0 0;width:100%;height:min(32rem,calc(100% - 3.5rem));flex-basis:auto!important;border-left:0;border-top:1px solid #d5dde7;box-shadow:0 -10px 30px rgb(7 22 43/14%)}.agent-drawer.collapsed{height:3.25rem;box-shadow:none}.resize-handle{display:none}}
+/* The drawer is always a real layout column: it reserves its own width and
+   pushes the tab content instead of covering it. Overlaying it hid the right
+   edge of every master/detail tab at ordinary laptop widths. */
+.agent-drawer{position:relative;flex:0 0 auto;display:flex;flex-direction:column;min-width:0;overflow:hidden;border-left:1px solid var(--aw-border);background:var(--p-surface-0)}.agent-drawer.collapsed{flex:0 0 3.25rem}.agent-drawer.resizing{transition:none;user-select:none}:global(body.agent-drawer-resizing){cursor:col-resize;user-select:none}.resize-handle{position:absolute;z-index:7;inset:0 auto 0 -.3rem;width:.6rem;cursor:col-resize}.drawer-head{display:flex;align-items:center;gap:.45rem;min-height:3.1rem;padding:.55rem .7rem;border-bottom:1px solid var(--aw-border)}.collapsed-toggle{flex:1;display:grid;place-items:center;width:100%;border:0;background:transparent;color:var(--aw-teal);font-size:1.05rem;cursor:pointer}.collapsed-toggle:hover{background:var(--aw-teal-soft)}.drawer-head>i{color:var(--aw-teal)}.title{display:flex;align-items:center;gap:.3rem;min-width:0;padding:.2rem;border:0;background:transparent;color:inherit;cursor:pointer}.title strong{max-width:12rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.82rem}.title i{font-size:.6rem}.grow{flex:1}.live-dot{width:.5rem;height:.5rem;border-radius:50%;background:#22c55e}.live-dot.off{background:var(--p-amber-500)}.loading{display:grid;place-content:center;place-items:center;gap:.4rem;flex:1;color:var(--aw-muted);font-size:.78rem}.rename-input{width:100%}
 </style>

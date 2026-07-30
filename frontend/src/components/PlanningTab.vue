@@ -7,6 +7,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
+import SplitButton from 'primevue/splitbutton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 
@@ -321,8 +322,14 @@ async function openWorkingPaper() {
   catch (error) { fail('Could not render the RCM working paper', error) }
 }
 async function copyPaper(kind: 'markdown' | 'html') {
-  if (workingPaper.value) await navigator.clipboard.writeText(workingPaper.value[kind])
+  if (!workingPaper.value) return
+  await navigator.clipboard.writeText(workingPaper.value[kind])
+  toast.add({ severity: 'success', summary: `${kind === 'markdown' ? 'Markdown' : 'HTML'} copied`, life: 1600 })
 }
+const copyOptions = [
+  { label: 'Copy Markdown', icon: 'pi pi-copy', command: () => void copyPaper('markdown') },
+  { label: 'Copy HTML', icon: 'pi pi-code', command: () => void copyPaper('html') },
+]
 </script>
 
 <template>
@@ -356,7 +363,7 @@ async function copyPaper(kind: 'markdown' | 'html') {
       </div>
     </Dialog>
     <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>
-    <Dialog v-model:visible="paperOpen" modal header="RCM working paper" :style="{ width: 'min(980px, 95vw)' }"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><Button label="Copy Markdown" icon="pi pi-copy" text @click="copyPaper('markdown')"/><Button label="Copy HTML" icon="pi pi-copy" @click="copyPaper('html')"/></template></Dialog>
+    <Dialog v-model:visible="paperOpen" modal header="RCM working paper" :style="{ width: 'min(980px, 95vw)' }"><div v-if="workingPaper" class="working-paper" v-html="workingPaper.html"/><template #footer><SplitButton label="Copy" icon="pi pi-copy" :model="copyOptions" @click="copyPaper('markdown')"/></template></Dialog>
   </div>
 </template>
 

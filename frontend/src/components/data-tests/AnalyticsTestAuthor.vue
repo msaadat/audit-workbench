@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import InputNumber from 'primevue/inputnumber'
+import Message from 'primevue/message'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
 
 import { api } from '../../api'
 import type { AnalyticsParamMeta, AnalyticsTest, ColumnSchema, WorkspaceSummary } from '../../types'
+import AnalyticsCatalog from './AnalyticsCatalog.vue'
 
 const props = defineProps<{
   workspace: WorkspaceSummary
@@ -24,35 +26,32 @@ const selected = ref<AnalyticsTest | null>(null)
 const params = ref<Record<string, unknown>>({})
 const pickerOpen = ref(true)
 
-const groups = computed(() => {
-  const result: Array<{ name: string; tests: AnalyticsTest[] }> = []
-  for (const test of tests.value) {
-    const name = test.group || 'Other'
-    let group = result.find((item) => item.name === name)
-    if (!group) {
-      group = { name, tests: [] }
-      result.push(group)
-    }
-    group.tests.push(test)
-  }
-  return result
-})
-
 const ready = computed(() => {
   if (!props.table || !selected.value) return false
-  return selected.value.params.every((param) => {
+  return selected.value.params.every(param => {
     if (param.optional) return true
     const value = params.value[param.name]
     if (param.kind === 'columns') return Array.isArray(value) && value.length > 0
     return value !== null && value !== undefined && value !== ''
   })
 })
+const missingParams = computed(() => {
+  if (!selected.value) return []
+  return selected.value.params
+    .filter(param => {
+      if (param.optional) return false
+      const value = params.value[param.name]
+      if (param.kind === 'columns') return !Array.isArray(value) || !value.length
+      return value === null || value === undefined || value === ''
+    })
+    .map(param => param.label)
+})
 
 function columnOptions(meta: AnalyticsParamMeta): string[] {
   const preferred = meta.column_kind
-    ? schema.value.filter((column) => column.kind === meta.column_kind).map((column) => column.name)
+    ? schema.value.filter(column => column.kind === meta.column_kind).map(column => column.name)
     : []
-  const rest = schema.value.map((column) => column.name).filter((name) => !preferred.includes(name))
+  const rest = schema.value.map(column => column.name).filter(name => !preferred.includes(name))
   return [...preferred, ...rest]
 }
 
@@ -72,7 +71,7 @@ function pick(test: AnalyticsTest) {
 async function loadTests() {
   try {
     tests.value = await api.get<AnalyticsTest[]>('/api/analytics')
-    const test = tests.value.find((item) => item.id === spec.value.test_id)
+    const test = tests.value.find(item => item.id === spec.value.test_id)
     if (test) {
       selected.value = test
       params.value = JSON.parse(JSON.stringify(spec.value.params ?? {})) as Record<string, unknown>
@@ -107,98 +106,92 @@ watch(
   },
   { deep: true },
 )
-watch(ready, (value) => emit('valid', value), { immediate: true })
+watch(ready, value => emit('valid', value), { immediate: true })
 watch(() => props.table, () => void loadSchema(), { immediate: true })
 void loadTests()
 </script>
 
 <template>
   <section class="author">
-    <div v-if="selected && !pickerOpen" class="selected-test">
-      <i :class="selected.icon" />
-      <div>
-        <strong>{{ selected.label }}</strong>
-        <span>{{ selected.description }}</span>
-      </div>
-      <button type="button" @click="pickerOpen = true">Change test</button>
-    </div>
+    <AnalyticsCatalog
+      v-if="pickerOpen"
+      :tests="tests"
+      :selectedId="selected?.id ?? null"
+      @select="pick"
+    />
 
-    <div v-if="pickerOpen" class="catalog">
-      <template v-for="group in groups" :key="group.name">
-        <p>{{ group.name }}</p>
-        <div class="test-grid">
-          <button
-            v-for="test in group.tests"
-            :key="test.id"
-            type="button"
-            :class="{ active: selected?.id === test.id }"
-            @click="pick(test)"
-          >
-            <i :class="test.icon" />
-            <strong>{{ test.label }}</strong>
-            <span>{{ test.description }}</span>
-          </button>
+    <template v-else-if="selected">
+      <!-- The picked analytic is stated once. The title and objective it fills
+           in live under Details, so the same sentence is not repeated three
+           times on one screen. -->
+      <div class="selected">
+        <i :class="selected.icon" />
+        <div>
+          <strong>{{ selected.label }}</strong>
+          <span>{{ selected.description }}</span>
         </div>
-      </template>
-    </div>
-
-    <div v-if="selected && !pickerOpen" class="parameters">
-      <strong>Parameters</strong>
-      <div v-if="selected.params.length" class="parameter-grid">
-        <label v-for="param in selected.params" :key="param.name">
-          {{ param.label }}<small v-if="param.optional">Optional</small>
-          <Select
-            v-if="param.kind === 'column'"
-            v-model="params[param.name] as string | null"
-            :options="columnOptions(param)"
-            :showClear="!!param.optional"
-            placeholder="Pick a column"
-            filter
-          />
-          <MultiSelect
-            v-else-if="param.kind === 'columns'"
-            v-model="params[param.name] as string[]"
-            :options="columnOptions(param)"
-            display="chip"
-            placeholder="Pick columns"
-            filter
-          />
-          <Select
-            v-else-if="param.kind === 'select'"
-            v-model="params[param.name] as string | number | null"
-            :options="param.options"
-            optionLabel="label"
-            optionValue="value"
-          />
-          <InputNumber
-            v-else-if="param.kind === 'number'"
-            v-model="params[param.name] as number"
-            :useGrouping="false"
-          />
-        </label>
+        <button type="button" @click="pickerOpen = true">Change</button>
       </div>
-      <p v-else class="muted">This test has no parameters.</p>
-    </div>
+
+      <div class="parameters">
+        <p class="parameters-head">Parameters</p>
+        <Message v-if="!table" severity="warn" :closable="false">
+          Pick a table before setting parameters — the column pickers read its schema.
+        </Message>
+        <div v-else-if="selected.params.length" class="parameter-grid">
+          <label v-for="param in selected.params" :key="param.name">
+            {{ param.label }}<small v-if="param.optional">Optional</small>
+            <Select
+              v-if="param.kind === 'column'"
+              v-model="params[param.name] as string | null"
+              :options="columnOptions(param)"
+              :showClear="!!param.optional"
+              placeholder="Pick a column"
+              filter
+            />
+            <MultiSelect
+              v-else-if="param.kind === 'columns'"
+              v-model="params[param.name] as string[]"
+              :options="columnOptions(param)"
+              display="chip"
+              placeholder="Pick columns"
+              filter
+            />
+            <Select
+              v-else-if="param.kind === 'select'"
+              v-model="params[param.name] as string | number | null"
+              :options="param.options"
+              optionLabel="label"
+              optionValue="value"
+            />
+            <InputNumber
+              v-else-if="param.kind === 'number'"
+              v-model="params[param.name] as number"
+              :useGrouping="false"
+            />
+          </label>
+        </div>
+        <p v-else class="muted">This analytic takes no parameters.</p>
+        <p v-if="table && missingParams.length" class="missing">
+          Still needed: {{ missingParams.join(', ') }}
+        </p>
+      </div>
+    </template>
   </section>
 </template>
 
 <style scoped>
-.author { display:flex; flex-direction:column; gap:.8rem }
-.selected-test { display:flex; align-items:center; gap:.75rem; border:1px solid var(--aw-border); border-radius:6px; padding:.7rem .8rem; background:#fff }
-.selected-test>i { color:var(--aw-teal); font-size:1.15rem }
-.selected-test div { display:flex; flex:1; min-width:0; flex-direction:column; gap:.15rem }
-.selected-test span,.muted { color:var(--aw-muted); font-size:.78rem }
-.selected-test button { border:0; background:transparent; color:var(--aw-teal); cursor:pointer; font:inherit; font-size:.8rem; font-weight:600 }
-.catalog>p { margin:.7rem 0 .4rem; color:var(--aw-muted); font-size:.72rem; font-weight:700; text-transform:uppercase }
-.catalog>p:first-child { margin-top:0 }
-.test-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:.6rem }
-.test-grid button { display:flex; min-height:7rem; flex-direction:column; gap:.35rem; border:1px solid var(--aw-border); border-radius:6px; padding:.8rem; background:#fff; color:inherit; cursor:pointer; font:inherit; text-align:left }
-.test-grid button:hover,.test-grid button.active { border-color:var(--aw-teal); box-shadow:inset 0 0 0 1px var(--aw-teal) }
-.test-grid i { color:var(--aw-teal) }
-.test-grid span { color:var(--aw-muted); font-size:.76rem; line-height:1.35 }
-.parameters { display:flex; flex-direction:column; gap:.6rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas) }
-.parameter-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.7rem }
-label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }
-label small { color:var(--aw-muted); font-weight:400 }
-@media(max-width:700px){.test-grid,.parameter-grid{grid-template-columns:1fr}}
+.author { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
+.selected { display: flex; align-items: center; gap: 0.7rem; padding: 0.65rem 0.75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: #fff; }
+.selected > i { color: var(--aw-teal); font-size: 1.1rem; }
+.selected div { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 0.1rem; }
+.selected span, .muted { color: var(--aw-muted); font-size: 0.78rem; }
+.selected button { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-size: 0.8rem; font-weight: 600; }
+.parameters { display: flex; flex-direction: column; gap: 0.55rem; padding: 0.8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
+.parameters-head { margin: 0; color: var(--aw-muted); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.parameter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.7rem; }
+label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: #46576d; font-size: 0.75rem; font-weight: 600; }
+label small { color: var(--aw-muted); font-weight: 400; }
+label :deep(.p-select), label :deep(.p-multiselect), label :deep(.p-inputnumber), label :deep(.p-inputtext) { width: 100%; min-width: 0; }
+.missing { margin: 0; color: var(--aw-warn); font-size: 0.75rem; }
 </style>
