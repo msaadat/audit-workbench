@@ -17,6 +17,7 @@ import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AgentRun, AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
+import CoverageBoard from './planning/CoverageBoard.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiTestStatus from './ui/UiTestStatus.vue'
@@ -47,6 +48,21 @@ const runningAllDataTests = ref(false)
 const runningAllDocumentTests = ref(false)
 const detailOpen = ref(false)
 const paperOpen = ref(false)
+// Board and grid render the same `data.rcm` array, so the toggle is a view
+// preference and nothing more. It is remembered because an auditor mid-fieldwork
+// and an auditor mid-review want different defaults.
+const VIEW_KEY = `audit-workbench:rcm-view:${props.workspace.id}`
+const rcmView = ref<'board' | 'grid'>(
+  (() => {
+    try { return window.localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'board' }
+    catch { return 'board' }
+  })(),
+)
+function setRcmView(value: 'board' | 'grid') {
+  rcmView.value = value
+  try { window.localStorage.setItem(VIEW_KEY, value) }
+  catch { /* storage can be unavailable in hardened browser contexts */ }
+}
 const workingPaper = ref<WorkingPaper | null>(null)
 const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
 const observationDispositions = [
@@ -341,7 +357,13 @@ const copyOptions = [
     <section v-else>
       <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Run all Document Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDocumentTestIds.length || isActive" :loading="runningAllDocumentTests" @click="runAllDocumentTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
-      <RcmGrid :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
+      <div class="view-toggle" role="group" aria-label="RCM view">
+        <button :class="{ on: rcmView === 'board' }" :aria-pressed="rcmView === 'board'" @click="setRcmView('board')"><i class="pi pi-th-large"/>Board</button>
+        <button :class="{ on: rcmView === 'grid' }" :aria-pressed="rcmView === 'grid'" @click="setRcmView('grid')"><i class="pi pi-table"/>Grid</button>
+        <span class="view-hint">{{ rcmView === 'board' ? 'Grouped by state of assurance. Switch to the grid to edit rows in bulk.' : `${data.rcm.length} row(s) · edit, import, and export from here.` }}</span>
+      </div>
+      <CoverageBoard v-if="rcmView === 'board'" :rows="data.rcm" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @open="openRcm" @generate="generatePlannedTests"/>
+      <RcmGrid v-else :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
     </section>
 
     <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">
@@ -364,5 +386,11 @@ const copyOptions = [
 </template>
 
 <style scoped>
+.view-toggle { display:flex; align-items:center; gap:.3rem; margin-bottom:.85rem }
+.view-toggle button { display:inline-flex; align-items:center; gap:.35rem; padding:.3rem .65rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:var(--aw-panel); color:#46587a; font-size:var(--aw-text-xs); font-weight:600; cursor:pointer }
+.view-toggle button:hover:not(.on) { border-color:var(--aw-border-strong) }
+.view-toggle button.on { border-color:var(--aw-navy-900); background:var(--aw-navy-900); color:#fff }
+.view-toggle button i { font-size:.7rem }
+.view-hint { margin-left:.4rem; color:var(--aw-muted); font-size:var(--aw-text-xs) }
 .planning-tab { display:flex; flex-direction:column; gap:1rem; min-height:100% }.muted { color:var(--aw-muted); font-size:.78rem }.section-toolbar,.rollup-bar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span,.rollup-bar>span { flex:1 }.rollup-bar { padding:.6rem .8rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas); color:var(--aw-muted); font-size:.78rem }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:.8rem }.rcm-detail { display:flex; flex-direction:column; gap:1rem }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:.75rem }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:#fff; border-radius:999px; padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:6px }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:6px }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
 </style>

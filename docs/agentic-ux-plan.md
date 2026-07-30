@@ -1,6 +1,6 @@
 # Agentic UX Plan
 
-**Status:** Phases 1–3 implemented; phases 4–7 proposed
+**Status:** Phases 1–4 implemented; phases 5–7 proposed
 **Date:** 2026-07-30
 **Visual mockups:** <https://claude.ai/code/artifact/edccf5ca-da17-401e-aa61-7bade42b3f83>
 **Primary objective:** Reshape the SPA so its information architecture matches the agent runtime's outcome graph rather than the storage taxonomy, moving the auditor from *operator* to *director, reviewer, and signatory* — without removing any manual capability.
@@ -312,11 +312,34 @@ The honest statement of the acceptance criterion is therefore: **no source loses
 - Inline resolution was verified for the deep-link and blocker-steering paths. Neither workspace had a pending approval or interaction to exercise live, so those two cards are wired but unproven against a real gate; they fall back to the console when the run in the store is not the run the decision came from.
 - Batch actions (approve several items at once) are not built. The queue is keyboard-navigable (`j`/`k`/`Enter`) but resolves one decision at a time.
 
-### Phase 4 — Coverage board
+### Phase 4 — Coverage board — **done (2026-07-30)**
 
 View toggle on the existing RCM. `RcmGrid.vue` is untouched; `CoverageView.vue` owns the board and the toggle.
 
 **Acceptance:** every RCM row appears in exactly one column; the board and grid agree on every row's state; export still runs from the grid.
+
+**As-built deviation: the board is a view inside the planning surface, not a route-level `CoverageView.vue`**
+
+The RCM surface's data, detail dialog, observation triage, and toolbar (generate, run all, import, export, refresh) all live in `PlanningTab.vue`. A route-level view would have had to duplicate them, which is exactly how a board and a grid come to disagree. Instead `CoverageBoard.vue` renders the same `data.rcm` array the grid renders, `PlanningTab` owns a persisted toggle, and `RcmGrid.vue` is untouched as planned. Agreement is structural rather than tested-for.
+
+**Column rules** (`components/planning/coverage.ts`, exhaustive and mutually exclusive by construction)
+
+| Column | Rule |
+|---|---|
+| No coverage | 0 linked tests — evaluated first, whatever else is recorded |
+| Needs you | Open exceptions, tests awaiting review, blocked tests, or `review_status = review_required` |
+| Concluded | A control conclusion other than `no_conclusion` recorded, and nothing pending |
+| Agent testing | Everything else with at least one test |
+
+"Needs you" deliberately outranks "Concluded": a concluded row with open exceptions is not finished work.
+
+**A gap in the four states, found in the data**
+
+A row whose tests are all complete but which carries no conclusion fits none of the four rules — execution is finished, so it is not "testing", and there is no conclusion, so it is not "concluded". On `exp` that was **every row in the Agent testing column**, all five reporting "1 of 1 test(s) complete", which reads as progress when nothing is progressing. The roll-up that owes the conclusion is the agent's (`results.rolled_up`), so the row stays in Agent testing and the card states the real outstanding item: *"Tests complete — awaiting roll-up conclusion."* If a fifth column is ever wanted, this is the one.
+
+**Verified against both workspaces:** 17 of 17 rows placed exactly once, board IDs and grid IDs each matching the planning payload exactly, no duplicates, export present in both views, card click opening the existing RCM detail dialog, and the toggle persisting per workspace.
+
+**Not built:** `Add risk` remains grid-only, as does bulk row editing. The board's hint line names the grid as the editing surface. The `Traceability` view in §5.3 is not built; the toggle is Board / Grid.
 
 ### Phase 5 — Provenance rail
 
