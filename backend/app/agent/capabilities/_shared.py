@@ -16,8 +16,28 @@ from __future__ import annotations
 
 from ... import methodology
 from ...workspaces import Workspace
-from ...workspace_transactions import rcm_material_projection
 from ..workflow import UnitSpec, canonical_sha1
+
+
+_RCM_MATERIAL_FIELDS = (
+    "id", "process", "risk", "risk_rating", "assertion", "control",
+    "control_type", "control_owner", "criteria", "criteria_refs",
+    "evidence_refs", "review_status",
+)
+
+
+def _rcm_material_projection(row: dict | None) -> dict | None:
+    """Return the auditor-editable RCM fields that define a row's basis.
+
+    Generated test links, execution rollups, and finding links are deliberately
+    excluded: they are workflow output, not source material for a new run.
+    Keeping this small projection in the capability layer avoids coupling
+    declarative readiness code to the transaction/write subsystem.
+    """
+
+    if row is None:
+        return None
+    return {field: row.get(field) for field in _RCM_MATERIAL_FIELDS}
 
 
 def planning_basis_sha1(workspace: Workspace) -> str:
@@ -58,7 +78,7 @@ def apm_sha1(workspace: Workspace) -> str:
 
 
 def rcm_row_sha1(row: dict) -> str:
-    return canonical_sha1(rcm_material_projection(row))
+    return canonical_sha1(_rcm_material_projection(row))
 
 
 # Dispositions that make an observation eligible to become a finding draft.
@@ -83,7 +103,7 @@ def target_rcm_ids(workspace: Workspace, scope: dict) -> list[str]:
     }
     selected_rcm_ids.update(
         str(item.get("rcm_id") or "")
-        for item in workspace.observations
+        for item in getattr(workspace, "observations", ())
         if item.get("id") in selected_observation_ids
     )
     has_explicit_scope = bool(selected_rcm_ids or selected_observation_ids)
