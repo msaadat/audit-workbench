@@ -45,6 +45,7 @@ const apmImporting = ref(false)
 const rcmExporting = ref(false)
 const rcmImporting = ref(false)
 const generatingTests = ref(false)
+const generatingFindings = ref(false)
 const runningAllDataTests = ref(false)
 const runningAllDocumentTests = ref(false)
 const detailOpen = ref(false)
@@ -292,6 +293,23 @@ async function generatePlannedTests(rowIds: string[] = rowsWithoutTests.value.ma
   } catch (error) { fail('Could not start planned test generation', error) }
   finally { generatingTests.value = false }
 }
+async function generateAllFindings() {
+  generatingFindings.value = true
+  try {
+    await assistantChat.send(
+      'Draft all eligible findings from the RCM observations.',
+      'act', launchMode.value,
+      { goalTemplate: 'finding_draft', source: 'tab_button' },
+    )
+    toast.add({
+      severity: 'success',
+      summary: 'Generating all eligible findings',
+      detail: 'Any observations requiring disposition will be presented in the assistant drawer first.',
+      life: 4000,
+    })
+  } catch (error) { fail('Could not start finding generation', error) }
+  finally { generatingFindings.value = false }
+}
 async function runAllDataTests() {
   runningAllDataTests.value = true
   try {
@@ -364,7 +382,7 @@ const copyOptions = [
       </div>
     </section>
     <section v-else>
-      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Run all Document Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDocumentTestIds.length || isActive" :loading="runningAllDocumentTests" @click="runAllDocumentTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
+      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Generate all findings" icon="pi pi-flag" size="small" outlined :disabled="isActive || !agent.state.status?.configured" :loading="generatingFindings" @click="generateAllFindings"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Run all Document Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDocumentTestIds.length || isActive" :loading="runningAllDocumentTests" @click="runAllDocumentTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
       <div class="view-toggle" role="group" aria-label="RCM view">
         <button :class="{ on: rcmView === 'board' }" :aria-pressed="rcmView === 'board'" @click="setRcmView('board')"><i class="pi pi-th-large"/>Board</button>
