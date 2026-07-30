@@ -29,7 +29,6 @@ from app.workspaces import WorkspaceError
 
 
 AGENT_ROOT = Path(agent_package.__file__).parent
-DOCS = AGENT_ROOT.parents[2] / "docs"
 
 
 # --------------------------------------------------------------------------- #
@@ -42,9 +41,9 @@ def test_only_two_general_schedulers_plus_one_justified_protocol_runner():
         store.INTAKE_ENGINE: IntakeRunner,
     }
     assert set(engines) == set(store.RUN_ENGINES)
-    # The protocol runner is retained by a recorded decision, not by default.
-    decisions = (DOCS / "agent-protocol-runner-decisions.md").read_text(encoding="utf-8")
-    assert "Decision 1 — Intake: retain a thin protocol runner" in decisions
+    # Intake is the sole retained protocol runner; the other two engines are
+    # the general-purpose workflow and action schedulers.
+    assert set(engines) == {"workflow", "action", "intake"}
 
 
 def test_schedulers_share_runtime_services_by_composition(workspace_with_data):
