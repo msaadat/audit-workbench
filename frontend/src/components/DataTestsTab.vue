@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -14,7 +14,7 @@ import Textarea from 'primevue/textarea'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   DataTest,
   DataTestEngine,
@@ -39,7 +39,7 @@ import type { TriageCount } from './ui/UiTriageCounts.vue'
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
 const route = useRoute()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const toast = useToast()
 const confirm = useConfirm()
 const assistantChat = useAssistantChat(props.workspace.id)
@@ -156,7 +156,7 @@ function selectTest(item: DataTest) {
     : [emptyPolarsStep()]
   editAnalyticsReady.value = false
   result.value = null
-  void router.replace({ query: workspaceQuery('data-tests', { test: item.id }) })
+  void nav.replace('data-tests', { test: item.id })
   if (item.last_run) void loadResult(item, item.last_run.id)
 }
 function editSpec(): Record<string, unknown> {
@@ -240,7 +240,7 @@ function deleteTest() {
         await api.del(`/api/workspaces/${props.workspace.id}/data-tests/${item.id}`)
         selectedId.value = null
         result.value = null
-        await router.replace({ query: workspaceQuery('data-tests') })
+        await nav.replace('data-tests')
         await load()
         emit('changed')
         toast.add({ severity: 'success', summary: 'Data test deleted', life: 1800 })
@@ -269,7 +269,7 @@ async function draftFinding() {
 }
 function openRcm() {
   if (!selected.value?.rcm_id) return
-  void router.replace({ query: workspaceQuery('rcm', { rcm: selected.value.rcm_id }) })
+  void nav.replace('rcm', { rcm: selected.value.rcm_id })
 }
 function pickFilter(key: string) {
   filter.value = filter.value === key ? 'all' : key

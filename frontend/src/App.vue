@@ -5,7 +5,10 @@ import Toast from 'primevue/toast'
 import ConfirmDialog from 'primevue/confirmdialog'
 
 const route = useRoute()
-const inWorkspace = computed(() => route.name === 'workspace')
+// Every workspace surface brings its own engagement header; the debug console
+// deliberately keeps the global one.
+const WORKSPACE_ROUTES = ['workspace', 'workspace-file', 'workspace-bench']
+const inWorkspace = computed(() => WORKSPACE_ROUTES.includes(String(route.name ?? '')))
 </script>
 
 <template>

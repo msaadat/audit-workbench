@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
@@ -10,6 +9,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AuditReport, MarkdownTemplate, ReportContext, ReportQuality, ReportQualityIssue, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ReportReconcileDialog from './ReportReconcileDialog.vue'
@@ -19,7 +19,7 @@ import UiPageHeader from './ui/UiPageHeader.vue'
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const agent = useAgentRun(props.workspace.id)
 const report = ref<AuditReport | null>(null)
 const context = ref<ReportContext | null>(null)
@@ -130,12 +130,12 @@ async function saveTemplate(reset = false) {
 
 function openIssueRef(ref: string) {
   const [kind, id] = ref.split(':', 2)
-  if (kind === 'finding') void router.replace({ query: { tab: 'findings', finding: id } })
-  else if (kind === 'doctest') void router.replace({ query: { tab: 'doc-tests', test: id } })
-  else if (kind === 'datatest') void router.replace({ query: { tab: 'data-tests', test: id } })
-  else if (kind === 'observation') void router.replace({ query: { tab: 'rcm', observation: id } })
-  else if (kind === 'rcm') void router.replace({ query: { tab: 'rcm', rcm: id } })
-  else if (kind === 'analysis' || kind === 'ruleset') void router.replace({ query: { tab: 'data-tests' } })
+  if (kind === 'finding') void nav.replace('findings', { finding: id })
+  else if (kind === 'doctest') void nav.replace('doc-tests', { test: id })
+  else if (kind === 'datatest') void nav.replace('data-tests', { test: id })
+  else if (kind === 'observation') void nav.replace('rcm', { observation: id })
+  else if (kind === 'rcm') void nav.replace('rcm', { rcm: id })
+  else if (kind === 'analysis' || kind === 'ruleset') void nav.replace('data-tests')
 }
 function allIssues(): ReportQualityIssue[] { return [...(report.value?.quality.issues ?? []), ...(report.value?.quality.editorial ?? [])] }
 const secondaryActions = computed(() => [

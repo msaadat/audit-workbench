@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
@@ -14,7 +14,7 @@ import Textarea from 'primevue/textarea'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AgentRun, AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import RcmGrid from './planning/RcmGrid.vue'
@@ -26,7 +26,7 @@ const emit = defineEmits<{ changed: [] }>()
 const toast = useToast()
 const confirm = useConfirm()
 const route = useRoute()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const agent = useAgentRun(props.workspace.id)
 const assistantChat = useAssistantChat(props.workspace.id)
 const { isActive, launchMode } = agent
@@ -210,7 +210,7 @@ function openRcm(row: RcmRow) {
   const current = data.value?.rcm.find(item => item.id === row.id) ?? row
   selectedRcmId.value = current.id
   detailOpen.value = true
-  void router.replace({ query: workspaceQuery('rcm', { rcm: current.id }) })
+  void nav.replace('rcm', { rcm: current.id })
 }
 function linkedTests(row: RcmRow): TestRollup[] {
   return row.execution_rollup.test_rollups ?? []
@@ -242,15 +242,11 @@ function canDraftFinding(item: AuditObservation) {
     && ['confirmed_control_exception', 'draft_finding_candidate'].includes(item.disposition ?? '')
 }
 function openTest(rollup: TestRollup) {
-  void router.replace({
-    query: workspaceQuery(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id }),
-  })
+  void nav.replace(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id })
 }
 function createTest(kind: 'data' | 'document') {
   if (!selectedRcm.value) return
-  void router.replace({
-    query: { tab: kind === 'data' ? 'data-tests' : 'doc-tests', create: '1', rcm: selectedRcm.value.id },
-  })
+  void nav.replace(kind === 'data' ? 'data-tests' : 'doc-tests', { create: '1', rcm: selectedRcm.value.id })
 }
 async function refreshRollup() {
   try {

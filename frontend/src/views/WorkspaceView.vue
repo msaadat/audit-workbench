@@ -1,101 +1,84 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
-import Tabs from 'primevue/tabs'
-import TabList from 'primevue/tablist'
-import Tab from 'primevue/tab'
-import TabPanels from 'primevue/tabpanels'
-import TabPanel from 'primevue/tabpanel'
 import Button from 'primevue/button'
 
 import { api } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import type { DashboardPhase, EngagementStatusPayload, WorkspaceSummary } from '../types'
 import AgentDrawer from '../components/agent/AgentDrawer.vue'
-import DashboardTab from '../components/DashboardTab.vue'
-import DataTab from '../components/DataTab.vue'
-import QueryTab from '../components/QueryTab.vue'
-import AnalysisTab from '../components/AnalysisTab.vue'
-import DataTestsTab from '../components/DataTestsTab.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
-import { cleanWorkspaceQuery, workspaceQuery } from '../composables/useWorkspaceNavigation'
-import PlanningTab from '../components/PlanningTab.vue'
-import DocumentsTab from '../components/DocumentsTab.vue'
-import DocTestsTab from '../components/DocTestsTab.vue'
-import FindingsTab from '../components/FindingsTab.vue'
-import ReportTab from '../components/ReportTab.vue'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
+import { workspaceContextKey } from '../composables/useWorkspaceContext'
+
+/**
+ * The workspace shell. It owns the engagement header, the surface switcher, the
+ * folder-import dialog and drop target, and the workspace/phase state every
+ * surface reads. Surfaces themselves are routes — see docs/agentic-ux-plan.md.
+ */
 
 const props = defineProps<{ id: string }>()
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
+const nav = useWorkspaceNav()
 
 const workspace = ref<WorkspaceSummary | null>(null)
-const requestedTab = String(route.query.tab || 'dashboard')
-const activeTab = ref(
-  requestedTab === 'validation' ? 'data'
-    : requestedTab === 'planning' && route.query.view === 'rcm' ? 'rcm'
-        : requestedTab === 'planning' ? 'apm'
-      : requestedTab,
-)
-const initialized = ref(false)
 const folderImportOpen = ref(false)
 const importDialogRef = ref<InstanceType<typeof ImportDialog> | null>(null)
 const dropActive = ref(false)
 let dragDepth = 0
-const dashboardRef = ref<{ load: () => Promise<void> } | null>(null)
-const phaseStatus = ref<Partial<Record<DashboardPhase['id'], DashboardPhase>>>({})
+const phases = ref<DashboardPhase[]>([])
+const phaseById = computed(() => Object.fromEntries(phases.value.map(phase => [phase.id, phase])) as Partial<Record<DashboardPhase['id'], DashboardPhase>>)
 
 const agent = useAgentRun(props.id)
-const phaseStateIcon: Record<DashboardPhase['state'], string> = {
-  not_started: 'pi pi-circle',
-  in_progress: 'pi pi-clock',
-  complete: 'pi pi-check-circle',
-  attention: 'pi pi-exclamation-triangle',
-}
-const phaseStateLabel: Record<DashboardPhase['state'], string> = {
-  not_started: 'Not started',
-  in_progress: 'In progress',
-  complete: 'Complete',
-  attention: 'Needs attention',
-}
+
+// The console owns the assistant full-width; every other surface keeps it as a
+// sidecar so a question is always one click away without leaving the record.
+const onConsole = computed(() => route.name === 'workspace')
+const surface = computed(() => {
+  if (route.name === 'workspace-file') return 'file'
+  if (route.name === 'workspace-bench') return 'bench'
+  return 'console'
+})
 
 async function loadEngagementStatus() {
   try {
     const payload = await api.get<EngagementStatusPayload>(`/api/workspaces/${props.id}/dashboard/status`)
-    phaseStatus.value = Object.fromEntries(payload.phases.map(phase => [phase.id, phase]))
+    phases.value = payload.phases
   } catch {
-    phaseStatus.value = {}
+    phases.value = []
   }
 }
 
-function statusLabel(phase: DashboardPhase) {
-  return `${phase.label}: ${phaseStateLabel[phase.state]}`
-}
-
-async function reload() {
+async function loadWorkspace() {
   try {
     workspace.value = await api.get<WorkspaceSummary>(`/api/workspaces/${props.id}`)
-    if (!initialized.value) {
-      // Dashboard is the engagement home, including onboarding for empty workspaces.
-      if (!route.query.tab) activeTab.value = 'dashboard'
-      initialized.value = true
-    }
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Workspace not found', detail: String(error), life: 5000 })
   }
 }
 
-async function handleImported() {
-  await Promise.all([reload(), loadEngagementStatus()])
-  if (activeTab.value === 'dashboard') await dashboardRef.value?.load()
+async function reload() {
+  await Promise.all([loadWorkspace(), loadEngagementStatus()])
 }
 
-async function reloadWorkspaceAndStatus() {
-  await Promise.all([reload(), loadEngagementStatus()])
+async function handleImported() {
+  await reload()
 }
+
+provide(workspaceContextKey, {
+  // Surfaces only render below `v-if="workspace"`, so the non-null assertion
+  // holds for every consumer.
+  workspace: workspace as unknown as import('vue').Ref<WorkspaceSummary>,
+  phases,
+  phaseById,
+  reload,
+  reloadStatus: loadEngagementStatus,
+  requestImport: () => { folderImportOpen.value = true },
+})
 
 // Workspace-wide desktop drop target. Listeners live on window so a drop on
 // any part of the page (including the dialog mask portal) never triggers the
@@ -134,35 +117,19 @@ onMounted(async () => {
   window.addEventListener('dragover', onWindowDragOver)
   window.addEventListener('dragleave', onWindowDragLeave)
   window.addEventListener('drop', onWindowDrop)
-  await Promise.all([reload(), loadEngagementStatus()])
+  await reload()
   if (route.query.import === '1') {
     folderImportOpen.value = true
     const query = { ...route.query }
     delete query.import
     await router.replace({ query })
   }
-  // Normalize old/bookmarked URLs that accumulated state from several tabs.
-  if (route.query.tab) await router.replace({ query: cleanWorkspaceQuery(activeTab.value, route.query) })
-})
-watch(activeTab, tab => {
-  if (route.query.tab !== tab) void router.replace({ query: workspaceQuery(tab) })
-  void loadEngagementStatus()
-})
-watch(() => route.query.tab, tab => {
-  const raw = String(tab || '')
-  const value = raw === 'validation' ? 'data'
-    : raw === 'planning' && route.query.view === 'rcm' ? 'rcm'
-        : raw === 'planning' ? 'apm' : raw
-  if (value && value !== activeTab.value) activeTab.value = value
 })
 
 // A workspace revision is the universal invalidation boundary for agent
-// commits. Refresh the shell counts/status and the dashboard if it is visible.
-const unsubscribe = agent.onWorkspaceInvalidated(() => {
-  void Promise.all([reload(), loadEngagementStatus()]).then(() => {
-    if (activeTab.value === 'dashboard') return dashboardRef.value?.load()
-  })
-})
+// commits. Refresh the shell counts and phase status; surfaces subscribe
+// separately for their own content.
+const unsubscribe = agent.onWorkspaceInvalidated(() => { void reload() })
 onUnmounted(() => {
   unsubscribe()
   window.removeEventListener('dragenter', onWindowDragEnter)
@@ -184,6 +151,19 @@ onUnmounted(() => {
         <small>Engagement</small>
         <h1>{{ workspace.name }}</h1>
       </div>
+
+      <nav class="surface-switcher" aria-label="Workspace surfaces">
+        <router-link :to="nav.to('console')" :class="{ active: surface === 'console' }">
+          <i class="pi pi-sparkles" /><span>Console</span>
+        </router-link>
+        <router-link :to="nav.to('dashboard')" :class="{ active: surface === 'file' }">
+          <i class="pi pi-book" /><span>Audit file</span>
+        </router-link>
+        <router-link :to="nav.to('documents')" :class="{ active: surface === 'bench' }">
+          <i class="pi pi-wrench" /><span>Workbench</span>
+        </router-link>
+      </nav>
+
       <span class="header-spacer" />
       <Button label="Import" icon="pi pi-upload" size="small" severity="secondary" @click="folderImportOpen = true" />
       <router-link :to="`/workspace/${props.id}/debug`" class="header-link" aria-label="Debug console" title="Debug console"><i class="pi pi-code" /></router-link>
@@ -192,71 +172,16 @@ onUnmounted(() => {
     </header>
 
     <div class="workspace-layout">
-      <Tabs v-model:value="activeTab" class="workspace-tabs">
-        <div class="workspace-body">
-          <TabList class="workspace-nav">
-            <p class="nav-label">Overview</p>
-            <Tab value="dashboard"><i class="pi pi-th-large" /><span>Dashboard</span></Tab>
-            <p class="nav-label nav-group">Data</p>
-            <Tab value="documents"><i class="pi pi-folder" /><span>Documents</span></Tab>
-            <Tab value="data"><i class="pi pi-database" /><span>Tables</span></Tab>
-            <Tab value="query"><i class="pi pi-search" /><span>Query</span></Tab>
-            <Tab value="analysis"><i class="pi pi-chart-bar" /><span>Analysis</span></Tab>
-            <p class="nav-label nav-group">Plan</p>
-            <Tab value="apm" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'APM'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'APM'"><i class="pi pi-map" /><span>APM</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
-            <Tab value="rcm" :aria-label="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'RCM'" v-tooltip.right="phaseStatus.planning ? statusLabel(phaseStatus.planning) : 'RCM'"><i class="pi pi-table" /><span>RCM</span><i v-if="phaseStatus.planning" class="phase-status" :class="phaseStateIcon[phaseStatus.planning.state]" :data-state="phaseStatus.planning.state" aria-hidden="true" /></Tab>
-            <p class="nav-label nav-group">Fieldwork</p>
-            <Tab value="doc-tests" :aria-label="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'" v-tooltip.right="phaseStatus.fieldwork ? statusLabel(phaseStatus.fieldwork) : 'Document tests'"><i class="pi pi-verified" /><span>Document tests</span><i v-if="phaseStatus.fieldwork" class="phase-status" :class="phaseStateIcon[phaseStatus.fieldwork.state]" :data-state="phaseStatus.fieldwork.state" aria-hidden="true" /></Tab>
-            <Tab value="data-tests"><i class="pi pi-shield" /><span>Data tests</span></Tab>
-            <p class="nav-label nav-group output-label">Output</p>
-            <Tab value="findings"><i class="pi pi-flag" /><span>Findings</span><small v-if="workspace.finding_count">{{ workspace.finding_count }}</small></Tab>
-            <Tab value="report" :aria-label="phaseStatus.report ? statusLabel(phaseStatus.report) : 'Report'" v-tooltip.right="phaseStatus.report ? statusLabel(phaseStatus.report) : 'Report'"><i class="pi pi-file-edit" /><span>Report</span><i v-if="phaseStatus.report" class="phase-status" :class="phaseStateIcon[phaseStatus.report.state]" :data-state="phaseStatus.report.state" aria-hidden="true" /></Tab>
-          </TabList>
-          <TabPanels class="workspace-panels">
-          <TabPanel value="dashboard">
-            <DashboardTab v-if="activeTab === 'dashboard'" ref="dashboardRef" :workspace="workspace" @import-requested="folderImportOpen = true" />
-          </TabPanel>
-          <TabPanel value="apm">
-            <PlanningTab v-if="activeTab === 'apm'" :workspace="workspace" section="apm" @changed="loadEngagementStatus" />
-          </TabPanel>
-          <TabPanel value="rcm">
-            <PlanningTab v-if="activeTab === 'rcm'" :workspace="workspace" section="rcm" @changed="loadEngagementStatus" />
-          </TabPanel>
-          <TabPanel value="documents">
-            <DocumentsTab v-if="activeTab === 'documents'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" @import-requested="folderImportOpen = true" />
-          </TabPanel>
-          <TabPanel value="doc-tests">
-            <DocTestsTab v-if="activeTab === 'doc-tests'" :workspace="workspace" @changed="loadEngagementStatus" />
-          </TabPanel>
-          <TabPanel value="data">
-            <DataTab :workspace="workspace" @changed="reloadWorkspaceAndStatus" @import-requested="folderImportOpen = true" />
-          </TabPanel>
-          <TabPanel value="query">
-            <QueryTab :workspace="workspace" />
-          </TabPanel>
-          <TabPanel value="analysis">
-            <AnalysisTab v-if="activeTab === 'analysis'" :workspace="workspace" />
-          </TabPanel>
-          <TabPanel value="data-tests">
-            <DataTestsTab v-if="activeTab === 'data-tests'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" />
-          </TabPanel>
-          <TabPanel value="findings">
-            <FindingsTab v-if="activeTab === 'findings'" :workspace="workspace" @changed="reloadWorkspaceAndStatus" />
-          </TabPanel>
-          <TabPanel value="report">
-            <ReportTab v-if="activeTab === 'report'" :workspace="workspace" @changed="loadEngagementStatus" />
-          </TabPanel>
-          </TabPanels>
-        </div>
-      </Tabs>
-      <AgentDrawer :workspace="workspace" />
+      <router-view />
+      <AgentDrawer v-if="!onConsole" :workspace="workspace" />
     </div>
+
     <ImportDialog
       ref="importDialogRef"
       v-model="folderImportOpen"
       :workspaceId="props.id"
       @imported="handleImported"
-      @planning-started="activeTab = 'apm'"
+      @planning-started="router.push(nav.to('apm'))"
     />
     <div v-if="dropActive" class="drop-overlay" aria-hidden="true">
       <div class="drop-overlay-card">
@@ -297,15 +222,38 @@ onUnmounted(() => {
 .header-divider { align-self: stretch; width: 1px; margin: 0.15rem 0.1rem; background: rgb(255 255 255 / 16%); }
 .engagement-title { min-width: 0; line-height: 1.1; }
 .engagement-title small { color: #8fa6c2; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-.engagement-title h1 { max-width: 22rem; margin: 0.15rem 0 0; overflow: hidden; color: #fff; font-size: 0.96rem; text-overflow: ellipsis; white-space: nowrap; }
+.engagement-title h1 { max-width: 18rem; margin: 0.15rem 0 0; overflow: hidden; color: #fff; font-size: 0.96rem; text-overflow: ellipsis; white-space: nowrap; }
 .header-spacer { flex: 1; }
+
+/* The surface switcher is the primary navigation now, so it sits with the
+   engagement identity rather than in the utility cluster on the right. */
+.surface-switcher { display: flex; gap: 0.15rem; margin-left: 0.5rem; padding: 0.15rem; border-radius: var(--aw-radius-sm); background: rgb(255 255 255 / 8%); }
+.surface-switcher a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 6px;
+  color: #c6d6ea;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.surface-switcher a:hover { background: rgb(255 255 255 / 10%); color: #fff; }
+.surface-switcher a.active { background: #fff; color: var(--aw-navy-900); box-shadow: var(--aw-shadow-sm); }
+.surface-switcher i { font-size: 0.8rem; }
+
 .workspace-header :deep(.p-button-secondary) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: #fff; }
 .header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-sm); color: #e6edf6; text-decoration: none; transition: background .15s; }
 .header-link:hover { background: rgb(255 255 255 / 10%); }
 
-@media (max-width: 1180px) {
+@media (max-width: 1280px) {
   .brand strong { display: none; }
-  .engagement-title h1 { max-width: 14rem; }
+  .engagement-title h1 { max-width: 12rem; }
+  .surface-switcher span { display: none; }
+  .surface-switcher a { padding-inline: 0.55rem; }
 }
 
 .drop-overlay {
@@ -341,41 +289,4 @@ onUnmounted(() => {
   align-items: stretch;
   overflow: hidden;
 }
-.workspace-tabs { flex: 1; min-width: 0; min-height: 0; height: 100%; }
-
-.workspace-body { display: flex; height: 100%; min-height: 0; }
-.workspace-nav { flex: 0 0 12.5rem; display: flex; flex-direction: column; align-items: stretch; gap: 0.16rem; padding: 1rem 0.65rem; background: var(--aw-raised); border-right: 1px solid var(--aw-border); }
-.nav-label { margin: 0 0.6rem 0.45rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
-.nav-group { margin-top: 0.7rem; margin-bottom: 0.18rem; }
-.workspace-nav :deep(.p-tab small) { margin-left:auto; min-width:1.25rem; padding:.1rem .35rem; border-radius:999px; background:var(--p-primary-50); color:var(--aw-teal); text-align:center; }
-.workspace-nav :deep(.phase-status) { margin-left:auto; font-size:.78rem; }
-.workspace-nav :deep(.phase-status[data-state='not_started']) { color:#94a3b8; }
-.workspace-nav :deep(.phase-status[data-state='in_progress']) { color:#2563eb; }
-.workspace-nav :deep(.phase-status[data-state='complete']) { color:#16855b; }
-.workspace-nav :deep(.phase-status[data-state='attention']) { color:#d97706; }
-/* Tabs size their own layout against this box, not the viewport. The viewport
-   is a bad proxy: the nav rail and the assistant drawer both take width out of
-   it, so viewport-keyed breakpoints fired hundreds of pixels too late. */
-.workspace-panels { container: workspace-panel / inline-size; flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1rem 1.25rem 1.35rem; background: var(--aw-canvas); }
-:deep(.workspace-nav .p-tab) {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0.65rem;
-  width: 100%;
-  min-height: 2.35rem;
-  padding: 0.5rem 0.7rem;
-  border: 0;
-  border-radius: var(--aw-radius-sm);
-  color: #485b74;
-  font-weight: 600;
-  transition: background .15s, color .15s;
-}
-:deep(.workspace-nav .p-tab:hover:not([data-p-active='true'])) { background: rgb(255 255 255 / 55%); color: var(--aw-ink); }
-:deep(.workspace-nav .p-tab[data-p-active='true']) { color: var(--aw-teal); background: #fff; box-shadow: var(--aw-shadow-sm); }
-:deep(.workspace-nav .p-tab[data-p-active='true'] .pi) { color: var(--aw-teal); }
-:deep(.workspace-nav .p-tablist-tab-list) { display: contents; }
-:deep(.workspace-nav .p-tablist-active-bar) { display: none; }
-:deep(.workspace-panels .p-tabpanel) { padding: 0; }
-
 </style>

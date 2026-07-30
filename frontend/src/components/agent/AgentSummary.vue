@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import Tag from 'primevue/tag'
 import Button from 'primevue/button'
-import { useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 
 import { api, ApiError } from '../../api'
-import { workspaceQuery } from '../../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
 import type { AgentAuditOutcome, AgentFinding, AuditFinding } from '../../types'
 import MarkdownView from '../MarkdownView.vue'
 
@@ -19,7 +18,7 @@ const props = defineProps<{
   workspaceId: string
   runId: string
 }>()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const toast = useToast()
 
 const severitySeverity: Record<string, string> = {
@@ -33,7 +32,7 @@ async function promote(finding: AgentFinding) {
   try {
     const saved = await api.post<AuditFinding>(`/api/workspaces/${props.workspaceId}/findings/promote`, { run_id: props.runId, finding_id: finding.id })
     toast.add({ severity: 'success', summary: 'Draft finding created', detail: 'Review and complete the IIA fields as needed.', life: 2600 })
-    await router.replace({ query: workspaceQuery('findings', { finding: saved.id }) })
+    await nav.replace('findings', { finding: saved.id })
   } catch (error) {
     toast.add({ severity: 'error', summary: 'Could not promote the observation', detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
   }

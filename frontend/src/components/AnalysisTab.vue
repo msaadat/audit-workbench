@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import SelectButton from 'primevue/selectbutton'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { SavedAnalysis, WorkspaceSummary } from '../types'
 import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
@@ -24,7 +24,7 @@ import UiVerdictStatus from './ui/UiVerdictStatus.vue'
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const toast = useToast()
 const route = useRoute()
-const router = useRouter()
+const nav = useWorkspaceNav()
 
 const analyses = ref<SavedAnalysis[]>([])
 const selectedId = ref<string | null>(null)
@@ -99,18 +99,16 @@ function startCode() {
 function select(a: SavedAnalysis) {
   selectedId.value = a.id
   creating.value = null
-  void router.replace({ query: workspaceQuery('analysis', { view: 'procedures', analysis: a.id }) })
+  void nav.replace('analysis', { view: 'procedures', analysis: a.id })
 }
 
 async function setView(raw: string) {
   const next: 'summary' | 'procedures' = raw === 'procedures' ? 'procedures' : 'summary'
   view.value = next
   if (next === 'procedures') await load()
-  await router.replace({
-    query: workspaceQuery('analysis', next === 'procedures'
-      ? { view: next, analysis: selectedId.value || undefined }
-      : { view: next }),
-  })
+  await nav.replace('analysis', next === 'procedures'
+    ? { view: next, analysis: selectedId.value || undefined }
+    : { view: next })
 }
 
 async function openAnalysis(analysisId: string) {

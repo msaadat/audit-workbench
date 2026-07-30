@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderAsync } from 'docx-preview'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
@@ -13,7 +13,7 @@ import { api } from '../api'
 import { documentStatus } from '../composables/documentStatus'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AIActivityEvent, AgentRun, AssistantProvider, AssistantStatus, AuditDocument, DocumentAnalysisCitation, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import MarkdownView from './MarkdownView.vue'
@@ -26,7 +26,7 @@ const emit = defineEmits<{ changed: []; 'import-requested': [] }>()
 const toast = useToast()
 const confirm = useConfirm()
 const route = useRoute()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const assistantChat = useAssistantChat(props.workspace.id)
 const agent = useAgentRun(props.workspace.id)
 
@@ -265,7 +265,7 @@ async function selectDocument(id: string, page?: number) {
   }
   selectedId.value = id
   currentPage.value = page || Number(route.query.page || 1)
-  await router.replace({ query: workspaceQuery('documents', { doc: id, page: currentPage.value }) })
+  await nav.replace('documents', { doc: id, page: currentPage.value })
   await loadDetail()
 }
 
@@ -376,7 +376,7 @@ async function openCitation(citation: DocumentAnalysisCitation) {
   currentPage.value = citation.page
   view.value = 'preview'
   sourceView.value = citation.evidence_kind === 'visual' ? 'original' : 'text'
-  await router.replace({ query: workspaceQuery('documents', { doc: selected.value.id, page: citation.page }) })
+  await nav.replace('documents', { doc: selected.value.id, page: citation.page })
 }
 
 async function reindexAll() {
@@ -522,7 +522,7 @@ async function searchPacks() {
 }
 
 watch(() => route.query.doc, id => { if (id && id !== selectedId.value) void selectDocument(String(id), Number(route.query.page || 1)) })
-watch(currentPage, page => { if (selectedId.value) void router.replace({ query: workspaceQuery('documents', { doc: selectedId.value, page }) }) })
+watch(currentPage, page => { if (selectedId.value) void nav.replace('documents', { doc: selectedId.value, page }) })
 watch(groupBy, saveRailPrefs)
 watch([selected, groupBy], () => {
   const doc = selected.value

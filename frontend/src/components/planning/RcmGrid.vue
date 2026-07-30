@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -8,7 +7,7 @@ import Textarea from 'primevue/textarea'
 import Tag from 'primevue/tag'
 
 import type { DataTest, DocTest, FindingRollups, RcmRow } from '../../types'
-import { workspaceQuery } from '../../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
 
 const props = defineProps<{
   rows: RcmRow[]
@@ -27,8 +26,8 @@ const emit = defineEmits<{
 }>()
 
 const ratings = ['low', 'medium', 'high', 'critical']
-const router = useRouter()
-function openFinding(id: string) { void router.replace({ query: workspaceQuery('findings', { finding: id }) }) }
+const nav = useWorkspaceNav()
+function openFinding(id: string) { void nav.replace('findings', { finding: id }) }
 function testCount(row: RcmRow) { return row.execution_rollup.tests ?? row.test_refs.length }
 function testTitles(row: RcmRow) { return (row.execution_rollup.test_rollups ?? []).map(item => item.title).join('; ') || 'Add a test' }
 function exceptionsLabel(row: RcmRow) { return (row.execution_rollup.completed ?? 0) ? String(row.execution_rollup.exceptions ?? 0) : 'Not assessed' }

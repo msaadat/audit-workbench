@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -12,7 +11,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   DashboardAction,
   DashboardAdvice,
@@ -28,7 +27,7 @@ import UiVerdictStatus from './ui/UiVerdictStatus.vue'
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ 'import-requested': [] }>()
 
-const router = useRouter()
+const nav = useWorkspaceNav()
 const toast = useToast()
 const confirm = useConfirm()
 const agent = useAgentRun(props.workspace.id)
@@ -78,7 +77,7 @@ async function load() {
 }
 
 function navigate(target: DashboardTarget) {
-  void router.replace({ query: workspaceQuery(target.tab, target.query) })
+  void nav.replaceTarget(target)
 }
 
 function runAction(action: DashboardAction) {

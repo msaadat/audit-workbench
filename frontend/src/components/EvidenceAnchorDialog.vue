@@ -1,23 +1,22 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRouter } from 'vue-router'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import type { EvidenceRef } from '../types'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 
 const props = defineProps<{ modelValue: boolean; anchor: EvidenceRef | null }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const visible = computed({ get: () => props.modelValue, set: value => emit('update:modelValue', value) })
 
 async function openSource() {
   if (!props.anchor) return
   if (props.anchor.source_kind === 'document') {
-    await router.replace({ query: workspaceQuery('documents', { doc: props.anchor.source_id, page: props.anchor.page || 1 }) })
+    await nav.replace('documents', { doc: props.anchor.source_id, page: props.anchor.page || 1 })
   } else if (props.anchor.source_kind === 'doctest') {
-    await router.replace({ query: workspaceQuery('doc-tests', { test: props.anchor.source_id, item: props.anchor.item_id || undefined }) })
+    await nav.replace('doc-tests', { test: props.anchor.source_id, item: props.anchor.item_id || undefined })
   } else return
   visible.value = false
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -12,7 +12,7 @@ import SelectButton from 'primevue/selectbutton'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditDocument,
   DocTest,
@@ -38,7 +38,7 @@ import type { TriageCount } from './ui/UiTriageCounts.vue'
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
 const route = useRoute()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const toast = useToast()
 const confirm = useConfirm()
 const agent = useAgentRun(props.workspace.id)
@@ -149,11 +149,9 @@ async function select(item: DocTestSummaryItem) {
   await syncUrl()
 }
 async function syncUrl() {
-  await router.replace({
-    query: workspaceQuery('doc-tests', {
-      test: currentTest.value?.id,
-      item: selectedItemId.value || undefined,
-    }),
+  await nav.replace('doc-tests', {
+    test: currentTest.value?.id,
+    item: selectedItemId.value || undefined,
   })
 }
 async function refresh() {
@@ -323,7 +321,7 @@ async function prepareTests() {
   } catch (error) { fail('Could not start document test preparation', error) }
 }
 function openRcm(rcmId: string) {
-  void router.replace({ query: workspaceQuery('rcm', { rcm: rcmId }) })
+  void nav.replace('rcm', { rcm: rcmId })
 }
 function showAnchor(value: EvidenceRef) {
   anchor.value = value

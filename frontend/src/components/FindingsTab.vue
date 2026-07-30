@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -11,7 +11,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
-import { workspaceQuery } from '../composables/useWorkspaceNavigation'
+import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AuditFinding, EvidenceRef, FindingsPayload, FindingSeverity, WorkspaceSummary } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
@@ -21,7 +21,7 @@ import UiPageHeader from './ui/UiPageHeader.vue'
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
 const route = useRoute()
-const router = useRouter()
+const nav = useWorkspaceNav()
 const toast = useToast()
 const agent = useAgentRun(props.workspace.id)
 
@@ -77,7 +77,7 @@ watch(() => route.query.finding, value => {
   if (id && data.value?.items.some(item => item.id === id)) selectedId.value = id
 })
 watch(selectedId, id => {
-  if (id && route.query.finding !== id) void router.replace({ query: workspaceQuery('findings', { finding: id }) })
+  if (id && route.query.finding !== id) void nav.replace('findings', { finding: id })
 })
 
 async function addManual() {
@@ -129,15 +129,15 @@ function removeEvidence(id: string) {
   if (selected.value) selected.value.evidence_refs = selected.value.evidence_refs.filter(item => item.id !== id)
 }
 function openPlanning(rcmId: string) {
-  void router.replace({ query: workspaceQuery('rcm', { rcm: rcmId }) })
+  void nav.replace('rcm', { rcm: rcmId })
 }
 function openEvidence(value: EvidenceRef) {
   if (value.source_kind === 'doctest') {
-    void router.replace({ query: workspaceQuery('doc-tests', { test: value.source_id, item: value.item_id }) })
+    void nav.replace('doc-tests', { test: value.source_id, item: value.item_id })
   } else if (value.source_kind === 'datatest') {
-    void router.replace({ query: workspaceQuery('data-tests', { test: value.source_id.split(':')[0] }) })
+    void nav.replace('data-tests', { test: value.source_id.split(':')[0] })
   } else if (value.source_kind === 'analysis' || value.source_kind === 'ruleset') {
-    void router.replace({ query: workspaceQuery('data-tests') })
+    void nav.replace('data-tests')
   } else showAnchor(value)
 }
 </script>
