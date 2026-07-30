@@ -2057,3 +2057,50 @@ export interface UnitProvenance {
 export type ArtifactProvenance =
   | ({ state: 'attributed'; artifact_ref: string } & UnitProvenance)
   | { state: 'unattributed'; artifact_ref: string; reason: string }
+
+// --------------------------------------------------------------------------
+// Engagement brief — what the agent would do, stated before it starts.
+// --------------------------------------------------------------------------
+export interface EngagementOutcome {
+  capability: string
+  title: string
+  stage_id: string
+}
+
+export type EngagementEstimate =
+  | {
+      state: 'measured'
+      runs_observed: number
+      basis: string
+      median_model_calls: number
+      median_minutes: number
+      slowest_minutes: number
+      caveat: string
+    }
+  | { state: 'insufficient_history'; runs_observed: number; reason: string }
+
+export interface EngagementDestination {
+  configured: boolean
+  provider: string
+  model: string
+  local: boolean
+  summary: string
+}
+
+export interface EngagementPlan {
+  template: string
+  outcomes: EngagementOutcome[]
+  estimate: EngagementEstimate
+  destination: EngagementDestination
+  gates: { mode: 'auto' | 'permission'; summary: string }
+}
+
+/** The planning-context fields a brief fills. */
+export interface EngagementBrief {
+  objective: string
+  scope: string
+  entity?: string
+  period?: string
+  materiality?: string
+  background_notes?: string
+}

@@ -1,6 +1,6 @@
 # Agentic UX Plan
 
-**Status:** Phases 1–5 implemented; phases 6–7 proposed
+**Status:** Phases 1–5 and 7 implemented; phase 6 (autonomy policy) deferred by the product owner
 **Date:** 2026-07-30
 **Visual mockups:** <https://claude.ai/code/artifact/edccf5ca-da17-401e-aa61-7bade42b3f83>
 **Primary objective:** Reshape the SPA so its information architecture matches the agent runtime's outcome graph rather than the storage taxonomy, moving the auditor from *operator* to *director, reviewer, and signatory* — without removing any manual capability.
@@ -369,15 +369,34 @@ The acceptance line says "a generated APM section". The sidecars record at artif
 
 **Verified against the real Procurement run:** the APM resolves to 18 supplied sources and 13 omissions (all "Global or per-source size limit reached"), `openrouter / nvidia/nemotron-3-ultra-550b-a55b:free`, 15,377 prompt tokens, 58s, receipt `85ebb56498fc…`, committed at revision 98. An RCM row resolves separately to the `rcm` unit at revision 115. `test_provenance.py` covers the four sidecar states, a deleted manifest file, a tampered manifest failing its identity check, and the proposal-withholding rule.
 
-### Phase 6 — Autonomy policy
+### Phase 6 — Autonomy policy — **deferred**
 
 Independent of Phases 2–5; can land any time after Phase 1.
 
 **Acceptance:** a capability set to *Ask first* always produces an approval before its executor commits; *Never* prevents scheduling with a clear reason rather than a silent skip; the Critical-risk override wins over a per-capability *On its own*.
 
-### Phase 7 — Engagement brief
+### Phase 7 — Engagement brief — **done (2026-07-30)**
 
 Conversational entry replacing the name dialog, plus the plan proposal and cost estimate.
+
+**The brief is the planning context, not a new concept**
+
+`planning.context` already holds `objective`, `entity`, `period`, `scope`, `materiality`, and `background_notes` — and `planning.context_ready` requires exactly `objective` and `scope`. So the brief writes straight into it, and a completed brief means the capability is **satisfied before the first run**: the agent opens at the memorandum instead of interviewing the auditor for something they just typed. Verified end to end on a real workspace.
+
+**Two claims from the §5.6 mockup were wrong and are now computed**
+
+1. **"Nothing leaves this machine."** Only true of a local model. This installation is configured against `openrouter`, so the screen reads *"Requests and bounded result previews go to openrouter"* with the model named. `destination()` derives locality from the provider and base URL, and a test asserts a cloud provider is never described as staying local.
+
+2. **"~180 model calls · roughly 25 minutes."** Invented. `cost_estimate()` measures completed full-audit runs already recorded on this machine, and with fewer than two it returns `insufficient_history` with **no numbers at all** — currently *"No completed full audit has run on this machine yet, so there is nothing to measure from. This engagement will be the first."* On a screen whose entire purpose is informed consent, a fabricated number is worse than none.
+
+Getting that filter right took three passes against real data: including non-completed runs produced a "slowest: 1490 minutes" from an interrupted run that sat waiting overnight — wall-clock that measured the auditor's absence, not the agent's work. Runs that reused everything and called no model were excluded for the same reason, and narrower runs are excluded because a two-minute analysis run says nothing about a full audit.
+
+**Also as-built**
+
+- The outcome list is the real dependency closure of `full_audit_working_draft` — 18 capabilities with their registered titles, in schedule order, with a test asserting no dependency is listed after something that needs it.
+- The gate line is read from the launch mode rather than the per-capability policy, since phase 6 is not built.
+- The primary action is **Create and add files**, landing on the import dialog: a full audit cannot start on an empty workspace, so "Approve and start" would have been a button that did nothing.
+- A brief cannot write outside `BRIEF_FIELDS`; `created_by` and `apm_markdown` are rejected by `update_planning`, and a test covers it.
 
 ## 8. Non-goals
 

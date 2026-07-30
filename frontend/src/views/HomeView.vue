@@ -5,14 +5,13 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
-import Dialog from 'primevue/dialog'
-import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 import Skeleton from 'primevue/skeleton'
 import type { MenuItem } from 'primevue/menuitem'
 
-import { api, ApiError } from '../api'
-import type { WorkspaceListItem, WorkspaceSummary } from '../types'
+import { api } from '../api'
+import type { WorkspaceListItem } from '../types'
+import NewEngagementDialog from '../components/NewEngagementDialog.vue'
 import UiOverflowMenu from '../components/ui/UiOverflowMenu.vue'
 
 const router = useRouter()
@@ -22,8 +21,6 @@ const toast = useToast()
 const workspaces = ref<WorkspaceListItem[]>([])
 const loading = ref(true)
 const showCreate = ref(false)
-const creating = ref(false)
-const name = ref('')
 
 async function load() {
   loading.value = true
@@ -36,27 +33,10 @@ async function load() {
   }
 }
 
-async function create() {
-  if (!name.value.trim()) return
-  creating.value = true
-  try {
-    const ws = await api.post<WorkspaceSummary>('/api/workspaces', {
-      name: name.value,
-      description: '',
-    })
-    showCreate.value = false
-    await router.push({ path: `/workspace/${ws.id}` })
-  } catch (error) {
-    const detail = error instanceof ApiError ? error.message : String(error)
-    toast.add({ severity: 'error', summary: 'Could not create workspace', detail, life: 5000 })
-  } finally {
-    creating.value = false
-  }
-}
-
-function openCreate() {
-  name.value = ''
-  showCreate.value = true
+// A new engagement lands on the import dialog rather than an empty console:
+// the agent needs the audit folder before any of its plan can start.
+async function onCreated({ id, withImport }: { id: string; withImport: boolean }) {
+  await router.push({ path: `/workspace/${id}`, query: withImport ? { import: '1' } : {} })
 }
 
 function remove(ws: WorkspaceListItem) {
@@ -91,7 +71,7 @@ onMounted(load)
         <p class="eyebrow">Engagement index</p>
         <h1>Your audit workspaces</h1>
       </div>
-      <Button label="New workspace" icon="pi pi-plus" @click="openCreate" />
+      <Button label="New engagement" icon="pi pi-plus" @click="showCreate = true" />
     </div>
 
     <div v-if="loading" class="loading-grid">
@@ -101,7 +81,7 @@ onMounted(load)
       <div>
         <span class="empty-state-icon"><i class="pi pi-folder-open" /></span>
         <h3>Start your first engagement</h3>
-        <Button label="Create workspace" icon="pi pi-plus" @click="openCreate" />
+        <Button label="Create your first engagement" icon="pi pi-plus" @click="showCreate = true" />
       </div>
     </div>
 
@@ -130,24 +110,7 @@ onMounted(load)
       </Card>
     </div>
 
-    <Dialog v-model:visible="showCreate" header="New workspace" modal :closable="!creating" :style="{ width: 'min(30rem, 94vw)' }">
-      <section class="wizard-panel">
-        <div class="wizard-heading">
-          <h2>Name this workspace</h2>
-        </div>
-        <div class="field">
-          <label for="ws-name">Name</label>
-          <InputText id="ws-name" v-model="name" placeholder="e.g. FY26 Revenue Audit" autofocus @keyup.enter="create" />
-        </div>
-      </section>
-
-      <template #footer>
-        <div class="wizard-footer">
-          <Button label="Cancel" severity="secondary" text :disabled="creating" @click="showCreate = false" />
-          <Button label="Create workspace" icon="pi pi-check" :loading="creating" :disabled="!name.trim()" @click="create" />
-        </div>
-      </template>
-    </Dialog>
+    <NewEngagementDialog v-model:visible="showCreate" @created="onCreated" />
   </div>
 </template>
 
@@ -215,12 +178,7 @@ h1 {
   padding: 2rem 0;
 }
 
-.wizard-panel { display: grid; gap: 1rem; align-content: start; }
-.wizard-heading h2 { margin: 0.15rem 0 0.4rem; font-size: var(--aw-text-xl); }
-.wizard-panel .field { display: grid; gap: 0.35rem; }
-.wizard-panel .field label { color: #46576d; font-size: var(--aw-text-xs); font-weight: 700; }
 
-.wizard-footer { display: flex; justify-content: space-between; width: 100%; }
 
 @media (max-width: 720px) {
   .home-hero { flex-direction: column; }
