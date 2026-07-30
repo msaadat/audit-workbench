@@ -807,19 +807,6 @@ PRESETS.register(
                     budget=ContextBudget(max_items=12, max_characters=12_000),
                 ),
                 ContextSource(
-                    id="table_profiles",
-                    source_type="tables",
-                    required=False,
-                    selector=ContextSelector(selector_id="tables.all"),
-                    # Generated Data Test steps are Polars code, so generation
-                    # needs to see column types and value shapes, not just names.
-                    # Supplied unconditionally: the model chooses ``source``
-                    # itself, so a unit is never known in advance to be
-                    # data-only or document-only.
-                    representations=(ContextRepresentation("table_profile"),),
-                    budget=ContextBudget(max_items=6, max_characters=14_000),
-                ),
-                ContextSource(
                     id="documents",
                     source_type="documents",
                     required=False,
@@ -852,18 +839,14 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            # One bounded ceiling for the merged unit, deliberately less than the
-            # sum of the two presets it replaces (231/60,000 + 32/56,000): a
-            # source-specific sub-budget already protects table metadata from a
-            # large document set, so the total does not need to be additive.
-            # This ceiling is a starting point pending the proposal-quality
-            # evaluation the cutover in section 10 of the merge plan requires.
-            budget=ContextBudget(max_items=187, max_characters=102_000),
+            # Data Test code is validated against schema-only empty frames, so
+            # profiles are not needed to generate a valid executable procedure.
+            # Keep the overall ceiling aligned with the remaining source limits.
+            budget=ContextBudget(max_items=181, max_characters=88_000),
             privacy=ContextPrivacy(
                 allow_planning_context=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
-                allow_table_profiles=True,
             ),
         ),
     )

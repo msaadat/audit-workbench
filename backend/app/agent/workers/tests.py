@@ -66,6 +66,36 @@ def _resolved_item(request: WorkerRequest, source_id: str) -> object:
     return matches[0]
 
 
+def _source_items(request: WorkerRequest, source_id: str) -> list[object]:
+    """Return the supplied contents for one optional source in stable order."""
+    return [item.content for item in request.context.items if item.source_id == source_id]
+
+
+def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
+    """Project the durable bundle into the small model-facing generation input.
+
+    The context manifest and bundle retain source identity, representations, and
+    supplied-size metrics for provenance.  The model only needs the underlying
+    audit material, so do not spend prompt tokens serializing that transport
+    envelope on every generation or repair attempt.
+    """
+    planning = _resolved_item(request, "planning_context")
+    if isinstance(planning, Mapping):
+        planning = planning.get("context") or {}
+    return {
+        "target_rcm_row": _resolved_item(request, GENERATE_ROW_SOURCE_ID),
+        "planning_context": planning,
+        "other_rcm_rows": _source_items(request, "other_rcm_rows"),
+        "table_schemas": _source_items(request, GENERATE_TABLE_SOURCE_ID),
+        "documents": _source_items(request, GENERATE_DOCUMENT_SOURCE_ID),
+        "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
+        "instructions": (
+            "Generate complete executable tests for target_rcm_row only. Do not "
+            "duplicate a test already covering other_rcm_rows."
+        ),
+    }
+
+
 def _json_payload(response: str) -> object:
     value = str(response or "").strip()
     fenced = re.fullmatch(
@@ -520,16 +550,8 @@ def run_generate_worker(
 ) -> str:
     """Transform only the supplied bundle into one budgeted model request."""
     user = json.dumps(
-        {
-            "TARGET RCM ROW": _resolved_item(request, GENERATE_ROW_SOURCE_ID),
-            "RESOLVED CONTEXT": request.context.to_dict(),
-            "INSTRUCTIONS": (
-                "Generate the complete executable tests for the target RCM row "
-                "only. Do not duplicate a test already covering another RCM row "
-                "in the supplied context."
-            ),
-        },
-        indent=1,
+        _generation_prompt_payload(request),
+        separators=(",", ":"),
         ensure_ascii=False,
     )
     return gateway.complete(

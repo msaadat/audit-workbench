@@ -279,19 +279,18 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
         "rcm_row",
         "other_rcm_rows",
         "table_metadata",
-        "table_profiles",
         "documents",
         "methodology",
     ]
     # The one target row is required; every duplicate-avoidance and material
     # source is not, since the model chooses source per test.
     assert [source.required for source in spec.sources] == [
-        True, True, False, False, False, False, False,
+        True, True, False, False, False, False,
     ]
-    # Generation reads schema metadata, profiles, and document text — never a
-    # row — since it now decides both Data and Document Test sources itself.
+    # Generation reads schema metadata and document text — never a table row —
+    # since it decides both Data and Document Test sources itself.
     assert spec.privacy.allow_table_metadata is True
-    assert spec.privacy.allow_table_profiles is True
+    assert spec.privacy.allow_table_profiles is False
     assert spec.privacy.allow_document_text is True
     assert spec.privacy.allow_table_rows is False
 
@@ -371,7 +370,6 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
         "planning_context",
         "rcm_row",
         "table_metadata",
-        "table_profiles",
         "documents",
     }
     table_names = {

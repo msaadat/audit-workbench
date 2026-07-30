@@ -649,7 +649,6 @@ def test_test_generate_definition_context_has_schema_metadata_but_no_table_rows(
     assert {selection.source_id for selection in manifest.selections} >= {
         "rcm_row",
         "table_metadata",
-        "table_profiles",
     }
     # No document exists in this workspace, so the declared document source
     # supplies nothing.

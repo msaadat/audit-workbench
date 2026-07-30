@@ -784,7 +784,6 @@ TEST_GENERATE_PLANNING_SOURCE_ID = "planning_context"
 TEST_GENERATE_ROW_SOURCE_ID = "rcm_row"
 TEST_GENERATE_OTHER_ROWS_SOURCE_ID = "other_rcm_rows"
 TEST_GENERATE_TABLE_METADATA_SOURCE_ID = "table_metadata"
-TEST_GENERATE_TABLE_PROFILE_SOURCE_ID = "table_profiles"
 TEST_GENERATE_DOCUMENT_SOURCE_ID = "documents"
 TEST_GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
 
@@ -800,9 +799,9 @@ def test_generate_scope(
 
     Replaces the separate ``tests.draft``/``tests.spec`` scopes: one RCM row's
     generation turn needs the row narrative, duplicate-avoidance context, table
-    metadata/profiles, and every candidate document in one bundle, since the
-    model chooses data vs document sources itself rather than a unit kind
-    choosing them beforehand. The document source is
+    schemas, and every candidate document in one bundle, since the model chooses
+    data vs document sources itself rather than a unit kind choosing them
+    beforehand. The document source is
     :func:`document_test_document_candidates` only — the planning-relevant
     filter :func:`apm_document_candidates` applies would force every Document
     Test into ``missing_evidence``.
@@ -846,9 +845,6 @@ def test_generate_scope(
                 workspace, rcm_id
             ),
             TEST_GENERATE_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
-                workspace
-            ),
-            TEST_GENERATE_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(
                 workspace
             ),
             TEST_GENERATE_DOCUMENT_SOURCE_ID: document_test_document_candidates(

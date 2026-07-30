@@ -218,6 +218,29 @@ def test_generate_worker_produces_a_ready_data_test():
     )
 
 
+def test_generate_worker_sends_a_compact_context_projection():
+    gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
+
+    WORKERS.execute(_request(), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert set(payload) == {
+        "target_rcm_row",
+        "planning_context",
+        "other_rcm_rows",
+        "table_schemas",
+        "documents",
+        "methodology",
+        "instructions",
+    }
+    assert payload["target_rcm_row"]["id"] == "RCM-1"
+    assert payload["planning_context"] == {"objective": "Assess procurement approvals"}
+    assert payload["table_schemas"][0]["table"] == "transactions"
+    assert "table_profiles" not in payload
+    assert "supplied_size" not in gateway.calls[0]["user"]
+    assert "representation" not in gateway.calls[0]["user"]
+
+
 def test_generate_worker_produces_a_ready_document_question_test():
     gateway = _Gateway([json.dumps({"tests": [_document_test()]})])
 
