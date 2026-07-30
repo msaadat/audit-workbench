@@ -83,7 +83,7 @@ class BoundUnitPipeline:
     # declares no executor, after its proposal is durable — and before the unit is
     # marked succeeded. It may return a ``DeterministicUnitResult`` to replace the
     # default ``succeeded`` fold when the domain owns the unit's terminal meaning
-    # (for example an answer that only an auditor may disposition);
+    # (for example an answer that needs additional evidence);
     # ``conflict_handler`` may translate a domain-recognized ``UnitPipelineConflict``
     # into a ``(status, error)`` override instead of the default ``conflict``.
     on_committed: OutcomeHandler | None = None

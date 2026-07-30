@@ -75,7 +75,7 @@ safe result creates no genuinely new work. Document-test kind must be exactly vo
 review, or qa. Use workspace_index `id` values in `*_id` arguments and typed `ref` values only
 for artifact targets or evidence/result references. Create document tests with rcm_id
 already assigned. Create a finding only from an already
-auditor-dispositioned observation. Prefer draft_finding_from_observation so the orchestrator
+exception observation. Prefer draft_finding_from_observation so the orchestrator
 derives immutable evidence and relationship references locally; supply the complete narrative
 fields and leave auditor confirmation to the auditor.
 The supplied table_schemas and table_profiles are authoritative; copy identifiers exactly and never

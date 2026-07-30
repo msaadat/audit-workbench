@@ -30,13 +30,6 @@ from .workspaces import (
 
 ENGINES = {"analytics", "validation", "polars"}
 STATUSES = TEST_STATUSES
-AUDITOR_DISPOSITIONS = {
-    "pending",
-    "follow_up",
-    "accepted",
-    "invalid_test_or_result",
-    "not_applicable",
-}
 CURRENT_RESULT_ID = "DTR-CURRENT"
 SUMMARY_ROWS = 500
 EXCEPTION_ROWS = 200
@@ -116,7 +109,6 @@ def _record(workspace: Workspace, data_test_id: str) -> dict:
     # until their next mutation, but it is never returned or persisted again.
     item.pop("runs", None)
     item.setdefault("last_run", None)
-    item.setdefault("auditor_disposition", "pending")
     item.setdefault("evidence_refs", [])
     item.setdefault("criteria", "")
     item.setdefault("steps", [])
@@ -266,7 +258,6 @@ def _base_record(workspace: Workspace, payload: dict, *, title: str, now: str) -
         "open_exception_count": 0,
         "finding_refs": [],
         "last_run": None,
-        "auditor_disposition": "pending",
         "evidence_refs": [],
         "created_by": "agent" if payload.get("agent_run_id") else "user",
         "agent_run_id": payload.get("agent_run_id"),
@@ -405,7 +396,7 @@ def update(
     item = _record(workspace, data_test_id)
     allowed = {
         "title", "objective", "engine", "table_refs", "spec", "rcm_id",
-        "auditor_disposition", "workflow_parent_sha1", "criteria", "steps",
+        "workflow_parent_sha1", "criteria", "steps",
         "methodology_refs", "conclusion", "control_conclusion",
         "scope_limitations", "next_action",
     }
@@ -430,11 +421,6 @@ def update(
     spec, warnings, refs = _validate_spec(
         workspace, engine, refs, changes.get("spec", item["spec"]), semantic_id=item["semantic_id"]
     )
-    disposition = str(
-        changes.get("auditor_disposition", item.get("auditor_disposition") or "pending")
-    )
-    if disposition not in AUDITOR_DISPOSITIONS:
-        raise WorkspaceError("Unknown Data Test auditor disposition.")
     conclusion = str(
         changes.get("control_conclusion", item.get("control_conclusion") or "no_conclusion")
     )
@@ -448,7 +434,6 @@ def update(
         table_refs=refs,
         spec=spec,
         semantic_warnings=warnings,
-        auditor_disposition=disposition,
         control_conclusion=conclusion,
         criteria=str(changes.get("criteria", item.get("criteria") or "")),
         steps=_normalize_steps(changes.get("steps", item.get("steps"))),

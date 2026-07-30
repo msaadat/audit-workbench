@@ -62,11 +62,6 @@ WORKFLOW_MODULES = {
     doc_tests_workflow.WORKFLOW_ID: doc_tests_workflow,
 }
 
-ELIGIBLE_DISPOSITIONS = {
-    "confirmed_control_exception",
-    "draft_finding_candidate",
-}
-
 # The four normalized routing results. ``workflow`` and ``action`` select an
 # engine; ``clarification`` and ``unsupported`` finish the run without one.
 ROUTE_WORKFLOW = "workflow"
@@ -790,8 +785,7 @@ def _audit_model_turns(workspace: Workspace) -> int:
         if summary.get("kind") == "qa"
     )
     eligible_findings = sum(
-        item.get("status") == "disposed"
-        and item.get("disposition") in ELIGIBLE_DISPOSITIONS
+        item.get("outcome") == "exception"
         for item in workspace.observations
     )
     return (
@@ -851,7 +845,7 @@ def _doc_test_model_turns(workspace: Workspace, scope: dict) -> int:
     """Size the document-test budget from the Q&A pairs actually in scope.
 
     Only the Q&A unit kind calls the model, once per unanswered item/document
-    pair; deterministic comparison, review, and disposition units never do.
+    pair; deterministic comparison and review units never do.
     """
 
     from .capabilities.doc_tests import scoped_tests

@@ -45,16 +45,16 @@ def draft_results(workspace: Workspace, procedure_id: str) -> dict:
         result = (
             f"Executed {len(tests)} linked document test(s) covering {total_items} item(s). "
             f"Deterministic checks recorded {matched} match(es) and {mismatched} mismatch/missing result(s); "
-            f"auditors marked {exceptions} exception(s)."
+            f"results recorded {exceptions} exception(s)."
         )
         if exceptions or mismatched:
             conclusion = "The stored results include exceptions or unmatched evidence that require auditor evaluation against the procedure criteria."
         elif pending or manual:
-            conclusion = "No final conclusion is supported while auditor dispositions or manual checks remain outstanding."
+            conclusion = "Manual-check results remain a documented limitation."
         else:
             conclusion = "The linked results support the procedure objective, subject to the stated scope limitations."
         limitations = (
-            f"{manual} item(s) require manual review and {pending} item(s) remain pending auditor disposition."
+            f"{manual} item(s) require manual review and {pending} item(s) have not run."
             if manual or pending else "No unresolved document-test limitations were recorded."
         )
     return workspace.update_procedure(
@@ -96,7 +96,7 @@ def render_markdown(workspace: Workspace, procedure_id: str) -> str:
             f"manual review: {rollup['manual_review']}.", "",
         ])
         for item in test.get("items") or []:
-            lines.append(f"- {item.get('label') or item['id']} — {item.get('state')}; auditor disposition: {item.get('auditor_disposition', 'pending')}")
+            lines.append(f"- {item.get('label') or item['id']} — {item.get('state')}")
     anchors = list(procedure.get("evidence_refs") or [])
     for test in tests:
         anchors.extend(anchor for item in test.get("items") or [] for anchor in item.get("evidence_refs") or [])
@@ -291,8 +291,8 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
     ]
     lines.extend(
         [
-            f"- {item['id']}: {item.get('summary')} — disposition: "
-            f"{item.get('disposition') or 'pending'}"
+            f"- {item['id']}: {item.get('summary')} — outcome: "
+            f"{item.get('outcome') or 'needs_manual_check'}"
             for item in observations
         ]
         or ["- No observations recorded."]

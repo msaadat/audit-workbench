@@ -381,11 +381,12 @@ def test_generate_executor_rejects_regenerating_a_settled_document_test():
             ],
         },
     )
-    doc_tests.update_item(
-        workspace, existing["id"], existing["items"][0]["id"], {"auditor_disposition": "accepted"}
-    )
+    # A model-settled result is immutable; there is no separate auditor
+    # disposition layer to write.
+    existing["items"][0]["state"] = "confirmed"
+    doc_tests.save_test(workspace, existing)
     request = _request(workspace, rcm_id, [_document_test(doc_id)])
     target = TestGenerateExecutorTarget(workspace, "run-settled", rcm_id)
 
-    with pytest.raises(Exception, match="auditor-settled items"):
+    with pytest.raises(Exception, match="final-result items"):
         EXECUTORS.execute(request, target)

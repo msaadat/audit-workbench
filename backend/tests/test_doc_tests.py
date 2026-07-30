@@ -71,7 +71,7 @@ def test_local_multi_document_matching_records_anchors_and_conflicts(workspace_w
     for doc in (invoice, receipt):
         doc_tests.attach_document(ws, test["id"], test["items"][0]["id"], doc["id"])
     item = doc_tests.run_item(ws, test["id"], test["items"][0]["id"], run_id="RUN-1")
-    assert item["state"] == "agent_checked"
+    assert item["state"] == "confirmed"
     assert all(check["verdict"] == "match" for check in item["checks"])
     assert all(len(check["comparisons"]) == 2 for check in item["checks"])
     anchor = item["checks"][0]["evidence_refs"][0]
@@ -97,11 +97,11 @@ def test_replaced_document_does_not_create_an_attachment_conflict(workspace_with
     })
     item = doc_tests.run_item(ws, test["id"], test["items"][0]["id"])
     assert replaced["id"] == document["id"]
-    assert item["state"] == "agent_checked"
+    assert item["state"] == "confirmed"
     assert item["document_conflicts"] == {"duplicate_documents": []}
 
 
-def test_all_four_builders_and_auditor_dispositions(workspace_with_data):
+def test_all_four_builders_expose_final_result_states(workspace_with_data):
     ws = workspace_with_data
     document = documents.add_document(ws, "policy.txt", b"Approval is required.\nEvidence must be retained.")
     attribute = doc_tests.build_attribute(ws, {"title": "Attributes", "attributes": [{"name": "Approval"}]})
@@ -109,11 +109,8 @@ def test_all_four_builders_and_auditor_dispositions(workspace_with_data):
     qa = doc_tests.build_qa(ws, {"title": "Policy Q&A", "document_ids": [document["id"]], "questions": ["Is approval required?"]})
     assert {attribute["kind"], review["kind"], qa["kind"]} == {"attribute", "review", "qa"}
     assert review["items"][0]["evidence_refs"][0]["source_sha1"] == document["sha1"]
-    updated = doc_tests.update_item(ws, review["id"], review["items"][0]["id"], {
-        "auditor_disposition": "exception", "auditor_note": "Policy is outdated."
-    })
-    assert updated["items"][0]["state"] == "exception"
-    assert updated["items"][0]["auditor_note"] == "Policy is outdated."
+    checked = doc_tests.run_item(ws, review["id"], review["items"][0]["id"])
+    assert checked["state"] == "manual_review"
 
 
 def test_doc_test_workflow_persists_each_item_and_completes(workspace_with_data):
@@ -137,15 +134,13 @@ def test_doc_test_workflow_persists_each_item_and_completes(workspace_with_data)
         context={"test_id": test["id"]},
     )
     finished = wait_run(ws, run["id"])
-    # Executed, then awaiting the auditor's own disposition — which is why the
-    # run completes with open items rather than plain ``completed``.
-    assert finished["status"] == "completed_with_open_items", finished.get("error")
+    assert finished["status"] == "completed", finished.get("error")
     assert finished["engine"] == "workflow"
     assert finished["workflow"]["definition"] == "doc_tests_workflow_v1"
     assert finished["doc_tests"]["rollup"]["matched"] == 2
     saved = doc_tests.load_test(ws, test["id"])
-    assert saved["items"][0]["state"] == "agent_checked"
-    assert saved["status"] == "review_required"
+    assert saved["items"][0]["state"] == "confirmed"
+    assert saved["status"] == "completed"
 
 
 def test_qa_runner_uses_document_context_without_workspace_setting(workspace_with_data, monkeypatch):
@@ -162,7 +157,7 @@ def test_qa_runner_uses_document_context_without_workspace_setting(workspace_wit
         })
     })
     checked = doc_tests.run_item(ws, test["id"], test["items"][0]["id"], run_id="RUN-QA")
-    assert checked["state"] == "agent_checked"
+    assert checked["state"] == "confirmed"
     assert checked["citations"][0]["source_sha1"] == document["sha1"]
     activity = documents.activities(ws)["items"][0]
     assert activity["purpose"] == "document_qa"
@@ -175,7 +170,7 @@ def test_working_paper_draft_traceability_and_safe_html(workspace_with_data):
     test = doc_tests.create_test(ws, {
         "kind": "vouching", "title": "Invoice support", "rcm_refs": [rcm["id"]],
         "procedure_refs": [procedure["id"]],
-        "items": [{"label": "Item one", "state": "exception", "auditor_disposition": "exception", "checks": [
+        "items": [{"label": "Item one", "state": "exception", "checks": [
             {"field": "amount", "expected": 100, "found": 90, "verdict": "mismatch"}
         ]}],
     })

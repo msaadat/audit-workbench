@@ -5,7 +5,7 @@ over semantic items — the scheduler's own description of itself — and becaus
 audit lifecycle already scheduled the same units. These tests pin what that
 migration has to preserve: per-item resume, deterministic comparisons and their
 evidence anchors, cited Q&A answers through the registered worker and executor,
-evidence blocking, auditor disposition as a separate outcome, and one
+evidence blocking, final outcomes, and one
 implementation shared with `fieldwork.executed`.
 """
 
@@ -92,7 +92,6 @@ def test_the_document_test_graph_is_declared_once_and_hash_identified():
     assert doc_tests_workflow.DEPENDENCIES == {
         "doc_tests.definitions_ready": (),
         "doc_tests.executed": ("doc_tests.definitions_ready",),
-        "doc_tests.dispositioned": ("doc_tests.executed",),
     }
     assert doc_tests_workflow.definition_hash().startswith("sha1:") or (
         len(doc_tests_workflow.definition_hash()) >= 40
@@ -137,30 +136,30 @@ def test_the_run_endpoint_starts_a_document_test_workflow_run():
     assert created["workflow"]["definition"] == doc_tests_workflow.WORKFLOW_ID
     assert created["workflow"]["scope"]["test_ids"] == [test["id"]]
     finished = wait_run(ws, created["id"])
-    assert finished["status"] == "completed_with_open_items", finished.get("error")
+    assert finished["status"] == "completed", finished.get("error")
 
 
 # --------------------------------------------------------------------------- #
 # Deterministic comparison, anchors, and per-item resume
 # --------------------------------------------------------------------------- #
-def test_deterministic_comparison_records_anchors_and_awaits_disposition():
+def test_deterministic_comparison_records_anchors_and_settles_directly():
     ws = _workspace("Doc test comparison")
     document, test = _vouching(ws)
 
     finished = wait_run(ws, _run(ws, test["id"])["id"])
 
-    assert finished["status"] == "completed_with_open_items", finished.get("error")
+    assert finished["status"] == "completed", finished.get("error")
     # No model turn: a vouching worklist is a local comparison end to end.
     assert int(finished["usage"].get("llm_turns") or 0) == 0
     executed = _units(finished, "doc_tests.executed")
     assert [unit["kind"] for unit in executed] == ["document_test_execution"]
-    assert executed[0]["status"] == "awaiting_confirmation"
+    assert executed[0]["status"] == "succeeded"
     assert executed[0]["result_refs"] == [f"doctest:{test['id']}"]
 
     saved = doc_tests.load_test(ws, test["id"])
     item = saved["items"][0]
-    assert item["state"] == "agent_checked"
-    assert saved["status"] == "review_required"
+    assert item["state"] == "confirmed"
+    assert saved["status"] == "completed"
     assert [check["verdict"] for check in item["checks"]] == ["match", "match"]
     anchors = [anchor["source_sha1"] for anchor in item["evidence_refs"]]
     assert anchors and set(anchors) == {document["sha1"]}
@@ -193,15 +192,13 @@ def test_a_second_run_reuses_the_executed_result_and_re_runs_nothing():
     ] == "not_assessed"
 
 
-def test_an_auditor_dispositioned_item_is_not_re_run():
+def test_a_final_result_item_is_not_re_run():
     ws = _workspace("Doc test disposition resume")
     _document, test = _vouching(ws)
-    doc_tests.update_item(
-        ws,
-        test["id"],
-        test["items"][0]["id"],
-        {"auditor_disposition": "accepted", "auditor_note": "Agrees to the ledger."},
-    )
+    stored = doc_tests.load_test(ws, test["id"])
+    stored["items"][0]["state"] = "confirmed"
+    stored["status"] = "completed"
+    doc_tests.save_test(ws, stored)
 
     finished = wait_run(ws, _run(ws, test["id"])["id"])
 
@@ -209,41 +206,6 @@ def test_an_auditor_dispositioned_item_is_not_re_run():
     assert _units(finished, "doc_tests.executed") == []
     saved = doc_tests.load_test(ws, test["id"])
     assert saved["items"][0]["state"] == "confirmed"
-    assert saved["items"][0]["auditor_note"] == "Agrees to the ledger."
-
-
-def test_a_remaining_disposition_is_an_outcome_only_the_auditor_can_settle():
-    ws = _workspace("Doc test disposition outcome")
-    _document, test = _vouching(ws)
-    wait_run(ws, _run(ws, test["id"])["id"])
-
-    requested = runner.start_command_run(
-        ws,
-        "auto",
-        {
-            "text": "Disposition the document test.",
-            "requested_outcomes": ["doc_tests.dispositioned"],
-            "target_refs": [f"doctest:{test['id']}"],
-        },
-        context={"test_id": test["id"]},
-    )
-    finished = wait_run(ws, requested["id"])
-
-    # A deterministic comparison has no model-worker outcome to apply, so this
-    # remaining unit settles for auditor judgment rather than succeeding.
-    assert finished["status"] == "completed_with_open_items", finished.get("error")
-    units = _units(finished, "doc_tests.dispositioned")
-    assert [unit["status"] for unit in units] == ["awaiting_confirmation"]
-    assert units[0]["error"] == doc_tests_execution.DISPOSITION_REQUIRED
-
-    fresh = workspaces.load_workspace(ws.id)
-    doc_tests.update_item(
-        fresh, test["id"], test["items"][0]["id"], {"auditor_disposition": "accepted"}
-    )
-    settled = capability_registries.doc_tests_workflow_state(
-        workspaces.load_workspace(ws.id), {"test_ids": [test["id"]]}
-    )
-    assert settled["doc_tests.dispositioned"]["state"] == "satisfied"
 
 
 def test_explicit_force_re_runs_an_already_executed_test():
@@ -255,7 +217,7 @@ def test_explicit_force_re_runs_an_already_executed_test():
         ws, _run(ws, test["id"], generation_mode="force")["id"]
     )
 
-    assert forced["status"] == "completed_with_open_items", forced.get("error")
+    assert forced["status"] == "completed", forced.get("error")
     assert [unit["kind"] for unit in _units(forced, "doc_tests.executed")] == [
         "document_test_execution"
     ]
@@ -371,8 +333,6 @@ def test_qa_execution_fans_out_per_item_document_pair_through_the_pipeline(
     stored = saved["items"][0]["qa_answers"][document["id"]]
     assert stored["answer"] == "The controller approved it."
     assert saved["items"][0]["state"] == "confirmed"
-    assert saved["items"][0]["auditor_disposition"] == "accepted"
-    assert saved["items"][0]["evidence_refs"][0]["confirmed_by"] == "agent"
 
 
 def test_auto_mode_applies_the_workers_exception_outcome(
@@ -391,9 +351,7 @@ def test_auto_mode_applies_the_workers_exception_outcome(
     saved = doc_tests.load_test(ws, test["id"])
     item = saved["items"][0]
     assert item["state"] == "exception"
-    assert item["auditor_disposition"] == "exception"
     assert item["qa_answers"][_document["id"]]["outcome"] == "exception"
-    assert item["evidence_refs"][0]["confirmed_by"] == "agent"
 
 
 def test_auto_mode_settles_a_workers_manual_check_outcome(
@@ -412,8 +370,6 @@ def test_auto_mode_settles_a_workers_manual_check_outcome(
     assert _units(finished, "doc_tests.executed")[0]["status"] == "succeeded"
     item = doc_tests.load_test(ws, test["id"])["items"][0]
     assert item["state"] == "manual_review"
-    assert item["auditor_disposition"] == "needs_manual_check"
-    assert item["evidence_refs"][0]["confirmed_by"] == "agent"
 
 
 def test_an_answered_qa_pair_is_not_re_billed_on_a_later_run(
@@ -430,7 +386,7 @@ def test_an_answered_qa_pair_is_not_re_billed_on_a_later_run(
     assert _units(second, "doc_tests.executed") == []
 
 
-def test_permission_mode_keeps_a_cited_qa_answer_for_auditor_disposition(
+def test_permission_mode_settles_a_cited_qa_answer_directly(
     monkeypatch, fake_agent_llm
 ):
     ws, _document, test = _qa_workspace(monkeypatch, fake_agent_llm)
@@ -438,11 +394,10 @@ def test_permission_mode_keeps_a_cited_qa_answer_for_auditor_disposition(
     finished = wait_run(ws, _run(ws, test["id"], mode="permission")["id"])
 
     unit = _units(finished, "doc_tests.executed")[0]
-    assert finished["status"] == "completed_with_open_items", finished.get("error")
-    assert unit["status"] == "awaiting_confirmation"
+    assert finished["status"] == "completed", finished.get("error")
+    assert unit["status"] == "succeeded"
     saved = doc_tests.load_test(ws, test["id"])
-    assert saved["items"][0]["state"] == "agent_checked"
-    assert saved["items"][0]["auditor_disposition"] == "pending"
+    assert saved["items"][0]["state"] == "confirmed"
 
 
 def test_forced_qa_execution_answers_the_pair_again(monkeypatch, fake_agent_llm):

@@ -15,19 +15,16 @@ handler.
 
 from __future__ import annotations
 
-import uuid
-
 from .. import doc_tests, rcm_execution
-from ..workspace_transactions import mutate, parent_hashes
+from ..workspace_transactions import parent_hashes
 from ..workspaces import (
-    OBSERVATION_DISPOSITIONS,
     Workspace,
     WorkspaceConflict,
     WorkspaceError,
     slugify,
 )
 from . import capabilities as audit_capabilities
-from . import narration, store, workflow
+from . import narration, workflow
 from .action_runner import ActionRunner
 from .analysis_execution import AnalysisWorkflowExecution
 from .capabilities.analysis import (
@@ -40,11 +37,7 @@ from .capabilities.documents import (
     analysis_unit_specs,
     resolve_document_scope,
 )
-from .capabilities.reporting import (
-    OBSERVATION_DISPOSITION_CHECKPOINT,
-    STAGE_CHECKPOINTS,
-)
-from .capabilities._shared import scoped_observations, target_rcm_ids
+from .capabilities._shared import target_rcm_ids
 from .doc_tests_execution import bind_document_test_unit
 from .documents_execution import (
     DocumentWorkflowExecution,
@@ -90,9 +83,6 @@ from .runtime import (
 )
 from .workers import WORKERS
 
-ELIGIBLE_DISPOSITIONS = {"confirmed_control_exception", "draft_finding_candidate"}
-
-
 class AuditWorkflowExecution(ActionRunner):
     """Per-unit audit execution bindings and projections for the scheduler."""
 
@@ -125,8 +115,7 @@ class AuditWorkflowExecution(ActionRunner):
             for item in doc_tests.load_test(self.ws, summary["id"]).get("items") or []
         )
         eligible_findings = sum(
-            item.get("status") == "disposed"
-            and item.get("disposition") in ELIGIBLE_DISPOSITIONS
+            item.get("outcome") == "exception"
             for item in self.ws.observations
         )
         calculated = (
@@ -322,25 +311,25 @@ class AuditWorkflowExecution(ActionRunner):
                 for row in subject.rcm
             ]
             exceptions = sum(int(row.get("exceptions") or 0) for row in rows)
-            open_observations = sum(
-                item.get("status") != "disposed" for item in subject.observations
+            exception_observations = sum(
+                item.get("outcome") == "exception" for item in subject.observations
             )
             return {
                 "status": (
                     "completed_with_issues"
-                    if exceptions or open_observations or attention
+                    if exceptions or attention
                     else state
                 ),
                 "headline": "Results and observations updated",
                 "summary": (
                     f"Rolled results into {len(rows)} RCM row(s). Recorded "
-                    f"{exceptions} exception(s); {open_observations} observation(s) "
-                    f"still need disposition."
+                    f"{exceptions} exception(s) across {exception_observations} "
+                    "exception observation(s)."
                 ),
                 "metrics": [
                     {"label": "RCM rows", "value": len(rows)},
                     {"label": "Exceptions", "value": exceptions},
-                    {"label": "Open observations", "value": open_observations},
+                    {"label": "Exception observations", "value": exception_observations},
                 ],
                 "artifact_refs": refs,
             }
@@ -957,9 +946,7 @@ class AuditWorkflowExecution(ActionRunner):
         Observation identities are keyed on ``execution_ref``, so a repeated
         roll-up reuses the same observation rows rather than creating duplicates.
         On success the binder emits the ``workspace_changed`` roll-up signal the
-        generic deterministic path does not. No model call or approval is involved;
-        the auditor's observation disposition runs as a declared checkpoint before
-        finding creation (see ``STAGE_CHECKPOINTS``), not here.
+        generic deterministic path does not. No model call or approval is involved.
         """
         self.ws = subject
         try:
@@ -973,112 +960,6 @@ class AuditWorkflowExecution(ActionRunner):
             "workspace_changed", {"kind": "rcm", "id": "rollup", "action": "updated"}
         )
         return DeterministicUnitResult("succeeded", tuple(refs))
-
-    def _observation_checkpoint(self) -> None:
-        open_items = [
-            item
-            for item in scoped_observations(self.ws, workflow_scope(self.run))
-            if item.get("status") != "disposed"
-        ]
-        if not open_items:
-            return
-        interaction = next((item for item in self.run.get("interactions") or [] if item.get("type") == "observation_disposition" and item.get("status") == "pending"), None)
-        if interaction is None:
-            interaction = {
-                "id": f"int_{uuid.uuid4().hex[:12]}", "action_id": "workflow:rollup",
-                "type": "observation_disposition",
-                "prompt": "Review and disposition the observations before finding drafts are prepared.",
-                "options": [],
-                "payload": {
-                    "observations": [
-                        {key: item.get(key) for key in ("id", "rcm_id", "test_id", "execution_ref", "summary", "exception_count", "suggested_disposition")}
-                        for item in open_items
-                    ],
-                    "allowed_values": sorted(OBSERVATION_DISPOSITIONS),
-                },
-                "policy_reason": "Observation disposition is authoritative auditor judgment.",
-                "status": "pending", "response": None, "actor": None,
-                "created_at": store.utcnow(), "resolved_at": None,
-            }
-            self.run.setdefault("interactions", []).append(interaction)
-            self.run["workflow"]["pending_checkpoint"] = interaction["id"]
-            self.save()
-            self.emit("checkpoint_request", {"interaction": interaction})
-        response = self._wait_interaction_response(interaction)
-        decisions = response.get("decisions") or []
-        by_id = {item["id"]: item for item in open_items}
-        if not isinstance(decisions, list):
-            raise WorkspaceError("Observation decisions must be an array.")
-
-        def commit(fresh: Workspace):
-            changed = []
-            for decision in decisions:
-                observation_id = str(decision.get("observation_id") or decision.get("id") or "")
-                if observation_id not in by_id:
-                    continue
-                current = next((item for item in fresh.observations if item.get("id") == observation_id), None)
-                if current is None or current.get("execution_ref") != by_id[observation_id].get("execution_ref"):
-                    raise WorkspaceConflict(fresh.revision, fresh.revision)
-                changed.append(rcm_execution.disposition(fresh, observation_id, str(decision.get("disposition") or ""), str(decision.get("auditor_note") or "")))
-            return changed
-
-        result = mutate(self.ws, commit)
-        self.ws = result.workspace
-        rcm_execution.rollup(
-            self.ws,
-            rcm_ids=set(target_rcm_ids(self.ws, workflow_scope(self.run))),
-        )
-        self.run["workflow"]["pending_checkpoint"] = None
-        self._resolve_interaction_record(interaction, response)
-        self.emit("checkpoint_resolved", {"interaction_id": interaction["id"], "count": len(result.value)})
-
-    def _auto_dispose_observations(self) -> None:
-        """Apply each valid generated observation disposition in auto mode.
-
-        Observation roll-up already records a bounded suggested disposition.
-        Permission mode deliberately asks the auditor to confirm it, while auto
-        mode must use it so eligible observations can progress into findings.
-        """
-        open_items = [
-            item
-            for item in scoped_observations(self.ws, workflow_scope(self.run))
-            if item.get("status") != "disposed"
-            and item.get("suggested_disposition") in OBSERVATION_DISPOSITIONS
-        ]
-        if not open_items:
-            return
-
-        suggested = {
-            str(item["id"]): str(item["suggested_disposition"])
-            for item in open_items
-        }
-
-        def commit(fresh: Workspace) -> list[dict]:
-            changed = []
-            for observation_id, disposition in suggested.items():
-                current = next(
-                    (item for item in fresh.observations if item.get("id") == observation_id),
-                    None,
-                )
-                if current is None or current.get("status") == "disposed":
-                    continue
-                changed.append(
-                    rcm_execution.disposition(
-                        fresh,
-                        observation_id,
-                        disposition,
-                        "Automatically dispositioned from the generated observation outcome.",
-                    )
-                )
-            return changed
-
-        result = mutate(self.ws, commit)
-        self.ws = result.workspace
-        if result.value:
-            self.emit(
-                "workspace_changed",
-                {"kind": "observation", "action": "auto_disposed", "count": len(result.value)},
-            )
 
     def _bind_finding(
         self,
@@ -1117,7 +998,7 @@ class AuditWorkflowExecution(ActionRunner):
                 [
                     self.proposal_item(
                         unit["title"],
-                        "Draft from an auditor-dispositioned observation.",
+                        "Draft from an exception observation.",
                         dict(proposal.get("finding") or {}),
                     )
                 ],
@@ -1303,7 +1184,7 @@ class AuditWorkflowExecution(ActionRunner):
         """Close the run on real audit outcomes, not on unit bookkeeping.
 
         A run that executed every unit cleanly can still be incomplete — open
-        evidence requests, undispositioned observations, or an unreconciled
+        evidence requests or an unreconciled
         report. Those become `next_outcomes`, the exact input "Continue audit"
         replays, and they are why `completed_with_open_items` is a distinct
         terminal status from `completed`.
@@ -1312,11 +1193,6 @@ class AuditWorkflowExecution(ActionRunner):
         completion = rcm_execution.completion(subject)
         failed = sum(unit.get("status") in {"failed", "conflict"} for stage in stages for unit in stage.get("units") or [])
         open_units = sum(unit.get("status") in {"blocked", "awaiting_input", "awaiting_confirmation"} for stage in stages for unit in stage.get("units") or [])
-        open_observations = [
-            item
-            for item in scoped_observations(subject, workflow_scope(self.run))
-            if item.get("status") != "disposed"
-        ]
         open_evidence = [item for item in subject.evidence_requests if item.get("status") == "open"]
         next_outcomes = []
         execution_open = bool(open_evidence) or any(
@@ -1329,14 +1205,12 @@ class AuditWorkflowExecution(ActionRunner):
         )
         if execution_open:
             next_outcomes.extend(["fieldwork.executed", "results.rolled_up"])
-        if open_observations:
-            next_outcomes.append("findings.drafted")
         reconciliation_open = any(
             stage.get("capability") == "report.working_draft"
             and any(unit.get("status") == "awaiting_confirmation" for unit in stage.get("units") or [])
             for stage in stages
         )
-        if execution_open or open_observations or reconciliation_open:
+        if execution_open or reconciliation_open:
             next_outcomes.extend(["report.working_draft", "audit.verified"])
         self.run["workflow"]["workspace_revision"] = subject.revision
         requires_full_completion = "audit.verified" in self.run["workflow"].get("requested_outcomes", [])
@@ -1363,7 +1237,10 @@ class AuditWorkflowExecution(ActionRunner):
                 ("Completion", None if completion["status"] == "completed" else completion["status"]),
                 ("Failed or conflicting units", failed),
                 ("Open workflow units", open_units),
-                ("Open observations", len(open_observations)),
+                ("Exception observations", sum(
+                    item.get("outcome") == "exception"
+                    for item in subject.observations
+                )),
                 ("Open evidence requests", len(open_evidence)),
             ],
         )
@@ -1594,21 +1471,13 @@ def build_audit_workflow_runner(
     ) -> bool:
         return dependency_id in _PARTIAL_DEPENDENCIES.get(capability_id, set())
 
-    # Declared auditor-judgment checkpoints resolved to their blocking handlers.
-    # The capability -> checkpoint-name declaration lives with the audit
-    # capability group (``STAGE_CHECKPOINTS``); the composition owns the concrete
-    # handler here because it needs the live run/runtime (interaction wait,
-    # persistence, and events). The checkpoint gates its capability's units and
-    # runs only in permission mode.
     checkpoint_handlers = {
-        OBSERVATION_DISPOSITION_CHECKPOINT: adapter._observation_checkpoint,
         DOCUMENT_SCOPE_CHECKPOINT: document_adapter._scope_checkpoint,
         ANALYSIS_SCOPE_CHECKPOINT: analysis_adapter._scope_checkpoint,
     }
     stage_checkpoints = {
         **DOCUMENT_STAGE_CHECKPOINTS,
         **ANALYSIS_STAGE_CHECKPOINTS,
-        **STAGE_CHECKPOINTS,
     }
 
     def before_stage(
@@ -1620,11 +1489,8 @@ def build_audit_workflow_runner(
         document_adapter.ws = subject
         analysis_adapter.ws = subject
         checkpoint = stage_checkpoints.get(capability.id)
-        if checkpoint is not None:
-            if run.get("mode") == "permission":
-                checkpoint_handlers[checkpoint]()
-            elif checkpoint == OBSERVATION_DISPOSITION_CHECKPOINT:
-                adapter._auto_dispose_observations()
+        if checkpoint is not None and run.get("mode") == "permission":
+            checkpoint_handlers[checkpoint]()
 
     scheduler = WorkflowRunner(
         subject=workspace,

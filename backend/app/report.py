@@ -639,15 +639,6 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
         if text and finding in supported_findings and finding["id"] not in cited_findings:
             issues.append(_issue("finding_missing_from_report", "warning", f"{finding['id']} is not cited in the report.", [ref]))
 
-    open_observations = [
-        item for item in workspace.observations if item.get("status") != "disposed"
-    ]
-    for observation in open_observations:
-        issues.append(_issue(
-            "unresolved_exception", "error",
-            f"Observation {observation['id']} has no auditor disposition.",
-            [f"observation:{observation['id']}", str(observation.get("execution_ref") or "")],
-        ))
     observed_doc_tests = {
         str(item.get("execution_ref") or "").split(":", 1)[1]
         for item in workspace.observations
@@ -658,12 +649,11 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
         exceptions = [
             item for item in test.get("items") or []
             if item.get("state") == "exception"
-            or item.get("auditor_disposition") == "exception"
         ]
         if exceptions and test["id"] not in observed_doc_tests:
             issues.append(_issue(
                 "unresolved_exception", "error",
-                f"{len(exceptions)} exception(s) in {test['id']} have no RCM observation disposition.",
+                f"{len(exceptions)} exception(s) in {test['id']} have no RCM observation.",
                 [f"doctest:{test['id']}"],
             ))
     exception_count = sum(int(item.get("exception_count") or 0) for item in workspace.observations)

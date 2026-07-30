@@ -72,16 +72,6 @@ RCM_IMPORT_FIELDS = (
     "process", "risk", "risk_rating", "assertion", "control", "control_type",
     "control_owner", "criteria", "prepared_by", "reviewed_by", "review_status",
 )
-OBSERVATION_DISPOSITIONS = {
-    "confirmed_control_exception",
-    "data_quality_issue",
-    "expected_or_benign",
-    "screening_follow_up",
-    "invalid_test_or_result",
-    "duplicate",
-    "draft_finding_candidate",
-}
-
 WORKSPACES_DIR = Path(
     os.environ.get("WORKBENCH_DATA", "")
     or Path(__file__).resolve().parents[2] / "Workspaces"

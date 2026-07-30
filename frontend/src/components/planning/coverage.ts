@@ -58,7 +58,7 @@ export function nextMove(row: RcmRow, state: CoverageState): string {
   if (state === 'no_coverage') return 'Agent can specify a test for this risk'
   if (state === 'needs_you') {
     const parts: string[] = []
-    if (rollup.open_exceptions) parts.push(`${rollup.open_exceptions} open exception(s) to disposition`)
+    if (rollup.open_exceptions) parts.push(`${rollup.open_exceptions} exception(s) recorded`)
     if (rollup.review_required) parts.push(`${rollup.review_required} test(s) awaiting review`)
     if (rollup.blocked) parts.push(`${rollup.blocked} test(s) blocked`)
     if (!parts.length) parts.push('Row is marked for review')

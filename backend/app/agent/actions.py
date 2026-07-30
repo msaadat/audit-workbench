@@ -42,7 +42,7 @@ from .. import (
 )
 from ..field_names import resolve_columns
 from ..workspaces import (
-    JOIN_TYPES, OBSERVATION_DISPOSITIONS,
+    JOIN_TYPES,
     Workspace, WorkspaceError, slugify,
 )
 from . import artifact_index
@@ -373,7 +373,7 @@ def expected_postcondition(action: dict) -> dict:
         return {"fields": {"context": args.get("changes") or {}}}
     if type_ == "edit_apm":
         return {"fields": {"apm_markdown": args.get("apm_markdown")}}
-    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "update_test_disposition", "edit_data_test"}:
+    if type_ in {"edit_rcm_row", "edit_procedure", "edit_finding", "edit_validation_rules", "edit_custom_analysis", "edit_dashboard_tile", "edit_document_test", "edit_data_test"}:
         return {"fields": dict(args.get("changes") or {})}
     if type_ == "update_test_comparisons":
         return {"fields": {"checks": args.get("checks") or []}}
@@ -597,11 +597,9 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         )
         if observation is None:
             raise WorkspaceError(f"Observation '{target_id}' not found.")
-        if observation.get("status") != "disposed" or observation.get("disposition") not in {
-            "confirmed_control_exception", "draft_finding_candidate",
-        }:
+        if observation.get("outcome") != "exception":
             raise WorkspaceError(
-                "A finding draft requires an auditor-dispositioned finding-candidate observation."
+                "A finding draft requires an exception observation."
             )
         execution_ref = str(observation.get("execution_ref") or "")
         anchor = findings.anchor_from_ref(workspace, execution_ref, run_id=run["id"])
@@ -735,18 +733,12 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
         return _receipt(action, item, refs=[f"doctest:{target_id}"])
     if type_ == "delete_document_test":
         doc_tests.remove_test(workspace, target_id); return _receipt(action, refs=[f"doctest:{target_id}"])
-    if type_ in {"attach_document_to_test", "detach_document_from_test", "update_test_comparisons", "update_test_disposition"}:
+    if type_ in {"attach_document_to_test", "detach_document_from_test", "update_test_comparisons"}:
         test_id, _, item_id = target_id.partition(":")
         if type_ == "attach_document_to_test": item = doc_tests.attach_document(workspace, test_id, item_id, args["document_id"])
         elif type_ == "detach_document_from_test": item = doc_tests.detach_document(workspace, test_id, item_id, args["document_id"])
         elif type_ == "update_test_comparisons": item = doc_tests.update_comparisons(workspace, test_id, item_id, args["checks"])
-        else: item = doc_tests.update_item(workspace, test_id, item_id, args["changes"])
         return _receipt(action, item, refs=[f"doctest:{test_id}", f"doctest_item:{target_id}"])
-    if type_ == "disposition_observation":
-        item = rcm_execution.disposition(
-            workspace, target_id, args["disposition"], args.get("auditor_note") or ""
-        )
-        return _receipt(action, item, refs=[f"observation:{target_id}"])
     if type_ == "generate_rcm_working_paper":
         item = working_papers.generate_rcm(workspace, target_id)
         return _receipt(
@@ -1008,12 +1000,6 @@ _register("delete_document_test", "Delete a document test", "destructive", ("doc
 _register("attach_document_to_test", "Attach a document to a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
 _register("detach_document_from_test", "Detach a document from a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
 _register("update_test_comparisons", "Update document-test comparisons", "reversible_mutation", ("doctest_item",), ("checks",), {"checks": ARR})
-_register("update_test_disposition", "Update a test-item disposition", "reversible_mutation", ("doctest_item",), ("changes",), {"changes": OBJ})
-_register(
-    "disposition_observation", "Record the auditor disposition for an execution observation",
-    "reversible_mutation", ("observation",), ("disposition",),
-    {"disposition": {"type": "string", "enum": sorted(OBSERVATION_DISPOSITIONS)}, "auditor_note": STR},
-)
 _register("generate_rcm_working_paper", "Generate an RCM-linked working paper", "compute", ("rcm",))
 _register("generate_working_paper", "Legacy compatibility: generate a procedure working paper", "reversible_mutation", ("procedure",))
 FINDING_PROPERTIES = {
@@ -1027,7 +1013,7 @@ FINDING_PROPERTIES = {
 _register("create_finding", "Create an evidence-linked finding", "create", required=("title",), properties=FINDING_PROPERTIES, model="draft")
 _register(
     "draft_finding_from_observation",
-    "Draft a fully supported finding from an auditor-dispositioned observation",
+    "Draft a fully supported finding from an exception observation",
     "create", ("observation",),
     required=(
         "title", "severity", "condition", "criteria", "effect",

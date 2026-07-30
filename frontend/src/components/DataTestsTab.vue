@@ -63,13 +63,6 @@ const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown>
 const editAnalyticsReady = ref(false)
 const editPolarsSteps = ref<DataTestStep[]>([])
 
-const dispositions = [
-  { label: 'Awaiting sign-off', value: 'pending' },
-  { label: 'Accepted', value: 'accepted' },
-  { label: 'Follow up', value: 'follow_up' },
-  { label: 'Test not valid', value: 'invalid_test_or_result' },
-  { label: 'Not applicable', value: 'not_applicable' },
-]
 const ATTENTION_STATUSES = ['completed_with_exception', 'review_required', 'blocked', 'error']
 const scopeOptions = [
   { label: 'Needs attention', value: 'attention' },
@@ -198,7 +191,6 @@ async function save(thenRun: boolean) {
       criteria: selected.value.criteria,
       table_refs: selected.value.table_refs,
       spec: editSpec(),
-      auditor_disposition: selected.value.auditor_disposition,
       rcm_id: selected.value.rcm_id,
     })
     if (thenRun) {
@@ -264,7 +256,7 @@ async function draftFinding() {
       'act', 'permission',
       { goalTemplate: 'finding_draft', source: 'tab_button', runContext: { rcm_id: selected.value.rcm_id } },
     )
-    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'The assistant will ask for a disposition if one is needed.', life: 3600 })
+    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
 function openRcm() {
@@ -369,19 +361,6 @@ onUnmounted(unsubscribe)
           </header>
 
           <DataTestResultPanel :test="selected" :result="result" />
-
-          <div class="sign-off">
-            <label>
-              Auditor disposition
-              <Select
-                v-model="selected.auditor_disposition"
-                :options="dispositions"
-                optionLabel="label"
-                optionValue="value"
-              />
-            </label>
-            <Button label="Save disposition" icon="pi pi-check" size="small" outlined :loading="saving" @click="save(false)" />
-          </div>
 
           <!-- Authoring is the rarer action, so it is here and closed. -->
           <UiAdvancedSection

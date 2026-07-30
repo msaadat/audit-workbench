@@ -5,9 +5,8 @@ Owns the post-roll-up outcomes of the authoritative audit graph:
 ``report.working_draft``, and ``audit.verified``.
 
 Each capability is declared here: its readiness (existence and structural
-usability only), its semantic unit expansion, the registry keys for its declared
-context, and — for ``findings.drafted`` — the auditor-judgment checkpoint that
-gates it. The dependency edges come from the authoritative graph in
+usability only), its semantic unit expansion, and the registry keys for its
+declared context. The dependency edges come from the authoritative graph in
 :mod:`agent.workflows.audit`; this module never restates them.
 """
 
@@ -26,7 +25,6 @@ from ..workflow import (
 from ..workflows import audit as audit_workflow
 from ._shared import all_tests as _all_tests
 from ._shared import eligible_observations as _eligible_observations
-from ._shared import scoped_observations as _scoped_observations
 from ._shared import rows as _rows
 from ._shared import single_unit as _single
 
@@ -39,32 +37,10 @@ CAPABILITY_IDS: tuple[str, ...] = (
 )
 
 
-# Declared auditor-judgment checkpoint. Observation disposition is authoritative
-# auditor judgment that gates finding creation, so it is declared here at the
-# rollup -> findings boundary rather than being embedded inside the (now
-# deterministic) roll-up executor. ``STAGE_CHECKPOINTS`` maps the capability whose
-# units the checkpoint gates to the checkpoint name; the audit execution
-# composition resolves that name to the concrete blocking handler and only runs it
-# in permission mode.
-OBSERVATION_DISPOSITION_CHECKPOINT = "observation_disposition"
-STAGE_CHECKPOINTS: dict[str, str] = {
-    "findings.drafted": OBSERVATION_DISPOSITION_CHECKPOINT,
-}
-
-
 # --------------------------------------------------------------------------- #
 # findings.drafted (P7H)
 # --------------------------------------------------------------------------- #
 def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
-    open_observations = [
-        item for item in _scoped_observations(workspace, scope) if item.get("status") != "disposed"
-    ]
-    if open_observations and scope.get("permission_mode"):
-        return Readiness(
-            "review_required",
-            (f"{len(open_observations)} observation(s) require auditor disposition",),
-            details={"open_observations": len(open_observations)},
-        )
     eligible = _eligible_observations(workspace, scope)
     linked = {
         str(item.get("source_observation_id") or ""): item
@@ -228,7 +204,7 @@ def _report_ready(workspace: Workspace, _scope: dict) -> Readiness:
         str(item.get("status") or "")
         in {"draft", "ready", "in_progress", "blocked", "review_required"}
         for item in _all_tests(workspace)
-    ) or any(item.get("status") != "disposed" for item in workspace.observations)
+    )
     return Readiness("satisfied", details={"preliminary": preliminary})
 
 
@@ -254,7 +230,6 @@ def _verified(workspace: Workspace, _scope: dict) -> Readiness:
     errors = [item for item in quality.get("issues") or [] if item.get("severity") == "error"]
     open_items = bool(
         coverage.get("issue_count")
-        or any(item.get("status") != "disposed" for item in workspace.observations)
         or any(
             str(item.get("status") or "")
             not in {"completed_no_exception", "completed_with_exception", "not_applicable"}

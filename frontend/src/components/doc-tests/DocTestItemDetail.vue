@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
-import Textarea from 'primevue/textarea'
 
 import type { AuditDocument, DocTest, DocTestItem, EvidenceRef } from '../../types'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
@@ -21,8 +20,6 @@ const emit = defineEmits<{
   attach: [documentId: string]
   saveChecks: []
   saveAttributes: []
-  disposition: [value: DocTestItem['auditor_disposition']]
-  note: [value: string]
   run: []
   openRcm: [rcmId: string]
 }>()
@@ -53,15 +50,9 @@ const hasAssessment = computed(() => Boolean(props.item.response) || perDocument
 // For a vouching item the comparison table *is* the assessment, so an empty
 // narrative block would only claim the item had not run when it had.
 const showAssessment = computed(() => hasAssessment.value || !props.item.checks?.length)
-// 'pending' means different things for a state and for a sign-off.
-const dispositionStatus = computed(() =>
-  props.item.auditor_disposition === 'pending' ? 'awaiting_signoff' : props.item.auditor_disposition)
 const coverage = computed(() => props.item.evidence_coverage)
 const duplicates = computed(() => props.item.document_conflicts?.duplicate_documents ?? [])
 
-const note = ref(props.item.auditor_note ?? '')
-watch(() => props.item.id, () => { note.value = props.item.auditor_note ?? ''; attachId.value = null })
-watch(() => props.item.auditor_note, value => { note.value = value ?? '' })
 
 function documentTitle(id: string) {
   return props.documents.find(doc => doc.id === id)?.title || id
@@ -70,10 +61,6 @@ function attach() {
   if (!attachId.value) return
   emit('attach', attachId.value)
   attachId.value = null
-}
-function saveDisposition(value: DocTestItem['auditor_disposition']) {
-  emit('note', note.value)
-  emit('disposition', value)
 }
 </script>
 
@@ -94,7 +81,6 @@ function saveDisposition(value: DocTestItem['auditor_disposition']) {
       </div>
       <div class="head-status">
         <UiTestStatus :status="item.state" showLabel />
-        <UiTestStatus :status="dispositionStatus" showLabel />
         <Button
           label="Run test"
           icon="pi pi-play"
@@ -273,18 +259,6 @@ function saveDisposition(value: DocTestItem['auditor_disposition']) {
       </dl>
     </section>
 
-    <!-- 5. The auditor's own sign-off, last and pinned. -->
-    <footer class="sign-off">
-      <label>
-        Auditor note
-        <Textarea v-model="note" rows="2" autoResize />
-      </label>
-      <div class="dispositions">
-        <Button label="Accept result" icon="pi pi-check" severity="success" outlined @click="saveDisposition('accepted')" />
-        <Button label="Needs manual check" icon="pi pi-eye" severity="warn" outlined @click="saveDisposition('needs_manual_check')" />
-        <Button label="Mark exception" icon="pi pi-exclamation-triangle" severity="danger" outlined @click="saveDisposition('exception')" />
-      </div>
-    </footer>
   </div>
 </template>
 
@@ -341,7 +315,6 @@ code { font-family: var(--aw-font-mono); font-size: 0.75rem; overflow-wrap: anyw
 
 .sign-off { position: sticky; bottom: -1rem; z-index: 2; display: flex; flex-direction: column; gap: 0.55rem; margin: 0 -1rem -1rem; padding: 0.75rem 1rem; border-top: 1px solid var(--aw-border); background: #fff; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
-.dispositions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 
 /* Sized against the detail column itself, not the window. */
 @container master-detail-content (max-width: 34rem) {

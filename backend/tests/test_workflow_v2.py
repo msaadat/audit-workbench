@@ -110,12 +110,12 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
         {
             "id": "OBS-ONE", "rcm_id": first_row["id"], "test_id": "DT-ONE",
             "execution_ref": "datatest:DT-ONE:RUN-ONE", "summary": "First exception",
-            "status": "disposed", "disposition": "confirmed_control_exception",
+            "outcome": "exception", "classification": "draft_finding_candidate",
         },
         {
             "id": "OBS-TWO", "rcm_id": second_row["id"], "test_id": "DT-TWO",
             "execution_ref": "datatest:DT-TWO:RUN-TWO", "summary": "Second exception",
-            "status": "disposed", "disposition": "confirmed_control_exception",
+            "outcome": "exception", "classification": "draft_finding_candidate",
         },
     ])
 
@@ -588,7 +588,7 @@ def test_workflow_test_generate_repair_reports_all_contract_errors(monkeypatch):
     completed = wait_run(ws, started["id"])
     current = workspaces.load_workspace(ws.id)
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed", completed.get("error")
     assert attempts == 2
     assert current.data_tests[0]["title"] == "Test duplicate payments"
     assert current.data_tests[0]["status"] == "ready"
@@ -2113,7 +2113,7 @@ def test_document_qa_expands_per_document_and_merges_in_attachment_order():
         ws, test["id"], item_id, first["id"], {"answer": "First", "citations": []}
     )
     assert merged["response"] == "First\n\nSecond"
-    assert merged["auditor_disposition"] == "pending"
+    assert merged["state"] == "manual_review"
 
 
 def test_output_readiness_is_existence_structural_and_not_currency():
@@ -2369,7 +2369,7 @@ def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):
     assert received["id"] in linked_test["items"][0]["document_ids"]
 
 
-def test_permission_mode_dispositions_resume_into_finding_batch(monkeypatch):
+def test_permission_mode_exceptions_proceed_directly_to_finding_batch(monkeypatch):
     ws = _planning_workspace("Permission dispositions")
     ws.add_table(
         "transactions.csv",
@@ -2423,35 +2423,6 @@ def test_permission_mode_dispositions_resume_into_finding_batch(monkeypatch):
         },
     )
 
-    deadline = time.time() + 5
-    interaction = None
-    while time.time() < deadline and interaction is None:
-        current_run = store.load_run(ws, started["id"])
-        interaction = next(
-            (
-                item for item in current_run.get("interactions") or []
-                if item.get("type") == "observation_disposition"
-                and item.get("status") == "pending"
-            ),
-            None,
-        )
-        time.sleep(0.02)
-    assert interaction is not None
-    runner.resolve_interaction(
-        ws,
-        started["id"],
-        interaction["id"],
-        {
-            "decisions": [
-                {
-                    "observation_id": observation["id"],
-                    "disposition": "draft_finding_candidate",
-                    "auditor_note": "Draft for review.",
-                }
-            ]
-        },
-    )
-
     approval = None
     deadline = time.time() + 5
     while time.time() < deadline and approval is None:
@@ -2475,18 +2446,14 @@ def test_permission_mode_dispositions_resume_into_finding_batch(monkeypatch):
     refreshed = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
-    assert refreshed.observations[0]["status"] == "disposed"
+    assert not any(item.get("type") == "observation_disposition" for item in completed.get("interactions") or [])
+    assert refreshed.observations[0]["outcome"] == "exception"
     assert refreshed.findings[0]["source_observation_id"] == observation["id"]
     assert refreshed.findings[0]["auditor_confirmed"] is False
 
 
-def test_observation_checkpoint_pauses_and_resumes_before_findings(monkeypatch):
-    """The declared observation-disposition checkpoint blocks before finding
-    creation, survives a pause/resume, and then applies the auditor disposition.
-
-    This is the declared checkpoint that replaced the roll-up-embedded interaction
-    in P7G.2: it gates ``findings.drafted`` (see ``STAGE_CHECKPOINTS``) and its
-    blocking wait is pause/resume-safe."""
+def test_observation_exceptions_do_not_create_a_checkpoint(monkeypatch):
+    """An exception directly reaches the normal finding-approval batch."""
     ws = _planning_workspace("Checkpoint pause/resume")
     ws.add_table(
         "transactions.csv",
@@ -2549,46 +2516,8 @@ def test_observation_checkpoint_pauses_and_resumes_before_findings(monkeypatch):
             time.sleep(0.02)
         raise AssertionError("Timed out waiting on run condition.")
 
-    # The declared checkpoint blocks (awaiting_input) before any finding exists.
-    blocked = _await(
-        lambda run: run.get("status") == "awaiting_input"
-        and any(
-            item.get("type") == "observation_disposition"
-            and item.get("status") == "pending"
-            for item in run.get("interactions") or []
-        )
-    )
-    interaction = next(
-        item
-        for item in blocked["interactions"]
-        if item.get("type") == "observation_disposition"
-    )
-    assert not workspaces.load_workspace(ws.id).findings
-
-    # Pause holds the checkpoint...
-    runner.pause_run(ws, started["id"])
-    _await(lambda run: run.get("status") == "paused")
-    assert not workspaces.load_workspace(ws.id).findings
-
-    # ...and resume releases it back to the same blocking wait.
-    runner.resume_run(ws, started["id"])
-    _await(lambda run: run.get("status") == "awaiting_input")
-
-    # The auditor disposition is applied and the finding batch proceeds.
-    runner.resolve_interaction(
-        ws,
-        started["id"],
-        interaction["id"],
-        {
-            "decisions": [
-                {
-                    "observation_id": observation["id"],
-                    "disposition": "draft_finding_candidate",
-                    "auditor_note": "Draft for review.",
-                }
-            ]
-        },
-    )
+    # No observation interaction pauses the run. The model exception is
+    # immediately eligible for the ordinary finding approval batch.
     resolved = _await(
         lambda run: any(
             item.get("kind") == "finding_drafts" and item.get("status") == "pending"
@@ -2610,12 +2539,12 @@ def test_observation_checkpoint_pauses_and_resumes_before_findings(monkeypatch):
     refreshed = workspaces.load_workspace(ws.id)
 
     assert completed["status"] == "completed"
-    assert refreshed.observations[0]["status"] == "disposed"
-    assert refreshed.observations[0]["disposition"] == "draft_finding_candidate"
+    assert not any(item.get("type") == "observation_disposition" for item in completed.get("interactions") or [])
+    assert refreshed.observations[0]["outcome"] == "exception"
     assert refreshed.findings[0]["source_observation_id"] == observation["id"]
 
 
-def test_full_workflow_runs_capability_closure_and_auto_disposes_observations(monkeypatch):
+def test_full_workflow_runs_capability_closure_and_records_exception_observations(monkeypatch):
     ws = workspaces.create_workspace("Workflow integration")
     ws.add_table(
         "transactions.csv",
@@ -2701,15 +2630,15 @@ def test_full_workflow_runs_capability_closure_and_auto_disposes_observations(mo
     current = workspaces.load_workspace(ws.id)
 
     # The generated finding remains a draft until an auditor confirms it, so
-    # report-quality verification correctly leaves the run open.  Auto mode
-    # must nevertheless disposition the source observation and draft the finding.
+    # report-quality verification correctly leaves the run open. Auto mode
+    # records the model exception directly and drafts the finding.
     assert completed["status"] == "completed_with_open_items"
     assert "agent:command_interpreter" not in {call["tag"] for call in fake.calls}
     assert {call["tag"] for call in fake.calls} >= {
         "agent:apm", "agent:rcm", "agent:test_generate",
     }
     assert current.data_tests[0]["last_run"]
-    assert current.observations and current.observations[0]["status"] == "disposed"
+    assert current.observations and current.observations[0]["outcome"] == "exception"
     assert current.findings
     assert current.report.get("markdown")
     assert completed["usage"]["model_call_metrics"]

@@ -50,7 +50,7 @@ async function promote(finding: AgentFinding) {
         <span>Document Tests run<strong>{{ auditOutcome.document_tests_executed }}</strong></span>
         <span>Unspecified<strong>{{ auditOutcome.tests_unspecified }}</strong></span>
         <span>Open gates<strong>{{ auditOutcome.open_gate_count }}</strong></span>
-        <span>Open observations<strong>{{ auditOutcome.open_observations }}</strong></span>
+        <span>Recorded exceptions<strong>{{ auditOutcome.recorded_exception_observations }}</strong></span>
         <span>Supported findings<strong>{{ auditOutcome.supported_findings }}</strong></span>
         <span>Draft findings<strong>{{ auditOutcome.draft_findings }}</strong></span>
       </div>

@@ -202,18 +202,9 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
         "scope_limitations": "One selected transaction is awaiting source documents.",
         "next_action": "Obtain and inspect the open evidence request.",
     })
-    for observation in list(workspace.observations):
-        rcm_execution.disposition(
-            workspace,
-            observation["id"],
-            "invalid_test_or_result"
-            if observation["execution_ref"].startswith(f"datatest:{invalid_test['id']}:")
-            else "screening_follow_up",
-            "Reviewed in the synthetic acceptance workflow.",
-        )
     rolled = rcm_execution.rollup(workspace)
     assert rolled["coverage"]["unspecified_tests"] == []
-    assert all(item["status"] == "disposed" for item in workspace.observations)
+    assert all(item["outcome"] in {"exception", "needs_manual_check"} for item in workspace.observations)
 
     finding_test = rows[1][1]
     finding_result = valid_results[1]
@@ -259,4 +250,4 @@ def test_synthetic_procurement_acceptance_from_population_to_preliminary_report(
     assert finding["id"] in generated["markdown"]
     assert not any(issue["code"] == "unsupported_finding" for issue in quality["issues"])
     assert completion["status"] == "completed_with_open_items"
-    assert completion["open_observations"] == []
+    assert any(item["outcome"] == "exception" for item in workspace.observations)

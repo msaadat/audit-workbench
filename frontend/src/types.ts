@@ -254,8 +254,6 @@ export interface DocTestItem {
   /** The procedure being performed on this item, always populated. */
   instruction: string
   state: DocTestItemState
-  auditor_disposition: 'pending' | 'accepted' | 'exception' | 'needs_manual_check'
-  auditor_note: string
   document_ids: string[]
   evidence_refs: EvidenceRef[]
   frozen?: Record<string, unknown>
@@ -313,8 +311,6 @@ export interface DocTestSummaryItem {
   label: string
   instruction: string
   state: DocTestItemState
-  auditor_disposition: string
-  auditor_note: string
   classification: DocTestClassification
   question: string
   response: string
@@ -560,7 +556,6 @@ export interface DataTest extends TestPlan, TestOutcome {
   status: TestStatus
   semantic_warnings: string[]
   last_run: DataTestRunSummary | null
-  auditor_disposition: string
   evidence_refs: EvidenceRef[]
   created_by: 'agent' | 'user'
   agent_run_id: string | null
@@ -621,10 +616,8 @@ export interface AuditObservation {
   execution_ref: string
   exception_count: number
   summary: string
-  suggested_disposition: string
-  disposition: string | null
-  auditor_note: string
-  status: 'open' | 'disposed'
+  classification: string
+  outcome: 'exception' | 'needs_manual_check'
   created: string
   updated: string
 }
@@ -1676,7 +1669,7 @@ export interface AgentAuditOutcome {
   tests_unspecified: number
   data_tests_executed: number
   document_tests_executed: number
-  open_observations: number
+  recorded_exception_observations: number
   supported_findings: number
   draft_findings: number
   report_quality_ok: boolean | null
@@ -1874,7 +1867,7 @@ export interface AgentAction {
 
 export type AgentInteractionType =
   | 'clarification' | 'target_choice' | 'confirmation'
-  | 'proposal_approval' | 'conflict_resolution' | 'observation_disposition'
+  | 'proposal_approval' | 'conflict_resolution'
 
 export interface AgentInteractionOption {
   value?: string
@@ -1901,71 +1894,6 @@ export interface AgentInteraction {
   resolved_at: string | null
 }
 
-// --------------------------------------------------------------------------
-// Decisions — the one queue for everything waiting on the auditor.
-// Assembled by the backend from approvals, interactions, run blockers,
-// document-test items, open observations, and report quality.
-// --------------------------------------------------------------------------
-export type DecisionKind =
-  | 'approval'
-  | 'interaction'
-  | 'blocker'
-  | 'doc_test_item'
-  | 'observation'
-  | 'quality'
-
-export type DecisionSeverity = 'critical' | 'warning' | 'info'
-
-export interface DecisionUnblocks {
-  /** The audit-graph capability this decision sits on, when it has one. */
-  capability: string
-  /** Capabilities released the moment it is resolved. */
-  next: string[]
-  /** Everything downstream, including `next` — the "holds up N steps" number. */
-  downstream: number
-}
-
-/**
- * Where a decision lives. Wider than `DashboardTarget` because a decision can
- * point at surfaces the dashboard never linked to — the console and an RCM row.
- * Both resolve through the same destination map in useWorkspaceNavigation.
- */
-export interface WorkspaceTarget {
-  tab: DashboardTarget['tab'] | 'console' | 'decisions' | 'rcm' | 'apm'
-  query: Record<string, string>
-}
-
-export interface DecisionItem {
-  id: string
-  kind: DecisionKind
-  severity: DecisionSeverity
-  title: string
-  context: string
-  created_at: string | null
-  target: WorkspaceTarget
-  unblocks: DecisionUnblocks
-  source_ref: {
-    run_id?: string
-    approval_id?: string
-    interaction_id?: string
-    unit_ids?: string[]
-    stage_title?: string
-    suggestions?: Array<{ label: string; command: string }>
-    test_id?: string
-    item_id?: string
-    rcm_id?: string
-    observation_id?: string
-    attention_id?: string
-  }
-}
-
-export interface DecisionsPayload {
-  items: DecisionItem[]
-  total: number
-  by_kind: Record<DecisionKind, number>
-  by_severity: Record<DecisionSeverity, number>
-  run: { id: string; status: string; waiting: boolean }
-}
 
 // --------------------------------------------------------------------------
 // Provenance — what the agent read, proposed, and committed for one unit.

@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from './views/HomeView.vue'
 import WorkspaceView from './views/WorkspaceView.vue'
 import ConsoleView from './views/ConsoleView.vue'
-import DecisionsView from './views/DecisionsView.vue'
 import AuditFileView from './views/AuditFileView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import DebugView from './views/DebugView.vue'
@@ -12,7 +11,7 @@ import {
 } from './composables/useWorkspaceNavigation'
 
 const WORKSPACE_ROUTES = [
-  'workspace', 'workspace-decisions', 'workspace-file', 'workspace-bench',
+  'workspace', 'workspace-file', 'workspace-bench',
 ]
 
 const router = createRouter({
@@ -26,7 +25,6 @@ const router = createRouter({
       props: true,
       children: [
         { path: '', name: 'workspace', component: ConsoleView, props: true },
-        { path: 'decisions', name: 'workspace-decisions', component: DecisionsView, props: true },
         { path: 'file/:section', name: 'workspace-file', component: AuditFileView, props: true },
         { path: 'bench/:section', name: 'workspace-bench', component: WorkbenchView, props: true },
         // Bare surface paths land on their first section.

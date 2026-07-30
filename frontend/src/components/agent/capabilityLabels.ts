@@ -34,7 +34,6 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   // doc_tests_workflow_v1
   'doc_tests.definitions_ready': 'Document test definitions',
   'doc_tests.executed': 'Document test execution',
-  'doc_tests.dispositioned': 'Document test disposition',
 }
 
 /** An unregistered ID still has to read as something; never show a raw key. */

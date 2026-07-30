@@ -163,18 +163,6 @@ async def list_observations(workspace_id: str):
     return {"items": _ws(workspace_id).observations}
 
 
-@router.patch("/observations/{observation_id}")
-async def disposition_observation(
-    workspace_id: str, observation_id: str, payload: dict = Body(...)
-):
-    return rcm_execution.disposition(
-        _ws(workspace_id),
-        observation_id,
-        str(payload.get("disposition") or ""),
-        str(payload.get("auditor_note") or ""),
-    )
-
-
 @router.get("/procedures")
 async def list_procedures(workspace_id: str):
     return {"items": _ws(workspace_id).work_program}

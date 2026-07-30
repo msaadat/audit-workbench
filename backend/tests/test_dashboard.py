@@ -246,10 +246,7 @@ def test_engagement_status_surfaces_attention_and_report_quality(workspace_with_
     ws = workspace_with_data
     test = doc_tests.create_test(ws, {
         "kind": "attribute", "title": "Approval review",
-        "items": [{"label": "Sample 1"}],
-    })
-    doc_tests.update_item(ws, test["id"], test["items"][0]["id"], {
-        "auditor_disposition": "needs_manual_check",
+        "items": [{"label": "Sample 1", "state": "manual_review"}],
     })
     findings.add(ws, {"title": "Unsupported transaction"})
     ws.report = {"markdown": "# Audit report\n\n99 findings."}

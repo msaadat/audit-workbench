@@ -184,7 +184,10 @@ def verify_audit(workspace: Workspace) -> dict:
             for item in doc_tests.list_tests(workspace)
             if item.get("rcm_id")
         ),
-        "open_observations": len(completion.get("open_observations") or []),
+        # Exceptions are recorded outcomes, not unresolved auditor gates.
+        "recorded_exception_observations": sum(
+            item.get("outcome") == "exception" for item in workspace.observations
+        ),
         "supported_findings": sum(
             item.get("auditor_confirmed")
             and not findings.support_issues(workspace, item)
@@ -196,8 +199,7 @@ def verify_audit(workspace: Workspace) -> dict:
         "report_quality_ok": not errors,
         "report_quality_errors": len(errors),
         "output_readiness": output_states,
-        "open_gate_count": len(completion.get("open_observations") or [])
-        + int((completion.get("coverage") or {}).get("issue_count") or 0)
+        "open_gate_count": int((completion.get("coverage") or {}).get("issue_count") or 0)
         + len(errors)
         + len(issues),
     }

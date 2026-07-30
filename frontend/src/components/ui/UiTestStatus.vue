@@ -21,12 +21,7 @@ const meta: Record<string, { icon: string; tone: string; label: string }> = {
   exception: { icon: 'pi-exclamation-triangle', tone: 'danger', label: 'Exception' },
   manual_review: { icon: 'pi-eye', tone: 'warn', label: 'Manual review' },
   error: { icon: 'pi-times-circle', tone: 'danger', label: 'Error' },
-  // Auditor dispositions share the vocabulary so one component covers both.
-  awaiting_signoff: { icon: 'pi-user-edit', tone: 'warn', label: 'Awaiting sign-off' },
-  accepted: { icon: 'pi-check-circle', tone: 'success', label: 'Accepted' },
   needs_manual_check: { icon: 'pi-eye', tone: 'warn', label: 'Needs manual check' },
-  follow_up: { icon: 'pi-flag', tone: 'warn', label: 'Follow up' },
-  invalid_test_or_result: { icon: 'pi-ban', tone: 'secondary', label: 'Test not valid' },
   awaiting_evidence: { icon: 'pi-inbox', tone: 'warn', label: 'Awaiting evidence' },
   not_run: { icon: 'pi-clock', tone: 'secondary', label: 'Not run' },
 }

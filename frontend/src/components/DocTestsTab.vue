@@ -256,17 +256,6 @@ async function saveAttributes() {
     toast.add({ severity: 'success', summary: 'Attribute notes saved', life: 1800 })
   } catch (error) { fail('Could not save the attribute notes', error) }
 }
-const pendingNote = ref('')
-async function setDisposition(value: DocTestItem['auditor_disposition']) {
-  if (!currentTest.value || !currentItem.value) return
-  try {
-    await api.patch(
-      `/api/workspaces/${props.workspace.id}/doc-tests/${currentTest.value.id}/items/${currentItem.value.id}`,
-      { auditor_disposition: value, auditor_note: pendingNote.value },
-    )
-    await refresh()
-  } catch (error) { fail('Could not save the auditor disposition', error) }
-}
 async function runTest() {
   const test = currentTest.value
   if (!test) return
@@ -411,8 +400,6 @@ onUnmounted(unsubscribe)
           @attach="attachDocument"
           @saveChecks="saveChecks"
           @saveAttributes="saveAttributes"
-          @note="pendingNote = $event"
-          @disposition="setDisposition"
           @run="runTest"
           @openRcm="openRcm"
         />

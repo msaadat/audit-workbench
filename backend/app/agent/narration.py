@@ -246,12 +246,6 @@ _BLOCKERS: dict[str, dict] = {
         "fallback_subject": "this test",
         "where": "doc-tests",
     },
-    "document_test_results_await_auditor_disposition": {
-        "message": "The results for {subject} are ready and waiting for your disposition.",
-        "fallback_subject": "this test",
-        "severity": "review",
-        "where": "doc-tests",
-    },
     "ambiguous_relationship_requires_confirmation": {
         "message": "More than one join looks plausible for {subject}; I won't guess which one is right.",
         "fallback_subject": "these tables",

@@ -34,7 +34,6 @@ from .workspaces import (
 KINDS = {"vouching", "attribute", "review", "qa"}
 DIRECTIONS = {"vouching", "tracing"}
 STATES = {"pending", "agent_checked", "confirmed", "exception", "manual_review"}
-DISPOSITIONS = {"pending", "accepted", "exception", "needs_manual_check"}
 METHODS = {"exact", "normalized", "fuzzy", "numeric_tolerance", "date_tolerance"}
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -135,8 +134,6 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
         item.setdefault("id", f"ITEM-{uuid.uuid4().hex[:8].upper()}")
         item.setdefault("instruction", "")
         item.setdefault("state", "pending")
-        item.setdefault("auditor_disposition", "pending")
-        item.setdefault("auditor_note", "")
         item.setdefault("document_ids", [])
         item.setdefault("evidence_refs", [])
         item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
@@ -339,15 +336,11 @@ def _new_item(payload: dict | None = None) -> dict:
         "label": str(payload.get("label") or "Test item"),
         "instruction": str(payload.get("instruction") or ""),
         "state": str(payload.get("state") or "pending"),
-        "auditor_disposition": str(payload.get("auditor_disposition") or "pending"),
-        "auditor_note": str(payload.get("auditor_note") or ""),
         "document_ids": [str(value) for value in (payload.get("document_ids") or [])],
         "evidence_refs": normalize_many(payload.get("evidence_refs") or []),
     }
     if item["state"] not in STATES:
         raise WorkspaceError("Unknown document-test item state.")
-    if item["auditor_disposition"] not in DISPOSITIONS:
-        raise WorkspaceError("Unknown auditor disposition.")
     return item
 
 
@@ -453,7 +446,7 @@ def update_plan(workspace: Workspace, test_id: str, payload: dict) -> dict:
 def apply_spec(workspace: Workspace, test_id: str, payload: dict) -> dict:
     """Write the executable spec onto an existing test, replacing its items.
 
-    Items an auditor has already dispositioned are never discarded: a test that
+    Items with final results are never discarded: a test that
     has been executed must be re-drafted rather than silently re-specified.
     """
     test = load_test(workspace, test_id)
@@ -463,7 +456,7 @@ def apply_spec(workspace: Workspace, test_id: str, payload: dict) -> dict:
     ]
     if settled:
         raise WorkspaceError(
-            f"Document Test '{test_id}' has auditor-settled items and cannot be re-specified."
+            f"Document Test '{test_id}' has final-result items and cannot be re-specified."
         )
     kind = str(payload.get("kind") or "").lower()
     if kind not in KINDS:
@@ -792,7 +785,6 @@ def prepare_evidence_aware_vouching(workspace: Workspace, payload: dict) -> dict
         if image_only:
             item.update(
                 state="manual_review",
-                auditor_disposition="needs_manual_check",
                 runner_note="Image-only evidence requires OCR or auditor review.",
             )
     covered_count = sum(bool(item.get("document_ids")) for item in test["items"])
@@ -956,7 +948,6 @@ def attach_document(workspace: Workspace, test_id: str, item_id: str, document_i
     if document_id not in item["document_ids"]:
         item["document_ids"].append(document_id)
     item["state"] = "pending"
-    item["auditor_disposition"] = "pending"
     request_ids = {str(value) for value in item.get("evidence_request_ids") or []}
     for request in workspace.evidence_requests:
         if str(request.get("id")) in request_ids and request.get("status") == "open":
@@ -984,7 +975,6 @@ def update_comparisons(workspace: Workspace, test_id: str, item_id: str, checks:
     item = _item(test, item_id)
     item["checks"] = [_normalize_check(check) for check in checks]
     item["state"] = "pending"
-    item["auditor_disposition"] = "pending"
     return save_test(workspace, test)
 
 
@@ -994,51 +984,32 @@ def update_item(
     item_id: str,
     changes: dict,
     *,
-    disposition_actor: str = "auditor",
     runner_note: str | None = None,
 ) -> dict:
     test = load_test(workspace, test_id)
     item = _item(test, item_id)
     allowed = {
-        "auditor_disposition", "auditor_note", "state", "attributes",
+        "attributes",
         "summary", "excerpt", "response", "citations",
     }
     if set(changes) - allowed:
         raise WorkspaceError("Unknown document-test item field.")
-    disposition = str(changes.get("auditor_disposition", item.get("auditor_disposition") or "pending"))
-    if disposition not in DISPOSITIONS:
-        raise WorkspaceError("Unknown auditor disposition.")
-    if "state" in changes and changes["state"] not in STATES:
-        raise WorkspaceError("Unknown document-test item state.")
-    item["auditor_disposition"] = disposition
-    if disposition == "accepted":
-        item["state"] = "confirmed"
-    elif disposition == "exception":
-        item["state"] = "exception"
-    elif disposition == "needs_manual_check":
-        item["state"] = "manual_review"
     for key, value in changes.items():
         if key == "attributes":
             item[key] = [_normalize_attribute(entry) for entry in (value or [])]
         elif key == "citations":
             item[key] = normalize_many(value or [], require_hash=True)
-        elif key not in {"auditor_disposition"}:
+        else:
             item[key] = value
     if runner_note is not None:
         item["runner_note"] = runner_note
-    for anchor in item.get("evidence_refs") or []:
-        if disposition != "pending":
-            anchor["confirmed_by"] = disposition_actor
-            anchor["confirmed_at"] = utcnow()
-    states = [value.get("state") for value in test["items"]]
-    test["status"] = "completed" if states and all(state in {"confirmed", "exception"} for state in states) else "in_progress"
     return save_test(workspace, test)
 
 
-def auto_dispose_llm_assessment(
+def settle_llm_assessment(
     workspace: Workspace, test_id: str, item_id: str,
 ) -> dict | None:
-    """Apply the worker's outcome to a complete auto-mode LLM assessment.
+    """Apply the worker's outcome to a complete LLM assessment.
 
     Multiple attached documents settle conservatively: any exception wins,
     otherwise any manual-check outcome wins, otherwise every answer must be
@@ -1060,28 +1031,22 @@ def auto_dispose_llm_assessment(
         for document_id in document_ids
     }
     if "exception" in outcomes:
-        disposition = "exception"
+        assessment_outcome = "exception"
     elif "needs_manual_check" in outcomes or outcomes != {"accepted"}:
-        disposition = "needs_manual_check"
+        assessment_outcome = "needs_manual_check"
     else:
-        disposition = "accepted"
-    return update_item(
-        workspace,
-        test_id,
-        item_id,
-        {
-            "auditor_disposition": disposition,
-            "auditor_note": (
-                "Automatically dispositioned from the document-assessment "
-                f"worker outcome: {disposition}."
-            ),
-        },
-        disposition_actor="agent",
-        runner_note=(
-            "Auto mode applied the document-assessment worker outcome: "
-            f"{disposition}."
-        ),
+        assessment_outcome = "accepted"
+    item["state"] = (
+        "exception" if assessment_outcome == "exception"
+        else "manual_review" if assessment_outcome == "needs_manual_check"
+        else "confirmed"
     )
+    item["runner_note"] = f"Model assessment outcome: {assessment_outcome}."
+    states = [value.get("state") for value in test["items"]]
+    test["status"] = "completed" if states and all(
+        state in {"confirmed", "exception", "manual_review"} for state in states
+    ) else "in_progress"
+    return save_test(workspace, test)
 
 
 def llm_assessment_outcome(
@@ -1217,7 +1182,7 @@ def run_item(
     item = _item(test, item_id)
     if test["kind"] == "qa":
         if not item.get("document_ids") or not str(item.get("question") or "").strip():
-            item.update(state="manual_review", auditor_disposition="needs_manual_check", runner_note="Attach evidence and record a question before running this item.")
+            item.update(state="manual_review", runner_note="Attach evidence and record a question before running this item.")
             save_test(workspace, test)
             return item
         try:
@@ -1231,24 +1196,23 @@ def run_item(
                 citations.extend(answer.get("citations") or [])
             item.update(
                 response="\n\n".join(value for value in answers if value), citations=citations,
-                evidence_refs=citations, state="agent_checked", auditor_disposition="pending",
-                runner_note="Cited answer generated from the attached pages; auditor disposition is still required.",
+                evidence_refs=citations, state="confirmed",
+                runner_note="Cited answer generated from the attached pages.",
             )
         except Exception as error:
             item.update(
-                state="manual_review", auditor_disposition="needs_manual_check",
+                state="manual_review",
                 runner_note=f"Manual fallback: {error}",
             )
         save_test(workspace, test)
         return item
     if test["kind"] != "vouching":
         item["state"] = "manual_review"
-        item["auditor_disposition"] = "needs_manual_check"
         item["runner_note"] = "This test kind requires auditor input in the current runner."
         save_test(workspace, test)
         return item
     if not item.get("document_ids"):
-        item.update(state="manual_review", auditor_disposition="needs_manual_check", runner_note="Attach at least one document before running this item.")
+        item.update(state="manual_review", runner_note="Attach at least one document before running this item.")
         save_test(workspace, test)
         return item
 
@@ -1296,12 +1260,14 @@ def run_item(
     has_conflict = bool(conflicts["duplicate_documents"])
     if not any_usable or has_conflict:
         item["state"] = "manual_review"
-        item["auditor_disposition"] = "needs_manual_check"
         item["runner_note"] = "Manual check required because evidence could not be matched or duplicate documents are attached."
     else:
-        item["state"] = "agent_checked"
-        item["auditor_disposition"] = "pending"
-        item["runner_note"] = "Deterministic local comparison completed; auditor disposition is still required."
+        item["state"] = (
+            "exception"
+            if any(check.get("verdict") in {"mismatch", "missing", "invalid"} for check in item.get("checks") or [])
+            else "confirmed"
+        )
+        item["runner_note"] = "Deterministic local comparison completed."
     save_test(workspace, test)
     return item
 
@@ -1339,15 +1305,11 @@ def commit_qa_answer(
         citations=[citation for value in ordered for citation in value["citations"]],
         evidence_refs=[citation for value in ordered for citation in value["citations"]],
         state="agent_checked",
-        auditor_disposition="pending",
-        runner_note=(
-            "Cited answers were generated from the attached pages in stable document order; "
-            "auditor disposition is still required."
-        ),
+        runner_note="Cited answers were generated from the attached pages in stable document order.",
     )
-    test["status"] = "review_required"
     save_test(workspace, test)
-    return item
+    settle_llm_assessment(workspace, test_id, item_id)
+    return _item(load_test(workspace, test_id), item_id)
 
 
 def commit_llm_assessment(
@@ -1373,19 +1335,18 @@ def commit_llm_assessment(
         response="\n\n".join(value["answer"] for value in ordered if value["answer"]),
         citations=[citation for value in ordered for citation in value["citations"]],
         evidence_refs=[citation for value in ordered for citation in value["citations"]],
-        state="agent_checked", auditor_disposition="pending",
-        runner_note="Cited LLM assessment generated from the attached pages; auditor disposition is still required.",
+        state="agent_checked",
+        runner_note="Cited LLM assessment generated from the attached pages.",
     )
-    test["status"] = "review_required"
     save_test(workspace, test)
-    return item
+    settle_llm_assessment(workspace, test_id, item_id)
+    return _item(load_test(workspace, test_id), item_id)
 
 
 def execution_issues(test: dict) -> list[str]:
     """Return deterministic blockers to attempting a document test.
 
-    A worklist may still require an auditor disposition after the local runner
-    has populated it.  These issues are narrower: they identify definitions
+    These issues identify definitions
     that cannot perform even that bounded local work (the failure mode that
     previously turned description-only items into nominally successful runs).
     """
@@ -1451,7 +1412,6 @@ def meta_payload() -> dict:
         "directions": sorted(DIRECTIONS),
         "document_types": sorted(_DOCUMENT_TYPE_ALIASES),
         "comparison_methods": sorted(METHODS),
-        "dispositions": sorted(DISPOSITIONS),
     }
 
 
@@ -1462,14 +1422,12 @@ _SUMMARY_RANK = {name: index for index, name in enumerate(SUMMARY_CLASSES)}
 def _item_classification(item: dict) -> str:
     """Bucket one worklist item by what the auditor has to do about it."""
     state = str(item.get("state") or "pending")
-    disposition = str(item.get("auditor_disposition") or "pending")
     coverage = item.get("evidence_coverage") or {}
     if state == "exception":
         return "exception"
     if state == "manual_review":
         return "needs_review"
-    # The agent has assessed it but nobody has signed off yet.
-    if state in {"agent_checked", "confirmed"} and disposition == "pending":
+    if state == "agent_checked":
         return "needs_review"
     if state == "confirmed":
         return "confirmed"
@@ -1512,8 +1470,6 @@ def summary_payload(workspace: Workspace) -> dict:
                 "label": item.get("label") or "",
                 "instruction": item.get("instruction") or "",
                 "state": item.get("state"),
-                "auditor_disposition": item.get("auditor_disposition"),
-                "auditor_note": item.get("auditor_note") or "",
                 "classification": classification,
                 "question": item.get("question") or "",
                 "response": item.get("response") or "",

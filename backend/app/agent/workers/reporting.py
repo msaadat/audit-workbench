@@ -1,6 +1,6 @@
 """Registered model workers for audit reporting capabilities.
 
-The finding worker turns one auditor-dispositioned observation and its immutable
+The finding worker turns one exception observation and its immutable
 execution result into an unconfirmed finding draft. It owns the prompt, the
 bundle-to-message transformation, and the response contract; evidence linking,
 support validation, and the durable write belong to the registered executor.
@@ -31,7 +31,7 @@ from .model import (
 
 FINDING_WORKER_ID = "reporting.finding"
 FINDING_SYSTEM = f"""[agent:finding]
-Draft one unconfirmed audit finding from the supplied auditor-dispositioned
+Draft one unconfirmed audit finding from the supplied exception
 observation and immutable execution reference. Return finding with title,
 severity (critical|high|medium|low|info), condition, criteria, cause or
 cause_pending, effect, recommendation, and severity_rationale. Do not create or

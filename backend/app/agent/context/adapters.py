@@ -861,7 +861,7 @@ def test_generate_scope(
 DOCUMENT_QA_ITEM_SOURCE_ID = "qa_item"
 DOCUMENT_QA_PAGE_SOURCE_ID = "document_pages"
 
-# The item fields a Q&A answer is derived from. Auditor dispositions, existing
+# The item fields a Q&A answer is derived from. Existing
 # answers, and evidence anchors are deliberately excluded: the worker answers the
 # question from the supplied pages and nothing else.
 _DOCUMENT_QA_ITEM_FIELDS = ("id", "label", "question", "pages")
@@ -1056,7 +1056,7 @@ def _finding_execution_projection(workspace: Workspace, execution_ref: str) -> d
                 {
                     **{
                         key: item.get(key)
-                        for key in ("id", "label", "state", "auditor_disposition")
+                        for key in ("id", "label", "state", "runner_note")
                     },
                     "check_verdicts": {
                         verdict: sum(

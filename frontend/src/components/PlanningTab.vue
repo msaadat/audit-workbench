@@ -70,10 +70,6 @@ function setRcmView(value: 'board' | 'grid') {
 }
 const workingPaper = ref<WorkingPaper | null>(null)
 const reviewStatuses = ['draft', 'prepared', 'review_required', 'reviewed']
-const observationDispositions = [
-  'confirmed_control_exception', 'data_quality_issue', 'expected_or_benign',
-  'screening_follow_up', 'invalid_test_or_result', 'duplicate', 'draft_finding_candidate',
-]
 const selectedRcm = computed(() => data.value?.rcm.find(item => item.id === selectedRcmId.value) ?? null)
 const selectedObservations = computed(() => (data.value?.observations ?? []).filter(item => item.rcm_id === selectedRcmId.value))
 const rowsWithoutTests = computed(() => (data.value?.rcm ?? []).filter(row => (row.execution_rollup.tests ?? row.test_refs.length) === 0))
@@ -236,16 +232,6 @@ function openRcm(row: RcmRow) {
 function linkedTests(row: RcmRow): TestRollup[] {
   return row.execution_rollup.test_rollups ?? []
 }
-async function saveObservation(item: AuditObservation) {
-  if (!item.disposition) return
-  try {
-    await api.patch(`/api/workspaces/${props.workspace.id}/observations/${item.id}`, {
-      disposition: item.disposition, auditor_note: item.auditor_note,
-    })
-    await reload()
-    emit('changed')
-  } catch (error) { fail('Could not disposition the observation', error) }
-}
 async function promoteObservation(item: AuditObservation) {
   try {
     await assistantChat.send(
@@ -257,10 +243,6 @@ async function promoteObservation(item: AuditObservation) {
     )
     toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'Review the proposed finding in the assistant before it is saved.', life: 3200 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
-}
-function canDraftFinding(item: AuditObservation) {
-  return item.status === 'disposed'
-    && ['confirmed_control_exception', 'draft_finding_candidate'].includes(item.disposition ?? '')
 }
 function openTest(rollup: TestRollup) {
   void nav.replace(rollup.kind === 'datatest' ? 'data-tests' : 'doc-tests', { test: rollup.test_id })
@@ -304,7 +286,7 @@ async function generateAllFindings() {
     toast.add({
       severity: 'success',
       summary: 'Generating all eligible findings',
-      detail: 'Any observations requiring disposition will be presented in the assistant drawer first.',
+      detail: 'Exception observations are used directly for finding drafts.',
       life: 4000,
     })
   } catch (error) { fail('Could not start finding generation', error) }
@@ -344,7 +326,7 @@ async function runAllDocumentTests() {
     toast.add({
       severity: 'info',
       summary: `Running ${testIds.length} RCM Document Test${testIds.length === 1 ? '' : 's'}`,
-      detail: 'Progress and any required decisions are visible in the assistant drawer.',
+      detail: 'Progress and any required actions are visible in the Console.',
       life: 4000,
     })
   } catch (error) { fail('Could not start RCM Document Tests', error) }
@@ -405,7 +387,7 @@ const copyOptions = [
           <div class="card-actions"><Button label="Open test" icon="pi pi-arrow-up-right" size="small" outlined @click="openTest(item)"/></div>
         </article><p v-if="!linkedTests(selectedRcm).length" class="empty">This RCM row has no linked test and cannot pass coverage.</p></section>
         <ProvenanceRail v-if="selectedRcm" :key="selectedRcm.id" :workspaceId="workspace.id" :artifactRef="`rcm:${selectedRcm.id}`" class="detail-provenance"/>
-        <section v-if="selectedObservations.length" class="observations"><strong>Observation triage</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.status" :severity="item.status === 'open' ? 'warn' : 'success'"/><span>{{ item.summary }}</span><small>Suggested: {{ item.suggested_disposition }}</small><Select v-model="item.disposition" :options="observationDispositions" placeholder="Auditor disposition"/><Textarea v-model="item.auditor_note" rows="2" placeholder="Auditor note"/><span class="observation-actions"><Button label="Save disposition" size="small" :disabled="!item.disposition" @click="saveObservation(item)"/><Button label="Draft finding" icon="pi pi-sparkles" size="small" severity="secondary" :disabled="!canDraftFinding(item)" title="Save an eligible auditor disposition before drafting with the assistant" @click="promoteObservation(item)"/></span></div></section>
+        <section v-if="selectedObservations.length" class="observations"><strong>Exception observations</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.outcome" :severity="item.outcome === 'exception' ? 'danger' : 'warn'"/><span>{{ item.summary }}</span><small>{{ item.classification.replaceAll('_', ' ') }}</small><span class="observation-actions"><Button label="Draft finding" icon="pi pi-sparkles" size="small" severity="secondary" :disabled="item.outcome !== 'exception'" @click="promoteObservation(item)"/></span></div></section>
       </div>
     </Dialog>
     <Dialog v-model:visible="templateOpen" modal header="APM template" :style="{ width: 'min(900px, 94vw)' }"><p class="muted">Workspace override · placeholders use <code v-pre>{{name}}</code>.</p><Textarea v-if="template" v-model="template.markdown" class="template-editor" rows="22" spellcheck="false"/><template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template></Dialog>

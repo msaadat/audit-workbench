@@ -932,7 +932,7 @@ PRESETS.register(
                 ),
             ),
             budget=ContextBudget(max_items=4, max_characters=16_000),
-            # A finding is grounded only in its dispositioned observation and the
+            # A finding is grounded only in its exception observation and the
             # immutable execution result behind it; no document or table content
             # is declared.
             privacy=ContextPrivacy(allow_document_text=True),

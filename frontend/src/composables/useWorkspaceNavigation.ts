@@ -12,11 +12,10 @@ type QueryValue = string | number | null | undefined
  * names stable meant the ~25 call sites only changed shape, not intent.
  */
 
-export type WorkspaceSurface = 'console' | 'decisions' | 'file' | 'bench'
+export type WorkspaceSurface = 'console' | 'file' | 'bench'
 
 export type WorkspaceDestination =
   | 'console'
-  | 'decisions'
   | 'dashboard'
   | 'apm'
   | 'rcm'
@@ -31,7 +30,7 @@ export type WorkspaceDestination =
 
 interface DestinationSpec {
   surface: WorkspaceSurface
-  /** Path segment under the surface; console and decisions have none. */
+  /** Path segment under the surface; the console has none. */
   section: string
   /** Query keys this destination owns, so deep links can be normalized. */
   keys: readonly string[]
@@ -39,7 +38,6 @@ interface DestinationSpec {
 
 const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   console: { surface: 'console', section: '', keys: [] },
-  decisions: { surface: 'decisions', section: '', keys: [] },
   // The curated dashboard is an audit outcome (`dashboard.curated`), so it sits
   // in the audit file rather than acting as the workspace landing page.
   dashboard: { surface: 'file', section: 'dashboard', keys: [] },
@@ -98,7 +96,6 @@ export function destinationForSection(
 export function surfacePath(workspaceId: string, surface: WorkspaceSurface, section = ''): string {
   const base = `/workspace/${workspaceId}`
   if (surface === 'console') return base
-  if (surface === 'decisions') return `${base}/decisions`
   return section ? `${base}/${surface}/${section}` : `${base}/${surface}`
 }
 

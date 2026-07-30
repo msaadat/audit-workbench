@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
-import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import type { AgentInteraction } from '../../types'
 import { api } from '../../api'
@@ -12,7 +11,6 @@ const text = ref('')
 const selected = ref('')
 const editedArgs = ref('')
 const detail = ref<unknown>(null)
-const observationDecisions = reactive<Record<string, string>>({})
 
 onMounted(async () => {
   const ref = (props.interaction.payload.comparison_sidecar || props.interaction.payload.sidecar) as { sha1?: string } | undefined
@@ -28,14 +26,8 @@ const title = computed(() => ({
   clarification: 'Information needed', target_choice: 'Choose a target',
   confirmation: 'Destructive action', proposal_approval: 'Review proposal',
   conflict_resolution: 'Resolve a conflict',
-  observation_disposition: 'Disposition observations',
 }[props.interaction.type]))
 
-const observations = computed(() => (props.interaction.payload.observations ?? []) as Array<{ id: string; summary?: string; suggested_disposition?: string; exception_count?: number }>)
-const dispositionOptions = computed(() => ((props.interaction.payload.allowed_values ?? []) as string[]).map(value => ({ label: value.replaceAll('_', ' '), value })))
-function submitObservations() {
-  emit('respond', { decisions: observations.value.map(item => ({ observation_id: item.id, disposition: observationDecisions[item.id] || item.suggested_disposition })) })
-}
 
 const resolved = computed(() => props.interaction.status !== 'pending')
 const resolvedSummary = computed(() => {
@@ -109,14 +101,6 @@ function readablePreview(value: unknown) {
         <Button label="Reject" severity="secondary" outlined size="small" :disabled="busy" @click="emit('respond', { decision: 'reject' })" />
         <Button label="Approve" size="small" :loading="busy" @click="approve" />
       </div>
-    </template>
-
-    <template v-else-if="interaction.type === 'observation_disposition'">
-      <div v-for="observation in observations" :key="observation.id" class="observation">
-        <span><strong>{{ observation.id }}</strong><small>{{ observation.summary }}<template v-if="observation.exception_count"> · {{ observation.exception_count }} exception(s)</template></small></span>
-        <Select v-model="observationDecisions[observation.id]" :options="dispositionOptions" optionLabel="label" optionValue="value" :placeholder="observation.suggested_disposition?.replaceAll('_', ' ') || 'Choose disposition'" />
-      </div>
-      <Button label="Apply dispositions and continue" size="small" :loading="busy" :disabled="observations.some(item => !(observationDecisions[item.id] || item.suggested_disposition))" @click="submitObservations" />
     </template>
 
     <template v-else-if="interaction.type === 'confirmation'">

@@ -53,7 +53,7 @@ def _bundle():
             {
                 "id": "OBS-1",
                 "summary": "A duplicate invoice identifier was processed.",
-                "disposition": "confirmed_control_exception",
+                "outcome": "exception",
             },
         ),
         (
@@ -160,7 +160,7 @@ def test_finding_worker_rejects_an_unsupported_severity():
 
 
 def _observed_workspace(workspace_with_data):
-    """Roll up one executed data test into an eligible, dispositioned observation."""
+    """Roll up one executed data test into an eligible exception observation."""
     ws = workspace_with_data
     row = ws.add_rcm(
         {
@@ -184,9 +184,6 @@ def _observed_workspace(workspace_with_data):
     data_tests.run(ws, test["id"])
     rcm_execution.rollup(ws)
     observation = ws.observations[0]
-    rcm_execution.disposition(
-        ws, observation["id"], "confirmed_control_exception", "Confirmed."
-    )
     return ws, ws.observations[0]
 
 

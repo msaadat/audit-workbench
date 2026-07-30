@@ -527,10 +527,7 @@ def test_observation_finding_action_derives_immutable_evidence_locally(
     data_tests.run(workspace_with_data, data_test["id"])
     rcm_execution.rollup(workspace_with_data)
     observation = workspace_with_data.observations[0]
-    rcm_execution.disposition(
-        workspace_with_data, observation["id"], "confirmed_control_exception",
-        "Auditor confirmed the duplicate requires reporting.",
-    )
+    assert observation["outcome"] == "exception"
     run = store.new_command_run(
         workspace_with_data, "auto", {"source": "chat", "text": "draft the finding"}
     )

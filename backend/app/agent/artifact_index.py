@@ -92,7 +92,7 @@ def build(workspace: Workspace) -> dict:
     for item in workspace.observations:
         entries.append(_entry(
             "observation", item["id"], item.get("summary") or item["id"], item,
-            body=" ".join(str(item.get(k) or "") for k in ("suggested_disposition", "disposition", "auditor_note")),
+            body=" ".join(str(item.get(k) or "") for k in ("outcome", "classification", "summary")),
             linked=[
                 *([f"rcm:{item['rcm_id']}"] if item.get("rcm_id") else []),
                 str(item.get("execution_ref") or ""),

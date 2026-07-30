@@ -454,7 +454,7 @@ class BaseRunner:
             run_id=self.run["id"],
             stage=kind,
             task=task["id"],
-            purpose="auditor_disposition",
+            purpose="approval_recorded",
             provider=profile.get("provider"),
             model=profile.get("model"),
             vision_used=False,

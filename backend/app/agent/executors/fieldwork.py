@@ -4,8 +4,8 @@ None of these performs a model call. ``roll_up_results`` recomputes each RCM
 row's derived result and its observations from the current execution artifacts and
 commits only material changes; it binds through the scheduler's deterministic
 execution path for ``results.rolled_up``. As with the reporting siblings, the
-observation/disposition auditor judgment is a declared checkpoint that runs
-between roll-up and finding creation, not part of this executor.
+exception observations are created directly during roll-up and feed finding
+creation without a separate checkpoint.
 
 ``execute_data_test`` is the registered commit for ``fieldwork.definitions_ready``
 Data Test units: it owns the planned-test parent guard, auditor-edit
@@ -90,8 +90,8 @@ def roll_up_results(
     artifacts and persists only material changes. Observation identities are keyed
     on ``execution_ref``, so a repeated roll-up reuses the same observation rows
     rather than creating duplicates — the result and observation identities stay
-    stable across runs. No model call is involved; the auditor's observation
-    disposition runs as a declared checkpoint before finding creation, not here.
+    stable across runs. No model call is involved; exception observations feed
+    finding creation directly.
     """
 
     result = rcm_execution.rollup(workspace, rcm_ids=rcm_ids)
@@ -102,7 +102,6 @@ def roll_up_results(
 # fieldwork.executed deterministic execution (P7F.2)
 # --------------------------------------------------------------------------- #
 EVIDENCE_UNAVAILABLE = "Evidence is unavailable."
-DOCUMENT_REVIEW_REQUIRED = "Auditor review or disposition is required."
 
 
 @dataclass(frozen=True)
@@ -130,7 +129,7 @@ def run_data_test(workspace: Workspace, data_test_id: str) -> ExecutionOutcome:
     guard, so a definition changed since the run started surfaces as a conflict
     rather than a result attributed to the wrong basis. A structurally computed
     result whose semantic contract fails is ``blocked``, not ``failed``: the run
-    happened and the auditor decides what to do about it.
+    happened but its evidence cannot support a reliable outcome.
     """
 
     result = data_tests.run(workspace, data_test_id)
@@ -215,14 +214,10 @@ def run_document_test(
         doc_tests.run_item(workspace, test_id, item["id"], run_id=run_id)
     test = doc_tests.load_test(workspace, test_id)
     rollup = doc_tests.result_rollup(test)
-    if rollup["pending"] or rollup["manual_review"]:
-        test["status"] = "review_required"
-        outcome = ExecutionOutcome(
-            reference, "awaiting_confirmation", DOCUMENT_REVIEW_REQUIRED
-        )
-    else:
-        test["status"] = "completed"
-        outcome = ExecutionOutcome(reference, "succeeded")
+    # A manual-check outcome remains visible in the result rollup but is not an
+    # auditor sign-off gate. Only missing evidence blocks this workflow unit.
+    test["status"] = "completed"
+    outcome = ExecutionOutcome(reference, "succeeded")
     doc_tests.save_test(workspace, test)
     return outcome
 
@@ -231,9 +226,6 @@ def run_document_test(
 # fieldwork.document_qa executor (P7F.3)
 # --------------------------------------------------------------------------- #
 DOCUMENT_QA_EXECUTOR_ID = "fieldwork.document_qa"
-DOCUMENT_QA_DISPOSITION_REQUIRED = "The cited answer requires auditor disposition."
-
-
 def document_qa_answer_ref(test_id: str, item_id: str, document_id: str) -> str:
     """The stable reference for one item/document Q&A answer."""
 
@@ -461,10 +453,8 @@ EXECUTORS.register(DOCUMENT_QA_EXECUTOR)
 
 
 __all__ = [
-    "DOCUMENT_QA_DISPOSITION_REQUIRED",
     "DOCUMENT_QA_EXECUTOR",
     "DOCUMENT_QA_EXECUTOR_ID",
-    "DOCUMENT_REVIEW_REQUIRED",
     "DocumentQaExecutorTarget",
     "EVIDENCE_UNAVAILABLE",
     "ExecutionOutcome",

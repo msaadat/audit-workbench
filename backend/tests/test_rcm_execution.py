@@ -202,7 +202,7 @@ def test_row_rollup_reports_a_passed_and_failed_tally(workspace_with_data):
     assert row_rollup["passed"] == 1
 
 
-def test_disposition_closes_observation_and_reduces_open_rollup(workspace_with_data):
+def test_exception_observation_is_final_without_a_disposition(workspace_with_data):
     ws = workspace_with_data
     row = _row(ws)
     item = _data_test(ws, row)
@@ -210,13 +210,10 @@ def test_disposition_closes_observation_and_reduces_open_rollup(workspace_with_d
     rcm_execution.rollup(ws)
     observation = ws.observations[0]
 
-    disposed = rcm_execution.disposition(
-        ws, observation["id"], "expected_or_benign", "Known approved high-value items."
-    )
     rcm_execution.rollup(ws)
 
-    assert disposed["status"] == "disposed"
-    assert data_tests._record(ws, item["id"])["open_exception_count"] == 0
+    assert observation["outcome"] == "exception"
+    assert data_tests._record(ws, item["id"])["open_exception_count"] > 0
 
 
 def test_rollup_reconciles_a_legacy_data_test_observation_reference(workspace_with_data):
@@ -305,16 +302,13 @@ def test_completion_uses_execution_and_outcome_gates(workspace_with_data):
 
     open_result = rcm_execution.completion(ws)
     assert open_result["status"] == "completed_with_open_items"
-    assert open_result["open_observations"]
-
-    for observation in list(ws.observations):
-        rcm_execution.disposition(ws, observation["id"], "expected_or_benign")
+    assert ws.observations[0]["outcome"] == "exception"
     data_tests.update(
         ws,
         item["id"],
         {
-            "conclusion": "The control operated effectively for the tested population.",
-            "control_conclusion": "effective",
+            "conclusion": "The exception was recorded for follow-up.",
+            "control_conclusion": "partially_effective",
         },
     )
     completed = rcm_execution.completion(ws)

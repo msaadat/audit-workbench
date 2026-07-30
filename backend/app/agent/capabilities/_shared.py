@@ -81,11 +81,6 @@ def rcm_row_sha1(row: dict) -> str:
     return canonical_sha1(_rcm_material_projection(row))
 
 
-# Dispositions that make an observation eligible to become a finding draft.
-ELIGIBLE_DISPOSITIONS = frozenset(
-    {"confirmed_control_exception", "draft_finding_candidate"}
-)
-
 
 def target_rcm_ids(workspace: Workspace, scope: dict) -> list[str]:
     """RCM row IDs in the requested scope (all rows when no target is given)."""
@@ -157,13 +152,12 @@ def scoped_observations(workspace: Workspace, scope: dict) -> list[dict]:
 
 
 def eligible_observations(workspace: Workspace, scope: dict | None = None) -> list[dict]:
-    """Disposed observations in scope whose disposition permits a finding draft."""
+    """Exception observations in scope that may become finding drafts."""
 
     return [
         item
         for item in scoped_observations(workspace, scope or {})
-        if item.get("status") == "disposed"
-        and item.get("disposition") in ELIGIBLE_DISPOSITIONS
+        if item.get("outcome") == "exception"
     ]
 
 

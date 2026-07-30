@@ -3,12 +3,11 @@ import { computed } from 'vue'
 
 import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
 import type { DashboardPhase, WorkspaceSummary } from '../../types'
+import ActionRequired from './ActionRequired.vue'
 
 /**
- * Console right rail: where the engagement stands, from data the shell already
- * loads. Coverage meters and the merged decision queue land here in later
- * phases of docs/agentic-ux-plan.md; this is deliberately only what the
- * existing `/dashboard/status` payload and workspace summary can answer.
+ * Console right rail: immediate run actions, followed by engagement progress
+ * from data the shell already loads.
  */
 
 const props = defineProps<{
@@ -40,6 +39,8 @@ const counts = computed(() => [
 
 <template>
   <aside class="engagement-state">
+    <ActionRequired :workspaceId="workspace.id" />
+
     <p class="rail-label">Engagement</p>
     <div class="counts">
       <router-link v-for="item in counts" :key="item.label" :to="nav.to(item.destination)" class="count">

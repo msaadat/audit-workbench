@@ -1,8 +1,8 @@
 """Standalone document-test capability group.
 
 Owns every outcome of the authoritative graph in
-:mod:`agent.workflows.doc_tests`: ``doc_tests.definitions_ready``,
-``doc_tests.executed``, and ``doc_tests.dispositioned``.
+:mod:`agent.workflows.doc_tests`: ``doc_tests.definitions_ready`` and
+``doc_tests.executed``.
 
 Each capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry key for its
@@ -30,7 +30,6 @@ from ..workflows import doc_tests as doc_tests_workflow
 CAPABILITY_IDS: tuple[str, ...] = (
     "doc_tests.definitions_ready",
     "doc_tests.executed",
-    "doc_tests.dispositioned",
 )
 
 # The bounded fallback when a request names no Document Test. Execution is up to
@@ -38,9 +37,9 @@ CAPABILITY_IDS: tuple[str, ...] = (
 # request from turning a whole worklist library into an unbounded provider bill.
 MAX_SCOPE_TESTS = 12
 
-# Item states that represent a settled decision. The auditor can always produce
-# one; auto mode can also apply a registered assessment worker's cited outcome.
-DISPOSED_STATES = frozenset({"confirmed", "exception"})
+# Item states that represent a completed outcome. ``manual_review`` remains
+# visible but does not require a workflow gate.
+DISPOSED_STATES = frozenset({"confirmed", "exception", "manual_review"})
 # Item states that mean the agent has already done what it can for the item.
 CHECKED_STATES = frozenset({"agent_checked", "manual_review"}) | DISPOSED_STATES
 
@@ -73,15 +72,6 @@ def _requested_ids(scope: dict) -> tuple[str, ...]:
         if separator and kind == "doctest" and item.strip():
             names.append(item.strip())
     return tuple(dict.fromkeys(names))
-
-
-def _outstanding(test: dict) -> bool:
-    """Whether a test still has work only execution or the auditor can settle."""
-
-    return any(
-        str(item.get("state") or "pending") not in DISPOSED_STATES
-        for item in test.get("items") or []
-    )
 
 
 def resolve_doc_test_scope(workspace: Workspace, scope: dict) -> DocTestScope:
@@ -237,7 +227,7 @@ def document_test_units(
     )
     # Explicit force is the auditor asking for the work again, so a test the
     # agent already checked is re-executed rather than handed straight back for
-    # review. Items the auditor has already dispositioned are still skipped —
+    # review. Items with a final result are still skipped —
     # that is ``run_document_test``'s own rule, not a scheduling decision.
     kind = (
         "document_test_review"
@@ -337,8 +327,8 @@ def unexecuted_items(test: dict) -> int:
     """Items the agent has not yet checked.
 
     Deliberately *not* ``result_rollup(...)['pending']``, which also counts
-    ``agent_checked``: that field answers "does the auditor still have work?",
-    which is the disposition outcome. An ``agent_checked`` item has been executed
+    ``agent_checked``: that field includes transient model work. An
+    ``agent_checked`` item has been executed
     — its comparison ran and its anchors are recorded — so counting it here would
     leave ``doc_tests.executed`` permanently unsatisfied and re-run every item on
     every request.
@@ -423,75 +413,9 @@ def _doc_tests_executed() -> Capability:
     )
 
 
-# --------------------------------------------------------------------------- #
-# doc_tests.dispositioned
-# --------------------------------------------------------------------------- #
-def _dispositioned_ready(workspace: Workspace, scope: dict) -> Readiness:
-    """Executed and dispositioned are separate outcomes, deliberately.
-
-    Deterministic comparisons and unresolved assessments remain candidates for
-    auditor judgment. A complete cited assessment can already be dispositioned
-    when auto mode applied the registered worker's structured outcome.
-    """
-    test_scope = resolve_doc_test_scope(workspace, scope)
-    blocked = _unknown_tests(test_scope)
-    if blocked is not None:
-        return blocked
-    outstanding = [
-        test_id
-        for test_id in test_scope.test_ids
-        if _outstanding(doc_test_service.load_test(workspace, test_id))
-    ]
-    details = {
-        "tests": len(test_scope.test_ids),
-        "awaiting_disposition": len(outstanding),
-    }
-    if not outstanding:
-        return Readiness("satisfied", details=details)
-    return Readiness(
-        "review_required",
-        (f"{len(outstanding)} Document Test(s) await auditor disposition",),
-        details=details,
-    )
-
-
-def _disposition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
-    test_scope = resolve_doc_test_scope(workspace, scope)
-    units = []
-    for test_id in test_scope.test_ids:
-        test = doc_test_service.load_test(workspace, test_id)
-        if not _outstanding(test):
-            continue
-        units.append(
-            UnitSpec(
-                semantic_unit_id("document_test_disposition", test_id),
-                "document_test_disposition",
-                f"Auditor disposition — {test.get('title') or test_id}",
-                (f"doctest:{test_id}",),
-                {"test_id": test_id},
-            )
-        )
-    return units
-
-
-def _doc_tests_dispositioned() -> Capability:
-    return Capability(
-        "doc_tests.dispositioned",
-        "doc_test_disposition",
-        "Document test disposition",
-        "document_test_disposition",
-        doc_tests_workflow.dependencies("doc_tests.dispositioned"),
-        _dispositioned_ready,
-        _disposition_units,
-        context=None,
-        invalidate_on=("execution",),
-    )
-
-
 _BUILDERS = {
     "doc_tests.definitions_ready": _doc_tests_definitions_ready,
     "doc_tests.executed": _doc_tests_executed,
-    "doc_tests.dispositioned": _doc_tests_dispositioned,
 }
 
 

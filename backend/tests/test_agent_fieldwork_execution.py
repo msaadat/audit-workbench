@@ -123,9 +123,9 @@ def test_run_document_test_completes_a_local_review_without_a_model(
     outcome = run_document_test(ws, test["id"], unit_id="unit-1", run_id="run-local")
 
     # A review-kind item is deterministically marked for auditor judgment.
-    assert outcome.status == "awaiting_confirmation"
+    assert outcome.status == "succeeded"
     assert outcome.artifact_ref == document_test_ref(test["id"])
-    assert doc_tests.load_test(ws, test["id"])["status"] == "review_required"
+    assert doc_tests.load_test(ws, test["id"])["status"] == "completed"
 
 
 def test_run_document_test_registers_the_blocked_unit_on_open_evidence_requests(
@@ -441,8 +441,7 @@ def test_document_qa_executor_commits_the_answer_with_derived_evidence_anchors()
     item = committed["items"][0]
     assert item["qa_answers"][document_id]["answer"] == "The controller approved it."
     assert item["qa_answers"][document_id]["outcome"] == "accepted"
-    assert item["state"] == "agent_checked"
-    assert item["auditor_disposition"] == "pending"
+    assert item["state"] == "confirmed"
     # The anchor is built from the document at commit time, so it carries the
     # real source hash rather than anything the proposal could claim.
     anchor = item["qa_answers"][document_id]["citations"][0]

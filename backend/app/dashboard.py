@@ -245,10 +245,10 @@ def _engagement_state(workspace: Workspace) -> dict:
         else "in_progress"
     )
     fieldwork_summary = (
-        "All RCM tests passed deterministic execution, outcome, and disposition gates."
+        "All RCM tests passed deterministic execution and outcome gates."
         if fieldwork_complete else (
             f"{len(workspace.data_tests)} Data Test(s), {len(tests)} Document Test(s), "
-            f"{len(completion['open_observations'])} open observation(s)."
+            f"{sum(item.get('outcome') == 'exception' for item in workspace.observations)} exception observation(s)."
         )
     )
 
@@ -276,7 +276,10 @@ def _engagement_state(workspace: Workspace) -> dict:
                {"rcm_rows": len(workspace.rcm), "tests": len(linked_tests)}, planning_issues),
         _phase("fieldwork", fieldwork_state, fieldwork_complete, fieldwork_summary,
                {"data_tests": len(workspace.data_tests), "document_tests": len(tests),
-                "open_observations": len(completion["open_observations"])}, fieldwork_issues),
+                "exception_observations": sum(
+                    item.get("outcome") == "exception"
+                    for item in workspace.observations
+                )}, fieldwork_issues),
         _phase("report", report_state, report_complete, report_summary,
                {"findings": len(workspace.findings), "quality_errors": len(report_errors)},
                report_issues),

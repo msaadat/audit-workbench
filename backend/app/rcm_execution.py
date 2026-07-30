@@ -11,7 +11,7 @@ import uuid
 
 from . import data_tests, doc_tests
 from .workspace_transactions import canonical_sha1, material_projection
-from .workspaces import OBSERVATION_DISPOSITIONS, Workspace, WorkspaceError
+from .workspaces import Workspace
 
 
 def _doc_tests(workspace: Workspace) -> list[dict]:
@@ -201,7 +201,7 @@ def _observation(
     test_id: str,
     execution_ref: str,
     exception_count: int,
-    suggested_disposition: str,
+    classification: str,
     summary: str,
 ) -> dict:
     existing = next(
@@ -223,12 +223,7 @@ def _observation(
             )
         ]
         if matches:
-            # An auditor's disposition belongs to the result, not to an
-            # obsolete result-file name. Prefer it when reconciling duplicates.
-            existing = next(
-                (item for item in matches if item.get("disposition") or item.get("status") == "disposed"),
-                existing or matches[0],
-            )
+            existing = existing or matches[0]
             if len(matches) > 1:
                 duplicate_ids = {id(item) for item in matches if item is not existing}
                 workspace.observations[:] = [
@@ -242,10 +237,8 @@ def _observation(
             "execution_ref": execution_ref,
             "exception_count": exception_count,
             "summary": summary,
-            "suggested_disposition": suggested_disposition,
-            "disposition": None,
-            "auditor_note": "",
-            "status": "open",
+            "classification": classification,
+            "outcome": "exception" if exception_count else "needs_manual_check",
             "created": workspace._updated_now(),
             "updated": workspace._updated_now(),
         }
@@ -255,7 +248,8 @@ def _observation(
             execution_ref=execution_ref,
             exception_count=exception_count,
             summary=summary,
-            suggested_disposition=suggested_disposition,
+            classification=classification,
+            outcome="exception" if exception_count else "needs_manual_check",
             updated=workspace._updated_now(),
         )
     return existing
@@ -284,11 +278,11 @@ def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, 
                 test_id=item["id"],
                 execution_ref=f"datatest:{item['id']}:{last_run['id']}",
                 exception_count=exceptions,
-                suggested_disposition=suggestion,
+                classification=suggestion,
                 summary=run.get("verdict_text") or item["title"],
             )
-            if observation.get("status") == "open":
-                open_exceptions = exceptions or 1
+            if observation.get("outcome") == "exception":
+                open_exceptions = exceptions
     status = str(item.get("status") or "draft")
     return status, exceptions, open_exceptions, executed
 
@@ -311,19 +305,15 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
             test_id=item["id"],
             execution_ref=f"doctest:{item['id']}",
             exception_count=exceptions,
-            suggested_disposition="draft_finding_candidate",
+            classification="draft_finding_candidate",
             summary=f"{exceptions} document-test exception or mismatch result(s).",
         )
-        if observation.get("status") == "open":
+        if observation.get("outcome") == "exception":
             open_exceptions = exceptions
     if status == "completed":
         status = (
             "completed_with_exception" if exceptions else "completed_no_exception"
         )
-    elif status != "blocked" and (rollup["manual_review"] or rollup["pending"]):
-        # A test waiting on requested evidence stays blocked: the auditor has an
-        # evidence request to settle, not an item to review.
-        status = "review_required" if item.get("items") else status
     return status, exceptions, open_exceptions, executed, evidence_refs
 
 
@@ -447,33 +437,11 @@ def rollup(
     return {"rows": rows, "coverage": coverage(workspace)}
 
 
-def disposition(
-    workspace: Workspace, observation_id: str, value: str, auditor_note: str = ""
-) -> dict:
-    item = next(
-        (row for row in workspace.observations if row.get("id") == observation_id),
-        None,
-    )
-    if item is None:
-        raise WorkspaceError(f"Observation '{observation_id}' not found.")
-    if value not in OBSERVATION_DISPOSITIONS:
-        raise WorkspaceError("Unknown observation disposition.")
-    item["disposition"] = value
-    item["auditor_note"] = str(auditor_note or "")
-    item["status"] = "disposed"
-    item["updated"] = workspace._updated_now()
-    workspace.save()
-    return item
-
-
 def completion(workspace: Workspace) -> dict:
     # Completion is used by dashboard/report GET paths. It must derive current
     # outcomes without turning a read into an optimistic-concurrency write.
     rolled = rollup(workspace, persist=False)
     cov = rolled["coverage"]
-    open_observations = [
-        item["id"] for item in workspace.observations if item.get("status") != "disposed"
-    ]
     linked = [
         (row, test)
         for row in workspace.rcm
@@ -530,7 +498,6 @@ def completion(workspace: Workspace) -> dict:
     technical = bool(cov["invalid_test_parents"] or cov["completed_without_durable_result"])
     open_items = bool(
         cov["issue_count"]
-        or open_observations
         or incomplete_outcomes
         or blank_conclusions
         or missing_planning_context
@@ -545,7 +512,6 @@ def completion(workspace: Workspace) -> dict:
     return {
         "status": status,
         "coverage": cov,
-        "open_observations": open_observations,
         "incomplete_outcomes": incomplete_outcomes,
         "blank_conclusions": blank_conclusions,
         "missing_planning_context": missing_planning_context,

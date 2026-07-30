@@ -8,10 +8,9 @@ capability IDs declared here; they do not redefine the edges.
 
 ``doc_tests.definitions_ready`` reports whether each scoped Document Test can
 perform even its bounded local work, ``doc_tests.executed`` runs the outstanding
-items — deterministic comparisons locally, cited Q&A answers through the
-registered ``fieldwork.document_qa`` worker — and ``doc_tests.dispositioned`` is
-the separate settlement outcome. Auto mode can apply a cited worker outcome;
-deterministic, inconclusive, and permission-mode results remain with the auditor.
+items — deterministic comparisons locally and cited Q&A answers through the
+registered ``fieldwork.document_qa`` worker. Outcomes are final; a manual-check
+result remains visible without adding a sign-off stage.
 
 `P10.5` replaced ``DocTestRunner`` with this graph. The audit lifecycle continues
 to schedule document tests through ``fieldwork.executed``; both graphs bind the
@@ -33,16 +32,13 @@ WORKFLOW_ID = "doc_tests_workflow_v1"
 
 # The document-test dependency graph. Each capability ID maps to its direct
 # dependencies in declaration order. The chain is linear: a test that cannot run
-# is not executed, and nothing is dispositioned that was not executed.
+# is not executed.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "doc_tests.definitions_ready": (),
     "doc_tests.executed": ("doc_tests.definitions_ready",),
-    "doc_tests.dispositioned": ("doc_tests.executed",),
 }
 
-# "Run this document test" requests execution. Auto-mode disposition is part of
-# the model-backed execution binding; remaining auditor disposition is not added
-# to the requested outcomes.
+# "Run this document test" requests execution.
 FULL_DOC_TEST_OUTCOMES = ["doc_tests.executed"]
 
 # Goal-template routing to requested outcome sets.

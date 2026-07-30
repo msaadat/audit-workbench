@@ -11,7 +11,6 @@ import AgentDrawer from '../components/agent/AgentDrawer.vue'
 import ImportDialog from '../components/ImportDialog.vue'
 import { collectDroppedFiles, dragHasFiles } from '../composables/useFileDrop'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import { useDecisions } from '../composables/useDecisions'
 import { workspaceContextKey } from '../composables/useWorkspaceContext'
 
 /**
@@ -40,12 +39,10 @@ const agent = useAgentRun(props.id)
 // sidecar so a question is always one click away without leaving the record.
 const onConsole = computed(() => route.name === 'workspace')
 const surface = computed(() => {
-  if (route.name === 'workspace-decisions') return 'decisions'
   if (route.name === 'workspace-file') return 'file'
   if (route.name === 'workspace-bench') return 'bench'
   return 'console'
 })
-const decisions = useDecisions(props.id)
 
 async function loadEngagementStatus() {
   try {
@@ -120,8 +117,7 @@ onMounted(async () => {
   window.addEventListener('dragover', onWindowDragOver)
   window.addEventListener('dragleave', onWindowDragLeave)
   window.addEventListener('drop', onWindowDrop)
-  decisions.watchWorkspace()
-  await Promise.all([reload(), decisions.load()])
+  await reload()
   if (route.query.import === '1') {
     folderImportOpen.value = true
     const query = { ...route.query }
@@ -159,10 +155,6 @@ onUnmounted(() => {
       <nav class="surface-switcher" aria-label="Workspace surfaces">
         <router-link :to="nav.to('console')" :class="{ active: surface === 'console' }">
           <i class="pi pi-sparkles" /><span>Console</span>
-        </router-link>
-        <router-link :to="nav.to('decisions')" :class="{ active: surface === 'decisions' }">
-          <i class="pi pi-inbox" /><span>Decisions</span>
-          <em v-if="decisions.total.value">{{ decisions.total.value }}</em>
         </router-link>
         <router-link :to="nav.to('dashboard')" :class="{ active: surface === 'file' }">
           <i class="pi pi-book" /><span>Audit file</span>

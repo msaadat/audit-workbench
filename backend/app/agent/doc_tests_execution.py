@@ -12,7 +12,7 @@ keeps only its datatest branch and its own task identity. That is what makes the
 
 :class:`DocTestWorkflowExecution` is the standalone composition itself: the
 document-test-shaped glue the scheduler must not know about — stage titles,
-scope, the model budget, the definition and disposition settlements, and the
+scope, the model budget, definition checks, and completion projection.
 completion projection.
 
 ``DocTestRunner`` was deleted here. The reasoning, measured against the workflow
@@ -39,8 +39,6 @@ from .capabilities.doc_tests import (
 from .context import ContextResolver, document_qa_scope
 from .executors import EXECUTORS
 from .executors.fieldwork import (
-    DOCUMENT_QA_DISPOSITION_REQUIRED,
-    DOCUMENT_REVIEW_REQUIRED,
     DocumentQaExecutorTarget,
     document_qa_answer_ref,
     document_test_ref,
@@ -62,7 +60,6 @@ from .runtime import (
 from .workers import WORKERS
 
 DEFINITION_REVIEW_REQUIRED = "document_test_definition_needs_auditor_attention"
-DISPOSITION_REQUIRED = "document_test_results_await_auditor_disposition"
 
 
 def unit_ref(unit: dict, prefix: str) -> str:
@@ -85,9 +82,9 @@ def bind_document_qa(
 
     The answer comes from the registered ``fieldwork.document_qa`` worker through
     the injected gateway and the declared page context, and the registered
-    executor owns the guarded merge into the Document Test. In permission mode a
-    cited answer remains an auditor checkpoint. In auto mode, the worker's
-    complete cited outcome is applied and a conclusive unit settles successfully.
+    executor owns the guarded merge into the Document Test. The worker's cited
+    outcome is final: exceptions are recorded as exceptions and
+    ``needs_manual_check`` remains visible without stopping the workflow.
     """
     test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
     item_id = unit_ref(unit, "docitem:").split(":", 1)[1]
@@ -112,29 +109,9 @@ def bind_document_qa(
             "workspace_changed",
             {"kind": "doctest", "id": test_id, "action": "qa_answered"},
         )
-        if adapter.run["mode"] == "auto":
-            doc_tests.auto_dispose_llm_assessment(
-                adapter.ws, test_id, item_id
-            )
-            target.workspace = adapter.ws
-            adapter.emit(
-                "workspace_changed",
-                {"kind": "doctest", "id": test_id, "action": "auto_disposed"},
-            )
-            # A complete worker assessment is the auto-mode disposition for
-            # this pair, including ``needs_manual_check``.  The latter is a
-            # durable outcome (and leaves the item in manual_review), not an
-            # instruction to wait for a human.  For multi-document items the
-            # last pair applies the aggregate disposition; earlier pairs still
-            # settle successfully so the stage does not retain stale open units.
-            return DeterministicUnitResult(
-                "succeeded",
-                (document_qa_answer_ref(test_id, item_id, document_id),),
-            )
         return DeterministicUnitResult(
-            "awaiting_confirmation",
+            "succeeded",
             (document_qa_answer_ref(test_id, item_id, document_id),),
-            DOCUMENT_QA_DISPOSITION_REQUIRED,
         )
 
     return BoundUnitPipeline(
@@ -184,20 +161,16 @@ def bind_document_test_unit(
 ) -> BoundUnitPipeline | DeterministicUnitResult:
     """Bind one Document Test unit, whichever graph expanded it.
 
-    The status vocabulary carries audit meaning, not just success/failure:
-    ``awaiting_confirmation`` means the agent produced something only an auditor
-    may disposition, and ``blocked`` means evidence is missing — which registers
-    the unit against its evidence request so uploading the document can unblock it
-    later.
+    ``blocked`` means evidence is missing and registers the unit against its
+    evidence request so uploading the document can unblock it later.
 
     ``adapter`` supplies the live run surface (``ws``, ``run``, ``emit``,
     ``_resolve_context``, ``context_resolver``); this function owns the decision.
     """
     if unit["kind"] == "document_test_review":
         return DeterministicUnitResult(
-            "awaiting_confirmation",
+            "succeeded",
             (unit_ref(unit, "doctest:"),),
-            DOCUMENT_REVIEW_REQUIRED,
         )
     if unit["kind"] in {"document_qa_execution", "document_llm_execution"}:
         return bind_document_qa(adapter, capability, unit, task=task)
@@ -227,7 +200,6 @@ class DocTestWorkflowExecution(BaseRunner):
     stage_titles = {
         "doc_test_definitions": "Document test definitions",
         "doc_test_execution": "Document test execution",
-        "doc_test_disposition": "Document test disposition",
     }
 
     def __init__(
@@ -405,39 +377,6 @@ class DocTestWorkflowExecution(BaseRunner):
         )
         return bind_document_test_unit(self, capability, unit, task=task)
 
-    # ----------------------------------------------- doc_tests.dispositioned
-    def _bind_disposition(
-        self,
-        subject: Workspace,
-        run: dict,
-        capability: workflow.Capability,
-        stage: dict,
-        unit: dict,
-    ) -> DeterministicUnitResult:
-        """Return any disposition still requiring authoritative auditor input."""
-
-        self.ws = subject
-        test_id = unit_ref(unit, "doctest:").split(":", 1)[1]
-        test = doc_tests.load_test(self.ws, test_id)
-        task = self.add_task(
-            "doc_test_disposition",
-            "workflow:doc_test_disposition",
-            "Document test disposition",
-        )
-        self.task_status(task, "running")
-        rollup = doc_tests.result_rollup(test)
-        self.task_detail(
-            task,
-            f"{test.get('title') or test_id}: {rollup['items']} item(s) awaiting "
-            "auditor disposition.",
-        )
-        self.task_status(task, "completed")
-        return DeterministicUnitResult(
-            "awaiting_confirmation",
-            (document_test_ref(test_id),),
-            DISPOSITION_REQUIRED,
-        )
-
     # ---------------------------------------------------------------- finish
     def _finish_projection(
         self,
@@ -505,8 +444,8 @@ class DocTestWorkflowExecution(BaseRunner):
                 ("Unchecked items", unexecuted),
             ],
             (
-                "Auto mode applies conclusive cited worker outcomes; unresolved "
-                "results remain subject to auditor disposition."
+                "Model and deterministic outcomes are final; manual-check results "
+                "remain visible as limitations without blocking completion."
             ),
         )
         return FinishProjection(
@@ -521,7 +460,6 @@ class DocTestWorkflowExecution(BaseRunner):
 # later capability re-expands against what the earlier one actually produced.
 _PARTIAL_DEPENDENCIES = {
     "doc_tests.executed": {"doc_tests.definitions_ready"},
-    "doc_tests.dispositioned": {"doc_tests.executed"},
 }
 
 _PIPELINE_BINDERS = {
@@ -540,10 +478,6 @@ _DETERMINISTIC_BINDERS = {
     "doc_tests.definitions_ready": (
         "_bind_definition",
         {"deterministic": "doc_tests.definition_review"},
-    ),
-    "doc_tests.dispositioned": (
-        "_bind_disposition",
-        {"deterministic": "doc_tests.disposition"},
     ),
 }
 
@@ -639,7 +573,6 @@ def build_doc_tests_workflow_runner(
 
 __all__ = [
     "DEFINITION_REVIEW_REQUIRED",
-    "DISPOSITION_REQUIRED",
     "DocTestWorkflowExecution",
     "bind_document_qa",
     "bind_document_test_unit",
