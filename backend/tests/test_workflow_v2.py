@@ -809,10 +809,10 @@ def test_planning_context_commit_merges_unrelated_concurrent_write(monkeypatch):
     completed = wait_run(ws, started["id"])
     current = workspaces.load_workspace(ws.id)
 
-    # The generated finding remains a draft until an auditor confirms it, so
-    # report-quality verification correctly leaves the run open.  Auto mode
-    # must nevertheless disposition the source observation and draft the finding.
-    assert completed["status"] == "completed_with_open_items"
+    # This route requests only planning context. Its concurrent table write
+    # must survive the context commit, and no full-audit review outcome is in
+    # scope to leave the run open.
+    assert completed["status"] == "completed"
     assert current.planning["context"]["objective"] == (
         "Assess procurement approval compliance"
     )

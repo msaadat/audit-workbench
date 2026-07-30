@@ -135,7 +135,7 @@ class FakeAgentLLM:
             response = response(messages[-1]["content"])
         if response is None:
             raise llm.LLMError(f"FakeAgentLLM has no script for '{tag}'.")
-        if isinstance(response, dict) and (
+        if isinstance(response, dict) and response and (
             "tool_calls" in response
             or set(response).issubset({"content", "tool_calls", "usage"})
         ):

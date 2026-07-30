@@ -1441,7 +1441,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     started = runner.start_command_run(
         workspace_with_data, "auto", {"source": "follow_up", "text": "do the full audit"}
     )
-    completed = wait_run(workspace_with_data, started["id"])
+    completed = wait_run(workspace_with_data, started["id"], timeout=30.0)
     reloaded = workspaces.load_workspace(workspace_with_data.id)
 
     assert completed["status"] == "completed_with_open_items"

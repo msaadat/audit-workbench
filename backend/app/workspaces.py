@@ -657,6 +657,11 @@ class Workspace:
         self.evidence_requests: list[dict] = _load_artifact_collection(self.root, "evidence_requests")
         self.findings: list[dict] = _load_artifact_collection(self.root, "findings")
         self.dashboard_advice: dict = _load_artifact_object(self.root, "dashboard_advice")
+        legacy_finding_statuses = {
+            str(item.get("id")): item.get("status")
+            for item in self.findings
+            if item.get("status") is not None
+        }
         # Legacy evidence strings remain represented through a typed wrapper;
         # all subsequent writes validate the durable anchor shape.
         from .evidence import normalize_many
@@ -678,9 +683,24 @@ class Workspace:
             item.pop("status", None)
             item.setdefault("source", "manual")
         self.report: dict = _load_artifact_object(self.root, "report")
+        legacy_artifact_statuses = {
+            "planning": self.planning.get("status"),
+            "report": self.report.get("status"),
+            "findings": legacy_finding_statuses,
+        }
         self.planning.pop("status", None)
         self.report.pop("status", None)
         self._artifact_snapshot = self._artifact_state()
+        # Keep removed legacy statuses in the prior snapshot so the next
+        # ordinary save rewrites the sidecars without those retired fields.
+        if legacy_artifact_statuses["planning"] is not None:
+            self._artifact_snapshot["planning"]["status"] = legacy_artifact_statuses["planning"]
+        if legacy_artifact_statuses["report"] is not None:
+            self._artifact_snapshot["report"]["status"] = legacy_artifact_statuses["report"]
+        for item in self._artifact_snapshot["findings"]:
+            status = legacy_artifact_statuses["findings"].get(str(item.get("id")))
+            if status is not None:
+                item["status"] = status
 
     # ------------------------------------------------------------- persistence
     @property

@@ -290,9 +290,17 @@ def test_declared_context_presets_are_registered():
     from app.agent.context import PRESETS
 
     known = {preset.preset_id for preset in PRESETS.all()}
-    for capability in capabilities.AUDIT_REGISTRY.all():
-        if capability.context is not None:
-            assert str(capability.context) in known
+    declared = {
+        preset_id
+        for capability in capabilities.AUDIT_REGISTRY.all()
+        for preset_id in (
+            capability.context.values()
+            if isinstance(capability.context, dict)
+            else (capability.context,)
+        )
+        if preset_id is not None
+    }
+    assert declared <= known
 
 
 def test_the_retired_audit_modules_have_no_module_alias_or_reexport():

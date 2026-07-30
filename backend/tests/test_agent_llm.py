@@ -14,7 +14,15 @@ def test_agent_profile_defaults_to_assistant_settings(monkeypatch):
 
 
 def test_vision_profile_and_image_part(monkeypatch):
-    assistant_settings.save({"provider": "mistral", "model": "mistral-large-latest"})
+    monkeypatch.delenv("AGENT_VISION_PROVIDER", raising=False)
+    monkeypatch.delenv("AGENT_VISION_BACKEND", raising=False)
+    monkeypatch.delenv("AGENT_VISION_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_VISION_CAPABILITIES", raising=False)
+    assistant_settings.save({
+        "provider": "mistral",
+        "model": "mistral-large-latest",
+        "vision_profile": None,
+    })
     monkeypatch.setenv("MISTRAL_API_KEY", "test")
     settings = llm._settings("vision")
     assert settings.model == "pixtral-large-latest"

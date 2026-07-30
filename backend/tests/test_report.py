@@ -375,7 +375,9 @@ def test_removed_artifact_statuses_are_discarded_when_loading(workspace_with_dat
     assert "status" not in loaded.report
     loaded.save()
 
-    persisted = json.loads(loaded.definition_path.read_text(encoding="utf-8"))
-    assert "status" not in persisted["planning"]
-    assert "status" not in persisted["findings"][0]
-    assert "status" not in persisted["report"]
+    planning = json.loads((loaded.root / "Planning" / "context.json").read_text(encoding="utf-8"))
+    finding = json.loads(next((loaded.root / "Findings").glob("*.json")).read_text(encoding="utf-8"))
+    report_artifact = json.loads((loaded.root / "Reports" / "current.json").read_text(encoding="utf-8"))
+    assert "status" not in planning
+    assert "status" not in finding
+    assert "status" not in report_artifact

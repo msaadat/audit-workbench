@@ -297,7 +297,16 @@ def _finding_citations(markdown: str) -> set[str]:
             searchable,
         )
     )
-    return citations
+    # Older report templates prepended ``F-`` to an ID that already carried
+    # that prefix. Retain those links as citations while normalizing only the
+    # repeated prefix; an ordinary finding ID remains unchanged.
+    normalized = set(citations)
+    for citation in citations:
+        current = citation
+        while current.startswith("F-F-"):
+            current = current[2:]
+            normalized.add(current)
+    return normalized
 
 
 def _normalize_finding_citations(workspace: Workspace, markdown: str) -> str:

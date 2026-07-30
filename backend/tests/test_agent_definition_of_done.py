@@ -97,10 +97,15 @@ def test_the_action_ledger_holds_no_audit_lifecycle_policy():
 
 def test_every_declared_context_preset_is_registered():
     declared = {
-        str(capability.context)
+        str(preset_id)
         for registry in capabilities.REGISTRY_BY_WORKFLOW.values()
         for capability in registry.all()
-        if capability.context
+        for preset_id in (
+            capability.context.values()
+            if isinstance(capability.context, dict)
+            else (capability.context,)
+        )
+        if preset_id
     }
     assert declared
     for preset in declared:
