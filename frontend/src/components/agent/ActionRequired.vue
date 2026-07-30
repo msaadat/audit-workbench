@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import Tag from 'primevue/tag'
 
 import { useAgentRun } from '../../composables/useAgentRun'
-import type { AgentApproval, AgentDecision, AgentInteraction, WorkflowUnit } from '../../types'
+import type { AgentApproval, AgentDecision, AgentInteraction } from '../../types'
 import AgentApprovalCard from './AgentApprovalCard.vue'
 import AgentInteractionCard from './AgentInteractionCard.vue'
 
@@ -17,27 +17,28 @@ const approvals = computed(() => (run.value?.approvals ?? []).filter(item => ite
 const interactions = computed(() => (run.value?.interactions ?? []).filter(item => item.status === 'pending'))
 const blockers = computed(() => {
   const stopped = new Set(['blocked', 'awaiting_input', 'awaiting_confirmation', 'conflict', 'failed'])
-  const seen = new Set<string>()
-  const items: Array<{ id: string; title: string; detail: string; failed: boolean }> = []
+  const groups = new Map<string, { id: string; stage: string; count: number; failed: boolean }>()
   for (const stage of run.value?.workflow?.stages ?? []) {
     for (const unit of stage.units) {
-      if (!stopped.has(unit.status) || seen.has(unit.id)) continue
-      seen.add(unit.id)
-      items.push(blocker(stage.title, unit))
+      if (!stopped.has(unit.status)) continue
+      const failed = unit.status === 'failed'
+      const key = `${stage.id}:${failed ? 'failed' : 'waiting'}`
+      const group = groups.get(key) ?? { id: key, stage: stage.title, count: 0, failed }
+      group.count += 1
+      groups.set(key, group)
     }
   }
-  return items
+  return [...groups.values()].map(item => ({
+    ...item,
+    title: item.failed
+      ? `${item.count} error${item.count === 1 ? '' : 's'} during ${item.stage}`
+      : `${item.count} item${item.count === 1 ? '' : 's'} waiting during ${item.stage}`,
+    detail: item.failed
+      ? 'Review the Console transcript to retry or adjust the request.'
+      : 'The agent is waiting for the next step before it can continue.',
+  }))
 })
 const total = computed(() => approvals.value.length + interactions.value.length + blockers.value.length)
-
-function blocker(stageTitle: string, unit: WorkflowUnit) {
-  return {
-    id: unit.id,
-    title: unit.title || stageTitle,
-    detail: unit.error || `${stageTitle} is waiting for the next step.`,
-    failed: unit.status === 'failed',
-  }
-}
 
 async function decide(approval: AgentApproval, decisions: AgentDecision[]) {
   busy.value = true
@@ -57,7 +58,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
     <div class="head">
       <div>
         <p class="rail-label">Action required</p>
-        <p class="summary">{{ total ? 'The agent needs your input to continue.' : 'Nothing is holding the current run.' }}</p>
+        <p class="summary">{{ total ? 'Review these run issues and continue where needed.' : 'Nothing is holding the current run.' }}</p>
       </div>
       <Tag v-if="total" :value="String(total)" severity="warn" />
       <i v-else class="pi pi-check-circle" aria-hidden="true" />
