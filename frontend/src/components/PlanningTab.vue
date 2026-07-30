@@ -17,6 +17,7 @@ import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AgentRun, AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
+import ProvenanceRail from './agent/ProvenanceRail.vue'
 import CoverageBoard from './planning/CoverageBoard.vue'
 import RcmGrid from './planning/RcmGrid.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
@@ -58,6 +59,9 @@ const rcmView = ref<'board' | 'grid'>(
     catch { return 'board' }
   })(),
 )
+// Provenance is a reviewer's question, not an author's, so it stays closed
+// until asked for rather than taking a column from the editor by default.
+const apmProvenanceOpen = ref(false)
 function setRcmView(value: 'board' | 'grid') {
   rcmView.value = value
   try { window.localStorage.setItem(VIEW_KEY, value) }
@@ -350,9 +354,14 @@ const copyOptions = [
       <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate" />
     </UiPageHeader>
     <section v-if="section === 'apm'" class="apm-view">
-      <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
+      <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button :label="apmProvenanceOpen ? 'Hide provenance' : 'Provenance'" icon="pi pi-shield" size="small" :outlined="!apmProvenanceOpen" @click="apmProvenanceOpen = !apmProvenanceOpen"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
       <input ref="apmImportInput" type="file" accept=".md,.markdown,.txt" hidden @change="importApm"/>
-      <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
+      <div class="apm-body" :class="{ 'with-rail': apmProvenanceOpen }">
+        <div class="apm-editor"><MarkdownEditor v-model="data.planning.apm_markdown"/></div>
+        <!-- Attribution is per artifact, which is what the sidecars record.
+             There is no per-section trail because no per-section record exists. -->
+        <ProvenanceRail v-if="apmProvenanceOpen" :workspaceId="workspace.id" artifactRef="planning:apm"/>
+      </div>
     </section>
     <section v-else>
       <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Run all Document Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDocumentTestIds.length || isActive" :loading="runningAllDocumentTests" @click="runAllDocumentTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
@@ -377,6 +386,7 @@ const copyOptions = [
           <p v-if="item.scope_limitations" class="muted">Limitation: {{ item.scope_limitations }}</p>
           <div class="card-actions"><Button label="Open test" icon="pi pi-arrow-up-right" size="small" outlined @click="openTest(item)"/></div>
         </article><p v-if="!linkedTests(selectedRcm).length" class="empty">This RCM row has no linked test and cannot pass coverage.</p></section>
+        <ProvenanceRail v-if="selectedRcm" :key="selectedRcm.id" :workspaceId="workspace.id" :artifactRef="`rcm:${selectedRcm.id}`" class="detail-provenance"/>
         <section v-if="selectedObservations.length" class="observations"><strong>Observation triage</strong><div v-for="item in selectedObservations" :key="item.id"><Tag :value="item.status" :severity="item.status === 'open' ? 'warn' : 'success'"/><span>{{ item.summary }}</span><small>Suggested: {{ item.suggested_disposition }}</small><Select v-model="item.disposition" :options="observationDispositions" placeholder="Auditor disposition"/><Textarea v-model="item.auditor_note" rows="2" placeholder="Auditor note"/><span class="observation-actions"><Button label="Save disposition" size="small" :disabled="!item.disposition" @click="saveObservation(item)"/><Button label="Draft finding" icon="pi pi-sparkles" size="small" severity="secondary" :disabled="!canDraftFinding(item)" title="Save an eligible auditor disposition before drafting with the assistant" @click="promoteObservation(item)"/></span></div></section>
       </div>
     </Dialog>
@@ -386,6 +396,10 @@ const copyOptions = [
 </template>
 
 <style scoped>
+.apm-body { display:grid; grid-template-columns:minmax(0,1fr); gap:1rem; align-items:start }
+.apm-body.with-rail { grid-template-columns:minmax(0,1fr) 20rem }
+@container workspace-panel (max-width: 60rem) { .apm-body.with-rail { grid-template-columns:minmax(0,1fr) } }
+.detail-provenance { max-width:34rem }
 .view-toggle { display:flex; align-items:center; gap:.3rem; margin-bottom:.85rem }
 .view-toggle button { display:inline-flex; align-items:center; gap:.35rem; padding:.3rem .65rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-sm); background:var(--aw-panel); color:#46587a; font-size:var(--aw-text-xs); font-weight:600; cursor:pointer }
 .view-toggle button:hover:not(.on) { border-color:var(--aw-border-strong) }

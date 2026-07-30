@@ -1936,3 +1936,124 @@ export interface DecisionsPayload {
   by_severity: Record<DecisionSeverity, number>
   run: { id: string; status: string; waiting: boolean }
 }
+
+// --------------------------------------------------------------------------
+// Provenance — what the agent read, proposed, and committed for one unit.
+// Content-free by construction: the manifest carries identities and sizes, the
+// proposal is withheld, and the receipt is commit metadata.
+// --------------------------------------------------------------------------
+export type ProvenanceState = 'available' | 'absent' | 'unavailable' | 'invalid'
+
+export interface ProvenanceSize {
+  items: number
+  characters: number
+  estimated_tokens: number
+  media_items?: number
+  media_bytes?: number
+  media_pixels?: number
+  estimated_image_tokens?: number
+}
+
+export interface ProvenanceSelection {
+  source_id: string
+  source_type: string
+  source_ref: string
+  source_hash: string
+  selector_kind: string
+  selector_id: string
+  selector_definition_hash: string
+  reason: string
+  representation: { kind: string; options: Record<string, unknown> }
+  supplied_size: ProvenanceSize
+  media?: Record<string, unknown> | null
+}
+
+export interface ProvenanceOmission {
+  source_id: string
+  source_ref: string | null
+  source_hash: string | null
+  reason: string
+}
+
+export interface ProvenanceTruncation {
+  source_id: string
+  source_ref: string
+  reason: string
+  original_size: ProvenanceSize
+  supplied_size: ProvenanceSize
+}
+
+export interface ProvenanceContext {
+  state: ProvenanceState
+  /** Present whenever `state` is not `available`. */
+  reason?: string
+  manifest_hash?: string
+  context_spec_hash?: string
+  resolver_hash?: string
+  supplied_size?: ProvenanceSize
+  selections?: ProvenanceSelection[]
+  omissions?: ProvenanceOmission[]
+  truncations?: ProvenanceTruncation[]
+  privacy_decisions?: Array<Record<string, unknown>>
+}
+
+export interface ProvenanceProposal {
+  state: ProvenanceState
+  reason?: string
+  payload_hash?: string
+  /** Always true when available: the body is the work product, not provenance. */
+  content_withheld?: boolean
+}
+
+export interface ProvenanceReceipt {
+  state: ProvenanceState
+  reason?: string
+  receipt_hash?: string
+  proposal_hash?: string
+  executor_id?: string
+  executor_definition_hash?: string
+  artifact_refs?: string[]
+  postcondition_hashes?: Record<string, string>
+  workspace_revision_before?: number
+  workspace_revision_after?: number
+  reconciled?: boolean
+  output?: Record<string, unknown>
+}
+
+export interface ProvenanceModel {
+  worker_kind: string
+  provider: string
+  model: string
+  profile_hash: string
+  configuration_source: string
+  /** Usage is accounted per worker across the run, not per unit. */
+  scope: 'worker_across_run'
+  usage: Record<string, number>
+}
+
+export interface UnitProvenance {
+  run_id: string
+  run_status: string
+  workflow_definition: string
+  unit: {
+    id: string
+    title: string
+    kind: string
+    capability: string
+    stage_id: string
+    stage_title: string
+    status: string
+    attempts: number
+    started_at: string | null
+    finished_at: string | null
+    error: string | null
+  }
+  context: ProvenanceContext
+  proposal: ProvenanceProposal
+  receipt: ProvenanceReceipt
+  model: ProvenanceModel
+}
+
+export type ArtifactProvenance =
+  | ({ state: 'attributed'; artifact_ref: string } & UnitProvenance)
+  | { state: 'unattributed'; artifact_ref: string; reason: string }

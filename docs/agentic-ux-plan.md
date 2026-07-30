@@ -1,6 +1,6 @@
 # Agentic UX Plan
 
-**Status:** Phases 1–4 implemented; phases 5–7 proposed
+**Status:** Phases 1–5 implemented; phases 6–7 proposed
 **Date:** 2026-07-30
 **Visual mockups:** <https://claude.ai/code/artifact/edccf5ca-da17-401e-aa61-7bade42b3f83>
 **Primary objective:** Reshape the SPA so its information architecture matches the agent runtime's outcome graph rather than the storage taxonomy, moving the auditor from *operator* to *director, reviewer, and signatory* — without removing any manual capability.
@@ -43,7 +43,7 @@ The dependency graph is the product's actual intelligence and it is never drawn.
 
 3. **The RCM is a manual matrix with AI buttons stapled on.** Eleven columns × seventeen rows, with a per-row *Generate test* button. Every row currently reads `NOT ASSESSED / NO_CONCLUSION / DRAFT`, so the grid communicates nothing at a glance — including the fact that two Critical risks have zero tests.
 
-4. **Provenance is persisted and never surfaced.** Every `WorkflowUnit` carries `context_manifest`, `proposal_sidecar`, and `receipt_sidecar` (`WorkflowSidecarReference` with `sha1`, `manifest_hash`, `payload_hash`, `receipt_hash`). `ContextManifest` records what was selected, omitted, and truncated. `AgentRun.usage.model_usage_by_worker` records per-worker model accounting. None of it is readable through any API or screen. For an audit product this is the single largest unrealised asset in the codebase.
+4. **Provenance is persisted and never surfaced.** Every `WorkflowUnit` carries `context_manifest`, `proposal_sidecar`, and `receipt_sidecar` (`WorkflowSidecarReference` with `sha1`, `manifest_hash`, `payload_hash`, `receipt_hash`). `ContextManifest` records what was selected, omitted, and truncated. `AgentRun.usage.model_usage_by_worker` records per-worker model accounting. None of it is readable through any API or screen. For an audit product this is the single largest unrealised asset in the codebase. *(Addressed in phase 5.)*
 
 ## 3. Design principles
 
@@ -341,11 +341,33 @@ A row whose tests are all complete but which carries no conclusion fits none of 
 
 **Not built:** `Add risk` remains grid-only, as does bulk row editing. The board's hint line names the grid as the editing surface. The `Traceability` view in §5.3 is not built; the toggle is Board / Grid.
 
-### Phase 5 — Provenance rail
+### Phase 5 — Provenance rail — **done (2026-07-30)**
 
 Sidecar read API (§6.2) plus the rail. Do it last and ship it loudest — it is the defensibility story that differentiates this product.
 
 **Acceptance:** a generated APM section resolves to its supplied and omitted sources; a missing or unreadable sidecar renders an explicit "provenance unavailable" state and never a partial or inferred one; no raw document text is returned beyond the manifest's declared bounds.
+
+**As-built**
+
+- `app/provenance.py` plus two read-only routes: `…/agent/runs/{run_id}/units/{unit_id}/provenance` and `…/provenance?artifact=<ref>`.
+- `UnitSidecarStore.read_receipt_record` is the one runtime addition — reconstructing an `ExecutorReceipt` needs the request and definition that produced it, which a read-only caller does not have. It still validates the reference.
+- `ProvenanceRail.vue` renders Sources / Not supplied / Generation / Trust, wired into the APM view behind a toggle and always-on in the RCM detail dialog.
+
+**The content rule turned out to be structural, not a filter**
+
+`ContextManifest` is content-free by construction — `ContextSelection` records a source ref, a hash, a selector, and a size, and the model layer actively rejects media records containing bytes, data URIs, or local paths. So the manifest passes through whole and the acceptance criterion holds by design rather than by sanitising.
+
+The proposal sidecar is the opposite: it *is* the generated artifact — the drafted APM, the RCM rows. Only its hash is exposed, and a test asserts a known string planted in a proposal never appears anywhere in the provenance payload. Receipts are commit metadata end to end and pass through in full.
+
+**Attribution is per artifact, not per section**
+
+The acceptance line says "a generated APM section". The sidecars record at artifact granularity (`planning:apm`, `rcm:RCM-9FB041`, `doctest:DT-2A94198C`) because that is what a receipt claims — there is no per-paragraph record to resolve, and inventing one would be the exact failure this feature exists to prevent. The rail attributes the whole artifact and says so.
+
+**The artifact index is the receipts themselves.** `resolve_artifact` scans receipts newest-run-first for one that claims the ref, so attribution is what a unit recorded writing, never inferred from ordering or naming. An artifact no run claims returns `unattributed` with a plain reason rather than an empty trail.
+
+**Model usage is per worker, not per unit.** A stage fanning out over seventeen RCM rows shares one worker, and `model_usage_by_worker` is accounted at that level. The payload carries `scope: "worker_across_run"` and the rail prints "for this worker across the run" rather than implying the numbers belong to one unit.
+
+**Verified against the real Procurement run:** the APM resolves to 18 supplied sources and 13 omissions (all "Global or per-source size limit reached"), `openrouter / nvidia/nemotron-3-ultra-550b-a55b:free`, 15,377 prompt tokens, 58s, receipt `85ebb56498fc…`, committed at revision 98. An RCM row resolves separately to the `rcm` unit at revision 115. `test_provenance.py` covers the four sidecar states, a deleted manifest file, a tampered manifest failing its identity check, and the proposal-withholding rule.
 
 ### Phase 6 — Autonomy policy
 

@@ -181,6 +181,21 @@ class UnitSidecarStore:
     ) -> Mapping[str, Any] | None:
         return self._load("proposals", unit_id, reference)
 
+    def read_receipt_record(
+        self,
+        unit_id: str,
+        reference: Mapping[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Return a persisted receipt as stored, without rebuilding it.
+
+        Reconstructing an :class:`ExecutorReceipt` needs the request and
+        definition that produced it, which a read-only caller such as the
+        provenance API does not have. This still validates the reference, so a
+        mismatched or unreadable sidecar raises rather than returning a partial
+        record.
+        """
+        return self._load("receipts", unit_id, reference)
+
     def persist_receipt(
         self,
         unit_id: str,
