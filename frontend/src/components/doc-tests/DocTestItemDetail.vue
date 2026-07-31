@@ -20,6 +20,7 @@ const emit = defineEmits<{
   attach: [documentId: string]
   saveChecks: []
   saveAttributes: []
+  setState: [value: 'confirmed' | 'exception' | 'pending']
   run: []
   openRcm: [rcmId: string]
 }>()
@@ -259,6 +260,38 @@ function attach() {
       </dl>
     </section>
 
+    <!-- 5. The auditor's own sign-off, last and pinned. -->
+    <footer class="sign-off">
+      <p class="sign-off-note">{{ item.runner_note || 'Confirm the result or mark an exception once you have reviewed it.' }}</p>
+      <div class="dispositions">
+        <Button
+          label="Confirm result"
+          icon="pi pi-check"
+          size="small"
+          severity="success"
+          outlined
+          :disabled="busy || item.state === 'confirmed'"
+          @click="emit('setState', 'confirmed')"
+        />
+        <Button
+          label="Mark exception"
+          icon="pi pi-exclamation-triangle"
+          size="small"
+          severity="danger"
+          outlined
+          :disabled="busy || item.state === 'exception'"
+          @click="emit('setState', 'exception')"
+        />
+        <Button
+          label="Reset to pending"
+          icon="pi pi-refresh"
+          size="small"
+          text
+          :disabled="busy || item.state === 'pending'"
+          @click="emit('setState', 'pending')"
+        />
+      </div>
+    </footer>
   </div>
 </template>
 
@@ -314,6 +347,8 @@ code { font-family: var(--aw-font-mono); font-size: 0.75rem; overflow-wrap: anyw
 .outcome dd { margin: 0; }
 
 .sign-off { position: sticky; bottom: -1rem; z-index: 2; display: flex; flex-direction: column; gap: 0.55rem; margin: 0 -1rem -1rem; padding: 0.75rem 1rem; border-top: 1px solid var(--aw-border); background: #fff; }
+.sign-off-note { margin: 0; color: var(--aw-muted); font-size: 0.78rem; }
+.dispositions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
 
 /* Sized against the detail column itself, not the window. */

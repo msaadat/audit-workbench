@@ -256,6 +256,17 @@ async function saveAttributes() {
     toast.add({ severity: 'success', summary: 'Attribute notes saved', life: 1800 })
   } catch (error) { fail('Could not save the attribute notes', error) }
 }
+async function setItemState(state: 'confirmed' | 'exception' | 'pending') {
+  if (!currentTest.value || !currentItem.value) return
+  try {
+    await api.patch(
+      `/api/workspaces/${props.workspace.id}/doc-tests/${currentTest.value.id}/items/${currentItem.value.id}`,
+      { state },
+    )
+    await refresh()
+    toast.add({ severity: 'success', summary: 'Auditor sign-off saved', life: 1800 })
+  } catch (error) { fail('Could not save the auditor sign-off', error) }
+}
 async function runTest() {
   const test = currentTest.value
   if (!test) return
@@ -400,6 +411,7 @@ onUnmounted(unsubscribe)
           @attach="attachDocument"
           @saveChecks="saveChecks"
           @saveAttributes="saveAttributes"
+          @setState="setItemState"
           @run="runTest"
           @openRcm="openRcm"
         />

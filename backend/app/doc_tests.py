@@ -978,6 +978,12 @@ def update_comparisons(workspace: Workspace, test_id: str, item_id: str, checks:
     return save_test(workspace, test)
 
 
+# The only transitions an auditor may make by hand: sign off a result either
+# way, or send it back for re-run. ``agent_checked``/``manual_review`` are
+# outcomes the runner produces, never a state a person picks.
+MANUAL_SIGNOFF_STATES = frozenset({"confirmed", "exception", "pending"})
+
+
 def update_item(
     workspace: Workspace,
     test_id: str,
@@ -990,7 +996,7 @@ def update_item(
     item = _item(test, item_id)
     allowed = {
         "attributes",
-        "summary", "excerpt", "response", "citations",
+        "summary", "excerpt", "response", "citations", "state",
     }
     if set(changes) - allowed:
         raise WorkspaceError("Unknown document-test item field.")
@@ -999,10 +1005,24 @@ def update_item(
             item[key] = [_normalize_attribute(entry) for entry in (value or [])]
         elif key == "citations":
             item[key] = normalize_many(value or [], require_hash=True)
+        elif key == "state":
+            state = str(value or "")
+            if state not in MANUAL_SIGNOFF_STATES:
+                raise WorkspaceError(
+                    "An auditor may only set a document-test item to confirmed, "
+                    "exception, or pending."
+                )
+            item["state"] = state
+            item["runner_note"] = "Auditor sign-off." if state != "pending" else "Reset for re-run by the auditor."
         else:
             item[key] = value
     if runner_note is not None:
         item["runner_note"] = runner_note
+    if "state" in changes:
+        states = [value.get("state") for value in test["items"]]
+        test["status"] = "completed" if states and all(
+            state in {"confirmed", "exception", "manual_review"} for state in states
+        ) else "in_progress"
     return save_test(workspace, test)
 
 

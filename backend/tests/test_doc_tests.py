@@ -113,6 +113,28 @@ def test_all_four_builders_expose_final_result_states(workspace_with_data):
     assert checked["state"] == "manual_review"
 
 
+def test_auditor_can_sign_off_an_item_stuck_in_manual_review(workspace_with_data):
+    ws = workspace_with_data
+    document = documents.add_document(ws, "policy.txt", b"Approval is required.\nEvidence must be retained.")
+    review = doc_tests.build_review(ws, {"title": "Policy review", "document_id": document["id"]})
+    doc_tests.run_item(ws, review["id"], review["items"][0]["id"])
+    item_id = review["items"][0]["id"]
+
+    confirmed = doc_tests.update_item(ws, review["id"], item_id, {"state": "confirmed"})
+    assert confirmed["items"][0]["state"] == "confirmed"
+    assert confirmed["status"] == "completed"
+
+    excepted = doc_tests.update_item(ws, review["id"], item_id, {"state": "exception"})
+    assert excepted["items"][0]["state"] == "exception"
+
+    reset = doc_tests.update_item(ws, review["id"], item_id, {"state": "pending"})
+    assert reset["items"][0]["state"] == "pending"
+    assert reset["status"] == "in_progress"
+
+    with pytest.raises(workspaces.WorkspaceError):
+        doc_tests.update_item(ws, review["id"], item_id, {"state": "manual_review"})
+
+
 def test_doc_test_workflow_persists_each_item_and_completes(workspace_with_data):
     ws = workspace_with_data
     document = documents.add_document(ws, "evidence.txt", b"Invoice: 1001\nAmount: 150.00")
