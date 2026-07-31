@@ -14,6 +14,14 @@ from .workspace_transactions import canonical_sha1, material_projection
 from .workspaces import Workspace
 
 
+_DURABLE_DOC_TEST_STATUSES = frozenset({
+    "completed",
+    "completed_no_exception",
+    "completed_with_exception",
+    "not_applicable",
+})
+
+
 def _doc_tests(workspace: Workspace) -> list[dict]:
     return [doc_tests.load_test(workspace, item["id"]) for item in doc_tests.list_tests(workspace)]
 
@@ -48,7 +56,7 @@ def _executable(test: dict) -> bool:
     # Preserve auditor-completed historical work even when its older definition
     # predates the stronger runner preflight metadata.
     return (
-        item.get("status") == "completed"
+        item.get("status") in _DURABLE_DOC_TEST_STATUSES
         or doc_tests.evidence_blocked(item)
         or not doc_tests.execution_issues(item)
     )
@@ -86,7 +94,7 @@ def test_manifest(workspace: Workspace) -> list[dict]:
                     )
                 )
             else:
-                has_result = item.get("status") == "completed"
+                has_result = item.get("status") in _DURABLE_DOC_TEST_STATUSES
                 result_stale = False
             manifest.append({
                 "rcm_id": row["id"],
@@ -292,7 +300,7 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
     status = str(item.get("status") or "draft")
     exceptions = int(rollup["exceptions"] + rollup["mismatched"])
     open_exceptions = 0
-    executed = 1 if status == "completed" else 0
+    executed = 1 if status in _DURABLE_DOC_TEST_STATUSES else 0
     evidence_refs = [
         anchor
         for test_item in item.get("items") or []

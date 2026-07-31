@@ -1,4 +1,4 @@
-from app import data_tests, doc_tests, rcm_execution, working_papers
+from app import data_tests, doc_tests, documents, rcm_execution, working_papers
 
 
 def _row(ws):
@@ -143,6 +143,31 @@ def test_test_manifest_carries_the_plan_and_the_specification_state(
     unspecified = next(value for value in manifest if value["test_id"] == draft["id"])
     assert unspecified["kind"] == "doctest"
     assert unspecified["specified"] is False
+
+
+def test_test_manifest_treats_refined_document_test_statuses_as_durable_results(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = _row(ws)
+    document = documents.add_document(ws, "approval-review.txt", b"Approval evidence")
+    test = doc_tests.create_test(
+        ws,
+        {
+            "kind": "review",
+            "title": "Completed approval review",
+            "rcm_id": row["id"],
+            "items": [{"document_ids": [document["id"]], "page": 1}],
+        },
+    )
+    saved = doc_tests.load_test(ws, test["id"])
+    saved["status"] = "completed_with_exception"
+    doc_tests.save_test(ws, saved)
+
+    manifest = rcm_execution.test_manifest(ws)
+    item = next(value for value in manifest if value["test_id"] == test["id"])
+
+    assert item["has_durable_result"] is True
 
 
 def test_a_description_only_document_test_is_not_executable(workspace_with_data):

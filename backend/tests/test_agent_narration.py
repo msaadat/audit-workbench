@@ -628,6 +628,26 @@ def test_next_steps_offer_document_tests_when_definitions_block_execution():
     }]
 
 
+def test_next_steps_offer_findings_when_result_rollup_is_the_only_prerequisite():
+    state = {
+        "results.rolled_up": {"state": "missing"},
+        "findings.drafted": {
+            "state": "blocked",
+            "eligible": 2,
+            "blocking_on": ["results.rolled_up"],
+            "reasons": ["2 eligible observation(s) need finding drafts"],
+        },
+    }
+
+    assert narration.next_steps(None, state) == [{
+        "capability": "findings.drafted",
+        "requested_outcomes": ["findings.drafted"],
+        "label": "Draft findings",
+        "command": "Draft findings.",
+        "reason": "2 eligible observation(s) need finding drafts",
+    }]
+
+
 def test_guided_workflows_hide_completed_areas():
     state = {
         "planning.apm_ready": {"state": "satisfied"},

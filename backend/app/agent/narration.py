@@ -662,14 +662,22 @@ def next_steps(workspace, state: dict[str, dict] | None = None, *, limit: int = 
         readiness = (state or {}).get(capability_id) or {}
         # The Document Test execution chain can be blocked by a separate
         # definition that needs review while other tests still have unchecked
-        # items.  It remains the relevant worklist in that case, and opening
-        # it exposes the blocked definitions instead of leaving an empty chat.
+        # items. It remains the relevant worklist in that case. Findings can
+        # likewise be eligible while their deterministic result roll-up has not
+        # run; requesting findings schedules that prerequisite automatically.
         document_tests_waiting = (
             capability_id == "doc_tests.executed"
             and readiness.get("state") == "blocked"
             and int(readiness.get("pending") or 0) > 0
         )
-        if readiness.get("state") != "missing" and not document_tests_waiting:
+        findings_waiting = (
+            capability_id == "findings.drafted"
+            and readiness.get("state") == "blocked"
+            and int(readiness.get("eligible") or 0) > 0
+        )
+        if readiness.get("state") != "missing" and not (
+            document_tests_waiting or findings_waiting
+        ):
             continue
         reasons = [str(item) for item in readiness.get("reasons") or []]
         suggestions.append(
