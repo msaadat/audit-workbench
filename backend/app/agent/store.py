@@ -75,12 +75,22 @@ ACTIVE_STATUSES = (
 )
 # Statuses a run can rest in with no thread attached.
 RESUMABLE_STATUSES = ("paused", "interrupted")
+# ``completed_with_failures`` is distinct from ``failed``: the run committed
+# real work and some units did not settle. ``failed`` means nothing settled.
 TERMINAL_STATUSES = (
-    "completed", "completed_with_open_items", "completed_with_issues", "failed", "cancelled"
+    "completed", "completed_with_open_items", "completed_with_issues",
+    "completed_with_failures", "failed", "cancelled",
+)
+# Terminal statuses that still produced durable output.
+PARTIAL_STATUSES = frozenset(
+    {"completed_with_open_items", "completed_with_issues", "completed_with_failures"}
 )
 
 _event_locks: dict[str, threading.Lock] = {}
 _event_locks_guard = threading.Lock()
+# Last sequence number written per run folder, guarded by that folder's event
+# lock. Absent means "not yet read from disk", never "zero".
+_event_sequences: dict[str, int] = {}
 _run_locks: dict[str, threading.RLock] = {}
 _run_locks_guard = threading.Lock()
 
@@ -268,16 +278,21 @@ def new_command_run(
 
 def save_run(workspace: Workspace, run: dict) -> None:
     path = run_dir(workspace, run["id"]) / "run.json"
+    from .. import debug_store
+
     with _run_lock(path):
+        # Reading the prior record exists only to diff it for state telemetry.
+        # A live run saves on every transition, so at the default telemetry
+        # level this read is the difference between one full parse of a growing
+        # record per save and none.
         before = None
-        if path.exists():
+        if debug_store.state_enabled() and path.exists():
             try:
                 before = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 before = None
         write_json_atomic(path, run)
         try:
-            from .. import debug_store
             with debug_store.trace_context(workspace_root=str(workspace.root)):
                 debug_store.record_run_save(workspace.id, run["id"], before, run)
         except Exception:
@@ -478,13 +493,24 @@ def read_sidecar(workspace: Workspace, run_id: str, ref: dict) -> object:
 # ------------------------------------------------------------------- events
 def append_event(workspace: Workspace, run_id: str, type_: str, data: dict) -> dict:
     """Append one event and return it (with its sequence number). Sequence
-    numbers restart from the current line count, so they stay contiguous even
-    across process restarts."""
+    numbers continue from the current line count, so they stay contiguous even
+    across process restarts.
+
+    The count is read from disk once per run folder and then carried in memory.
+    Counting lines on every append re-read the whole log each time, which made
+    the cost of writing a run's events quadratic in their number — and a run
+    that streams its model output writes a great many.
+    """
     folder = run_dir(workspace, run_id)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "events.jsonl"
     with _event_lock(folder):
-        seq = _line_count(path) + 1
+        key = str(folder)
+        seq = _event_sequences.get(key)
+        if seq is None:
+            seq = _line_count(path)
+        seq += 1
+        _event_sequences[key] = seq
         event = {"seq": seq, "at": utcnow(), "type": type_, "data": data}
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, default=str) + "\n")

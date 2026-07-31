@@ -61,6 +61,17 @@ const subline = computed(() => {
 const blockers = computed(() => props.projection.blockers ?? [])
 const openBlockers = computed(() => blockers.value.filter(item => item.severity !== 'review'))
 
+// Any finished run that named remaining outcomes can be continued, and both
+// failure statuses can be retried. `completed_with_failures` means the run
+// committed real work and some units did not settle, so continuing it picks up
+// only the remainder.
+const canContinue = computed(
+  () => !active.value && (props.projection.next_outcomes?.length ?? 0) > 0,
+)
+const canRetry = computed(
+  () => ['failed', 'completed_with_failures'].includes(props.projection.status),
+)
+
 function syncClock() {
   if (active.value && !clockTimer) {
     clockTimer = window.setInterval(() => { clock.value = Date.now() }, 1000)
@@ -134,14 +145,17 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
         </span>
       </span>
       <Tag v-if="projection.status === 'failed'" :value="projection.status_label" severity="danger" />
+      <Tag v-else-if="projection.status === 'completed_with_failures'" :value="projection.status_label" severity="warn" />
       <Tag v-else-if="projection.pending_attention" value="Needs you" severity="warn" />
       <template v-if="active">
         <button v-if="!['paused','interrupted'].includes(projection.status)" class="control" :disabled="busy" title="Pause" aria-label="Pause the run" @click="control('pause')"><i class="pi pi-pause" /></button>
         <button v-else class="control" :disabled="busy" title="Resume" aria-label="Resume the run" @click="control('resume')"><i class="pi pi-play" /></button>
         <button class="control danger" :disabled="busy" title="Stop" aria-label="Stop the run" @click="control('cancel')"><i class="pi pi-stop-circle" /></button>
       </template>
-      <button v-else-if="projection.status === 'failed'" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="retryRun"><i class="pi pi-refresh" /></button>
-      <button v-else-if="projection.status === 'completed_with_open_items' && projection.next_outcomes?.length" class="control" :disabled="busy" title="Continue" aria-label="Continue the audit" @click="continueAudit"><i class="pi pi-arrow-right" /></button>
+      <!-- Continue is offered first wherever the run named what is left: it
+           resumes only the remainder, where retry replays the whole command. -->
+      <button v-else-if="canContinue" class="control" :disabled="busy" title="Continue" aria-label="Continue the audit" @click="continueAudit"><i class="pi pi-arrow-right" /></button>
+      <button v-else-if="canRetry" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="retryRun"><i class="pi pi-refresh" /></button>
     </div>
 
     <!-- A run owned by another chat has neither its narration nor its closing

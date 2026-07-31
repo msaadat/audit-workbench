@@ -3,11 +3,23 @@ import io
 from datetime import datetime, timedelta, timezone
 import urllib.error
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import assistant_settings, debug_service, debug_store, llm
 from app.agent import store as agent_store
 from app.main import create_app
+
+
+@pytest.fixture(autouse=True)
+def full_telemetry(monkeypatch):
+    """Exercise the debug console against its complete recording surface.
+
+    State snapshots and transitions are opt-in at runtime because they rewrite
+    and diff the whole record on every durable save. This module is where that
+    surface is under test, so it runs at the level that produces it.
+    """
+    monkeypatch.setenv(debug_store.TELEMETRY_ENV_VAR, debug_store.TELEMETRY_FULL)
 
 
 class FakeResponse:

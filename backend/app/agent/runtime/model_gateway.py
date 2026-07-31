@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, runtime_checkable
 
@@ -87,6 +88,63 @@ def _media_handle(value: Mapping[str, Any]) -> dict[str, Any]:
     return handle
 
 
+# Streaming is a progress channel, not a transcript. Fragments are coalesced so
+# a long generation costs a readable trickle of events rather than one per token.
+# The character rule paces a fast provider; the time rule guarantees a slow one
+# still shows movement. Together they hold a typical generation to one or two
+# updates a second — enough to read as live, few enough that the run's durable
+# event feed stays a reasonable size.
+STREAM_MIN_CHARS = 80
+STREAM_MIN_SECONDS = 0.4
+
+
+class _StreamCoalescer:
+    """Batch provider text fragments into periodic, readable updates.
+
+    A provider emits a token at a time. Forwarding each one would put thousands
+    of events on a run's durable feed for a single call, so fragments are held
+    until they are worth sending — enough characters, or enough elapsed time
+    that a reader would otherwise think nothing was happening.
+
+    One instance per provider call, and its ``call_id`` is what tells a reader
+    where one call's text ends and the next begins. Without it two calls of the
+    same stage — a retry, or two units of one capability — run together into a
+    single unreadable block.
+    """
+
+    def __init__(self, sink: Callable[[str], None]):
+        self.call_id = uuid.uuid4().hex[:12]
+        self._sink = sink
+        self._pending: list[str] = []
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def feed(self, piece: str) -> None:
+        with self._lock:
+            self._pending.append(piece)
+            pending = "".join(self._pending)
+            now = time.monotonic()
+            if len(pending) < STREAM_MIN_CHARS and now - self._last < STREAM_MIN_SECONDS:
+                return
+            self._pending.clear()
+            self._last = now
+        self._emit(pending)
+
+    def flush(self) -> None:
+        with self._lock:
+            pending = "".join(self._pending)
+            self._pending.clear()
+        if pending:
+            self._emit(pending)
+
+    def _emit(self, text: str) -> None:
+        try:
+            self._sink(text)
+        except Exception:
+            # A progress update must never break the call that produced it.
+            pass
+
+
 def _provider_semaphore(profile: Mapping[str, Any]) -> threading.BoundedSemaphore:
     """Return the process-wide gate for one provider/model profile."""
     key = f"{profile.get('provider') or profile.get('backend')}:{profile.get('model')}"
@@ -153,6 +211,7 @@ class DefaultModelGateway:
         template_context: Callable[[str], dict[str, Any] | None],
         stage_labels: Mapping[str, str] | None = None,
         limit_error: type[Exception] = RuntimeError,
+        stream_sink: Callable[[str, str, str], None] | None = None,
     ):
         self.workspace_id = workspace_id
         self.workspace_root = workspace_root
@@ -167,6 +226,9 @@ class DefaultModelGateway:
         self._template_context = template_context
         self._stage_labels = dict(stage_labels or {})
         self._limit_error = limit_error
+        # Optional live-progress channel. Absent, calls behave exactly as before
+        # and no streamed request is made.
+        self._stream_sink = stream_sink
         self.context = threading.local()
 
     def complete(
@@ -267,6 +329,7 @@ class DefaultModelGateway:
         )
 
         tag = self._stage_tag(system)
+        stream = self._stream_coalescer(tag)
         self._model_wait(tag, started=True, attempt=attempt)
         activity_fields = dict(activity or {})
         unit_id = getattr(self.context, "unit_id", None)
@@ -328,7 +391,15 @@ class DefaultModelGateway:
                             chat_kwargs["tools"] = tools
                             if tool_choice is not None:
                                 chat_kwargs["tool_choice"] = tool_choice
-                        message = llm.chat(provider_messages, **chat_kwargs)
+                        # A tool-capable turn returns a structured call, not
+                        # prose, so there is nothing a reader could follow.
+                        if stream is not None and not tools:
+                            chat_kwargs["on_delta"] = stream.feed
+                        try:
+                            message = llm.chat(provider_messages, **chat_kwargs)
+                        finally:
+                            if stream is not None:
+                                stream.flush()
                     except llm.LLMError as error:
                         if handles:
                             raise VisionRequestRejected(
@@ -509,6 +580,19 @@ class DefaultModelGateway:
                 ).hexdigest(),
             }
         ]
+
+    def _stream_coalescer(self, tag: str) -> _StreamCoalescer | None:
+        """Bind this call's live-progress channel, if the runner supplied one."""
+        if self._stream_sink is None:
+            return None
+        sink = self._stream_sink
+        coalescer: _StreamCoalescer
+
+        def emit(text: str) -> None:
+            sink(tag, text, coalescer.call_id)
+
+        coalescer = _StreamCoalescer(emit)
+        return coalescer
 
     def _model_wait(self, tag: str, *, started: bool, attempt: int = 1) -> None:
         self._model_wait_projection(

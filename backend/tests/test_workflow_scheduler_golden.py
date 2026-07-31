@@ -608,7 +608,9 @@ def test_extracted_scheduler_blocks_dependencies_and_folds_partial_failure():
         INDEX_READY,
         PUBLISHED,
     ]
-    assert run["status"] == "failed"
+    # One record failed while its siblings committed, so the run is partial, not
+    # failed: the work that landed is real, and `next_outcomes` names the rest.
+    assert run["status"] == "completed_with_failures"
     assert run["error"] == "invalid record"
 
 

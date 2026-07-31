@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 
+import { useAgentRun } from '../../composables/useAgentRun'
 import type { AgentDecision, AssistantApprovalProjection, AssistantChat, AssistantChatMessage, AssistantInteractionProjection, AssistantMilestoneProjection, AssistantRunProjection, AssistantSuggestion, AuditDocument, EvidenceRef } from '../../types'
 import EvidenceAnchorDialog from '../EvidenceAnchorDialog.vue'
 import MarkdownView from '../MarkdownView.vue'
@@ -22,6 +23,7 @@ const emit = defineEmits<{
   respond: [string, AssistantInteractionProjection['interaction'], Record<string, unknown>]
   decide: [string, AssistantApprovalProjection['approval'], AgentDecision[]]
 }>()
+const agent = useAgentRun(props.workspaceId)
 const scroller = ref<HTMLElement | null>(null)
 const inner = ref<HTMLElement | null>(null)
 const anchor = ref<EvidenceRef | null>(null)
@@ -82,6 +84,14 @@ const working = computed<AssistantRunProjection | null>(() => {
     if (isRun(item) && !item.foreign && isRunWorking(item)) return item
   }
   return null
+})
+// Live model text belongs to the run this transcript is showing, and only while
+// that run is the one working — a stream left over from another run's call would
+// be attributed to this one.
+const liveStream = computed(() => {
+  const stream = agent.state.stream
+  if (!stream || !working.value) return null
+  return agent.state.run?.id === working.value.run_id ? stream.text : null
 })
 // The word pool follows what the user actually asked for; the trailing pending
 // message is the request currently in flight.
@@ -159,6 +169,7 @@ function messageTime(value: string) {
       <AgentThinking
         :label="working.current_activity"
         :startedAt="working.activity?.model_started_at ?? working.activity?.started_at ?? working.started"
+        :stream="liveStream"
       />
     </div>
     <div v-else-if="busy" class="message assistant">

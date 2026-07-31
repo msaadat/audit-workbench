@@ -468,6 +468,15 @@ def closing_text(run: dict, status: str | None = None) -> str:
         lines.append("I couldn't finish this one." + (f" {_sentence(error)}" if error else ""))
         if produced:
             lines.append(f"I did get through {_joined(produced, 'and')} before stopping.")
+    elif status == "completed_with_failures":
+        # Lead with what landed. This status exists precisely because the run
+        # committed real work, and opening on the failure would misdescribe it.
+        error = str(run.get("error") or "").strip()
+        if produced:
+            lines.append(f"Done — {_joined(produced, 'and')}.")
+        lines.append(
+            "Some of it didn't get through." + (f" {_sentence(error)}" if error else "")
+        )
     elif status == "cancelled":
         lines.append("Stopped, as you asked.")
         if produced:
@@ -519,7 +528,11 @@ def closing_text(run: dict, status: str | None = None) -> str:
             lines.extend(f"- {item['message']}" for item in reviewing)
 
     next_outcomes = list((run.get("workflow") or {}).get("next_outcomes") or [])
-    if status == "completed_with_open_items" and next_outcomes and not open_items:
+    if (
+        status in {"completed_with_open_items", "completed_with_failures"}
+        and next_outcomes
+        and not open_items
+    ):
         lines.append(
             "Say “continue” and I'll pick up with "
             f"{_joined([humanize(item) for item in next_outcomes], 'and')}."

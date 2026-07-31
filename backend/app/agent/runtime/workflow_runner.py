@@ -8,7 +8,7 @@ capability; the scheduler itself knows nothing about any domain.
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,6 +46,70 @@ class FinishProjection:
 FinishEvaluator = Callable[
     [Any, dict[str, Any], tuple[dict[str, Any], ...]], FinishProjection
 ]
+
+
+FAILED_UNIT_STATUSES = frozenset({"failed", "conflict"})
+OPEN_UNIT_STATUSES = frozenset(
+    {"blocked", "awaiting_input", "awaiting_confirmation"}
+)
+SETTLED_UNIT_STATUSES = frozenset({"succeeded", "skipped"})
+UNSETTLED_STAGE_STATUSES = frozenset({"failed", "blocked", "review_required"})
+
+
+def _units(stages: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [unit for stage in stages for unit in stage.get("units") or []]
+
+
+def fold_terminal_status(
+    stages: Iterable[dict[str, Any]],
+    *,
+    complete: bool = True,
+) -> str:
+    """Choose a run's terminal status from what its units actually settled.
+
+    Every workflow composition folds the same way, so the rule lives here once.
+    A failed unit only makes the *run* failed when nothing else settled: a unit
+    failing is ordinary — one transient provider error inside a fan-out — and a
+    run that committed most of its work must not be reported as if it committed
+    none. ``complete`` lets a domain add its own substantive condition (an audit
+    asked to verify itself is not "completed" merely because its units ran).
+    """
+    units = list(_units(stages))
+    failed = sum(unit.get("status") in FAILED_UNIT_STATUSES for unit in units)
+    open_units = sum(unit.get("status") in OPEN_UNIT_STATUSES for unit in units)
+    settled = sum(unit.get("status") in SETTLED_UNIT_STATUSES for unit in units)
+    if failed and not settled:
+        return "failed"
+    if failed:
+        return "completed_with_failures"
+    if open_units or not complete:
+        return "completed_with_open_items"
+    return "completed"
+
+
+def first_unit_error(stages: Iterable[dict[str, Any]], fallback: str) -> str:
+    """The first reported unit error, for the run-level error line."""
+    for unit in _units(stages):
+        if unit.get("status") in FAILED_UNIT_STATUSES and unit.get("error"):
+            return str(unit["error"])
+    return fallback
+
+
+def unsettled_capabilities(stages: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """Capabilities a follow-up run should reattempt, in scheduled order.
+
+    These become ``next_outcomes``, which is what "Continue" replays. Producing
+    them for a partially failed run is what makes resuming the remainder
+    possible instead of forcing a full retry.
+    """
+    return tuple(
+        dict.fromkeys(
+            str(stage["capability"])
+            for stage in stages
+            if stage.get("status") in UNSETTLED_STAGE_STATUSES
+            and stage.get("capability")
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -955,25 +1019,13 @@ class WorkflowRunner:
             for stage in stages
             for unit in stage.get("units") or []
         )
-        default_next = tuple(
-            str(stage["capability"])
-            for stage in stages
-            if stage.get("status") in {"failed", "blocked", "review_required"}
-        )
+        default_next = unsettled_capabilities(stages)
         projection = (
             self.finish_evaluator(self.subject, state, stages)
             if self.finish_evaluator is not None
             else FinishProjection(next_outcomes=default_next)
         )
-        terminal = projection.terminal_status
-        if terminal is None:
-            terminal = (
-                "failed"
-                if failed
-                else "completed_with_open_items"
-                if open_units
-                else "completed"
-            )
+        terminal = projection.terminal_status or fold_terminal_status(stages)
         state["next_outcomes"] = list(dict.fromkeys(projection.next_outcomes))
         self.run["summary_markdown"] = projection.summary_markdown or narration.summary_markdown(
             "Workflow",
@@ -986,14 +1038,10 @@ class WorkflowRunner:
                 ("Open workflow units", open_units),
             ],
         )
-        if terminal == "failed" and not self.run.get("error"):
-            errors = [
-                str(unit.get("error"))
-                for stage in stages
-                for unit in stage.get("units") or []
-                if unit.get("status") in {"failed", "conflict"} and unit.get("error")
-            ]
-            self.run["error"] = errors[0] if errors else "One or more workflow units failed."
+        if terminal in {"failed", "completed_with_failures"} and not self.run.get("error"):
+            self.run["error"] = first_unit_error(
+                stages, "One or more workflow units failed."
+            )
         # The closing turn is composed against the status about to be published
         # and written before it, so a client reacting to the run finishing never
         # sees a terminal run that has not said anything yet.

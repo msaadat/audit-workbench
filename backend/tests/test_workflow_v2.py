@@ -2182,7 +2182,9 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
     completed = wait_run(ws, started["id"])
     current = workspaces.load_workspace(ws.id)
 
-    assert completed["status"] == "failed"
+    # The run failed units and still committed a labelled preliminary report,
+    # which is exactly the partial outcome this status distinguishes.
+    assert completed["status"] == "completed_with_failures"
     assert current.report["markdown"]
     assert current.report["generation_warnings"] == [
         "Incomplete planning coverage: 0 planning workflow unit(s) failed and 1 "

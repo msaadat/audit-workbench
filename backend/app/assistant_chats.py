@@ -905,6 +905,7 @@ _STATUS_LABELS = {
     "completed": "Done",
     "completed_with_open_items": "Done, with things for you",
     "completed_with_issues": "Done, with issues",
+    "completed_with_failures": "Done, with parts unfinished",
     "failed": "Couldn't finish",
     "cancelled": "Stopped",
 }

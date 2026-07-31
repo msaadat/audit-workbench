@@ -574,7 +574,64 @@ def test_llm_empty_choices_exhaustion_is_explicit(monkeypatch):
     assert calls == llm.MAX_REQUEST_ATTEMPTS
 
 
+def test_llm_retries_transient_http_success_provider_error(monkeypatch):
+    """A saturated upstream reported in an HTTP 200 body must still retry.
+
+    An aggregator returns the upstream failure in the response body, so the
+    transport-level retry never sees it. Without this the first transient
+    rate-limit ends the unit that asked for the call — and, because a workflow
+    run folds an unsettled unit into its own terminal status, the run with it.
+    """
+    calls = 0
+    transient = json.dumps(
+        {
+            "error": {
+                "code": 502,
+                "message": (
+                    "Upstream error from Nvidia: ResourceExhausted: Worker "
+                    "local total request limit reached (33/32)"
+                ),
+            }
+        }
+    ).encode()
+    success = json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._body
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        return FakeResponse(transient if calls == 1 else success)
+
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "sleep", lambda delay: None)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert calls == 2
+
+
 def test_llm_surfaces_http_success_provider_error_without_retrying(monkeypatch):
+    """A deterministic upstream fault is terminal even under a retryable code.
+
+    The aggregator labels an unsupported-schema rejection ``502`` as well, and
+    that answer will not change, so retrying it only spends the budget three
+    times over.
+    """
     calls = 0
 
     class FakeResponse:

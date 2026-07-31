@@ -258,8 +258,37 @@ def overview(workspace: Workspace) -> dict:
         "running_calls": [item for item in calls if item.get("status") == "running"],
         "recent_runs": runs[:10], "recent_calls": calls[:10],
         "recent_transitions": transitions[-20:][::-1],
-        "retention": "Full local telemetry is retained until explicitly cleared or the workspace is deleted.",
+        "telemetry_level": debug_store.telemetry_level(),
+        "retention": _retention_notice(),
     }
+
+
+def _retention_notice() -> str:
+    """State plainly what is being recorded and what ages out.
+
+    The console must not present a gated or pruned history as complete, so the
+    notice is derived from the active level rather than being a fixed string.
+    """
+    level = debug_store.telemetry_level()
+    caps = (
+        f"The newest {debug_store.MAX_CALL_RECORDS} calls, "
+        f"{debug_store.MAX_TRANSITION_RECORDS} state transitions, and "
+        f"{debug_store.MAX_EVENT_LINES} events are retained locally; older "
+        "records are pruned automatically."
+    )
+    if level == debug_store.TELEMETRY_OFF:
+        return (
+            "Telemetry is off, so no new records are being written. Set "
+            f"{debug_store.TELEMETRY_ENV_VAR}=calls or =full to record again. "
+            + caps
+        )
+    if level == debug_store.TELEMETRY_CALLS:
+        return (
+            "LLM calls and events are recorded. State snapshots and transitions "
+            f"are not: set {debug_store.TELEMETRY_ENV_VAR}=full to record them, "
+            "at a substantial write cost per run. " + caps
+        )
+    return "Full local telemetry is recorded. " + caps
 
 
 def snapshot(workspace: Workspace, digest: str) -> dict:

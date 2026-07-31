@@ -695,13 +695,17 @@ def test_model_gateway_contract_wraps_active_budget_and_provenance_behavior(
 
     assert isinstance(gateway, ModelGateway)
     assert gateway.complete(system, user, attempt=2) == "SENSITIVE_PROVIDER_RESPONSE"
-    assert calls == [(
-        [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        {"profile": "agent"},
-    )]
+    assert len(calls) == 1
+    sent_messages, sent_kwargs = calls[0]
+    assert sent_messages == [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    # A text turn requests streaming so the run can report progress; the profile
+    # is still the only other thing the gateway sends.
+    assert sent_kwargs["profile"] == "agent"
+    assert callable(sent_kwargs["on_delta"])
+    assert set(sent_kwargs) == {"profile", "on_delta"}
 
     usage = store.load_run(workspace_with_data, active.run["id"])["usage"]
     assert usage["llm_turns"] == 1
@@ -888,3 +892,81 @@ def test_agent_provider_calls_are_confined_to_model_gateway():
     assert [path for path, _line in provider_calls] == [
         "runtime/model_gateway.py"
     ]
+
+
+def test_model_gateway_streams_text_turns_without_persisting_them(
+    workspace_with_data, monkeypatch
+):
+    """A text turn reports progress live and leaves no trace in the record.
+
+    A generation turn against a local model can run for a minute. Streaming is
+    what turns that from a frozen label into visible progress — but the streamed
+    text is unreviewed model output, so it travels on the event feed only. The
+    durable record stays content-free apart from what a capability commits.
+    """
+    def fake_chat(messages, **kwargs):
+        on_delta = kwargs.get("on_delta")
+        assert on_delta is not None, "a text turn should request streaming"
+        for piece in ("Condition: ", "the approval matrix ", "was not applied."):
+            on_delta(piece)
+        return {"content": "Condition: the approval matrix was not applied."}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "stream-test", "model": "model"},
+    )
+    active = _base_runner(workspace_with_data)
+    active.run["limits"] = {
+        "max_model_turns": 2,
+        "max_estimated_prompt_tokens": 10_000,
+        "max_completion_tokens": 1_000,
+    }
+    active.save()
+
+    answer = active.model_gateway.complete("[agent:finding]\nDraft it", "payload")
+    assert answer == "Condition: the approval matrix was not applied."
+
+    events = store.read_events(workspace_with_data, active.run["id"])
+    streamed = [event for event in events if event["type"] == "model_stream"]
+    assert streamed, "the run should publish the text as it arrives"
+    assert "".join(event["data"]["text"] for event in streamed) == answer
+    assert streamed[0]["data"]["stage"] == "agent:finding"
+    assert streamed[0]["data"]["label"] == "Drafting an evidence-linked finding"
+
+    # The durable record never carries it.
+    persisted = json.dumps(store.load_run(workspace_with_data, active.run["id"]))
+    assert "approval matrix" not in persisted
+
+
+def test_model_gateway_does_not_stream_tool_capable_turns(
+    workspace_with_data, monkeypatch
+):
+    """A partial tool call is not something a reader can be shown."""
+    seen = {}
+
+    def fake_chat(messages, **kwargs):
+        seen.update(kwargs)
+        return {"content": "", "tool_calls": []}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "stream-test", "model": "model"},
+    )
+    active = _base_runner(workspace_with_data)
+    active.run["limits"] = {"max_model_turns": 2, "max_estimated_prompt_tokens": 10_000}
+    active.save()
+
+    active.model_gateway.complete(
+        "[agent:workflow_router]\nRoute it",
+        "",
+        tools=[{"type": "function", "function": {"name": "route"}}],
+        conversation=[{"role": "user", "content": "do the audit"}],
+        return_message=True,
+    )
+    assert "on_delta" not in seen
+    events = store.read_events(workspace_with_data, active.run["id"])
+    assert not [event for event in events if event["type"] == "model_stream"]

@@ -11,7 +11,7 @@ import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import { api } from '../api'
 import { documentStatus } from '../composables/documentStatus'
-import { useAgentRun } from '../composables/useAgentRun'
+import { TERMINAL_STATUSES, useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AIActivityEvent, AgentRun, AssistantProvider, AssistantStatus, AuditDocument, DocumentAnalysisCitation, DocumentAnalysisDetail, DocumentCategory, DocumentIndexingStatus, DocumentPage, DocumentSearchResult, KnowledgePack, WorkspaceSummary } from '../types'
@@ -292,7 +292,7 @@ async function loadAnalysis() {
 async function waitForAnalysis(runId: string) {
   for (let attempt = 0; attempt < 300; attempt++) {
     const run = await api.get<AgentRun>(`/api/workspaces/${props.workspace.id}/agent/runs/${runId}`)
-    if (['completed', 'completed_with_open_items', 'completed_with_issues', 'failed', 'cancelled', 'paused', 'interrupted'].includes(run.status)) return run
+    if ([...TERMINAL_STATUSES, 'paused', 'interrupted'].includes(run.status)) return run
     await new Promise(resolve => window.setTimeout(resolve, 500))
   }
   throw new Error('Analysis is still running. Its progress remains available in the assistant.')

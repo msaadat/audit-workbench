@@ -1463,6 +1463,7 @@ export type AgentRunStatus =
   | 'completed'
   | 'completed_with_open_items'
   | 'completed_with_issues'
+  | 'completed_with_failures'
   | 'failed'
   | 'cancelled'
 

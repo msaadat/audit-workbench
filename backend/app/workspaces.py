@@ -87,7 +87,11 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     """Write JSON via a temp file + rename so a crash mid-write can never
     leave a truncated definition behind."""
     before_meta = None
-    if path.exists():
+    # The prior contents are read only to describe them for state telemetry, and
+    # the recorder below ignores exactly the paths written most often (run.json,
+    # workspace.json, and the Debug tree itself). Deciding that up front keeps a
+    # hot save from parsing a record whose "before" is then discarded.
+    if _traces_artifact_transitions(path) and path.exists():
         try:
             raw_before = path.read_bytes()
             parsed_before = json.loads(raw_before)
@@ -129,12 +133,25 @@ def _debug_artifact_meta(path: Path, payload: object, raw: bytes | None = None) 
     }
 
 
+def _traces_artifact_transitions(path: Path) -> bool:
+    """False for writes that artifact-state telemetry deliberately ignores.
+
+    Primary workspace/run writes have richer hooks of their own, and Debug
+    writes are the telemetry itself and must never recursively trace themselves.
+    """
+    if "Debug" in path.parts or ".Transactions" in path.parts:
+        return False
+    if path.name == "workspace.json":
+        return False
+    if path.name == "run.json" and "AgentRuns" in path.parts:
+        return False
+    from . import debug_store
+
+    return debug_store.state_enabled()
+
+
 def _record_atomic_artifact_transition(path: Path, before: dict | None, payload: dict) -> None:
-    # Primary workspace/run writes have richer hooks. Debug writes are the
-    # telemetry itself and must never recursively trace themselves.
-    if "Debug" in path.parts or ".Transactions" in path.parts or path.name == "workspace.json" or (
-        path.name == "run.json" and "AgentRuns" in path.parts
-    ):
+    if not _traces_artifact_transitions(path):
         return
     root = path.parent
     while root != root.parent and not (root / "workspace.json").exists():

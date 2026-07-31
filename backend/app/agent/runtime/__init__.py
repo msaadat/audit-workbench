@@ -26,6 +26,9 @@ from .workflow_runner import (
     DeterministicUnitResult,
     FinishProjection,
     WorkflowRunner,
+    first_unit_error,
+    fold_terminal_status,
+    unsettled_capabilities,
 )
 
 __all__ = [

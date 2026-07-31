@@ -215,7 +215,9 @@ def _carried_target_refs(workflow_state: dict) -> list[str]:
 def retry_run(workspace: Workspace, run_id: str) -> dict:
     """Start a fresh linked attempt without rewriting the failed run ledger."""
     previous = store.load_run(workspace, run_id)
-    if previous.get("status") != "failed":
+    # A partly failed run is retryable too. Structural readiness keeps whatever
+    # it already committed, so retrying reattempts only the unsettled work.
+    if previous.get("status") not in ("failed", "completed_with_failures"):
         raise WorkspaceError("Only a failed run can be retried.")
     # Command-ness, not engine: a run that failed while its route was still
     # pending has no engine yet and is still retryable as the same command.
@@ -252,8 +254,12 @@ def continue_audit(workspace: Workspace, run_id: str) -> dict:
     previous = store.load_run(workspace, run_id)
     if previous.get("engine") != store.WORKFLOW_ENGINE:
         raise WorkspaceError("Only a workflow run can continue audit outcomes.")
-    if previous.get("status") != "completed_with_open_items":
-        raise WorkspaceError("Only a run completed with open items can be continued.")
+    # Any terminal run that named remaining outcomes can be continued. Gating
+    # this on one status used to close the resume path on exactly the runs that
+    # needed it — a run that failed a single unit knew what was left and could
+    # only be retried whole.
+    if previous.get("status") not in store.TERMINAL_STATUSES:
+        raise WorkspaceError("Only a finished run can be continued.")
     workflow_state = previous.get("workflow") or {}
     outcomes = list(workflow_state.get("next_outcomes") or [])
     if not outcomes:

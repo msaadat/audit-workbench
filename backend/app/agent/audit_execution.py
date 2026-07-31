@@ -80,6 +80,9 @@ from .runtime import (
     UnitPipelineRequest,
     UnitSidecarStore,
     WorkflowRunner,
+    first_unit_error,
+    fold_terminal_status,
+    unsettled_capabilities,
 )
 from .workers import WORKERS
 
@@ -1214,19 +1217,18 @@ class AuditWorkflowExecution(ActionRunner):
             next_outcomes.extend(["report.working_draft", "audit.verified"])
         self.run["workflow"]["workspace_revision"] = subject.revision
         requires_full_completion = "audit.verified" in self.run["workflow"].get("requested_outcomes", [])
+        terminal = fold_terminal_status(
+            stages,
+            complete=completion["status"] == "completed" or not requires_full_completion,
+        )
         if failed:
-            terminal = "failed"
-            failed_errors = [
-                str(unit.get("error"))
-                for stage in stages
-                for unit in stage.get("units") or []
-                if unit.get("status") in {"failed", "conflict"} and unit.get("error")
-            ]
-            self.run["error"] = failed_errors[0] if failed_errors else "One or more workflow units failed."
-        elif not requires_full_completion:
-            terminal = "completed" if not open_units else "completed_with_open_items"
-        else:
-            terminal = "completed" if completion["status"] == "completed" and not open_units else "completed_with_open_items"
+            self.run["error"] = first_unit_error(
+                stages, "One or more workflow units failed."
+            )
+            # A capability that did not settle is what a follow-up run should
+            # reattempt. Without this a partly failed audit closes with nothing
+            # to continue, and the only affordance left is a full retry.
+            next_outcomes.extend(unsettled_capabilities(stages))
         summary = narration.summary_markdown(
             "Audit workflow",
             [

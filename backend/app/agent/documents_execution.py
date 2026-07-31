@@ -70,6 +70,9 @@ from .runtime import (
     UnitPipelineRequest,
     UnitSidecarStore,
     WorkflowRunner,
+    first_unit_error,
+    fold_terminal_status,
+    unsettled_capabilities,
 )
 from .workers import WORKERS
 from .workers.documents import (
@@ -1050,11 +1053,7 @@ class DocumentWorkflowExecution(BaseRunner):
             for document_id in document_scope.document_ids
             if has_generated_analysis(subject, document_id)
         ]
-        next_outcomes = [
-            str(stage["capability"])
-            for stage in stages
-            if stage.get("status") in {"failed", "blocked", "review_required"}
-        ]
+        next_outcomes = list(unsettled_capabilities(stages))
         self.run["workflow"]["workspace_revision"] = subject.revision
         for document_id in document_scope.document_ids:
             # No document may be left claiming an analysis is in flight once the
@@ -1067,18 +1066,11 @@ class DocumentWorkflowExecution(BaseRunner):
                 document_analysis.set_run_state(
                     subject, document_id, "failed" if failed else "idle"
                 )
+        terminal = fold_terminal_status(stages)
         if failed:
-            terminal = "failed"
-            errors = [
-                str(unit.get("error"))
-                for unit in units
-                if unit.get("status") in {"failed", "conflict"} and unit.get("error")
-            ]
-            self.run["error"] = (
-                errors[0] if errors else "One or more document units failed."
+            self.run["error"] = first_unit_error(
+                stages, "One or more document units failed."
             )
-        else:
-            terminal = "completed" if not open_units else "completed_with_open_items"
         summary = narration.summary_markdown(
             "Document analysis",
             [

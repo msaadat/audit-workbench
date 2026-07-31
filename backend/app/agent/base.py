@@ -110,6 +110,30 @@ class BaseRunner:
             template_context=self._model_template_context,
             stage_labels=MODEL_WAIT_LABELS,
             limit_error=LimitExceeded,
+            stream_sink=self._emit_model_stream,
+        )
+
+    def _emit_model_stream(self, tag: str, text: str, call_id: str) -> None:
+        """Publish live model text as an event, and only as an event.
+
+        A generation turn against a local model can run for a minute, and a
+        static "Waiting for the model" label tells the auditor nothing about
+        whether it is progressing. This is deliberately *not* written to
+        ``run.json``: the durable record stays content-free apart from the
+        artifacts a capability actually commits, and a run that saved on every
+        fragment would rewrite the whole record thousands of times per call.
+        """
+        self.runtime.emit(
+            "model_stream",
+            {
+                # The call id marks where one call's text ends and the next
+                # begins. Two calls of the same stage — a retry, or two units of
+                # one capability — would otherwise read as one garbled block.
+                "call_id": call_id,
+                "stage": tag,
+                "label": MODEL_WAIT_LABELS.get(tag, "Working"),
+                "text": text,
+            },
         )
     def save(self) -> None:
         self.runtime.save()

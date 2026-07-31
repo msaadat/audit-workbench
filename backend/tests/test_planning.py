@@ -314,7 +314,9 @@ def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):
         for unit in stage["units"]
     ]
 
-    assert completed["status"] == "failed"
+    # Partial, not failed — which is the same point the checkpoint assertions
+    # below make: this run committed an APM and an RCM before it stopped.
+    assert completed["status"] == "completed_with_failures"
     assert any(unit["kind"] == "test_generation" and unit["status"] == "failed" for unit in units)
     # The APM and RCM this run committed before the failure are checkpoints: a
     # later failed stage never rolls them back, and the auditor's own row
@@ -338,8 +340,11 @@ def test_planning_llm_failure_is_not_reported_as_completed(monkeypatch):
         for stage in completed["plan"]["stages"]
         for task in stage["tasks"]
     }
-    assert completed["status"] == "failed"
-    assert completed["command"]["status"] == "failed"
+    # The planning context unit settled before the APM call failed, so the run
+    # is partial. What matters to this test is that it is never plain
+    # "completed" and still carries the provider error.
+    assert completed["status"] == "completed_with_failures"
+    assert completed["command"]["status"] == "completed_with_failures"
     assert completed["error"] == "LLM request failed: Remote end closed connection without response"
     assert "Failed or conflicting units: 1" in completed["summary_markdown"]
     assert tasks["planning:context"]["status"] == "completed"
@@ -555,7 +560,7 @@ def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
     valid_apm = PLANNING_RESPONSES["agent:apm"]["apm_markdown"]
     apm_calls = []
 
-    def chat(messages, tools=None, temperature=0.0, profile="assistant"):
+    def chat(messages, tools=None, temperature=0.0, profile="assistant", on_delta=None):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
         if tag == "agent:apm":
@@ -563,7 +568,13 @@ def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
             # Literal newlines make this invalid JSON, but the Markdown itself
             # is complete and should not cost another provider turn.
             return {"content": '{"apm_markdown":"' + valid_apm + '"}'}
-        return fake(messages, tools=tools, temperature=temperature, profile=profile)
+        return fake(
+            messages,
+            tools=tools,
+            temperature=temperature,
+            profile=profile,
+            on_delta=on_delta,
+        )
 
     monkeypatch.setattr(llm, "chat", chat)
     ws = workspaces.create_workspace("Direct Markdown APM")

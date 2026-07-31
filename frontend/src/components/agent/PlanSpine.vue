@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { api } from '../../api'
-import { useAgentRun } from '../../composables/useAgentRun'
+import { FAILURE_STATUSES, useAgentRun } from '../../composables/useAgentRun'
 import { useAssistantChat } from '../../composables/useAssistantChat'
 import type { AgentRun, WorkflowStage, WorkflowUnit, WorkflowUnitStatus } from '../../types'
 import AgentActionList from './AgentActionList.vue'
@@ -105,6 +105,8 @@ const UNIT_ICONS: Record<WorkflowUnitStatus, string> = {
  */
 const HALTED_RUN_STATE: Record<string, SpineState> = {
   failed: 'failed',
+  // The run finished; a stage still marked running stopped part-way with it.
+  completed_with_failures: 'failed',
   cancelled: 'failed',
   interrupted: 'gate',
   paused: 'gate',
@@ -138,7 +140,7 @@ const rows = computed(() => {
     const units: WorkflowUnit[] = [...stage.units]
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       .map(unit => {
-        if (status === 'failed' && unit.status === 'running') {
+        if ((FAILURE_STATUSES as string[]).includes(status) && unit.status === 'running') {
           return { ...unit, status: 'failed' as const, error: unit.error || runError }
         }
         if (status === 'cancelled' && unit.status === 'running') return { ...unit, status: 'cancelled' as const }

@@ -41,6 +41,53 @@ _context: ContextVar[dict[str, Any]] = ContextVar("debug_trace_context", default
 _locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
 
+# Telemetry levels, cheapest first. ``calls`` is the default because LLM call
+# tracing is what the debug console is actually read for — provider, model,
+# retries, latency — and it costs a handful of writes per run. State-transition
+# tracing is a different order of magnitude: it snapshots, diffs, and rewrites
+# the whole record on *every* durable save, which for one measured run meant 974
+# transitions and 80MB of snapshots for 10 model calls. It stays opt-in.
+TELEMETRY_OFF = "off"
+TELEMETRY_CALLS = "calls"
+TELEMETRY_FULL = "full"
+TELEMETRY_LEVELS = (TELEMETRY_OFF, TELEMETRY_CALLS, TELEMETRY_FULL)
+DEFAULT_TELEMETRY_LEVEL = TELEMETRY_CALLS
+TELEMETRY_ENV_VAR = "DEBUG_TELEMETRY"
+
+# Retention caps per workspace. The store is local and append-only, so without
+# a bound it grows for the life of the engagement.
+MAX_CALL_RECORDS = 500
+MAX_TRANSITION_RECORDS = 500
+# Two per transition (before and after), so this cap is deliberately double the
+# transition cap; a transition whose snapshot has aged out still carries its own
+# inline ``changes`` list.
+MAX_SNAPSHOT_FILES = 1000
+MAX_EVENT_LINES = 20_000
+_SWEEP_INTERVAL = 200
+_sweep_counters: dict[str, int] = {}
+_sweep_guard = threading.Lock()
+
+
+def telemetry_level() -> str:
+    """The active telemetry level, read from the environment on each call.
+
+    Reading per call keeps the setting live for tests and for an operator who
+    flips it without restarting; the cost is one dict lookup against the writes
+    it decides to skip.
+    """
+    value = str(os.environ.get(TELEMETRY_ENV_VAR) or "").strip().lower()
+    return value if value in TELEMETRY_LEVELS else DEFAULT_TELEMETRY_LEVEL
+
+
+def calls_enabled() -> bool:
+    """True when LLM call and event tracing should be written."""
+    return telemetry_level() in (TELEMETRY_CALLS, TELEMETRY_FULL)
+
+
+def state_enabled() -> bool:
+    """True when state snapshots, diffs, and transitions should be written."""
+    return telemetry_level() == TELEMETRY_FULL
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -154,9 +201,11 @@ def safe_headers(headers: Any) -> dict[str, str]:
 
 
 def append_event(workspace_id: str, type_: str, data: dict) -> dict:
+    event = {"id": uuid.uuid4().hex, "at": utcnow(), "type": type_, "data": sanitize(data)}
+    if not calls_enabled():
+        return event
     root = debug_root(workspace_id)
     path = root / "events.jsonl"
-    event = {"id": uuid.uuid4().hex, "at": utcnow(), "type": type_, "data": sanitize(data)}
     raw = json.dumps(event, ensure_ascii=False, separators=(",", ":"), default=str) + "\n"
     with _lock(root):
         root.mkdir(parents=True, exist_ok=True)
@@ -164,13 +213,16 @@ def append_event(workspace_id: str, type_: str, data: dict) -> dict:
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
+    _note_write(workspace_id)
     return event
 
 
 def start_call(request: dict, settings: Any, *, extra: dict | None = None) -> tuple[str | None, dict | None]:
     context = current_context(extra)
     workspace_id = str(context.get("workspace_id") or "")
-    if not workspace_id:
+    if not workspace_id or not calls_enabled():
+        # Every caller guards its later tracing on a non-null call id, so
+        # returning none here disables the whole call-tracing path at once.
         return None, None
     root = debug_root(workspace_id)
     call_id = f"call_{uuid.uuid4().hex}"
@@ -246,6 +298,8 @@ def finish_call(workspace_id: str, call_id: str, *, payload: Any = None,
 
 
 def write_snapshot(workspace_id: str, payload: dict, *, kind: str = "workspace") -> dict:
+    if not state_enabled():
+        return {"sha1": "", "path": "", "kind": kind}
     safe = sanitize(payload)
     digest = sha1(safe)
     root = debug_root(workspace_id)
@@ -294,6 +348,10 @@ def _diff(before: Any, after: Any, path: str = "$") -> list[dict]:
 def record_transition(workspace_id: str, before: dict | None, after: dict,
                       *, trigger: str, kind: str = "workspace",
                       correlation: dict | None = None) -> dict | None:
+    # Checked before the equality test: comparing two large records is itself
+    # part of the cost this level is meant to avoid.
+    if not state_enabled():
+        return None
     if before == after:
         return None
     before_ref = write_snapshot(workspace_id, before or {}, kind=kind) if before is not None else None
@@ -323,7 +381,7 @@ def record_workspace_save(workspace_id: str, before: dict | None, after: dict) -
 def record_run_save(workspace_id: str, run_id: str, before: dict | None, after: dict) -> None:
     context = current_context({"run_id": run_id})
     record_transition(workspace_id, before, after, trigger=str(context.get("trigger") or "agent.run.save"), kind="agent_run", correlation=context)
-    if int(after.get("schema_version") or 1) >= 2:
+    if state_enabled() and int(after.get("schema_version") or 1) >= 2:
         old_revision = (before or {}).get("graph_revision")
         revision = after.get("graph_revision")
         if before is None or revision != old_revision:
@@ -354,6 +412,10 @@ def _file_sha1(path: Path, cache: dict) -> str | None:
 
 def capture_structural_state(workspace: Any, *, trigger: str, run_id: str | None = None) -> dict:
     """Capture metadata-rich state without copying source rows or binaries."""
+    if not state_enabled():
+        # This walks every table and join and loads frames to measure them, so
+        # it is the single most expensive telemetry call in the store.
+        return {"sha1": "", "path": "", "kind": "structural"}
     root = debug_root(workspace.id)
     cache_path = root / "FileSignatures.json"
     try: file_cache = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -432,3 +494,87 @@ def clear(workspace_id: str) -> None:
     import shutil
     root = debug_root(workspace_id)
     if root.exists(): shutil.rmtree(root)
+
+
+def _note_write(workspace_id: str) -> None:
+    """Count writes and sweep periodically rather than on every append."""
+    with _sweep_guard:
+        count = _sweep_counters.get(workspace_id, 0) + 1
+        if count < _SWEEP_INTERVAL:
+            _sweep_counters[workspace_id] = count
+            return
+        _sweep_counters[workspace_id] = 0
+    try:
+        prune(workspace_id)
+    except Exception:
+        # Retention is housekeeping. It must never fail a traced operation.
+        pass
+
+
+def _prune_directory(folder: Path, keep: int) -> int:
+    """Delete all but the ``keep`` most recently modified files in ``folder``."""
+    if not folder.is_dir():
+        return 0
+    entries = []
+    for path in folder.glob("*.json"):
+        try:
+            entries.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    if len(entries) <= keep:
+        return 0
+    entries.sort(reverse=True)
+    removed = 0
+    for _, path in entries[keep:]:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _truncate_events(path: Path, keep: int) -> int:
+    """Keep the newest ``keep`` event lines, rewriting the log atomically."""
+    if not path.is_file():
+        return 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return 0
+    if len(lines) <= keep:
+        return 0
+    tail = lines[-keep:]
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:6]}.tmp")
+    try:
+        tmp.write_text("".join(tail), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        return 0
+    return len(lines) - len(tail)
+
+
+def prune(workspace_id: str) -> dict[str, int]:
+    """Bound the local telemetry store to its retention caps.
+
+    Newest-first by modification time, so an in-flight call is never the record
+    that gets dropped. Returns what was removed so the debug console can say so
+    rather than presenting a truncated history as complete.
+    """
+    root = debug_root(workspace_id)
+    if not root.exists():
+        return {}
+    with _lock(root):
+        removed = {
+            "calls": _prune_directory(root / "LLMCalls", MAX_CALL_RECORDS),
+            "transitions": _prune_directory(
+                root / "StateTransitions", MAX_TRANSITION_RECORDS
+            ),
+            "snapshots": _prune_directory(
+                root / "StateSnapshots", MAX_SNAPSHOT_FILES
+            ),
+            "events": _truncate_events(root / "events.jsonl", MAX_EVENT_LINES),
+        }
+    return {key: value for key, value in removed.items() if value}

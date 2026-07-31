@@ -24,12 +24,14 @@ a workspace or a frame; callers assemble bounded model context one layer up.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 import base64
 import time
+from typing import Any
 import urllib.error
 import urllib.request
 
@@ -44,6 +46,45 @@ LOCAL_REQUEST_TIMEOUT = 300  # seconds
 MAX_REQUEST_ATTEMPTS = 3
 MAX_RETRY_DELAY = 2.0
 RETRYABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+# Symbolic equivalents of the codes above, as used by providers that report an
+# upstream failure inside an HTTP 200 body rather than as an HTTP status. These
+# name the condition, so they are trusted without reading the message.
+RETRYABLE_PROVIDER_CODES = frozenset(
+    {
+        "internal_server_error",
+        "overloaded",
+        "overloaded_error",
+        "rate_limit_exceeded",
+        "resource_exhausted",
+        "server_error",
+        "service_unavailable",
+        "timeout",
+        "unavailable",
+    }
+)
+# An in-band numeric code is ambiguous — an aggregator returns 502 both for a
+# saturated upstream and for a request the upstream rejected outright — so the
+# message has to corroborate it. These are the phrases that describe something
+# that may clear on its own; a schema or validation complaint will not match.
+TRANSIENT_PROVIDER_MARKERS = (
+    "capacity",
+    "connection reset",
+    "internal server error",
+    "overload",
+    "please retry",
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "request limit reached",
+    "resource exhausted",
+    "resourceexhausted",
+    "temporarily",
+    "timed out",
+    "timeout",
+    "too many requests",
+    "try again",
+    "unavailable",
+)
 
 
 class LLMError(RuntimeError):
@@ -406,6 +447,7 @@ def chat(
     temperature: float = 0.0,
     profile: str | dict = "assistant",
     tool_choice: str | dict | None = None,
+    on_delta: Callable[[str], None] | None = None,
 ) -> dict:
     """One chat/completions round-trip. Returns the assistant message dict.
 
@@ -414,7 +456,14 @@ def chat(
     API failure, with a message safe to show the user. ``profile`` selects the
     backend/model pair: 'assistant' (saved settings), 'agent' (agent overrides),
     or 'vision' (vision-capable profile overrides).
+
+    Passing ``on_delta`` requests a streamed response and calls it with each
+    text fragment as it arrives. The return value is unchanged, so a caller that
+    only wants progress reporting needs no other adjustment. Streaming is
+    text-only: a request carrying ``tools`` ignores ``on_delta``, because a
+    partial tool call is not something a reader can be shown.
     """
+    streaming = on_delta is not None and not tools
     call_started = time.monotonic()
     try:
         settings = _settings(profile)
@@ -443,6 +492,11 @@ def chat(
     if tools:
         body["tools"] = tools
         body["tool_choice"] = tool_choice or "auto"
+    if streaming:
+        body["stream"] = True
+        # Ask for usage on the terminal chunk. Providers that ignore this simply
+        # report no usage, which the budget ledger already tolerates.
+        body["stream_options"] = {"include_usage": True}
     call_id, _ = debug_store.start_call(
         body, settings, extra={"profile": settings.profile_name}
     )
@@ -494,7 +548,11 @@ def chat(
             with urllib.request.urlopen(request, timeout=settings.timeout) as response:
                 headers_at = time.monotonic()
                 response_headers = getattr(response, "headers", {})
-                raw_body = response.read()
+                if streaming:
+                    assert on_delta is not None
+                    payload, raw_body = _read_stream(response, on_delta)
+                else:
+                    raw_body = response.read()
                 body_at = time.monotonic()
                 attempt_record.update({
                     "http_status": getattr(response, "status", 200),
@@ -505,7 +563,8 @@ def chat(
                     "response_sha256": hashlib.sha256(raw_body).hexdigest(),
                 })
                 try:
-                    payload = json.loads(raw_body.decode("utf-8"))
+                    if not streaming:
+                        payload = json.loads(raw_body.decode("utf-8"))
                 finally:
                     parsed_at = time.monotonic()
                     attempt_record["parse_ms"] = round((parsed_at - body_at) * 1000, 3)
@@ -581,6 +640,23 @@ def chat(
             error_code, detail = provider_error
             attempt_record["error"] = detail
             attempt_record["error_response"] = debug_store.sanitize(payload)
+            # An aggregator such as OpenRouter reports an upstream failure in
+            # the body of an HTTP 200, so the transport-level retry above never
+            # sees it. A transient upstream code must exhaust the same ladder
+            # here or a rate-limited provider kills the unit — and, because a
+            # failed unit folds the whole run to failed, the run with it.
+            if (
+                _retryable_provider_error(error_code, detail)
+                and attempt + 1 < MAX_REQUEST_ATTEMPTS
+            ):
+                delay = _wait_before_retry(
+                    attempt, _retry_after_header(response_headers)
+                )
+                attempt_record["retry_delay_ms"] = round(delay * 1000, 3)
+                _finish_attempt(attempt_record, attempt_started)
+                if call_id:
+                    debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                continue
             terminal = LLMError(
                 f"LLM request failed ({error_code}): {detail}"
                 if error_code is not None
@@ -640,6 +716,106 @@ def _response_error(payload: object) -> tuple[object | None, str] | None:
         detail = f"{message} ({error_type})" if error_type else message
         return code, detail
     return None, str(error or "unknown provider error")
+
+
+def _read_stream(
+    response: Any, on_delta: Callable[[str], None]
+) -> tuple[dict, bytes]:
+    """Consume a streamed completion, reporting text as it arrives.
+
+    Returns a payload in the same shape a non-streamed call produces, so every
+    caller downstream — provider-error detection, usage accounting, choice
+    extraction — is unchanged. ``raw_body`` is the reassembled transcript, kept
+    for the response hash and size that telemetry records.
+
+    A malformed chunk is skipped rather than raised: the stream is a progress
+    channel, and one unparseable frame must not discard a completion that is
+    otherwise arriving normally. An in-band ``error`` frame is returned as the
+    payload so the existing provider-error path handles it.
+    """
+    content: list[str] = []
+    finish_reason = None
+    usage = None
+    role = "assistant"
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(chunk, dict):
+            continue
+        if "error" in chunk:
+            return chunk, "".join(content).encode("utf-8")
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            if delta.get("role"):
+                role = str(delta["role"])
+            piece = delta.get("content")
+            if piece:
+                content.append(str(piece))
+                on_delta(str(piece))
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+    text = "".join(content)
+    payload: dict = {
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": finish_reason,
+                "message": {"role": role, "content": text},
+            }
+        ]
+    }
+    if usage:
+        payload["usage"] = usage
+    return payload, text.encode("utf-8")
+
+
+def _retryable_provider_error(code: object, detail: str) -> bool:
+    """True when an in-band provider error is worth another attempt.
+
+    An aggregator reports an upstream failure inside an HTTP 200 body, and its
+    numeric code is not a reliable signal on its own: the same ``502`` covers
+    both "the upstream is momentarily out of capacity" and "your request is
+    invalid", and retrying the latter burns the budget three times for an
+    identical answer. So a numeric code additionally has to read as transient,
+    while a symbolic code is specific enough to trust by itself.
+    """
+    if isinstance(code, bool):
+        return False
+    text = str(code or "").strip().lower()
+    if isinstance(code, int) or text.isdigit():
+        numeric = code if isinstance(code, int) else int(text)
+        return numeric in RETRYABLE_HTTP_CODES and _transient_provider_detail(detail)
+    return bool(text) and text in RETRYABLE_PROVIDER_CODES
+
+
+def _transient_provider_detail(detail: str) -> bool:
+    """True when an error message describes a condition that may clear."""
+    text = str(detail or "").lower()
+    return any(marker in text for marker in TRANSIENT_PROVIDER_MARKERS)
+
+
+def _retry_after_header(headers: object) -> str | None:
+    """Read ``Retry-After`` off a successful response that carried an error."""
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return None
+    try:
+        value = getter("Retry-After")
+    except Exception:
+        return None
+    return str(value) if value else None
 
 
 def _finish_attempt(attempt: dict, started: float) -> None:

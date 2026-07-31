@@ -5,6 +5,7 @@ import type {
   AgentDecision,
   AgentInteraction,
   AgentRun,
+  AgentRunStatus,
   AgentRunSummary,
   AssistantStatus,
   WorkspaceChange,
@@ -29,7 +30,17 @@ interface AgentState {
   connected: boolean
   starting: boolean
   lastChange: (WorkspaceChange & { at: number }) | null
+  /**
+   * Live text from the model call in flight. Transient by design: it is never
+   * part of the run record, is dropped when the call ends, and exists only so a
+   * long generation shows movement instead of a frozen label.
+   */
+  stream: { callId: string; stage: string; label: string; text: string } | null
 }
+
+// Enough of the tail to show the model is producing sense, bounded so a long
+// generation cannot grow this without limit.
+const STREAM_TAIL_CHARS = 480
 
 type ChangeListener = (change: WorkspaceChange) => void
 type InvalidationListener = () => void
@@ -84,6 +95,25 @@ const ACTIVE_STATUSES = new Set([
   'paused',
 ])
 
+/**
+ * The run-status vocabulary, owned here so a new status is added in one place
+ * rather than in each list that happens to enumerate it.
+ * `completed_with_failures` is a run that committed real work and left some
+ * units unsettled — finished, but not cleanly, and worth the user's attention.
+ */
+export const COMPLETED_STATUSES: AgentRunStatus[] = [
+  'completed',
+  'completed_with_open_items',
+  'completed_with_issues',
+  'completed_with_failures',
+]
+export const FAILURE_STATUSES: AgentRunStatus[] = ['failed', 'completed_with_failures']
+export const TERMINAL_STATUSES: AgentRunStatus[] = [
+  ...COMPLETED_STATUSES,
+  'failed',
+  'cancelled',
+]
+
 function state(workspaceId: string): AgentState {
   let existing = stores.get(workspaceId)
   if (!existing) {
@@ -99,6 +129,7 @@ function state(workspaceId: string): AgentState {
       connected: false,
       starting: false,
       lastChange: null,
+      stream: null,
     })
     stores.set(workspaceId, existing)
   }
@@ -129,6 +160,7 @@ function disconnect(workspaceId: string) {
   sources.get(workspaceId)?.close()
   sources.delete(workspaceId)
   state(workspaceId).connected = false
+  state(workspaceId).stream = null
 }
 
 function scheduleRefetch(workspaceId: string, runId: string) {
@@ -156,7 +188,7 @@ function scheduleRefetch(workspaceId: string, runId: string) {
             store.drawerAutoOpened = true
           } else if (
             store.drawerAutoOpened &&
-            ['completed', 'completed_with_open_items', 'completed_with_issues', 'cancelled'].includes(run.status)
+            [...COMPLETED_STATUSES, 'cancelled'].includes(run.status)
           ) {
             store.drawerOpen = savedPanelState(workspaceId)
             store.drawerAutoOpened = false
@@ -214,6 +246,38 @@ function connect(workspaceId: string, runId: string) {
     'evidence_available',
   ]) {
     source.addEventListener(type, refetch)
+  }
+  // Deliberately not in the list above: streamed text carries its own payload
+  // and must never trigger a refetch of the run record, which is exactly the
+  // cost this event exists to avoid.
+  source.addEventListener('model_stream', (event) => {
+    try {
+      const payload = JSON.parse((event as MessageEvent).data)
+      const { call_id: callId, stage, label, text } = payload.data as {
+        call_id: string
+        stage: string
+        label: string
+        text: string
+      }
+      // Accumulate within one call only. A new call id starts a new tail, so
+      // two calls of the same stage never run together into one block.
+      const current = store.stream?.callId === callId ? store.stream.text : ''
+      store.stream = {
+        callId,
+        stage,
+        label,
+        text: (current + text).slice(-STREAM_TAIL_CHARS),
+      }
+    } catch {
+      /* malformed frame — the next one replaces it */
+    }
+  })
+  // A settled unit or stage means the call that was streaming is over; leaving
+  // its text on screen would attribute finished work to work still in flight.
+  for (const type of ['unit_update', 'stage_update', 'run_status', 'stream_end']) {
+    source.addEventListener(type, () => {
+      store.stream = null
+    })
   }
   source.addEventListener('workspace_revision', () => {
     refetch()

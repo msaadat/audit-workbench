@@ -93,6 +93,23 @@ def workspace_with_data(transactions_df) -> workspaces.Workspace:
 
 
 # --------------------------------------------------------------- agent fakes
+def _streamed(message: dict, on_delta) -> dict:
+    """Deliver a scripted reply the way a streaming provider would.
+
+    Splitting the content means every test that drives the agent also exercises
+    the streaming path — coalescing, flushing, and the reassembled message —
+    rather than leaving it covered only by its own dedicated test.
+    """
+    if on_delta is None:
+        return message
+    content = str(message.get("content") or "")
+    half = len(content) // 2 or len(content)
+    for piece in (content[:half], content[half:]):
+        if piece:
+            on_delta(piece)
+    return message
+
+
 class FakeAgentLLM:
     """Scripted model for agent-run tests: dispatches on the stable
     ``[agent:<stage>]`` tag each prompt starts with. Override any stage's
@@ -118,6 +135,7 @@ class FakeAgentLLM:
         temperature=0.0,
         profile="assistant",
         tool_choice=None,
+        on_delta=None,
     ):
         system = messages[0]["content"]
         tag = system[1 : system.index("]")] if system.startswith("[") else ""
@@ -128,6 +146,7 @@ class FakeAgentLLM:
                 "messages": messages,
                 "tools": tools,
                 "tool_choice": tool_choice,
+                "streamed": on_delta is not None,
             }
         )
         response = self.overrides.get(tag, self.DEFAULTS.get(tag))
@@ -139,8 +158,8 @@ class FakeAgentLLM:
             "tool_calls" in response
             or set(response).issubset({"content", "tool_calls", "usage"})
         ):
-            return response
-        return {"content": json.dumps(response)}
+            return _streamed(response, on_delta)
+        return _streamed({"content": json.dumps(response)}, on_delta)
 
 
 @pytest.fixture

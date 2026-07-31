@@ -16,6 +16,12 @@ const props = defineProps<{
   startedAt?: string | number | null
   /** Rendered inline (in a card header) rather than as a chat bubble. */
   inline?: boolean
+  /**
+   * Live tail of the text the model is producing. Shown verbatim and never
+   * treated as a result: it is unreviewed, uncommitted, and replaced by the
+   * real artifact the moment the call settles.
+   */
+  stream?: string | null
 }>()
 
 const POOLS: Record<string, string[]> = {
@@ -74,16 +80,40 @@ onUnmounted(() => {
 <template>
   <!-- One stable label for assistive tech; the rotating word would otherwise
        announce itself every few seconds. -->
-  <span class="thinking" :class="{ inline }" role="status" aria-label="Working">
-    <span class="word" aria-hidden="true">{{ word }}<span class="ellipsis">…</span></span>
-    <span v-if="elapsed" class="meta" aria-hidden="true">{{ elapsed }}</span>
-    <span v-if="slow" class="meta" aria-hidden="true">· taking a while</span>
+  <span class="thinking-block" :class="{ inline }">
+    <!-- One stable label for assistive tech; the rotating word would otherwise
+         announce itself every few seconds. -->
+    <span class="thinking" role="status" aria-label="Working">
+      <span class="word" aria-hidden="true">{{ word }}<span class="ellipsis">…</span></span>
+      <span v-if="elapsed" class="meta" aria-hidden="true">{{ elapsed }}</span>
+      <span v-if="slow" class="meta" aria-hidden="true">· taking a while</span>
+    </span>
+    <!-- Hidden from assistive tech: a tail that rewrites itself several times a
+         second is noise to a screen reader, and the label above already says
+         what is happening. -->
+    <span v-if="stream" class="stream" aria-hidden="true"><span class="stream-text">{{ stream }}</span></span>
   </span>
 </template>
 
 <style scoped>
+.thinking-block{display:grid;gap:.25rem;min-width:0}
 .thinking{display:inline-flex;align-items:baseline;gap:.35rem;min-width:0;font-size:.79rem;line-height:1.4}
-.thinking.inline{font-size:.68rem}
+.thinking-block.inline .thinking{font-size:.68rem}
+/* The tail reads as provisional: dimmed, monospaced, fading at the top edge so
+   it is legible as "being written" rather than as a finished statement.
+   `column-reverse` pins the newest text to the bottom edge and lets older lines
+   overflow upward into the fade — so the reader follows the writing, rather
+   than staring at the opening line while the live end is clipped out of view. */
+.stream{
+  display:flex;flex-direction:column-reverse;
+  max-height:4.2rem;overflow:hidden;
+  padding-left:.55rem;border-left:2px solid var(--aw-border);
+  color:var(--aw-muted);font-family:var(--aw-mono,ui-monospace,SFMono-Regular,Menlo,monospace);
+  font-size:.66rem;line-height:1.45;
+  mask-image:linear-gradient(to bottom,transparent 0,#000 1.4rem);
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 1.4rem);
+}
+.stream-text{white-space:pre-wrap;word-break:break-word}
 .word{
   min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   background:linear-gradient(90deg,var(--aw-muted) 0%,var(--aw-muted) 35%,var(--aw-teal) 50%,var(--aw-muted) 65%,var(--aw-muted) 100%);
