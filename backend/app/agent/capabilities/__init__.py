@@ -130,18 +130,6 @@ def grouped_analysis_capability_ids() -> tuple[str, ...]:
     return _group_ids(ANALYSIS_CAPABILITY_GROUPS)
 
 
-def grouped_document_capability_ids() -> tuple[str, ...]:
-    """Every capability ID contributed by the document groups, in order."""
-
-    return _group_ids(DOCUMENT_CAPABILITY_GROUPS)
-
-
-def grouped_doc_test_capability_ids() -> tuple[str, ...]:
-    """Every capability ID contributed by the document-test groups, in order."""
-
-    return _group_ids(DOC_TEST_CAPABILITY_GROUPS)
-
-
 def _build_registry(groups: tuple) -> CapabilityRegistry:
     registry = CapabilityRegistry()
     for group in groups:
@@ -424,8 +412,6 @@ __all__ = [
     "documents_workflow_state",
     "grouped_analysis_capability_ids",
     "grouped_capability_ids",
-    "grouped_doc_test_capability_ids",
-    "grouped_document_capability_ids",
     "outcomes_for_template",
     "all_tests",
     "planning_basis_sha1",
