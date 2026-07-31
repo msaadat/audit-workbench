@@ -169,3 +169,4 @@ def test_evidence_request_status_is_auditable():
 
     assert updated["status"] == "received"
     assert updated["auditor_note"] == "Received from Accounts Payable."
+    assert doc_tests.load_test(ws, test["id"])["scope_limitations"] == ""

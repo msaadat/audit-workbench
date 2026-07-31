@@ -682,8 +682,11 @@ class WorkflowRunner:
                 approval_provider=bound.approval_provider,
                 readiness_provider=bound.readiness_provider,
                 on_manifest_persisted=self._reference_recorder(unit, "context_manifest"),
+                on_manifest_resolved=self._narrate_context(capability),
                 on_proposal_persisted=self._reference_recorder(unit, "proposal_sidecar"),
                 on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
+                on_worker_repaired=self._narrate_repair(),
+                on_worker_completed=self._narrate_completion(capability),
             )
 
         settled = self.stable_all_settled(runnable, execute)
@@ -732,8 +735,11 @@ class WorkflowRunner:
                 approval_provider=bound.approval_provider,
                 readiness_provider=bound.readiness_provider,
                 on_manifest_persisted=self._reference_recorder(unit, "context_manifest"),
+                on_manifest_resolved=self._narrate_context(capability),
                 on_proposal_persisted=self._reference_recorder(unit, "proposal_sidecar"),
                 on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
+                on_worker_repaired=self._narrate_repair(),
+                on_worker_completed=self._narrate_completion(capability),
             )
             self._fold_pipeline_outcome(stage, unit, outcome, bound)
         except (Cancelled, LimitExceeded):
@@ -749,6 +755,53 @@ class WorkflowRunner:
             self.runtime.save()
 
         return persist
+
+    def _narrate_context(
+        self, capability: workflow.Capability
+    ) -> Callable[[Any], None]:
+        """Say what a unit is about to read, right before its model call.
+
+        Fired from the pipeline only when a model call is actually happening
+        (never on a reused proposal), so this is the one place a long,
+        single-unit capability gets an opening line instead of going silent
+        until it settles. A real conversational turn (``say``), not a log
+        entry: it belongs in the transcript the auditor reads back, not only
+        in a live status strip that vanishes once the unit settles.
+        """
+
+        def resolved(manifest: Any) -> None:
+            text = narration.context_note(manifest, self.subject, label=capability.title)
+            if text:
+                narration.say(self.run, self.runtime.emit, text)
+
+        return resolved
+
+    def _narrate_repair(self) -> Callable[[int, tuple[str, ...]], None]:
+        def repaired(_attempt: int, errors: tuple[str, ...]) -> None:
+            narration.say(
+                self.run,
+                self.runtime.emit,
+                narration.repair_note(errors[0] if errors else ""),
+            )
+
+        return repaired
+
+    def _narrate_completion(
+        self, capability: workflow.Capability
+    ) -> Callable[[Mapping[str, Any]], None]:
+        """Say what a unit actually produced, right as its call returns.
+
+        The live progress checklist reading the same response as it streams
+        disappears the moment the call settles; this is its permanent
+        counterpart, so what it showed is not lost the instant it is done.
+        """
+
+        def completed(proposal: Mapping[str, Any]) -> None:
+            text = narration.completion_note(capability.id, proposal)
+            if text:
+                narration.say(self.run, self.runtime.emit, text)
+
+        return completed
 
     def _fold_pipeline_failure(
         self,

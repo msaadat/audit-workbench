@@ -290,6 +290,20 @@ export interface DocTestRollup {
   pending: number
 }
 
+export interface EvidenceRequest {
+  id: string
+  document_test_id: string
+  item_id: string
+  rcm_id?: string | null
+  reason: string
+  next_action?: string
+  missing_document_types: string[]
+  status: 'open' | 'received' | 'cancelled'
+  auditor_note?: string
+  created?: string
+  updated?: string
+}
+
 /** What the auditor still has to do about one worklist item. */
 export type DocTestClassification =
   | 'exception'
@@ -368,6 +382,7 @@ export interface DocTest extends TestPlan, TestOutcome {
   item_count?: number
   state_counts?: Record<string, number>
   rollup?: DocTestRollup
+  evidence_requests?: EvidenceRequest[]
   created: string
   updated: string
   sha1: string
@@ -642,6 +657,7 @@ export interface AuditFinding {
   test_refs: string[]
   execution_refs: string[]
   evidence_refs: EvidenceRef[]
+  evidence_warnings?: string[]
   cause_pending: boolean
   severity_rationale: string
   auditor_confirmed: boolean

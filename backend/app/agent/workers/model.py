@@ -493,6 +493,8 @@ class WorkerRegistry:
         self,
         request: WorkerRequest,
         gateway: ModelGateway,
+        *,
+        on_repair: Callable[[int, tuple[str, ...]], None] | None = None,
     ) -> WorkerResult:
         if not isinstance(request, WorkerRequest):
             raise WorkerContractError("Worker execution requires a WorkerRequest.")
@@ -546,6 +548,13 @@ class WorkerRegistry:
                         attempt_number,
                         errors,
                     ) from error
+                if on_repair is not None:
+                    try:
+                        on_repair(attempt_number, errors)
+                    except Exception:
+                        # A progress note must never break the repair it is
+                        # describing.
+                        pass
                 continue
             return WorkerResult(
                 worker_id=definition.worker_id,

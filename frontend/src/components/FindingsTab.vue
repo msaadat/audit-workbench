@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
+import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import MultiSelect from 'primevue/multiselect'
@@ -23,6 +24,7 @@ const emit = defineEmits<{ changed: [] }>()
 const route = useRoute()
 const nav = useWorkspaceNav()
 const toast = useToast()
+const confirm = useConfirm()
 const agent = useAgentRun(props.workspace.id)
 
 const data = ref<FindingsPayload | null>(null)
@@ -95,7 +97,7 @@ async function save() {
   saving.value = true
   try {
     const item = selected.value
-    await api.patch(`/api/workspaces/${props.workspace.id}/findings/${item.id}`, {
+    const saved = await api.patch<AuditFinding>(`/api/workspaces/${props.workspace.id}/findings/${item.id}`, {
       title: item.title, severity: item.severity, condition: item.condition,
       criteria: item.criteria, cause: item.cause, effect: item.effect,
       recommendation: item.recommendation, management_response: item.management_response,
@@ -106,19 +108,34 @@ async function save() {
     })
     await reload(item.id)
     emit('changed')
-    toast.add({ severity: 'success', summary: 'Finding saved', life: 1800 })
+    if (saved.evidence_warnings?.length) {
+      toast.add({ severity: 'warn', summary: 'Finding saved with evidence warning', detail: saved.evidence_warnings.join(' '), life: 7000 })
+    } else {
+      toast.add({ severity: 'success', summary: 'Finding saved', life: 1800 })
+    }
   } catch (error) { fail('Could not save the finding', error) }
   finally { saving.value = false }
 }
 
-async function remove() {
-  if (!selected.value) return
-  try {
-    await api.del(`/api/workspaces/${props.workspace.id}/findings/${selected.value.id}`)
-    selectedId.value = null
-    await reload()
-    emit('changed')
-  } catch (error) { fail('Could not remove the finding', error) }
+function remove() {
+  const item = selected.value
+  if (!item) return
+  confirm.require({
+    header: 'Remove finding',
+    message: `Remove "${item.id} — ${item.title}"? This cannot be undone.`,
+    icon: 'pi pi-exclamation-triangle',
+    acceptProps: { label: 'Remove', severity: 'danger' },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      try {
+        await api.del(`/api/workspaces/${props.workspace.id}/findings/${item.id}`)
+        selectedId.value = null
+        await reload()
+        emit('changed')
+        toast.add({ severity: 'success', summary: 'Finding removed', life: 1800 })
+      } catch (error) { fail('Could not remove the finding', error) }
+    },
+  })
 }
 
 function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
@@ -160,7 +177,7 @@ function openEvidence(value: EvidenceRef) {
       <section v-if="selected" class="finding-detail card">
         <div class="detail-toolbar">
           <div class="provenance"><strong>{{ selected.id }}</strong><Tag :value="selected.source" severity="secondary"/><span v-if="selected.agent_run_id" class="muted">Run {{ selected.agent_run_id }}</span></div>
-          <span class="grow"/><Button label="Save finding" icon="pi pi-save" size="small" :loading="saving" @click="save"/>
+          <span class="grow"/><Button label="Remove" icon="pi pi-trash" severity="danger" outlined size="small" @click="remove"/><Button label="Save finding" icon="pi pi-save" size="small" :loading="saving" @click="save"/>
         </div>
         <h3 class="form-section-title">Finding</h3>
         <div class="top-fields"><label>Title<InputText v-model="selected.title" /></label><label>Severity<Select v-model="selected.severity" :options="severities" /></label></div>
@@ -182,12 +199,13 @@ function openEvidence(value: EvidenceRef) {
           <h3>Traceability and evidence</h3>
           <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning(id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.test_refs" :key="`test:${id}`" @click="openPlanning(selected.rcm_refs[0] || '')"><i class="pi pi-list-check"/> {{ id }}</button></div>
           <p v-if="!selected.evidence_refs.length" class="warning"><i class="pi pi-exclamation-triangle"/> No typed evidence is linked. Add evidence through a promoted agent observation or an evidence-enabled workflow.</p>
-          <div v-else class="evidence-list"><div v-for="value in selected.evidence_refs" :key="value.id"><button @click="openEvidence(value)"><i class="pi pi-link"/><span>{{ value.source_kind }}:{{ value.source_id }}<small v-if="value.page">page {{ value.page }}</small></span><code>{{ value.source_sha1?.slice(0, 10) }}</code></button><Button icon="pi pi-times" text rounded severity="danger" size="small" aria-label="Remove evidence link" @click="removeEvidence(value.id)"/></div></div>
+          <p v-for="warning in selected.evidence_warnings" :key="warning" class="warning"><i class="pi pi-exclamation-triangle"/> {{ warning }}</p>
+          <div v-if="selected.evidence_refs.length" class="evidence-list"><div v-for="value in selected.evidence_refs" :key="value.id"><button @click="openEvidence(value)"><i class="pi pi-link"/><span>{{ value.source_kind }}:{{ value.source_id }}<small v-if="value.page">page {{ value.page }}</small></span><code>{{ value.source_sha1?.slice(0, 10) }}</code></button><Button icon="pi pi-times" text rounded severity="danger" size="small" aria-label="Remove evidence link" @click="removeEvidence(value.id)"/></div></div>
           <details v-if="availableEvidence.length" class="evidence-picker"><summary>Add evidence already captured in fieldwork</summary><button v-for="option in availableEvidence" :key="option.anchor.id" @click="addEvidence(option.anchor)"><i class="pi pi-plus"/>{{ option.label }}</button></details>
         </div>
         </UiAdvancedSection>
         <UiAdvancedSection title="Finding administration" description="Source, run provenance, and deletion">
-          <div class="admin-row"><span>Source: {{ selected.source }}</span><span v-if="selected.agent_run_id">Agent run: {{ selected.agent_run_id }}</span><Button label="Delete finding" icon="pi pi-trash" severity="danger" outlined size="small" @click="remove"/></div>
+          <div class="admin-row"><span>Source: {{ selected.source }}</span><span v-if="selected.agent_run_id">Agent run: {{ selected.agent_run_id }}</span></div>
         </UiAdvancedSection>
       </section>
       <UiEmptyState v-else icon="pi pi-flag" title="No finding selected" description="Select a finding or add a manual finding." />

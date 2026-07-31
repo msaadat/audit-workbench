@@ -49,7 +49,10 @@ async def list_findings(workspace_id: str):
             {"anchor": anchor, "label": f"{data_test['id']} · durable result {last_run['id']}"}
         )
     return {
-        "items": ws.findings,
+        "items": [
+            {**item, "evidence_warnings": findings.evidence_warnings(ws, item)}
+            for item in ws.findings
+        ],
         "rcm": ws.rcm,
         "procedures": ws.work_program,
         "data_tests": ws.data_tests,
@@ -73,7 +76,9 @@ async def promote_finding(workspace_id: str, payload: dict = Body(...)):
 
 @router.patch("/findings/{finding_id}")
 async def patch_finding(workspace_id: str, finding_id: str, payload: dict = Body(...)):
-    return findings.update(_ws(workspace_id), finding_id, payload)
+    ws = _ws(workspace_id)
+    item = findings.update(ws, finding_id, payload)
+    return {**item, "evidence_warnings": findings.evidence_warnings(ws, item)}
 
 
 @router.delete("/findings/{finding_id}")

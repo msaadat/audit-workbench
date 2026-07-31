@@ -535,8 +535,11 @@ class UnitPipeline:
         approval_provider: ApprovalProvider | None = None,
         readiness_provider: ReadinessProvider | None = None,
         on_manifest_persisted: PersistenceObserver | None = None,
+        on_manifest_resolved: Callable[[ContextManifest], None] | None = None,
         on_proposal_persisted: PersistenceObserver | None = None,
         on_receipt_persisted: PersistenceObserver | None = None,
+        on_worker_repaired: Callable[[int, tuple[str, ...]], None] | None = None,
+        on_worker_completed: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> UnitPipelineOutcome:
         if not isinstance(request, UnitPipelineRequest):
             raise UnitPipelineError("Unit pipeline requires a UnitPipelineRequest.")
@@ -719,6 +722,11 @@ class UnitPipeline:
                 cached = None
 
         if cached is None:
+            # Fired only when a model call is actually about to happen — a
+            # reused proposal below never reaches here, so a reader is never
+            # told the agent is "reading" sources it already drew from.
+            if on_manifest_resolved is not None:
+                on_manifest_resolved(manifest)
             worker_result = self.workers.execute(
                 WorkerRequest(
                     worker_id=request.worker_id,
@@ -729,8 +737,14 @@ class UnitPipeline:
                     activity=request.activity,
                 ),
                 self.gateway,
+                on_repair=on_worker_repaired,
             )
             proposal = dict(worker_result.proposal)
+            # Fired with the freshly generated proposal, before approval can
+            # revise it: this reflects what the model actually produced, the
+            # same thing the live progress checklist was reading as it came in.
+            if on_worker_completed is not None:
+                on_worker_completed(proposal)
             proposal_payload = {
                 "capability_id": request.capability_id,
                 "unit_id": request.unit_id,

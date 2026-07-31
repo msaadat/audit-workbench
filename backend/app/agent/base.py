@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import uuid
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from .. import llm
 from ..workspaces import Workspace
-from . import prompts, store
+from . import narration, prompts, store
 from .context import ContextManifest
 from .runtime import (
     Cancelled,
@@ -50,6 +52,50 @@ MODEL_WAIT_LABELS = {
     "agent:file_classification": "Classifying staged files",
     "agent:document_analysis_map": "Analyzing document content",
     "agent:document_analysis_reduce": "Consolidating document analysis",
+}
+
+
+_HEADING_RE = re.compile(r"(?m)^#{1,6}\s+(.+?)\s*$")
+
+
+def _markdown_heading_progress(accumulated: str) -> list[dict[str, str]]:
+    """Sections seen so far in a markdown draft, last one still in progress.
+
+    A pure read of the response text streamed so far — no foreknowledge of the
+    active template's section list is needed, since a heading only needs to be
+    recognized once the model has actually written it.
+    """
+    headings = [match.group(1).strip() for match in _HEADING_RE.finditer(accumulated)]
+    if not headings:
+        return []
+    items = [{"label": heading, "state": "done"} for heading in headings[:-1]]
+    items.append({"label": headings[-1], "state": "current"})
+    return items[-12:]
+
+
+_RCM_ROW_FIELD_RE = re.compile(r'"risk_rating"\s*:')
+
+
+def _rcm_row_progress(accumulated: str) -> list[dict[str, str]]:
+    """How many RCM rows the draft has written so far.
+
+    ``risk_rating`` is a required field on every row (agent/workers/planning.py
+    RCM_SYSTEM), so counting its occurrences in the raw JSON stream is a cheap,
+    reliable proxy for rows completed — without waiting for the response to
+    parse, which only happens once the whole call has returned.
+    """
+    count = len(_RCM_ROW_FIELD_RE.findall(accumulated))
+    if not count:
+        return []
+    return [{"label": f"{count} row{'s' if count != 1 else ''} drafted", "state": "current"}]
+
+
+# Keyed the same way as MODEL_WAIT_LABELS. A worker whose response is a large
+# markdown document or a long JSON array benefits from a structured read of
+# what has streamed so far; a short response does not need one.
+PROGRESS_READERS: dict[str, Callable[[str], list[dict[str, str]]]] = {
+    "agent:apm": _markdown_heading_progress,
+    "agent:rcm": _rcm_row_progress,
 }
 
 
@@ -111,6 +157,37 @@ class BaseRunner:
             stage_labels=MODEL_WAIT_LABELS,
             limit_error=LimitExceeded,
             stream_sink=self._emit_model_stream,
+            progress_readers=PROGRESS_READERS,
+            progress_sink=self._emit_model_progress,
+            heartbeat_sink=self._emit_model_wait_heartbeat,
+        )
+
+    def _emit_model_progress(
+        self, tag: str, items: list[dict[str, Any]], call_id: str
+    ) -> None:
+        """Publish a structured read of the response so far, and only as an event.
+
+        Same non-durable treatment as ``_emit_model_stream``: a reader who is
+        not watching live loses nothing, since the eventual milestone states
+        the finished result.
+        """
+        self.runtime.emit(
+            "model_progress",
+            {"call_id": call_id, "stage": tag, "items": items},
+        )
+
+    def _emit_model_wait_heartbeat(self, tag: str) -> None:
+        """Say one thing when a call is still running well past normal.
+
+        A real conversational turn, not a log entry: a reader who opens the
+        transcript after the call finally settles should still see that it
+        ran long, not just its eventual result.
+        """
+        label = MODEL_WAIT_LABELS.get(tag, "Working")
+        narration.say(
+            self.run,
+            self.emit,
+            f"Still {label[0].lower()}{label[1:]} — this is taking longer than usual.",
         )
 
     def _emit_model_stream(self, tag: str, text: str, call_id: str) -> None:

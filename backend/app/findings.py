@@ -66,7 +66,13 @@ def artifact(workspace: Workspace, source_kind: str, source_id: str) -> dict | N
     return {"item": item, "sha1": _canonical_sha1(item)} if item else None
 
 
-def validate_evidence(workspace: Workspace, values: object, *, require_hash: bool = True) -> list[dict]:
+def validate_evidence(
+    workspace: Workspace,
+    values: object,
+    *,
+    require_hash: bool = True,
+    allow_changed: bool = False,
+) -> list[dict]:
     anchors = normalize_many(values, require_hash=require_hash)
     for anchor in anchors:
         resolved = artifact(workspace, anchor["source_kind"], anchor["source_id"])
@@ -74,11 +80,31 @@ def validate_evidence(workspace: Workspace, values: object, *, require_hash: boo
             raise WorkspaceError(
                 f"Evidence source '{anchor['source_kind']}:{anchor['source_id']}' does not exist."
             )
-        if anchor.get("source_sha1") and resolved["sha1"] != anchor["source_sha1"]:
+        if (
+            not allow_changed
+            and anchor.get("source_sha1")
+            and resolved["sha1"] != anchor["source_sha1"]
+        ):
             raise WorkspaceError(
                 f"Evidence source '{anchor['source_kind']}:{anchor['source_id']}' has changed."
             )
     return anchors
+
+
+def evidence_warnings(workspace: Workspace, item: dict) -> list[str]:
+    """Return stale-evidence warnings without changing a finding's provenance."""
+    warnings = []
+    for anchor in normalize_many(item.get("evidence_refs"), require_hash=False):
+        resolved = artifact(workspace, anchor["source_kind"], anchor["source_id"])
+        if resolved is None:
+            warnings.append(
+                f"Evidence source '{anchor['source_kind']}:{anchor['source_id']}' no longer exists."
+            )
+        elif anchor.get("source_sha1") and resolved["sha1"] != anchor["source_sha1"]:
+            warnings.append(
+                f"Evidence source '{anchor['source_kind']}:{anchor['source_id']}' has changed since this finding was drafted."
+            )
+    return list(dict.fromkeys(warnings))
 
 
 def _known_test_ids(workspace: Workspace) -> set[str]:
@@ -291,7 +317,15 @@ def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
             "test_refs": test_refs,
         }
     if "evidence_refs" in changes:
-        changes = {**changes, "evidence_refs": validate_evidence(workspace, changes["evidence_refs"])}
+        # A finding retains the source hash it was drafted from. A later test or
+        # document change must be visible to the auditor, but must not prevent
+        # them from confirming the finding after considering that warning.
+        changes = {
+            **changes,
+            "evidence_refs": validate_evidence(
+                workspace, changes["evidence_refs"], allow_changed=True
+            ),
+        }
     candidate = {**item, **changes}
     candidate["auditor_confirmed"] = bool(candidate.get("auditor_confirmed"))
     candidate["cause_pending"] = bool(candidate.get("cause_pending"))

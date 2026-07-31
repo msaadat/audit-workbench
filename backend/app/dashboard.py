@@ -409,6 +409,16 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
         pending = int(test.get("state_counts", {}).get("pending", 0)) + int(test.get("state_counts", {}).get("manual_review", 0))
         if pending:
             attention.append({"id": f"doctest:{test['id']}", "severity": "warning", "title": test["title"], "message": f"{pending} item(s) await auditor review.", "target": _target("doc-tests", test=test["id"])})
+    for issue in state["completion"]["coverage"].get("inconsistent_conclusions") or []:
+        test_id = str(issue.get("test_id") or "")
+        destination = "doc-tests" if test_id.startswith("DT-") else "data-tests"
+        attention.append({
+            "id": f"coverage:{test_id}",
+            "severity": "warning",
+            "title": f"Review conclusion: {test_id}",
+            "message": str(issue.get("reason") or "The test conclusion needs review."),
+            "target": _target(destination, test=test_id),
+        })
     for issue in quality["issues"]:
         if issue["severity"] in {"error", "warning"} and issue["code"] != "report_empty":
             attention.append({"id": f"quality:{issue['code']}:{len(attention)}", "severity": issue["severity"], "title": "Report quality", "message": issue["message"], "target": _target("report")})

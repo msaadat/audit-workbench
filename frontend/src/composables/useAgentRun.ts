@@ -36,6 +36,18 @@ interface AgentState {
    * long generation shows movement instead of a frozen label.
    */
   stream: { callId: string; stage: string; label: string; text: string } | null
+  /**
+   * Structured read of the same call — headings drafted so far, rows drafted
+   * so far — for a response whose raw text (JSON, mostly) is not worth
+   * showing a reader directly. Same lifecycle as `stream`: transient, cleared
+   * the moment the call settles.
+   */
+  progress: { callId: string; stage: string; items: AgentProgressItem[] } | null
+}
+
+export interface AgentProgressItem {
+  label: string
+  state: 'done' | 'current' | string
 }
 
 // Enough of the tail to show the model is producing sense, bounded so a long
@@ -130,6 +142,7 @@ function state(workspaceId: string): AgentState {
       starting: false,
       lastChange: null,
       stream: null,
+      progress: null,
     })
     stores.set(workspaceId, existing)
   }
@@ -161,6 +174,7 @@ function disconnect(workspaceId: string) {
   sources.delete(workspaceId)
   state(workspaceId).connected = false
   state(workspaceId).stream = null
+  state(workspaceId).progress = null
 }
 
 function scheduleRefetch(workspaceId: string, runId: string) {
@@ -272,11 +286,28 @@ function connect(workspaceId: string, runId: string) {
       /* malformed frame — the next one replaces it */
     }
   })
+  // Deliberately not in the refetch list either: a structured progress read is
+  // a projection of the same in-flight call the text stream carries, not a
+  // change to durable run state.
+  source.addEventListener('model_progress', (event) => {
+    try {
+      const payload = JSON.parse((event as MessageEvent).data)
+      const { call_id: callId, stage, items } = payload.data as {
+        call_id: string
+        stage: string
+        items: AgentProgressItem[]
+      }
+      store.progress = { callId, stage, items }
+    } catch {
+      /* malformed frame — the next one replaces it */
+    }
+  })
   // A settled unit or stage means the call that was streaming is over; leaving
   // its text on screen would attribute finished work to work still in flight.
   for (const type of ['unit_update', 'stage_update', 'run_status', 'stream_end']) {
     source.addEventListener(type, () => {
       store.stream = null
+      store.progress = null
     })
   }
   source.addEventListener('workspace_revision', () => {

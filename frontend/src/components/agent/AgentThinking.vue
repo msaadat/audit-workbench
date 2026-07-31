@@ -22,6 +22,13 @@ const props = defineProps<{
    * real artifact the moment the call settles.
    */
   stream?: string | null
+  /**
+   * A structured read of the same call — sections or rows drafted so far —
+   * for a response whose raw text is not worth showing directly (mostly
+   * JSON). When present, this replaces the raw tail: a reader gets one or the
+   * other, never both saying the same thing two different ways.
+   */
+  progress?: { label: string; state: string }[] | null
 }>()
 
 const POOLS: Record<string, string[]> = {
@@ -88,10 +95,19 @@ onUnmounted(() => {
       <span v-if="elapsed" class="meta" aria-hidden="true">{{ elapsed }}</span>
       <span v-if="slow" class="meta" aria-hidden="true">· taking a while</span>
     </span>
+    <!-- A structured read of the draft outranks its raw text: both describe
+         the same in-flight call, and the checklist is the one a reader can
+         actually use. -->
+    <ul v-if="progress?.length" class="checklist" aria-hidden="true">
+      <li v-for="item in progress" :key="item.label" :class="item.state">
+        <i :class="item.state === 'done' ? 'pi pi-check' : 'pi pi-spin pi-spinner'" />
+        <span>{{ item.label }}</span>
+      </li>
+    </ul>
     <!-- Hidden from assistive tech: a tail that rewrites itself several times a
          second is noise to a screen reader, and the label above already says
          what is happening. -->
-    <span v-if="stream" class="stream" aria-hidden="true"><span class="stream-text">{{ stream }}</span></span>
+    <span v-else-if="stream" class="stream" aria-hidden="true"><span class="stream-text">{{ stream }}</span></span>
   </span>
 </template>
 
@@ -114,6 +130,13 @@ onUnmounted(() => {
   -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 1.4rem);
 }
 .stream-text{white-space:pre-wrap;word-break:break-word}
+.checklist{display:grid;gap:.15rem;margin:0;padding-left:.55rem;border-left:2px solid var(--aw-border);list-style:none;max-height:8rem;overflow:hidden}
+.checklist li{display:flex;align-items:baseline;gap:.35rem;color:var(--aw-muted);font-size:.7rem;line-height:1.5}
+.checklist li>i{flex:0 0 auto;font-size:.62rem}
+.checklist li.done>i{color:var(--aw-ok)}
+.checklist li.current{color:var(--aw-ink,inherit)}
+.checklist li.current>i{color:var(--aw-teal)}
+.checklist li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .word{
   min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   background:linear-gradient(90deg,var(--aw-muted) 0%,var(--aw-muted) 35%,var(--aw-teal) 50%,var(--aw-muted) 65%,var(--aw-muted) 100%);

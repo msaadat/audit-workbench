@@ -76,6 +76,13 @@ def test_finding_crud_validates_typed_sources_and_rolls_up(workspace_with_data):
     with pytest.raises(workspaces.WorkspaceError, match="does not exist"):
         findings.update(ws, item["id"], {"evidence_refs": [broken]})
 
+    stale = {**anchor, "source_sha1": "0" * 40}
+    updated = findings.update(ws, item["id"], {"evidence_refs": [stale]})
+    assert updated["evidence_refs"][0]["source_sha1"] == "0" * 40
+    assert findings.evidence_warnings(ws, updated) == [
+        f"Evidence source '{anchor['source_kind']}:{anchor['source_id']}' has changed since this finding was drafted."
+    ]
+
     findings.remove(ws, item["id"])
     assert ws.findings == []
 

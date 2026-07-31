@@ -17,8 +17,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 from . import store
+
+if TYPE_CHECKING:
+    from .context import ContextManifest
 
 # Narration is an unbounded append log on a record that is rewritten in full on
 # every save, so it is capped. The tail is what a reader wants anyway.
@@ -210,6 +215,187 @@ def plan_sentence(
             f"reuse {'it' if single else 'them'} rather than repeat the work."
         )
     return " ".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# Model turns: what is being read, and what a repair is for
+# --------------------------------------------------------------------------- #
+# Source ids are declared per context preset (see agent/context/presets.py) and
+# are stable across workspaces, unlike the refs they select. (singular, plural)
+# so a lone item and a group both read naturally.
+_SOURCE_LABELS: dict[str, tuple[str, str]] = {
+    "planning_context": ("the planning context", "the planning context"),
+    "current_planning_context": ("the current planning context", "the current planning context"),
+    "planning_documents": ("a supporting document", "supporting documents"),
+    "apm_template": ("the APM template", "the APM template"),
+    "rcm_template": ("the RCM template", "the RCM template"),
+    "current_apm": ("the current APM", "the current APM"),
+    "current_rcm": ("the current RCM", "the current RCM"),
+    "rcm_row": ("the target RCM row", "the target RCM rows"),
+    "table_metadata": ("a table's metadata", "table metadata items"),
+    "table_profiles": ("a table profile", "table profiles"),
+    "table_profile": ("a table profile", "table profiles"),
+    "documents": ("a document", "documents"),
+    "methodology": ("the methodology pack", "the methodology pack"),
+}
+
+# Omission and truncation reasons are authored sentences from the context
+# resolver (agent/context/manifest.py, agent/context/resolver.py) rather than
+# stable codes, so they are matched loosely and a raw fallback covers the rest.
+_OMISSION_PHRASES: tuple[tuple[str, str], ...] = (
+    ("size limit", "past the size limit"),
+    ("did not match", "did not match this capability's selector"),
+    ("unavailable", "not available"),
+)
+
+
+def _omission_phrase(reason: str) -> str:
+    lowered = reason.casefold()
+    for needle, phrase in _OMISSION_PHRASES:
+        if needle in lowered:
+            return phrase
+    return reason.rstrip(".").strip() or "left out"
+
+
+def _document_title(source_ref: str | None, workspace: object) -> str:
+    ref = str(source_ref or "")
+    if not ref.startswith("document:"):
+        return ""
+    document_id = ref.split(":", 1)[1]
+    for item in getattr(workspace, "documents", None) or []:
+        if str(item.get("id")) == document_id:
+            return str(item.get("title") or "").strip()
+    return ""
+
+
+def _grouped_source_labels(items: list, workspace: object) -> list[str]:
+    """One label per distinct source, folding repeats into a count.
+
+    Documents are named individually when there are few enough to read; every
+    other source type is too numerous or too undifferentiated to be worth
+    naming twice (``table_profiles`` selected six times is six labels the
+    reader would skim past, not six facts).
+    """
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for item in items:
+        source_id = str(getattr(item, "source_id", "") or "")
+        groups.setdefault(source_id, []).append(item)
+        if source_id not in order:
+            order.append(source_id)
+    labels: list[str] = []
+    for source_id in order:
+        group = groups[source_id]
+        if source_id == "documents":
+            titles = [
+                title
+                for title in (
+                    _document_title(getattr(item, "source_ref", None), workspace)
+                    for item in group
+                )
+                if title
+            ]
+            if titles and len(titles) <= 3:
+                labels.append(_joined(titles, "and"))
+            else:
+                labels.append(_count(len(group), "document"))
+            continue
+        singular, plural = _SOURCE_LABELS.get(source_id, (humanize(source_id), f"{humanize(source_id)}s"))
+        labels.append(singular if len(group) == 1 else f"{len(group)} {plural}")
+    return labels
+
+
+def context_note(manifest: "ContextManifest", workspace: object, *, label: str = "") -> str:
+    """What a model turn is about to read, and what it left out.
+
+    A pure projection of the content-free manifest the context resolver
+    already persists (agent/context/manifest.py): it names sources and titles,
+    never excerpts, and returns "" when there is nothing worth saying so a
+    caller never has to guard against an empty narration line.
+    """
+    selections = list(getattr(manifest, "selections", None) or [])
+    if not selections:
+        return ""
+    named = _grouped_source_labels(selections, workspace)
+    if not named:
+        return ""
+    size = getattr(manifest, "supplied_size", None)
+    tokens = int(getattr(size, "estimated_tokens", 0) or 0)
+    token_phrase = f"~{max(1, tokens // 1000)}k tokens" if tokens >= 1000 else f"{tokens} tokens"
+    subject = f" for {label}" if label else ""
+    sentence = f"Reading {_joined(named, 'and')}{subject} ({token_phrase})."
+    omissions = list(getattr(manifest, "omissions", None) or [])
+    if omissions:
+        buckets: dict[str, list] = {}
+        order: list[str] = []
+        for item in omissions:
+            phrase = _omission_phrase(str(getattr(item, "reason", "") or ""))
+            buckets.setdefault(phrase, []).append(item)
+            if phrase not in order:
+                order.append(phrase)
+        left_out = [
+            f"{_joined(_grouped_source_labels(buckets[phrase], workspace), 'and')} ({phrase})"
+            for phrase in order
+        ]
+        sentence += f" Leaving out {_joined(left_out, 'and')}."
+    return sentence
+
+
+def repair_note(reason: str = "") -> str:
+    """What the agent says when a draft failed its quality gate and is retried.
+
+    The reason is the worker's own validation message
+    (agent/workers/model.py), so this stays a projection: it never decides
+    whether to repair, only states why one is happening.
+    """
+    reason = str(reason or "").strip()
+    if reason:
+        return f"That draft didn't pass the quality check — {reason} — so I'm redoing it."
+    return "That draft didn't pass the quality check, so I'm redoing it."
+
+
+_COMPLETION_HEADING_RE = re.compile(r"(?m)^#{1,6}\s+(.+?)\s*$")
+
+
+def _apm_completion(proposal: Mapping) -> str:
+    markdown = str(proposal.get("apm_markdown") or "")
+    headings = [match.group(1).strip() for match in _COMPLETION_HEADING_RE.finditer(markdown)]
+    if not headings:
+        return ""
+    checklist = "\n".join(f"- {heading}" for heading in headings)
+    return f"Drafted every section of the memorandum:\n{checklist}"
+
+
+def _rcm_completion(proposal: Mapping) -> str:
+    rows = proposal.get("rows")
+    if not isinstance(rows, (list, tuple)) or not rows:
+        return ""
+    return f"Drafted {_count(len(rows), 'row')} for the risk and control matrix."
+
+
+# Keyed by capability id. A response worth reading as a checklist or a count
+# once it lands, not just as a headline metric on the eventual milestone card.
+_COMPLETION_NOTES: dict[str, Callable[[Mapping], str]] = {
+    "planning.apm_ready": _apm_completion,
+    "planning.rcm_ready": _rcm_completion,
+}
+
+
+def completion_note(capability_id: str, proposal: Mapping) -> str:
+    """What a unit actually produced, once its model call has returned.
+
+    A pure read of the accepted proposal, never the raw response, so this is
+    safe to call whether or not a repair happened along the way. An unmapped
+    capability returns "" rather than guessing at a proposal shape it does
+    not own — most capabilities are already well served by their milestone.
+    """
+    reader = _COMPLETION_NOTES.get(str(capability_id or ""))
+    if reader is None:
+        return ""
+    try:
+        return reader(proposal if isinstance(proposal, Mapping) else {})
+    except Exception:
+        return ""
 
 
 # --------------------------------------------------------------------------- #

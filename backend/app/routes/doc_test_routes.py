@@ -70,8 +70,17 @@ async def create_document_test(workspace_id: str, payload: dict = Body(...)):
 
 @router.get("/doc-tests/{test_id}")
 async def get_document_test(workspace_id: str, test_id: str):
-    test = doc_tests.load_test(_ws(workspace_id), test_id)
-    return {**test, "rollup": doc_tests.result_rollup(test)}
+    workspace = _ws(workspace_id)
+    test = doc_tests.load_test(workspace, test_id)
+    evidence_requests = [
+        item for item in workspace.evidence_requests
+        if item.get("document_test_id") == test_id
+    ]
+    return {
+        **test,
+        "rollup": doc_tests.result_rollup(test),
+        "evidence_requests": evidence_requests,
+    }
 
 
 @router.patch("/doc-tests/{test_id}")

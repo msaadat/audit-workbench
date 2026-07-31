@@ -97,6 +97,11 @@ def _media_handle(value: Mapping[str, Any]) -> dict[str, Any]:
 STREAM_MIN_CHARS = 80
 STREAM_MIN_SECONDS = 0.4
 
+# How long a single provider call runs before its silence is worth
+# acknowledging. One reminder per call: past this point the caller already
+# knows it is slow, and a second reminder would only be noise.
+HEARTBEAT_SECONDS = 45.0
+
 
 class _StreamCoalescer:
     """Batch provider text fragments into periodic, readable updates.
@@ -112,34 +117,74 @@ class _StreamCoalescer:
     single unreadable block.
     """
 
-    def __init__(self, sink: Callable[[str], None]):
+    def __init__(
+        self,
+        sink: Callable[[str], None],
+        *,
+        progress_reader: Callable[[str], list[dict[str, Any]]] | None = None,
+        progress_sink: Callable[[list[dict[str, Any]]], None] | None = None,
+    ):
         self.call_id = uuid.uuid4().hex[:12]
         self._sink = sink
+        self._progress_reader = progress_reader
+        self._progress_sink = progress_sink
         self._pending: list[str] = []
+        # Every fragment ever fed, never trimmed: a structured progress read
+        # (headings so far, rows so far) needs the whole response so far, not
+        # just the latest unsent slice.
+        self._accumulated: list[str] = []
         self._last = time.monotonic()
+        self._last_progress: tuple[tuple[str, str], ...] | None = None
         self._lock = threading.Lock()
 
     def feed(self, piece: str) -> None:
         with self._lock:
             self._pending.append(piece)
+            self._accumulated.append(piece)
             pending = "".join(self._pending)
             now = time.monotonic()
-            if len(pending) < STREAM_MIN_CHARS and now - self._last < STREAM_MIN_SECONDS:
+            due = len(pending) >= STREAM_MIN_CHARS or now - self._last >= STREAM_MIN_SECONDS
+            if not due:
                 return
             self._pending.clear()
             self._last = now
+            accumulated = "".join(self._accumulated)
         self._emit(pending)
+        self._emit_progress(accumulated)
 
     def flush(self) -> None:
         with self._lock:
             pending = "".join(self._pending)
             self._pending.clear()
+            accumulated = "".join(self._accumulated)
         if pending:
             self._emit(pending)
+        self._emit_progress(accumulated)
 
     def _emit(self, text: str) -> None:
         try:
             self._sink(text)
+        except Exception:
+            # A progress update must never break the call that produced it.
+            pass
+
+    def _emit_progress(self, accumulated: str) -> None:
+        if self._progress_reader is None or self._progress_sink is None:
+            return
+        try:
+            items = self._progress_reader(accumulated)
+        except Exception:
+            return
+        if not items:
+            return
+        signature = tuple(
+            (str(item.get("label") or ""), str(item.get("state") or "")) for item in items
+        )
+        if signature == self._last_progress:
+            return
+        self._last_progress = signature
+        try:
+            self._progress_sink(items)
         except Exception:
             # A progress update must never break the call that produced it.
             pass
@@ -212,6 +257,9 @@ class DefaultModelGateway:
         stage_labels: Mapping[str, str] | None = None,
         limit_error: type[Exception] = RuntimeError,
         stream_sink: Callable[[str, str, str], None] | None = None,
+        progress_readers: Mapping[str, Callable[[str], list[dict[str, Any]]]] | None = None,
+        progress_sink: Callable[[str, list[dict[str, Any]], str], None] | None = None,
+        heartbeat_sink: Callable[[str], None] | None = None,
     ):
         self.workspace_id = workspace_id
         self.workspace_root = workspace_root
@@ -229,6 +277,13 @@ class DefaultModelGateway:
         # Optional live-progress channel. Absent, calls behave exactly as before
         # and no streamed request is made.
         self._stream_sink = stream_sink
+        # Optional structured read of the accumulated response so far (heading
+        # checklist, row count, ...), keyed the same way as stage_labels.
+        self._progress_readers = dict(progress_readers or {})
+        self._progress_sink = progress_sink
+        # Optional one-shot "this is taking a while" note. Absent, a slow call
+        # is silent until it settles, same as before this existed.
+        self._heartbeat_sink = heartbeat_sink
         self.context = threading.local()
 
     def complete(
@@ -331,6 +386,7 @@ class DefaultModelGateway:
         tag = self._stage_tag(system)
         stream = self._stream_coalescer(tag)
         self._model_wait(tag, started=True, attempt=attempt)
+        heartbeat_timer = self._start_heartbeat(tag)
         activity_fields = dict(activity or {})
         unit_id = getattr(self.context, "unit_id", None)
         parent_refs = getattr(self.context, "parent_refs", None)
@@ -407,6 +463,8 @@ class DefaultModelGateway:
                             ) from error
                         raise
         finally:
+            if heartbeat_timer is not None:
+                heartbeat_timer.cancel()
             self._model_wait(tag, started=False, attempt=attempt)
 
         with self._state_lock:
@@ -586,13 +644,45 @@ class DefaultModelGateway:
         if self._stream_sink is None:
             return None
         sink = self._stream_sink
+        progress_sink = self._progress_sink
+        reader = self._progress_readers.get(tag)
         coalescer: _StreamCoalescer
 
         def emit(text: str) -> None:
             sink(tag, text, coalescer.call_id)
 
-        coalescer = _StreamCoalescer(emit)
+        def emit_progress(items: list[dict[str, Any]]) -> None:
+            if progress_sink is not None:
+                progress_sink(tag, items, coalescer.call_id)
+
+        coalescer = _StreamCoalescer(
+            emit,
+            progress_reader=reader,
+            progress_sink=emit_progress if reader is not None else None,
+        )
         return coalescer
+
+    def _start_heartbeat(self, tag: str) -> threading.Timer | None:
+        """Arm a one-shot "still working" note for a call that runs long.
+
+        Cancelled the moment the call returns, so a call that finishes inside
+        the window never fires it — this is only for the ones that don't.
+        """
+        if self._heartbeat_sink is None:
+            return None
+        sink = self._heartbeat_sink
+
+        def fire() -> None:
+            try:
+                sink(tag)
+            except Exception:
+                # A heartbeat must never break the call it is watching.
+                pass
+
+        timer = threading.Timer(HEARTBEAT_SECONDS, fire)
+        timer.daemon = True
+        timer.start()
+        return timer
 
     def _model_wait(self, tag: str, *, started: bool, attempt: int = 1) -> None:
         self._model_wait_projection(

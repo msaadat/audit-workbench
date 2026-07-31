@@ -23,6 +23,7 @@ const emit = defineEmits<{
   saveAttributes: []
   setState: [value: 'confirmed' | 'exception' | 'pending']
   saveConclusion: []
+  updateEvidenceRequest: [requestId: string, status: 'received' | 'cancelled']
   run: []
   openRcm: [rcmId: string]
 }>()
@@ -55,6 +56,9 @@ const hasAssessment = computed(() => Boolean(props.item.response) || perDocument
 const showAssessment = computed(() => hasAssessment.value || !props.item.checks?.length)
 const coverage = computed(() => props.item.evidence_coverage)
 const duplicates = computed(() => props.item.document_conflicts?.duplicate_documents ?? [])
+const evidenceRequests = computed(() =>
+  (props.test.evidence_requests ?? []).filter(request => request.item_id === props.item.id),
+)
 // 'confirmed'/'exception' are already a direct read of the model's (or the
 // deterministic comparison's) own outcome — nothing for an auditor to settle.
 // Only 'manual_review'/'agent_checked' mean the result itself is unresolved.
@@ -227,6 +231,40 @@ function attach() {
         </span>
       </div>
 
+      <div v-if="evidenceRequests.length" class="evidence-requests">
+        <article
+          v-for="request in evidenceRequests"
+          :key="request.id"
+          class="evidence-request"
+          :data-status="request.status"
+        >
+          <div class="evidence-request-head">
+            <strong>{{ request.status === 'open' ? 'Open evidence request' : `Evidence request ${request.status}` }}</strong>
+            <small>{{ request.id }}</small>
+          </div>
+          <p>{{ request.reason }}</p>
+          <small v-if="request.next_action" class="muted">{{ request.next_action }}</small>
+          <div v-if="request.status === 'open'" class="evidence-request-actions">
+            <Button
+              label="Clear request"
+              icon="pi pi-check-circle"
+              size="small"
+              severity="success"
+              outlined
+              @click="emit('updateEvidenceRequest', request.id, 'cancelled')"
+            />
+            <Button
+              label="Mark received"
+              icon="pi pi-check"
+              size="small"
+              severity="secondary"
+              text
+              @click="emit('updateEvidenceRequest', request.id, 'received')"
+            />
+          </div>
+        </article>
+      </div>
+
       <div v-if="duplicates.length" class="conflict">
         <strong><i class="pi pi-copy" />Duplicate evidence attached</strong>
         <span>Resolve the duplication before accepting this item.</span>
@@ -377,6 +415,13 @@ code { font-family: var(--aw-font-mono); font-size: 0.75rem; overflow-wrap: anyw
 .gap { background: var(--aw-warn-soft); color: var(--p-orange-800); }
 .conflict { background: var(--aw-danger-soft); color: var(--p-red-700); }
 .gap strong, .conflict strong { display: flex; align-items: center; gap: 0.35rem; }
+.evidence-requests { display: grid; gap: 0.45rem; margin-top: 0.05rem; }
+.evidence-request { display: grid; gap: 0.25rem; padding: 0.55rem 0.65rem; border: 1px solid var(--aw-border); border-left: 3px solid var(--aw-warn); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
+.evidence-request[data-status='received'], .evidence-request[data-status='cancelled'] { border-left-color: var(--aw-ok); opacity: 0.8; }
+.evidence-request-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+.evidence-request-head small { color: var(--aw-muted); font-family: var(--aw-font-mono); }
+.evidence-request p { margin: 0; font-size: 0.76rem; line-height: 1.35; }
+.evidence-request-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.2rem; }
 .attach { display: flex; align-items: center; gap: 0.5rem; }
 .attach :deep(.p-select) { flex: 1; min-width: 0; }
 

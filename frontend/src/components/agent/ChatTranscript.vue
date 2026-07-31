@@ -85,6 +85,14 @@ const liveStream = computed(() => {
   if (!stream || !working.value) return null
   return agent.state.run?.id === working.value.run_id ? stream.text : null
 })
+// Same attribution rule as liveStream: a structured progress read belongs to
+// the run this transcript is showing, and only while that run is the one
+// working.
+const liveProgress = computed(() => {
+  const progress = agent.state.progress
+  if (!progress || !working.value) return null
+  return agent.state.run?.id === working.value.run_id ? progress.items : null
+})
 // The word pool follows what the user actually asked for; the trailing pending
 // message is the request currently in flight.
 const pendingIntent = computed(() => {
@@ -131,9 +139,18 @@ function messageTime(value: string) {
     <template v-for="item in chat.transcript" :key="item.id">
       <!-- The left rail owns the plan. The transcript shows only the live
            activity line, durable milestones, attention, and the run receipt. -->
-      <!-- A run owned by another chat is context, not this conversation's
-           work: it stays a compact receipt here. -->
-      <ChatRunCard v-if="isRun(item)" :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
+      <template v-if="isRun(item)">
+        <!-- The opening "here is what I'll do" line reads as the agent
+             speaking, not as a fact about the run, so it is a normal message
+             bubble ahead of the receipt rather than a line printed inside its
+             border. A run owned by another chat stays a compact receipt only. -->
+        <div v-if="item.plan_line && !item.foreign" class="message assistant">
+          <div class="bubble"><p>{{ item.plan_line }}</p></div>
+        </div>
+        <!-- A run owned by another chat is context, not this conversation's
+             work: it stays a compact receipt here. -->
+        <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
+      </template>
       <AgentMilestoneCard v-else-if="isMilestone(item)" :milestone="item.milestone" />
       <AgentInteractionCard v-else-if="isInteraction(item)" :interaction="item.interaction" :busy="actionBusy ?? false" :workspaceId="workspaceId" :runId="item.run_id" @respond="emit('respond', item.run_id, item.interaction, $event)" />
       <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" @decide="emit('decide', item.run_id, item.approval, $event)" />
@@ -164,6 +181,7 @@ function messageTime(value: string) {
         :label="working.current_activity"
         :startedAt="working.activity?.model_started_at ?? working.activity?.started_at ?? working.started"
         :stream="liveStream"
+        :progress="liveProgress"
       />
     </div>
     <div v-else-if="busy" class="message assistant">

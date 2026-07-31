@@ -308,6 +308,26 @@ def test_fieldwork_gate_uses_control_conclusion_not_free_text(
     assert not any("open execution or outcomes" in issue for issue in phase["issues"])
 
 
+def test_dashboard_links_conclusion_conflicts_to_the_owning_test(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    row = ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    test = data_tests.create(ws, {
+        "title": "Duplicate invoice check", "objective": "Identify duplicates.",
+        "engine": "analytics", "table_refs": ["transactions"],
+        "rcm_id": row["id"],
+        "spec": {"test_id": "duplicates", "params": {"columns": ["invoice_no"]}},
+    })
+    data_tests.run(ws, test["id"])
+    rcm_execution.rollup(ws)
+    data_tests.update(ws, test["id"], {"control_conclusion": "effective"})
+
+    attention = dashboard_payload(ws)["attention"]
+    item = next(value for value in attention if value["id"] == f"coverage:{test['id']}")
+    assert item["target"] == {"tab": "data-tests", "query": {"test": test["id"]}}
+
+
 def test_dashboard_advice_is_metadata_only_cached_and_marked_stale(
     workspace_with_data, monkeypatch,
 ):

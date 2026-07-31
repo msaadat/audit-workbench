@@ -824,6 +824,16 @@ def update_evidence_request(
     request["status"] = status
     request["auditor_note"] = str(note or "")
     request["updated"] = utcnow()
+    test_id = str(request.get("document_test_id") or "")
+    if status != "open" and test_id:
+        has_open_request = any(
+            item.get("document_test_id") == test_id and item.get("status") == "open"
+            for item in workspace.evidence_requests
+        )
+        if not has_open_request:
+            test = load_test(workspace, test_id)
+            test["scope_limitations"] = ""
+            write_test(workspace, test)
     workspace.save()
     return request
 

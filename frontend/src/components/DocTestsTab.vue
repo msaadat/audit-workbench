@@ -120,6 +120,15 @@ async function loadSummary() {
     filterInitialised.value = true
     if (!items.some(item => ACTION_CLASSES.includes(item.classification))) filter.value = 'all'
   }
+  // A dashboard/deep link can point to a completed test that is not in the
+  // default "Needs action" scope. Keep the requested test visible instead of
+  // letting the selection watcher replace it with the first open item.
+  const requested = requestedTestId.value
+    ? items.find(item => item.test_id === requestedTestId.value)
+    : undefined
+  if (requested && filter.value === 'action' && !ACTION_CLASSES.includes(requested.classification)) {
+    filter.value = 'all'
+  }
   // Honour a deep link first, then keep the current selection, then fall back
   // to the most severe item so the tab opens on work that needs doing.
   const target = items.find(item => item.item_id === selectedItemId.value)
@@ -142,6 +151,12 @@ async function loadMeta() {
 }
 async function loadTest(testId: string) {
   currentTest.value = await api.get<DocTest>(`/api/workspaces/${props.workspace.id}/doc-tests/${testId}`)
+  // Item-level deep links can outlive a regenerated worklist. Recover to the
+  // first current item instead of leaving the detail pane stuck on loading.
+  if (!currentTest.value.items.some(item => item.id === selectedItemId.value)) {
+    selectedItemId.value = currentTest.value.items[0]?.id ?? null
+    await syncUrl()
+  }
 }
 async function select(item: DocTestSummaryItem) {
   selectedItemId.value = item.item_id
@@ -277,6 +292,20 @@ async function saveConclusion() {
     await refresh()
     toast.add({ severity: 'success', summary: 'Conclusion saved', life: 1800 })
   } catch (error) { fail('Could not save the conclusion', error) }
+}
+async function updateEvidenceRequest(requestId: string, status: 'received' | 'cancelled') {
+  try {
+    await api.patch(`/api/workspaces/${props.workspace.id}/evidence-requests/${requestId}`, {
+      status,
+      auditor_note: status === 'received' ? 'Evidence reviewed by auditor.' : 'Request no longer required.',
+    })
+    await refresh()
+    toast.add({
+      severity: 'success',
+      summary: status === 'received' ? 'Evidence request cleared' : 'Evidence request cancelled',
+      life: 1800,
+    })
+  } catch (error) { fail('Could not update the evidence request', error) }
 }
 async function runTest() {
   const test = currentTest.value
@@ -424,6 +453,7 @@ onUnmounted(unsubscribe)
           @saveAttributes="saveAttributes"
           @setState="setItemState"
           @saveConclusion="saveConclusion"
+          @updateEvidenceRequest="updateEvidenceRequest"
           @run="runTest"
           @openRcm="openRcm"
         />
