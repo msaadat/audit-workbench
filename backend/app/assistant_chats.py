@@ -27,6 +27,12 @@ PENDING_RECOVERY_GRACE_SECONDS = 15 * 60
 # Derived transcript items carry no chat ordinal; they sort after every chat
 # message that shares their timestamp.
 DERIVED_ORDINAL = 1e12
+# A milestone and the handoff line the agent says about it are written in the
+# same breath, so they routinely share a timestamp to the millisecond. The
+# result belongs above the sentence that points at what comes next, and leaving
+# that to the id tiebreak decided it alphabetically — "message" before
+# "milestone" — which is backwards, and only stable by accident.
+MILESTONE_ORDINAL = DERIVED_ORDINAL - 1
 CHAT_ID_RE = re.compile(r"chat_[0-9]{8}_[0-9]{6}_[0-9a-f]{6}\Z")
 MESSAGE_ID_RE = re.compile(r"msg_[0-9a-f]{12}\Z")
 ARTIFACT_ID_RE = re.compile(r"art_[0-9a-f]{12}\Z")
@@ -1076,6 +1082,7 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 "derived": True,
                 "run_id": run["id"],
                 "created_at": item.get("created_at") or run.get("created"),
+                "ordinal": MILESTONE_ORDINAL,
                 "milestone": dict(item),
             })
         for interaction in run.get("interactions") or []:

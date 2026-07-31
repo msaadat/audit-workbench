@@ -71,6 +71,17 @@ function isMilestone(item: TranscriptItem): item is AssistantMilestoneProjection
 // claims progress that isn't happening.
 const WORKING_RUN_STATUSES = new Set(['queued', 'interpreting', 'executing', 'verifying'])
 function isRunWorking(item: AssistantRunProjection) { return WORKING_RUN_STATUSES.has(item.status) }
+// What the agent is doing right now belongs after everything it has already
+// said. Rendering it at the run's own anchor stranded a live, ticking phase
+// line above a growing column of milestones, so the one part of the transcript
+// still changing sat furthest from where the reader was looking.
+const working = computed<AssistantRunProjection | null>(() => {
+  for (let index = props.chat.transcript.length - 1; index >= 0; index -= 1) {
+    const item = props.chat.transcript[index]
+    if (isRun(item) && !item.foreign && isRunWorking(item)) return item
+  }
+  return null
+})
 // The word pool follows what the user actually asked for; the trailing pending
 // message is the request currently in flight.
 const pendingIntent = computed(() => {
@@ -115,20 +126,9 @@ function messageTime(value: string) {
     <template v-for="item in chat.transcript" :key="item.id">
       <!-- The left rail owns the plan. The transcript shows only the live
            activity line, durable milestones, attention, and the run receipt. -->
-      <template v-if="isRun(item)">
-        <!-- A run owned by another chat is context, not this conversation's
-             work: it stays a compact receipt here. -->
-        <div v-if="!item.foreign && isRunWorking(item)" class="run-log">
-          <!-- Timed from the model call when there is one, so a long provider
-               round trip is what the counter actually reflects. -->
-          <AgentThinking
-            v-if="isRunWorking(item)"
-            :label="item.current_activity"
-            :startedAt="item.activity?.model_started_at ?? item.activity?.started_at ?? item.started"
-          />
-        </div>
-        <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
-      </template>
+      <!-- A run owned by another chat is context, not this conversation's
+           work: it stays a compact receipt here. -->
+      <ChatRunCard v-if="isRun(item)" :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
       <AgentMilestoneCard v-else-if="isMilestone(item)" :milestone="item.milestone" />
       <AgentInteractionCard v-else-if="isInteraction(item)" :interaction="item.interaction" :busy="actionBusy ?? false" :workspaceId="workspaceId" :runId="item.run_id" @respond="emit('respond', item.run_id, item.interaction, $event)" />
       <AgentApprovalCard v-else-if="isApproval(item)" :approval="item.approval" :busy="actionBusy ?? false" @decide="emit('decide', item.run_id, item.approval, $event)" />
@@ -152,7 +152,15 @@ function messageTime(value: string) {
       </div>
     </template>
 
-    <div v-if="busy" class="message assistant">
+    <!-- Timed from the model call when there is one, so a long provider round
+         trip is what the counter actually reflects. -->
+    <div v-if="working" class="run-log">
+      <AgentThinking
+        :label="working.current_activity"
+        :startedAt="working.activity?.model_started_at ?? working.activity?.started_at ?? working.started"
+      />
+    </div>
+    <div v-else-if="busy" class="message assistant">
       <div class="bubble typing">
         <AgentThinking :intent="pendingIntent" />
       </div>

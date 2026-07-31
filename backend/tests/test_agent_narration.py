@@ -376,6 +376,39 @@ def test_chat_projects_durable_milestones_as_transcript_items(workspace_with_dat
     assert milestones[0]["milestone"]["headline"] == "Data analysis complete"
 
 
+def test_a_milestone_is_read_before_the_handoff_it_shares_a_timestamp_with(
+    workspace_with_data,
+):
+    # Both are written in one breath, so they land in the same millisecond far
+    # more often than not. The result has to come before the sentence pointing
+    # at what is next, whichever way the clock rounds.
+    ws = workspace_with_data
+    chat = assistant_chats.create_chat(ws)
+    run = store.new_command_run(
+        ws,
+        "auto",
+        {"source": "chat", "text": "start planning", "chat_id": chat["id"]},
+    )
+    at = "2026-07-26T00:00:30.500+00:00"
+    run["milestones"] = [{
+        "id": "apm:completed:abc123", "capability": "planning.apm_ready",
+        "stage_id": "apm", "status": "completed",
+        "headline": "Audit planning memorandum ready", "summary": "Prepared it.",
+        "metrics": [], "highlights": [], "artifact_refs": [],
+        "summary_sha1": "abc123", "created_at": at,
+    }]
+    run["messages"] = [{
+        "role": "agent",
+        "content": "Audit planning memorandum is done — now working on risk and control matrix.",
+        "at": at,
+    }]
+    store.save_run(ws, run)
+
+    transcript = assistant_chats.get_chat(ws, chat["id"])["transcript"]
+    kinds = [item["type"] for item in transcript if item.get("derived")]
+    assert kinds.index("milestone") < kinds.index("message")
+
+
 def test_deleting_a_chat_stops_the_runs_it_started(workspace_with_data):
     ws = workspace_with_data
     chat = assistant_chats.create_chat(ws)
