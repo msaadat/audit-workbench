@@ -267,6 +267,17 @@ async function setItemState(state: 'confirmed' | 'exception' | 'pending') {
     toast.add({ severity: 'success', summary: 'Auditor sign-off saved', life: 1800 })
   } catch (error) { fail('Could not save the auditor sign-off', error) }
 }
+async function saveConclusion() {
+  if (!currentTest.value) return
+  try {
+    await api.patch(`/api/workspaces/${props.workspace.id}/doc-tests/${currentTest.value.id}`, {
+      conclusion: currentTest.value.conclusion,
+      control_conclusion: currentTest.value.control_conclusion,
+    })
+    await refresh()
+    toast.add({ severity: 'success', summary: 'Conclusion saved', life: 1800 })
+  } catch (error) { fail('Could not save the conclusion', error) }
+}
 async function runTest() {
   const test = currentTest.value
   if (!test) return
@@ -412,6 +423,7 @@ onUnmounted(unsubscribe)
           @saveChecks="saveChecks"
           @saveAttributes="saveAttributes"
           @setState="setItemState"
+          @saveConclusion="saveConclusion"
           @run="runTest"
           @openRcm="openRcm"
         />

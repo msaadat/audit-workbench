@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
+import Textarea from 'primevue/textarea'
 
 import type { AuditDocument, DocTest, DocTestItem, EvidenceRef } from '../../types'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
@@ -21,25 +22,26 @@ const emit = defineEmits<{
   saveChecks: []
   saveAttributes: []
   setState: [value: 'confirmed' | 'exception' | 'pending']
+  saveConclusion: []
   run: []
   openRcm: [rcmId: string]
 }>()
 
 const attachId = ref<string | null>(null)
 const methods = ['exact', 'normalized', 'fuzzy', 'numeric_tolerance', 'date_tolerance']
-const conclusionLabel: Record<string, string> = {
-  effective: 'Control effective',
-  partially_effective: 'Control partially effective',
-  ineffective: 'Control ineffective',
-  no_conclusion: 'No conclusion recorded',
-  not_applicable: 'Not applicable',
-}
 const kindLabel: Record<string, string> = {
   vouching: 'Vouching / tracing',
   attribute: 'Attribute test',
   review: 'Document review',
   qa: 'Cited Q&A',
 }
+const controlConclusions = [
+  { label: 'No conclusion recorded', value: 'no_conclusion' },
+  { label: 'Control effective', value: 'effective' },
+  { label: 'Control partially effective', value: 'partially_effective' },
+  { label: 'Control ineffective', value: 'ineffective' },
+  { label: 'Not applicable', value: 'not_applicable' },
+]
 
 const documentOptions = computed(() => props.documents.map(doc => ({ label: doc.title, value: doc.id })))
 const attachable = computed(() => documentOptions.value.filter(option => !props.item.document_ids.includes(option.value)))
@@ -53,6 +55,10 @@ const hasAssessment = computed(() => Boolean(props.item.response) || perDocument
 const showAssessment = computed(() => hasAssessment.value || !props.item.checks?.length)
 const coverage = computed(() => props.item.evidence_coverage)
 const duplicates = computed(() => props.item.document_conflicts?.duplicate_documents ?? [])
+// 'confirmed'/'exception' are already a direct read of the model's (or the
+// deterministic comparison's) own outcome — nothing for an auditor to settle.
+// Only 'manual_review'/'agent_checked' mean the result itself is unresolved.
+const needsSignOff = computed(() => ['manual_review', 'agent_checked'].includes(props.item.state))
 
 
 function documentTitle(id: string) {
@@ -239,15 +245,12 @@ function attach() {
       </div>
     </section>
 
-    <!-- 4. The test-level conclusion the workflow recorded. -->
-    <section v-if="test.result_summary || test.conclusion || test.next_action || test.scope_limitations" class="block outcome">
+    <!-- 4. The test-level conclusion the workflow recorded, and the -->
+    <!-- auditor's own conclusion about the control this test covers. -->
+    <section class="block outcome">
       <h4>Test conclusion</h4>
       <p v-if="test.result_summary" class="summary">{{ test.result_summary }}</p>
-      <p v-if="test.conclusion">{{ test.conclusion }}</p>
-      <dl>
-        <template v-if="test.control_conclusion">
-          <dt>Control</dt><dd>{{ conclusionLabel[test.control_conclusion] ?? test.control_conclusion }}</dd>
-        </template>
+      <dl v-if="test.next_action || test.scope_limitations || test.exception_count || test.open_exception_count">
         <template v-if="test.next_action">
           <dt>Next action</dt><dd>{{ test.next_action }}</dd>
         </template>
@@ -258,30 +261,67 @@ function attach() {
           <dt>Exceptions</dt><dd>{{ test.exception_count }} recorded · {{ test.open_exception_count }} open</dd>
         </template>
       </dl>
+      <label>
+        Control conclusion
+        <Select
+          v-model="test.control_conclusion"
+          :options="controlConclusions"
+          optionLabel="label"
+          optionValue="value"
+        />
+      </label>
+      <label>
+        Conclusion
+        <Textarea
+          v-model="test.conclusion"
+          rows="2"
+          autoResize
+          placeholder="What this result means for the control, in your own words."
+        />
+      </label>
+      <Button
+        label="Save conclusion"
+        icon="pi pi-check"
+        size="small"
+        outlined
+        :disabled="busy"
+        @click="emit('saveConclusion')"
+      />
     </section>
 
-    <!-- 5. The auditor's own sign-off, last and pinned. -->
+    <!-- 5. The auditor's own sign-off. Confirm/exception only apply while -->
+    <!-- the result is unresolved — once it is 'confirmed' or 'exception' -->
+    <!-- that is already a direct read of the model's (or the deterministic -->
+    <!-- comparison's) own outcome, not something to settle by hand. -->
+    <!-- 'Reset to pending' stays available regardless: it is the only way -->
+    <!-- to force a re-check once new evidence makes the settled result stale. -->
     <footer class="sign-off">
-      <p class="sign-off-note">{{ item.runner_note || 'Confirm the result or mark an exception once you have reviewed it.' }}</p>
+      <p class="sign-off-note">
+        {{ needsSignOff
+          ? (item.runner_note || 'The model could not settle this item on its own — confirm the result or mark an exception.')
+          : 'This result was derived directly from the model\'s assessment. Reset it to force a re-check.' }}
+      </p>
       <div class="dispositions">
-        <Button
-          label="Confirm result"
-          icon="pi pi-check"
-          size="small"
-          severity="success"
-          outlined
-          :disabled="busy || item.state === 'confirmed'"
-          @click="emit('setState', 'confirmed')"
-        />
-        <Button
-          label="Mark exception"
-          icon="pi pi-exclamation-triangle"
-          size="small"
-          severity="danger"
-          outlined
-          :disabled="busy || item.state === 'exception'"
-          @click="emit('setState', 'exception')"
-        />
+        <template v-if="needsSignOff">
+          <Button
+            label="Confirm result"
+            icon="pi pi-check"
+            size="small"
+            severity="success"
+            outlined
+            :disabled="busy"
+            @click="emit('setState', 'confirmed')"
+          />
+          <Button
+            label="Mark exception"
+            icon="pi pi-exclamation-triangle"
+            size="small"
+            severity="danger"
+            outlined
+            :disabled="busy"
+            @click="emit('setState', 'exception')"
+          />
+        </template>
         <Button
           label="Reset to pending"
           icon="pi pi-refresh"
@@ -350,6 +390,7 @@ code { font-family: var(--aw-font-mono); font-size: 0.75rem; overflow-wrap: anyw
 .sign-off-note { margin: 0; color: var(--aw-muted); font-size: 0.78rem; }
 .dispositions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: #46576d; font-size: 0.75rem; font-weight: 600; }
+label :deep(.p-select), label :deep(.p-textarea) { width: 100%; }
 
 /* Sized against the detail column itself, not the window. */
 @container master-detail-content (max-width: 34rem) {

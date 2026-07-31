@@ -63,11 +63,11 @@ const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown>
 const editAnalyticsReady = ref(false)
 const editPolarsSteps = ref<DataTestStep[]>([])
 
-const dispositions = [
-  { label: 'Awaiting sign-off', value: 'pending' },
-  { label: 'Accepted', value: 'accepted' },
-  { label: 'Follow up', value: 'follow_up' },
-  { label: 'Test not valid', value: 'invalid_test_or_result' },
+const controlConclusions = [
+  { label: 'No conclusion recorded', value: 'no_conclusion' },
+  { label: 'Control effective', value: 'effective' },
+  { label: 'Control partially effective', value: 'partially_effective' },
+  { label: 'Control ineffective', value: 'ineffective' },
   { label: 'Not applicable', value: 'not_applicable' },
 ]
 const ATTENTION_STATUSES = ['completed_with_exception', 'review_required', 'blocked', 'error']
@@ -215,17 +215,18 @@ async function save(thenRun: boolean) {
   } catch (error) { fail(thenRun ? 'Could not run the data test' : 'Could not save the data test', error) }
   finally { saving.value = false; running.value = false }
 }
-async function saveDisposition() {
+async function saveConclusion() {
   if (!selected.value) return
   saving.value = true
   try {
     await api.patch(`/api/workspaces/${props.workspace.id}/data-tests/${selected.value.id}`, {
-      auditor_disposition: selected.value.auditor_disposition,
+      conclusion: selected.value.conclusion,
+      control_conclusion: selected.value.control_conclusion,
     })
     await load()
     emit('changed')
-    toast.add({ severity: 'success', summary: 'Auditor disposition saved', life: 1800 })
-  } catch (error) { fail('Could not save the auditor disposition', error) }
+    toast.add({ severity: 'success', summary: 'Conclusion saved', life: 1800 })
+  } catch (error) { fail('Could not save the conclusion', error) }
   finally { saving.value = false }
 }
 async function runTest() {
@@ -384,15 +385,19 @@ onUnmounted(unsubscribe)
 
           <div class="sign-off">
             <label>
-              Auditor disposition
+              Control conclusion
               <Select
-                v-model="selected.auditor_disposition"
-                :options="dispositions"
+                v-model="selected.control_conclusion"
+                :options="controlConclusions"
                 optionLabel="label"
                 optionValue="value"
               />
             </label>
-            <Button label="Save disposition" icon="pi pi-check" size="small" outlined :loading="saving" @click="saveDisposition" />
+            <label class="conclusion-note">
+              Conclusion
+              <Textarea v-model="selected.conclusion" rows="2" autoResize placeholder="What this result means for the control, in your own words." />
+            </label>
+            <Button label="Save conclusion" icon="pi pi-check" size="small" outlined :loading="saving" @click="saveConclusion" />
           </div>
 
           <!-- Authoring is the rarer action, so it is here and closed. -->
@@ -504,8 +509,9 @@ onUnmounted(unsubscribe)
 .objective { margin: 0; color: var(--aw-muted); font-size: 0.82rem; line-height: 1.45; }
 .head-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
-.sign-off { display: flex; align-items: flex-end; gap: 0.6rem; }
+.sign-off { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.6rem; }
 .sign-off label { flex: 0 1 16rem; }
+.sign-off label.conclusion-note { flex: 1 1 20rem; }
 
 .definition { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
 .plan { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.7rem; }

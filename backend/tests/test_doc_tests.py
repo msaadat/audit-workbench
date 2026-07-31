@@ -135,6 +135,30 @@ def test_auditor_can_sign_off_an_item_stuck_in_manual_review(workspace_with_data
         doc_tests.update_item(ws, review["id"], item_id, {"state": "manual_review"})
 
 
+def test_auditor_can_record_a_conclusion_on_a_document_test(workspace_with_data):
+    ws = workspace_with_data
+    document = documents.add_document(ws, "policy.txt", b"Approval is required.\nEvidence must be retained.")
+    review = doc_tests.build_review(ws, {"title": "Policy review", "document_id": document["id"]})
+    doc_tests.run_item(ws, review["id"], review["items"][0]["id"])
+    loaded = doc_tests.load_test(ws, review["id"])
+    before_status = loaded["status"]
+    assert loaded["conclusion"] == ""
+    assert loaded["control_conclusion"] == "no_conclusion"
+
+    updated = doc_tests.update_test(
+        ws, review["id"],
+        {"conclusion": "Reviewed the policy document; approval requirement is documented.",
+         "control_conclusion": "effective"},
+    )
+    assert updated["control_conclusion"] == "effective"
+    assert updated["conclusion"].startswith("Reviewed the policy")
+    # The runner's own read of the item is untouched by the auditor's conclusion.
+    assert updated["status"] == before_status
+
+    with pytest.raises(workspaces.WorkspaceError):
+        doc_tests.update_test(ws, review["id"], {"control_conclusion": "bogus"})
+
+
 def test_doc_test_workflow_persists_each_item_and_completes(workspace_with_data):
     ws = workspace_with_data
     document = documents.add_document(ws, "evidence.txt", b"Invoice: 1001\nAmount: 150.00")

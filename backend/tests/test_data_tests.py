@@ -82,21 +82,27 @@ def test_analytics_run_replaces_the_current_durable_result(workspace_with_data):
     ]
 
 
-def test_auditor_can_sign_off_a_completed_exception_result(workspace_with_data):
+def test_auditor_can_record_a_conclusion_on_a_completed_exception_result(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
     item = data_tests.create(ws, _analytics_payload(row))
     result = data_tests.run(ws, item["id"])
     assert result["status"] == "completed_with_exception"
-    assert item["auditor_disposition"] == "pending"
+    assert item["conclusion"] == ""
+    assert item["control_conclusion"] == "no_conclusion"
 
-    updated = data_tests.update(ws, item["id"], {"auditor_disposition": "accepted"})
-    assert updated["auditor_disposition"] == "accepted"
-    # The engine's own read of the run is untouched by the auditor's sign-off.
+    updated = data_tests.update(
+        ws, item["id"],
+        {"conclusion": "Exceptions were investigated and are not indicative of a control failure.",
+         "control_conclusion": "effective"},
+    )
+    assert updated["control_conclusion"] == "effective"
+    assert updated["conclusion"].startswith("Exceptions were investigated")
+    # The engine's own read of the run is untouched by the auditor's conclusion.
     assert updated["status"] == "completed_with_exception"
 
     with pytest.raises(workspaces.WorkspaceError):
-        data_tests.update(ws, item["id"], {"auditor_disposition": "bogus"})
+        data_tests.update(ws, item["id"], {"control_conclusion": "bogus"})
 
 
 def test_rerun_discards_unreferenced_legacy_result_files(workspace_with_data):

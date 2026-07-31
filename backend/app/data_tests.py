@@ -30,17 +30,6 @@ from .workspaces import (
 
 ENGINES = {"analytics", "validation", "polars"}
 STATUSES = TEST_STATUSES
-# The auditor's own sign-off on a computed result. Separate from ``status``,
-# which is the engine's own read of the last run — a completed test with
-# exceptions stays "completed_with_exception" forever; the disposition is
-# where the auditor records what they did about it.
-AUDITOR_DISPOSITIONS = {
-    "pending",
-    "follow_up",
-    "accepted",
-    "invalid_test_or_result",
-    "not_applicable",
-}
 CURRENT_RESULT_ID = "DTR-CURRENT"
 SUMMARY_ROWS = 500
 EXCEPTION_ROWS = 200
@@ -120,7 +109,6 @@ def _record(workspace: Workspace, data_test_id: str) -> dict:
     # until their next mutation, but it is never returned or persisted again.
     item.pop("runs", None)
     item.setdefault("last_run", None)
-    item.setdefault("auditor_disposition", "pending")
     item.setdefault("evidence_refs", [])
     item.setdefault("criteria", "")
     item.setdefault("steps", [])
@@ -270,7 +258,6 @@ def _base_record(workspace: Workspace, payload: dict, *, title: str, now: str) -
         "open_exception_count": 0,
         "finding_refs": [],
         "last_run": None,
-        "auditor_disposition": "pending",
         "evidence_refs": [],
         "created_by": "agent" if payload.get("agent_run_id") else "user",
         "agent_run_id": payload.get("agent_run_id"),
@@ -409,7 +396,7 @@ def update(
     item = _record(workspace, data_test_id)
     allowed = {
         "title", "objective", "engine", "table_refs", "spec", "rcm_id",
-        "auditor_disposition", "workflow_parent_sha1", "criteria", "steps",
+        "workflow_parent_sha1", "criteria", "steps",
         "methodology_refs", "conclusion", "control_conclusion",
         "scope_limitations", "next_action",
     }
@@ -439,11 +426,6 @@ def update(
     )
     if conclusion not in CONTROL_CONCLUSIONS:
         raise WorkspaceError("Unknown control conclusion.")
-    disposition = str(
-        changes.get("auditor_disposition", item.get("auditor_disposition") or "pending")
-    )
-    if disposition not in AUDITOR_DISPOSITIONS:
-        raise WorkspaceError("Unknown Data Test auditor disposition.")
     item.update(
         title=title,
         objective=objective,
@@ -452,7 +434,6 @@ def update(
         table_refs=refs,
         spec=spec,
         semantic_warnings=warnings,
-        auditor_disposition=disposition,
         control_conclusion=conclusion,
         criteria=str(changes.get("criteria", item.get("criteria") or "")),
         steps=_normalize_steps(changes.get("steps", item.get("steps"))),
@@ -925,9 +906,7 @@ def spec_as_python_code(spec: dict) -> str:
 
 
 def list_payload(workspace: Workspace) -> list[dict]:
-    payloads = []
-    for item in sorted(workspace.data_tests, key=lambda item: item.get("updated") or "", reverse=True):
-        payload = {key: value for key, value in item.items() if key != "runs"}
-        payload.setdefault("auditor_disposition", "pending")
-        payloads.append(payload)
-    return payloads
+    return [
+        {key: value for key, value in item.items() if key != "runs"}
+        for item in sorted(workspace.data_tests, key=lambda item: item.get("updated") or "", reverse=True)
+    ]
