@@ -26,12 +26,15 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Command:
     id: str
-    goal_template: str
+    goal_template: str | None
     label: str
     # Exact-match names accepted after "/". Matched after normalization, so
     # spacing, hyphens, and underscores are interchangeable. The first alias
     # is the canonical name shown in the composer's autocomplete.
     slash: tuple[str, ...]
+    # Local commands are handled by the chat coordinator and never start a
+    # model-backed run. They may still appear in the same slash-command menu.
+    local_handler: str | None = None
     description: str = ""
     # Conservative substring phrases checked against already-"act" free text.
     # Kept short and fully-worded to avoid false positives inside unrelated
@@ -100,6 +103,11 @@ COMMANDS: dict[str, Command] = {
             slash=("run document tests", "run tests"),
             description="Execute the Document Tests in scope.",
             phrases=("run document test", "run the document tests", "execute the document tests"),
+        ),
+        Command(
+            "status", None, "Audit status",
+            slash=("status",), local_handler="status",
+            description="Show the current audit status without using the model.",
         ),
     )
 }

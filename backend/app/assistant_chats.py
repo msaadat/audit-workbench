@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import assistant, debug_store, llm
+from . import assistant, dashboard, debug_store, llm
 from .agent import commands, narration, routing, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
@@ -556,16 +556,21 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
     request_id = _validate(str(payload.get("request_id") or ""), REQUEST_ID_RE, "request id")
     goal_template = str(payload.get("goal_template") or "").strip() or None
     command_id = str(payload.get("command") or "").strip() or None
+    local_handler = None
     if command_id:
         matched_command = commands.COMMANDS.get(command_id)
         if matched_command is None:
             raise WorkspaceError(f"Unknown command '{command_id}'.")
         if goal_template:
             raise WorkspaceError("Use either command or goal_template, not both.")
-        if requested not in {"auto", "act"}:
-            raise WorkspaceError("command requires act or auto intent.")
-        goal_template = matched_command.goal_template
-        requested = "act"
+        local_handler = matched_command.local_handler
+        if local_handler:
+            goal_template = None
+        else:
+            if requested not in {"auto", "act"}:
+                raise WorkspaceError("command requires act or auto intent.")
+            goal_template = matched_command.goal_template
+            requested = "act"
     if goal_template and (requested != "act" or goal_template not in routing.GOAL_TEMPLATES):
         raise WorkspaceError("goal_template requires act intent and a registered template.")
     raw_outcomes = payload.get("requested_outcomes") or []
@@ -633,7 +638,7 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                     )
             outcome = _process_message(
                 workspace, chat_id, user, record, mode, goal_template, run_kind,
-                run_context, requested_outcomes,
+                run_context, requested_outcomes, local_handler,
             )
             return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
         except Exception as error:
@@ -657,8 +662,20 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
 def _process_message(
     workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
     goal_template: str | None, run_kind: str | None = None, run_context: dict | None = None,
-    requested_outcomes: list[str] | None = None,
+    requested_outcomes: list[str] | None = None, local_handler: str | None = None,
 ) -> dict:
+    slash_command = None
+    if commands.is_slash(user["content"]):
+        slash_command = commands.match_slash(user["content"])
+        if slash_command and slash_command.local_handler:
+            local_handler = slash_command.local_handler
+
+    # Local slash commands have precedence over active-run interactions: a
+    # status check should report the engagement rather than answer a pending
+    # agent question or spend a model turn.
+    if local_handler == "status":
+        return _process_status_message(workspace, chat_id, user)
+
     active = _active_run(workspace)
     # Free-text interactions have precedence over all routing.
     if active and active.get("interview", {}).get("pending_question"):
@@ -681,7 +698,7 @@ def _process_message(
     if requested == "auto" and commands.is_slash(user["content"]):
         # An explicit slash command is resolved outright, the same as a caller
         # passing `command` directly — it never enters ask/act classification.
-        matched_command = commands.match_slash(user["content"])
+        matched_command = slash_command or commands.match_slash(user["content"])
         if matched_command is None:
             text = f"Unknown command. Available: {commands.help_text()}"
             outcome = {"kind": "clarification_requested"}
@@ -870,6 +887,58 @@ def _process_message(
             queued = response.get("command") or {}
             outcome = {"kind": "command_queued", "run_id": raced["id"], "command_id": queued.get("id"), "position": 1}
     def done(rec, stored): stored.update(state="complete", resolved_intent="act", outcome=outcome)
+    _finalize(workspace, chat_id, user["id"], done)
+    return outcome
+
+
+def _status_label(value: str) -> str:
+    return str(value or "unknown").replace("_", " ").capitalize()
+
+
+def _audit_status_text(workspace: Workspace) -> str:
+    """Render the deterministic engagement projection as a concise chat reply."""
+    phases = dashboard.engagement_status_payload(workspace).get("phases") or []
+    states = {str(phase.get("state") or "") for phase in phases}
+    if "attention" in states:
+        overall = "Needs attention"
+    elif phases and all(bool(phase.get("complete")) for phase in phases):
+        overall = "Complete"
+    elif "in_progress" in states or "complete" in states:
+        overall = "In progress"
+    else:
+        overall = "Not started"
+
+    lines = ["## Audit status", "", f"**Overall:** {overall}", ""]
+    for phase in phases:
+        line = (
+            f"- **{phase.get('label') or phase.get('id')}:** "
+            f"{_status_label(phase.get('state'))}"
+        )
+        summary = str(phase.get("summary") or "").strip()
+        if summary:
+            line += f" — {summary}"
+        lines.append(line)
+        for issue in (phase.get("issues") or [])[:2]:
+            lines.append(f"  - Attention: {issue}")
+
+    active = _active_run(workspace)
+    if active:
+        lines.extend(["", f"**Current run:** {_current_activity(active)}."])
+    return "\n".join(lines)
+
+
+def _process_status_message(workspace: Workspace, chat_id: str, user: dict) -> dict:
+    content = _audit_status_text(workspace)
+    outcome = {"kind": "status"}
+
+    def done(rec, stored):
+        answer = _append_assistant(
+            rec, kind="text", content=content, resolved="ask",
+            reply_to=stored["id"], outcome=outcome,
+        )
+        outcome["message_id"] = answer["id"]
+        stored.update(state="complete", resolved_intent="ask", outcome=outcome)
+
     _finalize(workspace, chat_id, user["id"], done)
     return outcome
 

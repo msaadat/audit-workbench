@@ -303,6 +303,32 @@ def test_slash_command_bypasses_ask_act_classification(workspace_with_data, monk
     assert result["chat"]["messages"][0]["resolved_intent"] == "act"
 
 
+def test_status_slash_command_is_deterministic_and_does_not_start_a_run(
+    workspace_with_data, monkeypatch,
+):
+    ws = workspace_with_data
+    chat = assistant_chats.create_chat(ws)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("/status must not call a model or start a run")
+
+    monkeypatch.setattr(assistant_chats.llm, "chat", fail)
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fail)
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fail)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/status", "intent": "auto", "mode": "auto",
+        "request_id": "request-slash-status", "source": "composer",
+    })
+
+    assert result["outcome"]["kind"] == "status"
+    assert store.list_runs(ws) == []
+    reply = result["chat"]["messages"][-1]
+    assert reply["kind"] == "text"
+    assert reply["resolved_intent"] == "ask"
+    assert "## Audit status" in reply["content"]
+    assert "Planning" in reply["content"]
+
+
 def test_unknown_slash_command_asks_for_clarification(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     configured(monkeypatch)
