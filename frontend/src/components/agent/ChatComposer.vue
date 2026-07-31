@@ -37,6 +37,9 @@ const modeMenuItems = computed(() => modeOptions.map(option => ({
 })))
 const canSend = computed(() => {
   if (!draft.value.trim() || props.busy) return false
+  // `/status` is a local deterministic command and remains available even
+  // when neither model profile has been configured.
+  if (/^\/status$/i.test(draft.value.trim())) return true
   return Boolean(props.capabilities?.ask || props.capabilities?.act)
 })
 const placeholder = computed(() => {

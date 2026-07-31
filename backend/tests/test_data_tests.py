@@ -82,6 +82,23 @@ def test_analytics_run_replaces_the_current_durable_result(workspace_with_data):
     ]
 
 
+def test_auditor_can_sign_off_a_completed_exception_result(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    result = data_tests.run(ws, item["id"])
+    assert result["status"] == "completed_with_exception"
+    assert item["auditor_disposition"] == "pending"
+
+    updated = data_tests.update(ws, item["id"], {"auditor_disposition": "accepted"})
+    assert updated["auditor_disposition"] == "accepted"
+    # The engine's own read of the run is untouched by the auditor's sign-off.
+    assert updated["status"] == "completed_with_exception"
+
+    with pytest.raises(workspaces.WorkspaceError):
+        data_tests.update(ws, item["id"], {"auditor_disposition": "bogus"})
+
+
 def test_rerun_discards_unreferenced_legacy_result_files(workspace_with_data):
     ws = workspace_with_data
     item = data_tests.create(ws, _analytics_payload(_rcm_row(ws)))

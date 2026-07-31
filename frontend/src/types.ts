@@ -556,6 +556,7 @@ export interface DataTest extends TestPlan, TestOutcome {
   status: TestStatus
   semantic_warnings: string[]
   last_run: DataTestRunSummary | null
+  auditor_disposition: 'pending' | 'follow_up' | 'accepted' | 'invalid_test_or_result' | 'not_applicable'
   evidence_refs: EvidenceRef[]
   created_by: 'agent' | 'user'
   agent_run_id: string | null
