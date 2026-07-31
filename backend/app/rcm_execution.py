@@ -20,6 +20,15 @@ _DURABLE_DOC_TEST_STATUSES = frozenset({
     "completed_with_exception",
     "not_applicable",
 })
+# The auditor's control-level disposition is the authoritative conclusion for
+# completion gates. The explanatory free-text note remains useful workpaper
+# context, but it is not required to close a test.
+CONCLUDED_CONTROL_CONCLUSIONS = frozenset({
+    "effective",
+    "partially_effective",
+    "ineffective",
+    "not_applicable",
+})
 
 
 def _doc_tests(workspace: Workspace) -> list[dict]:
@@ -460,7 +469,7 @@ def completion(workspace: Workspace) -> dict:
         for row, test in linked
         if test["item"].get("status")
         not in {
-            "blocked", "review_required", "completed_no_exception",
+            "blocked", "review_required", "completed", "completed_no_exception",
             "completed_with_exception", "not_applicable",
         }
     ]
@@ -468,7 +477,7 @@ def completion(workspace: Workspace) -> dict:
         {"rcm_id": row["id"], "test_id": test["id"]}
         for row, test in linked
         if str(test["item"].get("status") or "").startswith("completed")
-        and not str(test["item"].get("conclusion") or "").strip()
+        and test["item"].get("control_conclusion") not in CONCLUDED_CONTROL_CONCLUSIONS
     ]
     missing_planning_context = [
         field for field in ("objective", "scope")

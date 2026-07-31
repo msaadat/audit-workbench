@@ -224,10 +224,8 @@ def _engagement_state(workspace: Workspace) -> dict:
     incomplete_linked_tests = [
         item
         for item in linked_tests
-        if item.get("status") not in {
-            "completed_no_exception", "completed_with_exception", "not_applicable",
-        }
-        or not str(item.get("conclusion") or item.get("scope_limitations") or "").strip()
+        if item.get("status") not in _TERMINAL_TEST_STATUSES
+        or item.get("control_conclusion") not in rcm_execution.CONCLUDED_CONTROL_CONCLUSIONS
     ]
     incomplete_tests = [
         test for test in tests

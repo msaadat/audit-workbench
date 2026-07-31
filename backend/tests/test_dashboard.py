@@ -283,6 +283,31 @@ def test_terminal_document_test_result_statuses_are_not_marked_incomplete(
     )
 
 
+def test_fieldwork_gate_uses_control_conclusion_not_free_text(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    ws.update_planning({
+        "context": {"objective": "Test controls.", "scope": "Transactions."},
+    })
+    row = ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+    test = data_tests.create(ws, {
+        "title": "Required transaction identifiers", "objective": "Identify missing IDs.",
+        "engine": "analytics", "table_refs": ["transactions"],
+        "rcm_id": row["id"],
+        "spec": {"test_id": "sign_scan", "params": {"column": "amount"}},
+    })
+    data_tests.run(ws, test["id"])
+    rcm_execution.rollup(ws)
+    data_tests.update(ws, test["id"], {"control_conclusion": "effective"})
+
+    phase = next(
+        item for item in engagement_status_payload(ws)["phases"]
+        if item["id"] == "fieldwork"
+    )
+    assert not any("open execution or outcomes" in issue for issue in phase["issues"])
+
+
 def test_dashboard_advice_is_metadata_only_cached_and_marked_stale(
     workspace_with_data, monkeypatch,
 ):

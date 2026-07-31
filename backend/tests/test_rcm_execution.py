@@ -338,3 +338,26 @@ def test_completion_uses_execution_and_outcome_gates(workspace_with_data):
     )
     completed = rcm_execution.completion(ws)
     assert completed["status"] == "completed"
+
+
+def test_completion_uses_control_conclusion_without_free_text(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    ws.update_planning(
+        {
+            "context": {
+                "objective": "Test procurement controls.",
+                "scope": "Invoice population.",
+            }
+        }
+    )
+    row = _row(ws)
+    item = _data_test(ws, row)
+    data_tests.run(ws, item["id"])
+    rcm_execution.rollup(ws)
+
+    data_tests.update(ws, item["id"], {"control_conclusion": "effective"})
+
+    completion = rcm_execution.completion(ws)
+    assert completion["blank_conclusions"] == []
