@@ -29,8 +29,10 @@ class Command:
     goal_template: str
     label: str
     # Exact-match names accepted after "/". Matched after normalization, so
-    # spacing, hyphens, and underscores are interchangeable.
+    # spacing, hyphens, and underscores are interchangeable. The first alias
+    # is the canonical name shown in the composer's autocomplete.
     slash: tuple[str, ...]
+    description: str = ""
     # Conservative substring phrases checked against already-"act" free text.
     # Kept short and fully-worded to avoid false positives inside unrelated
     # sentences (a bare "plan" or "report" would match too much).
@@ -42,51 +44,61 @@ COMMANDS: dict[str, Command] = {
         Command(
             "full_audit", "full_audit_working_draft", "Full audit",
             slash=("full audit", "audit"),
+            description="Execute RCM-linked tests through an evidence-linked report working draft.",
             phrases=("full audit", "entire audit", "end-to-end audit", "end to end audit"),
         ),
         Command(
             "plan", "planning", "Plan the engagement",
             slash=("plan", "planning"),
+            description="Prepare or improve engagement planning and the RCM tests that cover it.",
             phrases=("plan the audit", "prepare planning", "prepare engagement planning"),
         ),
         Command(
             "generate_apm", "apm_only", "Generate APM",
             slash=("generate apm", "apm"),
+            description="Prepare or revise only the audit planning memorandum.",
             phrases=("generate apm", "generate the apm", "draft the apm", "update the apm"),
         ),
         Command(
             "draft_findings", "finding_draft", "Draft findings",
             slash=("draft findings", "findings"),
+            description="Draft evidence-linked findings for the selected observation or risk.",
             phrases=("draft findings", "draft eligible findings"),
         ),
         Command(
             "generate_report", "report", "Generate report",
             slash=("generate report", "report"),
+            description="Prepare evidence-linked audit report working content and run quality checks.",
             phrases=("generate the report", "draft the report", "audit report"),
         ),
         Command(
             "analyze_data", "data_analysis", "Analyze data",
             slash=("analyze data", "data analysis"),
+            description="Analyze available structured data and preserve useful validated work.",
             phrases=("analyze the data", "analyse the data", "explore the data"),
         ),
         Command(
             "relate_tables", "table_relationships", "Relate tables",
             slash=("relate tables", "table relationships"),
+            description="Infer table relationships and materialize supported joins.",
             phrases=("relationships between tables", "join the tables", "relate the tables"),
         ),
         Command(
             "analyze_documents", "document_analysis", "Analyze documents",
             slash=("analyze documents", "document analysis"),
+            description="Analyze the documents in scope.",
             phrases=("analyze the documents", "analyse the documents", "summarize the documents"),
         ),
         Command(
             "prepare_document_tests", "document_test_preparation", "Prepare document tests",
             slash=("prepare document tests", "prepare tests"),
+            description="Write the executable specification for each drafted test.",
             phrases=("prepare document tests", "prepare the document tests"),
         ),
         Command(
             "run_document_tests", "document_test_execution", "Run document tests",
             slash=("run document tests", "run tests"),
+            description="Execute the Document Tests in scope.",
             phrases=("run document test", "run the document tests", "execute the document tests"),
         ),
     )
@@ -125,3 +137,12 @@ def match_phrase(content: str) -> Command | None:
 
 def help_text() -> str:
     return ", ".join(f"/{command.slash[0]}" for command in COMMANDS.values())
+
+
+def list_for_ui() -> list[dict]:
+    """The registry projected for the composer's slash-command autocomplete."""
+
+    return [
+        {"id": command.id, "slash": command.slash[0], "label": command.label, "description": command.description}
+        for command in COMMANDS.values()
+    ]

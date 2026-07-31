@@ -1378,11 +1378,19 @@ export interface AssistantMilestoneProjection {
   milestone: AgentMilestone
 }
 
+export interface AssistantSlashCommand {
+  id: string
+  slash: string
+  label: string
+  description: string
+}
+
 export interface AssistantCapabilities {
   ask: boolean
   act: boolean
   assistant: AssistantStatus
   agent: AssistantStatus
+  commands: AssistantSlashCommand[]
 }
 
 export interface AssistantChat extends Omit<AssistantChatSummary, 'message_count'> {

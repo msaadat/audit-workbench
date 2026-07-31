@@ -263,6 +263,7 @@ def capabilities() -> dict:
         "act": bool(agent_status.get("configured")),
         "assistant": assistant_status,
         "agent": agent_status,
+        "commands": commands.list_for_ui(),
     }
 
 
