@@ -554,15 +554,14 @@ def summary_markdown(heading: str, rows: list[tuple[str, object]], note: str = "
 # --------------------------------------------------------------------------- #
 # Next steps
 # --------------------------------------------------------------------------- #
-# What to offer someone looking at an empty chat. Each command is worded to hit
-# a deterministic phrase in ``routing.GENERATION_RULES``, so accepting a
-# suggestion classifies without spending a router turn.
+# What to offer someone looking at an empty chat. The displayed command is
+# paired with its declared capability, so accepting it never needs to infer a
+# route from the wording.
 _NEXT_STEPS: dict[str, tuple[str, str]] = {
     "documents.analysis_generated": ("Analyse the documents", "Analyse the documents."),
     "planning.apm_ready": ("Draft the APM", "Draft the APM."),
     "planning.rcm_ready": ("Generate the RCM", "Generate the RCM."),
-    "tests.specified": ("Generate the tests", "Generate each executable test the RCM rows need."),
-    "fieldwork.definitions_ready": ("Prepare document tests", "Prepare the document tests."),
+    "tests.specified": ("Draft the tests", "Draft the tests the RCM rows still need."),
     "findings.drafted": ("Draft findings", "Draft findings."),
     "report.working_draft": ("Draft the report", "Draft the report."),
 }
@@ -593,6 +592,9 @@ def next_steps(workspace, state: dict[str, dict] | None = None, *, limit: int = 
         suggestions.append(
             {
                 "capability": capability_id,
+                # This is a declared outcome, not just wording for the
+                # assistant to interpret again.
+                "requested_outcomes": [capability_id],
                 "label": label,
                 "command": command,
                 "reason": reasons[0] if reasons else "",

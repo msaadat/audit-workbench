@@ -282,7 +282,7 @@ def _definition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     """One unit per unusable definition — the agent cannot author the fix.
 
     A standalone Document Test was created by the auditor (or by the audit
-    graph's ``fieldwork.definitions_ready``); this workflow never invents one, so
+    graph's ``tests.specified``); this workflow never invents one, so
     a definition that cannot run is reported rather than regenerated.
     """
     test_scope = resolve_doc_test_scope(workspace, scope)

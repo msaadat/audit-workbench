@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 
-import type { AgentDecision, AssistantApprovalProjection, AssistantChat, AssistantChatMessage, AssistantInteractionProjection, AssistantMilestoneProjection, AssistantRunProjection, AuditDocument, EvidenceRef } from '../../types'
+import type { AgentDecision, AssistantApprovalProjection, AssistantChat, AssistantChatMessage, AssistantInteractionProjection, AssistantMilestoneProjection, AssistantRunProjection, AssistantSuggestion, AuditDocument, EvidenceRef } from '../../types'
 import EvidenceAnchorDialog from '../EvidenceAnchorDialog.vue'
 import MarkdownView from '../MarkdownView.vue'
 import AgentApprovalCard from './AgentApprovalCard.vue'
@@ -16,6 +16,7 @@ const props = defineProps<{ workspaceId: string; chat: AssistantChat; documents:
 const emit = defineEmits<{
   shortcut: [string, string]
   command: [string]
+  suggestion: [AssistantSuggestion]
   retry: [AssistantChatMessage]
   changed: []
   respond: [string, AssistantInteractionProjection['interaction'], Record<string, unknown>]
@@ -109,7 +110,7 @@ function messageTime(value: string) {
       <strong>What should we work on?</strong>
       <p>Ask me anything about this engagement, or tell me what to do next.</p>
       <div v-if="chat.suggestions?.length" class="suggestions">
-        <button v-for="item in chat.suggestions" :key="item.capability" class="suggestion" @click="emit('command', item.command)">
+        <button v-for="item in chat.suggestions" :key="item.capability" class="suggestion" @click="emit('suggestion', item)">
           <strong>{{ item.label }}</strong>
           <small v-if="item.reason">{{ item.reason }}</small>
         </button>

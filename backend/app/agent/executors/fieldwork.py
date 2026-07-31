@@ -7,7 +7,7 @@ execution path for ``results.rolled_up``. As with the reporting siblings, the
 exception observations are created directly during roll-up and feed finding
 creation without a separate checkpoint.
 
-``execute_data_test`` is the registered commit for ``fieldwork.definitions_ready``
+``execute_data_test`` is the registered commit for ``fieldwork.executed``
 Data Test units: it owns the planned-test parent guard, auditor-edit
 preservation, and the authoritative data-dependent validation that the worker's
 bundle-only gate cannot perform.

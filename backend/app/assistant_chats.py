@@ -556,6 +556,20 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
     goal_template = str(payload.get("goal_template") or "").strip() or None
     if goal_template and (requested != "act" or goal_template not in routing.GOAL_TEMPLATES):
         raise WorkspaceError("goal_template requires act intent and a registered template.")
+    raw_outcomes = payload.get("requested_outcomes") or []
+    if not isinstance(raw_outcomes, list) or any(
+        not isinstance(value, str) or not value.strip() for value in raw_outcomes
+    ):
+        raise WorkspaceError("requested_outcomes must be a list of outcome ids.")
+    requested_outcomes = [value.strip() for value in raw_outcomes]
+    if requested_outcomes:
+        if requested != "act":
+            raise WorkspaceError("requested_outcomes requires act intent.")
+        if goal_template:
+            raise WorkspaceError("Use either requested_outcomes or a goal_template, not both.")
+        # A structured suggestion must name registered outcomes from one
+        # workflow before a durable command is created.
+        routing.validate_requested_outcomes(requested_outcomes)
 
     path = _chat_path(workspace, chat_id)
     process_lock = _processing_lock(path)
@@ -605,7 +619,10 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                         "Command run context is only accepted for a registered "
                         "goal template's declared scope keys."
                     )
-            outcome = _process_message(workspace, chat_id, user, record, mode, goal_template, run_kind, run_context)
+            outcome = _process_message(
+                workspace, chat_id, user, record, mode, goal_template, run_kind,
+                run_context, requested_outcomes,
+            )
             return {"outcome": outcome, "chat": get_chat(workspace, chat_id)}
         except Exception as error:
             try:
@@ -628,6 +645,7 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
 def _process_message(
     workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
     goal_template: str | None, run_kind: str | None = None, run_context: dict | None = None,
+    requested_outcomes: list[str] | None = None,
 ) -> dict:
     active = _active_run(workspace)
     # Free-text interactions have precedence over all routing.
@@ -763,6 +781,7 @@ def _process_message(
         "text": user["content"], "goal_template": goal_template,
         "chat_id": chat_id, "source_message_id": user["id"], "context_refs": refs,
         "target_refs": target_refs,
+        "requested_outcomes": list(requested_outcomes or []),
     }
     if goal_template == "planning" and not planning_context.get("document_ids"):
         planning_context["document_ids"] = list(
@@ -773,6 +792,7 @@ def _process_message(
             workspace, active["id"], user["content"], chat_id=chat_id,
             source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
             run_context=planning_context, goal_template=goal_template,
+            requested_outcomes=requested_outcomes,
         )
         queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
         pending_count = len(store.load_run(workspace, active["id"]).get("pending_commands") or [])
@@ -810,6 +830,7 @@ def _process_message(
                 workspace, raced["id"], user["content"], chat_id=chat_id,
                 source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
                 run_context=planning_context, goal_template=goal_template,
+                requested_outcomes=requested_outcomes,
             )
             queued = response.get("command") or {}
             outcome = {"kind": "command_queued", "run_id": raced["id"], "command_id": queued.get("id"), "position": 1}

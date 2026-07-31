@@ -161,7 +161,7 @@ export function useAssistantChat(workspaceId: string) {
     content: string,
     intent: AssistantMessageIntent = 'auto',
     mode: AgentMode = 'auto',
-    options: { goalTemplate?: string | null; source?: 'composer' | 'shortcut' | 'tab_button' | 'folder_intake'; runKind?: 'intake'; runContext?: Record<string, unknown>; requestId?: string } = {},
+    options: { goalTemplate?: string | null; source?: 'composer' | 'shortcut' | 'tab_button' | 'folder_intake'; requestedOutcomes?: string[]; runKind?: 'intake'; runContext?: Record<string, unknown>; requestId?: string } = {},
   ) {
     await init()
     if (!store.activeChatId || store.busy) return
@@ -183,6 +183,7 @@ export function useAssistantChat(workspaceId: string) {
         {
           content, intent, mode, request_id: rid,
           goal_template: options.goalTemplate ?? null, source: options.source ?? 'composer',
+          requested_outcomes: options.requestedOutcomes ?? [],
           run_kind: options.runKind ?? null, run_context: options.runContext ?? null,
         },
       )

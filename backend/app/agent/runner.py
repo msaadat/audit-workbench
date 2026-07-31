@@ -479,6 +479,7 @@ def steer(
     target_refs: list[str] | None = None,
     run_context: dict | None = None,
     goal_template: str | None = None,
+    requested_outcomes: list[str] | None = None,
 ) -> dict:
     """A message to a run: steering while it's live, a persisted note while
     paused, or a linked follow-up run once it has finished."""
@@ -494,7 +495,8 @@ def steer(
              "parent_command_id": (run.get("command") or {}).get("id"),
              "chat_id": chat_id, "source_message_id": source_message_id,
              "context_refs": list(context_refs or []),
-             "target_refs": list(target_refs or [])},
+             "target_refs": list(target_refs or []),
+             "requested_outcomes": list(requested_outcomes or [])},
             parent_run_id=run_id,
             context=run_context,
         )
@@ -508,6 +510,7 @@ def steer(
             "chat_id": chat_id, "source_message_id": source_message_id,
             "context_refs": list(context_refs or []),
             "target_refs": list(target_refs or []),
+            "requested_outcomes": list(requested_outcomes or []),
             "run_context": dict(run_context or {}),
         }
         handle = get_handle(run_id)

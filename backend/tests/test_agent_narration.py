@@ -567,7 +567,7 @@ def test_stage_lines_report_counts_and_who_is_waiting():
 # --------------------------------------------------------------------------- #
 # Next steps
 # --------------------------------------------------------------------------- #
-def test_next_steps_come_from_readiness_and_route_deterministically():
+def test_next_steps_come_from_readiness_and_preserve_declared_outcomes():
     from app.agent import routing
 
     state = {
@@ -582,12 +582,23 @@ def test_next_steps_come_from_readiness_and_route_deterministically():
         "planning.rcm_ready",
     ]
     assert steps[0]["reason"] == "1 document(s) have no generated analysis"
-    # Every suggested command has to hit a deterministic generation phrase, or
-    # accepting a suggestion would burn a router turn to classify it.
-    phrases = [phrase for rule in routing.GENERATION_RULES for phrase in rule[0]]
-    for step in narration.next_steps(None, {key: {"state": "missing"} for key in narration._NEXT_STEPS}):
-        text = step["command"].casefold()
-        assert any(phrase in text for phrase in phrases), step["command"]
+    # The clicked suggestion carries its declared outcome. Routing must honor
+    # that structured value rather than attempting to infer it from display
+    # wording, which can legitimately vary over time.
+    all_missing = {key: {"state": "missing"} for key in narration._NEXT_STEPS}
+    all_steps = narration.next_steps(None, all_missing, limit=len(narration._NEXT_STEPS))
+    assert len(all_steps) == len(narration._NEXT_STEPS)
+    for step in all_steps:
+        assert step["requested_outcomes"] == [step["capability"]]
+        resolved = routing.classify_command(
+            {
+                "source": "tab_button",
+                "text": step["command"],
+                "requested_outcomes": step["requested_outcomes"],
+            }
+        )
+        assert resolved["decided_by"] == "explicit_outcomes"
+        assert resolved["requested_outcomes"] == step["requested_outcomes"]
 
 
 def test_next_steps_never_break_a_chat_load():

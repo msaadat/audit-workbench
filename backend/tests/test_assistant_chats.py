@@ -169,6 +169,29 @@ def test_explicit_action_starts_linked_schema_v2_run(workspace_with_data, monkey
     assert any(item["type"] == "run" for item in result["chat"]["transcript"])
 
 
+def test_next_step_action_forwards_declared_outcomes(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    assistant_chats.send_message(ws, chat["id"], {
+        "content": "Generate each executable test the RCM rows need.",
+        "intent": "act", "mode": "auto", "request_id": "request-next-step",
+        "source": "shortcut", "requested_outcomes": ["tests.specified"],
+    })
+
+    assert launched["requested_outcomes"] == ["tests.specified"]
+
+
 def test_planning_action_passes_structured_run_context(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     configured(monkeypatch)

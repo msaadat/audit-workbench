@@ -1403,6 +1403,7 @@ export interface AssistantChat extends Omit<AssistantChatSummary, 'message_count
 
 export interface AssistantSuggestion {
   capability: string
+  requested_outcomes: string[]
   label: string
   command: string
   reason: string

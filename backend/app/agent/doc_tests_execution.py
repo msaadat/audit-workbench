@@ -330,7 +330,7 @@ class DocTestWorkflowExecution(BaseRunner):
         """A definition that cannot run is reported, never invented.
 
         This workflow schedules Document Tests the auditor (or the audit graph's
-        ``fieldwork.definitions_ready``) already authored. A worklist with no
+        ``tests.specified``) already authored. A worklist with no
         attached evidence, no comparison checks, or no question is something only
         its author can fix, so the unit settles for auditor attention with the
         deterministic issues recorded.

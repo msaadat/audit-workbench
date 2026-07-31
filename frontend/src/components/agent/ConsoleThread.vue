@@ -10,7 +10,7 @@ import Tag from 'primevue/tag'
 import { api, ApiError } from '../../api'
 import { useAgentRun } from '../../composables/useAgentRun'
 import { useAssistantChat } from '../../composables/useAssistantChat'
-import type { AgentApproval, AgentDecision, AgentInteraction, AssistantChat, AssistantMessageIntent, AuditDocument, WorkspaceSummary } from '../../types'
+import type { AgentApproval, AgentDecision, AgentInteraction, AssistantChat, AssistantMessageIntent, AssistantSuggestion, AuditDocument, WorkspaceSummary } from '../../types'
 import ChatComposer from './ChatComposer.vue'
 import ChatHistoryPanel from './ChatHistoryPanel.vue'
 import ChatTranscript from './ChatTranscript.vue'
@@ -71,10 +71,13 @@ watch(() => [
 async function loadDocuments() {
   documents.value = (await api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)).items
 }
-async function send(content: string, sendIntent: AssistantMessageIntent = 'auto', goalTemplate?: string, source: 'composer'|'shortcut'|'tab_button'|'folder_intake' = 'composer') {
+async function send(content: string, sendIntent: AssistantMessageIntent = 'auto', goalTemplate?: string, source: 'composer'|'shortcut'|'tab_button'|'folder_intake' = 'composer', requestedOutcomes?: string[]) {
   try {
-    await chats.send(content, sendIntent, mode.value, { goalTemplate, source })
+    await chats.send(content, sendIntent, mode.value, { goalTemplate, source, requestedOutcomes })
   } catch (error) { fail('Message failed', error) }
+}
+function nextStep(suggestion: AssistantSuggestion) {
+  void send(suggestion.command, 'act', undefined, 'shortcut', suggestion.requested_outcomes)
 }
 function stopRun() {
   confirm.require({
@@ -150,7 +153,7 @@ function fail(summary: string, error: unknown) { toast.add({ severity: 'error', 
     </header>
     <ChatHistoryPanel v-if="showHistory" :chats="chats.state.summaries" :activeId="chats.state.activeChatId" @select="chats.switchChat($event); showHistory = false" @create="chats.createChat(); showHistory = false" @rename="rename" @remove="remove" @close="showHistory = false" />
     <div v-if="chats.state.loading && !displayChat" class="loading"><i class="pi pi-spin pi-spinner" /> Loading chat…</div>
-    <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" @shortcut="shortcut" @command="send($event, 'act')" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
+    <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
     <ChatComposer
       v-if="activeChat"
       v-model:mode="mode"

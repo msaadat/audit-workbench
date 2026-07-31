@@ -139,6 +139,22 @@ def test_explicit_outcomes_outrank_every_phrase_rule():
     assert resolved["requested_outcomes"] == ["planning.apm_ready"]
 
 
+def test_next_step_outcome_bypasses_text_reparsing():
+    resolved = routing.classify_command(
+        {
+            "source": "tab_button",
+            "text": "Generate each executable test the RCM rows need.",
+            "requested_outcomes": ["tests.specified"],
+            "generation_mode": "reuse_existing",
+        }
+    )
+
+    assert resolved["route"] == "workflow"
+    assert resolved["decided_by"] == "explicit_outcomes"
+    assert resolved["requested_outcomes"] == ["tests.specified"]
+    assert resolved["generation_mode"] == "reuse_existing"
+
+
 def test_classification_is_pure(monkeypatch, workspace_with_data):
     """Routing cannot execute actions, gather domain context, or mutate."""
     monkeypatch.setattr(
