@@ -51,20 +51,36 @@ const counts = computed(() => [
 
     <p class="rail-label">Progress</p>
     <div v-if="!phases.length" class="empty">Status is unavailable.</div>
-    <router-link
-      v-for="phase in phases"
-      :key="phase.id"
-      :to="nav.target(phase.target)"
-      class="phase"
-      :data-state="phase.state"
-    >
-      <i :class="stateIcon[phase.state]" aria-hidden="true" />
-      <span class="body">
-        <strong>{{ phase.label }}</strong>
-        <small>{{ phase.summary || stateLabel[phase.state] }}</small>
-        <small v-if="phase.issues.length" class="issue">{{ phase.issues[0] }}</small>
-      </span>
-    </router-link>
+    <template v-for="phase in phases" :key="phase.id">
+      <div v-if="phase.sub.length" class="phase phase-group" :data-state="phase.state">
+        <i :class="stateIcon[phase.state]" aria-hidden="true" />
+        <span class="body">
+          <strong>{{ phase.label }}</strong>
+          <small>{{ phase.summary || stateLabel[phase.state] }}</small>
+          <small v-if="phase.issues.length" class="issue">{{ phase.issues[0] }}</small>
+          <span class="sub-buttons">
+            <router-link
+              v-for="sub in phase.sub"
+              :key="sub.id"
+              :to="nav.target(sub.target)"
+              class="sub-btn"
+              :data-state="sub.state"
+            >
+              <i :class="stateIcon[sub.state]" aria-hidden="true" />
+              {{ sub.label }}
+            </router-link>
+          </span>
+        </span>
+      </div>
+      <router-link v-else :to="nav.target(phase.target)" class="phase" :data-state="phase.state">
+        <i :class="stateIcon[phase.state]" aria-hidden="true" />
+        <span class="body">
+          <strong>{{ phase.label }}</strong>
+          <small>{{ phase.summary || stateLabel[phase.state] }}</small>
+          <small v-if="phase.issues.length" class="issue">{{ phase.issues[0] }}</small>
+        </span>
+      </router-link>
+    </template>
   </aside>
 </template>
 
@@ -127,6 +143,29 @@ const counts = computed(() => [
 .phase strong { font-size: 0.78rem; font-weight: 600; }
 .phase small { color: var(--aw-muted); font-size: 0.68rem; line-height: 1.35; }
 .phase small.issue { color: var(--aw-warn); }
+
+.phase-group { cursor: default; }
+
+.sub-buttons { display: flex; gap: 0.3rem; margin-top: 0.3rem; }
+.sub-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--aw-border);
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+  background: var(--aw-canvas);
+}
+.sub-btn:hover { border-color: var(--aw-teal); }
+.sub-btn > i { font-size: 0.6rem; }
+.sub-btn[data-state='not_started'] > i { color: #94a3b8; }
+.sub-btn[data-state='in_progress'] > i { color: #2563eb; }
+.sub-btn[data-state='complete'] > i { color: var(--aw-ok); }
+.sub-btn[data-state='attention'] > i { color: var(--aw-warn); }
 
 .empty { padding: 0.5rem 0.15rem; color: var(--aw-muted); font-size: 0.72rem; }
 

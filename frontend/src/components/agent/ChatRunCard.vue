@@ -8,7 +8,6 @@ import type { AgentDecision, AgentInteraction, AgentRun, AssistantRunProjection 
 import AgentApprovalCard from './AgentApprovalCard.vue'
 import AgentBlockerCard from './AgentBlockerCard.vue'
 import AgentInteractionCard from './AgentInteractionCard.vue'
-import AgentSummary from './AgentSummary.vue'
 
 // showAttention: pending interactions/approvals normally render as their own
 // transcript items; only a foreign run card (another chat's active run, not
@@ -18,8 +17,7 @@ const emit = defineEmits<{ changed: []; command: [string] }>()
 const agent = useAgentRun(props.workspaceId)
 // The plan — stages, units, the error each one stopped on — belongs to the left
 // rail, which shows it without a click. What is left here is the receipt: one
-// strip of identity and status, the blockers that still need answering, and the
-// analyst summary the run signed off with.
+// strip of identity and status plus the blockers that still need answering.
 const run = ref<AgentRun | null>(null)
 const busy = ref(false)
 const clock = ref(Date.now())
@@ -84,16 +82,14 @@ onMounted(syncClock)
 watch(active, syncClock)
 onUnmounted(() => { if (clockTimer) window.clearInterval(clockTimer) })
 
-// The full record is fetched only for what the projection cannot carry: the
-// analyst summary with its promotable observations, and — for a run owned by
-// another chat, whose attention items are not projected here — its open
-// approvals and questions.
-const needsDetail = computed(() => props.projection.has_summary || props.showAttention === true)
+// The full record is fetched only for a run owned by another chat, whose
+// attention items are not projected here.
+const needsDetail = computed(() => props.showAttention === true)
 async function load() {
   run.value = await api.get<AgentRun>(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}`)
 }
 // The projection updates with every chat refresh; keep the detail in step so
-// the header and the summary never show contradictory states.
+// attention items remain current.
 watch(
   () => [needsDetail.value, props.projection.status, props.projection.activity_revision ?? 0, props.projection.task_counts.completed, props.projection.task_counts.failed, props.projection.pending_attention].join(':'),
   () => { if (needsDetail.value) void load().catch(() => undefined) },
@@ -171,7 +167,6 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
         <AgentApprovalCard v-for="approval in run.approvals.filter(item => item.status === 'pending')" :key="approval.id" :approval="approval" :busy="busy" @decide="decide(approval.id, $event)" />
         <AgentInteractionCard v-for="interaction in (run.interactions ?? []).filter(item => item.status === 'pending')" :key="interaction.id" :interaction="interaction" :busy="busy" :workspaceId="workspaceId" :runId="run.id" @respond="respond(interaction, $event)" />
       </template>
-      <AgentSummary v-if="run.summary_markdown" :markdown="run.summary_markdown" :findings="run.findings" :auditOutcome="run.audit_outcome" :workspaceId="workspaceId" :runId="run.id" />
     </div>
   </article>
 </template>

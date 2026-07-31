@@ -575,9 +575,70 @@ _NEXT_STEPS: dict[str, tuple[str, str]] = {
     "planning.apm_ready": ("Draft the APM", "Draft the APM."),
     "planning.rcm_ready": ("Generate the RCM", "Generate the RCM."),
     "tests.specified": ("Draft the tests", "Draft the tests the RCM rows still need."),
+    "doc_tests.executed": ("Run document tests", "Run the outstanding Document Tests."),
     "findings.drafted": ("Draft findings", "Draft findings."),
     "report.working_draft": ("Draft the report", "Draft the report."),
 }
+
+# Guided workflows remain available as a fallback for an empty chat, but a
+# completed workflow should not be offered again.  Each command maps to the
+# outcomes it can still contribute to; the button is visible while any one of
+# those outcomes remains unsatisfied.
+_GUIDED_WORKFLOWS: tuple[dict[str, object], ...] = (
+    {
+        "label": "Full audit",
+        "command": "full_audit",
+        "outcomes": (
+            "analysis.executed",
+            "findings.drafted",
+            "working_papers.generated",
+            "dashboard.curated",
+            "report.working_draft",
+            "audit.verified",
+        ),
+    },
+    {
+        "label": "Planning",
+        "command": "plan",
+        "outcomes": ("planning.apm_ready", "planning.rcm_ready", "tests.specified"),
+    },
+    {
+        "label": "Data analysis",
+        "command": "analyze_data",
+        "outcomes": ("analysis.executed",),
+    },
+    {
+        "label": "Document tests",
+        "command": "run_document_tests",
+        "outcomes": ("doc_tests.executed",),
+    },
+    {
+        "label": "Report",
+        "command": "generate_report",
+        "outcomes": ("report.working_draft", "audit.verified"),
+    },
+)
+
+
+def guided_workflows(state: dict[str, dict] | None) -> list[dict]:
+    """Return only guided workflows that still have useful work to do.
+
+    When readiness cannot be computed, preserve every shortcut rather than
+    hiding an action based on an incomplete projection.
+    """
+    workflows: list[dict] = []
+    for workflow in _GUIDED_WORKFLOWS:
+        outcomes = tuple(workflow["outcomes"])
+        if state is not None and all(
+            (state.get(outcome) or {}).get("state") == "satisfied"
+            for outcome in outcomes
+        ):
+            continue
+        workflows.append({
+            "label": str(workflow["label"]),
+            "command": str(workflow["command"]),
+        })
+    return workflows
 
 
 def next_steps(workspace, state: dict[str, dict] | None = None, *, limit: int = 3) -> list[dict]:
@@ -599,7 +660,16 @@ def next_steps(workspace, state: dict[str, dict] | None = None, *, limit: int = 
     suggestions: list[dict] = []
     for capability_id, (label, command) in _NEXT_STEPS.items():
         readiness = (state or {}).get(capability_id) or {}
-        if readiness.get("state") != "missing":
+        # The Document Test execution chain can be blocked by a separate
+        # definition that needs review while other tests still have unchecked
+        # items.  It remains the relevant worklist in that case, and opening
+        # it exposes the blocked definitions instead of leaving an empty chat.
+        document_tests_waiting = (
+            capability_id == "doc_tests.executed"
+            and readiness.get("state") == "blocked"
+            and int(readiness.get("pending") or 0) > 0
+        )
+        if readiness.get("state") != "missing" and not document_tests_waiting:
             continue
         reasons = [str(item) for item in readiness.get("reasons") or []]
         suggestions.append(

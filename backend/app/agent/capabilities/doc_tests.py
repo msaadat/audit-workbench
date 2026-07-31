@@ -74,6 +74,15 @@ def _requested_ids(scope: dict) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def _outstanding(test: dict) -> bool:
+    """Whether this test still has an item the execution workflow can run."""
+
+    return any(
+        str(item.get("state") or "pending") == "pending"
+        for item in test.get("items") or []
+    )
+
+
 def resolve_doc_test_scope(workspace: Workspace, scope: dict) -> DocTestScope:
     """Resolve explicitly named tests, or a bounded set of outstanding ones."""
 

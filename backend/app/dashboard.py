@@ -154,12 +154,19 @@ def _action(action_id: str, title: str, reason: str, tab: str, *,
 
 
 def _phase(phase_id: str, state: str, complete: bool, summary: str,
-           counts: dict, issues: list[str]) -> dict:
+           counts: dict, issues: list[str], sub: list[dict] | None = None) -> dict:
     return {
         "id": phase_id, "label": phase_id.title(), "state": state,
         "complete": complete, "summary": summary, "counts": counts,
         "issues": issues, "target": _target(PHASE_TABS[phase_id]),
+        "sub": sub or [],
     }
+
+
+def _subphase(sub_id: str, label: str, started: bool, issues: list[str], target: dict) -> dict:
+    complete = not issues
+    state = "complete" if complete else ("in_progress" if started else "not_started")
+    return {"id": sub_id, "label": label, "state": state, "complete": complete, "target": target}
 
 
 def _engagement_state(workspace: Workspace) -> dict:
@@ -174,20 +181,25 @@ def _engagement_state(workspace: Workspace) -> dict:
     broken_analyses = []
 
     context = workspace.planning.get("context") or {}
-    planning_started = bool(
-        workspace.planning.get("apm_markdown") or workspace.rcm
+    apm_started = bool(
+        workspace.planning.get("apm_markdown")
         or any(str(value or "").strip() for key, value in context.items() if key != "interview_answers")
         or context.get("interview_answers")
     )
-    planning_issues = []
-    for field in ("objective", "scope"):
-        if not str(context.get(field) or "").strip():
-            planning_issues.append(f"Planning context is missing {field}.")
-    if not workspace.rcm:
-        planning_issues.append("No risks or controls are recorded in the RCM.")
+    apm_issues = [
+        f"Planning context is missing {field}." for field in ("objective", "scope")
+        if not str(context.get(field) or "").strip()
+    ]
     rows_without_tests = completion["coverage"]["rows_without_tests"]
+    rcm_started = bool(workspace.rcm)
+    rcm_issues = []
+    if not workspace.rcm:
+        rcm_issues.append("No risks or controls are recorded in the RCM.")
     if rows_without_tests:
-        planning_issues.append(f"{len(rows_without_tests)} RCM row(s) have no test.")
+        rcm_issues.append(f"{len(rows_without_tests)} RCM row(s) have no test.")
+
+    planning_started = apm_started or rcm_started
+    planning_issues = [*apm_issues, *rcm_issues]
     planning_complete = not planning_issues
     planning_state = "complete" if planning_complete else ("in_progress" if planning_started else "not_started")
     linked_rows = {row["id"] for row in workspace.rcm}
@@ -273,7 +285,11 @@ def _engagement_state(workspace: Workspace) -> dict:
 
     phases = [
         _phase("planning", planning_state, planning_complete, planning_summary,
-               {"rcm_rows": len(workspace.rcm), "tests": len(linked_tests)}, planning_issues),
+               {"rcm_rows": len(workspace.rcm), "tests": len(linked_tests)}, planning_issues,
+               sub=[
+                   _subphase("apm", "APM", apm_started, apm_issues, _target("planning")),
+                   _subphase("rcm", "RCM", rcm_started, rcm_issues, _target("planning", view="rcm")),
+               ]),
         _phase("fieldwork", fieldwork_state, fieldwork_complete, fieldwork_summary,
                {"data_tests": len(workspace.data_tests), "document_tests": len(tests),
                 "exception_observations": sum(

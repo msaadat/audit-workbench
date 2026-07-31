@@ -1163,11 +1163,31 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
         str(item.get("id") or ""),
     ))
 
+    workflow_state = None
+    try:
+        from .agent import capabilities as audit_capabilities
+
+        workflow_state = audit_capabilities.workflow_state(workspace)
+    except Exception:
+        # Recommendation UI must not make an otherwise durable chat unreadable.
+        workflow_state = None
+    if workflow_state is not None:
+        try:
+            workflow_state = {
+                **workflow_state,
+                **audit_capabilities.doc_tests_workflow_state(workspace),
+            }
+        except Exception:
+            # Keep audit recommendations available if a standalone worklist
+            # cannot be inspected.
+            pass
+
     result = dict(record)
     result.update({
         "transcript": transcript, "artifacts": artifacts, "artifact_errors": artifact_errors,
         "runs": linked, "missing_document_ids": missing, "capabilities": capabilities(),
-        "suggestions": narration.next_steps(workspace),
+        "suggestions": narration.next_steps(workspace, workflow_state),
+        "guided_workflows": narration.guided_workflows(workflow_state),
     })
     active_statuses = set(store.ACTIVE_STATUSES) | set(store.RESUMABLE_STATUSES)
     active_summary = next(

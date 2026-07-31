@@ -192,6 +192,24 @@ def test_a_second_run_reuses_the_executed_result_and_re_runs_nothing():
     ] == "not_assessed"
 
 
+def test_unscoped_readiness_selects_only_tests_with_unchecked_items():
+    ws = _workspace("Outstanding document tests")
+    _document, complete = _vouching(ws, title="Completed")
+    _document, pending = _vouching(ws, title="Pending")
+    stored = doc_tests.load_test(ws, complete["id"])
+    stored["items"][0]["state"] = "confirmed"
+    stored["status"] = "completed"
+    doc_tests.save_test(ws, stored)
+
+    state = capability_registries.doc_tests_workflow_state(ws)
+
+    assert state["doc_tests.definitions_ready"]["state"] == "satisfied"
+    assert state["doc_tests.executed"]["state"] == "missing"
+    assert state["doc_tests.executed"]["tests"] == 1
+    assert state["doc_tests.executed"]["pending"] == 1
+    assert doc_test_capabilities.resolve_doc_test_scope(ws, {}).test_ids == (pending["id"],)
+
+
 def test_a_final_result_item_is_not_re_run():
     ws = _workspace("Doc test disposition resume")
     _document, test = _vouching(ws)

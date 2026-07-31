@@ -931,6 +931,14 @@ export interface DashboardTarget {
   query: Record<string, string>
 }
 
+export interface DashboardSubPhase {
+  id: string
+  label: string
+  state: 'not_started' | 'in_progress' | 'complete' | 'attention'
+  complete: boolean
+  target: DashboardTarget
+}
+
 export interface DashboardPhase {
   id: 'planning' | 'fieldwork' | 'report'
   label: string
@@ -940,6 +948,7 @@ export interface DashboardPhase {
   counts: Record<string, number>
   issues: string[]
   target: DashboardTarget
+  sub: DashboardSubPhase[]
 }
 
 export interface EngagementStatusPayload {
@@ -1406,6 +1415,8 @@ export interface AssistantChat extends Omit<AssistantChatSummary, 'message_count
   capabilities: AssistantCapabilities
   /** What this engagement actually needs next, from workspace readiness. */
   suggestions: AssistantSuggestion[]
+  /** Guided workflow shortcuts that still have incomplete outcomes. */
+  guided_workflows: AssistantGuidedWorkflow[]
   active_workspace_run: AssistantRunProjection | null
 }
 
@@ -1415,6 +1426,11 @@ export interface AssistantSuggestion {
   label: string
   command: string
   reason: string
+}
+
+export interface AssistantGuidedWorkflow {
+  label: string
+  command: string
 }
 
 export interface AssistantAnswer {

@@ -608,6 +608,46 @@ def test_next_steps_never_break_a_chat_load():
     assert narration.next_steps(Exploding(), None) == []
 
 
+def test_next_steps_offer_document_tests_when_definitions_block_execution():
+    state = {
+        "doc_tests.definitions_ready": {"state": "review_required"},
+        "doc_tests.executed": {
+            "state": "blocked",
+            "pending": 9,
+            "blocking_on": ["doc_tests.definitions_ready"],
+            "reasons": ["9 Document Test(s) have unchecked items"],
+        },
+    }
+
+    assert narration.next_steps(None, state) == [{
+        "capability": "doc_tests.executed",
+        "requested_outcomes": ["doc_tests.executed"],
+        "label": "Run document tests",
+        "command": "Run the outstanding Document Tests.",
+        "reason": "9 Document Test(s) have unchecked items",
+    }]
+
+
+def test_guided_workflows_hide_completed_areas():
+    state = {
+        "planning.apm_ready": {"state": "satisfied"},
+        "planning.rcm_ready": {"state": "satisfied"},
+        "tests.specified": {"state": "satisfied"},
+        "doc_tests.executed": {"state": "missing"},
+        "analysis.executed": {"state": "missing"},
+        "findings.drafted": {"state": "missing"},
+        "working_papers.generated": {"state": "missing"},
+        "dashboard.curated": {"state": "missing"},
+        "report.working_draft": {"state": "missing"},
+        "audit.verified": {"state": "missing"},
+    }
+
+    commands = [item["command"] for item in narration.guided_workflows(state)]
+
+    assert "plan" not in commands
+    assert {"full_audit", "analyze_data", "run_document_tests", "generate_report"} <= set(commands)
+
+
 def test_plan_sentence_reads_as_prose():
     text = narration.plan_sentence(
         ["Document analysis", "Planning context", "Audit planning memorandum"],
