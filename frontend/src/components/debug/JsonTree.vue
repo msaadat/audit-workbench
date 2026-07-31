@@ -1,5 +1,22 @@
 <script setup lang="ts">
-defineProps<{ value: unknown; name?: string; path?: string; search?: string }>()
+import { computed } from 'vue'
+
+const props = defineProps<{ value: unknown; name?: string; path?: string; search?: string }>()
+
+function parseInlineJson(value: unknown): Record<string, unknown> | unknown[] | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (!text.startsWith('{') && !text.startsWith('[')) return undefined
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> | unknown[] : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const inlineJson = computed(() => parseInlineJson(props.value))
+const isContentText = computed(() => props.name === 'content' && typeof props.value === 'string' && !inlineJson.value)
 
 function entries(value: unknown): [string, unknown][] {
   if (Array.isArray(value)) return value.map((item, index) => [String(index), item])
@@ -27,9 +44,18 @@ function visible(path: string | undefined, key: string, child: unknown, search: 
       <JsonTree v-if="visible(path, key, child, search)" :value="child" :name="key" :path="childPath(path, key)" :search="search" />
     </template>
   </details>
+  <details v-else-if="inlineJson" class="json-branch json-inline" :open="Boolean(search)">
+    <summary><span v-if="name" class="json-key">{{ name }}</span><small>inline JSON {{ collectionLabel(inlineJson) }}</small></summary>
+    <JsonTree :value="inlineJson" :path="path" :search="search" />
+  </details>
+  <div v-else-if="isContentText" class="json-text">
+    <span class="json-key">{{ name }}</span>
+    <pre>{{ value }}</pre>
+  </div>
   <div v-else class="json-leaf"><span v-if="name" class="json-key">{{ name }}</span><code>{{ display(value) }}</code></div>
 </template>
 
 <style scoped>
 .json-branch{margin-left:.8rem;border-left:1px solid #dce5ee;padding-left:.55rem}.json-branch>summary{cursor:pointer;display:flex;gap:.45rem;align-items:center;min-height:1.55rem}.json-key{color:#075985;font-family:'JetBrains Mono Variable',monospace;font-size:.75rem}.json-branch small{color:#8090a5}.json-leaf{display:grid;grid-template-columns:minmax(5rem,auto) 1fr;gap:.65rem;margin-left:1.35rem;min-height:1.45rem;align-items:start}.json-leaf code{white-space:pre-wrap;overflow-wrap:anywhere;color:#334155;font-size:.72rem}
+.json-text{display:grid;gap:.35rem;margin:.35rem 0 .35rem 1.35rem}.json-text pre{margin:0;max-height:28rem;overflow:auto;padding:.7rem;border:1px solid #e4eaf0;border-radius:6px;background:#f8fafc;color:#334155;font:11px/1.55 'JetBrains Mono Variable',monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 </style>
