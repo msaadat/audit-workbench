@@ -27,6 +27,12 @@ ALLOWED_ACTION_TABS = {
 AI_ADVICE_MAX = 3
 CURATED_TILE_MIN = 4
 CURATED_TILE_MAX = 6
+_TERMINAL_TEST_STATUSES = {
+    "completed",
+    "completed_no_exception",
+    "completed_with_exception",
+    "not_applicable",
+}
 
 
 def _cap_for(viz: dict) -> int:
@@ -225,7 +231,7 @@ def _engagement_state(workspace: Workspace) -> dict:
     ]
     incomplete_tests = [
         test for test in tests
-        if test.get("status") not in {"completed", "blocked", "review_required"}
+        if test.get("status") not in {*_TERMINAL_TEST_STATUSES, "blocked", "review_required"}
     ]
     fieldwork_started = bool(
         tests or workspace.data_tests

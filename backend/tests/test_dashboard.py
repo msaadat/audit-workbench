@@ -263,6 +263,26 @@ def test_engagement_status_surfaces_attention_and_report_quality(workspace_with_
     assert "draft_findings" not in phases["report"]["counts"]
 
 
+def test_terminal_document_test_result_statuses_are_not_marked_incomplete(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    for status in ("completed_no_exception", "completed_with_exception"):
+        doc_tests.create_test(ws, {
+            "kind": "qa",
+            "title": f"{status} test",
+            "status": status,
+            "items": [{"label": "Settled item", "state": "confirmed"}],
+        })
+
+    phases = {phase["id"]: phase for phase in engagement_status_payload(ws)["phases"]}
+
+    assert not any(
+        "document test(s) are incomplete" in issue
+        for issue in phases["fieldwork"]["issues"]
+    )
+
+
 def test_dashboard_advice_is_metadata_only_cached_and_marked_stale(
     workspace_with_data, monkeypatch,
 ):
