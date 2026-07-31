@@ -135,7 +135,7 @@ async function generate() {
     await savePlanning()
     await assistantChat.send(
       'Update the planning context and APM, then create or reconcile the RCM and the Document and Data Tests that cover it. Do not create a separate audit program.',
-      'act', launchMode.value, { goalTemplate: 'planning', source: 'tab_button' },
+      'act', launchMode.value, { command: 'plan', source: 'tab_button' },
     )
   } catch (error) { fail('Could not start planning', error) }
 }
@@ -237,7 +237,7 @@ async function promoteObservation(item: AuditObservation) {
     await assistantChat.send(
       `Draft a finding from observation ${item.id}.`,
       'act', 'permission', {
-        goalTemplate: 'finding_draft', source: 'tab_button',
+        command: 'draft_findings', source: 'tab_button',
         runContext: { observation_id: item.id },
       },
     )
@@ -281,7 +281,7 @@ async function generateAllFindings() {
     await assistantChat.send(
       'Draft all eligible findings from the RCM observations.',
       'act', launchMode.value,
-      { goalTemplate: 'finding_draft', source: 'tab_button' },
+      { command: 'draft_findings', source: 'tab_button' },
     )
     toast.add({
       severity: 'success',
@@ -318,7 +318,7 @@ async function runAllDocumentTests() {
       `Run all ${testIds.length} RCM-linked Document Test${testIds.length === 1 ? '' : 's'} and preserve the results.`,
       'act', launchMode.value,
       {
-        goalTemplate: 'document_test_execution',
+        command: 'run_document_tests',
         source: 'tab_button',
         runContext: { test_ids: testIds },
       },

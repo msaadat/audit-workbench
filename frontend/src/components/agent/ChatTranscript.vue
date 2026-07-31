@@ -32,8 +32,8 @@ const anchorOpen = ref(false)
 // what this engagement actually needs next leads, because a menu of five fixed
 // procedures frames the agent as a form to fill in.
 const shortcuts = [
-  ['Full audit', 'full_audit_working_draft'], ['Planning', 'planning'],
-  ['Data analysis', 'data_analysis'], ['Document tests', 'document_test_preparation'], ['Report', 'report'],
+  ['Full audit', 'full_audit'], ['Planning', 'plan'],
+  ['Data analysis', 'analyze_data'], ['Document tests', 'prepare_document_tests'], ['Report', 'generate_report'],
 ]
 const showTemplates = ref(false)
 // Transcript covers stored messages, run projections, and the optimistic

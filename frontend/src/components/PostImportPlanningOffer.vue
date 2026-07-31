@@ -32,7 +32,7 @@ async function startPlanningUpdate() {
     await assistantChat.send(
       `Review newly imported documents ${props.action.document_ids.join(', ')} and update planning context, APM, RCM rows, and the tests that cover them.`,
       'act', launchMode.value, {
-        goalTemplate: 'planning', source: 'tab_button',
+        command: 'plan', source: 'tab_button',
         runContext: { document_ids: props.action.document_ids },
       },
     )

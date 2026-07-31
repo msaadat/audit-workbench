@@ -274,6 +274,147 @@ def test_run_projection_uses_durable_activity_instead_of_coarse_status(workspace
     assert projection["duration_ms"] is not None
 
 
+def test_slash_command_bypasses_ask_act_classification(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    def fail(*args, **kwargs):
+        raise AssertionError("ask/act classification must not run for a slash command")
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    monkeypatch.setattr(assistant_chats, "_deterministic_intent", fail)
+    monkeypatch.setattr(assistant_chats, "_classifier", fail)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/generate apm", "intent": "auto", "mode": "auto",
+        "request_id": "request-slash-apm", "source": "composer",
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    assert launched["goal_template"] == "apm_only"
+    assert result["chat"]["messages"][0]["resolved_intent"] == "act"
+
+
+def test_unknown_slash_command_asks_for_clarification(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/nonexistent-command", "intent": "auto", "mode": "auto",
+        "request_id": "request-slash-unknown", "source": "composer",
+    })
+
+    assert result["outcome"]["kind"] == "clarification_requested"
+    reply = result["chat"]["messages"][-1]
+    assert reply["kind"] == "clarification"
+    assert "Unknown command" in reply["content"]
+
+
+def test_explicit_command_field_resolves_goal_template(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Prepare document tests for this engagement.", "intent": "auto", "mode": "auto",
+        "request_id": "request-command-field", "source": "tab_button",
+        "command": "prepare_document_tests",
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    assert launched["goal_template"] == "document_test_preparation"
+    assert result["chat"]["messages"][0]["resolved_intent"] == "act"
+
+
+def test_command_field_rejects_conflicting_goal_template(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+    with pytest.raises(Exception, match="Use either command or goal_template"):
+        assistant_chats.send_message(ws, chat["id"], {
+            "content": "Prepare document tests.", "intent": "auto", "mode": "auto",
+            "request_id": "request-command-conflict", "source": "tab_button",
+            "command": "prepare_document_tests", "goal_template": "document_test_preparation",
+        })
+
+
+def test_unknown_command_field_is_rejected(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    chat = assistant_chats.create_chat(ws)
+    with pytest.raises(Exception, match="Unknown command"):
+        assistant_chats.send_message(ws, chat["id"], {
+            "content": "Do something.", "intent": "auto", "mode": "auto",
+            "request_id": "request-command-unknown", "source": "tab_button",
+            "command": "not_a_real_command",
+        })
+
+
+def test_free_text_phrase_dictionary_shortcuts_act_text_to_goal_template(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Please generate the report for this engagement.", "intent": "auto", "mode": "auto",
+        "request_id": "request-phrase-report", "source": "composer",
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    assert launched["goal_template"] == "report"
+    assert launched["source"] == "goal_template"
+
+
+def test_free_text_without_a_phrase_match_is_unaffected(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Delete the old join.", "intent": "auto", "mode": "auto",
+        "request_id": "request-phrase-miss", "source": "composer",
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    assert launched["goal_template"] is None
+    assert launched["source"] == "chat"
+
+
 def test_pending_turn_is_recovered_as_failed(workspace_with_data):
     ws = workspace_with_data
     chat = assistant_chats.create_chat(ws)

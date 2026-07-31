@@ -71,9 +71,9 @@ watch(() => [
 async function loadDocuments() {
   documents.value = (await api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)).items
 }
-async function send(content: string, sendIntent: AssistantMessageIntent = 'auto', goalTemplate?: string, source: 'composer'|'shortcut'|'tab_button'|'folder_intake' = 'composer', requestedOutcomes?: string[]) {
+async function send(content: string, sendIntent: AssistantMessageIntent = 'auto', command?: string, source: 'composer'|'shortcut'|'tab_button'|'folder_intake' = 'composer', requestedOutcomes?: string[]) {
   try {
-    await chats.send(content, sendIntent, mode.value, { goalTemplate, source, requestedOutcomes })
+    await chats.send(content, sendIntent, mode.value, { command, source, requestedOutcomes })
   } catch (error) { fail('Message failed', error) }
 }
 function nextStep(suggestion: AssistantSuggestion) {
@@ -91,9 +91,9 @@ function stopRun() {
     },
   })
 }
-function shortcut(label: string, template: string) {
-  const text = template === 'full_audit_working_draft' ? 'Prepare a full audit working draft.' : `Start ${label.toLowerCase()} work for this engagement.`
-  void send(text, 'act', template, 'shortcut')
+function shortcut(label: string, commandId: string) {
+  const text = commandId === 'full_audit' ? 'Prepare a full audit working draft.' : `Start ${label.toLowerCase()} work for this engagement.`
+  void send(text, 'act', commandId, 'shortcut')
 }
 function rename() {
   renameTitle.value = activeChat.value?.title ?? ''

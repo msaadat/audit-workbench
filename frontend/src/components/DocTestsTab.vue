@@ -264,7 +264,7 @@ async function runTest() {
     await assistantChat.send(
       `Run document test ${test.id} and preserve its results.`,
       'act', launchMode.value,
-      { goalTemplate: 'document_test_execution', source: 'tab_button', runContext: { test_id: test.id } },
+      { command: 'run_document_tests', source: 'tab_button', runContext: { test_id: test.id } },
     )
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start the document test', error) }
@@ -304,7 +304,7 @@ async function prepareTests() {
   try {
     await assistantChat.send(
       'Write the executable specification for each drafted Document Test, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.',
-      'act', launchMode.value, { goalTemplate: 'document_test_preparation', source: 'tab_button' },
+      'act', launchMode.value, { command: 'prepare_document_tests', source: 'tab_button' },
     )
     toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start document test preparation', error) }

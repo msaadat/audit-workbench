@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import assistant, debug_store, llm
-from .agent import narration, routing, runner, store
+from .agent import commands, narration, routing, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 CHATS_DIRNAME = "AssistantChats"
@@ -554,6 +554,17 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
         raise WorkspaceError("Message mode must be auto or permission.")
     request_id = _validate(str(payload.get("request_id") or ""), REQUEST_ID_RE, "request id")
     goal_template = str(payload.get("goal_template") or "").strip() or None
+    command_id = str(payload.get("command") or "").strip() or None
+    if command_id:
+        matched_command = commands.COMMANDS.get(command_id)
+        if matched_command is None:
+            raise WorkspaceError(f"Unknown command '{command_id}'.")
+        if goal_template:
+            raise WorkspaceError("Use either command or goal_template, not both.")
+        if requested not in {"auto", "act"}:
+            raise WorkspaceError("command requires act or auto intent.")
+        goal_template = matched_command.goal_template
+        requested = "act"
     if goal_template and (requested != "act" or goal_template not in routing.GOAL_TEMPLATES):
         raise WorkspaceError("goal_template requires act intent and a registered template.")
     raw_outcomes = payload.get("requested_outcomes") or []
@@ -666,7 +677,22 @@ def _process_message(
             return outcome
 
     resolved = requested = user["requested_intent"]
-    if requested == "auto":
+    if requested == "auto" and commands.is_slash(user["content"]):
+        # An explicit slash command is resolved outright, the same as a caller
+        # passing `command` directly — it never enters ask/act classification.
+        matched_command = commands.match_slash(user["content"])
+        if matched_command is None:
+            text = f"Unknown command. Available: {commands.help_text()}"
+            outcome = {"kind": "clarification_requested"}
+            def done(rec, stored):
+                stored.update(state="complete", resolved_intent="clarify", outcome=outcome)
+                _append_assistant(rec, kind="clarification", content=text, resolved="clarify", reply_to=stored["id"], outcome=outcome)
+            _finalize(workspace, chat_id, user["id"], done)
+            return outcome
+        resolved = "act"
+        goal_template = matched_command.goal_template
+        clarification = None
+    elif requested == "auto":
         resolved = _deterministic_intent(user["content"])
         if resolved is None:
             classified = _classifier(workspace, record, user["content"], bool(active and store.is_command_run(active)))
@@ -751,6 +777,14 @@ def _process_message(
             _append_assistant(rec, kind="clarification", content=text, resolved="clarify", reply_to=stored["id"], outcome=outcome)
         _finalize(workspace, chat_id, user["id"], done)
         return outcome
+
+    if not goal_template and not requested_outcomes:
+        # A small, conservative phrase dictionary shortcuts a fully-worded
+        # request straight to its command's goal template before it reaches
+        # routing.py's own phrase tables and bounded router worker.
+        phrase_match = commands.match_phrase(user["content"])
+        if phrase_match:
+            goal_template = phrase_match.goal_template
 
     refs = []
     if not goal_template and re.search(r"\b(that|it|this)\b", user["content"], re.I):
