@@ -240,3 +240,20 @@ def test_analyses_api_roundtrip(workspace_with_data):
         f"/api/workspaces/{ws.id}/analyses/{analysis_id}"
     ).json() == {"ok": True}
     assert client.get(f"/api/workspaces/{ws.id}/analyses").json()["analyses"] == []
+
+
+def test_pin_analysis_from_summary_creates_dashboard_tile(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis["last_result"] = {"run_id": "run-pin"}
+    ws.save()
+    client = TestClient(create_app())
+
+    response = client.post(f"/api/workspaces/{ws.id}/analyses/{analysis['id']}/pin", json={})
+
+    assert response.status_code == 200
+    fresh = workspaces.load_workspace(ws.id)
+    assert len(fresh.tiles) == 1
+    assert fresh.tiles[0]["analysis_id"] == analysis["id"]
+    assert fresh.tiles[0]["result_ref"] == f"analysis:{analysis['id']}:run-pin"
+    assert response.json()["error"] is None
