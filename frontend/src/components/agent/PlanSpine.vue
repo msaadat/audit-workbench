@@ -130,13 +130,20 @@ const rows = computed(() => {
     const state = mapped === 'running' && halted ? halted : mapped
     // A unit left marked `running` by a run that died never finished; saying so
     // is the whole reason someone opens the stage.
-    const units: WorkflowUnit[] = stage.units.map(unit => {
-      if (status === 'failed' && unit.status === 'running') {
-        return { ...unit, status: 'failed' as const, error: unit.error || runError }
-      }
-      if (status === 'cancelled' && unit.status === 'running') return { ...unit, status: 'cancelled' as const }
-      return unit
-    })
+    //
+    // Pipeline-backed stages run their units sorted by id (workflow_runner's
+    // `_run_pipeline_units`), not in the declaration order `stage.units`
+    // arrives in. Sorting here too keeps the rail's row order matching the
+    // order units actually flip to running/succeeded.
+    const units: WorkflowUnit[] = [...stage.units]
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map(unit => {
+        if (status === 'failed' && unit.status === 'running') {
+          return { ...unit, status: 'failed' as const, error: unit.error || runError }
+        }
+        if (status === 'cancelled' && unit.status === 'running') return { ...unit, status: 'cancelled' as const }
+        return unit
+      })
     const total = units.length
     const settled = units.filter(unit => SETTLED.includes(unit.status)).length
     const attention = units.filter(unit =>
@@ -377,7 +384,14 @@ const note = computed(() => {
   border-radius: 5px;
   background: var(--aw-panel);
 }
-.unit > i { padding-top: 0.12rem; color: #9aa9bd; font-size: 0.62rem; }
+.unit > i {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 0.884rem; /* matches .unit b line-height so the icon sits on the first text line */
+  color: #9aa9bd;
+  font-size: 0.62rem;
+}
 .unit.succeeded > i { color: var(--aw-ok); }
 .unit.running > i { color: var(--aw-teal); }
 .unit.failed > i, .unit.conflict > i { color: var(--aw-danger); }
