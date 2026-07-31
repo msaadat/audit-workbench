@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
+import { useToast } from 'primevue/usetoast'
 
 import { api, ApiError } from '../../api'
 import type { AnalysisSummaryItem, AnalysisSummaryPayload, WorkspaceSummary } from '../../types'
@@ -10,11 +11,13 @@ import UiVerdictStatus from '../ui/UiVerdictStatus.vue'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ open: [analysisId: string] }>()
+const toast = useToast()
 
 const data = ref<AnalysisSummaryPayload | null>(null)
 const loading = ref(false)
 const error = ref('')
 const filter = ref<'review' | 'all'>('review')
+const pinning = ref<Record<string, boolean>>({})
 const filters = [
   { label: 'Needs review', value: 'review' },
   { label: 'All results', value: 'all' },
@@ -42,6 +45,20 @@ function severity(item: AnalysisSummaryItem) {
   if (item.classification === 'unusual' || item.classification === 'stale') return 'warn'
   if (item.classification === 'clear') return 'success'
   return 'info'
+}
+
+async function pin(item: AnalysisSummaryItem) {
+  pinning.value = { ...pinning.value, [item.analysis_id]: true }
+  try {
+    await api.post(`/api/workspaces/${props.workspace.id}/analyses/${item.analysis_id}/pin`, {})
+    toast.add({ severity: 'success', summary: 'Pinned to dashboard', detail: item.title, life: 2500 })
+  } catch (caught) {
+    toast.add({ severity: 'error', summary: 'Pin failed', detail: caught instanceof ApiError ? caught.message : String(caught), life: 6000 })
+  } finally {
+    const next = { ...pinning.value }
+    delete next[item.analysis_id]
+    pinning.value = next
+  }
 }
 
 async function load() {
@@ -106,7 +123,10 @@ defineExpose({ load })
         <div class="item-actions">
           <div v-if="item.stats.length" class="stat-chips"><span v-for="stat in item.stats.slice(0, 4)" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span></div>
           <span v-else-if="item.status === 'ok'" class="row-count">{{ item.row_count.toLocaleString() }} result row{{ item.row_count === 1 ? '' : 's' }}</span>
-          <Button label="Open analysis" icon="pi pi-arrow-right" iconPos="right" size="small" text @click="emit('open', item.analysis_id)" />
+          <div class="action-buttons">
+            <Button label="Pin" icon="pi pi-thumbtack" size="small" outlined :loading="pinning[item.analysis_id]" @click="pin(item)" />
+            <Button label="Open analysis" icon="pi pi-arrow-right" iconPos="right" size="small" text @click="emit('open', item.analysis_id)" />
+          </div>
         </div>
       </article>
     </div>

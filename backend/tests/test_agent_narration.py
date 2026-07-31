@@ -266,6 +266,31 @@ def test_milestone_is_structured_bounded_and_idempotent():
     assert [item[0] for item in events] == ["milestone"]
 
 
+def test_stage_handoff_names_what_finished_and_what_is_next():
+    stage = _stage("succeeded", [_unit()], title="Audit planning memorandum")
+    assert narration.stage_handoff(stage, "Risk and control matrix") == (
+        "Audit planning memorandum is done — now working on risk and control matrix."
+    )
+
+
+def test_stage_handoff_counts_the_units_that_still_need_a_person():
+    stage = _stage(
+        "review_required",
+        [_unit(), _unit("failed", "boom", unit_id="u2")],
+        title="Executable test specifications",
+    )
+    assert narration.stage_handoff(stage, "Findings") == (
+        "Executable test specifications is done, with 1 item needing you"
+        " — now working on findings."
+    )
+
+
+def test_stage_handoff_is_silent_when_nothing_follows():
+    # The closing turn is a run's last word; a handoff with nowhere to hand off
+    # to would only pre-empt it.
+    assert narration.stage_handoff(_stage("succeeded", [_unit()]), "") == ""
+
+
 # --------------------------------------------------------------------------- #
 # Projection
 # --------------------------------------------------------------------------- #

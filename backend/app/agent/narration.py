@@ -378,6 +378,33 @@ def stage_settled(stage: dict) -> str:
     return " · ".join(parts)
 
 
+def stage_handoff(stage: dict, next_title: str) -> str:
+    """The line the agent says between a finished stage and the next one.
+
+    A milestone states the result; this states the movement. Together they are
+    what makes a long run read as work arriving piece by piece rather than as a
+    status block that fills itself in once, at the end.
+
+    Returns empty when nothing follows: the closing turn is the last word on a
+    run, and a handoff with nowhere to hand off to would only pre-empt it.
+    """
+    title = str(stage.get("title") or "").strip()
+    following = str(next_title or "").strip().lower()
+    if not title or not following:
+        return ""
+    unresolved = sum(
+        1
+        for unit in stage.get("units") or []
+        if unit.get("status") in _OPEN_UNIT_STATUSES | _FAILED_UNIT_STATUSES
+    )
+    done = (
+        f"{title} is done"
+        if not unresolved
+        else f"{title} is done, with {_count(unresolved, 'item')} needing you"
+    )
+    return f"{_sentence(done)} — now working on {following}."
+
+
 def _produced(run: dict) -> list[str]:
     produced: list[str] = []
     for stage in (run.get("workflow") or {}).get("stages") or []:

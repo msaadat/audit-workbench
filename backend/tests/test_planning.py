@@ -254,6 +254,17 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
     assert milestones["planning.rcm_ready"]["headline"] == (
         "Risk and control matrix ready"
     )
+    # Each milestone is handed off in the agent's own voice, so a long run reads
+    # as work arriving piece by piece rather than as a block of cards at the end.
+    said = [item["content"] for item in completed["messages"] if item["role"] == "agent"]
+    assert (
+        "Audit planning memorandum is done — now working on risk and control matrix."
+        in said
+    )
+    # The last stage hands off to nothing: the closing turn is the run's last word.
+    assert not any(
+        item.startswith("Executable test specifications is done") for item in said
+    )
 
 
 def test_planning_failure_preserves_valid_apm_and_rcm_checkpoints(monkeypatch):

@@ -41,6 +41,32 @@ async def update_analysis(workspace_id: str, analysis_id: str, changes: dict = B
     return dashboard.analysis_payload(ws, analysis)
 
 
+@router.post("/analyses/{analysis_id}/pin")
+async def pin_analysis(workspace_id: str, analysis_id: str, payload: dict = Body(default={} )):
+    """Promote a saved analysis to a live, recomputable dashboard tile."""
+    ws = workspaces.load_workspace(workspace_id)
+    analysis = ws._analysis(analysis_id)
+    last_result = analysis.get("last_result") or {}
+    title = str(payload.get("title") or analysis.get("title") or "").strip()
+    note = str(payload.get("note") or analysis.get("note") or "").strip()
+    tile = ws.add_tile(
+        {
+            "kind": analysis.get("kind"),
+            "table": analysis.get("table"),
+            "title": title,
+            "note": note,
+            "spec": dict(analysis.get("spec") or {}),
+            "viz": dict(analysis.get("viz") or {"type": "table"}),
+            "analysis_id": analysis_id,
+            "result_ref": (
+                f"analysis:{analysis_id}:{last_result.get('run_id')}"
+                if last_result.get("run_id") else f"analysis:{analysis_id}"
+            ),
+        }
+    )
+    return dashboard.tile_payload(ws, tile)
+
+
 @router.delete("/analyses/{analysis_id}")
 async def remove_analysis(workspace_id: str, analysis_id: str):
     ws = workspaces.load_workspace(workspace_id)

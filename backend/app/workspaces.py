@@ -1162,7 +1162,7 @@ class Workspace:
                 "created": date.today().isoformat(),
                 **{
                     key: payload[key]
-                    for key in ("data_test_id", "rcm_id", "result_ref")
+                    for key in ("data_test_id", "analysis_id", "rcm_id", "result_ref")
                     if payload.get(key)
                 },
             },

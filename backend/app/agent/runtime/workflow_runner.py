@@ -879,6 +879,19 @@ class WorkflowRunner:
         self.runtime.save()
         self.runtime.emit("stage_update", {"stage": copy.deepcopy(stage)})
 
+    def _next_stage_title(self, stage: dict[str, Any]) -> str:
+        """The stage the run moves on to once ``stage`` has settled."""
+        stages = list((self.run.get("workflow") or {}).get("stages") or [])
+        identifiers = [str(item.get("id") or "") for item in stages]
+        try:
+            index = identifiers.index(str(stage.get("id") or ""))
+        except ValueError:
+            return ""
+        for item in stages[index + 1:]:
+            if str(item.get("status") or "") in {"queued", "running"}:
+                return str(item.get("title") or "").strip()
+        return ""
+
     def _project_milestone(self, stage: dict[str, Any], status: str) -> None:
         if self.milestone_projector is None:
             return
@@ -896,7 +909,7 @@ class WorkflowRunner:
             )
             if not projection:
                 return
-            narration.milestone(
+            entry = narration.milestone(
                 self.run,
                 self.runtime.emit,
                 capability=capability.id,
@@ -908,6 +921,12 @@ class WorkflowRunner:
                 highlights=list(projection.get("highlights") or []),
                 artifact_refs=list(projection.get("artifact_refs") or []),
             )
+            # A milestone that was already on the record is a replay, not new
+            # work, so it must not make the agent announce a handoff twice.
+            if entry is not None:
+                handoff = narration.stage_handoff(stage, self._next_stage_title(stage))
+                if handoff:
+                    narration.say(self.run, self.runtime.emit, handoff)
         except Exception as error:
             # Milestones are a read-only conversational projection. A summary
             # bug must never turn successfully committed audit work into a

@@ -1,18 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
 import { api } from '../../api'
 import { useAgentRun } from '../../composables/useAgentRun'
 import type { AgentDecision, AgentInteraction, AgentRun, AssistantRunProjection } from '../../types'
-import AgentActionList from './AgentActionList.vue'
 import AgentApprovalCard from './AgentApprovalCard.vue'
 import AgentBlockerCard from './AgentBlockerCard.vue'
 import AgentInteractionCard from './AgentInteractionCard.vue'
 import AgentSummary from './AgentSummary.vue'
-import AgentTaskList from './AgentTaskList.vue'
-import AgentWorkflowList from './AgentWorkflowList.vue'
 
 // showAttention: pending interactions/approvals normally render as their own
 // transcript items; only a foreign run card (another chat's active run, not
@@ -20,10 +16,10 @@ import AgentWorkflowList from './AgentWorkflowList.vue'
 const props = defineProps<{ workspaceId: string; projection: AssistantRunProjection; showAttention?: boolean }>()
 const emit = defineEmits<{ changed: []; command: [string] }>()
 const agent = useAgentRun(props.workspaceId)
-// The left rail carries the plan and the transcript carries milestone results,
-// so this card is the receipt: one collapsed strip, opened only when someone
-// wants the stage-by-stage detail or is on a narrow layout without the rail.
-const expanded = ref(false)
+// The plan — stages, units, the error each one stopped on — belongs to the left
+// rail, which shows it without a click. What is left here is the receipt: one
+// strip of identity and status, the blockers that still need answering, and the
+// analyst summary the run signed off with.
 const run = ref<AgentRun | null>(null)
 const busy = ref(false)
 const clock = ref(Date.now())
@@ -77,15 +73,20 @@ onMounted(syncClock)
 watch(active, syncClock)
 onUnmounted(() => { if (clockTimer) window.clearInterval(clockTimer) })
 
+// The full record is fetched only for what the projection cannot carry: the
+// analyst summary with its promotable observations, and — for a run owned by
+// another chat, whose attention items are not projected here — its open
+// approvals and questions.
+const needsDetail = computed(() => props.projection.has_summary || props.showAttention === true)
 async function load() {
   run.value = await api.get<AgentRun>(`/api/workspaces/${props.workspaceId}/agent/runs/${props.projection.run_id}`)
 }
-async function toggle() { expanded.value = !expanded.value; if (expanded.value) await load() }
-// The projection updates with every chat refresh; keep the expanded detail in
-// step so the header tag and the task list never show contradictory states.
+// The projection updates with every chat refresh; keep the detail in step so
+// the header and the summary never show contradictory states.
 watch(
-  () => [props.projection.status, props.projection.activity_revision ?? 0, props.projection.task_counts.completed, props.projection.task_counts.failed, props.projection.pending_attention].join(':'),
-  () => { if (expanded.value) void load().catch(() => undefined) },
+  () => [needsDetail.value, props.projection.status, props.projection.activity_revision ?? 0, props.projection.task_counts.completed, props.projection.task_counts.failed, props.projection.pending_attention].join(':'),
+  () => { if (needsDetail.value) void load().catch(() => undefined) },
+  { immediate: true },
 )
 async function control(action: 'pause'|'resume'|'cancel') {
   busy.value = true
@@ -125,13 +126,13 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
     <!-- One row: identity, one status line, icon controls. Everything else the
          card used to restate is already in the narration above it. -->
     <div class="head-row">
-      <button class="run-head" @click="toggle">
+      <span class="run-head">
         <span class="icon"><i :class="active ? 'pi pi-spin pi-spinner' : 'pi pi-sparkles'" /></span>
         <span class="identity">
           <strong>{{ projection.title }}</strong>
           <small>{{ subline }}</small>
         </span>
-      </button>
+      </span>
       <Tag v-if="projection.status === 'failed'" :value="projection.status_label" severity="danger" />
       <Tag v-else-if="projection.pending_attention" value="Needs you" severity="warn" />
       <template v-if="active">
@@ -141,7 +142,6 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       </template>
       <button v-else-if="projection.status === 'failed'" class="control" :disabled="busy" title="Retry" aria-label="Retry the run" @click="retryRun"><i class="pi pi-refresh" /></button>
       <button v-else-if="projection.status === 'completed_with_open_items' && projection.next_outcomes?.length" class="control" :disabled="busy" title="Continue" aria-label="Continue the audit" @click="continueAudit"><i class="pi pi-arrow-right" /></button>
-      <button class="control chevron" :aria-label="expanded ? 'Hide detail' : 'Show detail'" @click="toggle"><i :class="expanded ? 'pi pi-chevron-up' : 'pi pi-chevron-down'" /></button>
     </div>
 
     <!-- A run owned by another chat has neither its narration nor its closing
@@ -152,24 +152,12 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
       <AgentBlockerCard v-for="item in openBlockers" :key="item.unit_id" :blocker="item" :busy="busy" @command="emit('command', $event)" />
     </div>
 
-    <div v-if="expanded" class="run-detail">
-      <template v-if="run">
-        <template v-if="showAttention">
-          <AgentApprovalCard v-for="approval in run.approvals.filter(item => item.status === 'pending')" :key="approval.id" :approval="approval" :busy="busy" @decide="decide(approval.id, $event)" />
-          <AgentInteractionCard v-for="interaction in (run.interactions ?? []).filter(item => item.status === 'pending')" :key="interaction.id" :interaction="interaction" :busy="busy" :workspaceId="workspaceId" :runId="run.id" @respond="respond(interaction, $event)" />
-        </template>
-        <!-- Every workflow definition renders through the workflow list. Keying
-             this on `audit_workflow_v2` alone left document, analysis and
-             document-test runs — which carry stages too — falling through to an
-             always-empty task list. -->
-        <AgentWorkflowList v-if="run.workflow?.stages?.length" :stages="run.workflow.stages" :runStatus="run.status" :runError="run.error" />
-        <AgentActionList v-else-if="run.actions?.length" :actions="run.actions" :runStatus="run.status" />
-        <AgentTaskList v-else :stages="run.plan.stages" :runStatus="run.status" :runError="run.error" />
-        <details v-if="run.warnings.length"><summary>{{ run.warnings.length }} warning(s)</summary><ul><li v-for="warning in run.warnings" :key="warning">{{ warning }}</li></ul></details>
-        <AgentSummary v-if="run.summary_markdown" :markdown="run.summary_markdown" :findings="run.findings" :auditOutcome="run.audit_outcome" :workspaceId="workspaceId" :runId="run.id" />
-        <div class="controls"><span class="grow" /><Button icon="pi pi-refresh" text size="small" :loading="busy" @click="load" /></div>
+    <div v-if="needsDetail && run" class="run-detail">
+      <template v-if="showAttention">
+        <AgentApprovalCard v-for="approval in run.approvals.filter(item => item.status === 'pending')" :key="approval.id" :approval="approval" :busy="busy" @decide="decide(approval.id, $event)" />
+        <AgentInteractionCard v-for="interaction in (run.interactions ?? []).filter(item => item.status === 'pending')" :key="interaction.id" :interaction="interaction" :busy="busy" :workspaceId="workspaceId" :runId="run.id" @respond="respond(interaction, $event)" />
       </template>
-      <p v-else class="loading-detail"><i class="pi pi-spin pi-spinner" /> Loading detail…</p>
+      <AgentSummary v-if="run.summary_markdown" :markdown="run.summary_markdown" :findings="run.findings" :auditOutcome="run.audit_outcome" :workspaceId="workspaceId" :runId="run.id" />
     </div>
   </article>
 </template>
@@ -179,7 +167,7 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
 .run-card.attention{border-color:var(--p-amber-400)}
 .run-card.live{border-color:var(--aw-teal)}
 .head-row{display:flex;align-items:center;gap:.3rem;padding:.35rem .45rem}
-.run-head{display:flex;align-items:center;gap:.45rem;flex:1;min-width:0;padding:.1rem;border:0;background:transparent;text-align:left;cursor:pointer;color:inherit}
+.run-head{display:flex;align-items:center;gap:.45rem;flex:1;min-width:0;padding:.1rem;text-align:left;color:inherit}
 .icon{display:grid;place-items:center;width:1.4rem;height:1.4rem;flex:0 0 auto;border-radius:5px;background:var(--aw-teal-soft);color:var(--aw-teal);font-size:.66rem}
 .identity{display:grid;gap:.05rem;min-width:0;flex:1}
 .identity strong,.identity small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -187,16 +175,11 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
 .identity small,.summary-line{font-size:.66rem;color:var(--aw-muted)}
 .summary-line{margin:0;padding:0 .55rem .45rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .run-detail{padding:.6rem;border-top:1px solid var(--aw-border);background:var(--p-surface-0)}
-.controls{display:flex;align-items:center}
-.grow{flex:1}
-.run-detail details{font-size:.72rem;color:var(--aw-muted)}
-.run-detail summary{cursor:pointer}
 .blockers{display:grid;gap:.4rem;padding:0 .55rem .5rem}
 .control{display:grid;place-items:center;width:1.5rem;height:1.5rem;flex:0 0 auto;border:0;border-radius:5px;background:transparent;color:var(--aw-muted);cursor:pointer}
 .control:hover:not(:disabled){background:var(--p-surface-100);color:inherit}
 .control:disabled{opacity:.4;cursor:default}
 .control.danger:hover:not(:disabled){color:var(--p-red-600)}
 .control i{font-size:.7rem}
-.loading-detail{display:flex;align-items:center;gap:.4rem;margin:0;font-size:.72rem;color:var(--aw-muted)}
 .head-row :deep(.p-tag){flex:0 0 auto;padding:.1rem .35rem;font-size:.6rem}
 </style>

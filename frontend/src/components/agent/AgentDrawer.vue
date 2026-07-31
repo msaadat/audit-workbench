@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 
 import { useAgentRun } from '../../composables/useAgentRun'
 import type { WorkspaceSummary } from '../../types'
 import ConsoleThread from './ConsoleThread.vue'
+import PlanSpine from './PlanSpine.vue'
 
 /**
  * The assistant as a resizable sidecar, for the surfaces that are not the
@@ -16,6 +18,9 @@ const props = defineProps<{ workspace: WorkspaceSummary }>()
 const agent = useAgentRun(props.workspace.id)
 const drawerWidth = ref(416)
 const resizing = ref(false)
+// The drawer has no room for the plan rail the console shows beside the thread,
+// so the same rail is reachable here as an overlay.
+const planOpen = ref(false)
 const MIN_WIDTH = 340
 const MAX_WIDTH = 680
 // A surface rail plus a two-pane detail layout that still reads.
@@ -47,9 +52,13 @@ function stopResize() { if (!resizing.value) return; resizing.value = false; doc
       <div class="resize-handle" role="separator" aria-label="Resize audit assistant" @pointerdown="startResize" />
       <ConsoleThread :workspace="workspace">
         <template #head-actions>
+          <Button icon="pi pi-list-check" text size="small" severity="secondary" aria-label="Show the plan" v-tooltip.bottom="'Plan'" @click="planOpen = true" />
           <Button icon="pi pi-angle-right" text size="small" severity="secondary" aria-label="Collapse assistant" @click="agent.toggleDrawer()" />
         </template>
       </ConsoleThread>
+      <Dialog v-model:visible="planOpen" modal header="Plan" :style="{ width: 'min(92vw, 28rem)' }">
+        <PlanSpine :workspaceId="workspace.id" overlay />
+      </Dialog>
     </template>
   </aside>
 </template>
