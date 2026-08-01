@@ -217,23 +217,17 @@ class AuditWorkflowExecution(ActionRunner):
             updated = int(changes.get("apm_updated") or 0)
             proposed = int(changes.get("apm_proposed") or 0)
             context = (subject.planning or {}).get("context") or {}
-            missing = [
-                name for name in ("objective", "scope")
-                if not str(context.get(name) or "").strip()
-            ]
             return {
-                "status": "completed_with_issues" if missing or attention else state,
+                "status": state,
                 "headline": "Audit planning memorandum ready",
                 "summary": (
                     f"Prepared the audit planning memorandum from "
                     f"{len([value for value in context.values() if str(value).strip()])} "
-                    f"planning field(s). {len(missing)} required planning field(s) "
-                    f"remain incomplete."
+                    f"planning field(s)."
                 ),
                 "metrics": [
                     {"label": "Updated", "value": updated},
                     {"label": "Proposed for approval", "value": proposed},
-                    {"label": "Missing required fields", "value": len(missing)},
                 ],
                 "artifact_refs": refs or ["planning:apm"],
             }
@@ -565,11 +559,9 @@ class AuditWorkflowExecution(ActionRunner):
             approval_provider=(
                 approval_provider if self.run["mode"] == "permission" else None
             ),
-            # Deliberately not a post-commit postcondition: this capability's
-            # readiness requires a stated objective and scope, and documents alone
-            # may not supply both. A committed synthesis is a real outcome even
-            # when the auditor still has to state the objective, so the commit is
-            # not failed for it.
+            # Deliberately not a post-commit postcondition: a committed
+            # synthesis is a real outcome even when the available sources do
+            # not establish every planning detail.
             readiness_provider=None,
             on_committed=on_committed,
         )

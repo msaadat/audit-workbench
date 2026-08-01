@@ -109,6 +109,7 @@ GOAL_TEMPLATES: dict[str, dict] = {
         ),
     },
     "apm_only": {"objective": "Prepare or revise only the audit planning memorandum."},
+    "rcm_only": {"objective": "Prepare or revise only the risk and control matrix."},
     "finding_draft": {
         "objective": "Draft evidence-linked findings for the selected observation or risk.",
     },

@@ -131,8 +131,7 @@ def _incomplete_coverage(workspace: Workspace, workflow: dict | None = None) -> 
     completion = rcm_execution.completion(workspace)
     coverage = completion.get("coverage") or {}
     missing_planning = (
-        len(completion.get("missing_planning_context") or [])
-        + int(not str(workspace.planning.get("apm_markdown") or "").strip())
+        int(not str(workspace.planning.get("apm_markdown") or "").strip())
         + int(not workspace.rcm)
         + len(coverage.get("rows_without_tests") or [])
     )

@@ -164,6 +164,25 @@ def test_empty_workspace_dashboard_drives_onboarding():
     assert board["ai_advice"] is None
 
 
+def test_dashboard_apm_status_rechecks_current_content(workspace_with_data):
+    ws = workspace_with_data
+    ws.update_planning({
+        "context": {"objective": "Test controls.", "scope": "Transactions."},
+        "apm_markdown": "# Audit planning memorandum\n\nInitial draft.",
+    })
+    ws.update_planning({"apm_markdown": ""})
+
+    planning = next(
+        phase for phase in engagement_status_payload(ws)["phases"]
+        if phase["id"] == "planning"
+    )
+    apm = next(sub for sub in planning["sub"] if sub["id"] == "apm")
+
+    assert apm["complete"] is False
+    assert apm["state"] == "in_progress"
+    assert "APM content is empty" in planning["issues"]
+
+
 def test_engagement_status_endpoint_is_lightweight(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     client = TestClient(create_app())

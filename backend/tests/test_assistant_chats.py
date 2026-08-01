@@ -303,6 +303,29 @@ def test_slash_command_bypasses_ask_act_classification(workspace_with_data, monk
     assert result["chat"]["messages"][0]["resolved_intent"] == "act"
 
 
+def test_generate_rcm_slash_command_starts_rcm_run(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/generate rcm", "intent": "auto", "mode": "auto",
+        "request_id": "request-slash-rcm", "source": "composer",
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    assert launched["goal_template"] == "rcm_only"
+
+
 def test_status_slash_command_is_deterministic_and_does_not_start_a_run(
     workspace_with_data, monkeypatch,
 ):

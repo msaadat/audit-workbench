@@ -147,38 +147,39 @@ def test_an_unconfigured_model_says_the_agent_cannot_run(monkeypatch):
 # --------------------------------------------------------------------------- #
 # The brief itself
 # --------------------------------------------------------------------------- #
-def test_a_brief_satisfies_the_planning_context_the_agent_would_interview_for(workspace_with_data):
+def test_a_brief_does_not_require_an_objective_or_scope(workspace_with_data):
     from app.agent.capabilities import REGISTRY_BY_WORKFLOW
 
     capability = REGISTRY_BY_WORKFLOW[audit_workflow.WORKFLOW_ID].get("planning.context_ready")
     assert capability.readiness(workspace_with_data, {}).state != "satisfied"
 
     engagement.apply_brief(workspace_with_data, {
-        "objective": "Assess procure-to-pay controls for FY26.",
-        "scope": "Vendor onboarding through payment release.",
         "entity": "Global Bank",
     })
 
     assert capability.readiness(workspace_with_data, {}).state == "satisfied"
     context = workspace_with_data.planning["context"]
-    assert context["objective"].startswith("Assess procure-to-pay")
     assert context["entity"] == "Global Bank"
 
 
 def test_an_empty_brief_leaves_planning_untouched(workspace_with_data):
     before = dict(workspace_with_data.planning["context"])
-    engagement.apply_brief(workspace_with_data, {"objective": "   ", "scope": ""})
+    engagement.apply_brief(workspace_with_data, {"entity": "   ", "period": ""})
     assert workspace_with_data.planning["context"] == before
 
 
 def test_a_brief_cannot_write_fields_outside_the_declared_set(workspace_with_data):
     engagement.apply_brief(workspace_with_data, {
-        "objective": "Real objective.",
+        "entity": "Real entity.",
+        "objective": "Ignored legacy field.",
+        "scope": "Ignored legacy field.",
         "created_by": "agent",
         "apm_markdown": "# Injected",
     })
     context = workspace_with_data.planning["context"]
-    assert context["objective"] == "Real objective."
+    assert context["entity"] == "Real entity."
+    assert not context["objective"]
+    assert not context["scope"]
     assert "apm_markdown" not in context
     # Provenance stays workbench-managed; a brief is an auditor edit.
     assert workspace_with_data.planning.get("created_by") != "agent"

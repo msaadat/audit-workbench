@@ -479,10 +479,6 @@ def completion(workspace: Workspace) -> dict:
         if str(test["item"].get("status") or "").startswith("completed")
         and test["item"].get("control_conclusion") not in CONCLUDED_CONTROL_CONCLUSIONS
     ]
-    missing_planning_context = [
-        field for field in ("objective", "scope")
-        if not str((workspace.planning.get("context") or {}).get(field) or "").strip()
-    ]
     blocked_without_plan = [
         {
             "rcm_id": row["id"], "test_id": test["id"],
@@ -517,7 +513,6 @@ def completion(workspace: Workspace) -> dict:
         cov["issue_count"]
         or incomplete_outcomes
         or blank_conclusions
-        or missing_planning_context
         or blocked_without_plan
         or rcm_without_conclusion
         or any(
@@ -531,7 +526,6 @@ def completion(workspace: Workspace) -> dict:
         "coverage": cov,
         "incomplete_outcomes": incomplete_outcomes,
         "blank_conclusions": blank_conclusions,
-        "missing_planning_context": missing_planning_context,
         "blocked_without_plan": blocked_without_plan,
         "rcm_without_conclusion": rcm_without_conclusion,
     }

@@ -42,10 +42,10 @@ _COMPLETED = ("completed", "completed_with_open_items", "completed_with_issues")
 _MIN_RUNS_FOR_ESTIMATE = 2
 _MAX_RUNS_SCANNED = 40
 
-# The context fields a brief fills. `objective` and `scope` are exactly what
-# `planning.context_ready` requires, so a completed brief means the agent can
-# skip the interview and start from planning.
-BRIEF_FIELDS = ("objective", "entity", "period", "scope", "materiality", "background_notes")
+# Optional engagement details captured at workspace creation. Planning derives
+# its objective and scope from the available engagement material instead of
+# requiring either as an upfront field.
+BRIEF_FIELDS = ("entity", "period", "materiality", "background_notes")
 
 
 def plan_outcomes(template: str = DEFAULT_TEMPLATE) -> list[dict[str, str]]:
@@ -181,10 +181,9 @@ def plan_preview(template: str = DEFAULT_TEMPLATE, mode: str = "auto") -> dict[s
 def apply_brief(workspace: Workspace, brief: dict[str, Any]) -> dict[str, Any]:
     """Record the brief as planning context.
 
-    A brief is not a new concept: `objective`, `scope`, `period` and the rest
-    are the planning-context fields the assistant interview would otherwise
-    collect. Writing them here means `planning.context_ready` is satisfied from
-    the start and the agent begins at the memorandum instead of an interview.
+    A brief is not a new concept: its optional details are planning-context
+    fields the assistant can use alongside the imported engagement material.
+    Objective and scope are not collected at workspace creation.
     """
     context = {
         field: str(brief.get(field) or "").strip()

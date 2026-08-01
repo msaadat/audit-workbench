@@ -63,6 +63,12 @@ COMMANDS: dict[str, Command] = {
             phrases=("generate apm", "generate the apm", "draft the apm", "update the apm"),
         ),
         Command(
+            "generate_rcm", "rcm_only", "Generate RCM",
+            slash=("generate rcm", "rcm"),
+            description="Prepare or revise only the risk and control matrix.",
+            phrases=("generate rcm", "generate the rcm", "draft the rcm", "update the rcm"),
+        ),
+        Command(
             "draft_findings", "finding_draft", "Draft findings",
             slash=("draft findings", "findings"),
             description="Draft evidence-linked findings for the selected observation or risk.",

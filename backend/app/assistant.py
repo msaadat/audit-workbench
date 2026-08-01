@@ -91,7 +91,11 @@ def workspace_manifest(workspace: Workspace) -> dict:
         "table_names": workspace.table_names(),
         "planning": {
             "context_available": bool(
-                str((workspace.planning.get("context") or {}).get("objective") or "").strip()
+                any(
+                    str(value or "").strip()
+                    for key, value in (workspace.planning.get("context") or {}).items()
+                    if key != "interview_answers"
+                )
             ),
             "apm_available": bool(
                 str(workspace.planning.get("apm_markdown") or "").strip()

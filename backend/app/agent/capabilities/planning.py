@@ -30,18 +30,15 @@ CAPABILITY_IDS: tuple[str, ...] = (
 # --------------------------------------------------------------------------- #
 def _context_ready(workspace: Workspace, _scope: dict) -> Readiness:
     context = workspace.planning.get("context") or {}
-    missing = [
-        field
-        for field in ("objective", "scope")
-        if not str(context.get(field) or "").strip()
-    ]
-    if not missing:
+    if any(
+        str(value or "").strip()
+        for field, value in context.items()
+        if field != "interview_answers"
+    ) or context.get("interview_answers"):
         return Readiness("satisfied")
     if not workspace.tables and not workspace.documents:
         return Readiness("blocked", ("no imported data or documents are available",))
-    return Readiness(
-        "missing", tuple(f"engagement {field} is missing" for field in missing)
-    )
+    return Readiness("missing", ("planning context has not been established",))
 
 
 def _context_units(_workspace: Workspace, _scope: dict) -> list[UnitSpec]:

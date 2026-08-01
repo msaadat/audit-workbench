@@ -26,9 +26,8 @@ async def get_engagement_plan(
 async def put_engagement_brief(workspace_id: str, brief: dict = Body(...)):
     """Record a brief as planning context.
 
-    `objective` and `scope` are what `planning.context_ready` requires, so a
-    completed brief lets the agent start at the memorandum rather than opening
-    with an interview the auditor has already answered.
+    The brief contains optional engagement details only. Planning derives its
+    objective and scope from the engagement material.
     """
     ws = workspaces.load_workspace(workspace_id)
     return engagement.apply_brief(ws, brief)

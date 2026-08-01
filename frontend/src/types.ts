@@ -2095,10 +2095,8 @@ export interface EngagementPlan {
   gates: { mode: 'auto' | 'permission'; summary: string }
 }
 
-/** The planning-context fields a brief fills. */
+/** Optional engagement details collected when a workspace is created. */
 export interface EngagementBrief {
-  objective: string
-  scope: string
   entity?: string
   period?: string
   materiality?: string

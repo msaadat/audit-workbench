@@ -33,6 +33,11 @@ DERIVED_ORDINAL = 1e12
 # that to the id tiebreak decided it alphabetically — "message" before
 # "milestone" — which is backwards, and only stable by accident.
 MILESTONE_ORDINAL = DERIVED_ORDINAL - 1
+# The run card is a receipt, not a bulletin posted the moment the run starts:
+# it belongs after everything the run has said or asked about so far, not
+# pinned to the message that launched it. Larger than the default derived
+# ordinal so it sorts after a plain message sharing its chased timestamp.
+RUN_CARD_ORDINAL = DERIVED_ORDINAL + 1
 CHAT_ID_RE = re.compile(r"chat_[0-9]{8}_[0-9]{6}_[0-9a-f]{6}\Z")
 MESSAGE_ID_RE = re.compile(r"msg_[0-9a-f]{12}\Z")
 ARTIFACT_ID_RE = re.compile(r"art_[0-9a-f]{12}\Z")
@@ -1015,6 +1020,36 @@ _STATUS_LABELS = {
 }
 
 
+def _run_card_anchor(run: dict, fallback_created_at: object) -> str:
+    """Where a run's card sorts: after everything it has said or asked, so far.
+
+    The card is a receipt of where the run currently stands, not a bulletin
+    posted at launch. A run that keeps talking — a context note, a repair, its
+    eventual close — must not leave that receipt stranded next to the message
+    that started it while the conversation visibly continues below. Paired
+    with ``RUN_CARD_ORDINAL``, which is what actually wins the tie once the
+    anchor lands on the same timestamp as the turn it chased.
+    """
+    latest = str(fallback_created_at or "")
+    for message in run.get("messages") or []:
+        candidate = str(message.get("at") or "")
+        if candidate > latest:
+            latest = candidate
+    for milestone in run.get("milestones") or []:
+        candidate = str(milestone.get("created_at") or "")
+        if candidate > latest:
+            latest = candidate
+    for interaction in run.get("interactions") or []:
+        candidate = str(interaction.get("created_at") or "")
+        if candidate > latest:
+            latest = candidate
+    for approval in run.get("approvals") or []:
+        candidate = str(approval.get("created") or "")
+        if candidate > latest:
+            latest = candidate
+    return latest
+
+
 def _run_projection(run: dict) -> dict:
     summary = store.run_summary(run)
     open_items = narration.blockers(run)
@@ -1115,8 +1150,8 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
             # in the message's place rather than a card still saying "queued".
             transcript.append(dict(
                 launched,
-                created_at=item.get("created_at"),
-                ordinal=float(item.get("ordinal") or 0) + 0.5,
+                created_at=_run_card_anchor(linked_runs.get(run_id) or {}, item.get("created_at")),
+                ordinal=RUN_CARD_ORDINAL,
                 source_message_id=item["id"],
             ))
         elif run_id and outcome.get("kind") == "command_queued":
@@ -1162,7 +1197,8 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
             except WorkspaceError:
                 pass
         elif run_id and run_id in by_run:
-            card = dict(by_run[run_id], created_at=item.get("created_at"), ordinal=float(item.get("ordinal") or 0) + 0.5, source_message_id=item["id"])
+            anchor = _run_card_anchor(linked_runs.get(run_id) or {}, item.get("created_at"))
+            card = dict(by_run[run_id], created_at=anchor, ordinal=RUN_CARD_ORDINAL, source_message_id=item["id"])
             transcript.append(card)
     # Child runs can appear after a queued parent ends; include unplaced links.
     # A queued-command card carries its parent's ``run_id`` but is not that
@@ -1171,7 +1207,15 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
         item.get("run_id") for item in transcript
         if item.get("type") == "run" and ":command:" not in str(item.get("id") or "")
     }
-    transcript.extend(item for item in linked if item["run_id"] not in placed)
+    transcript.extend(
+        dict(
+            item,
+            created_at=_run_card_anchor(linked_runs.get(item["run_id"]) or {}, item.get("created_at")),
+            ordinal=RUN_CARD_ORDINAL,
+        )
+        for item in linked
+        if item["run_id"] not in placed
+    )
     # Run-owned conversational messages and typed attention items are response
     # projections.  They retain stable derived IDs and are never written back
     # through chat APIs.
@@ -1223,9 +1267,12 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 "derived": True, "run_id": run["id"], "created_at": approval.get("created") or run.get("created"),
                 "approval": approval,
             })
-    # Run projections keep their fractional anchor (source ordinal + 0.5) and
-    # derived items without an ordinal sort after every chat message sharing
-    # their timestamp — both would be destroyed by an int() truncation.
+    # A run's card sorts by RUN_CARD_ORDINAL at its chased timestamp (see
+    # _run_card_anchor); a still-queued placeholder keeps the fractional
+    # anchor (source ordinal + 0.5) it needs to sit right under the message
+    # that queued it; derived items without an ordinal sort after every chat
+    # message sharing their timestamp — all of this floating-point precision
+    # would be destroyed by an int() truncation.
     transcript.sort(key=lambda item: (
         str(item.get("created_at") or ""),
         float(item.get("ordinal") if item.get("ordinal") is not None else DERIVED_ORDINAL),

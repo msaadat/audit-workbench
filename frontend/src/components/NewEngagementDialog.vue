@@ -4,7 +4,6 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import SelectButton from 'primevue/selectbutton'
-import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import type { AgentMode } from '../composables/useAgentRun'
@@ -14,11 +13,9 @@ import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 /**
  * Brief the agent instead of naming a folder.
  *
- * The one thing the agent cannot infer is what the engagement is for, and it is
- * also exactly what `planning.context_ready` requires — so the brief is not a
- * new concept, it is the planning context collected up front. Answering it here
- * means the agent opens at the memorandum rather than interviewing the auditor
- * for something they already typed.
+ * Start with the engagement name and add evidence. Planning context is then
+ * assembled from the engagement material instead of requiring an auditor to
+ * define an objective or scope before the workspace exists.
  *
  * The panel underneath states what the agent will do, where it will stop, where
  * requests go, and what past runs cost. Every line is read from the backend;
@@ -29,7 +26,7 @@ const visible = defineModel<boolean>('visible', { required: true })
 const emit = defineEmits<{ created: [{ id: string; withImport: boolean }] }>()
 
 const name = ref('')
-const brief = ref<EngagementBrief>({ objective: '', scope: '', entity: '', period: '' })
+const brief = ref<EngagementBrief>({ entity: '', period: '' })
 const mode = ref<AgentMode>('auto')
 const plan = ref<EngagementPlan | null>(null)
 const busy = ref(false)
@@ -52,7 +49,7 @@ async function loadPlan() {
 watch(visible, open => {
   if (!open) return
   name.value = ''
-  brief.value = { objective: '', scope: '', entity: '', period: '' }
+  brief.value = { entity: '', period: '' }
   error.value = ''
   void loadPlan()
 })
@@ -65,11 +62,9 @@ async function create(withImport: boolean) {
   try {
     const workspace = await api.post<{ id: string }>('/api/workspaces', {
       name: name.value,
-      description: brief.value.objective.trim(),
     })
-    // A brief with nothing in it is not written, so an auditor who skips it is
-    // left exactly where the old dialog left them.
-    if (brief.value.objective.trim() || brief.value.scope.trim()) {
+    // Optional engagement details are only written when supplied.
+    if (brief.value.entity?.trim() || brief.value.period?.trim()) {
       await api.post(`/api/workspaces/${workspace.id}/engagement/brief`, brief.value)
     }
     visible.value = false
@@ -96,27 +91,6 @@ async function create(withImport: boolean) {
         <label class="field">
           <span>Engagement name</span>
           <InputText v-model="name" placeholder="e.g. FY26 Procurement Audit" autofocus />
-        </label>
-
-        <label class="field">
-          <span>What are we auditing, and why?</span>
-          <Textarea
-            v-model="brief.objective"
-            rows="3"
-            autoResize
-            placeholder="Internal audit of procure-to-pay for FY26. Focus on vendor onboarding and three-way match."
-          />
-          <small>Becomes the engagement objective. The agent plans from this.</small>
-        </label>
-
-        <label class="field">
-          <span>Scope</span>
-          <Textarea
-            v-model="brief.scope"
-            rows="2"
-            autoResize
-            placeholder="Vendor onboarding through payment release, excluding payroll."
-          />
         </label>
 
         <UiAdvancedSection title="More detail" description="Optional — the agent infers what it can">

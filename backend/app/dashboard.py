@@ -15,6 +15,7 @@ import json
 from datetime import datetime, timezone
 
 from . import analytics, data_tests, debug_store, doc_tests, explore, llm, rcm_execution, report, sandbox, validation
+from .agent import capabilities as audit_capabilities
 from .agent.prompts import parse_json_object, validate_json_shape
 from .workspaces import Workspace, WorkspaceConflict, sync_workspace
 
@@ -192,10 +193,23 @@ def _engagement_state(workspace: Workspace) -> dict:
         or any(str(value or "").strip() for key, value in context.items() if key != "interview_answers")
         or context.get("interview_answers")
     )
-    apm_issues = [
-        f"Planning context is missing {field}." for field in ("objective", "scope")
-        if not str(context.get(field) or "").strip()
-    ]
+    # Objective and scope are derived during planning; they are not setup
+    # requirements for a new workspace.
+    # Keep the dashboard's APM badge tied to the same live readiness projection
+    # used by workflow scheduling.  A generated run is historical evidence; it
+    # must not keep the badge complete after the current APM is emptied or
+    # becomes structurally unusable.
+    apm_readiness = audit_capabilities.REGISTRY.get(
+        "planning.apm_ready"
+    ).readiness(workspace, {}).payload()
+    apm_issues = list(apm_readiness.get("reasons") or [])
+    if apm_readiness.get("state") == "blocked":
+        apm_issues.extend(
+            f"Blocked by {dependency}."
+            for dependency in apm_readiness.get("blocking_on") or []
+        )
+    if not apm_issues and apm_readiness.get("state") != "satisfied":
+        apm_issues.append("The APM is not ready.")
     rows_without_tests = completion["coverage"]["rows_without_tests"]
     rcm_started = bool(workspace.rcm)
     rcm_issues = []
@@ -381,7 +395,7 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     if not has_sources:
         actions.append(_action("import-sources", "Import audit files", "Add a folder or individual files to begin the engagement.", "data", priority="high"))
     elif not planning_started:
-        actions.append(_action("start-planning", "Start engagement planning", "Record the objective and scope, then build the RCM and its tests.", "planning", priority="high"))
+        actions.append(_action("start-planning", "Start engagement planning", "Build the planning memorandum, RCM, and linked tests from the available engagement material.", "planning", priority="high"))
     elif not planning_complete:
         actions.append(_action("complete-planning", "Complete engagement planning", planning_issues[0], "planning", priority="high"))
     if incomplete_tests:
