@@ -57,6 +57,7 @@ const createOpen = ref(false)
 const creating = ref(false)
 const saving = ref(false)
 const running = ref(false)
+const runningAll = ref(false)
 const filter = ref<'attention' | 'all' | string>('all')
 const search = ref('')
 const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
@@ -239,6 +240,27 @@ async function runTest() {
   } catch (error) { fail('Could not run the data test', error) }
   finally { running.value = false }
 }
+async function runAllTests() {
+  runningAll.value = true
+  try {
+    const batch = await api.post<{
+      total: number
+      completed: Array<{ data_test_id: string; status: string; exception_count: number }>
+      failed: Array<{ data_test_id: string; error: string }>
+    }>(`/api/workspaces/${props.workspace.id}/data-tests/run-all`)
+    await load()
+    emit('changed')
+    toast.add({
+      severity: batch.failed.length ? 'warn' : 'success',
+      summary: `Ran ${batch.completed.length} of ${batch.total} Data Test${batch.total === 1 ? '' : 's'}`,
+      detail: batch.failed.length
+        ? `${batch.failed.length} test(s) could not run: ${batch.failed.map(item => item.data_test_id).join(', ')}`
+        : undefined,
+      life: 6000,
+    })
+  } catch (error) { fail('Could not run all data tests', error) }
+  finally { runningAll.value = false }
+}
 function deleteTest() {
   const item = selected.value
   if (!item) return
@@ -306,6 +328,7 @@ onUnmounted(unsubscribe)
 <template>
   <div class="data-tests">
     <UiPageHeader title="Data tests" description="Run analytics over the imported tables and record what they found.">
+      <Button label="Run all" icon="pi pi-play" size="small" outlined :loading="runningAll" :disabled="running || runningAll" @click="runAllTests" />
       <Button label="New test" icon="pi pi-plus" size="small" @click="createOpen = true" />
       <Button
         v-if="selected"
@@ -365,7 +388,7 @@ onUnmounted(unsubscribe)
               <p class="objective">{{ selected.objective }}</p>
             </div>
             <div class="head-actions">
-              <Button label="Run" icon="pi pi-play" size="small" :loading="running" @click="runTest" />
+              <Button label="Run" icon="pi pi-play" size="small" :loading="running" :disabled="runningAll" @click="runTest" />
               <Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" size="small" outlined @click="openRcm" />
               <Button
                 v-if="selected.rcm_id"

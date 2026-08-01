@@ -52,6 +52,11 @@ async def run_data_test(workspace_id: str, data_test_id: str):
     return await asyncio.to_thread(data_tests.run, _ws(workspace_id), data_test_id)
 
 
+@router.post("/data-tests/run-all")
+async def run_all_data_tests(workspace_id: str):
+    return await asyncio.to_thread(data_tests.run_all, _ws(workspace_id))
+
+
 @router.post("/data-tests/run-all-rcm")
 async def run_all_rcm_data_tests(workspace_id: str):
     return await asyncio.to_thread(data_tests.run_all_rcm_linked, _ws(workspace_id))

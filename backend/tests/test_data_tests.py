@@ -68,6 +68,7 @@ def test_analytics_run_replaces_the_current_durable_result(workspace_with_data):
 
     assert first["status"] == "completed_with_exception"
     assert first["exception_count"] == 2
+    assert first["control_conclusion"] == "ineffective"
     assert first["dataset_fingerprints"]["transactions"]
     assert first["result_sha1"]
     assert data_tests.load_result(ws, item["id"], first["id"]) == first
@@ -89,7 +90,7 @@ def test_auditor_can_record_a_conclusion_on_a_completed_exception_result(workspa
     result = data_tests.run(ws, item["id"])
     assert result["status"] == "completed_with_exception"
     assert item["conclusion"] == ""
-    assert item["control_conclusion"] == "no_conclusion"
+    assert item["control_conclusion"] == "ineffective"
 
     updated = data_tests.update(
         ws, item["id"],
@@ -103,6 +104,51 @@ def test_auditor_can_record_a_conclusion_on_a_completed_exception_result(workspa
 
     with pytest.raises(workspaces.WorkspaceError):
         data_tests.update(ws, item["id"], {"control_conclusion": "bogus"})
+
+
+def test_deterministic_run_marks_no_exception_as_effective(workspace_with_data):
+    ws = workspace_with_data
+    item = data_tests.create(ws, {
+        "title": "No exception test",
+        "objective": "Confirm the empty exception population.",
+        "engine": "polars",
+        "table_refs": ["transactions"],
+        "spec": _polars_spec(
+            table_refs=["transactions"],
+            code="result = transactions.head(0)",
+        ),
+    })
+
+    result = data_tests.run(ws, item["id"])
+
+    assert result["status"] == "completed_no_exception"
+    assert result["exception_count"] == 0
+    assert result["control_conclusion"] == "effective"
+    assert item["control_conclusion"] == "effective"
+
+
+def test_run_all_includes_exploratory_and_rcm_tests(workspace_with_data):
+    ws = workspace_with_data
+    linked = data_tests.create(ws, _analytics_payload(_rcm_row(ws)))
+    exploratory = data_tests.create(ws, {
+        "title": "Exploratory no exception test",
+        "objective": "Confirm the empty exception population.",
+        "engine": "polars",
+        "table_refs": ["transactions"],
+        "spec": _polars_spec(
+            table_refs=["transactions"],
+            code="result = transactions.head(0)",
+        ),
+    })
+
+    batch = data_tests.run_all(ws)
+
+    assert batch["total"] == 2
+    assert len(batch["completed"]) == 2
+    assert batch["failed"] == []
+    assert {item["data_test_id"] for item in batch["completed"]} == {
+        linked["id"], exploratory["id"],
+    }
 
 
 def test_rerun_discards_unreferenced_legacy_result_files(workspace_with_data):
@@ -288,6 +334,7 @@ def test_null_exception_field_with_populated_identifier_is_valid(workspace_with_
     assert result["semantic_valid"] is True
     assert result["status"] == "completed_with_exception"
     assert result["exception_count"] > 0
+    assert result["control_conclusion"] == "ineffective"
     assert not any("entirely null" in issue for issue in result["semantic_issues"])
 
 

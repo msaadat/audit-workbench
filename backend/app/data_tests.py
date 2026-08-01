@@ -684,6 +684,13 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
             if exception_count or output["verdict"] in {"warn", "fail"}
             else "completed_no_exception"
         )
+        control_conclusion = (
+            "ineffective"
+            if status == "completed_with_exception"
+            else "effective"
+            if status == "completed_no_exception"
+            else "no_conclusion"
+        )
         error = None
     except Exception as exc:
         output = {"verdict": "error", "statistics": [], "verdict_text": str(exc), "viz": None}
@@ -692,6 +699,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         semantic_issues = list(dict.fromkeys([*join_issues, str(exc)]))
         semantic_valid = False
         status = "review_required"
+        control_conclusion = "no_conclusion"
         error = str(exc)
     result = {
         "id": run_id,
@@ -699,6 +707,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         "rcm_id": item["rcm_id"],
         "run_at": run_at,
         "status": status,
+        "control_conclusion": control_conclusion,
         "verdict": output["verdict"],
         "verdict_text": output.get("verdict_text") or "",
         "statistics": output.get("statistics") or [],
@@ -771,6 +780,12 @@ def commit_result(
             if tile.get("data_test_id") == data_test_id:
                 tile["result_ref"] = f"datatest:{data_test_id}:{candidate['id']}"
         item["status"] = candidate["status"]
+        # Deterministic execution has an unambiguous control conclusion for a
+        # semantically valid result. A review-required run is deliberately left
+        # without a conclusion because its evidence is not reliable enough.
+        item["control_conclusion"] = str(
+            candidate.get("control_conclusion") or "no_conclusion"
+        )
         item["updated"] = candidate["run_at"]
         return candidate
 
@@ -812,19 +827,8 @@ def run(workspace: Workspace, data_test_id: str) -> dict:
     )
 
 
-def run_all_rcm_linked(workspace: Workspace) -> dict:
-    """Run every Data Test linked to an RCM row, one at a time.
-
-    Each test has its own durable result and guarded commit, so a bad or
-    incomplete definition must not prevent the other RCM-linked tests from
-    running.  The returned payload is intentionally a compact batch summary;
-    callers can open individual results through the normal test endpoint.
-    """
-    test_ids = [
-        str(item["id"])
-        for item in workspace.data_tests
-        if item.get("rcm_id")
-    ]
+def _run_all(workspace: Workspace, test_ids: list[str]) -> dict:
+    """Run a selected set of Data Tests one at a time."""
     completed: list[dict] = []
     failed: list[dict] = []
     for data_test_id in test_ids:
@@ -841,7 +845,7 @@ def run_all_rcm_linked(workspace: Workspace) -> dict:
             failed.append({"data_test_id": data_test_id, "error": str(error)})
 
     # Keep the central RCM projection current even when a subset of tests
-    # could not run.  Import here to avoid a module-level cycle.
+    # could not run. Exploratory tests simply do not contribute linked rows.
     from . import rcm_execution
 
     rcm_execution.rollup(workspace)
@@ -850,6 +854,30 @@ def run_all_rcm_linked(workspace: Workspace) -> dict:
         "completed": completed,
         "failed": failed,
     }
+
+
+def run_all(workspace: Workspace) -> dict:
+    """Run every Data Test in the workspace, including exploratory tests."""
+    return _run_all(
+        workspace,
+        [str(item["id"]) for item in workspace.data_tests],
+    )
+
+
+def run_all_rcm_linked(workspace: Workspace) -> dict:
+    """Run every Data Test linked to an RCM row, one at a time.
+
+    Each test has its own durable result and guarded commit, so a bad or
+    incomplete definition must not prevent the other RCM-linked tests from
+    running.  The returned payload is intentionally a compact batch summary;
+    callers can open individual results through the normal test endpoint.
+    """
+    test_ids = [
+        str(item["id"])
+        for item in workspace.data_tests
+        if item.get("rcm_id")
+    ]
+    return _run_all(workspace, test_ids)
 
 
 def load_result(workspace: Workspace, data_test_id: str, run_id: str) -> dict:
