@@ -559,12 +559,27 @@ def test_extracted_scheduler_materializes_transitions_and_finishes_generically()
     assert run["status"] == "completed"
     assert run["command"]["status"] == "completed"
     assert run["summary_markdown"] == "# Synthetic catalog complete\n"
-    assert [activity["label"] for activity in runtime.activities] == [
+    # Activity is republished as each unit settles (not just once per stage),
+    # so the visible label progresses through the stages in order...
+    seen_labels = []
+    for activity in runtime.activities:
+        if not seen_labels or seen_labels[-1] != activity["label"]:
+            seen_labels.append(activity["label"])
+    assert seen_labels == [
         "Normalize catalog records",
         "Render catalog preview",
         "Build catalog index",
         "Publish catalog",
     ]
+    # ...and its current/total counter climbs to completion instead of
+    # staying frozen at the stage's initial current=0.
+    normalize_activities = [
+        activity
+        for activity in runtime.activities
+        if activity["label"] == "Normalize catalog records"
+    ]
+    assert [activity["current"] for activity in normalize_activities] == [0, 1, 2, 3]
+    assert all(activity["total"] == 3 for activity in normalize_activities)
     assert runtime.events[-1] == ("summary_ready", {"run_id": "run_synthetic"})
 
 

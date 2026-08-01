@@ -464,6 +464,32 @@ class WorkflowRunner:
                     "attempt": unit["attempts"],
                 },
             )
+        if status != "running":
+            self._refresh_stage_activity(stage)
+
+    def _refresh_stage_activity(self, stage: dict[str, Any]) -> None:
+        """Keep the run's live activity counter in step with settled units.
+
+        ``_set_stage`` publishes the initial ``current=0`` when a stage starts;
+        without this, that count never advances as units settle, so the
+        user-facing "(current/total)" label stays frozen even while
+        task_counts and the plan spine (which recompute live) progress.
+        """
+        units = stage.get("units") or []
+        if not units:
+            return
+        stage_id = str(stage.get("id") or stage.get("capability") or "workflow")
+        phase = f"workflow.{stage_id}"
+        if (self.run.get("activity") or {}).get("phase") != phase:
+            return
+        settled = sum(unit.get("status") in SETTLED_UNIT_STATUSES for unit in units)
+        self.runtime.set_activity(
+            phase,
+            str(stage.get("title") or "Workflow"),
+            current=settled,
+            total=len(units),
+            task_id=f"workflow:{stage_id}",
+        )
 
     def ensure_stage_units(self, stage: dict[str, Any]) -> list[dict[str, Any]]:
         """Re-expand a stage against the current subject with stable IDs."""
