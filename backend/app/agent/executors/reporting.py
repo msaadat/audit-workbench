@@ -356,7 +356,26 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
             raise WorkspaceError(
                 "Finding draft failed support validation: " + "; ".join(issues)
             )
-        return findings.add(fresh, item, source="agent")
+        existing = next(
+            (
+                candidate for candidate in fresh.findings
+                if candidate.get("semantic_id") == semantic
+                or candidate.get("id") == item["id"]
+            ),
+            None,
+        )
+        if existing is None:
+            return findings.add(fresh, item, source="agent")
+        if existing.get("source") != "agent":
+            raise WorkspaceError("A manually maintained finding cannot be regenerated.")
+        # Keep the stable finding identity and creation record while replacing
+        # the agent-authored draft from the current observation and evidence.
+        existing.update(item)
+        existing["created_by"] = "agent"
+        existing["source"] = "agent"
+        existing["updated"] = fresh._updated_now()
+        fresh.save()
+        return existing
 
     committed = mutate(
         target.workspace,

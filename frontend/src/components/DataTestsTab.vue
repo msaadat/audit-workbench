@@ -16,6 +16,7 @@ import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
+  AuditFinding,
   DataTest,
   DataTestEngine,
   DataTestResult,
@@ -127,6 +128,10 @@ const definitionReady = computed(() => {
   if (!selected.value.table_refs[0]) return false
   if (selected.value.engine === 'analytics') return editAnalyticsReady.value
   return false
+})
+const linkedFindings = computed<AuditFinding[]>(() => {
+  const testId = selected.value?.id
+  return testId ? (planning.value?.findings ?? []).filter(finding => finding.test_refs.includes(testId)) : []
 })
 
 function fail(summary: string, error: unknown) {
@@ -291,16 +296,19 @@ async function pin() {
     emit('changed')
   } catch (error) { fail('Could not pin the result', error) }
 }
-async function draftFinding() {
+async function draftFinding(regenerate = false) {
   if (!selected.value?.rcm_id || !selected.value.last_run) return
   try {
     await assistantChat.send(
-      `Draft findings for RCM row ${selected.value.rcm_id}.`,
+      `${regenerate ? 'Regenerate' : 'Draft'} findings for RCM row ${selected.value.rcm_id}.`,
       'act', 'permission',
-      { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: selected.value.rcm_id } },
+      { command: 'draft_findings', goalTemplate: 'finding_draft', source: 'tab_button', runContext: { rcm_id: selected.value.rcm_id } },
     )
-    toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
+    toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
+}
+function openFinding(findingId: string) {
+  void nav.replace('findings', { finding: findingId })
 }
 function openRcm() {
   if (!selected.value?.rcm_id) return
@@ -390,16 +398,6 @@ onUnmounted(unsubscribe)
             <div class="head-actions">
               <Button label="Run" icon="pi pi-play" size="small" :loading="running" :disabled="runningAll" @click="runTest" />
               <Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" size="small" outlined @click="openRcm" />
-              <Button
-                v-if="selected.rcm_id"
-                label="Draft finding"
-                icon="pi pi-sparkles"
-                size="small"
-                outlined
-                :disabled="!selected.last_run"
-                title="Run the test first, then draft through the assistant"
-                @click="draftFinding"
-              />
               <Button label="Pin" icon="pi pi-thumbtack" size="small" outlined :disabled="!selected.last_run" @click="pin" />
             </div>
           </header>
@@ -422,6 +420,30 @@ onUnmounted(unsubscribe)
             </label>
             <Button label="Save conclusion" icon="pi pi-check" size="small" outlined :loading="saving" @click="saveConclusion" />
           </div>
+          <section class="finding-action" aria-label="Finding">
+            <template v-if="linkedFindings.length">
+              <div>
+                <strong>Finding{{ linkedFindings.length === 1 ? '' : 's' }}</strong>
+                <p>{{ linkedFindings.length === 1 ? 'A finding is linked to this test.' : `${linkedFindings.length} findings are linked to this test.` }}</p>
+              </div>
+              <div class="finding-actions">
+                <Button
+                  v-for="finding in linkedFindings"
+                  :key="finding.id"
+                  :label="`Open ${finding.id}`"
+                  icon="pi pi-arrow-up-right"
+                  size="small"
+                  outlined
+                  @click="openFinding(finding.id)"
+                />
+                <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="!selected.rcm_id || !selected.last_run" @click="draftFinding(true)" />
+              </div>
+            </template>
+            <template v-else>
+              <div><strong>Finding</strong><p>Generate a draft from this test’s exception observations.</p></div>
+              <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="!selected.rcm_id || !selected.last_run" @click="() => draftFinding()" />
+            </template>
+          </section>
 
           <!-- Authoring is the rarer action, so it is here and closed. -->
           <UiAdvancedSection
@@ -535,6 +557,10 @@ onUnmounted(unsubscribe)
 .sign-off { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.6rem; }
 .sign-off label { flex: 0 1 16rem; }
 .sign-off label.conclusion-note { flex: 1 1 20rem; }
+.finding-action { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 0.8rem; border: 1px solid var(--p-blue-200); border-radius: var(--aw-radius-sm); background: var(--p-blue-50); }
+.finding-action strong { font-size: 0.8rem; }
+.finding-action p { margin: 0.15rem 0 0; color: var(--aw-muted); font-size: 0.76rem; }
+.finding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
 
 .definition { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
 .plan { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.7rem; }
@@ -547,6 +573,7 @@ label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { wi
 @container master-detail-content (max-width: 34rem) {
   .detail-head { flex-direction: column; }
   .head-actions { justify-content: flex-start; }
+  .finding-action { align-items: flex-start; flex-direction: column; }
   .plan { grid-template-columns: minmax(0, 1fr); }
   .wide { grid-column: auto; }
 }

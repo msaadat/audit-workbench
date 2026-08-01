@@ -5,7 +5,7 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 
-import type { AuditDocument, DocTest, DocTestItem, EvidenceRef } from '../../types'
+import type { AuditDocument, AuditFinding, DocTest, DocTestItem, EvidenceRef } from '../../types'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 
@@ -13,6 +13,7 @@ const props = defineProps<{
   test: DocTest
   item: DocTestItem
   documents: AuditDocument[]
+  findings: AuditFinding[]
   running: boolean
   busy: boolean
 }>()
@@ -23,6 +24,8 @@ const emit = defineEmits<{
   saveAttributes: []
   setState: [value: 'confirmed' | 'exception' | 'pending']
   saveConclusion: []
+  generateFinding: [regenerate: boolean]
+  openFinding: [findingId: string]
   updateEvidenceRequest: [requestId: string, status: 'received' | 'cancelled']
   run: []
   openRcm: [rcmId: string]
@@ -326,6 +329,30 @@ function attach() {
         @click="emit('saveConclusion')"
       />
     </section>
+    <section class="block finding-action">
+      <template v-if="findings.length">
+        <div>
+          <h4>Finding{{ findings.length === 1 ? '' : 's' }}</h4>
+          <p>{{ findings.length === 1 ? 'A finding is linked to this test.' : `${findings.length} findings are linked to this test.` }}</p>
+        </div>
+        <div class="finding-actions">
+          <Button
+            v-for="finding in findings"
+            :key="finding.id"
+            :label="`Open ${finding.id}`"
+            icon="pi pi-arrow-up-right"
+            size="small"
+            outlined
+            @click="emit('openFinding', finding.id)"
+          />
+          <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="busy || !test.rcm_id || !test.status.startsWith('completed')" @click="emit('generateFinding', true)" />
+        </div>
+      </template>
+      <template v-else>
+        <div><h4>Finding</h4><p>Generate a draft from this test’s exception observations.</p></div>
+        <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="busy || !test.rcm_id || !test.status.startsWith('completed')" @click="emit('generateFinding', false)" />
+      </template>
+    </section>
 
     <!-- 5. The auditor's own sign-off. Confirm/exception only apply while -->
     <!-- the result is unresolved — once it is 'confirmed' or 'exception' -->
@@ -389,6 +416,9 @@ function attach() {
 .block { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding: 0.8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: #fff; }
 .block[data-empty='true'] { background: var(--aw-canvas); }
 .block h4 { margin: 0; color: var(--aw-muted); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.finding-action { align-items: center; flex-direction: row; justify-content: space-between; }
+.finding-action p { margin: 0.2rem 0 0; color: var(--aw-muted); font-size: 0.78rem; }
+.finding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
 .instruction { margin: 0; font-size: 0.88rem; line-height: 1.5; }
 .question { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; color: var(--aw-muted); font-size: 0.8rem; }
 .response { margin: 0; font-size: 0.85rem; line-height: 1.55; }

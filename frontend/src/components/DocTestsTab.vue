@@ -15,6 +15,7 @@ import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type {
   AuditDocument,
+  AuditFinding,
   DocTest,
   DocTestClassification,
   DocTestItem,
@@ -103,6 +104,10 @@ const activeFilterLabel = computed(() => {
 })
 const currentItem = computed<DocTestItem | null>(() =>
   currentTest.value?.items.find(item => item.id === selectedItemId.value) ?? null)
+const linkedFindings = computed<AuditFinding[]>(() => {
+  const testId = currentTest.value?.id
+  return testId ? (planning.value?.findings ?? []).filter(finding => finding.test_refs.includes(testId)) : []
+})
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
 const hasTests = computed(() => Boolean(summary.value?.tests.length))
 
@@ -321,6 +326,21 @@ async function runTest() {
   } catch (error) { fail('Could not start the document test', error) }
   finally { running.value = false }
 }
+async function generateFinding(regenerate: boolean) {
+  const test = currentTest.value
+  if (!test?.rcm_id || !test.status.startsWith('completed')) return
+  try {
+    await assistantChat.send(
+      `${regenerate ? 'Regenerate' : 'Draft'} findings for RCM row ${test.rcm_id}.`,
+      'act', launchMode.value,
+      { command: 'draft_findings', goalTemplate: 'finding_draft', source: 'tab_button', runContext: { rcm_id: test.rcm_id } },
+    )
+    toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
+  } catch (error) { fail('Could not start the finding-draft workflow', error) }
+}
+function openFinding(findingId: string) {
+  void nav.replace('findings', { finding: findingId })
+}
 function deleteTest() {
   const test = currentTest.value
   if (!test) return
@@ -445,6 +465,7 @@ onUnmounted(unsubscribe)
           :test="currentTest"
           :item="currentItem"
           :documents="documents"
+          :findings="linkedFindings"
           :running="running"
           :busy="agent.isActive.value"
           @anchor="showAnchor"
@@ -453,6 +474,8 @@ onUnmounted(unsubscribe)
           @saveAttributes="saveAttributes"
           @setState="setItemState"
           @saveConclusion="saveConclusion"
+          @generateFinding="generateFinding"
+          @openFinding="openFinding"
           @updateEvidenceRequest="updateEvidenceRequest"
           @run="runTest"
           @openRcm="openRcm"

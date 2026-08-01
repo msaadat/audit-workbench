@@ -72,6 +72,7 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
 
 def _finding_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     existing = {str(item.get("source_observation_id") or "") for item in workspace.findings}
+    forced = str(scope.get("generation_mode") or "") == "force"
     return [
         UnitSpec(
             semantic_unit_id("finding", item["id"]),
@@ -87,7 +88,7 @@ def _finding_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             item,
         )
         for item in _eligible_observations(workspace, scope)
-        if item["id"] not in existing
+        if forced or item["id"] not in existing
     ]
 
 
