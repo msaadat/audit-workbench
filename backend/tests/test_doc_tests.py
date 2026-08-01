@@ -159,6 +159,56 @@ def test_auditor_can_record_a_conclusion_on_a_document_test(workspace_with_data)
         doc_tests.update_test(ws, review["id"], {"control_conclusion": "bogus"})
 
 
+def test_llm_conclusion_is_rolled_up_without_overwriting_an_auditor(workspace_with_data):
+    ws = workspace_with_data
+    document = documents.add_document(ws, "policy.txt", b"Approval is required.")
+    test = doc_tests.build_qa(ws, {
+        "title": "Policy Q&A", "document_ids": [document["id"]],
+        "questions": ["Is approval required?"],
+    })
+    item_id = test["items"][0]["id"]
+
+    doc_tests.commit_llm_assessment(
+        ws, test["id"], item_id, document["id"],
+        {
+            "answer": "Yes, approval is required.",
+            "conclusion": "The cited policy supports the approval requirement.",
+            "control_conclusion": "effective",
+            "outcome": "accepted",
+            "citations": [],
+        },
+    )
+    saved = doc_tests.load_test(ws, test["id"])
+    assert saved["conclusion"] == "The cited policy supports the approval requirement."
+    assert saved["conclusion_source"] == "agent"
+    assert saved["control_conclusion"] == "effective"
+    assert saved["control_conclusion_source"] == "agent"
+
+    doc_tests.update_test(
+        ws,
+        test["id"],
+        {
+            "conclusion": "Auditor conclusion.",
+            "control_conclusion": "partially_effective",
+        },
+    )
+    doc_tests.commit_llm_assessment(
+        ws, test["id"], item_id, document["id"],
+        {
+            "answer": "Yes, approval is required.",
+            "conclusion": "A rerun would otherwise replace this text.",
+            "control_conclusion": "effective",
+            "outcome": "accepted",
+            "citations": [],
+        },
+    )
+    saved = doc_tests.load_test(ws, test["id"])
+    assert saved["conclusion"] == "Auditor conclusion."
+    assert saved["conclusion_source"] == "auditor"
+    assert saved["control_conclusion"] == "partially_effective"
+    assert saved["control_conclusion_source"] == "auditor"
+
+
 def test_doc_test_workflow_persists_each_item_and_completes(workspace_with_data):
     ws = workspace_with_data
     document = documents.add_document(ws, "evidence.txt", b"Invoice: 1001\nAmount: 150.00")

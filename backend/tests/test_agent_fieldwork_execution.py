@@ -421,6 +421,8 @@ def _qa_request(ws, test, item_id, document_id, *, answer="The controller approv
         unit_id=f"document_qa_execution:{test['id']}:{item_id}:{document_id}",
         proposal={
             "answer": answer,
+            "conclusion": "The cited evidence supports the requested assessment.",
+            "control_conclusion": "effective",
             "outcome": "accepted",
             "citations": [{"page": 1, "excerpt": "approved by the controller"}],
         },
@@ -440,6 +442,11 @@ def test_document_qa_executor_commits_the_answer_with_derived_evidence_anchors()
     committed = doc_tests.load_test(target.workspace, test["id"])
     item = committed["items"][0]
     assert item["qa_answers"][document_id]["answer"] == "The controller approved it."
+    assert item["qa_answers"][document_id]["conclusion"] == (
+        "The cited evidence supports the requested assessment."
+    )
+    assert committed["conclusion"] == "The cited evidence supports the requested assessment."
+    assert committed["control_conclusion"] == "effective"
     assert item["qa_answers"][document_id]["outcome"] == "accepted"
     assert item["state"] == "confirmed"
     # The anchor is built from the document at commit time, so it carries the

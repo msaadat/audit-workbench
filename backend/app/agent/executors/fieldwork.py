@@ -257,7 +257,7 @@ class DocumentQaExecutorTarget:
 def _validated_document_qa(
     request: ExecutorRequest,
     target: object,
-) -> tuple[DocumentQaExecutorTarget, str, str, list[dict]]:
+) -> tuple[DocumentQaExecutorTarget, str, str, str, str, list[dict]]:
     if not isinstance(target, DocumentQaExecutorTarget):
         raise WorkspaceError(
             "Document Q&A executor requires a DocumentQaExecutorTarget."
@@ -270,6 +270,19 @@ def _validated_document_qa(
     answer = request.proposal.get("answer")
     if not isinstance(answer, str):
         raise WorkspaceError("The accepted document Q&A proposal has no answer.")
+    conclusion = request.proposal.get("conclusion")
+    if conclusion is not None and not isinstance(conclusion, str):
+        raise WorkspaceError("The accepted document Q&A proposal has no conclusion.")
+    control_conclusion = str(
+        request.proposal.get("control_conclusion")
+        or {"accepted": "effective", "exception": "ineffective"}.get(
+            request.proposal.get("outcome"), "no_conclusion"
+        )
+    )
+    if control_conclusion not in doc_tests.CONTROL_CONCLUSIONS:
+        raise WorkspaceError(
+            "The accepted document Q&A proposal has no valid control conclusion."
+        )
     outcome = str(request.proposal.get("outcome") or "")
     if outcome not in {"accepted", "exception", "needs_manual_check"}:
         raise WorkspaceError("The accepted document Q&A proposal has no valid outcome.")
@@ -278,7 +291,7 @@ def _validated_document_qa(
         for citation in _plain_json(request.proposal.get("citations") or [])
         if isinstance(citation, Mapping) and citation.get("page") is not None
     ]
-    return target, answer, outcome, citations
+    return target, answer, str(conclusion or answer), control_conclusion, outcome, citations
 
 
 def _document_qa_result(
@@ -322,7 +335,7 @@ def execute_document_qa(request: ExecutorRequest, raw_target: object) -> Executo
     citation to a document or hash it never saw. The commit is a merge in stable
     document order, so answering one attached document never discards another's.
     """
-    target, answer, outcome, citations = _validated_document_qa(
+    target, answer, conclusion, control_conclusion, outcome, citations = _validated_document_qa(
         request, raw_target
     )
     state: dict[str, int] = {}
@@ -353,7 +366,13 @@ def execute_document_qa(request: ExecutorRequest, raw_target: object) -> Executo
             target.test_id,
             target.item_id,
             target.document_id,
-            {"answer": answer, "outcome": outcome, "citations": anchors},
+            {
+                "answer": answer,
+                "conclusion": conclusion,
+                "control_conclusion": control_conclusion,
+                "outcome": outcome,
+                "citations": anchors,
+            },
         )
 
     committed = mutate(
@@ -382,7 +401,7 @@ def reconcile_document_qa(
     changed parent is reconcilable only when this exact answer is already the
     durable one for that item and document; anything else is a real conflict.
     """
-    target, answer, outcome, _citations = _validated_document_qa(
+    target, answer, conclusion, control_conclusion, outcome, _citations = _validated_document_qa(
         request, raw_target
     )
     parent_ref = document_test_ref(target.test_id)
@@ -416,6 +435,22 @@ def reconcile_document_qa(
             reason=(
                 "The Document Test changed before the interrupted Q&A commit was "
                 "reconciled."
+            ),
+        )
+    if str(durable.get("conclusion") or durable.get("answer") or "") != conclusion:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=(
+                "The Document Test conclusion changed before the interrupted Q&A "
+                "commit was reconciled."
+            ),
+        )
+    if str(durable.get("control_conclusion") or "no_conclusion") != control_conclusion:
+        return ExecutorReconciliation(
+            "conflict",
+            reason=(
+                "The Document Test control conclusion changed before the interrupted "
+                "Q&A commit was reconciled."
             ),
         )
     if str(durable.get("outcome") or "") != outcome:

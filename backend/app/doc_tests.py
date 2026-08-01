@@ -113,7 +113,18 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     test.setdefault("methodology_refs", [])
     # Outcome.
     test.setdefault("conclusion", "")
+    # Conclusions produced by the bounded worker may be refreshed on a forced
+    # rerun. A conclusion saved through the auditor-facing API is never changed
+    # by that process.
+    test.setdefault(
+        "conclusion_source",
+        "auditor" if str(test.get("conclusion") or "").strip() else "none",
+    )
     test.setdefault("control_conclusion", "no_conclusion")
+    test.setdefault(
+        "control_conclusion_source",
+        "auditor" if test["control_conclusion"] != "no_conclusion" else "none",
+    )
     test.setdefault("result_summary", "")
     test.setdefault("scope_limitations", "")
     test.setdefault("next_action", "")
@@ -223,7 +234,7 @@ def list_tests(workspace: Workspace) -> list[dict]:
                 "procedure_refs", "rcm_id", "spec", "created",
                 "updated", "sha1", "created_by", "agent_run_id",
                 "workflow_parent_sha1", "objective", "criteria", "steps",
-                "conclusion", "control_conclusion", "result_summary", "next_action",
+                "conclusion", "conclusion_source", "control_conclusion", "control_conclusion_source", "result_summary", "next_action",
                 "exception_count", "open_exception_count", "scope_limitations",
             )},
             "item_count": len(states),
@@ -920,11 +931,14 @@ def update_test(workspace: Workspace, test_id: str, changes: dict) -> dict:
         if conclusion not in CONTROL_CONCLUSIONS:
             raise WorkspaceError("Unknown control conclusion.")
         test["control_conclusion"] = conclusion
+        test["control_conclusion_source"] = "auditor"
     if "steps" in changes:
         test["steps"] = _normalize_steps(changes["steps"])
     for key in ("objective", "criteria", "conclusion", "scope_limitations", "next_action"):
         if key in changes:
             test[key] = str(changes[key] or "")
+    if "conclusion" in changes:
+        test["conclusion_source"] = "auditor"
     test["rcm_refs"], test["procedure_refs"] = rcm_refs, procedure_refs
     test["rcm_id"] = rcm_id
     if "spec" in changes:
@@ -1036,6 +1050,78 @@ def update_item(
     return save_test(workspace, test)
 
 
+def _refresh_agent_conclusion(test: dict) -> None:
+    """Roll worker-authored item conclusions into the completed test result.
+
+    The worker evaluates one item/document pair, while the durable result is a
+    Document Test. This deterministic roll-up needs no extra model turn and
+    never overwrites an explicit auditor conclusion.
+    """
+    if test.get("status") != "completed" or test.get("conclusion_source") == "auditor":
+        return
+    answer_key = "qa_answers" if test.get("kind") == "qa" else "llm_answers"
+    item_conclusions: list[tuple[str, str]] = []
+    for item in test.get("items") or []:
+        answers = item.get(answer_key) or {}
+        conclusions = [
+            str((answers.get(document_id) or {}).get("conclusion") or "").strip()
+            for document_id in item.get("document_ids") or []
+        ]
+        conclusions = [conclusion for conclusion in conclusions if conclusion]
+        if not conclusions:
+            return
+        item_conclusions.append(
+            (str(item.get("label") or "Test item"), " ".join(conclusions))
+        )
+    if not item_conclusions:
+        return
+    test["conclusion"] = (
+        item_conclusions[0][1]
+        if len(item_conclusions) == 1
+        else "\n".join(
+            f"{label}: {conclusion}" for label, conclusion in item_conclusions
+        )
+    )
+    test["conclusion_source"] = "agent"
+
+
+def _refresh_agent_control_conclusion(test: dict) -> None:
+    """Conservatively combine every settled worker control conclusion."""
+    if (
+        test.get("status") != "completed"
+        or test.get("control_conclusion_source") == "auditor"
+    ):
+        return
+    answer_key = "qa_answers" if test.get("kind") == "qa" else "llm_answers"
+    conclusions: list[str] = []
+    for item in test.get("items") or []:
+        answers = item.get(answer_key) or {}
+        for document_id in item.get("document_ids") or []:
+            conclusion = str(
+                (answers.get(document_id) or {}).get("control_conclusion")
+                or "no_conclusion"
+            )
+            if conclusion not in CONTROL_CONCLUSIONS:
+                return
+            conclusions.append(conclusion)
+    if not conclusions:
+        return
+    if "ineffective" in conclusions:
+        result = "ineffective"
+    elif "partially_effective" in conclusions:
+        result = "partially_effective"
+    elif "no_conclusion" in conclusions:
+        result = "no_conclusion"
+    elif all(value == "not_applicable" for value in conclusions):
+        result = "not_applicable"
+    elif all(value == "effective" for value in conclusions):
+        result = "effective"
+    else:
+        result = "no_conclusion"
+    test["control_conclusion"] = result
+    test["control_conclusion_source"] = "agent"
+
+
 def settle_llm_assessment(
     workspace: Workspace, test_id: str, item_id: str,
 ) -> dict | None:
@@ -1076,6 +1162,8 @@ def settle_llm_assessment(
     test["status"] = "completed" if states and all(
         state in {"confirmed", "exception", "manual_review"} for state in states
     ) else "in_progress"
+    _refresh_agent_conclusion(test)
+    _refresh_agent_control_conclusion(test)
     return save_test(workspace, test)
 
 
@@ -1302,6 +1390,14 @@ def run_item(
     return item
 
 
+def _llm_control_conclusion(answer: dict) -> str:
+    """Validate the fixed enum before an LLM assessment becomes durable."""
+    conclusion = str(answer.get("control_conclusion") or "no_conclusion")
+    if conclusion not in CONTROL_CONCLUSIONS:
+        raise WorkspaceError("Unknown control conclusion.")
+    return conclusion
+
+
 def commit_qa_answer(
     workspace: Workspace,
     test_id: str,
@@ -1320,6 +1416,8 @@ def commit_qa_answer(
         )
     candidate = {
         "answer": str(answer.get("answer") or ""),
+        "conclusion": str(answer.get("conclusion") or answer.get("answer") or ""),
+        "control_conclusion": _llm_control_conclusion(answer),
         "outcome": str(answer.get("outcome") or "needs_manual_check"),
         "citations": normalize_many(answer.get("citations") or []),
     }
@@ -1357,6 +1455,8 @@ def commit_llm_assessment(
     answers = item.setdefault("llm_answers", {})
     answers[document_id] = {
         "answer": str(answer.get("answer") or ""),
+        "conclusion": str(answer.get("conclusion") or answer.get("answer") or ""),
+        "control_conclusion": _llm_control_conclusion(answer),
         "outcome": str(answer.get("outcome") or "needs_manual_check"),
         "citations": normalize_many(answer.get("citations") or []),
     }

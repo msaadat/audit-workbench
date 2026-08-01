@@ -320,6 +320,8 @@ def _qa_workspace(monkeypatch, fake_agent_llm):
     )
     fake_agent_llm.overrides["agent:document_qa"] = {
         "answer": "The controller approved it.",
+        "conclusion": "The approval requirement is supported by the cited policy.",
+        "control_conclusion": "effective",
         "outcome": "accepted",
         "citations": [{"page": 1, "excerpt": "Approved by: the controller"}],
     }
@@ -352,6 +354,11 @@ def test_qa_execution_fans_out_per_item_document_pair_through_the_pipeline(
     saved = doc_tests.load_test(ws, test["id"])
     stored = saved["items"][0]["qa_answers"][document["id"]]
     assert stored["answer"] == "The controller approved it."
+    assert stored["conclusion"] == "The approval requirement is supported by the cited policy."
+    assert saved["conclusion"] == "The approval requirement is supported by the cited policy."
+    assert saved["conclusion_source"] == "agent"
+    assert saved["control_conclusion"] == "effective"
+    assert saved["control_conclusion_source"] == "agent"
     assert saved["items"][0]["state"] == "confirmed"
 
 

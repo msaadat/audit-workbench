@@ -54,23 +54,38 @@ DOCUMENT_QA_WORKER_ID = "fieldwork.document_qa"
 DOCUMENT_QA_OUTCOMES = frozenset(
     {"accepted", "exception", "needs_manual_check"}
 )
+DOCUMENT_QA_CONTROL_CONCLUSIONS = frozenset(
+    {"effective", "partially_effective", "ineffective", "no_conclusion", "not_applicable"}
+)
 DOCUMENT_QA_SYSTEM = """[agent:document_qa]
 Answer or assess only from the included pages. Return one JSON object only, with
 `answer` as a string, `outcome` as one of `accepted`, `exception`, or
-`needs_manual_check`, and `citations` as an array of objects. Each citation
-object has `page` as an integer and `excerpt` as a short verbatim string.
+`needs_manual_check`, `conclusion` as a concise statement of what this result
+means for the test item, `control_conclusion` as one of `effective`,
+`partially_effective`, `ineffective`, `no_conclusion`, or `not_applicable`, and
+`citations` as an array of objects. Each citation object has `page` as an
+integer and `excerpt` as a short verbatim string.
 
 Choose `accepted` when the evidence affirmatively satisfies the question or
 expected condition, `exception` when it affirmatively does not, and
 `needs_manual_check` when the evidence is absent, ambiguous, or inconclusive.
-Do not invent facts. Do not return prose outside the JSON object or a Markdown
-fence."""
+Use `no_conclusion` when evidence is inconclusive; do not choose a conclusion
+outside the fixed list. Do not invent facts. Do not return prose outside the JSON
+object or a Markdown fence."""
 
 DOCUMENT_QA_QUESTION_SOURCE_ID = "qa_item"
 DOCUMENT_QA_PAGE_SOURCE_ID = "document_pages"
 # A citation excerpt that is not verbatim in its page is replaced by the page's
 # opening text rather than rejected, matching the established anchor contract.
 _DOCUMENT_QA_FALLBACK_EXCERPT_CHARACTERS = 240
+
+
+def _fallback_control_conclusion(outcome: str) -> str:
+    """Keep pre-change proposal sidecars compatible with the new enum."""
+    return {
+        "accepted": "effective",
+        "exception": "ineffective",
+    }.get(outcome, "no_conclusion")
 
 
 def _supplied_pages(request: WorkerRequest) -> dict[int, str]:
@@ -115,10 +130,20 @@ def _document_qa_response_schema(response: str) -> Mapping[str, Any]:
         raise WorkerResponseValidationError("the response must be a JSON object")
     if not isinstance(payload.get("answer"), str):
         raise WorkerResponseValidationError("`answer` must be a string")
+    if "conclusion" in payload and not isinstance(payload["conclusion"], str):
+        raise WorkerResponseValidationError("`conclusion` must be a string")
     outcome = str(payload.get("outcome") or "").strip()
     if outcome not in DOCUMENT_QA_OUTCOMES:
         choices = ", ".join(sorted(DOCUMENT_QA_OUTCOMES))
         raise WorkerResponseValidationError(f"`outcome` must be one of: {choices}")
+    control_conclusion = str(
+        payload.get("control_conclusion") or _fallback_control_conclusion(outcome)
+    )
+    if control_conclusion not in DOCUMENT_QA_CONTROL_CONCLUSIONS:
+        choices = ", ".join(sorted(DOCUMENT_QA_CONTROL_CONCLUSIONS))
+        raise WorkerResponseValidationError(
+            f"`control_conclusion` must be one of: {choices}"
+        )
     citations = payload.get("citations")
     if citations is None:
         citations = []
@@ -128,6 +153,10 @@ def _document_qa_response_schema(response: str) -> Mapping[str, Any]:
         raise WorkerResponseValidationError("`citations` must be an array of objects")
     return {
         "answer": payload["answer"],
+        # Keep old proposal sidecars and interrupted runs readable. New model
+        # responses are instructed to supply this explicitly.
+        "conclusion": str(payload.get("conclusion") or payload["answer"]),
+        "control_conclusion": control_conclusion,
         "outcome": outcome,
         "citations": citations,
     }
@@ -167,8 +196,15 @@ def validate_document_qa_proposal(
         outcome = "needs_manual_check"
     if outcome in {"accepted", "exception"} and not citations:
         outcome = "needs_manual_check"
+    control_conclusion = str(
+        proposal.get("control_conclusion") or _fallback_control_conclusion(outcome)
+    )
+    if control_conclusion not in DOCUMENT_QA_CONTROL_CONCLUSIONS:
+        control_conclusion = _fallback_control_conclusion(outcome)
     return {
         "answer": str(proposal.get("answer") or ""),
+        "conclusion": str(proposal.get("conclusion") or proposal.get("answer") or ""),
+        "control_conclusion": control_conclusion,
         "outcome": outcome,
         "citations": sorted(citations, key=lambda item: item["page"]),
     }
@@ -196,7 +232,9 @@ def run_document_qa_worker(
             "\n\nYour previous response could not be used: "
             + "; ".join(attempt.validation_errors)
             + ". Return exactly one JSON object with a string `answer`, an "
+            "string `conclusion`, "
             "`outcome` of `accepted`, `exception`, or `needs_manual_check`, "
+            "a `control_conclusion` from the fixed enum, "
             "and an array of citation objects containing integer `page` and "
             "string `excerpt`."
         )
@@ -221,7 +259,7 @@ def run_document_qa_worker(
 DOCUMENT_QA_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="fieldwork.document_qa.response",
     schema_hash=_sha256_text(
-        "document-qa-response:json-object-with-answer-outcome-citations"
+        "document-qa-response:json-object-with-answer-conclusion-control-conclusion-outcome-citations"
     ),
     validator=_document_qa_response_schema,
 )
@@ -248,6 +286,7 @@ WORKERS.register(DOCUMENT_QA_WORKER)
 
 __all__ = [
     "DOCUMENT_QA_OUTCOMES",
+    "DOCUMENT_QA_CONTROL_CONCLUSIONS",
     "DOCUMENT_QA_PAGE_SOURCE_ID",
     "DOCUMENT_QA_QUESTION_SOURCE_ID",
     "DOCUMENT_QA_RESPONSE_SCHEMA",
