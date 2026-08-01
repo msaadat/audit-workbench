@@ -227,9 +227,16 @@ A check names both of its sides by path, never by value:
   row.<column>                   a value from the population row
   <role>.<group>.<key>           a value extracted from the document attached
   <role>.<group>.<key>.<attr>    in that role
-<group> is one of: {", ".join(sorted(doc_tests.FIELD_GROUPS))}. <key> is the kind
-or role that names the entry, such as `claim_id`, `payment_date`, `total`, or
-`receipt`; `*` matches every entry in the group.
+<key> is the kind or role that names the entry, such as `claim_id`,
+`payment_date`, `total`, or `receipt`; `*` matches every entry in the group.
+<group> and its permitted <attr> are exactly:
+{chr(10).join(
+    f"  {group:<12} {', '.join(sorted(doc_tests.FIELD_GROUP_ATTRIBUTES[group]))}"
+    for group in sorted(doc_tests.FIELD_GROUPS)
+)}
+Omitting <attr> reads the group's default: {", ".join(
+    f"{group}->{doc_tests.FIELD_GROUPS[group][2]}" for group in sorted(doc_tests.FIELD_GROUPS)
+)}.
 
 <method> is one of: {", ".join(sorted(doc_tests.METHODS))}. Use `date_order` when
 the left date must not fall after the right one, such as approval before

@@ -315,6 +315,27 @@ def test_paths_are_validated_when_the_check_is_written():
     doc_tests._normalize_check({"field": "f", "method": "normalized", "expected": "x"})
 
 
+def test_unknown_attributes_are_rejected_at_authoring_time():
+    """An attribute the schema has no field for is a mistake, not absent evidence.
+
+    Resolving it leniently would return no matches, and the check would report
+    ``missing`` — indistinguishable from a document that genuinely lacks the
+    fact. Rejecting the path when it is written keeps that distinction honest.
+    """
+    with pytest.raises(workspaces.WorkspaceError, match="unknown attribute 'receipt_id'"):
+        doc_tests.validate_path("voucher.attachment.receipt.receipt_id")
+    with pytest.raises(workspaces.WorkspaceError, match="unknown attribute 'total'"):
+        doc_tests.validate_path("invoice.amount.total.total")
+
+    # Documented attributes, the group default, and the verbatim `raw_` form
+    # normalization preserves are all addressable.
+    doc_tests.validate_path("invoice.amount.total")
+    doc_tests.validate_path("invoice.amount.total.currency")
+    doc_tests.validate_path("invoice.amount.total.raw_value")
+    doc_tests.validate_path("voucher.attachment.receipt.reference")
+    doc_tests.validate_path("voucher.approval.*.approver")
+
+
 def test_unary_and_binary_methods_declare_the_sides_they_need():
     """``present`` reads one side; every other method needs both."""
 

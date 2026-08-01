@@ -586,6 +586,23 @@ FIELD_GROUPS = {
     "approval": ("approvals", "role", "date"),
     "line_item": ("line_items", "category", "amount"),
 }
+
+# The attributes each group's entries actually carry, per the voucher profile's
+# declared schema. Validated rather than resolved leniently: an unknown
+# attribute would otherwise resolve to nothing and surface as a missing
+# comparison at run time, which reads like absent evidence rather than the
+# authoring mistake it is.
+FIELD_GROUP_ATTRIBUTES = {
+    "identifier": frozenset({"kind", "value"}),
+    "date": frozenset({"kind", "value"}),
+    "amount": frozenset({"kind", "value", "currency"}),
+    "party": frozenset({"role", "name"}),
+    "attachment": frozenset({"kind", "reference", "present"}),
+    "approval": frozenset({"approver", "role", "decision", "date"}),
+    "line_item": frozenset(
+        {"description", "amount", "quantity", "date", "category", "receipt_reference"}
+    ),
+}
 ROW_PREFIX = "row"
 WILDCARD = "*"
 
@@ -618,6 +635,15 @@ def _parse_path(path: str) -> tuple[str, str, str, str]:
     attribute = parts[3] if len(parts) > 3 else FIELD_GROUPS[group][2]
     if len(parts) > 4:
         raise PathError(f"'{path}' has too many segments.")
+    known = FIELD_GROUP_ATTRIBUTES[group]
+    # ``raw_<attr>`` is the verbatim form normalization preserves beside each
+    # typed value, so it is addressable wherever its typed counterpart is.
+    base = attribute[4:] if attribute.startswith("raw_") else attribute
+    if base not in known:
+        raise PathError(
+            f"'{path}' names unknown attribute '{attribute}' of group '{group}'; "
+            "expected one of " + ", ".join(sorted(known)) + "."
+        )
     return role, group, key, attribute
 
 
