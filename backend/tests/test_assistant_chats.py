@@ -33,7 +33,7 @@ def test_q_and_a_is_durable_idempotent_and_uses_bounded_history(workspace_with_d
     configured(monkeypatch)
     calls = []
 
-    def fake_ask(workspace, question, document_ids, *, prior_turns, chat_id=None):
+    def fake_ask(workspace, question, document_ids, *, prior_turns, chat_id=None, commander=None):
         calls.append((question, prior_turns, chat_id))
         return {
             "answer": f"Answer to {question}", "steps": [{"tool": "list_tables", "args": {}, "ok": True}],
@@ -67,7 +67,7 @@ def test_q_and_a_is_durable_idempotent_and_uses_bounded_history(workspace_with_d
     assert restored["title"] == "What tables are available?"
 
 
-def test_auto_next_task_question_uses_read_only_coordinator_with_chat_context(
+def test_auto_question_reaches_the_coordinator_with_chat_context_and_command_tools(
     workspace_with_data, monkeypatch,
 ):
     ws = workspace_with_data
@@ -75,13 +75,16 @@ def test_auto_next_task_question_uses_read_only_coordinator_with_chat_context(
     captured = {}
 
     def fake_ask(
-        workspace, question, document_ids, *, prior_turns, chat_id=None,
+        workspace, question, document_ids, *, prior_turns, chat_id=None, commander=None,
     ):
         captured.update(
             question=question,
             document_ids=document_ids,
             prior_turns=prior_turns,
             chat_id=chat_id,
+            # An auto message is coordinated: the loop is lent the capability
+            # to start work, and answering is the model's own choice.
+            commander_lent=commander is not None,
         )
         return {
             "answer": "The latest run is complete; inspect audit progress next.",
@@ -109,6 +112,7 @@ def test_auto_next_task_question_uses_read_only_coordinator_with_chat_context(
         "document_ids": [],
         "prior_turns": [],
         "chat_id": chat["id"],
+        "commander_lent": True,
     }
     assert store.list_runs(ws) == []
 
@@ -274,7 +278,7 @@ def test_run_projection_uses_durable_activity_instead_of_coarse_status(workspace
     assert projection["duration_ms"] is not None
 
 
-def test_slash_command_bypasses_ask_act_classification(workspace_with_data, monkeypatch):
+def test_slash_command_never_reaches_the_model(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     configured(monkeypatch)
     launched = {}
@@ -287,11 +291,10 @@ def test_slash_command_bypasses_ask_act_classification(workspace_with_data, monk
         return run
 
     def fail(*args, **kwargs):
-        raise AssertionError("ask/act classification must not run for a slash command")
+        raise AssertionError("a slash command must not spend a model turn")
 
     monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
-    monkeypatch.setattr(assistant_chats, "_deterministic_intent", fail)
-    monkeypatch.setattr(assistant_chats, "_classifier", fail)
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fail)
     chat = assistant_chats.create_chat(ws)
     result = assistant_chats.send_message(ws, chat["id"], {
         "content": "/generate apm", "intent": "auto", "mode": "auto",
@@ -416,7 +419,7 @@ def test_unknown_command_field_is_rejected(workspace_with_data, monkeypatch):
         })
 
 
-def test_free_text_phrase_dictionary_shortcuts_act_text_to_goal_template(workspace_with_data, monkeypatch):
+def test_exact_command_phrase_starts_a_run_without_a_model_turn(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     configured(monkeypatch)
     launched = {}
@@ -428,10 +431,14 @@ def test_free_text_phrase_dictionary_shortcuts_act_text_to_goal_template(workspa
         store.save_run(workspace, run)
         return run
 
+    def fail(*args, **kwargs):
+        raise AssertionError("an exact command phrase must not spend a model turn")
+
     monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fail)
     chat = assistant_chats.create_chat(ws)
     result = assistant_chats.send_message(ws, chat["id"], {
-        "content": "Please generate the report for this engagement.", "intent": "auto", "mode": "auto",
+        "content": "Generate the audit report.", "intent": "auto", "mode": "auto",
         "request_id": "request-phrase-report", "source": "composer",
     })
 
@@ -440,7 +447,40 @@ def test_free_text_phrase_dictionary_shortcuts_act_text_to_goal_template(workspa
     assert launched["source"] == "goal_template"
 
 
-def test_free_text_without_a_phrase_match_is_unaffected(workspace_with_data, monkeypatch):
+def test_text_merely_mentioning_a_command_is_coordinated_not_launched(workspace_with_data, monkeypatch):
+    """The phrase table is whole-message, so a question about an artifact is
+    still a question."""
+
+    ws = workspace_with_data
+    configured(monkeypatch)
+    seen = {}
+
+    def fake_ask(workspace, question, document_ids, *, prior_turns, chat_id=None, commander=None):
+        seen["question"] = question
+        return {
+            "answer": "The report has not been drafted yet.", "steps": [],
+            "artifacts": [], "citations": [], "document_context": None,
+            "started_run": None,
+        }
+
+    def fail(*args, **kwargs):
+        raise AssertionError("a question must not start a run on its own")
+
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fake_ask)
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fail)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Tell me about the audit report.", "intent": "auto", "mode": "auto",
+        "request_id": "request-phrase-mention", "source": "composer",
+    })
+
+    assert seen["question"] == "Tell me about the audit report."
+    assert result["outcome"]["kind"] == "answer"
+    assert result["chat"]["messages"][0]["resolved_intent"] == "ask"
+    assert store.list_runs(ws) == []
+
+
+def test_coordinator_starting_a_run_is_recorded_as_an_action(workspace_with_data, monkeypatch):
     ws = workspace_with_data
     configured(monkeypatch)
     launched = {}
@@ -452,16 +492,56 @@ def test_free_text_without_a_phrase_match_is_unaffected(workspace_with_data, mon
         store.save_run(workspace, run)
         return run
 
+    def fake_ask(workspace, question, document_ids, *, prior_turns, chat_id=None, commander=None):
+        # Stand in for the model choosing the mutating tool.
+        started = commander.launch_command("generate_report")
+        return {
+            "answer": "Starting the report now.", "steps": [], "artifacts": [],
+            "citations": [], "document_context": None, "started_run": started,
+        }
+
     monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fake_ask)
     chat = assistant_chats.create_chat(ws)
     result = assistant_chats.send_message(ws, chat["id"], {
-        "content": "Delete the old join.", "intent": "auto", "mode": "auto",
-        "request_id": "request-phrase-miss", "source": "composer",
+        "content": "I think it is time we pulled the report together.",
+        "intent": "auto", "mode": "auto",
+        "request_id": "request-coordinated-act", "source": "composer",
     })
 
     assert result["outcome"]["kind"] == "run_started"
-    assert launched["goal_template"] is None
-    assert launched["source"] == "chat"
+    assert launched["goal_template"] == "report"
+    messages = result["chat"]["messages"]
+    assert messages[0]["resolved_intent"] == "act"
+    assert messages[0]["outcome"]["run_id"] == result["outcome"]["run_id"]
+    # The model's closing line is kept, and carries no run id of its own: the
+    # run card hangs off the auditor's message only.
+    assert messages[1]["content"] == "Starting the report now."
+    assert messages[1]["outcome"]["kind"] == "answer"
+    run_cards = [item for item in result["chat"]["transcript"] if item.get("type") == "run"]
+    assert len(run_cards) == 1
+
+
+def test_explicit_ask_is_lent_no_mutating_capability(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    seen = {}
+
+    def fake_ask(workspace, question, document_ids, *, prior_turns, chat_id=None, commander=None):
+        seen["commander"] = commander
+        return {
+            "answer": "Six tables.", "steps": [], "artifacts": [], "citations": [],
+            "document_context": None, "started_run": None,
+        }
+
+    monkeypatch.setattr(assistant_chats.assistant, "ask", fake_ask)
+    chat = assistant_chats.create_chat(ws)
+    assistant_chats.send_message(ws, chat["id"], {
+        "content": "How many tables are there?", "intent": "ask", "mode": "auto",
+        "request_id": "request-explicit-ask", "source": "composer",
+    })
+
+    assert seen["commander"] is None
 
 
 def test_pending_turn_is_recovered_as_failed(workspace_with_data):

@@ -10,11 +10,12 @@ guessed, in three ways:
   slash is reported back rather than silently falling through.
 * A structured caller (a tab button, a shortcut chip) can pass the command id
   directly, bypassing text matching entirely.
-* A free-typed message that already resolved to "act" is checked against each
-  command's ``phrases`` before it reaches the routing-layer phrase tables and
-  bounded router. This dictionary is deliberately small and conservative —
-  it only shortcuts unambiguous, fully-worded requests; anything else still
-  falls through to routing.py exactly as before.
+* A free-typed message that *is* one of a command's ``phrases`` — the whole
+  message, not a fragment of it — resolves without a model turn. Matching is
+  deliberately whole-message: "generate the audit report" is the command,
+  while "tell me about the audit report" is a question that merely mentions
+  it. Anything else goes to the assistant's tool loop, which decides for
+  itself whether to answer or to start a run.
 """
 
 from __future__ import annotations
@@ -36,9 +37,9 @@ class Command:
     # model-backed run. They may still appear in the same slash-command menu.
     local_handler: str | None = None
     description: str = ""
-    # Conservative substring phrases checked against already-"act" free text.
-    # Kept short and fully-worded to avoid false positives inside unrelated
-    # sentences (a bare "plan" or "report" would match too much).
+    # Complete messages that mean this command and nothing else. Matched
+    # whole-message, never as a substring, so a phrase can be an ordinary
+    # imperative without swallowing questions that mention the same artifact.
     phrases: tuple[str, ...] = ()
 
 
@@ -48,37 +49,55 @@ COMMANDS: dict[str, Command] = {
             "full_audit", "full_audit_working_draft", "Full audit",
             slash=("full audit", "audit"),
             description="Execute RCM-linked tests through an evidence-linked report working draft.",
-            phrases=("full audit", "entire audit", "end-to-end audit", "end to end audit"),
+            phrases=(
+                "run the full audit", "do the full audit", "complete the audit",
+                "prepare a full audit working draft",
+            ),
         ),
         Command(
             "plan", "planning", "Plan the engagement",
             slash=("plan", "planning"),
             description="Prepare or improve engagement planning and the RCM tests that cover it.",
-            phrases=("plan the audit", "prepare planning", "prepare engagement planning"),
+            phrases=(
+                "plan the audit", "plan the engagement", "prepare planning",
+                "prepare the engagement planning",
+            ),
         ),
         Command(
             "generate_apm", "apm_only", "Generate APM",
             slash=("generate apm", "apm"),
             description="Prepare or revise only the audit planning memorandum.",
-            phrases=("generate apm", "generate the apm", "draft the apm", "update the apm"),
+            phrases=(
+                "generate the apm", "draft the apm", "update the apm",
+                "generate the audit planning memorandum",
+            ),
         ),
         Command(
             "generate_rcm", "rcm_only", "Generate RCM",
             slash=("generate rcm", "rcm"),
             description="Prepare or revise only the risk and control matrix.",
-            phrases=("generate rcm", "generate the rcm", "draft the rcm", "update the rcm"),
+            phrases=(
+                "generate the rcm", "draft the rcm", "update the rcm",
+                "generate the risk and control matrix",
+            ),
         ),
         Command(
             "draft_findings", "finding_draft", "Draft findings",
             slash=("draft findings", "findings"),
             description="Draft evidence-linked findings for the selected observation or risk.",
-            phrases=("draft findings", "draft eligible findings"),
+            phrases=(
+                "draft the findings", "draft eligible findings",
+                "draft all eligible findings",
+            ),
         ),
         Command(
             "generate_report", "report", "Generate report",
             slash=("generate report", "report"),
             description="Prepare evidence-linked audit report working content and run quality checks.",
-            phrases=("generate the report", "draft the report", "audit report"),
+            phrases=(
+                "generate the report", "generate the audit report",
+                "draft the report", "draft the audit report",
+            ),
         ),
         Command(
             "analyze_data", "data_analysis", "Analyze data",
@@ -90,25 +109,34 @@ COMMANDS: dict[str, Command] = {
             "relate_tables", "table_relationships", "Relate tables",
             slash=("relate tables", "table relationships"),
             description="Infer table relationships and materialize supported joins.",
-            phrases=("relationships between tables", "join the tables", "relate the tables"),
+            phrases=(
+                "relate the tables", "join the tables",
+                "infer the table relationships",
+            ),
         ),
         Command(
             "analyze_documents", "document_analysis", "Analyze documents",
             slash=("analyze documents", "document analysis"),
             description="Analyze the documents in scope.",
-            phrases=("analyze the documents", "analyse the documents", "summarize the documents"),
+            phrases=(
+                "analyze the documents", "analyse the documents",
+                "summarize the documents", "summarise the documents",
+            ),
         ),
         Command(
             "prepare_document_tests", "document_test_preparation", "Prepare document tests",
             slash=("prepare document tests", "prepare tests"),
             description="Write the executable specification for each drafted test.",
-            phrases=("prepare document tests", "prepare the document tests"),
+            phrases=("prepare the document tests", "prepare document tests"),
         ),
         Command(
             "run_document_tests", "document_test_execution", "Run document tests",
             slash=("run document tests", "run tests"),
             description="Execute the Document Tests in scope.",
-            phrases=("run document test", "run the document tests", "execute the document tests"),
+            phrases=(
+                "run the document tests", "run document tests",
+                "execute the document tests",
+            ),
         ),
         Command(
             "status", None, "Audit status",
@@ -120,12 +148,24 @@ COMMANDS: dict[str, Command] = {
 
 
 def _normalize(text: str) -> str:
-    return re.sub(r"[\s_-]+", " ", text.strip().casefold()).strip()
+    # Trailing punctuation is presentation, not meaning: "plan the audit." is
+    # the same request as "plan the audit".
+    return re.sub(r"[\s_-]+", " ", text.strip().rstrip(".!").casefold()).strip()
 
 
 _SLASH_INDEX: dict[str, Command] = {
     _normalize(alias): command for command in COMMANDS.values() for alias in command.slash
 }
+
+_PHRASE_INDEX: dict[str, Command] = {}
+for _command in COMMANDS.values():
+    for _phrase in _command.phrases:
+        _key = _normalize(_phrase)
+        # Two commands claiming one phrase would make the winner depend on
+        # registration order, which is exactly the ambiguity whole-message
+        # matching exists to remove.
+        if _PHRASE_INDEX.setdefault(_key, _command) is not _command:
+            raise RuntimeError(f"Command phrase '{_phrase}' is claimed by two commands.")
 
 
 def is_slash(content: str) -> bool:
@@ -140,13 +180,14 @@ def match_slash(content: str) -> Command | None:
 
 
 def match_phrase(content: str) -> Command | None:
-    """Resolve free text already classified as "act" to a command, if any."""
+    """Resolve a message that *is* one known command phrase, or ``None``.
 
-    folded = content.casefold()
-    for command in COMMANDS.values():
-        if any(phrase in folded for phrase in command.phrases):
-            return command
-    return None
+    Whole-message only. "generate the audit report" is the command; "tell me
+    about the audit report" is a question that mentions it, and belongs to the
+    assistant's tool loop rather than to a run started without a model turn.
+    """
+
+    return _PHRASE_INDEX.get(_normalize(content))
 
 
 def help_text() -> str:

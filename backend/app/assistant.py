@@ -1,11 +1,15 @@
-"""Natural-language, read-only audit-workbench assistant.
+"""Natural-language audit-workbench assistant coordinator.
 
-An auditor asks a question in plain English; an LLM answers it by *calling
-registered read tools* that run locally against the workspace. The coordinator
-is deliberately domain-neutral: audit progress, prior runs, planning artifacts,
-documents, and tabular analysis are peer capabilities. Intent routing decides
-only whether a message is read-only (``ask``) or mutating (``act``); it never
-equates a question with data analysis.
+An auditor writes in plain English; an LLM responds by *calling registered
+tools* that run locally against the workspace. The coordinator is deliberately
+domain-neutral: audit progress, prior runs, planning artifacts, documents, and
+tabular analysis are peer capabilities, and a question is never equated with
+data analysis.
+
+The loop is read-only by default. A caller that lends a :class:`Commander` also
+gets ``start_command`` and ``start_action``, letting the same turn decide by
+ordinary tool-calling whether to answer or to hand work to the agent runner —
+which is why no separate ask/act classification step exists ahead of it.
 
 Model tool results include compact, unmasked previews. Full computations stay
 local and previews are bounded only to protect the model's context window.
@@ -16,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import polars as pl
@@ -372,12 +377,103 @@ if set(READ_TOOL_REGISTRY) != set(_TOOL_HANDLERS):
 TOOLS = [tool.schema for tool in READ_TOOLS]
 
 
+@dataclass(frozen=True)
+class Commander:
+    """The mutating capability a caller may lend to the coordinator.
+
+    This module never imports the agent runner: the chat layer owns run policy
+    (approval mode, the single-live-run rule, queueing) and passes in already
+    bound launchers. A caller that passes no commander gets the historical
+    strictly read-only loop, schemas included.
+    """
+
+    catalog: tuple[dict, ...]
+    launch_command: Callable[[str], dict]
+    launch_action: Callable[[str], dict]
+
+
+_COMMAND_TOOL_HANDLERS = {
+    "start_command": "start_command",
+    "start_action": "start_action",
+}
+
+
+def _command_schemas(commander: Commander | None) -> list[dict]:
+    """Wire schemas for the mutating tools, or none when no commander is lent."""
+
+    if commander is None:
+        return []
+    catalog = "\n".join(
+        f"- {item['id']}: {item['label']} — {item['description']}"
+        for item in commander.catalog
+    )
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "start_command",
+                "description": (
+                    "Start a registered audit workflow as a durable background "
+                    "run. Use only when the auditor is asking for the work to be "
+                    "carried out, never to answer a question about it. Returns "
+                    "as soon as the run is accepted; the work continues in the "
+                    "background.\nAvailable commands:\n" + catalog
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command_id": {
+                            "type": "string",
+                            "enum": [item["id"] for item in commander.catalog],
+                            "description": "Which registered workflow to start.",
+                        },
+                    },
+                    "required": ["command_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "start_action",
+                "description": (
+                    "Start a durable run for an isolated artifact operation that "
+                    "no registered workflow owns — renaming, pinning, deleting, "
+                    "attaching, or rerunning one existing artifact. Prefer "
+                    "start_command whenever a registered workflow covers the "
+                    "request."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "request": {
+                            "type": "string",
+                            "description": (
+                                "The operation to perform, in one imperative "
+                                "sentence naming the artifact it applies to."
+                            ),
+                        },
+                    },
+                    "required": ["request"],
+                },
+            },
+        },
+    ]
+
+
 class _Session:
     """Holds per-request state: the workspace, a frame cache, and artifacts."""
 
-    def __init__(self, workspace: Workspace, *, chat_id: str | None = None):
+    def __init__(
+        self, workspace: Workspace, *, chat_id: str | None = None,
+        commander: Commander | None = None,
+    ):
         self.workspace = workspace
         self.chat_id = str(chat_id or "").strip() or None
+        self.commander = commander
+        # The outcome of the one run this message was allowed to start, if it
+        # started one. Read by :func:`ask` to report what the turn actually did.
+        self.started_run: dict | None = None
         self._frames: dict[str, pl.DataFrame] = {}
         self.artifacts: list[dict] = []
         self.steps: list[dict] = []
@@ -781,11 +877,47 @@ class _Session:
         self.artifacts.append(artifact)
         return artifact
 
+    def _guard_single_run(self) -> None:
+        """One message may start at most one run.
+
+        A model that has already handed work to the runner has nothing left to
+        decide this turn, and a second run would either be refused by the
+        single-live-run rule or silently queue behind the first.
+        """
+
+        if self.commander is None:
+            raise WorkspaceError("This assistant turn cannot change the workspace.")
+        if self.started_run is not None:
+            raise WorkspaceError(
+                "A run was already started for this message. Report it and stop."
+            )
+
+    def start_command(self, args: dict):
+        self._guard_single_run()
+        command_id = str(args.get("command_id") or "").strip()
+        known = {str(item["id"]) for item in self.commander.catalog}
+        if command_id not in known:
+            raise WorkspaceError(
+                f"Unknown command '{command_id}'. Available: {', '.join(sorted(known))}."
+            )
+        self.started_run = self.commander.launch_command(command_id)
+        return dict(self.started_run), None
+
+    def start_action(self, args: dict):
+        self._guard_single_run()
+        request = str(args.get("request") or "").strip()
+        if not request:
+            raise WorkspaceError("An action needs a request describing what to do.")
+        self.started_run = self.commander.launch_action(request)
+        return dict(self.started_run), None
+
     def dispatch(self, name: str, args: dict):
         definition = READ_TOOL_REGISTRY.get(name)
-        if definition is None:
-            return {"error": f"Unknown tool '{name}'."}, None
-        return getattr(self, definition.handler)(args)
+        if definition is not None:
+            return getattr(self, definition.handler)(args)
+        if name in _COMMAND_TOOL_HANDLERS:
+            return getattr(self, _COMMAND_TOOL_HANDLERS[name])(args)
+        return {"error": f"Unknown tool '{name}'."}, None
 
 
 def _default_viz(df: pl.DataFrame, aggregated: bool) -> dict:
@@ -829,10 +961,36 @@ Use filters and aggregates for large populations rather than asking for an \
 entire table at once. Attached document text is also available as context.
 - When done, give a short, plain-English answer grounded in the tool results. \
 Mention concrete figures when the tools provide them. Note truncation, blockers, \
-or data-quality caveats briefly. Never claim to have changed the workspace.
+or data-quality caveats briefly. Never claim to have changed the workspace \
+unless a tool you called reports that it did.
 
 Workspace manifest:
 %s
+"""
+
+
+# Appended only when the caller lends a commander. Without it the loop has no
+# mutating tool at all, so these rules would describe capabilities that are
+# absent.
+COMMAND_RULES = """
+You can also carry work out, not only describe it. Two tools start durable
+background runs: start_command for a registered audit workflow, and
+start_action for an isolated operation on one existing artifact.
+
+Rules for starting work:
+- Start a run only when the auditor is asking for the work to be carried out. \
+A question about what something is, what it would involve, what state it is \
+in, or whether it is worth doing is answered with the read tools — never by \
+starting a run.
+- Starting a run changes the workspace and is not silently undoable. When a \
+request could be either a question or an instruction, answer it and ask which \
+they meant rather than guessing.
+- Prefer start_command whenever a registered command covers the request. Use \
+start_action only for an operation no registered workflow owns.
+- Start at most one run per message. Once a run has started, stop calling \
+tools and reply with one short sentence naming what is now running.
+- The run continues in the background after you reply. Do not poll it, and \
+never describe its results as though they already exist.
 """
 
 
@@ -890,9 +1048,14 @@ def ask(
     *,
     prior_turns: list[dict] | None = None,
     chat_id: str | None = None,
+    commander: Commander | None = None,
 ) -> dict:
-    """Run the tool-calling loop for one question. Returns answer + trace +
-    artifacts. Raises :class:`llm.LLMError` if the backend isn't configured."""
+    """Run the tool-calling loop for one message.
+
+    Returns answer + trace + artifacts, plus ``started_run`` describing the run
+    the model chose to start, if any. Without a ``commander`` the loop is
+    strictly read-only and ``started_run`` is always ``None``. Raises
+    :class:`llm.LLMError` if the backend isn't configured."""
     question = str(question or "").strip()
     if not question:
         raise WorkspaceError("Ask a question first.")
@@ -905,9 +1068,13 @@ def ask(
         if attached_ids else None
     )
 
-    session = _Session(workspace, chat_id=chat_id)
+    session = _Session(workspace, chat_id=chat_id, commander=commander)
+    command_schemas = _command_schemas(commander)
+    tools = TOOLS + command_schemas
     manifest_text = json.dumps(workspace_manifest(workspace), indent=1)
     system_prompt = SYSTEM_PROMPT % manifest_text
+    if command_schemas:
+        system_prompt += COMMAND_RULES
     if document_context:
         system_prompt += DOCUMENT_CONTEXT_RULES % _document_prompt(document_context)
     messages = [{"role": "system", "content": system_prompt}]
@@ -923,7 +1090,7 @@ def ask(
             purpose="assistant_answer", document_ids=attached_ids,
             tool_step=step + 1,
         ):
-            message = llm.chat(messages, tools=TOOLS)
+            message = llm.chat(messages, tools=tools)
         raw_tool_calls = message.get("tool_calls") or []
         tool_calls = (
             [call for call in raw_tool_calls if isinstance(call, dict)]
@@ -1007,6 +1174,7 @@ def ask(
         "steps": session.steps,
         "artifacts": session.artifacts,
         "citations": citations,
+        "started_run": session.started_run,
         "document_context": ({
             "manifest": document_context["manifest"],
             "trimmed": document_context["trimmed"],

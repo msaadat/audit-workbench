@@ -103,6 +103,151 @@ def test_read_tools_are_registered_once_with_matching_handlers():
     assert [schema["function"]["name"] for schema in assistant.TOOLS] == names
     assert tooling.TABLE_SCHEMAS_TOOL in assistant.TOOLS
     assert tooling.TABLE_PROFILE_TOOL in assistant.TOOLS
+    # The mutating tools are lent, never registered: a caller that passes no
+    # commander must not even see them advertised.
+    assert assistant._command_schemas(None) == []
+    assert "start_command" not in names
+
+
+def _commander(**overrides) -> assistant.Commander:
+    calls: list = overrides.setdefault("calls", [])
+
+    def launch_command(command_id):
+        calls.append(("command", command_id))
+        return {"kind": "run_started", "run_id": "20260801-000000-abcdef"}
+
+    def launch_action(request):
+        calls.append(("action", request))
+        return {"kind": "run_started", "run_id": "20260801-000000-abcdef"}
+
+    return assistant.Commander(
+        catalog=({"id": "generate_report", "label": "Generate report", "description": "…"},),
+        launch_command=overrides.get("launch_command", launch_command),
+        launch_action=overrides.get("launch_action", launch_action),
+    )
+
+
+def test_command_schemas_are_offered_only_when_a_commander_is_lent():
+    commander = _commander()
+    schemas = assistant._command_schemas(commander)
+
+    assert [item["function"]["name"] for item in schemas] == ["start_command", "start_action"]
+    enum = schemas[0]["function"]["parameters"]["properties"]["command_id"]["enum"]
+    assert enum == ["generate_report"]
+    # The catalog is described to the model, not just enumerated.
+    assert "generate_report" in schemas[0]["function"]["description"]
+
+
+def test_start_command_records_the_run_and_refuses_a_second(workspace_with_data):
+    calls: list = []
+    session = assistant._Session(
+        workspace_with_data, commander=_commander(calls=calls),
+    )
+
+    content, artifact = session.dispatch("start_command", {"command_id": "generate_report"})
+
+    assert content["kind"] == "run_started"
+    assert artifact is None
+    assert session.started_run == content
+    assert calls == [("command", "generate_report")]
+    # One message, one run: a second call must not silently queue more work.
+    with pytest.raises(WorkspaceError, match="already started"):
+        session.dispatch("start_command", {"command_id": "generate_report"})
+    assert calls == [("command", "generate_report")]
+
+
+def test_start_command_rejects_an_unregistered_command(workspace_with_data):
+    session = assistant._Session(workspace_with_data, commander=_commander())
+
+    with pytest.raises(WorkspaceError, match="Unknown command"):
+        session.dispatch("start_command", {"command_id": "delete_everything"})
+    assert session.started_run is None
+
+
+def test_mutating_tools_are_unavailable_without_a_commander(workspace_with_data):
+    session = assistant._Session(workspace_with_data)
+
+    with pytest.raises(WorkspaceError, match="cannot change the workspace"):
+        session.dispatch("start_command", {"command_id": "generate_report"})
+    with pytest.raises(WorkspaceError, match="cannot change the workspace"):
+        session.dispatch("start_action", {"request": "delete the Q3 join"})
+    assert session.started_run is None
+
+
+def test_start_action_requires_a_request(workspace_with_data):
+    session = assistant._Session(workspace_with_data, commander=_commander())
+
+    with pytest.raises(WorkspaceError, match="needs a request"):
+        session.dispatch("start_action", {"request": "  "})
+
+
+def test_ask_loop_can_start_a_run_and_reports_it(monkeypatch, workspace_with_data):
+    """The whole seam: schemas reach the model, the tool call dispatches, and
+    the started run comes back out of ``ask``."""
+
+    calls = []
+    launched = []
+
+    def fake_chat(messages, tools=None, temperature=0.0):
+        calls.append({"messages": messages, "tools": tools})
+        if len(calls) == 1:
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {
+                        "name": "start_command",
+                        "arguments": json.dumps({"command_id": "generate_report"}),
+                    },
+                }],
+            }
+        return {"content": "Started the report."}
+
+    monkeypatch.setattr(assistant.llm, "chat", fake_chat)
+    result = assistant.ask(
+        workspace_with_data, "Pull the report together please",
+        commander=_commander(calls=launched),
+    )
+
+    assert result["answer"] == "Started the report."
+    assert result["started_run"] == {"kind": "run_started", "run_id": "20260801-000000-abcdef"}
+    assert launched == [("command", "generate_report")]
+    offered = [item["function"]["name"] for item in calls[0]["tools"]]
+    assert "start_command" in offered and "start_action" in offered
+    assert "start a run only when" in calls[0]["messages"][0]["content"].casefold()
+
+
+def test_ask_stays_read_only_without_a_commander(monkeypatch, workspace_with_data):
+    calls = []
+
+    def fake_chat(messages, tools=None, temperature=0.0):
+        calls.append({"messages": messages, "tools": tools})
+        if len(calls) == 1:
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {
+                        "name": "start_command",
+                        "arguments": json.dumps({"command_id": "generate_report"}),
+                    },
+                }],
+            }
+        return {"content": "I can't change the workspace."}
+
+    monkeypatch.setattr(assistant.llm, "chat", fake_chat)
+    result = assistant.ask(workspace_with_data, "Generate the report")
+
+    assert result["started_run"] is None
+    assert [item["function"]["name"] for item in calls[0]["tools"]] == [
+        tool.name for tool in assistant.READ_TOOLS
+    ]
+    # A model that invents the tool anyway is refused, and told so.
+    assert result["steps"][0] == {
+        "tool": "start_command", "args": {"command_id": "generate_report"}, "ok": False,
+    }
+    tool_msg = next(item for item in calls[1]["messages"] if item.get("role") == "tool")
+    assert "cannot change the workspace" in tool_msg["content"]
 
 
 def test_latest_run_tool_prefers_the_current_chat(workspace_with_data):

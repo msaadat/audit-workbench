@@ -298,9 +298,14 @@ def _eligible_history(record: dict, current: dict) -> list[dict]:
     index = len(messages) - 1
     while index >= 1 and len(selected) < 4:
         answer, user = messages[index], messages[index - 1]
+        # A coordinated turn that started a run resolves to "act" but still
+        # produced an ordinary text reply, and it is exactly the context a
+        # follow-up needs ("did that finish?"). Only turns with no text reply —
+        # clarifications, deterministic command launches — end the chain.
         if not (
             user.get("role") == "user" and answer.get("role") == "assistant"
-            and user.get("resolved_intent") == answer.get("resolved_intent") == "ask"
+            and user.get("resolved_intent") in {"ask", "act"}
+            and answer.get("resolved_intent") in {"ask", "act"}
             and user.get("kind") == answer.get("kind") == "text"
         ):
             break
@@ -465,60 +470,11 @@ def _active_run(workspace: Workspace, summaries: list[dict] | None = None) -> di
     return store.load_run(workspace, matches[0]["id"])
 
 
-ASK_WORDS = {"explain", "summarize", "compare", "inspect", "count", "calculate", "show", "what", "why", "how", "which", "who", "when"}
-ACT_WORDS = {"create", "edit", "update", "delete", "remove", "save", "pin", "rerun", "execute", "import", "generate", "prepare", "preserve", "reconcile", "approve", "run"}
-
-
-def _deterministic_intent(content: str) -> str | None:
-    words = re.findall(r"[a-z]+", content.casefold())
-    if not words:
-        return None
-    # An explicit leading imperative wins even when phrased with a trailing
-    # question mark ("Delete the Q3 join?"); interrogative openers stay
-    # questions ("What did the last run do?"). Everything else is classified
-    # or clarified.
-    if words[0] in ACT_WORDS or (words[0] == "please" and len(words) > 1 and words[1] in ACT_WORDS):
-        return "act"
-    if words[0] in ASK_WORDS or content.rstrip().endswith("?"):
-        return "ask"
-    return None
-
-
-def _classifier(workspace: Workspace, record: dict, content: str, active: bool) -> dict:
-    if not llm.status().get("configured"):
-        return {"intent": "clarify", "confidence": "low", "clarification": "Choose Ask or Act so I can route this safely."}
-    prior = []
-    for item in reversed(record.get("messages") or []):
-        if item.get("state") == "complete" and item.get("kind") == "text" and item.get("role") in {"user", "assistant"}:
-            prior.append({"role": item["role"], "content": str(item.get("content") or "")[:2000]})
-            if len(prior) == 2:
-                break
-    prompt = {
-        "text": content, "prior_text_turns": list(reversed(prior)),
-        "active_schema_v2_run": active,
-    }
-    with debug_store.trace_context(
-        workspace_id=workspace.id, workspace_root=str(workspace.root), chat_id=record.get("id"),
-        stage="assistant.classification", purpose="classify_intent",
-    ):
-        message = llm.chat([
-            {"role": "system", "content": "Classify the request. Return JSON only: {\"intent\":\"ask|act|clarify\",\"confidence\":\"high|medium|low\",\"clarification\":null}. Actions change or persist workspace state. Questions are read-only. Ambiguous pronouns require clarify."},
-            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-        ], profile="assistant")
-    try:
-        value = json.loads(str(message.get("content") or ""))
-    except (json.JSONDecodeError, TypeError):
-        value = {}
-    if not isinstance(value, dict):
-        value = {}
-    if value.get("intent") not in {"ask", "act", "clarify"} or value.get("confidence") not in {"high", "medium", "low"}:
-        return {"intent": "clarify", "confidence": "low", "clarification": "I could not safely tell whether you want an answer or a workspace change. Choose Ask or Act."}
-    # Actions run through the command runner's own approval policy, so only a
-    # genuinely uncertain classification needs a clarify round-trip.
-    if value["intent"] == "act" and value["confidence"] == "low":
-        value["intent"] = "clarify"
-        value["clarification"] = value.get("clarification") or "Should I answer this as a question, or carry it out as an action?"
-    return value
+# Intent is no longer guessed ahead of the work. A message resolves to a
+# command deterministically (a slash command, a caller-supplied command id, or
+# an exact registered phrase), or it goes to the assistant tool loop, which
+# decides for itself — by ordinary tool-calling — whether to answer the message
+# or hand it to the command runner. See :func:`_commander`.
 
 
 def _append_assistant(record: dict, *, kind: str, content: str, resolved: str, reply_to: str, error=None, **extra) -> dict:
@@ -664,6 +620,157 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
             _processing_paths.discard(key)
 
 
+class CommandLaunchError(WorkspaceError):
+    """A command could not be started. The message is safe to show a user."""
+
+    def __init__(self, message: str, *, run_id: str | None = None):
+        super().__init__(message)
+        self.run_id = run_id
+
+
+def _launch_command(
+    workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
+    *, goal_template: str | None = None, run_context: dict | None = None,
+    requested_outcomes: list[str] | None = None, text: str | None = None,
+) -> dict:
+    """Start or queue one command run, and report where it landed.
+
+    Shared by the deterministic entry points (slash commands, tab buttons,
+    exact phrases) and by the assistant tool loop's ``start_command`` /
+    ``start_action`` tools, so run policy — the agent-model requirement, the
+    single-live-run rule, queueing behind an active run — is written once and
+    cannot drift between them. Refusals are raised as
+    :class:`CommandLaunchError`: a deterministic caller turns one into a
+    clarification message, while the tool loop hands it back to the model as a
+    tool error so it can explain or choose differently.
+    """
+
+    request = str(text if text is not None else user["content"]).strip()
+    # Action routing never bypasses the command runner.
+    if not llm.agent_status().get("configured"):
+        raise llm.LLMError("The action agent model is not configured.")
+    active = _active_run(workspace)
+    # The only non-command run is folder intake, which owns the workspace
+    # until its staged batch is applied.
+    if active and not store.is_command_run(active):
+        raise CommandLaunchError(
+            "A folder import is running. Wait for it to finish, or pause or "
+            "cancel it before starting another action.",
+            run_id=active["id"],
+        )
+
+    refs = []
+    if not goal_template and re.search(r"\b(that|it|this)\b", request, re.I):
+        preceding = next((item for item in reversed(record.get("messages") or []) if item.get("role") == "assistant"), None)
+        ids = list((preceding or {}).get("artifact_ids") or [])
+        if len(ids) != 1:
+            raise CommandLaunchError(
+                "Which result do you mean? Name the artifact or use its action button."
+            )
+        artifact = _artifact(workspace, chat_id, ids[0])
+        refs = [{"kind": "assistant_artifact", "id": artifact["id"], "title": artifact.get("title")}]
+
+    planning_context = dict(run_context or {})
+    target_refs: list[str] = []
+    if goal_template == "finding_draft":
+        observation_id = str(planning_context.get("observation_id") or "").strip()
+        rcm_id = str(planning_context.get("rcm_id") or "").strip()
+        if observation_id:
+            target_refs = [f"observation:{observation_id}"]
+        elif rcm_id:
+            target_refs = [f"rcm:{rcm_id}"]
+    command = {
+        "source": "goal_template" if goal_template else ("tab_button" if user.get("source") != "composer" else "chat"),
+        "text": request, "goal_template": goal_template,
+        "chat_id": chat_id, "source_message_id": user["id"], "context_refs": refs,
+        "target_refs": target_refs,
+        "requested_outcomes": list(requested_outcomes or []),
+    }
+    if goal_template == "planning" and not planning_context.get("document_ids"):
+        planning_context["document_ids"] = list(
+            (user.get("document_context") or {}).get("document_ids") or []
+        )
+    if active:
+        response = runner.steer(
+            workspace, active["id"], request, chat_id=chat_id,
+            source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
+            run_context=planning_context, goal_template=goal_template,
+            requested_outcomes=requested_outcomes,
+        )
+        queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
+        pending_count = len(store.load_run(workspace, active["id"]).get("pending_commands") or [])
+        return {"kind": "command_queued", "run_id": active["id"], "command_id": (queued or {}).get("id"), "position": max(1, pending_count)}
+
+    parent_id = None
+    for item in reversed(record.get("messages") or []):
+        candidate = (item.get("outcome") or {}).get("run_id")
+        if candidate:
+            if not RUN_ID_RE.fullmatch(str(candidate)):
+                break
+            try:
+                linked = store.load_run(workspace, candidate)
+                if linked.get("chat_id") == chat_id and linked.get("status") in store.TERMINAL_STATUSES:
+                    parent_id = candidate
+            except WorkspaceError:
+                pass
+            break
+    try:
+        if planning_context:
+            run = runner.start_command_run(
+                workspace, mode, command, parent_run_id=parent_id,
+                context=planning_context,
+            )
+        else:
+            run = runner.start_command_run(
+                workspace, mode, command, parent_run_id=parent_id,
+            )
+        return {"kind": "run_started", "run_id": run["id"], "command_id": run["command"]["id"]}
+    except runner.AgentBusyError:
+        raced = _active_run(workspace)
+        if not raced or not store.is_command_run(raced):
+            raise
+        response = runner.steer(
+            workspace, raced["id"], request, chat_id=chat_id,
+            source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
+            run_context=planning_context, goal_template=goal_template,
+            requested_outcomes=requested_outcomes,
+        )
+        queued = response.get("command") or {}
+        return {"kind": "command_queued", "run_id": raced["id"], "command_id": queued.get("id"), "position": 1}
+
+
+def _commander(
+    workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
+) -> assistant.Commander:
+    """Bind this message's launch policy for the assistant tool loop.
+
+    The assistant module never imports the agent runner; the chat layer owns
+    run policy and hands the loop a pre-bound launcher, so ``assistant.ask``
+    stays read-only for every caller that does not pass one.
+    """
+
+    def launch_command(command_id: str) -> dict:
+        return _launch_command(
+            workspace, chat_id, user, record, mode,
+            goal_template=commands.COMMANDS[command_id].goal_template,
+        )
+
+    def launch_action(request: str) -> dict:
+        return _launch_command(
+            workspace, chat_id, user, record, mode, text=request,
+        )
+
+    return assistant.Commander(
+        catalog=tuple(
+            {"id": item.id, "label": item.label, "description": item.description}
+            for item in commands.COMMANDS.values()
+            if item.goal_template
+        ),
+        launch_command=launch_command,
+        launch_action=launch_action,
+    )
+
+
 def _process_message(
     workspace: Workspace, chat_id: str, user: dict, record: dict, mode: str,
     goal_template: str | None, run_kind: str | None = None, run_context: dict | None = None,
@@ -702,7 +809,7 @@ def _process_message(
     resolved = requested = user["requested_intent"]
     if requested == "auto" and commands.is_slash(user["content"]):
         # An explicit slash command is resolved outright, the same as a caller
-        # passing `command` directly — it never enters ask/act classification.
+        # passing `command` directly — it never reaches the model.
         matched_command = slash_command or commands.match_slash(user["content"])
         if matched_command is None:
             text = f"Unknown command. Available: {commands.help_text()}"
@@ -714,33 +821,27 @@ def _process_message(
             return outcome
         resolved = "act"
         goal_template = matched_command.goal_template
-        clarification = None
     elif requested == "auto":
-        resolved = _deterministic_intent(user["content"])
-        if resolved is None:
-            classified = _classifier(workspace, record, user["content"], bool(active and store.is_command_run(active)))
-            resolved = classified["intent"]
-            clarification = classified.get("clarification")
-        else:
-            clarification = None
-    else:
-        clarification = None
+        # A message that *is* a registered command phrase resolves without a
+        # model turn. Anything else is left to the coordinator, which decides
+        # by tool-calling whether to answer or to start work.
+        phrase_match = commands.match_phrase(user["content"])
+        resolved = "act" if phrase_match else "coordinate"
+        if phrase_match:
+            goal_template = phrase_match.goal_template
 
-    if resolved == "clarify":
-        text = str(clarification or "Should I answer this as a question, or carry it out as an action?")
-        outcome = {"kind": "clarification_requested"}
-        def done(rec, stored):
-            stored.update(state="complete", resolved_intent="clarify", outcome=outcome)
-            _append_assistant(rec, kind="clarification", content=text, resolved="clarify", reply_to=stored["id"], outcome=outcome)
-        _finalize(workspace, chat_id, user["id"], done)
-        return outcome
-
-    if resolved == "ask":
+    if resolved in {"ask", "coordinate"}:
         if not llm.status().get("configured"):
             raise llm.LLMError("The read-only assistant model is not configured.")
         doc_ids = list(record.get("composer_context", {}).get("document_ids") or [])
         current = _document_snapshot(workspace, doc_ids)
         history = _eligible_history(record, current)
+        # An explicit Ask is a promise the workspace will not change, so the
+        # coordinator is lent no mutating capability for it.
+        commander = (
+            _commander(workspace, chat_id, user, record, mode)
+            if resolved == "coordinate" else None
+        )
         with debug_store.trace_context(
             workspace_id=workspace.id, workspace_root=str(workspace.root), chat_id=chat_id,
             stage="assistant.answer", purpose="assistant_answer",
@@ -749,19 +850,26 @@ def _process_message(
                 workspace, user["content"], doc_ids,
                 prior_turns=history,
                 chat_id=chat_id,
+                commander=commander,
             )
         final_snapshot = _document_snapshot(
             workspace, doc_ids, manifest=(result.get("document_context") or {}).get("manifest") or []
         )
         answer_id = _new_id("msg")
         artifact_ids = _write_artifacts(workspace, chat_id, answer_id, result.get("artifacts") or [])
-        outcome = {"kind": "answer", "message_id": answer_id}
+        started = result.get("started_run") or None
+        answer_outcome = {"kind": "answer", "message_id": answer_id}
+        # The run card hangs off whichever message carries a run id. Only the
+        # auditor's message may carry it: repeating it on the reply would append
+        # a second, identical card for the same run.
+        outcome = started or answer_outcome
+        final_intent = "act" if started else "ask"
         def done(rec, stored):
-            stored.update(state="complete", resolved_intent="ask", outcome=outcome, document_context=final_snapshot)
+            stored.update(state="complete", resolved_intent=final_intent, outcome=outcome, document_context=final_snapshot)
             answer = _append_assistant(
-                rec, kind="text", content=str(result.get("answer") or ""), resolved="ask",
+                rec, kind="text", content=str(result.get("answer") or ""), resolved=final_intent,
                 reply_to=stored["id"], document_context=final_snapshot, artifact_ids=artifact_ids,
-                outcome=outcome, citation_ids=[str(item.get("id") or _new_id("citation")) for item in result.get("citations") or []],
+                outcome=answer_outcome, citation_ids=[str(item.get("id") or _new_id("citation")) for item in result.get("citations") or []],
                 citations=result.get("citations") or [], tool_trace=_safe_trace(result.get("steps") or []),
                 document_manifest=result.get("document_context"),
             )
@@ -787,110 +895,21 @@ def _process_message(
         _finalize(workspace, chat_id, user["id"], done)
         return outcome
 
-    # Action routing never bypasses the command runner.
-    if not llm.agent_status().get("configured"):
-        raise llm.LLMError("The action agent model is not configured.")
-    # The only non-command run is folder intake, which owns the workspace
-    # until its staged batch is applied.
-    if active and not store.is_command_run(active):
-        text = "A folder import is running. Wait for it to finish, or pause or cancel it before starting another action."
-        outcome = {"kind": "clarification_requested", "run_id": active["id"]}
+    try:
+        outcome = _launch_command(
+            workspace, chat_id, user, record, mode, goal_template=goal_template,
+            run_context=run_context, requested_outcomes=requested_outcomes,
+        )
+    except CommandLaunchError as error:
+        text = str(error)
+        outcome = {"kind": "clarification_requested"}
+        if error.run_id:
+            outcome["run_id"] = error.run_id
         def done(rec, stored):
             stored.update(state="complete", resolved_intent="clarify", outcome=outcome)
             _append_assistant(rec, kind="clarification", content=text, resolved="clarify", reply_to=stored["id"], outcome=outcome)
         _finalize(workspace, chat_id, user["id"], done)
         return outcome
-
-    if not goal_template and not requested_outcomes:
-        # A small, conservative phrase dictionary shortcuts a fully-worded
-        # request straight to its command's goal template before it reaches
-        # routing.py's own phrase tables and bounded router worker.
-        phrase_match = commands.match_phrase(user["content"])
-        if phrase_match:
-            goal_template = phrase_match.goal_template
-
-    refs = []
-    if not goal_template and re.search(r"\b(that|it|this)\b", user["content"], re.I):
-        preceding = next((item for item in reversed(record.get("messages") or []) if item.get("role") == "assistant"), None)
-        ids = list((preceding or {}).get("artifact_ids") or [])
-        if len(ids) != 1:
-            text = "Which result do you mean? Name the artifact or use its action button."
-            outcome = {"kind": "clarification_requested"}
-            def done(rec, stored):
-                stored.update(state="complete", resolved_intent="clarify", outcome=outcome)
-                _append_assistant(rec, kind="clarification", content=text, resolved="clarify", reply_to=stored["id"], outcome=outcome)
-            _finalize(workspace, chat_id, user["id"], done)
-            return outcome
-        artifact = _artifact(workspace, chat_id, ids[0])
-        refs = [{"kind": "assistant_artifact", "id": artifact["id"], "title": artifact.get("title")}]
-
-    planning_context = dict(run_context or {})
-    target_refs: list[str] = []
-    if goal_template == "finding_draft":
-        observation_id = str(planning_context.get("observation_id") or "").strip()
-        rcm_id = str(planning_context.get("rcm_id") or "").strip()
-        if observation_id:
-            target_refs = [f"observation:{observation_id}"]
-        elif rcm_id:
-            target_refs = [f"rcm:{rcm_id}"]
-    command = {
-        "source": "goal_template" if goal_template else ("tab_button" if user.get("source") != "composer" else "chat"),
-        "text": user["content"], "goal_template": goal_template,
-        "chat_id": chat_id, "source_message_id": user["id"], "context_refs": refs,
-        "target_refs": target_refs,
-        "requested_outcomes": list(requested_outcomes or []),
-    }
-    if goal_template == "planning" and not planning_context.get("document_ids"):
-        planning_context["document_ids"] = list(
-            (user.get("document_context") or {}).get("document_ids") or []
-        )
-    if active:
-        response = runner.steer(
-            workspace, active["id"], user["content"], chat_id=chat_id,
-            source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
-            run_context=planning_context, goal_template=goal_template,
-            requested_outcomes=requested_outcomes,
-        )
-        queued = response.get("command") or next((item for item in reversed((store.load_run(workspace, active["id"]).get("pending_commands") or [])) if item.get("source_message_id") == user["id"]), None)
-        pending_count = len(store.load_run(workspace, active["id"]).get("pending_commands") or [])
-        outcome = {"kind": "command_queued", "run_id": active["id"], "command_id": (queued or {}).get("id"), "position": max(1, pending_count)}
-    else:
-        parent_id = None
-        for item in reversed(record.get("messages") or []):
-            candidate = (item.get("outcome") or {}).get("run_id")
-            if candidate:
-                if not RUN_ID_RE.fullmatch(str(candidate)):
-                    break
-                try:
-                    linked = store.load_run(workspace, candidate)
-                    if linked.get("chat_id") == chat_id and linked.get("status") in store.TERMINAL_STATUSES:
-                        parent_id = candidate
-                except WorkspaceError:
-                    pass
-                break
-        try:
-            if planning_context:
-                run = runner.start_command_run(
-                    workspace, mode, command, parent_run_id=parent_id,
-                    context=planning_context,
-                )
-            else:
-                run = runner.start_command_run(
-                    workspace, mode, command, parent_run_id=parent_id,
-                )
-            outcome = {"kind": "run_started", "run_id": run["id"], "command_id": run["command"]["id"]}
-        except runner.AgentBusyError:
-            raced = _active_run(workspace)
-            if not raced or not store.is_command_run(raced):
-                raise
-            response = runner.steer(
-                workspace, raced["id"], user["content"], chat_id=chat_id,
-                source_message_id=user["id"], context_refs=refs, target_refs=target_refs,
-                run_context=planning_context, goal_template=goal_template,
-                requested_outcomes=requested_outcomes,
-            )
-            queued = response.get("command") or {}
-            outcome = {"kind": "command_queued", "run_id": raced["id"], "command_id": queued.get("id"), "position": 1}
     def done(rec, stored): stored.update(state="complete", resolved_intent="act", outcome=outcome)
     _finalize(workspace, chat_id, user["id"], done)
     return outcome
