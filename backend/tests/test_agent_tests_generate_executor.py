@@ -10,7 +10,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from app import doc_tests, documents, workspaces
+from app import doc_tests, document_analysis, documents, workspaces
 from app.agent import capabilities as audit_capabilities
 from app.agent.executors import EXECUTORS, ExecutorRequest
 from app.agent.executors.tests import (
@@ -147,18 +147,79 @@ def test_generate_executor_document_item_retains_its_own_documents_and_question(
     assert item["instruction"] == "Determine whether the payment was approved."
 
 
-def test_generate_executor_vouch_test_produces_a_vouching_kind():
-    workspace, rcm_id, doc_id = _workspace()
+def _voucher_with_fields(workspace, filename: str, identifier: str, amount: float):
+    """Attach transaction evidence carrying an extracted structured record."""
+
+    entry = documents.add_document(
+        workspace,
+        filename,
+        f"Invoice for {identifier} totalling {amount:.0f}.".encode(),
+        category="voucher",
+    )
+    extracted = documents.extract_document(workspace, entry["id"])
+    reloaded = workspaces.load_workspace(workspace.id)
+    document = next(
+        item for item in reloaded.documents if str(item["id"]) == str(entry["id"])
+    )
+    document_analysis.persist_analysis(
+        reloaded,
+        document,
+        extracted,
+        {
+            "summary_markdown": "Invoice.",
+            "audit_notes_markdown": "None.",
+            "citations": [
+                {
+                    "id": "C1",
+                    "page": 1,
+                    "excerpt": f"Invoice for {identifier} totalling {amount:.0f}.",
+                }
+            ],
+            "fields": {
+                "document_type": "invoice",
+                "identifiers": [
+                    {"kind": "invoice_number", "value": identifier, "citation": "C1"}
+                ],
+                "amounts": [{"kind": "total", "value": amount, "citation": "C1"}],
+            },
+            "analysis_profile": "voucher",
+        },
+        provider="test",
+        model="test",
+    )
+    return str(entry["id"])
+
+
+def test_generate_executor_vouch_step_builds_items_from_the_population():
+    """The accepted proposal is a plan; the workspace produces the items.
+
+    This is the whole point of the cycle shape: the model writes paths, and the
+    executor materializes one item per population row that linked to a document,
+    with the row's own values frozen as what the document is compared against.
+    """
+    workspace, rcm_id, _doc_id = _workspace()
+    _voucher_with_fields(workspace, "INV-1.txt", "INV-1", 100.0)
+    workspace = workspaces.load_workspace(workspace.id)
+
     vouch = _document_test(
-        doc_id,
+        _doc_id,
         steps=[
             {
-                "label": "Compare approved amount",
-                "instruction": "Compare the approved amount with the payment record.",
+                "label": "Vouch payments to invoices",
+                "instruction": "Agree each recorded payment to its invoice.",
                 "mode": "vouch",
-                "document_ids": [doc_id],
-                "checks": [{"field": "approved_amount", "expected": "12500.00"}],
-                "missing_evidence": "",
+                "anchor_table": "transactions",
+                "anchor_key": "invoice",
+                "document_roles": [{"role": "invoice", "required": True}],
+                "checks": [
+                    {
+                        "field": "amount agrees",
+                        "method": "numeric_tolerance",
+                        "tolerance": 0,
+                        "left": "row.amount",
+                        "right": "invoice.amount.total",
+                    }
+                ],
             }
         ],
     )
@@ -167,9 +228,32 @@ def test_generate_executor_vouch_test_produces_a_vouching_kind():
 
     EXECUTORS.execute(request, target)
 
-    committed = doc_tests.load_test(target.workspace, doc_tests.list_tests(target.workspace)[0]["id"])
+    committed = doc_tests.load_test(
+        target.workspace, doc_tests.list_tests(target.workspace)[0]["id"]
+    )
     assert committed["kind"] == "vouching"
-    assert committed["items"][0]["checks"][0]["field"] == "approved_amount"
+    assert committed["spec"]["shape"] == "cycle"
+    assert committed["spec"]["anchor_key"] == "invoice"
+    # Two of the three population rows carry INV-1, so both link; INV-2 does not.
+    assert committed["spec"]["coverage"] == {
+        "population": 3,
+        "linked": 2,
+        "unlinked": 1,
+        "incomplete_roles": 0,
+    }
+    assert [item["label"] for item in committed["items"]] == ["INV-1", "INV-1"]
+    item = committed["items"][0]
+    assert item["documents"][0]["role"] == "invoice"
+    # The expected value came from the row, never from the proposal.
+    assert item["frozen"]["amount"] == 100
+    assert item["checks"][0]["left"] == "row.amount"
+    assert item["checks"][0]["expected"] is None
+
+    # And it executes deterministically off the extracted fields.
+    ws = workspaces.load_workspace(target.workspace.id)
+    ran = doc_tests.run_item(ws, committed["id"], item["id"], run_id="test")
+    assert ran["state"] == "confirmed"
+    assert ran["checks"][0]["verdict"] == "match"
 
 
 def test_generate_executor_missing_evidence_blocks_the_test_and_creates_a_request():

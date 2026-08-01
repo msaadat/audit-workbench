@@ -226,7 +226,12 @@ def _validated_generation(
 
 
 def _document_items_from_steps(steps: list[Mapping[str, object]]) -> list[dict]:
-    """Normalize each generated document step into the existing item model."""
+    """Normalize each generated question step into the existing item model.
+
+    Only question steps map one-to-one onto items. A vouch step is a *plan* for
+    items, not an item: its items are one per population row that linked to a
+    document, which only the workspace can produce.
+    """
     items = []
     for step in steps:
         item = {
@@ -234,17 +239,38 @@ def _document_items_from_steps(steps: list[Mapping[str, object]]) -> list[dict]:
             "instruction": str(step.get("instruction") or ""),
             "document_ids": [str(value) for value in step.get("document_ids") or []],
         }
-        mode = str(step.get("mode") or "")
-        if mode == "question":
+        if str(step.get("mode") or "") == "question":
             item["question"] = str(step.get("question") or "")
-        elif mode == "vouch":
-            item["checks"] = [
-                {"field": check.get("field"), "expected": check.get("expected")}
-                for check in step.get("checks") or []
-                if isinstance(check, Mapping)
-            ]
         items.append(item)
     return items
+
+
+def _cycle_payload(common: dict, step: Mapping[str, object], semantic: str) -> dict:
+    """Project one accepted vouch step into a cycle-vouching build payload."""
+
+    return {
+        **{
+            key: common[key]
+            for key in (
+                "title",
+                "objective",
+                "steps",
+                "methodology_refs",
+                "rcm_id",
+                "agent_run_id",
+                "workflow_parent_sha1",
+            )
+        },
+        "semantic_id": semantic,
+        "table": str(step.get("anchor_table") or ""),
+        "anchor_key": str(step.get("anchor_key") or ""),
+        "document_roles": [
+            dict(role) for role in step.get("document_roles") or [] if isinstance(role, Mapping)
+        ],
+        "checks": [
+            dict(check) for check in step.get("checks") or [] if isinstance(check, Mapping)
+        ],
+    }
 
 
 def _commit_data_test(fresh: Workspace, existing: dict | None, common: dict, semantic: str) -> dict:
@@ -282,6 +308,22 @@ def _commit_document_test(
 ) -> dict:
     steps = common["steps"]
     kind = doc_tests.kind_from_steps(steps)
+    if kind == "vouching":
+        # The population builds the items, not the proposal. ``build_cycle_vouching``
+        # links each row to the documents carrying its identifier and freezes the
+        # row values the checks compare against, which is the whole reason the
+        # model writes paths instead of expected values: it has no row data.
+        return doc_tests.build_cycle_vouching(
+            fresh,
+            {
+                **_cycle_payload(common, steps[0], semantic),
+                "id": (
+                    existing["id"]
+                    if existing is not None
+                    else stable_test_id("doctest", semantic)
+                ),
+            },
+        )
     items = _document_items_from_steps(steps)
     payload = {
         "title": common["title"],

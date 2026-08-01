@@ -54,6 +54,7 @@ def _bundle(
     tables=("transactions",),
     table_columns=("invoice", "amount"),
     documents=("DOC-1",),
+    document_categories=None,
 ):
     values = [
         (
@@ -95,13 +96,22 @@ def _bundle(
                 },
             )
         )
+    categories = document_categories or {}
     for document_id in documents:
         values.append(
             (
                 "documents",
                 f"document:{document_id}",
                 ContextRepresentation("summary"),
-                {"id": document_id, "title": document_id, "summary": "Policy."},
+                {
+                    "id": document_id,
+                    "title": document_id,
+                    "summary": "Policy.",
+                    # A vouch step resolves its paths against fields only the
+                    # voucher profile extracts, so the category is what tells the
+                    # worker whether a cycle plan is proposable at all.
+                    "category": categories.get(document_id, "policy"),
+                },
             )
         )
     for index, section in enumerate(methodology, start=1):
@@ -166,16 +176,33 @@ def _question_step(**overrides):
 
 
 def _vouch_step(**overrides):
+    """One transaction-cycle plan: paths on both sides, no literal values."""
+
     value = {
-        "label": "Compare approved amount",
-        "instruction": "Compare the approved amount with the payment record.",
+        "label": "Vouch payments to their invoices",
+        "instruction": "Agree each recorded payment to its supporting invoice.",
         "mode": "vouch",
-        "document_ids": ["DOC-1"],
-        "checks": [{"field": "approved_amount", "expected": "12500.00"}],
-        "missing_evidence": "",
+        "anchor_table": "transactions",
+        "anchor_key": "invoice",
+        "document_roles": [{"role": "invoice", "required": True}],
+        "checks": [
+            {
+                "field": "amount agrees",
+                "method": "numeric_tolerance",
+                "tolerance": 0,
+                "left": "row.amount",
+                "right": "invoice.amount.total",
+            }
+        ],
     }
     value.update(overrides)
     return value
+
+
+def _voucher_bundle(**overrides):
+    """A bundle whose supplied document is transaction evidence."""
+
+    return _bundle(document_categories={"DOC-1": "voucher"}, **overrides)
 
 
 def _data_test(**overrides):
@@ -255,16 +282,207 @@ def test_generate_worker_produces_a_ready_document_question_test():
 
 
 def test_generate_worker_produces_a_ready_document_vouch_test():
+    """A vouch step is a cycle plan: paths on both sides, no expected values."""
+
     gateway = _Gateway([json.dumps({"tests": [_document_test(steps=[_vouch_step()])]})])
 
-    result = WORKERS.execute(_request(), gateway)
+    result = WORKERS.execute(_request(_voucher_bundle()), gateway)
 
     step = result.proposal["tests"][0]["steps"][0]
     assert step["mode"] == "vouch"
+    assert step["anchor_table"] == "transactions"
+    assert step["anchor_key"] == "invoice"
+    assert [dict(role) for role in step["document_roles"]] == [
+        {"role": "invoice", "required": True, "document_types": ("invoice",)}
+    ]
     assert [dict(check) for check in step["checks"]] == [
-        {"field": "approved_amount", "expected": "12500.00"}
+        {
+            "field": "amount agrees",
+            "left": "row.amount",
+            "right": "invoice.amount.total",
+            "method": "numeric_tolerance",
+            "tolerance": 0,
+        }
     ]
     assert "question" not in step
+    # The model never names documents for a cycle: linking is by extracted
+    # identifier, which is what makes the sample reproducible.
+    assert "document_ids" not in step
+
+
+def test_generate_worker_rejects_a_literal_expected_value_in_a_vouch_check():
+    """The population supplies the expected value; a model has no row data."""
+
+    invalid = json.dumps(
+        {
+            "tests": [
+                _document_test(
+                    steps=[
+                        _vouch_step(
+                            checks=[
+                                {
+                                    "field": "amount agrees",
+                                    "method": "normalized",
+                                    "left": "row.amount",
+                                    "expected": "12500.00",
+                                }
+                            ]
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="literal expected value"):
+        WORKERS.execute(_request(_voucher_bundle()), gateway)
+
+
+def test_generate_worker_rejects_a_vouch_plan_the_schemas_cannot_resolve():
+    """Anchor and every row path must name real columns of a real table."""
+
+    invalid = json.dumps(
+        {
+            "tests": [
+                _document_test(
+                    steps=[
+                        _vouch_step(
+                            anchor_table="nope",
+                            anchor_key="missing_key",
+                            checks=[
+                                {
+                                    "field": "amount agrees",
+                                    "method": "normalized",
+                                    "left": "row.not_a_column",
+                                    "right": "invoice.amount.total",
+                                }
+                            ],
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="unknown table 'nope'"):
+        WORKERS.execute(_request(_voucher_bundle()), gateway)
+
+
+def test_generate_worker_rejects_a_check_naming_an_undeclared_role():
+    invalid = json.dumps(
+        {
+            "tests": [
+                _document_test(
+                    steps=[
+                        _vouch_step(
+                            checks=[
+                                {
+                                    "field": "amount agrees",
+                                    "method": "normalized",
+                                    "left": "row.amount",
+                                    "right": "goods_receipt.amount.total",
+                                }
+                            ]
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="undeclared role 'goods_receipt'"):
+        WORKERS.execute(_request(_voucher_bundle()), gateway)
+
+
+def test_generate_worker_refuses_a_vouch_test_without_transaction_evidence():
+    """A cycle plan over documents that carry no extracted fields tests nothing."""
+
+    invalid = json.dumps({"tests": [_document_test(steps=[_vouch_step()])]})
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    # The default bundle supplies a policy document only.
+    with pytest.raises(WorkerRunError, match="no transaction-evidence document"):
+        WORKERS.execute(_request(), gateway)
+
+
+def test_generate_worker_allows_document_to_document_cycle_checks():
+    """Chaining: neither side of a check has to be the population row."""
+
+    gateway = _Gateway(
+        [
+            json.dumps(
+                {
+                    "tests": [
+                        _document_test(
+                            steps=[
+                                _vouch_step(
+                                    document_roles=[
+                                        {"role": "purchase_order", "required": True},
+                                        {"role": "invoice", "required": True},
+                                        {
+                                            "role": "goods_receipt",
+                                            "required": False,
+                                            "document_types": ["goods_receipt", "delivery_note"],
+                                        },
+                                    ],
+                                    checks=[
+                                        {
+                                            "field": "invoice agrees to order",
+                                            "method": "numeric_tolerance",
+                                            "tolerance": 0,
+                                            "left": "purchase_order.amount.total",
+                                            "right": "invoice.amount.total",
+                                        },
+                                        {
+                                            "field": "goods received before invoice",
+                                            "method": "date_order",
+                                            "left": "goods_receipt.date.delivery_date",
+                                            "right": "invoice.date.invoice_date",
+                                        },
+                                        {
+                                            "field": "receipt attached",
+                                            "method": "present",
+                                            "left": "invoice.attachment.receipt.present",
+                                        },
+                                    ],
+                                )
+                            ]
+                        )
+                    ]
+                }
+            )
+        ]
+    )
+
+    result = WORKERS.execute(_request(_voucher_bundle()), gateway)
+
+    step = result.proposal["tests"][0]["steps"][0]
+    assert [check["method"] for check in step["checks"]] == [
+        "numeric_tolerance",
+        "date_order",
+        "present",
+    ]
+    # A unary method carries no right-hand side.
+    assert step["checks"][2]["right"] == ""
+    assert list(step["document_roles"][2]["document_types"]) == [
+        "goods_receipt",
+        "delivery_note",
+    ]
+
+
+def test_generate_worker_rejects_two_vouch_steps_in_one_test():
+    """One vouch test is one cycle plan over one population."""
+
+    invalid = json.dumps(
+        {"tests": [_document_test(steps=[_vouch_step(), _vouch_step()])]}
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="a vouch test is one cycle plan"):
+        WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
 def test_generate_worker_carries_supplied_methodology_citations():

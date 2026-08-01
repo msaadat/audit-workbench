@@ -17,7 +17,7 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from . import analytics, documents, explore
+from . import analytics, document_analysis, documents, explore
 from .evidence import document_anchor, normalize_many
 from .workspaces import (
     CONTROL_CONCLUSIONS,
@@ -34,7 +34,22 @@ from .workspaces import (
 KINDS = {"vouching", "attribute", "review", "qa"}
 DIRECTIONS = {"vouching", "tracing"}
 STATES = {"pending", "agent_checked", "confirmed", "exception", "manual_review"}
-METHODS = {"exact", "normalized", "fuzzy", "numeric_tolerance", "date_tolerance"}
+METHODS = {
+    "exact",
+    "normalized",
+    "fuzzy",
+    "numeric_tolerance",
+    "date_tolerance",
+    # Sequencing: the left date must not fall after the right one. This is the
+    # shape of "approval precedes payment", which no equality method can express.
+    "date_order",
+    # Unary: the addressed value must exist and be affirmatively true. This is
+    # the shape of "a receipt is attached", where the voucher profile records
+    # ``present: false`` and an equality comparison would have nothing to compare.
+    "present",
+}
+# Methods that read only the left side of a check.
+UNARY_METHODS = {"present"}
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -373,6 +388,26 @@ def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
         if kind == "vouching":
             item["frozen"] = {str(key): _json_value(value) for key, value in dict(raw.get("frozen") or {}).items()}
             item["checks"] = [_normalize_check(check) for check in (raw.get("checks") or [])]
+            # Role-tagged attachments are what make a check's ``<role>.…`` path
+            # resolvable. Absent, the item is a legacy single-shape worklist and
+            # its checks read document page text instead.
+            item["documents"] = [
+                {
+                    "document_id": str(value.get("document_id") or ""),
+                    "role": str(value.get("role") or "other"),
+                    "document_type": str(value.get("document_type") or ""),
+                    "matched_by": str(value.get("matched_by") or "auditor"),
+                }
+                for value in (raw.get("documents") or [])
+                if str(value.get("document_id") or "")
+            ]
+            item["missing_roles"] = [
+                str(value) for value in (raw.get("missing_roles") or [])
+            ]
+            if item["documents"] and not item["document_ids"]:
+                item["document_ids"] = [
+                    entry["document_id"] for entry in item["documents"]
+                ]
         elif kind == "attribute":
             item["attributes"] = [_normalize_attribute(value) for value in (raw.get("attributes") or [])]
         elif kind == "review":
@@ -489,11 +524,35 @@ def apply_spec(workspace: Workspace, test_id: str, payload: dict) -> dict:
 
 
 def _normalize_check(check: dict) -> dict:
+    """Normalize one comparison, in either of the two supported shapes.
+
+    A check with ``left``/``right`` is a cycle comparison: both sides are paths
+    resolved at run time, against the frozen population row and the structured
+    fields of the documents attached in each role. A check with ``expected`` is
+    the original shape — a literal value searched for in document page text —
+    and is preserved unchanged for auditor-authored and historical tests.
+    """
     method = str(check.get("method") or "normalized")
     if method not in METHODS:
         raise WorkspaceError(f"Unknown comparison method '{method}'.")
+    left = str(check.get("left") or "").strip()
+    right = str(check.get("right") or "").strip()
+    if left:
+        validate_path(left)
+        if right:
+            validate_path(right)
+        elif method not in UNARY_METHODS:
+            raise WorkspaceError(
+                f"Comparison method '{method}' needs both a left and a right path."
+            )
+    elif method in UNARY_METHODS or right:
+        raise WorkspaceError(
+            f"Comparison method '{method}' requires a left path."
+        )
     return {
         "field": str(check.get("field") or "value"),
+        "left": left,
+        "right": right,
         "expected": _json_value(check.get("expected")),
         "found": _json_value(check.get("found")),
         "method": method,
@@ -503,6 +562,139 @@ def _normalize_check(check: dict) -> dict:
         "comparisons": list(check.get("comparisons") or []),
         "evidence_refs": normalize_many(check.get("evidence_refs") or []),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Cycle vouching: resolving one side of a comparison
+#
+# A check names two sides by path. ``row.<column>`` reads the frozen population
+# row; ``<role>.<group>.<key>[.<attr>]`` reads the structured field a voucher
+# profile extracted from the document attached in that role. That second form is
+# the whole chaining primitive: for a procurement cycle, ``purchase_order.amount
+# .total`` against ``invoice.amount.total`` compares two documents to each other,
+# and neither against the population, using exactly the same machinery as a
+# row-to-document comparison.
+# --------------------------------------------------------------------------- #
+
+# group name -> (fields group, discriminator key, default attribute)
+FIELD_GROUPS = {
+    "identifier": ("identifiers", "kind", "value"),
+    "date": ("dates", "kind", "value"),
+    "amount": ("amounts", "kind", "value"),
+    "party": ("parties", "role", "name"),
+    "attachment": ("attachments", "kind", "present"),
+    "approval": ("approvals", "role", "date"),
+    "line_item": ("line_items", "category", "amount"),
+}
+ROW_PREFIX = "row"
+WILDCARD = "*"
+
+
+class PathError(WorkspaceError):
+    """A check names a path this test's shape cannot resolve."""
+
+
+def _parse_path(path: str) -> tuple[str, str, str, str]:
+    """Split one check path into (role, group, key, attribute)."""
+
+    parts = [part for part in str(path or "").split(".") if part != ""]
+    if not parts:
+        raise PathError("A check path cannot be empty.")
+    if parts[0] == ROW_PREFIX:
+        if len(parts) != 2:
+            raise PathError(f"'{path}' must name exactly one population column.")
+        return ROW_PREFIX, "", parts[1], ""
+    if len(parts) < 3:
+        raise PathError(
+            f"'{path}' must be 'row.<column>' or '<role>.<group>.<key>[.<attribute>]'."
+        )
+    role, group, key = parts[0], parts[1], parts[2]
+    if group not in FIELD_GROUPS:
+        raise PathError(
+            f"'{path}' names unknown field group '{group}'; expected one of "
+            + ", ".join(sorted(FIELD_GROUPS))
+            + "."
+        )
+    attribute = parts[3] if len(parts) > 3 else FIELD_GROUPS[group][2]
+    if len(parts) > 4:
+        raise PathError(f"'{path}' has too many segments.")
+    return role, group, key, attribute
+
+
+def validate_path(path: str) -> None:
+    """Raise if a path is not resolvable in principle. Shape only, never data."""
+
+    _parse_path(path)
+
+
+def _resolved(value, citation, document_id, page, excerpt):
+    return {
+        "value": _json_value(value),
+        "citation": citation,
+        "document_id": document_id,
+        "page": page,
+        "excerpt": excerpt,
+    }
+
+
+def resolve_check_path(
+    path: str,
+    *,
+    frozen: dict,
+    role_fields: dict,
+) -> list[dict]:
+    """Every value one path addresses, with the citation that anchors each.
+
+    ``role_fields`` maps a role to ``(document_id, fields, citations_by_id)`` for
+    each document attached in that role. Returning a list rather than a scalar is
+    deliberate: zero matches is a missing comparison, and two conflicting matches
+    is an ambiguity an auditor must see rather than a value the runner silently
+    picks between.
+    """
+    role, group, key, attribute = _parse_path(path)
+    if role == ROW_PREFIX:
+        if key not in frozen:
+            return []
+        return [_resolved(frozen[key], None, None, None, None)]
+    matches: list[dict] = []
+    for document_id, fields, citations in role_fields.get(role, ()):
+        fields_group, discriminator, _default = FIELD_GROUPS[group]
+        for entry in fields.get(fields_group) or []:
+            if not isinstance(entry, dict):
+                continue
+            if key != WILDCARD and normalize_value(
+                entry.get(discriminator)
+            ) != normalize_value(key):
+                continue
+            if attribute not in entry:
+                continue
+            citation = str(entry.get("citation") or "")
+            anchor = citations.get(citation) or {}
+            matches.append(
+                _resolved(
+                    entry.get(attribute),
+                    citation,
+                    document_id,
+                    anchor.get("page"),
+                    anchor.get("excerpt"),
+                )
+            )
+    return matches
+
+
+def _single_value(matches: list[dict]) -> tuple[object, str]:
+    """Collapse resolved matches to one comparable value, or say why not.
+
+    Repeated matches that normalize identically are one fact the record stated
+    more than once; genuinely different values are an ambiguity, because picking
+    one would decide the comparison's outcome by list order.
+    """
+    if not matches:
+        return None, "missing"
+    distinct = {normalize_value(match["value"]) for match in matches}
+    if len(distinct) > 1:
+        return None, "ambiguous"
+    return matches[0]["value"], "resolved"
 
 
 def _normalize_attribute(value: dict) -> dict:
@@ -562,6 +754,204 @@ def build_vouching(workspace: Workspace, payload: dict) -> dict:
             checks=[_normalize_check({"field": field, "expected": value, "method": default_method}) for field, value in frozen.items()],
         )
         test["items"].append(item)
+    save_test(workspace, test)
+    return test
+
+
+def voucher_field_index(workspace: Workspace) -> list[dict]:
+    """Every analyzed document that carries a structured voucher record.
+
+    Reads the generated analysis rather than the document text: after the voucher
+    profile runs, a document's identifiers are discrete extracted values with
+    citations behind them, so linking is exact-value matching rather than a
+    substring scan that would confuse ``EXP-2025-001`` with ``EXP-2025-0010``.
+    """
+    index = []
+    for document in workspace.documents:
+        record = document_analysis.generated_record(workspace, document["id"]) or {}
+        fields = record.get("fields") or {}
+        if not fields:
+            continue
+        citations = {
+            str(citation.get("id") or ""): citation
+            for citation in record.get("citations") or []
+        }
+        index.append(
+            {
+                "document": document,
+                "document_id": str(document["id"]),
+                "role": str(fields.get("document_type") or "") or "other",
+                "fields": fields,
+                "citations": citations,
+                "identifiers": {
+                    normalize_value(entry.get("value"))
+                    for entry in fields.get("identifiers") or []
+                    if isinstance(entry, dict) and normalize_value(entry.get("value"))
+                },
+            }
+        )
+    return index
+
+
+def _role_fields(workspace: Workspace, item: dict) -> dict[str, list[tuple]]:
+    """Group one item's attached documents by role, with their extracted fields."""
+
+    grouped: dict[str, list[tuple]] = {}
+    for attachment in item.get("documents") or []:
+        document_id = str(attachment.get("document_id") or "")
+        record = document_analysis.generated_record(workspace, document_id) or {}
+        fields = record.get("fields") or {}
+        citations = {
+            str(citation.get("id") or ""): citation
+            for citation in record.get("citations") or []
+        }
+        grouped.setdefault(str(attachment.get("role") or "other"), []).append(
+            (document_id, fields, citations)
+        )
+    return grouped
+
+
+def build_cycle_vouching(workspace: Workspace, payload: dict) -> dict:
+    """Build a vouching worklist from documents already linked to a population.
+
+    The sample is not selected here — it is *recognized*. Every row whose anchor
+    identifier appears in an analyzed document's extracted identifiers becomes an
+    item covering that row's whole cycle: one anchor row, every document that
+    names it, and the declared comparisons across them. Rows with no document are
+    counted and reported as uncovered rather than silently dropped, so the
+    coverage the test actually achieved stays visible against the population.
+    """
+    table = str(payload.get("table") or "")
+    if table not in workspace.table_names():
+        raise WorkspaceError(f"No table named '{table}'.")
+    frame = workspace.get_frame(table).with_row_index("source_row", offset=2)
+    anchor_key = str(payload.get("anchor_key") or "")
+    if anchor_key not in frame.columns:
+        raise WorkspaceError(f"Anchor key '{anchor_key}' does not exist in '{table}'.")
+    frozen_fields = [
+        str(value) for value in (payload.get("frozen_fields") or frame.columns)
+        if str(value) != "source_row"
+    ]
+    missing = [name for name in frozen_fields if name not in frame.columns]
+    if missing:
+        raise WorkspaceError(f"Frozen field '{missing[0]}' does not exist in '{table}'.")
+    # Which extracted document types fill a role is the test's declaration, not
+    # one model field's verdict. A profile classifies each record independently,
+    # so an identically formatted pack can come back ``expense_claim`` rather
+    # than ``payment_voucher``; without a declared mapping that single word would
+    # silently drop a whole cycle out of scope. Defaults to the role's own name.
+    declared_roles = [
+        {
+            "role": str(value.get("role") or "").strip(),
+            "required": bool(value.get("required", True)),
+            "document_types": [
+                str(entry).strip()
+                for entry in (
+                    value.get("document_types")
+                    or [str(value.get("role") or "").strip()]
+                )
+                if str(entry).strip()
+            ],
+        }
+        for value in (payload.get("document_roles") or [])
+        if str(value.get("role") or "").strip()
+    ]
+    role_by_type = {
+        document_type: entry["role"]
+        for entry in declared_roles
+        for document_type in entry["document_types"]
+    }
+    check_templates = [_normalize_check(check) for check in (payload.get("checks") or [])]
+    if not check_templates:
+        raise WorkspaceError("A cycle vouching test needs at least one comparison.")
+
+    index = voucher_field_index(workspace)
+    source_hash = _sha1(workspace._table_signature(table))
+    test = _base_test(workspace, payload, "vouching")
+    required_roles = [entry["role"] for entry in declared_roles if entry["required"]]
+
+    linked = 0
+    incomplete = 0
+    for row in frame.iter_rows(named=True):
+        anchor = normalize_value(row.get(anchor_key))
+        if not anchor:
+            continue
+        matched = [entry for entry in index if anchor in entry["identifiers"]]
+        if not matched:
+            continue
+        linked += 1
+        # A document whose extracted type fills no declared role still attaches
+        # under its own type, so a path naming that type resolves and an
+        # unexpected document in the pack stays visible rather than vanishing.
+        roles = {
+            entry["document_id"]: role_by_type.get(entry["role"], entry["role"])
+            for entry in matched
+        }
+        available_roles = set(roles.values())
+        missing_roles = [role for role in required_roles if role not in available_roles]
+        incomplete += bool(missing_roles)
+        item = _new_item(
+            {
+                "label": str(row.get(anchor_key)),
+                "instruction": str(payload.get("objective") or ""),
+                "document_ids": [entry["document_id"] for entry in matched],
+            }
+        )
+        item.update(
+            source={
+                "table": table,
+                "source_row": row["source_row"],
+                "source_sha1": source_hash,
+            },
+            transaction_identifiers=[str(row.get(anchor_key))],
+            frozen={field: _json_value(row.get(field)) for field in frozen_fields},
+            documents=[
+                {
+                    "document_id": entry["document_id"],
+                    "role": roles[entry["document_id"]],
+                    "document_type": entry["role"],
+                    "matched_by": "extracted_identifier",
+                }
+                for entry in matched
+            ],
+            missing_roles=missing_roles,
+            checks=[dict(check) for check in check_templates],
+        )
+        test["items"].append(item)
+
+    population = frame.height
+    test["spec"].update(
+        {
+            "direction": "vouching",
+            "shape": "cycle",
+            "table": table,
+            "table_sha1": source_hash,
+            "anchor_key": anchor_key,
+            "frozen_fields": frozen_fields,
+            "document_roles": declared_roles,
+            "population_rows": population,
+            "require_all_documents": bool(payload.get("require_all_documents", True)),
+            "coverage": {
+                "population": population,
+                "linked": linked,
+                "unlinked": population - linked,
+                "incomplete_roles": incomplete,
+            },
+        }
+    )
+    uncovered = population - linked
+    limitations = []
+    if uncovered:
+        limitations.append(
+            f"{uncovered} of {population} population row(s) have no linked document "
+            "and were not tested."
+        )
+    if incomplete:
+        limitations.append(
+            f"{incomplete} linked row(s) are missing a required document role."
+        )
+    test["scope_limitations"] = " ".join(limitations)
+    test["status"] = "blocked" if not test["items"] else "in_progress"
     save_test(workspace, test)
     return test
 
@@ -1240,6 +1630,31 @@ def compare_values(expected: object, found: object, method: str = "normalized", 
             percent = float(config.get("percent") or 0)
             allowed = max(absolute, abs(left) * percent / 100.0)
             result.update(normalization={"expected": left, "found": right}, tolerance={"absolute": absolute, "percent": percent, "allowed": allowed}, result="match" if abs(left - right) <= allowed else "mismatch")
+    elif method == "present":
+        # ``found`` carries the single addressed value; a false boolean is an
+        # affirmative negative — the record says the item is not there — and is
+        # a mismatch rather than a missing value.
+        value = found if not isinstance(found, str) else found.strip()
+        truth = (
+            value
+            if isinstance(value, bool)
+            else str(value).strip().casefold() not in {"false", "no", "none", "0"}
+        )
+        result.update(
+            normalization={"expected": True, "found": truth},
+            result="match" if truth else "mismatch",
+        )
+    elif method == "date_order":
+        left, right = _date(expected), _date(found)
+        if left is None or right is None:
+            result["result"] = "invalid"
+        else:
+            days = int((tolerance or {}).get("days", 0) if isinstance(tolerance, dict) else tolerance or 0)
+            result.update(
+                normalization={"expected": left.isoformat(), "found": right.isoformat()},
+                tolerance={"days": days},
+                result="match" if (left - right).days <= days else "mismatch",
+            )
     else:
         left, right = _date(expected), _date(found)
         if left is None or right is None:
@@ -1292,6 +1707,140 @@ def _document_conflicts(workspace: Workspace, document_ids: list[str]) -> dict:
     return {"duplicate_documents": duplicates}
 
 
+def _cycle_evidence(
+    workspace: Workspace, matches: list[dict], *, run_id: str | None
+) -> list[dict]:
+    """Anchor each resolved document value to the citation that supports it."""
+
+    anchors = []
+    for match in matches:
+        document_id = match.get("document_id")
+        if not document_id or not match.get("excerpt"):
+            continue
+        document = next(
+            (value for value in workspace.documents if value.get("id") == document_id),
+            None,
+        )
+        if document is None:
+            continue
+        anchors.append(
+            document_anchor(
+                document,
+                int(match.get("page") or 1),
+                str(match["excerpt"])[:400],
+                generated_by=run_id or "cycle-vouching",
+            )
+        )
+    return anchors
+
+
+def _run_cycle_item(
+    workspace: Workspace, test: dict, item: dict, *, run_id: str | None
+) -> dict:
+    """Compare one transaction cycle deterministically.
+
+    Every value on both sides was extracted by the voucher profile and is
+    anchored to a verbatim citation, so this function performs no matching
+    against raw text and calls no model: it resolves two paths, compares them,
+    and records which citation supports each side.
+    """
+    role_fields = _role_fields(workspace, item)
+    frozen = dict(item.get("frozen") or {})
+    anchors: list[dict] = []
+    unresolved = 0
+    for check in item.get("checks") or []:
+        if not check.get("left"):
+            # A legacy literal check on a cycle item: nothing addresses it, so it
+            # is surfaced for the auditor rather than silently passed.
+            check.update(verdict="missing", note="This check names no path to resolve.")
+            unresolved += 1
+            continue
+        try:
+            left_matches = resolve_check_path(
+                check["left"], frozen=frozen, role_fields=role_fields
+            )
+            right_matches = (
+                resolve_check_path(
+                    check["right"], frozen=frozen, role_fields=role_fields
+                )
+                if check.get("right")
+                else []
+            )
+        except PathError as error:
+            check.update(verdict="invalid", note=str(error))
+            unresolved += 1
+            continue
+        left_value, left_state = _single_value(left_matches)
+        if check["method"] in UNARY_METHODS:
+            right_value, right_state = left_value, left_state
+        else:
+            right_value, right_state = _single_value(right_matches)
+        states = {left_state, right_state}
+        if "ambiguous" in states:
+            check.update(
+                verdict="ambiguous",
+                note="More than one differing value matched a path on this record.",
+                comparisons=[
+                    {"side": "left", "matches": left_matches},
+                    {"side": "right", "matches": right_matches},
+                ],
+            )
+            unresolved += 1
+            continue
+        outcome = compare_values(
+            left_value if check["method"] not in UNARY_METHODS else True,
+            right_value,
+            check["method"],
+            check.get("tolerance"),
+        )
+        matched_anchors = _cycle_evidence(
+            workspace, left_matches + right_matches, run_id=run_id
+        )
+        anchors.extend(matched_anchors)
+        check.update(
+            expected=_json_value(left_value),
+            found=_json_value(right_value),
+            verdict=outcome["result"],
+            evidence_refs=matched_anchors,
+            comparisons=[
+                {
+                    "side": "left",
+                    "path": check["left"],
+                    "state": left_state,
+                    "matches": left_matches,
+                },
+                {
+                    "side": "right",
+                    "path": check.get("right") or "",
+                    "state": right_state,
+                    "matches": right_matches,
+                },
+                outcome,
+            ],
+        )
+    item["evidence_refs"] = anchors
+    verdicts = [check.get("verdict") for check in item.get("checks") or []]
+    if item.get("missing_roles") or unresolved or "ambiguous" in verdicts:
+        item["state"] = "manual_review"
+        item["runner_note"] = (
+            "Manual check required: "
+            + (
+                f"missing document role(s) {', '.join(item['missing_roles'])}. "
+                if item.get("missing_roles")
+                else ""
+            )
+            + (f"{unresolved} check(s) could not be resolved." if unresolved else "")
+        ).strip()
+    elif any(value in {"mismatch", "missing", "invalid"} for value in verdicts):
+        item["state"] = "exception"
+        item["runner_note"] = "Deterministic cycle comparison found an exception."
+    else:
+        item["state"] = "confirmed"
+        item["runner_note"] = "Deterministic cycle comparison completed."
+    save_test(workspace, test)
+    return item
+
+
 def run_item(
     workspace: Workspace, test_id: str, item_id: str, *,
     run_id: str | None = None, model_adapter=None,
@@ -1333,6 +1882,8 @@ def run_item(
         item.update(state="manual_review", runner_note="Attach at least one document before running this item.")
         save_test(workspace, test)
         return item
+    if item.get("documents"):
+        return _run_cycle_item(workspace, test, item, run_id=run_id)
 
     conflicts = _document_conflicts(workspace, item["document_ids"])
     item["document_conflicts"] = conflicts

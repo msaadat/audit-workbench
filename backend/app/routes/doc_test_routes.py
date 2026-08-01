@@ -41,6 +41,13 @@ async def build_vouching_test(workspace_id: str, payload: dict = Body(...)):
     return await asyncio.to_thread(doc_tests.build_vouching, _ws(workspace_id), payload)
 
 
+@router.post("/doc-tests/build/cycle")
+async def build_cycle_vouching_test(workspace_id: str, payload: dict = Body(...)):
+    return await asyncio.to_thread(
+        doc_tests.build_cycle_vouching, _ws(workspace_id), payload
+    )
+
+
 @router.post("/doc-tests/prepare-evidence-aware")
 async def prepare_evidence_aware_test(workspace_id: str, payload: dict = Body(...)):
     return await asyncio.to_thread(
