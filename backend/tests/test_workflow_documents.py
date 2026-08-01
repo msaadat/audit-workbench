@@ -26,6 +26,9 @@ from app.agent import runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent.capabilities import documents as document_capabilities
 from app.agent.context import PRESETS
+from app.agent.context.adapters import (
+    document_identity_candidate as document_context_identity,
+)
 from app.agent.documents_execution import build_documents_workflow_runner
 from app.agent.executors import EXECUTORS, ExecutorRequest
 from app.agent.executors import documents as document_executors
@@ -853,17 +856,171 @@ def test_standalone_and_planning_use_the_same_workers_and_executor():
     workers = {definition.worker_id for definition in WORKERS.all()}
     executors = {definition.executor_id for definition in EXECUTORS.all()}
 
-    # One text map worker, one visual map worker, one reduction worker, and one
-    # persistence executor are shared by standalone and audit callers.
+    # Two text map profiles (standard and voucher), one visual map worker, one
+    # reduction worker, and one persistence executor are shared by standalone and
+    # audit callers. The profiles differ only in prompt and response contract;
+    # everything downstream of the map — reduction, persistence, reconciliation —
+    # is the single shared implementation.
     assert {
         "documents.analysis_chunk",
+        "documents.analysis_voucher",
         "documents.analysis_visual_page",
         "documents.analysis_reduction",
     } <= workers
-    assert len({name for name in workers if name.startswith("documents.")}) == 3
+    assert len({name for name in workers if name.startswith("documents.")}) == 4
     assert {name for name in executors if name.startswith("documents.")} == {
         "documents.analysis"
     }
+
+
+# --------------------------------------------------------------------------- #
+# Voucher analysis profile
+# --------------------------------------------------------------------------- #
+def test_voucher_category_routes_to_the_voucher_profile():
+    """A declared voucher is mapped by the structured profile; nothing else is."""
+
+    ws = workspaces.create_workspace("Voucher profile routing")
+    policy = documents.add_document(
+        ws, "Policy.txt", b"Purchases require documented approval.", category="policy"
+    )
+    voucher = documents.add_document(
+        ws,
+        "PV-2025-001.txt",
+        b"Payment voucher PV-2025-001 paid PKR 2,390 to Ayesha Khan on 2025-04-13.",
+        category="voucher",
+    )
+    unclassified = documents.add_document(
+        ws, "Notes.txt", b"Some background notes.", category="other"
+    )
+    for entry in (policy, voucher, unclassified):
+        document_executors.extract_text(ws, entry["id"])
+    ws = workspaces.load_workspace(ws.id)
+
+    assert document_capabilities.analysis_profile(ws, voucher["id"]) == "voucher"
+    assert document_capabilities.analysis_profile(ws, policy["id"]) == "standard"
+    # Explicit only: an unclassified document is never assumed to be evidence.
+    assert document_capabilities.analysis_profile(ws, unclassified["id"]) == "standard"
+
+    kinds = {
+        spec["kind"]
+        for spec in document_capabilities.analysis_unit_specs(ws, voucher["id"], {})
+    }
+    assert kinds == {"document_voucher_analysis"}
+    assert {
+        spec["kind"]
+        for spec in document_capabilities.analysis_unit_specs(ws, policy["id"], {})
+    } == {"document_chunk_analysis"}
+
+
+def test_vouchers_stay_out_of_the_unscoped_planning_default():
+    """Analyzing evidence must never become a cost every planning run pays.
+
+    A voucher is analyzed when something names it. It is not swept into the
+    bounded default set, so an APM-only run over a workspace holding a voucher
+    library analyses the policies and nothing else.
+    """
+    ws = workspaces.create_workspace("Voucher scope isolation")
+    policy = documents.add_document(
+        ws, "Policy.txt", b"Purchases require documented approval.", category="policy"
+    )
+    voucher = documents.add_document(
+        ws, "PV-1.txt", b"Voucher PV-1 for PKR 100.", category="voucher"
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    default_scope = document_capabilities.resolve_document_scope(ws, {})
+    assert policy["id"] in default_scope.document_ids
+    assert voucher["id"] not in default_scope.document_ids
+
+    # Naming it explicitly still selects it, under the voucher profile.
+    named = document_capabilities.resolve_document_scope(
+        ws, {"document_ids": [voucher["id"]]}
+    )
+    assert named.document_ids == (voucher["id"],)
+
+
+def test_voucher_profile_withholds_identifier_bearing_metadata():
+    """The voucher context supplies bare identity, never the source filename.
+
+    A voucher pack's filename routinely contains the transaction identifiers the
+    profile is asked to extract from the record body, so supplying the standard
+    metadata projection would let a worker report a value it never read.
+    """
+    ws = workspaces.create_workspace("Voucher metadata isolation")
+    voucher = documents.add_document(
+        ws,
+        "EXP-2025-003_PV-2025-003.txt",
+        b"Payment voucher for PKR 4,800.",
+        category="voucher",
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    candidate = document_context_identity(ws, voucher["id"])
+    payload = candidate.representations["current_artifact"]
+    assert set(payload) == {"document_id", "source_sha1", "category"}
+    serialized = json.dumps(payload)
+    assert "EXP-2025-003" not in serialized
+    assert "PV-2025-003" not in serialized
+
+    # The two text profiles must stay distinguishable by declared policy: the
+    # scheduler resolves a unit's binding by its context spec hash.
+    chunk_spec = PRESETS.compile("documents.analysis_chunk")
+    voucher_spec = PRESETS.compile("documents.analysis_voucher")
+    assert chunk_spec.to_json() != voucher_spec.to_json()
+
+
+def test_voucher_fields_require_an_exact_citation():
+    """A structured field survives only when anchored to a validated citation."""
+
+    citations = [{"id": "C1", "page": 1, "excerpt": "Amount paid PKR 4,800"}]
+    fields = document_analysis.validate_voucher_fields(
+        {
+            "document_type": "payment_voucher",
+            "amounts": [
+                {"kind": "total", "value": "4,800", "currency": "PKR", "citation": "C1"},
+                # Ungrounded: names a citation that did not survive validation.
+                {"kind": "tax", "value": "100", "currency": "PKR", "citation": "C9"},
+            ],
+            "dates": [
+                {"kind": "payment_date", "value": "2025-04-21", "citation": "C1"},
+                # Incomplete: no value, so nothing could be compared against it.
+                {"kind": "approval_date", "citation": "C1"},
+            ],
+            "attachments": [
+                {"kind": "receipt", "reference": "RCP-1", "present": "No", "citation": "C1"}
+            ],
+        },
+        citations,
+    )
+    assert [item["kind"] for item in fields["amounts"]] == ["total"]
+    # Typed for comparison, with the verbatim form preserved beside it.
+    assert fields["amounts"][0]["value"] == 4800.0
+    assert fields["amounts"][0]["raw_value"] == "4,800"
+    assert [item["kind"] for item in fields["dates"]] == ["payment_date"]
+    assert fields["dates"][0]["value"] == "2025-04-21"
+    assert fields["attachments"][0]["present"] is False
+
+
+def test_voucher_field_merge_is_deterministic_and_deduplicated():
+    """Reduction of the structured half is a union, not a model turn."""
+
+    first = {
+        "document_type": "invoice",
+        "identifiers": [{"kind": "invoice_number", "value": "INV-1", "citation": "C1"}],
+        "amounts": [{"kind": "total", "value": 100.0, "citation": "C1"}],
+    }
+    second = {
+        "document_type": "invoice",
+        # Same fact seen again in a later chunk under a different citation.
+        "identifiers": [{"kind": "invoice_number", "value": "INV-1", "citation": "C7"}],
+        "amounts": [{"kind": "tax", "value": 18.0, "citation": "C8"}],
+    }
+    merged = document_analysis.merge_voucher_fields([first, second])
+    assert merged["document_type"] == "invoice"
+    assert len(merged["identifiers"]) == 1
+    assert merged["identifiers"][0]["citation"] == "C1"
+    assert sorted(item["kind"] for item in merged["amounts"]) == ["tax", "total"]
+    assert merged == document_analysis.merge_voucher_fields([first, second])
 
 
 def test_no_document_analysis_runner_or_engine_remains():

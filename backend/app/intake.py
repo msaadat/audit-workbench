@@ -37,6 +37,12 @@ ROUTES = frozenset({"table", "document", "unsupported", "ignore"})
 PLANNING_DOCUMENT_CATEGORIES = frozenset(
     {"background", "policy", "regulation", "contract", "minutes", "prior_report", "correspondence"}
 )
+# Transaction-level evidence: analyzed under the voucher profile, which extracts
+# a structured ``fields`` record a vouching comparison can read. Deliberately
+# disjoint from ``PLANNING_DOCUMENT_CATEGORIES`` — a voucher is never planning
+# material, and the planning/APM context selectors stay constrained to that set
+# so a voucher analysis can never enter a planning prompt.
+VOUCHER_DOCUMENT_CATEGORIES = frozenset({"voucher"})
 PLANNING_DOCUMENT_TERMS = re.compile(
     r"\b(policy|policies|procedure|procedures|process|manual|sop|guideline|"
     r"standard|regulation|control|charter|terms of reference|prior audit|minutes)\b",

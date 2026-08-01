@@ -146,6 +146,13 @@ def _validated_analysis(
             if isinstance(citation, Mapping)
         ],
         "coverage": _plain_json(coverage),
+        # Present only for the voucher profile. It is part of the accepted
+        # proposal, so it is covered by ``analysis_content_sha1`` and the
+        # reconciler can prove a structured commit landed.
+        "fields": _plain_json(request.proposal.get("fields") or {}),
+        "analysis_profile": str(
+            request.proposal.get("analysis_profile") or "standard"
+        ),
         "vision_used": bool(request.proposal.get("vision_used")),
         "generation_profiles": [
             _plain_json(profile)

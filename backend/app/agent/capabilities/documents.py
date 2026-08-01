@@ -98,8 +98,35 @@ def _planning_relevant(document: dict) -> bool:
     return not category or category in intake.PLANNING_DOCUMENT_CATEGORIES
 
 
+def _voucher_document(document: dict) -> bool:
+    """Whether this document is transaction evidence, by its declared category.
+
+    Explicit only: an unclassified document is never treated as a voucher, so the
+    structured profile runs on what intake (or the auditor) actually marked.
+    """
+    return str(document.get("category") or "") in intake.VOUCHER_DOCUMENT_CATEGORIES
+
+
+def analysis_profile(workspace: Workspace, document_id: str) -> str:
+    """The analysis profile one document's text chunks are mapped under."""
+
+    document = next(
+        (item for item in workspace.documents if str(item.get("id")) == document_id),
+        None,
+    )
+    return "voucher" if document is not None and _voucher_document(document) else "standard"
+
+
 def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
-    """Resolve explicitly named documents or a bounded planning-relevant set."""
+    """Resolve explicitly named documents or a bounded planning-relevant set.
+
+    Transaction evidence is deliberately *not* in the unscoped default. A voucher
+    is analyzed when something asks for it by id — the Documents tab, or a
+    vouching test that has linked it to a population row — because that is what
+    keeps an APM-only run from paying to analyze a voucher library it will never
+    read. Naming a voucher explicitly still selects it, and it is then mapped
+    under the voucher profile.
+    """
 
     known = {str(item.get("id")): item for item in workspace.documents}
     requested = _requested_ids(scope)
@@ -254,10 +281,18 @@ def analysis_unit_specs(
         item for item in workspace.documents if str(item.get("id")) == document_id
     )
     text_chunks = chunk_specs(workspace, document_id, scope)
+    # Which profile a text chunk is mapped under is a property of the document,
+    # not of the chunk: transaction evidence goes to the voucher worker, which
+    # returns structured fields alongside the same narrative pair.
+    text_kind = (
+        "document_voucher_analysis"
+        if _voucher_document(document)
+        else "document_chunk_analysis"
+    )
     by_page: dict[int, list[dict]] = {}
     for chunk in text_chunks:
         by_page.setdefault(int(chunk["page"]), []).append(
-            {**chunk, "kind": "document_chunk_analysis", "modality": "text"}
+            {**chunk, "kind": text_kind, "modality": "text"}
         )
     routed_visual: list[tuple[dict, str | None]] = []
     for page in extracted.get("pages") or []:
@@ -506,6 +541,7 @@ def _documents_analysis_chunks_ready() -> Capability:
         context={
             "document_chunk_analysis": "documents.analysis_chunk",
             "document_visual_page_analysis": "documents.analysis_visual_page",
+            "document_voucher_analysis": "documents.analysis_voucher",
         },
         # Chunks are independent of each other and never commit, so they are the
         # one capability whose units the scheduler may run concurrently.

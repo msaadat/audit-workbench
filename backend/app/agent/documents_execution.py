@@ -44,6 +44,7 @@ from .context import (
     document_chunk_scope,
     document_reduction_scope,
     document_visual_page_scope,
+    document_voucher_scope,
 )
 from .executors import EXECUTORS
 from .executors.documents import (
@@ -79,7 +80,16 @@ from .workers.documents import (
     CHUNK_WORKER_ID,
     REDUCTION_WORKER_ID,
     VISUAL_WORKER_ID,
+    VOUCHER_WORKER_ID,
 )
+
+# Text-modality map profiles, by unit kind. A voucher chunk reads exactly what a
+# standard chunk reads, so both resolve ``document_chunk_scope`` and differ only
+# in which worker consumes it.
+_TEXT_MAP_WORKERS = {
+    "document_chunk_analysis": CHUNK_WORKER_ID,
+    "document_voucher_analysis": VOUCHER_WORKER_ID,
+}
 
 
 class DocumentWorkflowExecution(BaseRunner):
@@ -123,9 +133,7 @@ class DocumentWorkflowExecution(BaseRunner):
             for document_id in document_scope.document_ids
             for item in analysis_unit_specs(self.ws, document_id, scope)
         ]
-        text_units = sum(
-            item["kind"] == "document_chunk_analysis" for item in specs
-        )
+        text_units = sum(item["kind"] in _TEXT_MAP_WORKERS for item in specs)
         visual_units = sum(
             item["kind"] == "document_visual_page_analysis"
             and not item.get("unsupported_reason")
@@ -438,6 +446,8 @@ class DocumentWorkflowExecution(BaseRunner):
                         self.ws, document_id, handles
                     )
                     if visual
+                    else document_voucher_scope(self.ws, document_id, chunk)
+                    if chunk["kind"] == "document_voucher_analysis"
                     else document_chunk_scope(self.ws, document_id, chunk)
                 ),
             )
@@ -463,7 +473,11 @@ class DocumentWorkflowExecution(BaseRunner):
             request=UnitPipelineRequest(
                 capability_id=capability.id,
                 unit_id=unit["id"],
-                worker_id=VISUAL_WORKER_ID if visual else CHUNK_WORKER_ID,
+                worker_id=(
+                    VISUAL_WORKER_ID
+                    if visual
+                    else _TEXT_MAP_WORKERS[str(chunk["kind"])]
+                ),
                 executor_id=None,
                 unit_input={
                     "kind": unit.get("kind"),
@@ -527,7 +541,7 @@ class DocumentWorkflowExecution(BaseRunner):
         return semantic_unit_id("document_chunk", document_id, chunk_id)
 
     def _map_unit_id(self, document_id: str, spec: dict) -> str:
-        if spec["kind"] == "document_chunk_analysis":
+        if spec["kind"] in _TEXT_MAP_WORKERS:
             return self._chunk_unit_id(document_id, str(spec["id"]))
         return semantic_unit_id(
             "document_visual_page",
@@ -661,6 +675,12 @@ class DocumentWorkflowExecution(BaseRunner):
                 "vision_used": any(
                     item.get("modality") == "image" for item in analyses
                 ),
+                # The structured half of a voucher analysis is reduced here,
+                # deterministically. Merging typed records through the reduction
+                # worker would be lossy and would cost a provider turn per
+                # document; a union with de-duplication is exact and free. The
+                # narrative half is still reduced by the worker above.
+                **self._voucher_fields(analyses),
             }
 
         def on_committed(_stage, _unit, outcome) -> DeterministicUnitResult:
@@ -799,6 +819,27 @@ class DocumentWorkflowExecution(BaseRunner):
             if name in keys
             for profile in [dict(profiles.get(name) or {})]
         ]
+
+    @staticmethod
+    def _voucher_fields(analyses: list[dict]) -> dict:
+        """The merged structured record, for a document mapped as a voucher.
+
+        Returns an empty mapping for every other profile, so the reduction
+        proposal carries ``fields`` only when a voucher map actually produced
+        one — the structured half stays optional rather than becoming a second
+        artifact kind every document has to have.
+        """
+        voucher = [
+            item for item in analyses if item.get("analysis_profile") == "voucher"
+        ]
+        if not voucher:
+            return {}
+        return {
+            "analysis_profile": "voucher",
+            "fields": document_analysis.merge_voucher_fields(
+                [dict(item.get("fields") or {}) for item in voucher]
+            ),
+        }
 
     @staticmethod
     def _prepared_media_set_hash(analyses: list[dict]) -> str:
@@ -1104,7 +1145,7 @@ _PIPELINE_BINDERS = {
         "_bind_chunk",
         {
             "workers_by_unit_kind": {
-                "document_chunk_analysis": CHUNK_WORKER_ID,
+                **_TEXT_MAP_WORKERS,
                 "document_visual_page_analysis": VISUAL_WORKER_ID,
             },
             "executor": None,

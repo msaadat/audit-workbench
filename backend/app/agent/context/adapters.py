@@ -1406,6 +1406,7 @@ def analysis_definition_scope(
 
 
 DOCUMENT_ANALYSIS_METADATA_SOURCE_ID = "document_metadata"
+DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"
 DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID = "document_page_images"
 DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID = "chunk_analyses"
@@ -1489,6 +1490,78 @@ def document_chunk_scope(
         candidates={
             DOCUMENT_ANALYSIS_METADATA_SOURCE_ID: (
                 document_metadata_candidate(workspace, document_id),
+            ),
+            DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref=(
+                        f"document:{document_id}:chunk:{payload['id']}"
+                    ),
+                    source=payload,
+                    representations={"raw_pages": payload},
+                    metadata={
+                        "document_id": str(document_id),
+                        "chunk_id": payload["id"],
+                        "page": payload["page"],
+                    },
+                ),
+            ),
+        },
+    )
+
+
+def document_identity_candidate(
+    workspace: Workspace, document_id: str
+) -> ContextCandidate:
+    """Expose only the identity a citation binds to — never descriptive metadata.
+
+    The voucher profile extracts transaction identifiers from the record's own
+    text. A filename like ``EXP-2025-003_PV-2025-003.pdf`` contains exactly those
+    identifiers, so supplying the standard metadata projection would let a worker
+    report a value it read off the filename and attach a loosely related excerpt.
+    This candidate carries the document id, its source hash, and its category and
+    nothing else, which is the minimum citation validation needs.
+    """
+    document = _document_entry(workspace, document_id)
+    projection = {
+        "document_id": str(document_id),
+        "source_sha1": str(document.get("sha1") or ""),
+        "category": str(document.get("category") or ""),
+    }
+    return ContextCandidate(
+        source_ref=f"document:{document_id}",
+        source=projection,
+        # The same registered representation the metadata candidate uses: the
+        # narrowing here is what the projection *contains*, not a new privacy
+        # class. Adding one would change ``ContextPrivacy`` and rehash every
+        # declared spec in the system for no additional protection.
+        representations={"current_artifact": projection},
+        metadata=dict(projection),
+    )
+
+
+def document_voucher_scope(
+    workspace: Workspace,
+    document_id: str,
+    chunk: Mapping[str, object],
+) -> ContextScope:
+    """The voucher map unit's scope: one chunk plus bare document identity.
+
+    Deliberately not ``document_chunk_scope``: this profile withholds the
+    descriptive metadata that profile supplies, so that every identifier in the
+    structured result is one the worker read out of the record itself.
+    """
+    payload = {
+        "id": str(chunk.get("id") or ""),
+        "page": int(chunk.get("page") or 0),
+        "pages": [int(page) for page in chunk.get("pages") or []],
+        "start_character": int(chunk.get("start_character") or 0),
+        "end_character": int(chunk.get("end_character") or 0),
+        "text": str(chunk.get("text") or ""),
+    }
+    return ContextScope(
+        candidates={
+            DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID: (
+                document_identity_candidate(workspace, document_id),
             ),
             DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID: (
                 ContextCandidate(
@@ -1671,6 +1744,7 @@ __all__ = [
     "APM_CURRENT_ARTIFACT_SOURCE_ID",
     "DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID",
     "DOCUMENT_ANALYSIS_CHUNKS_SOURCE_ID",
+    "DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID",
     "DOCUMENT_ANALYSIS_METADATA_SOURCE_ID",
     "DOCUMENT_ANALYSIS_VISUAL_SOURCE_ID",
     "DOCUMENT_QA_ITEM_SOURCE_ID",
@@ -1704,6 +1778,8 @@ __all__ = [
     "apm_table_metadata_candidates",
     "apm_table_profile_candidates",
     "document_chunk_scope",
+    "document_identity_candidate",
+    "document_voucher_scope",
     "document_metadata_candidate",
     "document_qa_page_candidates",
     "document_qa_scope",

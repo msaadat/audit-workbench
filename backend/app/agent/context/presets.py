@@ -1062,6 +1062,42 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
+        # Deliberately *narrower* than ``documents.analysis_chunk``. This profile
+        # extracts transaction identifiers from the record's own text, and the
+        # standard metadata projection carries the original filename — which for
+        # a voucher pack contains those same identifiers. Supplying it would let
+        # a worker report a value it never read from the document body, so this
+        # preset declares bare identity instead: enough to bind a citation to its
+        # source hash, and nothing a field could be lifted from.
+        preset_id="documents.analysis_voucher",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="document_identity",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=1, max_characters=500),
+                ),
+                ContextSource(
+                    id="document_chunk",
+                    source_type="documents",
+                    required=True,
+                    selector=ContextSelector(selector_id="documents.all"),
+                    representations=(ContextRepresentation("raw_pages"),),
+                    budget=ContextBudget(max_items=1, max_characters=32_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=2, max_characters=34_000),
+            privacy=ContextPrivacy(allow_document_text=True),
+        ),
+    )
+)
+
+
+PRESETS.register(
+    ContextPreset(
         preset_id="documents.analysis_visual_page",
         spec=ContextSpec(
             sources=(

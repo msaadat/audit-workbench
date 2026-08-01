@@ -48,9 +48,11 @@ from .model import (
 
 CHUNK_WORKER_ID = "documents.analysis_chunk"
 VISUAL_WORKER_ID = "documents.analysis_visual_page"
+VOUCHER_WORKER_ID = "documents.analysis_voucher"
 REDUCTION_WORKER_ID = "documents.analysis_reduction"
 
 DOCUMENT_METADATA_SOURCE_ID = "document_metadata"
+DOCUMENT_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_CHUNK_SOURCE_ID = "document_chunk"
 DOCUMENT_VISUAL_SOURCE_ID = "document_page_images"
 CHUNK_ANALYSES_SOURCE_ID = "chunk_analyses"
@@ -257,6 +259,7 @@ def validate_chunk_proposal(
         "document_id": str(document.get("document_id") or ""),
         "pages": [int(page) for page in chunk.get("pages") or []],
         "modality": "text",
+        "analysis_profile": "standard",
         "derived_text_markdown": "",
         "summary_markdown": validated["summary_markdown"],
         "audit_notes_markdown": validated["audit_notes_markdown"],
@@ -305,6 +308,179 @@ def run_chunk_worker(
         },
     )
     return gateway.complete(CHUNK_SYSTEM, user, activity, attempt=attempt.number)
+
+
+# --------------------------------------------------------------------------- #
+# documents.analysis_voucher
+#
+# The transaction-evidence profile. It reads the same bounded chunk the standard
+# map worker reads and returns the same narrative pair, plus a structured
+# `fields` record that a vouching comparison can resolve field-by-field. Every
+# structured entry carries a citation id, so the deterministic comparison that
+# consumes it is anchored to a verbatim excerpt rather than to model prose.
+# --------------------------------------------------------------------------- #
+VOUCHER_SYSTEM = f"""[agent:document_analysis_voucher]
+Analyze the supplied chunk as transaction evidence — a voucher, invoice,
+purchase order, goods-received note, receipt, approval record, or similar.
+Report only what this chunk states. Do not infer a value from a filename, from
+metadata, or from what a document of this type usually contains.
+
+Return exactly summary_markdown, audit_notes_markdown, citations, and fields.
+
+summary_markdown is a short neutral description of what this record is and what
+it evidences. audit_notes_markdown records observations visible on the face of
+the document — a missing signature or date, an unreferenced attachment, an
+internal inconsistency, an alteration, an incomplete field. State the
+observation and why it matters. Do not conclude that a control operated or
+failed; that determination is made elsewhere by comparing this record against
+the accounting population. If there is no such observation, use: `No
+observations were identified on the face of this record.`
+
+citations is an array of objects with id, page, and a short exact excerpt copied
+verbatim from this chunk.
+
+fields is an object with document_type and these arrays. Every array entry must
+carry `citation`, the id of the citation that supports it. Omit an entry you
+cannot cite. Use an empty array for a group this chunk does not evidence.
+  document_type  one of payment_voucher, invoice, purchase_order,
+                 goods_receipt, receipt, approval_record, expense_claim,
+                 credit_note, contract, other
+  identifiers    {{kind, value, citation}} — every reference number the record
+                 carries. kind is a short snake_case name such as claim_id,
+                 voucher_id, invoice_number, po_number, grn_number,
+                 receipt_reference, bank_reference.
+  parties        {{role, name, citation}} — role such as payee, vendor,
+                 supplier, employee, customer, bank.
+  dates          {{kind, value, citation}} — kind such as document_date,
+                 payment_date, invoice_date, approval_date, delivery_date,
+                 expense_date. value as it appears on the record.
+  amounts        {{kind, value, currency, citation}} — kind such as total,
+                 total_paid, subtotal, tax, discount, net, line_total.
+  line_items     {{description, amount, quantity, date, category,
+                 receipt_reference, citation}} — one entry per line the record
+                 itemizes. Include the keys the line actually shows.
+  approvals      {{approver, role, decision, date, citation}} — one entry per
+                 approval, signature, or authorization the record carries.
+  attachments    {{kind, reference, present, citation}} — supporting items the
+                 record refers to or encloses, such as a receipt or invoice
+                 copy. present is true when this chunk shows the item is
+                 attached or enclosed, false when it shows it is missing.
+
+Copy values as the record writes them; normalization happens downstream. Do not
+invent an identifier, an amount, or a date. {JSON_RULES}"""
+
+
+def _voucher_response_schema(response: str) -> Mapping[str, Any]:
+    payload = _json_object(response)
+    citations = payload.get("citations")
+    if citations is None:
+        citations = []
+    if not isinstance(citations, list) or any(
+        not isinstance(item, dict) for item in citations
+    ):
+        raise WorkerResponseValidationError("`citations` must be an array of objects")
+    fields = payload.get("fields")
+    if fields is None:
+        fields = {}
+    if not isinstance(fields, dict):
+        raise WorkerResponseValidationError("`fields` must be an object")
+    for group in document_analysis.VOUCHER_FIELD_GROUPS:
+        value = fields.get(group)
+        if value is None:
+            continue
+        if not isinstance(value, list) or any(
+            not isinstance(item, dict) for item in value
+        ):
+            raise WorkerResponseValidationError(
+                f"`fields.{group}` must be an array of objects"
+            )
+    return {
+        "summary_markdown": payload.get("summary_markdown"),
+        "audit_notes_markdown": payload.get("audit_notes_markdown"),
+        "citations": citations,
+        "fields": fields,
+    }
+
+
+def validate_voucher_proposal(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Apply the standard map contract, then ground every structured field.
+
+    The narrative half goes through exactly the same ``validate_analysis_map``
+    gate the standard profile uses. The structured half is then normalized
+    against the citations that survived it, so a field anchored to an excerpt the
+    chunk does not contain is dropped rather than committed.
+    """
+    chunk = _supplied_chunk(request)
+    document = _resolved_item(request, DOCUMENT_IDENTITY_SOURCE_ID)
+    source_sha1 = str(document.get("source_sha1") or "")
+    if not source_sha1:
+        raise WorkerContractError("The supplied document identity has no source hash.")
+    try:
+        validated = document_analysis.validate_analysis_map(
+            dict(proposal), [dict(chunk)], source_sha1
+        )
+    except ValueError as error:
+        raise WorkerResponseValidationError(str(error)) from error
+    fields = document_analysis.validate_voucher_fields(
+        _plain_json(proposal.get("fields") or {}), validated["citations"]
+    )
+    if not any(fields.get(group) for group in document_analysis.VOUCHER_FIELD_GROUPS):
+        raise WorkerResponseValidationError(
+            "fields carried no entry anchored to an exact excerpt from this chunk"
+        )
+    return {
+        "chunk_id": str(chunk.get("id") or ""),
+        "document_id": str(document.get("document_id") or ""),
+        "pages": [int(page) for page in chunk.get("pages") or []],
+        "modality": "text",
+        "analysis_profile": "voucher",
+        "derived_text_markdown": "",
+        "summary_markdown": validated["summary_markdown"],
+        "audit_notes_markdown": validated["audit_notes_markdown"],
+        "citations": validated["citations"],
+        "fields": fields,
+    }
+
+
+def run_voucher_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Transform only the supplied chunk and metadata into one model request."""
+
+    chunk = _supplied_chunk(request)
+    document = _resolved_item(request, DOCUMENT_IDENTITY_SOURCE_ID)
+    # No filename, title, or note: every value in the structured result must come
+    # from the record's own text, and a voucher pack's filename routinely carries
+    # the transaction identifiers the worker is asked to extract.
+    user = (
+        f"SOURCE SHA: {document.get('source_sha1')}\nPAGE: {chunk['page']}\n"
+        f"CHARACTER RANGE: {chunk['start_character']}..{chunk['end_character']}\n"
+        "DOCUMENT OPENING CHUNK: "
+        f"{'yes' if int(chunk['start_character']) == 0 else 'no'}\n\n"
+        f"RAW SOURCE CHUNK:\n{chunk['text']}"
+    )
+    if attempt.is_repair:
+        user += (
+            "\n\nYour previous response could not be used: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return a complete corrected JSON object."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "document_voucher_analysis",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(VOUCHER_SYSTEM, user, activity, attempt=attempt.number)
 
 
 # --------------------------------------------------------------------------- #
@@ -660,6 +836,32 @@ VISUAL_WORKER = WorkerDefinition(
     semantic_validator=validate_visual_proposal,
 )
 
+VOUCHER_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="documents.analysis_voucher.response",
+    schema_hash=_sha256_text(
+        "document-voucher-response:v1:summary-notes-citations-fields"
+    ),
+    validator=_voucher_response_schema,
+)
+VOUCHER_WORKER = WorkerDefinition(
+    worker_id=VOUCHER_WORKER_ID,
+    implementation_hash=_sha256_text(inspect.getsource(run_voucher_worker)),
+    prompt_hash=_sha256_text(VOUCHER_SYSTEM),
+    response_schema=VOUCHER_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair the voucher analysis against the supplied chunk text, its "
+            "exact excerpts, and the declared field groups."
+        ),
+    ),
+    implementation=run_voucher_worker,
+    semantic_validation_hash=_sha256_text(
+        inspect.getsource(validate_voucher_proposal)
+    ),
+    semantic_validator=validate_voucher_proposal,
+)
+
 REDUCTION_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="documents.analysis_reduction.response",
     schema_hash=_sha256_text("document-reduction-response:json-object-with-summary-notes"),
@@ -685,6 +887,7 @@ REDUCTION_WORKER = WorkerDefinition(
 
 WORKERS.register(CHUNK_WORKER)
 WORKERS.register(VISUAL_WORKER)
+WORKERS.register(VOUCHER_WORKER)
 WORKERS.register(REDUCTION_WORKER)
 
 
@@ -705,11 +908,17 @@ __all__ = [
     "VISUAL_SYSTEM",
     "VISUAL_WORKER",
     "VISUAL_WORKER_ID",
+    "VOUCHER_RESPONSE_SCHEMA",
+    "VOUCHER_SYSTEM",
+    "VOUCHER_WORKER",
+    "VOUCHER_WORKER_ID",
     "document_metadata",
     "run_chunk_worker",
     "run_reduction_worker",
     "run_visual_worker",
+    "run_voucher_worker",
     "validate_chunk_proposal",
     "validate_reduction_proposal",
     "validate_visual_proposal",
+    "validate_voucher_proposal",
 ]
