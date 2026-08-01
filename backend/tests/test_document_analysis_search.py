@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app import document_analysis, document_context, document_search, documents, embedding, llm, workspaces
 from app.agent import prompts, runner, store
+from app.agent.context import adapters
 from app.main import create_app
 from conftest import wait_run
 
@@ -179,6 +180,14 @@ def test_analysis_overrides_candidate_and_replacement_staleness():
     stale = document_analysis.load_analysis(ws, doc["id"], document=replaced)
     assert stale["status"]["analysis_validity_state"] == "stale"
     assert document_analysis.compact_artifact(ws, doc["id"]) is None
+
+    context = document_context.apm_document_context(ws, doc["id"])
+    assert context["outcome"] == "supplied"
+    assert "Auditor summary" in context["content"]
+    assert context["analysis_validity_state"] == "stale"
+    candidate = adapters.apm_document_candidates(ws)[0]
+    assert candidate.representations["summary"] == context["content"]
+    assert candidate.metadata["analysis_validity_state"] == "stale"
 
 
 def test_broker_refuses_unscoped_large_attachment_without_prefix():

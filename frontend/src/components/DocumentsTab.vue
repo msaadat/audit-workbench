@@ -705,7 +705,7 @@ onUnmounted(() => {
               <p v-else>Omitted pages: {{ analysis.effective?.coverage.omitted_pages.join(', ') || '—' }}</p>
             </div>
           </div>
-          <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity and is excluded from agent context.</span></div>
+          <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity. It remains available to agent context; refresh it before relying on it as current.</span></div>
 
           <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyze this document once" description="Create a reusable summary and freeform audit notes. Source indexing remains local and independent." compact />
           <template v-else>

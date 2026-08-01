@@ -18,7 +18,7 @@ def apm_document_context(
     *,
     max_characters: int = SMALL_DOCUMENT_CHARACTERS,
 ) -> dict:
-    """Adapt a current document analysis to one bounded APM representation.
+    """Adapt a document analysis to one bounded APM representation.
 
     The adapter deliberately composes :func:`get_document_context` instead of
     reading analysis sidecars or extracted pages itself.  That keeps document
@@ -66,6 +66,10 @@ def apm_document_context(
         "title": summary.get("title") or audit_notes.get("title"),
         "source_sha1": summary.get("source_sha1") or audit_notes.get("source_sha1"),
         "analysis_id": summary.get("analysis_id") or audit_notes.get("analysis_id"),
+        "analysis_validity_state": (
+            summary.get("analysis_validity_state")
+            or audit_notes.get("analysis_validity_state")
+        ),
         "content": content,
         "characters": len(content),
         "citations": citations,
@@ -87,10 +91,10 @@ def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
     result = {"document_id": document_id, "title": document.get("title") or document.get("source"),
               "source_sha1": document.get("sha1"), "mode": mode, "content": "",
               "pages": [], "citations": [], "characters": 0, "outcome": "unavailable",
-              "analysis_id": None, "trimmed": False}
+              "analysis_id": None, "analysis_validity_state": None, "trimmed": False}
     if mode in {"summary", "audit_notes", "derived_text", "vision_transcript"}:
         analysis = document_analysis.load_analysis(workspace, document_id, document=document)
-        if analysis["effective"] and analysis["status"]["analysis_validity_state"] == "current":
+        if analysis["effective"]:
             key = (
                 "summary_markdown"
                 if mode == "summary"
@@ -102,6 +106,7 @@ def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
             result.update(content=content[:max_chars], characters=min(len(content), max_chars),
                           outcome="trimmed" if len(content) > max_chars else "supplied",
                           trimmed=len(content) > max_chars, analysis_id=analysis["effective"]["id"],
+                          analysis_validity_state=analysis["status"]["analysis_validity_state"],
                           citations=analysis["effective"].get("citations") or [])
     elif mode == "search_excerpts":
         if not str(query or "").strip():
@@ -125,7 +130,7 @@ def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
                     )
                     or ""
                 )
-                if analysis["status"]["analysis_validity_state"] == "current"
+                if analysis.get("effective")
                 else ""
             )
             if derived:
@@ -160,6 +165,7 @@ def get_document_context(workspace: Workspace, document_id: str, mode: str, *,
                     ),
                     trimmed=len(derived) > max_chars,
                     analysis_id=(analysis.get("effective") or {}).get("id"),
+                    analysis_validity_state=analysis["status"]["analysis_validity_state"],
                     citations=(
                         analysis.get("effective") or {}
                     ).get("citations")

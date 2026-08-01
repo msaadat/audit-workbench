@@ -124,6 +124,7 @@ def apm_document_candidates(
             "category": category,
             "text_state": document.get("text_state") or "",
             "analysis_id": context.get("analysis_id"),
+            "analysis_validity_state": context.get("analysis_validity_state"),
             "planning_relevant": _planning_relevant(document, curated),
         }
         candidates.append(
@@ -402,6 +403,7 @@ def planning_context_document_candidates(
             "category": category,
             "text_state": document.get("text_state") or "",
             "analysis_id": analysis.get("analysis_id"),
+            "analysis_validity_state": analysis.get("analysis_validity_state"),
             "planning_relevant": _planning_relevant(document, curated),
         }
         candidates.append(
