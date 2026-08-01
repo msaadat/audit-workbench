@@ -238,15 +238,39 @@ export interface DocComparison {
   evidence?: EvidenceRef
 }
 
+/** One value a cycle check's path resolved to, with the citation behind it. */
+export interface DocTestPathMatch {
+  value: unknown
+  citation: string | null
+  document_id: string | null
+  page: number | null
+  excerpt: string | null
+}
+
+/** One resolved side of a cycle comparison. */
+export interface DocTestCheckSide {
+  side: 'left' | 'right'
+  path: string
+  state: 'resolved' | 'missing' | 'ambiguous'
+  matches: DocTestPathMatch[]
+}
+
 export interface DocTestCheck {
   field: string
+  /**
+   * A cycle check names both sides by path — `row.<column>` or
+   * `<role>.<group>.<key>` — and carries no literal expectation. A legacy
+   * check instead carries `expected` and searches document page text for it.
+   */
+  left?: string
+  right?: string
   expected: unknown
   found: unknown
-  method: DocComparison['method']
+  method: DocComparison['method'] | 'date_order' | 'present'
   tolerance: unknown
-  verdict: 'pending' | 'match' | 'mismatch' | 'missing' | 'invalid'
+  verdict: 'pending' | 'match' | 'mismatch' | 'missing' | 'invalid' | 'ambiguous'
   note: string
-  comparisons: DocComparison[]
+  comparisons: Array<DocComparison | DocTestCheckSide>
   evidence_refs: EvidenceRef[]
 }
 
@@ -273,6 +297,20 @@ export interface DocTestItem {
   runner_note?: string
   document_conflicts?: { duplicate_documents: string[][] }
   transaction_identifiers?: string[]
+  /**
+   * Role-tagged attachments. Present on a cycle item, where a check's
+   * `<role>.…` path resolves against the document attached in that role.
+   * `document_type` is what the voucher profile extracted, kept beside the
+   * role the test mapped it into.
+   */
+  documents?: Array<{
+    document_id: string
+    role: string
+    document_type?: string
+    matched_by?: string
+  }>
+  /** Required roles no attached document filled; the item cannot be concluded. */
+  missing_roles?: string[]
   evidence_coverage?: {
     document_ids: string[]
     available_document_types: string[]

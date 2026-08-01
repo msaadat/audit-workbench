@@ -376,6 +376,23 @@ def validate_citations(citations: list[dict], chunks: list[dict], source_sha1: s
 # Each group maps to the keys an entry must carry to be usable at all. An entry
 # missing one of them is dropped rather than stored half-formed, because a
 # comparison that reads it would otherwise silently compare against nothing.
+# The closed vocabulary the profile classifies a record into. Shared rather than
+# restated: the voucher worker's prompt emits it and a vouching test's role
+# mapping consumes it, so a drifting second copy would silently produce cycle
+# tests whose declared roles no document can ever fill.
+VOUCHER_DOCUMENT_TYPES: tuple[str, ...] = (
+    "payment_voucher",
+    "invoice",
+    "purchase_order",
+    "goods_receipt",
+    "receipt",
+    "approval_record",
+    "expense_claim",
+    "credit_note",
+    "contract",
+    "other",
+)
+
 VOUCHER_FIELD_GROUPS: dict[str, tuple[str, ...]] = {
     "identifiers": ("kind", "value"),
     "parties": ("role", "name"),

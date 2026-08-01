@@ -257,9 +257,14 @@ def test_generate_worker_sends_a_compact_context_projection():
         "other_rcm_rows",
         "table_schemas",
         "documents",
+        "transaction_evidence",
         "methodology",
         "instructions",
     }
+    # The default bundle carries a policy document only, so the projection says
+    # so rather than leaving the model to infer it from a category field.
+    assert payload["transaction_evidence"]["document_ids"] == []
+    assert "not possible" in payload["transaction_evidence"]["note"]
     assert payload["target_rcm_row"]["id"] == "RCM-1"
     assert payload["planning_context"] == {"objective": "Assess procurement approvals"}
     assert payload["table_schemas"][0]["table"] == "transactions"
@@ -308,6 +313,18 @@ def test_generate_worker_produces_a_ready_document_vouch_test():
     # The model never names documents for a cycle: linking is by extracted
     # identifier, which is what makes the sample reproducible.
     assert "document_ids" not in step
+
+
+def test_generate_worker_names_the_transaction_evidence_it_was_supplied():
+    """The one fact that decides whether a cycle test is possible is surfaced."""
+
+    gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
+
+    WORKERS.execute(_request(_voucher_bundle()), gateway)
+
+    evidence = json.loads(gateway.calls[0]["user"])["transaction_evidence"]
+    assert evidence["document_ids"] == ["DOC-1"]
+    assert "extracted structured record" in evidence["note"]
 
 
 def test_generate_worker_rejects_a_literal_expected_value_in_a_vouch_check():
@@ -425,7 +442,9 @@ def test_generate_worker_allows_document_to_document_cycle_checks():
                                         {
                                             "role": "goods_receipt",
                                             "required": False,
-                                            "document_types": ["goods_receipt", "delivery_note"],
+                                            # A role may accept more than one
+                                            # extracted type; both must be real.
+                                            "document_types": ["goods_receipt", "receipt"],
                                         },
                                     ],
                                     checks=[
@@ -469,8 +488,48 @@ def test_generate_worker_allows_document_to_document_cycle_checks():
     assert step["checks"][2]["right"] == ""
     assert list(step["document_roles"][2]["document_types"]) == [
         "goods_receipt",
-        "delivery_note",
+        "receipt",
     ]
+
+
+def test_generate_worker_rejects_an_import_category_as_a_document_type():
+    """`voucher` is how a document is imported, not how it is classified.
+
+    A role declared against the import category can never be filled — the
+    extraction records `payment_voucher` — so every item would report a missing
+    role and the whole cycle would land in manual review with no result.
+    """
+    invalid = json.dumps(
+        {
+            "tests": [
+                _document_test(
+                    steps=[
+                        _vouch_step(
+                            document_roles=[
+                                {
+                                    "role": "voucher",
+                                    "required": True,
+                                    "document_types": ["voucher"],
+                                }
+                            ],
+                            checks=[
+                                {
+                                    "field": "amount agrees",
+                                    "method": "normalized",
+                                    "left": "row.amount",
+                                    "right": "voucher.amount.total",
+                                }
+                            ],
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="not an extracted document type"):
+        WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
 def test_generate_worker_rejects_two_vouch_steps_in_one_test():

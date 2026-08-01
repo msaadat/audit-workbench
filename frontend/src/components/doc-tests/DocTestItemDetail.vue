@@ -5,7 +5,16 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 
-import type { AuditDocument, AuditFinding, DocTest, DocTestItem, EvidenceRef } from '../../types'
+import type {
+  AuditDocument,
+  AuditFinding,
+  DocTest,
+  DocTestCheck,
+  DocTestCheckSide,
+  DocComparison,
+  DocTestItem,
+  EvidenceRef,
+} from '../../types'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 
@@ -32,7 +41,17 @@ const emit = defineEmits<{
 }>()
 
 const attachId = ref<string | null>(null)
-const methods = ['exact', 'normalized', 'fuzzy', 'numeric_tolerance', 'date_tolerance']
+const methods = [
+  'exact',
+  'normalized',
+  'fuzzy',
+  'numeric_tolerance',
+  'date_tolerance',
+  'date_order',
+  'present',
+]
+// `present` reads only the left side, so a cycle check using it shows one row.
+const unaryMethods = new Set(['present'])
 const kindLabel: Record<string, string> = {
   vouching: 'Vouching / tracing',
   attribute: 'Attribute test',
@@ -67,6 +86,68 @@ const evidenceRequests = computed(() =>
 // Only 'manual_review'/'agent_checked' mean the result itself is unresolved.
 const needsSignOff = computed(() => ['manual_review', 'agent_checked'].includes(props.item.state))
 
+
+// A cycle check names both sides by path; a legacy check searches page text for
+// a literal. They render differently because they mean different things — one
+// is a resolved comparison between two records, the other a text match.
+function isCycleCheck(check: DocTestCheck) {
+  return Boolean(check.left)
+}
+function sides(check: DocTestCheck): DocTestCheckSide[] {
+  return (check.comparisons ?? []).filter(
+    (entry): entry is DocTestCheckSide => 'side' in entry && 'matches' in entry,
+  )
+}
+function legacyComparisons(check: DocTestCheck): DocComparison[] {
+  if (isCycleCheck(check)) return []
+  return (check.comparisons ?? []).filter(
+    (entry): entry is DocComparison => !('side' in entry),
+  )
+}
+function visibleSides(check: DocTestCheck) {
+  const resolved = sides(check)
+  if (unaryMethods.has(check.method as string)) {
+    return resolved.filter(side => side.side === 'left')
+  }
+  return resolved.filter(side => side.path)
+}
+function sideValue(side: DocTestCheckSide) {
+  if (side.state === 'missing') return 'not found'
+  if (side.state === 'ambiguous') return 'conflicting values'
+  const value = side.matches[0]?.value
+  if (value === null || value === undefined || value === '') return 'empty'
+  return String(value)
+}
+// `row.<column>` reads the frozen population row and has no document behind it;
+// every other path resolves to an excerpt in a named document.
+function sideOrigin(side: DocTestCheckSide) {
+  if (side.path.startsWith('row.')) return 'Population record'
+  const match = side.matches[0]
+  if (!match?.document_id) return 'No source'
+  return `${documentTitle(match.document_id)} · page ${match.page ?? '—'}`
+}
+function sideAnchor(side: DocTestCheckSide): EvidenceRef | null {
+  const match = side.matches.find(entry => entry.document_id && entry.excerpt)
+  if (!match) return null
+  return (props.item.evidence_refs ?? []).find(
+    ref => ref.source_id === match.document_id && ref.excerpt === match.excerpt,
+  ) ?? null
+}
+
+const cycleSpec = computed(() => (props.test.spec ?? {}) as Record<string, any>)
+const cycleCoverage = computed(() => {
+  const coverage = cycleSpec.value.coverage
+  if (!coverage || typeof coverage !== 'object') return null
+  return coverage as {
+    population: number
+    linked: number
+    unlinked: number
+    incomplete_roles: number
+  }
+})
+const cycleDocuments = computed(() => props.item.documents ?? [])
+const missingRoles = computed(() => props.item.missing_roles ?? [])
+const frozenRow = computed(() => Object.entries(props.item.frozen ?? {}))
 
 function documentTitle(id: string) {
   return props.documents.find(doc => doc.id === id)?.title || id
@@ -162,7 +243,32 @@ function attach() {
       <blockquote v-if="item.excerpt">{{ item.excerpt }}</blockquote>
     </section>
 
-    <!-- 2. Comparison detail, for the vouching branch only. -->
+    <!-- 2a. The transaction cycle: which documents stood in for which role. -->
+    <section v-if="cycleDocuments.length" class="block">
+      <h4>Transaction cycle</h4>
+      <p v-if="missingRoles.length" class="missing-roles">
+        No attached document fills the required role{{ missingRoles.length > 1 ? 's' : '' }}
+        <strong>{{ missingRoles.join(', ') }}</strong>, so this item cannot be concluded.
+      </p>
+      <div v-for="entry in cycleDocuments" :key="entry.document_id" class="role-row">
+        <span class="role-name">{{ entry.role }}</span>
+        <span class="role-doc">{{ documentTitle(entry.document_id) }}</span>
+        <span
+          v-if="entry.document_type && entry.document_type !== entry.role"
+          class="role-type"
+          :title="'Extracted document type, mapped into this role'"
+        >{{ entry.document_type }}</span>
+      </div>
+      <UiAdvancedSection title="Population record" description="The frozen row this cycle is tested against">
+        <div class="frozen">
+          <span v-for="[field, value] in frozenRow" :key="field">
+            {{ field }}: <code>{{ value ?? '—' }}</code>
+          </span>
+        </div>
+      </UiAdvancedSection>
+    </section>
+
+    <!-- 2b. Comparison detail, for the vouching branch only. -->
     <section v-if="item.checks?.length" class="block">
       <h4>Comparisons</h4>
       <article v-for="check in item.checks" :key="check.field" class="check">
@@ -170,8 +276,29 @@ function attach() {
           <strong>{{ check.field }}</strong>
           <UiTestStatus :status="check.verdict" showLabel />
         </div>
+
+        <!-- Cycle comparison: two resolved sides, each with its own source. -->
+        <template v-if="isCycleCheck(check)">
+          <div v-for="side in visibleSides(check)" :key="side.side" class="comparison">
+            <span class="comparison-source">{{ sideOrigin(side) }}</span>
+            <code :class="{ unresolved: side.state !== 'resolved' }">{{ sideValue(side) }}</code>
+            <span class="path" :title="side.path">{{ side.path }}</span>
+            <Button
+              v-if="sideAnchor(side)"
+              icon="pi pi-link"
+              text
+              rounded
+              size="small"
+              aria-label="Open evidence"
+              @click="emit('anchor', sideAnchor(side)!)"
+            />
+          </div>
+          <p v-if="check.note" class="check-note">{{ check.note }}</p>
+        </template>
+
+        <!-- Legacy comparison: a literal expectation matched against page text. -->
         <div
-          v-for="result in check.comparisons"
+          v-for="result in legacyComparisons(check)"
           :key="`${result.document_id}:${result.page}`"
           class="comparison"
         >
@@ -190,7 +317,7 @@ function attach() {
         </div>
         <UiAdvancedSection title="Matching rule" description="Change how this field is compared">
           <div class="comparison-settings">
-            <span>Expected: <code>{{ check.expected }}</code></span>
+            <span v-if="!isCycleCheck(check)">Expected: <code>{{ check.expected }}</code></span>
             <Select v-model="check.method" :options="methods" />
             <InputText
               :modelValue="String(check.tolerance ?? '')"
@@ -291,6 +418,19 @@ function attach() {
     <section class="block outcome">
       <h4>Test conclusion</h4>
       <p v-if="test.result_summary" class="summary">{{ test.result_summary }}</p>
+      <!-- Coverage is what makes a cycle conclusion honest: how much of the
+           population was actually reached, stated beside the result. -->
+      <p v-if="cycleCoverage" class="coverage">
+        Tested <strong>{{ cycleCoverage.linked }}</strong> of
+        <strong>{{ cycleCoverage.population }}</strong> population row(s) from
+        <code>{{ cycleSpec.table }}.{{ cycleSpec.anchor_key }}</code>.
+        <span v-if="cycleCoverage.unlinked">
+          {{ cycleCoverage.unlinked }} row(s) had no linked document.
+        </span>
+        <span v-if="cycleCoverage.incomplete_roles">
+          {{ cycleCoverage.incomplete_roles }} linked row(s) are missing a required role.
+        </span>
+      </p>
       <dl v-if="test.next_action || test.scope_limitations || test.exception_count || test.open_exception_count">
         <template v-if="test.next_action">
           <dt>Next action</dt><dd>{{ test.next_action }}</dd>
@@ -436,6 +576,18 @@ blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-
 .comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: 0.5rem; align-items: center; padding: 0.4rem 0; border-top: 1px solid var(--aw-border); font-size: 0.78rem; }
 .comparison-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .comparison-settings { display: grid; grid-template-columns: minmax(0, 1fr) 11rem 8rem; gap: 0.5rem; align-items: center; }
+/* The path is the audit trail for a cycle comparison: it says exactly which
+   field of which record produced the value beside it. */
+.path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--aw-muted); font-family: var(--aw-mono, monospace); font-size: 0.72rem; }
+.unresolved { color: var(--aw-warn); }
+.check-note { margin: 0.2rem 0 0; color: var(--aw-warn); font-size: 0.75rem; }
+.role-row { display: grid; grid-template-columns: 10rem minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; padding: 0.3rem 0; border-top: 1px solid var(--aw-border); font-size: 0.78rem; }
+.role-name { font-weight: 700; }
+.role-doc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-type { color: var(--aw-muted); font-size: 0.72rem; }
+.missing-roles { margin: 0 0 0.4rem; color: var(--aw-warn); font-size: 0.78rem; }
+.coverage { margin: 0 0 0.5rem; color: var(--aw-muted); font-size: 0.78rem; }
+.frozen { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; font-size: 0.75rem; color: var(--aw-muted); }
 code { font-family: var(--aw-font-mono); font-size: 0.75rem; overflow-wrap: anywhere; }
 .attribute { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr); gap: 0.5rem; align-items: center; padding: 0.5rem 0.6rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }
 

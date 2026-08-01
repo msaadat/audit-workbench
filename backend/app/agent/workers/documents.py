@@ -342,9 +342,7 @@ verbatim from this chunk.
 fields is an object with document_type and these arrays. Every array entry must
 carry `citation`, the id of the citation that supports it. Omit an entry you
 cannot cite. Use an empty array for a group this chunk does not evidence.
-  document_type  one of payment_voucher, invoice, purchase_order,
-                 goods_receipt, receipt, approval_record, expense_claim,
-                 credit_note, contract, other
+  document_type  one of {", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)}
   identifiers    {{kind, value, citation}} — every reference number the record
                  carries. kind is a short snake_case name such as claim_id,
                  voucher_id, invoice_number, po_number, grn_number,

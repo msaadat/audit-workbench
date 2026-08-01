@@ -27,7 +27,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import doc_tests, sandbox
+from ... import doc_tests, document_analysis, sandbox
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -82,12 +82,33 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
     planning = _resolved_item(request, "planning_context")
     if isinstance(planning, Mapping):
         planning = planning.get("context") or {}
+    documents = _source_items(request, GENERATE_DOCUMENT_SOURCE_ID)
+    # Which supplied documents are transaction evidence is the single fact that
+    # decides whether a cycle test is possible, and it is otherwise buried in a
+    # per-document category field. Surfacing it is context the model lacks, not a
+    # thumb on the scale: the model still chooses the mode.
+    evidence = [
+        str(item.get("id") or "")
+        for item in documents
+        if isinstance(item, Mapping)
+        and str(item.get("category") or "") == _TRANSACTION_EVIDENCE_CATEGORY
+    ]
     return {
         "target_rcm_row": _resolved_item(request, GENERATE_ROW_SOURCE_ID),
         "planning_context": planning,
         "other_rcm_rows": _source_items(request, "other_rcm_rows"),
         "table_schemas": _source_items(request, GENERATE_TABLE_SOURCE_ID),
-        "documents": _source_items(request, GENERATE_DOCUMENT_SOURCE_ID),
+        "documents": documents,
+        "transaction_evidence": {
+            "document_ids": evidence,
+            "note": (
+                "These documents carry an extracted structured record — "
+                "identifiers, parties, dates, amounts, line items, approvals, and "
+                "attachments — that a vouch check resolves its paths against."
+            )
+            if evidence
+            else "No transaction evidence is available; a vouch test is not possible.",
+        },
         "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
         "instructions": (
             "Generate complete executable tests for target_rcm_row only. Do not "
@@ -220,7 +241,10 @@ document is compared against. Fields:
   anchor_key      the column holding the identifier the documents carry
   document_roles  array of {{role, required, document_types}}; role is the name
                   a check refers to, document_types lists the extracted
-                  document types that fill it
+                  document types that fill it. document_types must come from
+                  this closed vocabulary, which is what the extraction records —
+                  not the document's import category:
+                  {", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)}
   checks          array of {{field, left, right, method, tolerance}}
 
 A check names both of its sides by path, never by value:
@@ -506,6 +530,21 @@ def _validate_generate_cycle_step(
             for value in (raw_role.get("document_types") or [name])
             if str(value).strip()
         ]
+        # A role whose declared types are not what the extraction records can
+        # never be filled, so every item would report a missing role and the
+        # whole cycle would land in manual review. Caught here rather than
+        # discovered as an empty result.
+        unknown_types = [
+            value
+            for value in types
+            if value not in document_analysis.VOUCHER_DOCUMENT_TYPES
+        ]
+        if unknown_types:
+            errors.append(
+                f"{role_path}.document_types has '{unknown_types[0]}', which is not "
+                "an extracted document type; expected one of: "
+                + ", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)
+            )
         roles.append(
             {
                 "role": name,
