@@ -150,6 +150,7 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
             ],
         ),
         ("apm_only", "workflow", ["planning.apm_ready"]),
+        ("rcm_only", "workflow", ["planning.rcm_ready"]),
         ("finding_draft", "workflow", ["findings.drafted"]),
         ("report", "workflow", ["report.working_draft", "audit.verified"]),
         # Phase 8 made data analysis a declared workflow goal; Phase 11 did the
@@ -171,6 +172,7 @@ def test_every_registered_goal_template_has_a_deterministic_local_route(
         "full_audit_working_draft",
         "planning",
         "apm_only",
+        "rcm_only",
         "finding_draft",
         "data_analysis",
         "table_relationships",

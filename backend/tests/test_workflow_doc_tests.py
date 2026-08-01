@@ -34,7 +34,9 @@ def _workspace(label="Document tests"):
 
 
 def _vouching(ws, *, title="Invoice support"):
-    document = documents.add_document(ws, "evidence.txt", EVIDENCE)
+    document = documents.add_document(
+        ws, f"evidence-{len(ws.documents) + 1}.txt", EVIDENCE
+    )
     return document, doc_tests.create_test(
         ws,
         {
