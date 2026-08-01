@@ -114,6 +114,8 @@ export interface GeneratedDocumentAnalysis {
   generated_at: string
   summary_markdown: string
   audit_notes_markdown: string
+  /** Profile-specific structured extraction, such as voucher IDs and approvals. */
+  fields?: Record<string, unknown>
   citations: DocumentAnalysisCitation[]
   coverage: {
     state: DocumentAnalysisCoverageState
