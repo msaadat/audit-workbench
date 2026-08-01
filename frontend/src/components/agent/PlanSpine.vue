@@ -291,14 +291,11 @@ const note = computed(() => {
 
 <style scoped>
 .plan-spine {
-  flex: 0 0 16.5rem;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0.9rem 0.7rem;
-  border-right: 1px solid var(--aw-border);
-  background: var(--aw-raised);
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--aw-border);
 }
 .rail-label {
   margin: 0 0.15rem 0.6rem;
@@ -455,9 +452,5 @@ const note = computed(() => {
 }
 .reused i { padding-top: 0.15rem; font-size: 0.62rem; }
 
-@container console-body (max-width: 52rem) {
-  .plan-spine:not(.overlay) { display: none; }
-}
-
-.plan-spine.overlay{width:100%;min-height:auto;max-height:70vh;border-right:0}
+.plan-spine.overlay{width:100%;min-height:auto;max-height:70vh;margin-top:0;padding-top:0;border-top:0}
 </style>
