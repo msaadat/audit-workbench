@@ -99,6 +99,9 @@ const filtered = computed(() => documents.value.filter(doc => {
   const term = search.value.toLowerCase()
   return !term || `${doc.title} ${doc.source}`.toLowerCase().includes(term)
 }))
+const eligibleDocuments = computed(() => documents.value.filter(document =>
+  ['extracted', 'partial', 'image_only'].includes(document.text_state)
+  && document.analysis_validity_state !== 'current'))
 
 function groupValue(doc: AuditDocument): string {
   if (groupBy.value === 'folder') {
@@ -144,7 +147,6 @@ const indexingDetail = computed(() => {
 })
 const secondaryActions = computed(() => [
   { label: 'Search contents', icon: 'pi pi-search', command: () => { contentSearchOpen.value = true } },
-  { label: 'Analyze eligible documents', icon: 'pi pi-sparkles', command: () => void batchAnalyze() },
   { label: 'Reindex documents', icon: 'pi pi-sync', command: () => void reindexAll() },
   { label: 'Methodology knowledge', icon: 'pi pi-book', command: () => void openKnowledge() },
 ])
@@ -395,9 +397,7 @@ async function reindexAll() {
 }
 
 async function batchAnalyze() {
-  const eligible = documents.value.filter(document =>
-    ['extracted', 'partial', 'image_only'].includes(document.text_state)
-    && document.analysis_validity_state !== 'current')
+  const eligible = eligibleDocuments.value
   if (!eligible.length) {
     toast.add({ severity: 'info', summary: 'All eligible documents already have current analysis', life: 2600 }); return
   }
@@ -554,6 +554,7 @@ onUnmounted(() => {
   <section class="documents-tab">
     <UiPageHeader title="Documents" description="Engagement evidence and reference material">
       <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
+      <Button label="Analyze all" icon="pi pi-sparkles" severity="secondary" outlined :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
       <UiOverflowMenu :items="secondaryActions" />
     </UiPageHeader>
 
