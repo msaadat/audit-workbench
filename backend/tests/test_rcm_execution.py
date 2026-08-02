@@ -1,4 +1,4 @@
-from app import data_tests, doc_tests, documents, rcm_execution, working_papers
+from app import dashboard, data_tests, doc_tests, documents, rcm_execution, working_papers
 
 
 def _row(ws):
@@ -188,6 +188,39 @@ def test_a_description_only_document_test_is_not_executable(workspace_with_data)
     item = next(value for value in manifest if value["test_id"] == shell["id"])
 
     assert item["executable"] is False
+
+
+def test_dashboard_status_loads_the_document_test_worklist_once(
+    workspace_with_data, monkeypatch,
+):
+    """Status checks reuse one request-local document-test index across RCM rows."""
+    ws = workspace_with_data
+    rows = [_row(ws) for _ in range(3)]
+    for row in rows:
+        _document_test(ws, row)
+
+    list_calls = 0
+    load_calls = 0
+    original_list_tests = doc_tests.list_tests
+    original_load_test = doc_tests.load_test
+
+    def tracked_list_tests(*args, **kwargs):
+        nonlocal list_calls
+        list_calls += 1
+        return original_list_tests(*args, **kwargs)
+
+    def tracked_load_test(*args, **kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        return original_load_test(*args, **kwargs)
+
+    monkeypatch.setattr(doc_tests, "list_tests", tracked_list_tests)
+    monkeypatch.setattr(doc_tests, "load_test", tracked_load_test)
+
+    dashboard.engagement_status_payload(ws)
+
+    assert list_calls == 1
+    assert load_calls == len(rows)
 
 
 def test_rollup_combines_both_sources_and_creates_observations(workspace_with_data):

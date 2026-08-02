@@ -15,15 +15,19 @@ from .findings import artifact, support_issues
 from .workspaces import Workspace, WorkspaceError
 
 
-def _linked_tests(workspace: Workspace, rcm_id: str) -> list[dict]:
+def _linked_tests(
+    workspace: Workspace,
+    rcm_id: str,
+    document_tests: rcm_execution.DocumentTestIndex | None = None,
+) -> list[dict]:
     """Every durable test linked to one RCM row, in a stable order."""
     tests = [
         item for item in workspace.data_tests if item.get("rcm_id") == rcm_id
     ]
     tests.extend(
-        doc_tests.load_test(workspace, summary["id"])
-        for summary in doc_tests.list_tests(workspace)
-        if summary.get("rcm_id") == rcm_id
+        (document_tests or rcm_execution.document_test_index(workspace)).by_rcm_id.get(
+            rcm_id, ()
+        )
     )
     return sorted(tests, key=lambda item: str(item.get("id") or ""))
 
@@ -106,7 +110,12 @@ def _planning_context(workspace: Workspace) -> dict:
     }
 
 
-def _incomplete_coverage(workspace: Workspace, workflow: dict | None = None) -> dict:
+def _incomplete_coverage(
+    workspace: Workspace,
+    workflow: dict | None = None,
+    *,
+    document_tests: rcm_execution.DocumentTestIndex | None = None,
+) -> dict:
     """Summarize coverage lost before deterministic report generation.
 
     Workspace gaps remain authoritative after a partial workflow commits its
@@ -128,7 +137,7 @@ def _incomplete_coverage(workspace: Workspace, workflow: dict | None = None) -> 
         if stage.get("capability") == "tests.specified"
         for unit in stage.get("units") or []
     )
-    completion = rcm_execution.completion(workspace)
+    completion = rcm_execution.completion(workspace, document_tests=document_tests)
     coverage = completion.get("coverage") or {}
     missing_planning = (
         int(not str(workspace.planning.get("apm_markdown") or "").strip())
@@ -167,13 +176,12 @@ def _coverage_warnings(coverage: dict) -> list[str]:
 
 def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict:
     """Build report context without structured rows or document excerpts."""
-    rolled = rcm_execution.rollup(workspace)
-    completion = rcm_execution.completion(workspace)
-    tests = doc_tests.list_tests(workspace)
+    document_tests = rcm_execution.document_test_index(workspace)
+    rolled = rcm_execution.rollup(workspace, document_tests=document_tests)
+    completion = rcm_execution.completion(workspace, document_tests=document_tests)
     test_summaries = []
     totals = {"items": 0, "exceptions": 0, "manual_review": 0, "pending": 0}
-    for summary in tests:
-        test = doc_tests.load_test(workspace, summary["id"])
+    for test in document_tests.tests:
         rollup = doc_tests.result_rollup(test)
         for key in totals:
             totals[key] += int(rollup.get(key) or 0)
@@ -215,7 +223,9 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
         )
         for rating in ("critical", "high", "medium", "low")
     }
-    incomplete_coverage = _incomplete_coverage(workspace, workflow)
+    incomplete_coverage = _incomplete_coverage(
+        workspace, workflow, document_tests=document_tests,
+    )
     return {
         "workspace": {"id": workspace.id, "name": workspace.name, "description": workspace.description},
         "planning": {
@@ -241,7 +251,7 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
                             "exception_count", "open_exception_count", "finding_refs",
                         )
                     }
-                    for test in _linked_tests(workspace, item["id"])
+                    for test in _linked_tests(workspace, item["id"], document_tests)
                 ],
             }
             for item in workspace.rcm
@@ -254,7 +264,7 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
         "scope_limitations": [
             {"rcm_id": row["id"], "test_id": test["id"], "text": test.get("scope_limitations")}
             for row in workspace.rcm
-            for test in _linked_tests(workspace, row["id"])
+            for test in _linked_tests(workspace, row["id"], document_tests)
             if str(test.get("scope_limitations") or "").strip()
         ],
         "completion": completion,
@@ -263,10 +273,13 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
         "statistics": {
             "rcm_rows": len(workspace.rcm),
             "risk_distribution": risk_distribution,
-            "tests": sum(len(_linked_tests(workspace, row["id"])) for row in workspace.rcm),
+            "tests": sum(
+                len(_linked_tests(workspace, row["id"], document_tests))
+                for row in workspace.rcm
+            ),
             "data_tests": len(data_test_summaries), "findings": len(supported),
             "draft_findings": len(workspace.findings) - len(supported),
-            "document_tests": len(tests), **totals,
+            "document_tests": len(document_tests.tests), **totals,
         },
     }
 
@@ -596,7 +609,13 @@ def _issue(code: str, severity: str, message: str, refs: list[str] | None = None
     return {"code": code, "severity": severity, "message": message, "refs": refs or [], "source": source}
 
 
-def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
+def quality_checks(
+    workspace: Workspace,
+    markdown: str | None = None,
+    *,
+    document_tests: rcm_execution.DocumentTestIndex | None = None,
+) -> dict:
+    document_tests = document_tests or rcm_execution.document_test_index(workspace)
     report = hydrate(workspace)
     text = report["markdown"] if markdown is None else str(markdown)
     issues: list[dict] = []
@@ -604,7 +623,7 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
     known_tests = {
         str(test.get("id")): row.get("id")
         for row in workspace.rcm
-        for test in _linked_tests(workspace, row["id"])
+        for test in _linked_tests(workspace, row["id"], document_tests)
     }
     cited_findings = _finding_citations(text)
     supported_findings = []
@@ -643,8 +662,7 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
         for item in workspace.observations
         if str(item.get("execution_ref") or "").startswith("doctest:")
     }
-    for summary in doc_tests.list_tests(workspace):
-        test = doc_tests.load_test(workspace, summary["id"])
+    for test in document_tests.tests:
         exceptions = [
             item for item in test.get("items") or []
             if item.get("state") == "exception"
@@ -705,7 +723,7 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
     limitations = [
         (row, test)
         for row in workspace.rcm
-        for test in _linked_tests(workspace, row["id"])
+        for test in _linked_tests(workspace, row["id"], document_tests)
         if str(test.get("scope_limitations") or "").strip()
     ]
     if limitations and "limitation" not in text.lower():
@@ -714,7 +732,7 @@ def quality_checks(workspace: Workspace, markdown: str | None = None) -> dict:
             "Recorded test scope limitations are not disclosed in the report.",
             [f"test:{test['id']}" for _row, test in limitations],
         ))
-    completion = rcm_execution.completion(workspace)
+    completion = rcm_execution.completion(workspace, document_tests=document_tests)
     if completion["status"] != "completed" and text.strip() and "preliminary" not in text.casefold():
         issues.append(_issue(
             "preliminary_label_missing", "error",

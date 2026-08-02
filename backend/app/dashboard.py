@@ -14,7 +14,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from . import analytics, data_tests, debug_store, doc_tests, explore, llm, rcm_execution, report, sandbox, validation
+from . import analytics, data_tests, debug_store, explore, llm, rcm_execution, report, sandbox, validation
 from .agent import capabilities as audit_capabilities
 from .agent.prompts import parse_json_object, validate_json_shape
 from .workspaces import Workspace, WorkspaceConflict, sync_workspace
@@ -177,9 +177,10 @@ def _subphase(sub_id: str, label: str, started: bool, issues: list[str], target:
 
 
 def _engagement_state(workspace: Workspace) -> dict:
-    tests = doc_tests.list_tests(workspace)
-    completion = rcm_execution.completion(workspace)
-    quality = report.quality_checks(workspace)
+    document_tests = rcm_execution.document_test_index(workspace)
+    tests = list(document_tests.summaries)
+    completion = rcm_execution.completion(workspace, document_tests=document_tests)
+    quality = report.quality_checks(workspace, document_tests=document_tests)
     current_report = report.hydrate(workspace)
     state_counts = {
         state: sum(int(test.get("state_counts", {}).get(state, 0)) for test in tests)

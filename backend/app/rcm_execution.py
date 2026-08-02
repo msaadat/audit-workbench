@@ -8,6 +8,7 @@ layer and nothing to reconcile between a plan and its execution.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from . import data_tests, doc_tests
 from .workspace_transactions import canonical_sha1, material_projection
@@ -31,11 +32,41 @@ CONCLUDED_CONTROL_CONCLUSIONS = frozenset({
 })
 
 
-def _doc_tests(workspace: Workspace) -> list[dict]:
-    return [doc_tests.load_test(workspace, item["id"]) for item in doc_tests.list_tests(workspace)]
+@dataclass(frozen=True)
+class DocumentTestIndex:
+    """One request-local, fully hydrated view of the document-test worklist."""
+
+    tests: tuple[dict, ...]
+    by_rcm_id: dict[str, tuple[dict, ...]]
+    summaries: tuple[dict, ...]
 
 
-def _tests(workspace: Workspace, rcm_id: str) -> list[dict]:
+def document_test_index(workspace: Workspace) -> DocumentTestIndex:
+    """Load document tests once and group them by their linked RCM row.
+
+    The index deliberately lives only for the current calculation. Durable
+    document-test mutations write their own files, so rebuilding it for each
+    request keeps status surfaces current without cache invalidation state.
+    """
+    summaries = tuple(doc_tests.list_tests(workspace))
+    tests = tuple(doc_tests.load_test(workspace, item["id"]) for item in summaries)
+    grouped: dict[str, list[dict]] = {}
+    for test in tests:
+        rcm_id = str(test.get("rcm_id") or "")
+        if rcm_id:
+            grouped.setdefault(rcm_id, []).append(test)
+    return DocumentTestIndex(
+        tests=tests,
+        by_rcm_id={rcm_id: tuple(items) for rcm_id, items in grouped.items()},
+        summaries=summaries,
+    )
+
+
+def _tests(
+    workspace: Workspace,
+    rcm_id: str,
+    document_tests: DocumentTestIndex | None = None,
+) -> list[dict]:
     """Every durable test linked to one RCM row, in a stable order."""
     tests = [
         {"kind": "datatest", "id": item["id"], "item": item}
@@ -44,8 +75,9 @@ def _tests(workspace: Workspace, rcm_id: str) -> list[dict]:
     ]
     tests.extend(
         {"kind": "doctest", "id": item["id"], "item": item}
-        for item in _doc_tests(workspace)
-        if item.get("rcm_id") == rcm_id
+        for item in (
+            document_tests or document_test_index(workspace)
+        ).by_rcm_id.get(rcm_id, ())
     )
     return sorted(tests, key=lambda test: (test["kind"], test["id"]))
 
@@ -79,8 +111,9 @@ def test_manifest(workspace: Workspace) -> list[dict]:
     result rather than merely whether a definition exists.
     """
     manifest = []
+    document_tests = document_test_index(workspace)
     for row in workspace.rcm:
-        for test in _tests(workspace, row["id"]):
+        for test in _tests(workspace, row["id"], document_tests):
             item = test["item"]
             if test["kind"] == "datatest":
                 has_result = bool(item.get("last_run"))
@@ -134,7 +167,12 @@ def test_manifest(workspace: Workspace) -> list[dict]:
     return manifest
 
 
-def coverage(workspace: Workspace) -> dict:
+def coverage(
+    workspace: Workspace,
+    *,
+    document_tests: DocumentTestIndex | None = None,
+) -> dict:
+    test_index = document_tests or document_test_index(workspace)
     rows_without_tests = []
     unspecified_tests = []
     invalid_test_parents = []
@@ -144,7 +182,7 @@ def coverage(workspace: Workspace) -> dict:
     known_rows = {row["id"] for row in workspace.rcm}
 
     for row in workspace.rcm:
-        tests = _tests(workspace, row["id"])
+        tests = _tests(workspace, row["id"], test_index)
         if not tests:
             rows_without_tests.append(row["id"])
         usable = False
@@ -182,7 +220,7 @@ def coverage(workspace: Workspace) -> dict:
         if row.get("risk_rating") in {"high", "critical"} and tests and not usable:
             high_risks_without_executable_work.append(row["id"])
 
-    for item in [*workspace.data_tests, *_doc_tests(workspace)]:
+    for item in [*workspace.data_tests, *test_index.tests]:
         rcm_id = item.get("rcm_id")
         # An unlinked test is exploration or standalone document work, not a
         # coverage defect. Only a link that does not resolve is.
@@ -385,6 +423,7 @@ def rollup(
     *,
     persist: bool = True,
     rcm_ids: set[str] | None = None,
+    document_tests: DocumentTestIndex | None = None,
 ) -> dict:
     """Recompute RCM outcomes, persisting only material changes.
 
@@ -392,22 +431,23 @@ def rollup(
     read-only.  Explicit roll-up commands still persist, but repeated calls do
     not advance the workspace revision when only volatile timestamps changed.
     """
+    test_index = document_tests or document_test_index(workspace)
     before_sha1 = canonical_sha1(
         material_projection(
             {"rcm": workspace.rcm, "observations": workspace.observations}
         )
     )
-    document_tests: dict[str, dict] = {}
+    documents_to_write: dict[str, dict] = {}
     rows = []
     selected_rcm_ids = None if rcm_ids is None else set(rcm_ids)
     for row in workspace.rcm:
         if selected_rcm_ids is not None and row["id"] not in selected_rcm_ids:
             continue
-        tests = _tests(workspace, row["id"])
+        tests = _tests(workspace, row["id"], test_index)
         test_rollups = [_rollup_test(workspace, row, test) for test in tests]
         for test in tests:
             if test["kind"] == "doctest":
-                document_tests[test["id"]] = test["item"]
+                documents_to_write[test["id"]] = test["item"]
         conclusions = [item["control_conclusion"] for item in test_rollups]
         if "ineffective" in conclusions:
             control_conclusion = "ineffective"
@@ -448,21 +488,26 @@ def rollup(
         # Document Tests are separate files, so their recomputed outcome is
         # written back explicitly rather than riding the workspace save. The
         # single coordinated revision bump is the workspace save below.
-        for test in document_tests.values():
+        for test in documents_to_write.values():
             doc_tests.write_test(workspace, test)
         workspace.save()
-    return {"rows": rows, "coverage": coverage(workspace)}
+    return {"rows": rows, "coverage": coverage(workspace, document_tests=test_index)}
 
 
-def completion(workspace: Workspace) -> dict:
+def completion(
+    workspace: Workspace,
+    *,
+    document_tests: DocumentTestIndex | None = None,
+) -> dict:
     # Completion is used by dashboard/report GET paths. It must derive current
     # outcomes without turning a read into an optimistic-concurrency write.
-    rolled = rollup(workspace, persist=False)
+    document_tests = document_tests or document_test_index(workspace)
+    rolled = rollup(workspace, persist=False, document_tests=document_tests)
     cov = rolled["coverage"]
     linked = [
         (row, test)
         for row in workspace.rcm
-        for test in _tests(workspace, row["id"])
+        for test in _tests(workspace, row["id"], document_tests)
     ]
     incomplete_outcomes = [
         {"rcm_id": row["id"], "test_id": test["id"], "status": test["item"].get("status")}
@@ -505,7 +550,7 @@ def completion(workspace: Workspace) -> dict:
         if (row.get("execution_rollup") or {}).get("control_conclusion") == "no_conclusion"
         and not all(
             str(test["item"].get("scope_limitations") or "").strip()
-            for test in _tests(workspace, row["id"])
+            for test in _tests(workspace, row["id"], document_tests)
         )
     ]
     technical = bool(cov["invalid_test_parents"] or cov["completed_without_durable_result"])
