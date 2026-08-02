@@ -96,7 +96,6 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
     return {
         "target_rcm_row": _resolved_item(request, GENERATE_ROW_SOURCE_ID),
         "planning_context": planning,
-        "other_rcm_rows": _source_items(request, "other_rcm_rows"),
         "table_schemas": _source_items(request, GENERATE_TABLE_SOURCE_ID),
         "documents": documents,
         "transaction_evidence": {
@@ -110,10 +109,7 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
             else "No transaction evidence is available; a vouch test is not possible.",
         },
         "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
-        "instructions": (
-            "Generate complete executable tests for target_rcm_row only. Do not "
-            "duplicate a test already covering other_rcm_rows."
-        ),
+        "instructions": "Generate complete executable tests for target_rcm_row only.",
     }
 
 
@@ -196,6 +192,35 @@ document inspection, return two tests — one "data" and one "document". A
 Document Test has one execution mode; if a row needs both a question and a
 comparison, return two Document Tests.
 
+A test obtains evidence about whether the control in the row operated. It is
+not a restatement of the risk, and not a re-confirmation of something the
+supplied material already concludes: where the planning basis already reports
+that a policy is silent on a point, establishing that again yields no evidence
+about a control. Where the row records that no control was identified, do not
+invent one to test — test whether the exposure the risk describes is present in
+the records themselves.
+
+Say what the test runs over. The objective names the population — which
+records, in what state, over what period — and the steps operate on all of it.
+A data test runs across the whole population rather than a sample, so narrow it
+only where the control genuinely applies to a subset, and say which subset in
+the step's instruction when it does.
+
+An exception is a record that contradicts the control having operated. It is
+not merely a record that is large, unusual, or incomplete. Before treating an
+absent value as an exception, decide whether it is a legitimate state of the
+process rather than a failure of it: a record that is still in progress, or was
+cancelled or rejected, is routinely missing a downstream field by design, and
+excluding those states is part of defining the population.
+
+Where the supplied material cannot answer the row's question, say so in the
+objective instead of substituting a proxy. A test resting on a stand-in that
+the data does not actually carry returns a confident and wrong conclusion,
+where naming the missing evidence leaves the auditor something true. Treat
+a threshold, limit, or approval rule read from a document the same way: it is
+only as complete as that document, so do not encode one in a step as though it
+were the entire rule unless the document states that it is.
+
 A "data" test's steps are Polars only. Each step is an object:
   label         short name for the step
   instruction   what the step determines
@@ -205,6 +230,18 @@ their exact names, and in the `tables` mapping; `pl` is the Polars module.
 `result` must be a DataFrame holding the rows that fail the step — an empty
 result means no exception. Use exact column and table names from the supplied
 schemas. No imports, no file or network access, and no printing.
+
+A step is a predicate, so the values a column holds decide whether it can match
+anything. Where a column carries `values`, that is the complete set of values
+present in that column — filter only on those, and never on a value outside it.
+Where a column carries `distinct` without `values`, its contents are unknown to
+you: do not guess a code, status, or category literal for it. Write the step so
+it derives what it needs from the column itself instead of from an assumed
+value, and prefer a comparison between two columns, a null check, or an
+aggregate over a guessed string. Guessing wrong does not fail — it silently
+matches every row or no row, and both are reported as a control conclusion.
+Check the two sides of a comparison hold the same kind of identifier: comparing
+columns from different id schemes returns no rows and looks like a clean result.
 
 A "document" test's steps use only "question" or "vouch" mode, the same mode
 on every step in one test. Choose the mode from what the row's risk is about:
@@ -271,6 +308,14 @@ Both sides of a check may be documents, which is how one row tests a whole
 cycle: compare `purchase_order.amount.total` to `invoice.amount.total`, and
 `goods_receipt.date.delivery_date` to `invoice.date.invoice_date`. Propose a
 vouch test only when the supplied documents include transaction evidence.
+
+A vouch test reaches only those population rows whose identifier appears in the
+supplied evidence, which is usually a small part of the population and may be a
+single transaction. Mark a role `required` only where the test is meaningless
+without it — a required role no document fills leaves every check on that role
+unresolved. Say in the objective which cycle the test covers and that its reach
+is limited to the transactions holding evidence, so a clean result is not read
+as assurance over the whole population.
 
 Choose each test's source from what is actually available in the supplied
 tables and documents. Add no other fields. {JSON_RULES}"""

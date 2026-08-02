@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -518,6 +519,167 @@ def _all_null_columns(frame: pl.DataFrame | None) -> list[str]:
     return [name for name in frame.columns if frame[name].null_count() == frame.height]
 
 
+# A generated step is written against column names and dtypes only — the values a
+# text column actually holds are withheld from the generating turn by design. A
+# predicate over a guessed category literal therefore fails silently in one of two
+# directions, and both are invisible to the schema-only validation the worker runs:
+# it matches every row (reported as a total control failure) or none (reported as a
+# clean control). ``SATURATION_RATIO`` is the share of the largest referenced table
+# at or above which a step is treated as saturated rather than as evidence.
+SATURATION_RATIO = 0.9
+# Saturation is a statistical signal about a population, so it is only reported
+# where there is a population to speak of. Below this, "every row is an
+# exception" is as likely to be a correct result on a handful of rows.
+MIN_SATURATION_POPULATION = 20
+# A short vocabulary is a category column; a long one is an identifier or a free
+# text field, where an absent literal says nothing about the predicate.
+MAX_CATEGORY_CARDINALITY = 24
+_COLUMN_REF_RE = re.compile(r"""pl\.col\(\s*['"]([^'"]+)['"]\s*\)""")
+# Only a literal in *predicate* position says anything about whether a step can
+# match. A column name is also a bare string in ``select``, ``join(on=...)`` and
+# ``group_by``, so the comparison forms are matched explicitly rather than by
+# reading every string in the snippet.
+_COMPARISON_RE = re.compile(
+    r"""pl\.col\(\s*['"](?P<column>[^'"]+)['"]\s*\)"""
+    r"""(?P<chain>(?:\s*\.\s*str\s*\.\s*\w+\(\s*\))*)"""
+    r"""\s*(?:"""
+    r"""(?P<operator>==|!=)\s*(?P<literal>['"][^'"]*['"])"""
+    r"""|\.\s*is_in\(\s*\[(?P<members>[^\]]*)\]"""
+    r"""|\.\s*str\s*\.\s*contains\(\s*(?P<pattern>['"][^'"]*['"])\s*\)"""
+    r""")"""
+)
+_QUOTED_RE = re.compile(r"""['"]([^'"]*)['"]""")
+# ``pl.col("A") == pl.col("B")``, optionally casting either side. Two identifier
+# columns drawn from different namespaces compare cleanly and match nothing.
+_COLUMN_PAIR_RE = re.compile(
+    r"""pl\.col\(\s*['"](?P<left>[^'"]+)['"]\s*\)(?:\s*\.\s*\w+\([^()]*\))*"""
+    r"""\s*==\s*"""
+    r"""pl\.col\(\s*['"](?P<right>[^'"]+)['"]\s*\)"""
+)
+
+
+def _category_values(frames: dict[str, pl.DataFrame]) -> dict[str, set[str]]:
+    """Map each low-cardinality text column to the values it actually holds."""
+    values: dict[str, set[str]] = {}
+    for frame in frames.values():
+        if frame is None:
+            continue
+        for name, dtype in zip(frame.columns, frame.dtypes):
+            if dtype != pl.String:
+                continue
+            column = frame[name].drop_nulls()
+            distinct = column.unique()
+            if 0 < distinct.len() <= MAX_CATEGORY_CARDINALITY:
+                values.setdefault(name, set()).update(
+                    str(value) for value in distinct.to_list()
+                )
+    return values
+
+
+def _column_values(frames: dict[str, pl.DataFrame], column: str) -> set[str]:
+    """Every value one column name holds, as text, across the tables that carry it.
+
+    Comparisons are read across the joined frames the step builds, so the column
+    is located by name rather than by table; stringifying makes the numeric and
+    text sides of a cast comparison directly comparable.
+    """
+    values: set[str] = set()
+    for frame in frames.values():
+        if frame is None or column not in frame.columns:
+            continue
+        values.update(str(value) for value in frame[column].drop_nulls().unique().to_list())
+    return values
+
+
+def _step_reality_issues(
+    step: dict,
+    result: pl.DataFrame,
+    frames: dict[str, pl.DataFrame],
+    categories: dict[str, set[str]],
+) -> list[str]:
+    """Flag a step whose predicate cannot be evidence, using the real frames.
+
+    Neither check can be made by the generating worker: it is given column names
+    and dtypes but never the values, so a literal it guessed wrong is only
+    discoverable here, against the data the step actually runs on.
+    """
+    issues: list[str] = []
+    code = str(step.get("code") or "")
+    label = step["label"]
+    referenced = [name for name in frames if re.search(rf"\b{re.escape(name)}\b", code)]
+    population = max(
+        (frames[name].height for name in referenced if frames[name] is not None),
+        default=0,
+    )
+    if (
+        population >= MIN_SATURATION_POPULATION
+        and result.height >= SATURATION_RATIO * population
+    ):
+        issues.append(
+            f"Step '{label}' flags {result.height} of {population} rows in the "
+            "tables it reads. A step that excepts nearly its whole population is "
+            "usually a mis-specified predicate rather than a control failure; "
+            "confirm the condition before relying on this result."
+        )
+    known_columns = {
+        name for frame in frames.values() if frame is not None for name in frame.columns
+    }
+    named_columns: set[str] = set()
+    absent: list[str] = []
+    for match in _COMPARISON_RE.finditer(code):
+        column = match.group("column")
+        lowered = "to_lowercase" in (match.group("chain") or "")
+        if match.group("literal") is not None:
+            literals = _QUOTED_RE.findall(match.group("literal"))
+        elif match.group("members") is not None:
+            literals = _QUOTED_RE.findall(match.group("members"))
+        else:
+            # ``str.contains`` takes a regex; only a plain alternation of literal
+            # words can be checked against a vocabulary without interpreting it.
+            pattern = _QUOTED_RE.findall(match.group("pattern") or "")
+            raw = pattern[0] if pattern else ""
+            if not raw or re.search(r"[.^$*+?()\[\]{}\\]", raw):
+                continue
+            literals = raw.split("|")
+        vocabulary = categories.get(column)
+        for literal in literals:
+            if literal in known_columns:
+                # ``pl.col("A") == "B"`` where B names a column compares a value
+                # against a column *name* rather than against that column.
+                named_columns.add(literal)
+            elif vocabulary is not None and literal:
+                # The empty string is the ordinary way to test for a blank, and
+                # finding none is that test succeeding, not a dead predicate.
+                candidates = (
+                    {value.casefold() for value in vocabulary} if lowered else vocabulary
+                )
+                if (literal.casefold() if lowered else literal) not in candidates:
+                    absent.append(literal)
+    for match in _COLUMN_PAIR_RE.finditer(code):
+        left, right = match.group("left"), match.group("right")
+        if left == right:
+            continue
+        left_values, right_values = _column_values(frames, left), _column_values(frames, right)
+        if left_values and right_values and not (left_values & right_values):
+            issues.append(
+                f"Step '{label}' compares {left} to {right}, but the two columns "
+                "share no value in the supplied data; the comparison can never "
+                "match, so a result of no exceptions is not evidence."
+            )
+    for literal in sorted(named_columns):
+        issues.append(
+            f"Step '{label}' compares against the string '{literal}', which is the "
+            "name of a column rather than a value; the comparison can never match."
+        )
+    if absent:
+        issues.append(
+            f"Step '{label}' filters on the value(s) {sorted(set(absent))}, which do "
+            "not occur in the category column(s) it reads; the step cannot match the "
+            "rows it describes."
+        )
+    return list(dict.fromkeys(issues))
+
+
 def _run_polars_steps(
     workspace: Workspace, item: dict
 ) -> tuple[dict, pl.DataFrame | None, pl.DataFrame | None, int, list[str]]:
@@ -531,6 +693,7 @@ def _run_polars_steps(
     total_exceptions = 0
     any_step_failed = False
     frames = {name: workspace.get_frame(name) for name in workspace.table_names()}
+    categories = _category_values(frames)
     for step in steps:
         try:
             result, stdout = sandbox.run(step["code"], frames)
@@ -557,6 +720,7 @@ def _run_polars_steps(
             issues.append(
                 f"Step '{step['label']}' result is entirely null."
             )
+        issues.extend(_step_reality_issues(step, result, frames, categories))
         step_exception_count = result.height
         total_exceptions += step_exception_count
         summary_frames.append(result)
@@ -675,6 +839,13 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
             or "conditional trigger matches zero" in issue
             or "allowed values have no overlap" in issue
             or "failed to execute" in issue
+            # A saturated or unmatchable predicate must not reach a control
+            # conclusion: "every row is an exception" and "no row can be an
+            # exception" are the two ways a wrong literal presents, and reporting
+            # either as an effectiveness conclusion is worse than reporting none.
+            or "mis-specified predicate" in issue
+            or "can never match" in issue
+            or "cannot match the rows it describes" in issue
             for issue in semantic_issues
         )
         status = (

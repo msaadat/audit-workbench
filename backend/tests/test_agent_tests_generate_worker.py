@@ -254,7 +254,6 @@ def test_generate_worker_sends_a_compact_context_projection():
     assert set(payload) == {
         "target_rcm_row",
         "planning_context",
-        "other_rcm_rows",
         "table_schemas",
         "documents",
         "transaction_evidence",

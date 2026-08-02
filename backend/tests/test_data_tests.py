@@ -550,3 +550,109 @@ def test_data_test_api_runs_all_rcm_linked_tests_and_skips_exploratory(workspace
     )
     assert persisted_linked["last_run"] is not None
     assert persisted_exploratory["last_run"] is None
+
+
+# ------------------------------------------------------------------ reality gate
+def _workspace_with_population() -> workspaces.Workspace:
+    """A workspace whose tables are wide enough for a population-level signal."""
+    ws = workspaces.create_workspace("Reality Gate")
+    orders = pl.DataFrame(
+        {
+            "order_id": [f"O{index:03d}" for index in range(40)],
+            "buyer_id": [f"B{index % 4:03d}" for index in range(40)],
+            "status": ["Closed"] * 38 + ["Open"] * 2,
+        }
+    )
+    approvals = pl.DataFrame(
+        {
+            "order_id": [f"O{index:03d}" for index in range(40)],
+            "approver_id": [2000 + (index % 5) for index in range(40)],
+        }
+    )
+    ws.add_table("orders.csv", orders.write_csv().encode())
+    ws.add_table("approvals.csv", approvals.write_csv().encode())
+    return ws
+
+
+def _run_step(ws, code: str) -> dict:
+    row = _rcm_row(ws)
+    item = data_tests.create(
+        ws,
+        {
+            "title": "Generated step",
+            "objective": "Exercise the generated predicate.",
+            "rcm_id": row["id"],
+            "engine": "polars",
+            "spec": _polars_spec(label="Generated step", table_refs=["orders"], code=code),
+        },
+    )
+    return data_tests.compute(ws, item["id"])
+
+
+def test_step_filtering_on_a_value_the_column_never_holds_cannot_conclude():
+    """The dead-literal half of a guessed category value.
+
+    The generating turn is given column names and dtypes, so a literal it guessed
+    wrong matches nothing and the run would otherwise report the control as
+    operating effectively.
+    """
+    result = _run_step(
+        _workspace_with_population(),
+        "result = orders.filter(pl.col('status') == 'Cancelled')",
+    )
+
+    assert result["exception_count"] == 0
+    assert result["semantic_valid"] is False
+    assert result["status"] == "review_required"
+    assert result["control_conclusion"] == "no_conclusion"
+    assert any("cannot match the rows it describes" in issue for issue in result["semantic_issues"])
+
+
+def test_step_excepting_nearly_the_whole_population_cannot_conclude():
+    """The saturated half: a wrong literal that matches every row instead of none."""
+    result = _run_step(
+        _workspace_with_population(),
+        "result = orders.filter(pl.col('status') != 'Approved')",
+    )
+
+    assert result["exception_count"] == 40
+    assert result["semantic_valid"] is False
+    assert result["status"] == "review_required"
+    assert any("mis-specified predicate" in issue for issue in result["semantic_issues"])
+
+
+def test_step_comparing_identifiers_from_different_schemes_cannot_conclude():
+    """A segregation-of-duties step whose two sides can never be equal."""
+    result = _run_step(
+        _workspace_with_population(),
+        "joined = orders.join(approvals, on='order_id', how='inner')\n"
+        "result = joined.filter(pl.col('buyer_id') == pl.col('approver_id').cast(pl.String))",
+    )
+
+    assert result["exception_count"] == 0
+    assert result["semantic_valid"] is False
+    assert any("share no value" in issue for issue in result["semantic_issues"])
+
+
+def test_a_sound_step_that_finds_no_exception_still_concludes():
+    """The gate must not turn every clean result into a review item."""
+    result = _run_step(
+        _workspace_with_population(),
+        "result = orders.filter(pl.col('status') == 'Open').filter(pl.col('buyer_id').is_null())",
+    )
+
+    assert result["exception_count"] == 0
+    assert result["semantic_valid"] is True
+    assert result["status"] == "completed_no_exception"
+    assert result["control_conclusion"] == "effective"
+
+
+def test_a_sound_step_that_finds_real_exceptions_still_concludes():
+    result = _run_step(
+        _workspace_with_population(),
+        "result = orders.filter(pl.col('status') == 'Open')",
+    )
+
+    assert result["exception_count"] == 2
+    assert result["semantic_valid"] is True
+    assert result["control_conclusion"] == "ineffective"

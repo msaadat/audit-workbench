@@ -593,8 +593,6 @@ _TEST_DRAFT_EXISTING_FIELDS = (
     "steps",
     "created_by",
 )
-# The duplicate-avoidance projection of every other RCM row in scope.
-_TEST_DRAFT_OTHER_ROW_FIELDS = ("id", "semantic_id", "risk")
 
 
 def linked_test_projections(workspace: Workspace, rcm_id: str) -> list[dict]:
@@ -640,27 +638,6 @@ def test_draft_row_candidates(
             metadata={"rcm_id": str(row["id"])},
         ),
     )
-
-
-def test_draft_other_row_candidates(
-    workspace: Workspace,
-    rcm_id: str,
-) -> tuple[ContextCandidate, ...]:
-    """Expose every other RCM row as a bounded duplicate-avoidance candidate."""
-    candidates = []
-    for row in workspace.rcm:
-        if str(row.get("id")) == str(rcm_id):
-            continue
-        projection = {key: row.get(key) for key in _TEST_DRAFT_OTHER_ROW_FIELDS}
-        candidates.append(
-            ContextCandidate(
-                source_ref=f"rcm:{row['id']}",
-                source=projection,
-                representations={"current_artifact": projection},
-                metadata={"rcm_id": str(row["id"])},
-            )
-        )
-    return tuple(candidates)
 
 
 def test_draft_methodology_candidates(
@@ -746,6 +723,7 @@ def document_test_document_candidates(
     workspace: Workspace,
     *,
     document_ids: Iterable[str] | None = None,
+    include_audit_notes: bool = True,
 ) -> tuple[ContextCandidate, ...]:
     """Expose every document with the identity and citations an item may cite.
 
@@ -759,7 +737,9 @@ def document_test_document_candidates(
     candidates = []
     for document_id in _normalized_document_ids(workspace, document_ids):
         document = documents_by_id[document_id]
-        context = document_context.apm_document_context(workspace, document_id)
+        context = document_context.apm_document_context(
+            workspace, document_id, include_audit_notes=include_audit_notes
+        )
         metadata = {
             "document_id": document_id,
             "title": document.get("title") or document.get("source") or document_id,
@@ -800,10 +780,91 @@ def document_test_document_candidates(
 
 TEST_GENERATE_PLANNING_SOURCE_ID = "planning_context"
 TEST_GENERATE_ROW_SOURCE_ID = "rcm_row"
-TEST_GENERATE_OTHER_ROWS_SOURCE_ID = "other_rcm_rows"
 TEST_GENERATE_TABLE_METADATA_SOURCE_ID = "table_metadata"
 TEST_GENERATE_DOCUMENT_SOURCE_ID = "documents"
 TEST_GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
+
+# A column's value set is only a *category domain* — as opposed to its rows
+# restated — when there is a population and each value recurs across it. Below
+# either bound the values are withheld and the column carries its distinct count
+# alone, so a narrow or near-unique column can never become a row disclosure.
+MIN_CATEGORY_ROWS = 20
+MIN_CATEGORY_REPETITION = 4
+
+
+def test_generate_table_metadata_candidates(
+    workspace: Workspace,
+) -> tuple[ContextCandidate, ...]:
+    """Expose table schemas plus the complete value set of each category column.
+
+    A generated Data Test is a *predicate*, not a description, so a step written
+    against column names alone has to guess what a status column holds. A guess
+    that is wrong does not fail loudly: it either matches every row, which reads
+    as a total control failure, or none, which reads as a clean control. Neither
+    is visible to the schema-only validation the generation worker runs.
+
+    Two conditions keep this category metadata rather than row data, and both
+    matter:
+
+    A value is a category only when many rows share it. In a narrow table the
+    "complete set of values" of a column is just its rows restated, so a column
+    qualifies only when the table is large enough to have a population and each
+    value recurs across it (``MIN_CATEGORY_ROWS``, ``MIN_CATEGORY_REPETITION``).
+    An identifier, a name, or a free-text field fails this by construction.
+
+    A vocabulary is supplied only when it is provably complete. The profile keeps
+    a bounded number of the most frequent values, so a column with more distinct
+    values than that yields a *truncated* list the model would have no way to
+    recognise as partial — worse than supplying nothing, because it would license
+    excluding a value that does occur. A list is therefore passed on only when it
+    holds one entry per distinct value; every other column carries its distinct
+    count alone, which says "do not guess" without implying a domain.
+    """
+    candidates = []
+    for table in assistant.schema_brief(workspace):
+        table_name = str(table.get("table") or "").strip()
+        if not table_name or table.get("error"):
+            continue
+        try:
+            profile = assistant.table_metadata(
+                workspace, table_name, include_category_values=True
+            )
+        except (OSError, WorkspaceError):
+            profile = {"columns": []}
+        profiled = {
+            str(column.get("name")): column for column in profile.get("columns") or []
+        }
+        rows = table.get("rows")
+        rows = rows if isinstance(rows, int) else 0
+        columns = []
+        for column in table.get("columns") or []:
+            entry = dict(column)
+            column_profile = profiled.get(str(column.get("name"))) or {}
+            distinct = column_profile.get("distinct")
+            values = column_profile.get("values")
+            if isinstance(distinct, int) and column.get("type") in {"categorical", "text"}:
+                entry["distinct"] = distinct
+                if (
+                    isinstance(values, list)
+                    and len(values) == distinct
+                    and rows >= MIN_CATEGORY_ROWS
+                    and distinct * MIN_CATEGORY_REPETITION <= rows
+                ):
+                    entry["values"] = values
+            columns.append(entry)
+        content = {**table, "columns": columns}
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"table:{table_name}",
+                source=content,
+                representations={"table_metadata": content},
+                metadata={"table": table_name},
+                lexical_text=" ".join(
+                    (table_name, *(str(column.get("name") or "") for column in columns))
+                ),
+            )
+        )
+    return tuple(candidates)
 
 
 def test_generate_scope(
@@ -859,14 +920,19 @@ def test_generate_scope(
                 ),
             ),
             TEST_GENERATE_ROW_SOURCE_ID: test_draft_row_candidates(workspace, rcm_id),
-            TEST_GENERATE_OTHER_ROWS_SOURCE_ID: test_draft_other_row_candidates(
-                workspace, rcm_id
+            TEST_GENERATE_TABLE_METADATA_SOURCE_ID: (
+                test_generate_table_metadata_candidates(workspace)
             ),
-            TEST_GENERATE_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(
-                workspace
-            ),
+            # A test obtains evidence about a control; the audit-notes block is a
+            # numbered list of conclusions already drawn about the document, each
+            # ending in a follow-up. Supplied here, it is the most test-shaped
+            # content in the turn, and the turn writes it back as objectives that
+            # re-confirm a known deficiency instead of testing whether a control
+            # operated. The deficiency is already carried by the RCM row driving
+            # this unit, so nothing is lost by reasoning from the process
+            # description alone.
             TEST_GENERATE_DOCUMENT_SOURCE_ID: document_test_document_candidates(
-                workspace, document_ids=document_ids
+                workspace, document_ids=document_ids, include_audit_notes=False
             ),
             TEST_GENERATE_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
                 workspace
@@ -1775,7 +1841,6 @@ __all__ = [
     "PLANNING_CONTEXT_DOCUMENT_SOURCE_ID",
     "TEST_GENERATE_PLANNING_SOURCE_ID",
     "TEST_GENERATE_ROW_SOURCE_ID",
-    "TEST_GENERATE_OTHER_ROWS_SOURCE_ID",
     "TEST_GENERATE_TABLE_METADATA_SOURCE_ID",
     "TEST_GENERATE_TABLE_PROFILE_SOURCE_ID",
     "TEST_GENERATE_DOCUMENT_SOURCE_ID",
@@ -1810,7 +1875,6 @@ __all__ = [
     "planning_context_document_candidates",
     "planning_context_scope",
     "test_draft_methodology_candidates",
-    "test_draft_other_row_candidates",
     "test_draft_row_candidates",
     "rcm_current_row_candidates",
     "rcm_scope",

@@ -314,15 +314,14 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
     assert [source.id for source in spec.sources] == [
         "planning_context",
         "rcm_row",
-        "other_rcm_rows",
         "table_metadata",
         "documents",
         "methodology",
     ]
-    # The one target row is required; every duplicate-avoidance and material
-    # source is not, since the model chooses source per test.
+    # The one target row is required; every material source is not, since the
+    # model chooses source per test.
     assert [source.required for source in spec.sources] == [
-        True, True, False, False, False, False,
+        True, True, False, False, False,
     ]
     # Generation reads schema metadata and document text — never a table row —
     # since it decides both Data and Document Test sources itself.
@@ -370,12 +369,10 @@ def test_test_generate_scope_supplies_one_target_row_and_citable_methodology():
     assert rows[0].source["existing_tests"][0]["source"] == "document"
     # Execution state stays out of the generation context.
     assert "execution_rollup" not in rows[0].source
-    assert [candidate.source_ref for candidate in scope.candidates["other_rcm_rows"]] == [
-        f"rcm:{other_id}"
-    ]
-    assert set(scope.candidates["other_rcm_rows"][0].source) == {
-        "id", "semantic_id", "risk",
-    }
+    # The turn is scoped to its own row: no other row travels with it, since a
+    # unit cannot see what its siblings generate and the projection carried
+    # their risks rather than their tests.
+    assert "other_rcm_rows" not in scope.candidates
     section = scope.candidates["methodology"][0].representations["excerpt"]
     assert section["pack_name"] == "Firm AP Guide"
     assert section["citation"].startswith("Firm AP Guide v")
@@ -418,3 +415,96 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
     supplied = scope.candidates["documents"][0].representations["summary"]
     assert supplied["summary"] == ""
     assert supplied["id"]
+
+
+def test_test_generate_metadata_supplies_category_values_but_never_row_values():
+    """A generated Polars step is a predicate, so it needs the column's domain.
+
+    Given names and dtypes alone the turn has to guess what a status column
+    holds, and a wrong guess does not fail loudly: it matches every row or none,
+    and both are reported as a control conclusion. A value is only supplied where
+    it is a category rather than a datum — the table has a population and each
+    value recurs across it — and only where the list is provably complete.
+    """
+    workspace = workspaces.create_workspace("Test generation metadata")
+    orders = pl.DataFrame(
+        {
+            "order_id": [f"O{index:03d}" for index in range(40)],
+            "status": ["Closed"] * 38 + ["Open"] * 2,
+            "note": [f"free text {index}" for index in range(40)],
+        }
+    )
+    workspace.add_table("orders.csv", orders.write_csv().encode())
+
+    candidates = context_adapters.test_generate_table_metadata_candidates(workspace)
+    columns = {
+        column["name"]: column
+        for column in candidates[0].representations["table_metadata"]["columns"]
+    }
+
+    # A recurring, provably complete domain: the step can be written against it.
+    assert columns["status"]["values"] == ["Closed", "Open"]
+    # One row per value is the row itself, so the count is supplied without them.
+    assert "values" not in columns["note"]
+    assert columns["note"]["distinct"] == 40
+    # The identifier is neither categorical nor bounded.
+    assert "values" not in columns["order_id"]
+
+
+def test_test_generate_metadata_withholds_a_truncated_category_vocabulary():
+    """An incomplete list is worse than none — it licenses excluding a real value."""
+    workspace = workspaces.create_workspace("Truncated vocabulary")
+    frame = pl.DataFrame(
+        {
+            "row_id": list(range(120)),
+            # More distinct values than the profile retains, each well repeated.
+            "bank": [f"Bank {index % 20:02d}" for index in range(120)],
+        }
+    )
+    workspace.add_table("payments.csv", frame.write_csv().encode())
+
+    candidates = context_adapters.test_generate_table_metadata_candidates(workspace)
+    columns = {
+        column["name"]: column
+        for column in candidates[0].representations["table_metadata"]["columns"]
+    }
+
+    assert columns["bank"]["distinct"] == 20
+    assert "values" not in columns["bank"]
+
+
+def test_test_generate_scope_supplies_the_process_description_without_the_audit_notes():
+    """A test obtains evidence about a control; audit notes are conclusions.
+
+    The notes block is a numbered deficiency list whose entries each end in a
+    follow-up, which makes it the most test-shaped content in the turn. Supplied
+    here it comes back as objectives that re-confirm a known deficiency rather
+    than establishing whether a control operated. The deficiency already reaches
+    the turn through the RCM row that drives the unit.
+    """
+    workspace = workspaces.create_workspace("Test generate document scope")
+    document = _analyzed_document(
+        workspace,
+        "procurement-sop.txt",
+        "Purchase orders require approval before issue.",
+        summary="The SOP describes requisition, approval, and purchase order issue.",
+        notes="1. **Missing thresholds** - the SOP defines no monetary bands.",
+    )
+    workspace.update_planning({"context": {"objective": "Assess procurement approvals"}})
+    row = workspace.add_rcm(
+        {
+            "process": "Procurement",
+            "risk": "Purchase orders may be issued without approval",
+            "risk_rating": "high",
+            "control": "No control identified",
+        }
+    )
+
+    scope = context_adapters.test_generate_scope(
+        workspace, row["id"], document_ids=[document["id"]]
+    )
+
+    summary = scope.candidates["documents"][0].source["summary"]
+    assert "requisition, approval, and purchase order issue" in summary
+    assert "AUDIT NOTES" not in summary
+    assert "Missing thresholds" not in summary

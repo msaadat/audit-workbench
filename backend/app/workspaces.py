@@ -1766,7 +1766,11 @@ class Workspace:
         profile = profiler.profile_table(self.get_frame(name))
         try:
             cache_file.parent.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(json.dumps(profile), encoding="utf-8")
+            # Written through the temp-file + rename path because capabilities
+            # that fan their units out resolve context concurrently, and two
+            # threads profiling the same table would otherwise be free to
+            # interleave writes to this one path.
+            write_json_atomic(cache_file, profile)
             for stale in cache_file.parent.glob(f"{name}.*.profile.json"):
                 if stale != cache_file:
                     stale.unlink(missing_ok=True)

@@ -19,6 +19,7 @@ import pytest
 from app.agent import capabilities
 from app.agent.capabilities import planning
 from app.agent.runtime import CapabilityExecution, CapabilityExecutionRegistry
+from app.agent import workflow
 from app.agent.workflow import Capability, CapabilityRegistry
 from app.agent.workflows import audit as audit_workflow
 
@@ -324,3 +325,23 @@ def test_the_retired_audit_modules_have_no_module_alias_or_reexport():
 
     assert routing.ROUTER_SYSTEM.startswith("[agent:workflow_router]")
     assert callable(routing.validate_router_result)
+
+
+def test_only_independent_non_committing_unit_expansions_declare_the_parallel_barrier():
+    """The barrier is a claim about a capability's units, not a speed setting.
+
+    ``all_settled_parallel`` asserts that a capability's units are independent of
+    one another and that nothing one unit does has to land before the next is
+    bound. Document chunks qualify because a chunk reads no other chunk; test
+    generation qualifies because one unit is one RCM row, the turn reads no other
+    unit's output, and the commit guards exactly that row's parent hash against a
+    freshly read workspace. Everything else commits into shared planning state
+    and stays serialized, so this pins the set rather than the two members.
+    """
+    parallel = {
+        capability.id
+        for capability in capabilities.AUDIT_REGISTRY.all()
+        if capability.barrier == workflow.PARALLEL_BARRIER
+    }
+
+    assert parallel == {"documents.analysis_chunks_ready", "tests.specified"}

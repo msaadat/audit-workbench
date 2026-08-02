@@ -145,6 +145,13 @@ def _tests_specified() -> Capability:
         _specified_ready,
         _generation_units,
         context="tests.generate",
+        # One unit is one RCM row: the rows are independent, the turn reads no
+        # other unit's output, and the commit guards exactly its own row's parent
+        # hash against a freshly read workspace, so nothing here depends on a
+        # sibling having landed first. Serialized, a row-per-unit expansion is
+        # also the one capability that cannot finish inside the run budget —
+        # seventy turns at a minute each exhaust it before the stage completes.
+        barrier="all_settled_parallel",
         invalidate_on=("rcm",),
     )
 

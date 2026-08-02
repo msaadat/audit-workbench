@@ -790,14 +790,13 @@ PRESETS.register(
                     representations=(ContextRepresentation("current_artifact"),),
                     budget=ContextBudget(max_items=1, max_characters=16_000),
                 ),
-                ContextSource(
-                    id="other_rcm_rows",
-                    source_type="artifacts",
-                    required=False,
-                    selector=ContextSelector(selector_id="artifacts.current"),
-                    representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=150, max_characters=16_000),
-                ),
+                # Every other RCM row was supplied here as duplicate avoidance and
+                # did not achieve it: the projection carried the other rows' risks
+                # rather than the tests already written for them, and a unit cannot
+                # see what its siblings produce in any case. It cost a third of the
+                # prompt — more than the target row by a factor of twenty — and was
+                # truncated by its own budget besides. Deduplication needs a pass
+                # that can see every generated test at once, not a per-unit prompt.
                 ContextSource(
                     id="table_metadata",
                     source_type="tables",
