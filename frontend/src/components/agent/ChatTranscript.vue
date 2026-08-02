@@ -154,15 +154,12 @@ function messageTime(value: string) {
       <!-- The left rail owns the plan. The transcript shows only the live
            activity line, durable milestones, attention, and the run receipt. -->
       <template v-if="isRun(item)">
-        <!-- The opening "here is what I'll do" line reads as the agent
-             speaking, not as a fact about the run, so it is a normal message
-             ahead of the receipt rather than a line printed inside its border.
-             A run owned by another chat stays a compact receipt only. -->
-        <div v-if="item.plan_line && !item.foreign" class="message assistant">
-          <div class="bubble"><p>{{ item.plan_line }}</p></div>
-        </div>
-        <!-- A run owned by another chat is context, not this conversation's
-             work: it stays a compact receipt here. -->
+        <!-- The opening "here is what I'll do" line is its own transcript
+             entry anchored at the run's start (see `_plan_line_entry` in
+             assistant_chats.py), so it reads as spoken before anything the
+             run went on to do rather than being dragged down beside the
+             finished receipt. A run owned by another chat is context, not
+             this conversation's work: it stays a compact receipt here. -->
         <ChatRunCard :workspaceId="workspaceId" :projection="item" :showAttention="item.foreign === true" @changed="emit('changed')" @command="emit('command', $event)" />
       </template>
       <AgentMilestoneCard v-else-if="isMilestone(item)" :milestone="item.milestone" />

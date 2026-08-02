@@ -1069,6 +1069,27 @@ def _run_card_anchor(run: dict, fallback_created_at: object) -> str:
     return latest
 
 
+def _run_start_anchor(run: dict, fallback_created_at: object) -> str:
+    """Where a run's opening line sorts: when the run began, not where its
+    receipt lands. ``plan_line`` reads as the agent speaking before it did
+    anything, so it must not share ``_run_card_anchor``'s late timestamp —
+    doing so once dragged the opening line down past every milestone and
+    narration line the run went on to produce.
+    """
+    return str(run.get("created") or fallback_created_at or "")
+
+
+def _plan_line_entry(run_id: str, plan_line: str, run: dict, fallback_created_at: object) -> dict:
+    return {
+        "id": f"run:{run_id}:plan_line", "type": "message", "derived": True,
+        "role": "assistant", "kind": "text", "content": plan_line,
+        "created_at": _run_start_anchor(run, fallback_created_at), "state": "complete",
+        "requested_intent": None, "resolved_intent": None,
+        "reply_to_id": None, "artifact_ids": [], "outcome": None, "error": None,
+        "run_id": run_id,
+    }
+
+
 def _run_projection(run: dict) -> dict:
     summary = store.run_summary(run)
     open_items = narration.blockers(run)
@@ -1142,6 +1163,9 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
         source = str(projection.get("source_message_id") or "")
         if source:
             by_source_message.setdefault(source, projection)
+    # Tracks which runs already got their opening line placed, so a run
+    # touched by more than one placement path below doesn't repeat it.
+    plan_line_seen: set[str] = set()
     transcript = [dict(item, type="message", derived=False) for item in record.get("messages") or []]
     documents_by_id = {str(item.get("id")): item for item in workspace.documents}
     for item in transcript:
@@ -1173,6 +1197,11 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
                 ordinal=RUN_CARD_ORDINAL,
                 source_message_id=item["id"],
             ))
+            if launched.get("plan_line") and run_id not in plan_line_seen:
+                plan_line_seen.add(run_id)
+                transcript.append(_plan_line_entry(
+                    run_id, launched["plan_line"], linked_runs.get(run_id) or {}, item.get("created_at"),
+                ))
         elif run_id and outcome.get("kind") == "command_queued":
             try:
                 parent_run = linked_runs.get(run_id) or store.load_run(workspace, run_id)
@@ -1219,6 +1248,11 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
             anchor = _run_card_anchor(linked_runs.get(run_id) or {}, item.get("created_at"))
             card = dict(by_run[run_id], created_at=anchor, ordinal=RUN_CARD_ORDINAL, source_message_id=item["id"])
             transcript.append(card)
+            if card.get("plan_line") and run_id not in plan_line_seen:
+                plan_line_seen.add(run_id)
+                transcript.append(_plan_line_entry(
+                    run_id, card["plan_line"], linked_runs.get(run_id) or {}, item.get("created_at"),
+                ))
     # Child runs can appear after a queued parent ends; include unplaced links.
     # A queued-command card carries its parent's ``run_id`` but is not that
     # run's card, so it must not satisfy the placement check.
@@ -1226,15 +1260,20 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
         item.get("run_id") for item in transcript
         if item.get("type") == "run" and ":command:" not in str(item.get("id") or "")
     }
-    transcript.extend(
-        dict(
+    for item in linked:
+        run_id = item["run_id"]
+        if run_id in placed:
+            continue
+        transcript.append(dict(
             item,
-            created_at=_run_card_anchor(linked_runs.get(item["run_id"]) or {}, item.get("created_at")),
+            created_at=_run_card_anchor(linked_runs.get(run_id) or {}, item.get("created_at")),
             ordinal=RUN_CARD_ORDINAL,
-        )
-        for item in linked
-        if item["run_id"] not in placed
-    )
+        ))
+        if item.get("plan_line") and run_id not in plan_line_seen:
+            plan_line_seen.add(run_id)
+            transcript.append(_plan_line_entry(
+                run_id, item["plan_line"], linked_runs.get(run_id) or {}, item.get("created_at"),
+            ))
     # Run-owned conversational messages and typed attention items are response
     # projections.  They retain stable derived IDs and are never written back
     # through chat APIs.
