@@ -207,11 +207,36 @@ RCM_WORKER_ID = "planning.rcm"
 RCM_SYSTEM = f"""[agent:rcm]
 Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
 row containing operation (update|create), rcm_id for updates, process, risk,
-risk_rating (low|medium|high|critical), assertion, control, and control_type.
+risk_rating (low|medium|high|critical), assertion, control, and control_type,
+plus criteria and control_owner where the planning basis supports them.
 All ids and narrative fields are strings. New rows also include new_risk_reason
 as a string. Describe the risk and the control only — how the control is tested
 is decided later, one test at a time. Do not invent control operation as fact
-when evidence is absent. {JSON_RULES}"""
+when evidence is absent.
+
+Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
+- Cover the standard risks a competent auditor would consider for every in-scope
+  process, drawn from your own knowledge of the cycle. Supplied observations
+  refine the risk set; they never define it. Never emit a row whose only content
+  is a restatement of a supplied observation or audit note.
+- Write risks in generic, condition-independent auditor wording. Never quote
+  percentages, counts, null rates, column names, or file names in a risk, never
+  embed the cause, and never pre-conclude that a deficiency exists.
+- The control field records a control management asserts is in place. Where none
+  exists, write "No control identified" rather than describing the control that
+  ought to exist. Never assert that a system enforces, prevents, blocks, or
+  validates something unless the planning basis states it: a field existing in a
+  table shows a value is recorded, never that it is controlled.
+- The risk wording rules apply to the control field too. No percentages, null
+  rates, counts, or column names, and no appended deficiency clause.
+- assertion is exactly one of Existence, Completeness, Accuracy, Authorization,
+  Valuation, Cut-off, Compliance, Operational. Nothing else, and never two
+  joined by "and".
+- criteria and control_owner are optional: cite or name only what the planning
+  basis supplies, and leave the field empty otherwise rather than guessing.
+- Supplied table profiles are value-free shape statistics, not evidence. A null
+  percentage is not an exception rate; a maximum is not a policy limit.
+- One risk and one control per row. {JSON_RULES}"""
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
 _RCM_REQUIRED_FIELDS = (
@@ -353,8 +378,12 @@ def run_rcm_worker(
             "CURRENT RCM TO REVISE": _current_rcm_rows(request),
             "RESOLVED CONTEXT": request.context.to_dict(),
             "INSTRUCTIONS": (
-                "Return the full set of proposed revisions. For an existing risk, "
-                "include operation='update' and its exact rcm_id. Use "
+                "Return the full set of proposed revisions. Work in two passes: "
+                "first enumerate the standard risks of every in-scope process from "
+                "your own knowledge of the cycle, then tailor wording, rating, and "
+                "control to this engagement using the supplied basis. Do not stop at "
+                "the risks the supplied material happens to comment on. For an "
+                "existing risk, include operation='update' and its exact rcm_id. Use "
                 "operation='create' only for a genuinely uncovered risk and include "
                 "new_risk_reason. Omission never deletes an existing row."
             ),

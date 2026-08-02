@@ -376,6 +376,13 @@ RCM_ROW_FIELDS = (
     "control",
     "control_type",
 )
+# Narrative fields the model supplies only when the planning basis carries them.
+# They are written on revision only when the proposal actually provides one, so
+# a run that cannot cite a criterion never blanks an existing citation.
+RCM_OPTIONAL_ROW_FIELDS = (
+    "criteria",
+    "control_owner",
+)
 
 
 @dataclass
@@ -547,6 +554,11 @@ def execute_rcm(request: ExecutorRequest, raw_target: object) -> ExecutorResult:
                     existing["id"],
                     {
                         **{key: spec.get(key) for key in RCM_ROW_FIELDS},
+                        **{
+                            key: spec[key]
+                            for key in RCM_OPTIONAL_ROW_FIELDS
+                            if str(spec.get(key) or "").strip()
+                        },
                         "workflow_parent_sha1": parent_sha1,
                     },
                     agent=True,

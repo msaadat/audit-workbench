@@ -87,6 +87,7 @@ def apm_document_candidates(
     *,
     document_ids: Iterable[str] | None = None,
     excerpt_query: str | None = None,
+    include_audit_notes: bool = True,
 ) -> tuple[ContextCandidate, ...]:
     """Expose bounded document material as planning candidates.
 
@@ -100,13 +101,21 @@ def apm_document_candidates(
     presets constrain their selectors on, so a transaction voucher or raw
     evidence file is not offered as planning material even though it is a valid
     engagement document. Explicit auditor curation overrides the rule.
+
+    ``include_audit_notes`` is passed through to the document-context boundary;
+    see :func:`document_context.apm_document_context` for why a downstream turn
+    that already inherits the APM asks for the process description alone.
     """
     curated = document_ids is not None
     documents_by_id = {str(item.get("id")): item for item in workspace.documents}
     candidates = []
     for document_id in _normalized_document_ids(workspace, document_ids):
         document = documents_by_id[document_id]
-        context = document_context.apm_document_context(workspace, document_id)
+        context = document_context.apm_document_context(
+            workspace,
+            document_id,
+            include_audit_notes=include_audit_notes,
+        )
         representations: dict[str, object] = {}
         if context.get("outcome") == "supplied" and context.get("content"):
             representations = {"summary": context["content"]}
@@ -546,6 +555,13 @@ def rcm_scope(
                 workspace,
                 document_ids=document_ids,
                 excerpt_query=rcm_query,
+                # The RCM turn takes the APM as its parent, and the APM already
+                # carries every audit note forward. Supplying the numbered
+                # deficiency list a second time here is what makes the turn
+                # transcribe observations into rows instead of deriving the
+                # process risk set; the process description alone is what a
+                # risk-and-control matrix is built from.
+                include_audit_notes=False,
             ),
             RCM_METHODOLOGY_SOURCE_ID: apm_methodology_candidates(workspace),
         },

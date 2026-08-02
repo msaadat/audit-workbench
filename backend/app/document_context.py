@@ -17,6 +17,7 @@ def apm_document_context(
     document_id: str,
     *,
     max_characters: int = SMALL_DOCUMENT_CHARACTERS,
+    include_audit_notes: bool = True,
 ) -> dict:
     """Adapt a document analysis to one bounded APM representation.
 
@@ -24,6 +25,13 @@ def apm_document_context(
     reading analysis sidecars or extracted pages itself.  That keeps document
     validity, auditor overrides, and the model-facing privacy boundary in one
     place while giving the generic agent context resolver a plain local value.
+
+    ``include_audit_notes`` is off for turns that must reason from the document's
+    own process description rather than from conclusions already drawn about it.
+    The audit-notes block is a numbered deficiency list, and a turn that produces
+    rows will transcribe such a list one observation per row instead of deriving
+    its own set.  The APM is the artifact that carries those observations
+    forward, so a turn taking the APM as a parent already has them.
     """
     max_chars = max(1, int(max_characters))
     summary = get_document_context(
@@ -34,13 +42,17 @@ def apm_document_context(
         purpose="apm_context",
         record_activity=False,
     )
-    audit_notes = get_document_context(
-        workspace,
-        document_id,
-        "audit_notes",
-        max_characters=max_chars,
-        purpose="apm_context",
-        record_activity=False,
+    audit_notes = (
+        get_document_context(
+            workspace,
+            document_id,
+            "audit_notes",
+            max_characters=max_chars,
+            purpose="apm_context",
+            record_activity=False,
+        )
+        if include_audit_notes
+        else {}
     )
     sections = []
     if summary.get("content"):

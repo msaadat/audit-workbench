@@ -167,6 +167,43 @@ def test_apm_document_adapter_leaves_final_truncation_and_omission_to_resolver()
     )
 
 
+def test_rcm_scope_supplies_the_process_description_without_the_audit_notes():
+    """The RCM turn reasons from the process, not from conclusions about it.
+
+    Its parent APM already carries every audit note forward, so repeating the
+    numbered deficiency list here is what makes the turn transcribe observations
+    into rows. The APM turn itself is unaffected and still receives both blocks.
+    """
+    workspace = workspaces.create_workspace("RCM document scope")
+    document = _analyzed_document(
+        workspace,
+        "procurement-sop.txt",
+        "Purchase orders require approval before issue.",
+        summary="The SOP describes requisition, approval, and purchase order issue.",
+        notes="1. **Missing thresholds** - the SOP defines no monetary bands.",
+    )
+    workspace.update_planning(
+        {
+            "context": {"objective": "Assess procurement approvals"},
+            "apm_markdown": "# APM\n\nProcurement approvals.",
+        }
+    )
+
+    rcm = context_adapters.rcm_scope(workspace, document_ids=[document["id"]])
+    apm = context_adapters.apm_document_methodology_scope(
+        workspace, document_ids=[document["id"]]
+    )
+
+    rcm_summary = rcm.candidates["documents"][0].representations["summary"]
+    apm_summary = apm.candidates["documents"][0].representations["summary"]
+    assert "requisition, approval, and purchase order issue" in rcm_summary
+    assert "AUDIT NOTES" not in rcm_summary
+    assert "Missing thresholds" not in rcm_summary
+    # The APM keeps both blocks: observations belong to the memorandum.
+    assert "AUDIT NOTES" in apm_summary
+    assert "Missing thresholds" in apm_summary
+
+
 def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
     monkeypatch,
 ):

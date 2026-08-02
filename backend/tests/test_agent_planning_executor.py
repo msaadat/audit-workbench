@@ -295,6 +295,41 @@ def test_rcm_executor_updates_a_matched_row_and_preserves_the_id():
     assert receipt.output["rows"][0]["action"] == "updated"
 
 
+def test_rcm_executor_writes_supplied_criteria_and_keeps_it_when_a_rerun_omits_it():
+    """Optional narrative fields are written, but an omission is not a deletion.
+
+    A later run that cannot cite a criterion for the row must leave the earlier
+    citation standing rather than blanking it.
+    """
+    workspace = _rcm_workspace("RCM optional fields")
+    created = EXECUTORS.execute(
+        _rcm_request(
+            workspace,
+            [_rcm_row(criteria="Procurement SOP 3.7", control_owner="Finance Manager")],
+        ),
+        first := RcmExecutorTarget(workspace, "run-one"),
+    )
+    row = first.workspace.rcm[0]
+    assert row["criteria"] == "Procurement SOP 3.7"
+    assert row["control_owner"] == "Finance Manager"
+    assert created.output["rows"][0]["action"] == "created"
+
+    # A rerun that revises the rating but supplies no criteria.
+    second = RcmExecutorTarget(first.workspace, "run-two")
+    EXECUTORS.execute(
+        _rcm_request(
+            first.workspace,
+            [_rcm_row(operation="update", rcm_id=row["id"], risk_rating="critical")],
+        ),
+        second,
+    )
+
+    revised = second.workspace.rcm[0]
+    assert revised["risk_rating"] == "critical"
+    assert revised["criteria"] == "Procurement SOP 3.7"
+    assert revised["control_owner"] == "Finance Manager"
+
+
 def test_rcm_executor_preserves_auditor_owned_row_without_permission():
     workspace = _rcm_workspace("RCM preserve")
     existing = workspace.add_rcm(
