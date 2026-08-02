@@ -15,6 +15,15 @@ adding a taxonomy to the prompt causes the model to leak it into fields, and
 that banning a construction in one field relocates it to the next field rather
 than removing it.
 
+`docs/test-generation-quality.md` is the same treatment applied to
+`tests.generate`, and it reproduced both of those lessons independently — which
+makes them properties of this pipeline rather than of this artifact. It also
+found RC1 below (a methodology channel declared but resolving to zero items)
+repeating verbatim in a second capability, and adds a third lesson specific to
+generated artifacts that are executed: the generating worker is workspace-free
+by design, so a check at generation can never see what its own output does to
+real data.
+
 ## Context
 
 `Workspaces/procurement` — Global Bank procurement audit, 2025 annual plan.
