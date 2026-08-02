@@ -861,8 +861,19 @@ def next_steps(workspace, state: dict[str, dict] | None = None, *, limit: int = 
             and readiness.get("state") == "blocked"
             and int(readiness.get("eligible") or 0) > 0
         )
+        blocked_behind_unlisted_dependency = (
+            capability_id not in {"doc_tests.executed", "findings.drafted"}
+            and readiness.get("state") == "blocked"
+            and bool(readiness.get("blocking_on"))
+            and not any(
+                dependency in _NEXT_STEPS
+                for dependency in readiness.get("blocking_on") or []
+            )
+        )
         if readiness.get("state") != "missing" and not (
-            document_tests_waiting or findings_waiting
+            document_tests_waiting
+            or findings_waiting
+            or blocked_behind_unlisted_dependency
         ):
             continue
         reasons = [str(item) for item in readiness.get("reasons") or []]
