@@ -58,11 +58,13 @@ const kindLabel: Record<string, string> = {
   review: 'Document review',
   qa: 'Cited Q&A',
 }
+// Short labels: the field is already called "Control conclusion", so repeating
+// "Control" in every option only spent width the rail does not have.
 const controlConclusions = [
-  { label: 'No conclusion recorded', value: 'no_conclusion' },
-  { label: 'Control effective', value: 'effective' },
-  { label: 'Control partially effective', value: 'partially_effective' },
-  { label: 'Control ineffective', value: 'ineffective' },
+  { label: 'Not concluded', value: 'no_conclusion' },
+  { label: 'Effective', value: 'effective' },
+  { label: 'Partially effective', value: 'partially_effective' },
+  { label: 'Ineffective', value: 'ineffective' },
   { label: 'Not applicable', value: 'not_applicable' },
 ]
 
@@ -161,32 +163,22 @@ function attach() {
 
 <template>
   <div class="detail">
-    <!-- 1. What this item concluded, before anything editable. -->
+    <!-- Identity only. The status, the run action, and everything the auditor
+         records all live together in the rail. -->
     <header class="detail-head">
-      <div class="head-copy">
-        <p class="eyebrow">{{ kindLabel[test.kind ?? ''] ?? 'Document work' }} · {{ item.id }}</p>
-        <h3>{{ item.label || item.id }}</h3>
-        <p class="context">
-          <span>{{ test.title }}</span>
-          <button v-if="test.rcm_id" type="button" class="link" @click="emit('openRcm', test.rcm_id)">
-            {{ test.rcm_id }}
-          </button>
-          <em v-else>Not linked to an RCM row — this work does not count as coverage.</em>
-        </p>
-      </div>
-      <div class="head-status">
-        <UiTestStatus :status="item.state" showLabel />
-        <Button
-          label="Run test"
-          icon="pi pi-play"
-          size="small"
-          :loading="running"
-          :disabled="busy"
-          @click="emit('run')"
-        />
-      </div>
+      <p class="eyebrow">{{ kindLabel[test.kind ?? ''] ?? 'Document work' }} · {{ item.id }}</p>
+      <h3>{{ item.label || item.id }}</h3>
+      <p class="context">
+        <span>{{ test.title }}</span>
+        <button v-if="test.rcm_id" type="button" class="link" @click="emit('openRcm', test.rcm_id)">
+          {{ test.rcm_id }}
+        </button>
+        <em v-else>Not linked to an RCM row — this work does not count as coverage.</em>
+      </p>
     </header>
 
+    <!-- The record: what the procedure was and what the run found. -->
+    <div class="detail-main">
     <p class="mode-note">
       <i class="pi pi-info-circle" />
       {{ executedLocally
@@ -413,10 +405,9 @@ function attach() {
       </div>
     </section>
 
-    <!-- 4. The test-level conclusion the workflow recorded, and the -->
-    <!-- auditor's own conclusion about the control this test covers. -->
+    <!-- What the run produced. The auditor's own conclusion is in the rail. -->
     <section class="block outcome">
-      <h4>Test conclusion</h4>
+      <h4>Result</h4>
       <p v-if="test.result_summary" class="summary">{{ test.result_summary }}</p>
       <!-- Coverage is what makes a cycle conclusion honest: how much of the
            population was actually reached, stated beside the result. -->
@@ -442,40 +433,60 @@ function attach() {
           <dt>Exceptions</dt><dd>{{ test.exception_count }} recorded · {{ test.open_exception_count }} open</dd>
         </template>
       </dl>
-      <label>
-        Control conclusion
-        <Select
-          v-model="test.control_conclusion"
-          :options="controlConclusions"
-          optionLabel="label"
-          optionValue="value"
-        />
-      </label>
-      <label>
-        Conclusion
-        <Textarea
-          v-model="test.conclusion"
-          rows="2"
-          autoResize
-          placeholder="What this result means for the control, in your own words."
-        />
-      </label>
-      <Button
-        label="Save conclusion"
-        icon="pi pi-check"
-        size="small"
-        outlined
-        :disabled="busy"
-        @click="emit('saveConclusion')"
-      />
+      <p v-if="!test.result_summary && !cycleCoverage" class="muted">
+        No test-level result has been recorded yet.
+      </p>
     </section>
-    <section class="block finding-action">
-      <template v-if="findings.length">
-        <div>
-          <h4>Finding{{ findings.length === 1 ? '' : 's' }}</h4>
-          <p>{{ findings.length === 1 ? 'A finding is linked to this test.' : `${findings.length} findings are linked to this test.` }}</p>
-        </div>
-        <div class="finding-actions">
+    </div>
+
+    <!-- The rail: everything the auditor decides, in one column that stays put
+         while the record beside it scrolls. -->
+    <aside class="detail-rail" aria-label="Your assessment">
+      <div class="rail-group rail-status">
+        <UiTestStatus :status="item.state" showLabel />
+        <Button
+          label="Run test"
+          icon="pi pi-play"
+          size="small"
+          :loading="running"
+          :disabled="busy"
+          @click="emit('run')"
+        />
+      </div>
+
+      <div class="rail-group">
+        <h4>Your conclusion</h4>
+        <label>
+          Control conclusion
+          <Select
+            v-model="test.control_conclusion"
+            :options="controlConclusions"
+            optionLabel="label"
+            optionValue="value"
+          />
+        </label>
+        <label>
+          Conclusion
+          <Textarea
+            v-model="test.conclusion"
+            rows="3"
+            autoResize
+            placeholder="What this result means for the control, in your own words."
+          />
+        </label>
+        <Button
+          label="Save conclusion"
+          icon="pi pi-check"
+          size="small"
+          outlined
+          :disabled="busy"
+          @click="emit('saveConclusion')"
+        />
+      </div>
+
+      <div class="rail-group">
+        <h4>Finding{{ findings.length > 1 ? 's' : '' }}</h4>
+        <template v-if="findings.length">
           <Button
             v-for="finding in findings"
             :key="finding.id"
@@ -486,57 +497,58 @@ function attach() {
             @click="emit('openFinding', finding.id)"
           />
           <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="busy || !test.rcm_id || !test.status.startsWith('completed')" @click="emit('generateFinding', true)" />
-        </div>
-      </template>
-      <template v-else>
-        <div><h4>Finding</h4><p>Generate a draft from this test’s exception observations.</p></div>
-        <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="busy || !test.rcm_id || !test.status.startsWith('completed')" @click="emit('generateFinding', false)" />
-      </template>
-    </section>
-
-    <!-- 5. The auditor's own sign-off. Confirm/exception only apply while -->
-    <!-- the result is unresolved — once it is 'confirmed' or 'exception' -->
-    <!-- that is already a direct read of the model's (or the deterministic -->
-    <!-- comparison's) own outcome, not something to settle by hand. -->
-    <!-- 'Reset to pending' stays available regardless: it is the only way -->
-    <!-- to force a re-check once new evidence makes the settled result stale. -->
-    <footer class="sign-off">
-      <p class="sign-off-note">
-        {{ needsSignOff
-          ? (item.runner_note || 'The model could not settle this item on its own — confirm the result or mark an exception.')
-          : 'This result was derived directly from the model\'s assessment. Reset it to force a re-check.' }}
-      </p>
-      <div class="dispositions">
-        <template v-if="needsSignOff">
-          <Button
-            label="Confirm result"
-            icon="pi pi-check"
-            size="small"
-            severity="success"
-            outlined
-            :disabled="busy"
-            @click="emit('setState', 'confirmed')"
-          />
-          <Button
-            label="Mark exception"
-            icon="pi pi-exclamation-triangle"
-            size="small"
-            severity="danger"
-            outlined
-            :disabled="busy"
-            @click="emit('setState', 'exception')"
-          />
         </template>
-        <Button
-          label="Reset to pending"
-          icon="pi pi-refresh"
-          size="small"
-          text
-          :disabled="busy || item.state === 'pending'"
-          @click="emit('setState', 'pending')"
-        />
+        <template v-else>
+          <p class="rail-note">Generate a draft from this test’s exception observations.</p>
+          <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="busy || !test.rcm_id || !test.status.startsWith('completed')" @click="emit('generateFinding', false)" />
+        </template>
       </div>
-    </footer>
+
+      <!-- Confirm/exception only apply while the result is unresolved — once it
+           is 'confirmed' or 'exception' that is already a direct read of the
+           model's (or the deterministic comparison's) own outcome, not
+           something to settle by hand. 'Reset to pending' stays available
+           regardless: it is the only way to force a re-check once new evidence
+           makes the settled result stale. -->
+      <div class="rail-group">
+        <h4>Sign-off</h4>
+        <p class="rail-note">
+          {{ needsSignOff
+            ? (item.runner_note || 'The model could not settle this item on its own — confirm the result or mark an exception.')
+            : 'This result was derived directly from the model\'s assessment. Reset it to force a re-check.' }}
+        </p>
+        <div class="dispositions">
+          <template v-if="needsSignOff">
+            <Button
+              label="Confirm result"
+              icon="pi pi-check"
+              size="small"
+              severity="success"
+              outlined
+              :disabled="busy"
+              @click="emit('setState', 'confirmed')"
+            />
+            <Button
+              label="Mark exception"
+              icon="pi pi-exclamation-triangle"
+              size="small"
+              severity="danger"
+              outlined
+              :disabled="busy"
+              @click="emit('setState', 'exception')"
+            />
+          </template>
+          <Button
+            label="Reset to pending"
+            icon="pi pi-refresh"
+            size="small"
+            text
+            :disabled="busy || item.state === 'pending'"
+            @click="emit('setState', 'pending')"
+          />
+        </div>
+      </div>
+    </aside>
   </div>
 </template>
 
@@ -545,23 +557,48 @@ function attach() {
    separated by a rule and whitespace; only the repeated records inside a
    section (an answer, a check, an evidence request) still take a fill. That
    keeps the nesting to one level instead of the three it had. */
-.detail { display: flex; flex-direction: column; gap: 0; min-width: 0; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
-.detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; min-width: 0; }
-.head-copy { min-width: 0; }
+/* `align-content: start` is load-bearing: `min-height: 100%` makes this grid
+   taller than its rows, and the default stretch would pour that slack into the
+   header row instead of leaving it at the bottom. */
+.detail { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--aw-space-4); min-width: 0; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
+.detail-head { min-width: 0; }
 .eyebrow { margin: 0; }
 .detail-head h3 { margin: 0.15rem 0 0.25rem; font-size: var(--aw-text-lg); line-height: 1.3; }
 .context { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .context em { color: var(--aw-warn); font-style: normal; }
 .link { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-weight: 600; padding: 0; }
-.head-status { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
 
-.mode-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0.75rem 0 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-sm); }
+/* The record column is its own container: the panels inside it size against
+   the space they actually have, which is now roughly a rail narrower than
+   the detail column itself. */
+.detail-main { min-width: 0; container: detail-main / inline-size; }
+
+/* Tinted so "what I decided" separates from "what the run found" without
+   another border. Below the three-column breakpoint it simply stacks under
+   the record, still as one group. */
+.detail-rail { display: flex; flex-direction: column; gap: 0.9rem; min-width: 0; padding: 0.9rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
+.rail-group { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.rail-group + .rail-group { padding-top: 0.9rem; border-top: 1px solid var(--aw-border-strong); }
+.rail-group h4 { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+.rail-status { align-items: flex-start; }
+.rail-note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.4; }
+.detail-rail :deep(.p-button) { width: 100%; justify-content: center; }
+.dispositions { display: flex; flex-direction: column; gap: 0.4rem; }
+
+/* 42rem, measured: at a 1440 window with the assistant docked the detail
+   column is ~44rem, so a higher threshold never engaged where it matters. */
+@container master-detail-content (min-width: 42rem) {
+  .detail { grid-template-columns: minmax(0, 1fr) 13rem; }
+  .detail-head { grid-column: 1 / -1; }
+  /* Sticky against the surface panel, so the conclusion and the sign-off stay
+     reachable however long the comparison list runs. */
+  .detail-rail { position: sticky; top: 0; align-self: start; }
+}
+
+.mode-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
 .block { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding: 0.85rem 0; border-top: 1px solid var(--aw-border); }
 .block h4 { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
-.finding-action { align-items: center; flex-direction: row; justify-content: space-between; }
-.finding-action p { margin: 0.2rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.finding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
 .instruction { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
 .question { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .response { margin: 0; font-size: var(--aw-text-base); line-height: 1.55; }
@@ -616,17 +653,12 @@ code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-
 .outcome dt { color: var(--aw-muted); font-weight: 600; }
 .outcome dd { margin: 0; }
 
-/* Bleeds to the panel edge, so it has to carry the panel's bottom corners. */
-.sign-off { position: sticky; bottom: -1rem; z-index: 2; display: flex; flex-direction: column; gap: 0.55rem; margin: 0 -1rem -1rem; padding: 0.75rem 1rem; border-top: 1px solid var(--aw-border); border-radius: 0 0 var(--aw-radius-surface) var(--aw-radius-surface); background: var(--aw-panel); }
-.sign-off-note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.dispositions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label :deep(.p-select), label :deep(.p-textarea) { width: 100%; }
 
-/* Sized against the detail column itself, not the window. */
-@container master-detail-content (max-width: 34rem) {
-  .detail-head { flex-direction: column; }
-  .head-status { flex-wrap: wrap; }
+/* Sized against the record column, not the whole detail column: the rail
+   takes width out of it, so a query keyed to the outer column fired late. */
+@container detail-main (max-width: 30rem) {
   .comparison, .comparison-settings, .attribute { grid-template-columns: minmax(0, 1fr); }
   .outcome dl { grid-template-columns: minmax(0, 1fr); }
   .outcome dt { margin-top: 0.3rem; }

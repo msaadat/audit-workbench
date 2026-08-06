@@ -424,7 +424,9 @@ onUnmounted(unsubscribe)
         </span>
       </div>
 
-      <UiMasterDetail railWidth="20rem" class="layout">
+      <!-- 16rem, not 20: the worklist row is a title and two short lines, and
+           the width it gives back is what makes room for the action rail. -->
+      <UiMasterDetail railWidth="16rem" class="layout">
         <template #rail>
           <DocTestItemList :items="visibleItems" :selectedId="selectedItemId" @select="select" />
         </template>

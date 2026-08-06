@@ -64,11 +64,12 @@ const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown>
 const editAnalyticsReady = ref(false)
 const editPolarsSteps = ref<DataTestStep[]>([])
 
+// Short labels — see DocTestItemDetail: the field name already says "Control".
 const controlConclusions = [
-  { label: 'No conclusion recorded', value: 'no_conclusion' },
-  { label: 'Control effective', value: 'effective' },
-  { label: 'Control partially effective', value: 'partially_effective' },
-  { label: 'Control ineffective', value: 'ineffective' },
+  { label: 'Not concluded', value: 'no_conclusion' },
+  { label: 'Effective', value: 'effective' },
+  { label: 'Partially effective', value: 'partially_effective' },
+  { label: 'Ineffective', value: 'ineffective' },
   { label: 'Not applicable', value: 'not_applicable' },
 ]
 const selected = computed(() => tests.value.find(item => item.id === selectedId.value) ?? null)
@@ -359,67 +360,23 @@ onUnmounted(unsubscribe)
         <span class="muted">{{ visibleTests.length }} of {{ tests.length }} · {{ activeFilterLabel }}</span>
       </div>
 
-      <UiMasterDetail railWidth="20rem" class="layout">
+      <!-- 16rem, not 20: the width the list gives back is what makes room for
+           the action rail in the detail. -->
+      <UiMasterDetail railWidth="16rem" class="layout">
         <template #rail>
           <DataTestList :tests="visibleTests" :selectedId="selectedId" :rcmRows="rcmRows" @select="selectTest" />
         </template>
 
         <section v-if="selected" class="detail">
+          <!-- Identity only; the actions all sit in the rail. -->
           <header class="detail-head">
-            <div class="head-copy">
-              <p class="eyebrow">{{ selected.id }}</p>
-              <h3>{{ selected.title }}</h3>
-              <p class="objective">{{ selected.objective }}</p>
-            </div>
-            <div class="head-actions">
-              <Button label="Run" icon="pi pi-play" size="small" :loading="running" :disabled="runningAll" @click="runTest" />
-              <Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" size="small" outlined @click="openRcm" />
-              <Button label="Pin" icon="pi pi-thumbtack" size="small" outlined :disabled="!selected.last_run" @click="pin" />
-            </div>
+            <p class="eyebrow">{{ selected.id }}</p>
+            <h3>{{ selected.title }}</h3>
+            <p class="objective">{{ selected.objective }}</p>
           </header>
 
+          <div class="detail-main">
           <DataTestResultPanel :test="selected" :result="result" />
-
-          <div class="sign-off">
-            <label>
-              Control conclusion
-              <Select
-                v-model="selected.control_conclusion"
-                :options="controlConclusions"
-                optionLabel="label"
-                optionValue="value"
-              />
-            </label>
-            <label class="conclusion-note">
-              Conclusion
-              <Textarea v-model="selected.conclusion" rows="2" autoResize placeholder="What this result means for the control, in your own words." />
-            </label>
-            <Button label="Save conclusion" icon="pi pi-check" size="small" outlined :loading="saving" @click="saveConclusion" />
-          </div>
-          <section class="finding-action" aria-label="Finding">
-            <template v-if="linkedFindings.length">
-              <div>
-                <strong>Finding{{ linkedFindings.length === 1 ? '' : 's' }}</strong>
-                <p>{{ linkedFindings.length === 1 ? 'A finding is linked to this test.' : `${linkedFindings.length} findings are linked to this test.` }}</p>
-              </div>
-              <div class="finding-actions">
-                <Button
-                  v-for="finding in linkedFindings"
-                  :key="finding.id"
-                  :label="`Open ${finding.id}`"
-                  icon="pi pi-arrow-up-right"
-                  size="small"
-                  outlined
-                  @click="openFinding(finding.id)"
-                />
-                <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="!selected.rcm_id || !selected.last_run" @click="draftFinding(true)" />
-              </div>
-            </template>
-            <template v-else>
-              <div><strong>Finding</strong><p>Generate a draft from this test’s exception observations.</p></div>
-              <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="!selected.rcm_id || !selected.last_run" @click="() => draftFinding()" />
-            </template>
-          </section>
 
           <!-- Authoring is the rarer action, so it is here and closed. -->
           <UiAdvancedSection
@@ -481,6 +438,54 @@ onUnmounted(unsubscribe)
               </div>
             </div>
           </UiAdvancedSection>
+          </div>
+
+          <!-- The rail: run it, and record what it means. -->
+          <aside class="detail-rail" aria-label="Your assessment">
+            <div class="rail-group">
+              <Button label="Run" icon="pi pi-play" size="small" :loading="running" :disabled="runningAll" @click="runTest" />
+              <Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" size="small" outlined @click="openRcm" />
+              <Button label="Pin" icon="pi pi-thumbtack" size="small" outlined :disabled="!selected.last_run" @click="pin" />
+            </div>
+
+            <div class="rail-group">
+              <h4>Your conclusion</h4>
+              <label>
+                Control conclusion
+                <Select
+                  v-model="selected.control_conclusion"
+                  :options="controlConclusions"
+                  optionLabel="label"
+                  optionValue="value"
+                />
+              </label>
+              <label>
+                Conclusion
+                <Textarea v-model="selected.conclusion" rows="3" autoResize placeholder="What this result means for the control, in your own words." />
+              </label>
+              <Button label="Save conclusion" icon="pi pi-check" size="small" outlined :loading="saving" @click="saveConclusion" />
+            </div>
+
+            <div class="rail-group">
+              <h4>Finding{{ linkedFindings.length > 1 ? 's' : '' }}</h4>
+              <template v-if="linkedFindings.length">
+                <Button
+                  v-for="finding in linkedFindings"
+                  :key="finding.id"
+                  :label="`Open ${finding.id}`"
+                  icon="pi pi-arrow-up-right"
+                  size="small"
+                  outlined
+                  @click="openFinding(finding.id)"
+                />
+                <Button label="Regenerate" icon="pi pi-refresh" size="small" severity="secondary" :disabled="!selected.rcm_id || !selected.last_run" @click="draftFinding(true)" />
+              </template>
+              <template v-else>
+                <p class="rail-note">Generate a draft from this test’s exception observations.</p>
+                <Button label="Generate finding" icon="pi pi-sparkles" size="small" :disabled="!selected.rcm_id || !selected.last_run" @click="() => draftFinding()" />
+              </template>
+            </div>
+          </aside>
         </section>
         <UiEmptyState
           v-else
@@ -523,21 +528,29 @@ onUnmounted(unsubscribe)
 .layout { min-height: 32rem; }
 
 /* One panel for the whole detail column — see DocTestItemDetail for why. */
-.detail { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; max-width: 100%; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
-.detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; min-width: 0; }
-.head-copy { min-width: 0; }
+/* align-content: start — see DocTestItemDetail; min-height plus a stretching
+   grid would otherwise inflate the header row. */
+.detail { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--aw-space-4); min-width: 0; max-width: 100%; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
+.detail-head { min-width: 0; }
 .eyebrow { margin: 0; }
 .detail-head h3 { margin: 0.15rem 0 0.25rem; font-size: var(--aw-text-lg); line-height: 1.3; }
 .objective { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.45; }
-.head-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
-.sign-off { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.6rem; }
-.sign-off label { flex: 0 1 16rem; }
-.sign-off label.conclusion-note { flex: 1 1 20rem; }
-.finding-action { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 0.8rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); }
-.finding-action strong { font-size: var(--aw-text-sm); }
-.finding-action p { margin: 0.15rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.finding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
+.detail-main { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; container: detail-main / inline-size; }
+
+.detail-rail { display: flex; flex-direction: column; gap: 0.9rem; min-width: 0; padding: 0.9rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
+.rail-group { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.rail-group + .rail-group { padding-top: 0.9rem; border-top: 1px solid var(--aw-border-strong); }
+.rail-group h4 { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+.rail-note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.4; }
+.detail-rail :deep(.p-button) { width: 100%; justify-content: center; }
+
+/* 42rem — see DocTestItemDetail for why this is measured, not round. */
+@container master-detail-content (min-width: 42rem) {
+  .detail { grid-template-columns: minmax(0, 1fr) 13rem; }
+  .detail-head { grid-column: 1 / -1; }
+  .detail-rail { position: sticky; top: 0; align-self: start; }
+}
 
 .definition { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
 .plan { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.7rem; }
@@ -547,10 +560,8 @@ onUnmounted(unsubscribe)
 label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { width: 100%; min-width: 0; }
 
-@container master-detail-content (max-width: 34rem) {
-  .detail-head { flex-direction: column; }
-  .head-actions { justify-content: flex-start; }
-  .finding-action { align-items: flex-start; flex-direction: column; }
+/* Keyed to the record column: the rail takes width out of it. */
+@container detail-main (max-width: 30rem) {
   .plan { grid-template-columns: minmax(0, 1fr); }
   .wide { grid-column: auto; }
 }
