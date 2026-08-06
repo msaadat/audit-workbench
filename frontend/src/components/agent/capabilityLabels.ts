@@ -31,9 +31,10 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'audit.verified': 'Audit verification',
   // documents_workflow_v1
   'documents.analysis_reviewed': 'Document analysis review',
-  // doc_tests_workflow_v1
+  // doc_tests_workflow_v2
   'doc_tests.definitions_ready': 'Document test definitions',
   'doc_tests.executed': 'Document test execution',
+  'doc_tests.dispositioned': 'Auditor disposition',
 }
 
 /** An unregistered ID still has to read as something; never show a raw key. */

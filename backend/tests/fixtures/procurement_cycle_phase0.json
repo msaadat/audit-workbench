@@ -1,0 +1,160 @@
+{
+  "registry": {
+    "pack_id": "procure_to_pay",
+    "pack_version": 1,
+    "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"
+  },
+  "record_fragments": [
+    {
+      "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"},
+      "chunk_id": "DOC-PR:pages:1-1",
+      "page_span": [1, 1],
+      "record_kind": "procure_to_pay.purchase_requisition",
+      "classification_evidence": ["PR-C1"],
+      "identifiers": [
+        {"kind": "procure_to_pay.requisition_number", "value": {"raw_value": "PR-2024-004", "value": "PR-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PR-C1"}},
+        {"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PR-C1"}},
+        {"kind": "common.buyer_id", "value": {"raw_value": "BUYER-7", "value": "BUYER-7", "normalization_status": "normalized", "normalization_error": null, "citation": "PR-C1"}}
+      ],
+      "fields": [
+        {"group": "approvals", "kind": "request_approval", "attribute": "approver", "value": {"raw_value": "A. Khan", "value": "A. Khan", "normalization_status": "normalized", "normalization_error": null, "citation": "PR-C2"}}
+      ]
+    },
+    {
+      "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"},
+      "chunk_id": "DOC-PO:pages:1-1",
+      "page_span": [1, 1],
+      "record_kind": "procure_to_pay.purchase_order",
+      "classification_evidence": ["PO-C1"],
+      "identifiers": [
+        {"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PO-C1"}},
+        {"kind": "procure_to_pay.requisition_number", "value": {"raw_value": "PR-2024-004", "value": "PR-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PO-C1"}}
+      ],
+      "fields": []
+    },
+    {
+      "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"},
+      "chunk_id": "DOC-GRN:pages:1-1",
+      "page_span": [1, 1],
+      "record_kind": "procure_to_pay.goods_receipt",
+      "classification_evidence": ["GRN-C1"],
+      "identifiers": [
+        {"kind": "procure_to_pay.goods_receipt_number", "value": {"raw_value": "GRN-2024-011", "value": "GRN-2024-011", "normalization_status": "normalized", "normalization_error": null, "citation": "GRN-C1"}},
+        {"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "GRN-C1"}}
+      ],
+      "fields": [
+        {"group": "dates", "kind": "receipt_date", "attribute": "value", "value": {"raw_value": "29-Apr -2024", "value": null, "normalization_status": "invalid", "normalization_error": "unrecognized date format", "citation": "GRN-C2"}}
+      ]
+    },
+    {
+      "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"},
+      "chunk_id": "DOC-INV:pages:1-1",
+      "page_span": [1, 1],
+      "record_kind": "procure_to_pay.vendor_invoice",
+      "classification_evidence": ["INV-C1"],
+      "identifiers": [
+        {"kind": "procure_to_pay.vendor_invoice_number", "value": {"raw_value": "V-INV-778", "value": "V-INV-778", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}},
+        {"kind": "procure_to_pay.internal_invoice_id", "value": {"raw_value": "INV2024004", "value": "INV2024004", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}},
+        {"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}},
+        {"kind": "procure_to_pay.goods_receipt_number", "value": {"raw_value": "GRN-2024-011", "value": "GRN-2024-011", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}}
+      ],
+      "fields": [
+        {"group": "amounts", "kind": "total", "attribute": "value", "value": {"raw_value": "2,000,000.00", "value": 2000000.0, "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C2"}}
+      ]
+    },
+    {
+      "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"},
+      "chunk_id": "DOC-PAY:pages:1-1",
+      "page_span": [1, 1],
+      "record_kind": "procure_to_pay.payment_voucher",
+      "classification_evidence": ["PAY-C1"],
+      "identifiers": [
+        {"kind": "procure_to_pay.payment_voucher_number", "value": {"raw_value": "PV-2024-119", "value": "PV-2024-119", "normalization_status": "normalized", "normalization_error": null, "citation": "PAY-C1"}},
+        {"kind": "procure_to_pay.internal_invoice_id", "value": {"raw_value": "INV2024004", "value": "INV2024004", "normalization_status": "normalized", "normalization_error": null, "citation": "PAY-C1"}},
+        {"kind": "common.vendor_id", "value": {"raw_value": "VEND-12", "value": "VEND-12", "normalization_status": "normalized", "normalization_error": null, "citation": "PAY-C1"}}
+      ],
+      "fields": [
+        {"group": "amounts", "kind": "total", "attribute": "value", "value": {"raw_value": "2,100,000.00", "value": 2100000.0, "normalization_status": "normalized", "normalization_error": null, "citation": "PAY-C2"}},
+        {"group": "dates", "kind": "payment_date", "attribute": "value", "value": {"raw_value": "2024-05-02", "value": "2024-05-02", "normalization_status": "normalized", "normalization_error": null, "citation": "PAY-C2"}}
+      ]
+    }
+  ],
+  "reduction": {
+    "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"},
+    "records": [
+      {"registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"}, "record_id": "REC-PR", "document_id": "DOC-PR", "record_kind": "procure_to_pay.purchase_requisition", "classification_evidence": ["PR-C1"], "identifiers": [{"kind": "procure_to_pay.requisition_number", "value": {"raw_value": "PR-2024-004", "value": "PR-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PR-C1"}}, {"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PR-C1"}}], "fields": []},
+      {"registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"}, "record_id": "REC-PO", "document_id": "DOC-PO", "record_kind": "procure_to_pay.purchase_order", "classification_evidence": ["PO-C1"], "identifiers": [{"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PO-C1"}}, {"kind": "procure_to_pay.requisition_number", "value": {"raw_value": "PR-2024-004", "value": "PR-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "PO-C1"}}], "fields": []},
+      {"registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"}, "record_id": "REC-GRN", "document_id": "DOC-GRN", "record_kind": "procure_to_pay.goods_receipt", "classification_evidence": ["GRN-C1"], "identifiers": [{"kind": "procure_to_pay.goods_receipt_number", "value": {"raw_value": "GRN-2024-011", "value": "GRN-2024-011", "normalization_status": "normalized", "normalization_error": null, "citation": "GRN-C1"}}, {"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "GRN-C1"}}], "fields": []},
+      {"registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"}, "record_id": "REC-INV", "document_id": "DOC-INV", "record_kind": "procure_to_pay.vendor_invoice", "classification_evidence": ["INV-C1"], "identifiers": [{"kind": "procure_to_pay.vendor_invoice_number", "value": {"raw_value": "V-INV-778", "value": "V-INV-778", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}}, {"kind": "procure_to_pay.internal_invoice_id", "value": {"raw_value": "INV2024004", "value": "INV2024004", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}}, {"kind": "procure_to_pay.purchase_order_number", "value": {"raw_value": "PO-2024-004", "value": "PO-2024-004", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}}, {"kind": "procure_to_pay.goods_receipt_number", "value": {"raw_value": "GRN-2024-011", "value": "GRN-2024-011", "normalization_status": "normalized", "normalization_error": null, "citation": "INV-C1"}}], "fields": []},
+      {"registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"}, "record_id": "REC-PAY", "document_id": "DOC-PAY", "record_kind": "procure_to_pay.payment_voucher", "classification_evidence": ["PAY-C1"], "identifiers": [{"kind": "procure_to_pay.payment_voucher_number", "value": {"raw_value": "PV-2024-119", "value": "PV-2024-119", "normalization_status": "normalized", "normalization_error": null, "citation": "PAY-C1"}}, {"kind": "procure_to_pay.internal_invoice_id", "value": {"raw_value": "INV2024004", "value": "INV2024004", "normalization_status": "normalized", "normalization_error": null, "citation": "PAY-C1"}}], "fields": []}
+    ],
+    "unresolved_fragments": [],
+    "conflicts": []
+  },
+  "control_attributes": [
+    {"key": "five_record_cycle", "assertion": "Existence", "requirement": "A paid vendor invoice is supported by a requisition, purchase order, goods receipt, and payment voucher.", "evidence_kind": "transaction_cycle", "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"}, "required_record_kinds": ["procure_to_pay.purchase_requisition", "procure_to_pay.purchase_order", "procure_to_pay.goods_receipt", "procure_to_pay.vendor_invoice", "procure_to_pay.payment_voucher"]},
+    {"key": "receipt_before_payment", "assertion": "Cut-off", "requirement": "Receipt occurs no later than payment.", "evidence_kind": "transaction_cycle", "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"}, "required_record_kinds": ["procure_to_pay.goods_receipt", "procure_to_pay.payment_voucher"]}
+  ],
+  "cycle_test": {
+    "schema_version": 2,
+    "kind": "cycle_vouch",
+    "registry": {"pack_id": "procure_to_pay", "pack_version": 1, "definition_hash": "sha256:ff014c3ed35eaf4f9201e6fc36b345d5d888e2d8573b455afae150af828a5d87"},
+    "rcm_id": "RCM-P2P-01",
+    "requirement_refs": ["RCM-P2P-01:five_record_cycle", "RCM-P2P-01:receipt_before_payment"],
+    "procedure_key": "invoice-five-record-cycle",
+    "steps": [],
+    "definition": {
+      "population": {
+        "candidate_id": "CYCLE-CAND-INVOICE",
+        "selection_reason": "Authoritative invoice population at the paid-invoice lifecycle stage.",
+        "table": "invoice_data",
+        "row_key": {"column": "INVOICE_ID", "identifier_kind": "procure_to_pay.internal_invoice_id"},
+        "cycle_keys": [
+          {"column": "VENDOR_INVOICE_NUMBER", "identifier_kind": "procure_to_pay.vendor_invoice_number"},
+          {"column": "PO_NUMBER_LINK", "identifier_kind": "procure_to_pay.purchase_order_number"},
+          {"column": "GRN_ID_LINK", "identifier_kind": "procure_to_pay.goods_receipt_number"}
+        ],
+        "selection": {"mode": "evidence_linked", "assurance_scope": "targeted_evidence_only"}
+      },
+      "roles": [
+        {"role": "purchase_requisition", "record_kind": "procure_to_pay.purchase_requisition", "required": true, "cardinality": "one", "reuse_across_items": "allowed"},
+        {"role": "purchase_order", "record_kind": "procure_to_pay.purchase_order", "required": true, "cardinality": "one", "reuse_across_items": "allowed"},
+        {"role": "goods_receipt", "record_kind": "procure_to_pay.goods_receipt", "required": true, "cardinality": "one", "reuse_across_items": "allowed"},
+        {"role": "vendor_invoice", "record_kind": "procure_to_pay.vendor_invoice", "required": true, "cardinality": "one", "reuse_across_items": "exclusive"},
+        {"role": "payment_voucher", "record_kind": "procure_to_pay.payment_voucher", "required": true, "cardinality": "one", "reuse_across_items": "allowed"}
+      ],
+      "assertions": [
+        {"key": "invoice_amount_to_payment", "label": "Invoice amount agrees to payment", "left": {"source": "role", "role": "vendor_invoice", "field": {"group": "amounts", "kind": "total", "attribute": "value"}}, "right": {"source": "role", "role": "payment_voucher", "field": {"group": "amounts", "kind": "total", "attribute": "value"}}, "operator": "numeric_within", "tolerance": {"absolute": 0.01, "percent": 0}},
+        {"key": "receipt_before_payment", "label": "Receipt date is on or before payment", "left": {"source": "role", "role": "goods_receipt", "field": {"group": "dates", "kind": "receipt_date", "attribute": "value"}}, "right": {"source": "role", "role": "payment_voucher", "field": {"group": "dates", "kind": "payment_date", "attribute": "value"}}, "operator": "date_on_or_before"},
+        {"key": "requisition_approved", "label": "Purchase requisition records an approver", "left": {"source": "role", "role": "purchase_requisition", "field": {"group": "approvals", "kind": "request_approval", "attribute": "approver"}}, "operator": "present"}
+      ]
+    },
+    "items": [
+      {
+        "id": "ITEM-INV2024004",
+        "label": "INV2024004",
+        "instruction": "Vouch the complete procure-to-pay cycle.",
+        "population_ref": {"table": "invoice_data", "source_row": 17, "source_sha1": "sha1:population"},
+        "frozen_row": {"INVOICE_ID": "INV2024004", "VENDOR_INVOICE_NUMBER": "V-INV-778", "PO_NUMBER_LINK": "PO-2024-004", "GRN_ID_LINK": "GRN-2024-011"},
+        "cycle_identifiers": [
+          {"kind": "procure_to_pay.internal_invoice_id", "value": "INV2024004"},
+          {"kind": "procure_to_pay.vendor_invoice_number", "value": "V-INV-778"},
+          {"kind": "procure_to_pay.purchase_order_number", "value": "PO-2024-004"},
+          {"kind": "procure_to_pay.goods_receipt_number", "value": "GRN-2024-011"}
+        ],
+        "role_bindings": [
+          {"role": "purchase_requisition", "document_id": "DOC-PR", "record_id": "REC-PR", "matched_by": [{"identifier_kind": "procure_to_pay.requisition_number", "normalized_value": "pr-2024-004"}]},
+          {"role": "purchase_order", "document_id": "DOC-PO", "record_id": "REC-PO", "matched_by": [{"identifier_kind": "procure_to_pay.purchase_order_number", "normalized_value": "po-2024-004"}]},
+          {"role": "goods_receipt", "document_id": "DOC-GRN", "record_id": "REC-GRN", "matched_by": [{"identifier_kind": "procure_to_pay.goods_receipt_number", "normalized_value": "grn-2024-011"}]},
+          {"role": "vendor_invoice", "document_id": "DOC-INV", "record_id": "REC-INV", "matched_by": [{"identifier_kind": "procure_to_pay.internal_invoice_id", "normalized_value": "inv2024004"}]},
+          {"role": "payment_voucher", "document_id": "DOC-PAY", "record_id": "REC-PAY", "matched_by": [{"identifier_kind": "procure_to_pay.internal_invoice_id", "normalized_value": "inv2024004"}]}
+        ],
+        "unassigned_records": [],
+        "missing_roles": [],
+        "result_by_assertion": {},
+        "evaluation": {"state": "not_run", "definition_sha1": "sha1:definition"},
+        "disposition": {"state": "pending", "evaluated_definition_sha1": null, "stale": false}
+      }
+    ]
+  }
+}

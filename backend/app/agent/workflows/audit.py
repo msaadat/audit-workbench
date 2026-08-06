@@ -93,7 +93,7 @@ FULL_AUDIT_OUTCOMES = [
 
 # Goal-template routing to requested outcome sets. Running one named Document
 # Test is not an RCM workflow goal, so it is intentionally absent here: it is a
-# request against the standalone ``doc_tests_workflow_v1`` graph, which reaches
+# request against the standalone ``doc_tests_workflow_v2`` graph, which reaches
 # the same units through the same binder.
 TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     "full_audit_working_draft": FULL_AUDIT_OUTCOMES,

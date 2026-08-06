@@ -136,7 +136,16 @@ def test_manifest(workspace: Workspace) -> list[dict]:
                     )
                 )
             else:
-                has_result = item.get("status") in _DURABLE_DOC_TEST_STATUSES
+                current_items = bool(item.get("items")) and all(
+                    doc_tests.item_execution_current(item, test_item)
+                    for test_item in item.get("items") or []
+                )
+                has_result = (
+                    current_items
+                    if doc_tests.is_cycle_test(item)
+                    else item.get("status") in _DURABLE_DOC_TEST_STATUSES
+                    or current_items
+                )
                 result_stale = False
             manifest.append({
                 "rcm_id": row["id"],
@@ -347,7 +356,15 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
     status = str(item.get("status") or "draft")
     exceptions = int(rollup["exceptions"] + rollup["mismatched"])
     open_exceptions = 0
-    executed = 1 if status in _DURABLE_DOC_TEST_STATUSES else 0
+    current_items = bool(item.get("items")) and all(
+        doc_tests.item_execution_current(item, test_item)
+        for test_item in item.get("items") or []
+    )
+    executed = int(
+        current_items
+        if doc_tests.is_cycle_test(item)
+        else status in _DURABLE_DOC_TEST_STATUSES or current_items
+    )
     evidence_refs = [
         anchor
         for test_item in item.get("items") or []

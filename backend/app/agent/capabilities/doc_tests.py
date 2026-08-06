@@ -1,8 +1,8 @@
 """Standalone document-test capability group.
 
 Owns every outcome of the authoritative graph in
-:mod:`agent.workflows.doc_tests`: ``doc_tests.definitions_ready`` and
-``doc_tests.executed``.
+:mod:`agent.workflows.doc_tests`: ``doc_tests.definitions_ready``,
+``doc_tests.executed``, and ``doc_tests.dispositioned``.
 
 Each capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry key for its
@@ -30,6 +30,7 @@ from ..workflows import doc_tests as doc_tests_workflow
 CAPABILITY_IDS: tuple[str, ...] = (
     "doc_tests.definitions_ready",
     "doc_tests.executed",
+    "doc_tests.dispositioned",
 )
 
 # The bounded fallback when a request names no Document Test. Execution is up to
@@ -75,10 +76,11 @@ def _requested_ids(scope: dict) -> tuple[str, ...]:
 
 
 def _outstanding(test: dict) -> bool:
-    """Whether this test still has an item the execution workflow can run."""
+    """Whether this test still owes execution or auditor disposition."""
 
     return any(
-        str(item.get("state") or "pending") == "pending"
+        doc_test_service.item_execution_pending(test, item)
+        or not doc_test_service.item_disposition_current(test, item)
         for item in test.get("items") or []
     )
 
@@ -232,7 +234,8 @@ def document_test_units(
             )
         ]
     already_checked = bool(test.get("items")) and all(
-        item.get("state") in CHECKED_STATES for item in test.get("items") or []
+        doc_test_service.item_execution_current(test, item)
+        for item in test.get("items") or []
     )
     # Explicit force is the auditor asking for the work again, so a test the
     # agent already checked is re-executed rather than handed straight back for
@@ -343,7 +346,7 @@ def unexecuted_items(test: dict) -> int:
     every request.
     """
     return sum(
-        str(item.get("state") or "pending") == "pending"
+        doc_test_service.item_execution_pending(test, item)
         for item in test.get("items") or []
     )
 
@@ -422,9 +425,87 @@ def _doc_tests_executed() -> Capability:
     )
 
 
+# --------------------------------------------------------------------------- #
+# doc_tests.dispositioned
+# --------------------------------------------------------------------------- #
+def undispositioned_items(test: dict) -> int:
+    """Current execution outcomes that still require an auditor decision."""
+
+    return sum(
+        doc_test_service.item_disposition_pending(test, item)
+        for item in test.get("items") or []
+    )
+
+
+def _dispositioned_ready(workspace: Workspace, scope: dict) -> Readiness:
+    test_scope = resolve_doc_test_scope(workspace, scope)
+    blocked = _unknown_tests(test_scope)
+    if blocked is not None:
+        return blocked
+    tests = [
+        doc_test_service.load_test(workspace, test_id)
+        for test_id in test_scope.test_ids
+    ]
+    awaiting_execution = sum(unexecuted_items(test) for test in tests)
+    pending = sum(undispositioned_items(test) for test in tests)
+    details = {
+        "tests": len(test_scope.test_ids),
+        "awaiting_execution": awaiting_execution,
+        "pending": pending,
+    }
+    if awaiting_execution:
+        return Readiness(
+            "missing",
+            (f"{awaiting_execution} Document Test item(s) must execute before disposition",),
+            details=details,
+        )
+    if pending:
+        return Readiness(
+            "review_required",
+            (f"{pending} Document Test item(s) await auditor disposition",),
+            details=details,
+        )
+    return Readiness("satisfied", details=details)
+
+
+def _disposition_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    test_scope = resolve_doc_test_scope(workspace, scope)
+    units: list[UnitSpec] = []
+    for test_id in test_scope.test_ids:
+        test = doc_test_service.load_test(workspace, test_id)
+        for item in test.get("items") or []:
+            if not doc_test_service.item_disposition_pending(test, item):
+                continue
+            units.append(
+                UnitSpec(
+                    semantic_unit_id("document_test_disposition", test_id, item["id"]),
+                    "document_test_disposition",
+                    f"Disposition {item.get('label') or item['id']} — {test.get('title') or test_id}",
+                    (f"doctest:{test_id}", f"docitem:{item['id']}"),
+                    {"test_id": test_id, "item_id": item["id"]},
+                )
+            )
+    return units
+
+
+def _doc_tests_dispositioned() -> Capability:
+    return Capability(
+        "doc_tests.dispositioned",
+        "doc_test_disposition",
+        "Auditor disposition",
+        "document_test_disposition",
+        doc_tests_workflow.dependencies("doc_tests.dispositioned"),
+        _dispositioned_ready,
+        _disposition_units,
+        context=None,
+        invalidate_on=("definition", "evidence", "evaluation", "disposition"),
+    )
+
+
 _BUILDERS = {
     "doc_tests.definitions_ready": _doc_tests_definitions_ready,
     "doc_tests.executed": _doc_tests_executed,
+    "doc_tests.dispositioned": _doc_tests_dispositioned,
 }
 
 
@@ -443,6 +524,7 @@ __all__ = [
     "capabilities",
     "document_test_units",
     "unexecuted_items",
+    "undispositioned_items",
     "resolve_doc_test_scope",
     "scoped_tests",
 ]

@@ -57,6 +57,12 @@ backend/app/
 |- document_search.py          - retrieval helpers over extracted docs
 |- document_analysis.py        - document-analysis jobs and conflict model
 |- doc_tests.py                - durable document test definitions and runs
+|- cycle_vouching.py           - domain-neutral cycle-test contracts,
+|                                registry-reference validation, and shared
+|                                execution/disposition state accessors
+|- cycle_registry/             - immutable registry core, common evidence
+|  |- models.py / registry.py    definitions, expanded pack hashes, and
+|  `- packs/                     namespaced business-cycle packs
 |- data_tests.py               - durable exploratory or RCM-linked data tests
 |- methodology.py              - methodology pack storage and retrieval
 |- evidence.py                 - typed evidence anchors and provenance helpers
@@ -251,7 +257,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   analysis definitions, and executes them locally), the document-analysis
   workflow (`documents_workflow_v1`: extract, map each bounded source chunk,
   reduce, and separately await auditor review), and the standalone document-test
-  workflow (`doc_tests_workflow_v1`: definition readiness, item execution, and
+  workflow (`doc_tests_workflow_v2`: definition readiness, item execution, and
   separately the auditor's own disposition). `workflow_dispatch.py`
   selects the composition from the definition id the run persists. It receives a
   materialized route and registered capability executions, fans outcomes into units, and
@@ -447,7 +453,7 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `documents.analysis_reviewed`.
 - Phase 10 settled the two remaining leaf runners with an explicit decision
   record, [docs/agent-protocol-runner-decisions.md](docs/agent-protocol-runner-decisions.md).
-  **Document tests migrated:** the standalone `doc_tests_workflow_v1` graph
+  **Document tests migrated:** the standalone `doc_tests_workflow_v2` graph
   (`doc_tests.definitions_ready` → `doc_tests.executed` →
   `doc_tests.dispositioned`) replaced `DocTestRunner`, and the `doc_test` engine
   and run kind are deleted. Both graphs bind Document Test units through one
@@ -619,7 +625,7 @@ npm run build
   still calls `/documents/analysis-runs`, but that endpoint now starts a
   `documents_workflow_v1` command run.
 - Document-test execution is likewise a declared workflow.
-  `POST /doc-tests/{test_id}/run` starts a `doc_tests_workflow_v1` command run
+  `POST /doc-tests/{test_id}/run` starts a `doc_tests_workflow_v2` command run
   naming that test as a workflow target, and since Phase 11 the DocTests tab's
   own Run and Prepare buttons send the `document_test_execution` and
   `document_test_preparation` workflow templates through assistant chat. Run

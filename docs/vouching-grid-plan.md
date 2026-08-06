@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: implementation-ready, revised against the current application and `Workspaces/procurement` on 2026-08-06. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0 and the domain-neutral Phase 0.1 refactor are implemented as of 2026-08-06. The remaining phases are implementation-ready. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -15,7 +15,7 @@ The original plan started too late in the pipeline. The procurement workspace sh
 
 The implementation order is therefore:
 
-1. create a typed transaction-evidence and voucher-role model;
+1. create a typed transaction-evidence model backed by registered business-cycle packs;
 2. generate stronger RCM control attributes and executable cycle-test definitions;
 3. link and evaluate complete cycles deterministically;
 4. expose the result as a grid; and
@@ -24,6 +24,10 @@ The implementation order is therefore:
 The existing synthetic cycle tests may be deleted and regenerated, but only by the user through the existing product UX at the checkpoints in section 9. Implementation and automated tests must not reset, delete, or regenerate `Workspaces/procurement`. Do not add compatibility readers, migration heuristics, dual-write paths, endpoints, or UI states for its current schema. The implementing model tells the user when the disposable workspace must be regenerated and pauses until the user confirms it.
 
 ## 2. What the procurement workspace demonstrates
+
+Procurement is the concrete failure case and first validation pack, not the
+product ontology. Every defect below is translated into a domain-neutral rule
+in section 3 and must also hold for payroll and future registered packs.
 
 The workspace contains four source populations:
 
@@ -103,39 +107,57 @@ Consolidation must be scoped to one RCM row and one coherent population/procedur
 
 ## 3. Target domain model
 
-### 3.1 Voucher record kinds and typed identifiers
+### 3.1 Domain-neutral registry and typed evidence records
 
-Replace the broad voucher `document_type` as the role-binding key with a closed `record_kind` vocabulary. The initial procurement set is:
+Replace broad document `document_type` values as role-binding keys with an
+immutable registry of business-cycle packs. The core registry defines only the
+shape and validation rules for normalizers, identifier kinds, field kinds,
+record kinds, evidence strategies, and pack identity. It contains no
+procurement record-name switch.
 
-```text
-purchase_requisition
-purchase_order
-goods_receipt
-vendor_invoice
-payment_voucher
-other
+Built-in Phase 0.1 packs prove the boundary:
+
+- `procure_to_pay` registers requisition, purchase-order, receipt, invoice, and
+  payment-voucher evidence;
+- `payroll` registers employment-contract, time-record, payroll-register,
+  payslip, and bank-payment evidence; and
+- `common` supplies shared non-linking entity identifiers, common fields, the
+  non-bindable `common.other` record, and evidence strategies.
+
+Domain IDs are namespaced. Procurement examples are
+`procure_to_pay.purchase_order`,
+`procure_to_pay.purchase_order_number`, and
+`procure_to_pay.date.receipt`; payroll examples are `payroll.payslip`,
+`payroll.payslip_number`, and `payroll.amount.net_pay`. Shared entity IDs use
+the `common` namespace, such as `common.vendor_id` and `common.employee_id`.
+Only identifier definitions with `edge_policy: transaction` can create graph
+edges. The registry, never the model or a workspace payload, declares that
+policy.
+
+Every persisted registry-backed artifact carries an exact reference:
+
+```yaml
+registry:
+  pack_id: procure_to_pay
+  pack_version: 1
+  definition_hash: sha256:...
 ```
 
-The document-analysis response must return a `records` array. Each record has a stable local `record_id`, one `record_kind`, and the evidence that supports that classification. A normal single-voucher file produces one record; a combined pack may produce several, all citing their own pages. If a record cannot be classified uniquely, it returns `other` with candidate kinds and a review reason; the cycle builder must not guess. The kind registry is extensible for other business cycles, but an unknown kind fails closed until registered.
+The definition hash covers the expanded pack: the pack declaration and every
+referenced normalizer, identifier, field, and record definition. Missing,
+unknown, cross-pack, version-mismatched, or stale references fail closed. A
+definition change requires a version/hash change and explicitly invalidates
+dependent evidence and results. Extension to another audit area means adding a
+validated registered pack and runtime descriptors; it does not mean widening
+TypeScript literal unions or adding a new branch to cycle-validation code.
 
-Identifiers also use a closed kind registry. The registry, not the model, declares whether a kind may create a cycle edge.
-
-```text
-Transaction-linking examples:
-  requisition_number
-  purchase_order_number
-  goods_receipt_number
-  vendor_invoice_number
-  internal_invoice_id
-  payment_voucher_number
-
-Non-linking examples:
-  vendor_id
-  buyer_id
-  employee_id
-  department_id
-  account_number
-```
+The document-analysis response must return a `records` array. Each record has a
+stable local `record_id`, one registered `record_kind`, the exact registry
+reference, and the evidence that supports its classification. A normal
+single-record file produces one record; a combined evidence pack may produce
+several, all citing their own pages. If a record cannot be classified uniquely,
+it returns `common.other` with candidate kinds and a review reason; the cycle
+builder must not guess.
 
 Every extracted typed value has this normalization envelope:
 
@@ -151,18 +173,33 @@ Improve the date normalizer for common human formats, but retain `raw_value` and
 
 #### Chunk-to-record reduction
 
-The voucher map worker runs on bounded source chunks, so it emits `record_fragments`, not durable records. One fragment represents one candidate voucher record visible in that chunk and contains its chunk ID/page span, candidate record kind, citation-anchored identifiers and fields, and no `record_id`. If a chunk contains two distinct values for a record kind's primary identifier, the worker must emit two fragments; the map validator rejects a fragment that blends them.
+The transaction-evidence map worker runs on bounded source chunks, so it emits
+`record_fragments`, not durable records. One fragment represents one candidate
+record visible in that chunk and contains its registry reference, chunk ID/page
+span, candidate record kind, classification evidence, citation-anchored typed
+identifiers and fields, and no `record_id`. Field facts name `group`, `kind`, and
+`attribute` explicitly. If a chunk contains two distinct values for a record
+kind's primary identifier, the worker must emit two fragments; the map validator
+rejects a fragment that blends them.
 
 After every chunk proposal has settled, a deterministic document-local reducer builds records:
 
-1. the record-kind registry defines an ordered set of primary identifier kinds for each record kind;
+1. the selected pack defines an ordered set of primary identifier kinds for each record kind;
 2. fragments with the same specific record kind and same exact typed primary identifier join one component;
 3. fragments with different values of the same primary identifier kind never merge, even when they share a PO, payment, vendor, or another secondary identifier;
 4. a fragment without a primary identifier joins a component only when it has a typed transaction identifier shared by exactly one component of a compatible record kind and has no contradictory identifier;
 5. a fragment matching zero or several components remains in `unresolved_fragments` with `missing_identity` or `ambiguous_identity`; it contributes no comparable fact until auditor review assigns it; and
 6. `record_id` is computed from the completed component only after this grouping, using the stable identity rule in section 3.7.
 
-Within a component, identical normalized facts deduplicate while retaining every citation. Differing facts remain separate and resolve as ambiguous. `other` plus one specific record kind resolves to the specific kind; two different specific kinds produce `record_kind_conflict` and the component is not role-bindable. The reducer output is `{records, unresolved_fragments, conflicts}` and replaces the current first-non-empty `document_type` plus union behavior. Narrative map/reduction remains separate.
+Within a component, identical normalized facts deduplicate while retaining
+every citation. Differing facts remain separate and resolve as ambiguous.
+`common.other` plus one specific record kind resolves to the specific kind; two
+different specific kinds produce `record_kind_conflict` and the component is
+not role-bindable. The reducer output is
+`{registry, records, unresolved_fragments, conflicts}` and replaces the current
+first-non-empty `document_type` plus union behavior. Children carry the same
+exact registry reference as the reduction. Narrative map/reduction remains
+separate.
 
 Because map fragments have no durable IDs, two chunks cannot independently create competing record hashes. A later primary identifier can absorb an earlier partial fragment only through the exact unique rule above; page adjacency or list order alone is never sufficient. Auditor fragment assignments are stored as reviewed overrides, included in the extraction hash, and revalidated on reanalysis.
 
@@ -180,21 +217,37 @@ control_attributes:
     assertion: Existence
     requirement: A paid vendor invoice is supported by a PO and goods receipt.
     evidence_kind: transaction_cycle
+    registry:
+      pack_id: procure_to_pay
+      pack_version: 1
+      definition_hash: sha256:...
     required_record_kinds:
-      - vendor_invoice
-      - purchase_order
-      - goods_receipt
-      - payment_voucher
+      - procure_to_pay.vendor_invoice
+      - procure_to_pay.purchase_order
+      - procure_to_pay.goods_receipt
+      - procure_to_pay.payment_voucher
   - key: receipt_before_payment
     assertion: Cut-off
     requirement: Receipt occurs no later than payment.
     evidence_kind: transaction_cycle
+    registry:
+      pack_id: procure_to_pay
+      pack_version: 1
+      definition_hash: sha256:...
     required_record_kinds:
-      - goods_receipt
-      - payment_voucher
+      - procure_to_pay.goods_receipt
+      - procure_to_pay.payment_voucher
 ```
 
-The RCM worker and validator must require unique attribute keys, the existing assertion vocabulary, a supported evidence kind, and evidence roles that are logically supported by the control wording or criteria. RCM generation must not create extra RCM rows merely to represent attributes of the same risk/control.
+The RCM worker and validator must require unique attribute keys, the existing
+assertion vocabulary, and a registered evidence strategy. Evidence strategy is
+a discriminator: `transaction_cycle` requires an exact registry reference and
+unique bindable record kinds from that pack; `tabular_population`,
+`document_content`, `manual_inspection`, `inquiry`, and `mixed` forbid record
+kinds. This keeps non-cycle audit work independent of business-cycle
+vocabulary. Required roles must still be logically supported by the control
+wording or criteria. RCM generation must not create extra RCM rows merely to
+represent attributes of the same risk/control.
 
 Tests remain the sole executable source. They reference `RCM-ID:attribute_key`; the RCM row continues to reference tests through `test_refs`.
 
@@ -205,6 +258,10 @@ Add a distinct `cycle_vouch` Document Test variant. Its `definition` is the only
 ```yaml
 schema_version: 2
 kind: cycle_vouch
+registry:
+  pack_id: procure_to_pay
+  pack_version: 1
+  definition_hash: sha256:...
 rcm_id: RCM-...
 requirement_refs:
   - RCM-...:three_way_match
@@ -216,40 +273,45 @@ definition:
     table: invoice_data
     row_key:
       column: INVOICE_ID
-      identifier_kind: internal_invoice_id
+      identifier_kind: procure_to_pay.internal_invoice_id
     cycle_keys:
       - column: VENDOR_INVOICE_NUMBER
-        identifier_kind: vendor_invoice_number
+        identifier_kind: procure_to_pay.vendor_invoice_number
       - column: PO_NUMBER_LINK
-        identifier_kind: purchase_order_number
+        identifier_kind: procure_to_pay.purchase_order_number
       - column: GRN_ID_LINK
-        identifier_kind: goods_receipt_number
+        identifier_kind: procure_to_pay.goods_receipt_number
     selection:
       mode: evidence_linked
       assurance_scope: targeted_evidence_only
   roles:
     - role: vendor_invoice
-      record_kind: vendor_invoice
+      record_kind: procure_to_pay.vendor_invoice
       required: true
       cardinality: one
       reuse_across_items: exclusive
     - role: purchase_order
-      record_kind: purchase_order
+      record_kind: procure_to_pay.purchase_order
       required: true
       cardinality: one
       reuse_across_items: allowed
     - role: goods_receipt
-      record_kind: goods_receipt
+      record_kind: procure_to_pay.goods_receipt
       required: true
       cardinality: one
       reuse_across_items: allowed
     - role: payment_voucher
-      record_kind: payment_voucher
+      record_kind: procure_to_pay.payment_voucher
       required: true
       cardinality: one
       reuse_across_items: allowed
   assertions: []
 ```
+
+Role names are procedure-local aliases; `record_kind`, identifier kinds, and
+field selectors resolve through the test's exact pack. The validator rejects a
+role from another pack and rejects a field that its selected record kind does
+not expose.
 
 Supported selection modes and their structural assurance scope are explicit:
 
@@ -380,7 +442,7 @@ disposition:
 Cycle linkage is exact and local:
 
 1. seed the graph from all declared `population.cycle_keys`, not only `row_key`;
-2. attach directly matching voucher records on allowed transaction identifier kinds;
+2. attach directly matching evidence records on allowed transaction identifier kinds;
 3. follow the allowed identifiers extracted from those records to a bounded transitive closure;
 4. assign records by `record_kind` to declared roles while retaining their parent document IDs;
 5. reject or flag role-cardinality conflicts instead of choosing by list order; and
@@ -388,7 +450,12 @@ Cycle linkage is exact and local:
 
 Entity identifiers never create edges. Exact identifier disagreement remains a test result; it is not fuzzy-corrected to make linkage work. In the procurement sample, a PO-number typo should still be visible as a mismatch, while other exact invoice/GRN links can keep the cycle connected. Manual attach/detach operations act on a role binding (`document_id`, `record_id`, and `role`), then recompute missing roles and stale affected results; changing only a flat `document_ids` list is not sufficient.
 
-Execution results are keyed by immutable assertion key. Each result stores the assertion hash, input hashes, verdict, bounded display values, per-document comparisons, and evidence references. Items do not contain copies of assertion definitions.
+Execution results are keyed by immutable assertion key. Each result stores the
+pack `registry_definition_hash`, assertion hash, input hashes, verdict, bounded
+display values, per-document comparisons, and evidence references. A result
+whose registry hash is no longer current fails closed and becomes stale; it is
+never reinterpreted against a newer pack. Items do not contain copies of
+assertion definitions.
 
 Keep deterministic evaluation separate from auditor disposition:
 
@@ -402,12 +469,19 @@ This separation aligns `doc_tests.executed` with machine execution and `doc_test
 
 ### 3.7 Exact graph, identity, and limit rules
 
-A cycle edge is keyed by the exact pair `(identifier_kind, normalized_value)`. Values from different kinds never join even when their text is equal. Each identifier kind owns a deterministic normalizer. The default performs Unicode NFKC normalization, trims leading/trailing whitespace, collapses internal whitespace, and case-folds; punctuation and alphanumeric characters are preserved unless that kind registers an additional demonstrably safe rule. Thus `PO2024004` and `P02024004` remain different.
+A cycle edge is keyed by the exact triple
+`(registry_definition_hash, identifier_kind, normalized_value)`. Values from
+different kinds or pack definitions never join even when their text is equal.
+Each identifier kind owns a deterministic registered normalizer. The common
+default performs Unicode NFKC normalization, trims leading/trailing whitespace,
+collapses internal whitespace, and case-folds; punctuation and alphanumeric
+characters are preserved unless that kind registers an additional demonstrably
+safe rule. Thus `PO2024004` and `P02024004` remain different.
 
 The linker uses breadth-first traversal with these hard limits:
 
 - maximum six identifier edges from a population seed;
-- maximum 25 voucher records in one cycle closure;
+- maximum 25 evidence records in one cycle closure;
 - maximum 100 traversed edges; and
 - maximum 20 declared roles and 50 assertions in one test.
 
@@ -426,8 +500,8 @@ Shared-record facts include role, record ID, identifier edge, related item IDs, 
 
 Stable identities and invalidation are also fixed:
 
-- `record_id` hashes the parent document ID, record kind, registry-selected primary identifier kind, and normalized primary identifier. The citation fallback is used only after auditor review deliberately accepts a standalone component with no registered primary identifier; such a record is not transaction-linkable without an explicit reviewed role override. Duplicate fallback identities are an extraction conflict. A corrected primary identifier deliberately creates a new record identity.
-- `item_id` hashes the test semantic ID, population table, row-key identifier kind, and normalized row-key value. It survives source-row reordering; the table signature and frozen-row hash remain inputs that can make its results stale.
+- `record_id` hashes the parent document ID, registry definition hash, record kind, registry-selected primary identifier kind, and normalized primary identifier. The citation fallback is used only after auditor review deliberately accepts a standalone component with no registered primary identifier; such a record is not transaction-linkable without an explicit reviewed role override. Duplicate fallback identities are an extraction conflict. A corrected primary identifier or changed pack definition deliberately creates a new record identity.
+- `item_id` hashes the test semantic ID, registry definition hash, population table, row-key identifier kind, and normalized row-key value. It survives source-row reordering; the table signature and frozen-row hash remain inputs that can make its results stale.
 - an automatic role binding stores the record content hash and complete `matched_by` edge chain.
 - a manual role override stores `(item_id, role, document_id, record_id)` plus the bound record hash. Reanalysis preserves it only when the same record identity and compatible record kind remain; otherwise the override is retained as stale for review and is never silently dropped or rebound.
 - assertion result reuse requires the same assertion hash, frozen-row hash, bound-record hashes, and extraction hashes. Any changed dependency stales only the affected results and aggregate disposition.
@@ -464,7 +538,7 @@ The standalone workflow is bumped to `doc_tests_workflow_v2` and declares `doc_t
 
 Replace the current aggregate overlap list with a local manifest that describes:
 
-- each voucher record's parent document ID, local record ID, and exact `record_kind`;
+- each evidence record's parent document ID, local record ID, exact registry reference, and exact `record_kind`;
 - its available typed fields and normalization status, without relying on a document-type union;
 - allowed transaction identifier kinds;
 - original source-table candidates and explicitly justified join candidates;
@@ -472,7 +546,13 @@ Replace the current aggregate overlap list with a local manifest that describes:
 - uniqueness, collision, matched-row, reachable-record, reachable-document, and reachable-role counts; and
 - the complete cycle packs reached by each candidate, computed locally.
 
-Each candidate has a stable `candidate_id` derived from the table signature, row key, cycle-key mappings, and identifier-registry version. Safety validation runs before ranking. Eligible candidates are sorted by this tuple: required-role coverage descending, authoritative source table before derived join, complete-cycle count descending, linked-row count descending, collision count ascending, then table and row-key names ascending. The complete tuple is included in the manifest.
+Each candidate has a stable `candidate_id` derived from the selected pack's
+definition hash, table signature, row key, and cycle-key mappings. Safety
+validation runs before ranking. Eligible candidates are sorted by this tuple:
+required-role coverage descending, authoritative source table before derived
+join, complete-cycle count descending, linked-row count descending, collision
+count ascending, then table and row-key names ascending. The complete tuple is
+included in the manifest.
 
 The model chooses only among manifest candidates that already pass deterministic safety checks and returns the exact `candidate_id` plus `selection_reason`. It may choose a lower-ranked eligible candidate only when its lifecycle/population scope better matches the RCM requirement. The semantic validator verifies both fields; it never permits the model to invent a table/column-to-identifier-kind mapping.
 
@@ -592,6 +672,14 @@ Requirements:
 The full item endpoint remains the source for citations, raw/normalized values, role-link paths, notes, and sign-off actions.
 
 ## 6. Frontend
+
+The frontend keeps literal unions only for structural states and operators.
+Pack, record, identifier, field, and evidence-kind IDs are strings constrained
+by the descriptors returned from Document Test metadata. Authoring selects one
+pack reference first, then derives every option from that exact descriptor;
+saved IDs from one pack are never offered under another pack. Labels shown to
+auditors come from descriptors rather than from procurement-specific switch
+statements.
 
 ### 6.1 Test-first navigation
 
@@ -769,29 +857,61 @@ Any later implementation change that invalidates user-visible procurement artifa
 
 Primary touchpoints:
 
-- `document_analysis.py`, document workflow reduction, `agent/workers/documents.py`, document routes, and `DocumentsTab.vue`: voucher fragments, deterministic record reduction, reviewed-fragment assignment, kinds, typed identifiers, and normalization status;
-- new `cycle_vouching.py`: identifier registry, definition validation, candidate graph, item materialization, deterministic evaluation, and grid projection;
+- `cycle_registry/models.py`, `registry.py`, `common.py`, and `packs/`:
+  domain-neutral immutable definitions, validation, expanded definition hashes,
+  runtime metadata, and registered business-cycle packs;
+- `document_analysis.py`, document workflow reduction, `agent/workers/documents.py`, document routes, and `DocumentsTab.vue`: registry-backed evidence fragments, deterministic record reduction, reviewed-fragment assignment, kinds, typed identifiers, and normalization status;
+- `cycle_vouching.py`: registry-reference enforcement, definition validation,
+  candidate graph, item materialization, deterministic evaluation, and grid
+  projection;
 - `doc_tests.py` and `routes/doc_test_routes.py`: fifth-kind integration, retained simple-vouching builders, removal/replacement of the old cycle builder, generic persistence, role-aware mutations, disposition, and grid/assertion/manual-cycle routes;
 - `agent/context/adapters.py`, `agent/workers/tests.py`, and `agent/executors/tests.py`: evidence manifest, generation contract, semantic validation, identity, and commit;
 - `agent/workers/planning.py`, `agent/executors/planning.py`, `workspaces.py`, and Planning frontend types/components: RCM control attributes;
 - `agent/workflows/doc_tests.py`, `agent/capabilities/doc_tests.py`, `doc_tests_execution.py`, `agent/executors/fieldwork.py`, and audit verification: state accessors, workflow-v2 disposition, and execution/readiness semantics;
 - `rcm_execution.py` and working-paper assembly: assurance-scope eligibility, tested-item rollups, and the canonical grid result source; and
-- `frontend/src/types.ts`, `DocTestsTab.vue`, `DocTestCreateDialog.vue`, `DocTestItemList.vue`, `DocTestItemDetail.vue`, and a new cycle-grid component: fifth-kind/manual authoring, test-first review, and drill-down.
+- `frontend/src/types.ts`, `DocTestsTab.vue`, `DocTestCreateDialog.vue`, `DocTestItemList.vue`, `DocTestItemDetail.vue`, and a new cycle-grid component: structural unions plus runtime pack descriptors, fifth-kind/manual authoring, test-first review, and drill-down.
 
 Keep cycle-specific schema and compute out of the generic document-test persistence module so the clean rewrite does not further expand `doc_tests.py`.
 
-### Phase 0 - lock the clean schemas and procurement fixture
+### Phase 0 - lock the clean schemas and procurement fixture (completed)
 
 - define `record_kind`, identifier-kind/cardinality registry, fragment/reduced-record contracts, normalized value envelope, RCM `control_attributes`, `cycle_vouch` definition, assurance scope, typed assertions, and the evaluation/disposition workflow accessors;
 - enumerate every backend/frontend fifth-kind switch, the retained simple-vouching paths, the replacement manual-cycle path, and the `doc_tests_workflow_v2` graph;
 - create a compact test fixture from the five-document procurement cycle; and
 - add schema/validator tests before changing workers.
 
-Exit condition: the fixture expresses the complete requisition -> PO -> GRN -> invoice -> payment cycle without broad-type aliases or dotted paths; Phase 0 tests prove cycle items expand exactly once for execution and remain pending only for auditor disposition.
+Exit condition met: the fixture expresses the complete requisition -> PO -> GRN
+-> invoice -> payment cycle without broad-type aliases or dotted paths; Phase 0
+tests prove cycle items expand exactly once for execution and remain pending only
+for auditor disposition.
+
+### Phase 0.1 - make the contract domain-neutral (completed)
+
+- split immutable registry models and validation from domain pack definitions;
+- move procurement names into the namespaced `procure_to_pay` pack and add the
+  independent `payroll` pack as a second vertical contract fixture;
+- introduce expanded pack version/hash references and require them on fragments,
+  reductions, records, transaction-cycle RCM attributes, and tests; bind each
+  assertion result to the exact definition hash;
+- make evidence strategy a discriminator so non-cycle document, data, inquiry,
+  inspection, and mixed work does not require record kinds;
+- validate identifier edge policy, record bindability, field availability, and
+  cross-pack references through the selected pack;
+- replace procurement-specific frontend literal unions with generic IDs and
+  runtime registry descriptors while retaining literal unions only for true
+  structural state; and
+- update the contract inventory and plan before extraction work begins.
+
+Exit condition met: both procure-to-pay and payroll fixtures pass the same
+generic validators; the registry core contains no procurement name switch;
+stale and cross-pack references fail closed; and the metadata contract exposes
+both packs for dynamic frontend authoring.
 
 ### Phase 1 - extraction and deterministic cycle evidence
 
-- update document-analysis map extraction, fragment validators, deterministic record reduction, and reviewed-fragment overrides;
+- update document-analysis map extraction to select a registered pack and emit
+  exact registry references, then implement deterministic record reduction and
+  reviewed-fragment overrides against that pack;
 - implement transaction-safe identifier indexing and bounded transitive cycle linkage;
 - implement candidate scoring over authoritative populations; and
 - stop at Checkpoint A, tell the user in chat what to reanalyze through the existing UX, and do not reanalyze the procurement workspace.
@@ -800,10 +920,12 @@ Exit condition: automated fixtures reduce partial multi-chunk records without fi
 
 ### Phase 2 - RCM and test generation
 
-- update the RCM worker, response schema, executor fields, hashes, and UI types for `control_attributes`;
+- update the RCM worker, response schema, executor fields, hashes, and UI for
+  discriminated `control_attributes`; only transaction-cycle attributes select
+  a registry pack and record kinds;
 - replace the cycle branch of `tests.generate` with the new definition contract;
 - expand the transaction-evidence context manifest;
-- integrate the fifth kind across persistence, RCM executability, workflow expansion, summaries, routes, and frontend types;
+- integrate the fifth kind across persistence, RCM executability, workflow expansion, summaries, routes, and registry-driven frontend forms;
 - retain simple manual `vouching`, replace manual cycle authoring with the canonical Cycle vouch dialog/route, and remove the old cycle payload/comparison paths;
 - implement assurance-scope derivation and the large-population `selection_confirmation` proposal;
 - implement the semantic quality gate and stable test identity; and
@@ -860,6 +982,17 @@ Exit condition: no production path reads the old cycle schema; automated fixture
 
 ### Backend
 
+- procure-to-pay and payroll fixtures traverse the same fragment, reduction,
+  RCM-attribute, definition, assertion, and item validators;
+- pack IDs are namespaced, cross-pack definitions reject, and unknown or stale
+  version/hash references fail closed;
+- changing any expanded pack definition changes its identity and invalidates
+  dependent artifacts rather than reinterpreting them;
+- transaction-cycle RCM attributes require bindable record kinds from one exact
+  pack, while non-cycle evidence strategies forbid record kinds and require no
+  domain pack;
+- fields and attributes resolve through the selected record kind's declared
+  availability, including generalized multi-role operands;
 - two formerly identical broad types resolve to distinct invoice/payment and requisition/PO roles;
 - cycle closure follows invoice -> PO -> GRN/requisition transaction identifiers;
 - graph edges require the same identifier kind and conservative kind-specific normalization;
@@ -894,6 +1027,10 @@ Exit condition: no production path reads the old cycle schema; automated fixture
 
 ### Frontend
 
+- registry metadata renders at least procure-to-pay and payroll descriptors
+  without compile-time unions for either pack;
+- switching packs constrains record, identifier, and field choices to the
+  selected version/hash and never mixes IDs across packs;
 - selecting a cycle test loads the grid without eagerly loading an item;
 - selecting a row/cell opens the correct item and assertion context;
 - closing detail restores filters, scroll position, and selected cell;
@@ -916,6 +1053,10 @@ Exit condition: no production path reads the old cycle schema; automated fixture
 ## 12. Non-goals
 
 - no compatibility or migration layer for the current synthetic cycle schema;
+- no model-defined, workspace-defined, or free-text record/identifier/field
+  kinds; extensions are reviewed code-owned registry packs;
+- no procurement switch in generic persistence, validation, workflow, or
+  frontend type unions;
 - no backend or frontend feature whose only purpose is notifying or performing regeneration of the procurement test workspace;
 - no fuzzy auto-linking of transaction identifiers;
 - no treating an allowed shared PO, GRN, or consolidated payment as a collision merely because it supports several items;

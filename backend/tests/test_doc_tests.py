@@ -232,7 +232,7 @@ def test_doc_test_workflow_persists_each_item_and_completes(workspace_with_data)
     finished = wait_run(ws, run["id"])
     assert finished["status"] == "completed", finished.get("error")
     assert finished["engine"] == "workflow"
-    assert finished["workflow"]["definition"] == "doc_tests_workflow_v1"
+    assert finished["workflow"]["definition"] == "doc_tests_workflow_v2"
     assert finished["doc_tests"]["rollup"]["matched"] == 2
     saved = doc_tests.load_test(ws, test["id"])
     assert saved["items"][0]["state"] == "confirmed"

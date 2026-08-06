@@ -208,12 +208,14 @@ async function createTest({ kind, direction, draft }: {
         document_id: draft.documentId,
         ...(pages.length ? { pages } : {}),
       })
-    } else {
+    } else if (kind === 'qa') {
       created = await api.post(`/api/workspaces/${props.workspace.id}/doc-tests/build/qa`, {
         ...common,
         document_ids: draft.documentId ? [draft.documentId] : [],
         questions: draft.questions.split('\n').map(value => value.trim()).filter(Boolean),
       })
+    } else {
+      throw new Error('Cycle vouch authoring is introduced by the canonical Phase 2 builder.')
     }
     createOpen.value = false
     requestedTestId.value = created.id

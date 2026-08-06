@@ -208,8 +208,13 @@ def run_document_test(
             f"Document Test '{test_id}' answers questions with the model and must "
             "execute as document Q&A units, not as a local document test."
         )
+    if test.get("kind") == "cycle_vouch":
+        raise WorkspaceError(
+            f"Document Test '{test_id}' uses the Phase 0 cycle_vouch contract; "
+            "its deterministic evaluator is introduced in Phase 3."
+        )
     for item in test.get("items") or []:
-        if item.get("state") in {"confirmed", "exception"}:
+        if not doc_tests.item_execution_pending(test, item):
             continue
         doc_tests.run_item(workspace, test_id, item["id"], run_id=run_id)
     test = doc_tests.load_test(workspace, test_id)

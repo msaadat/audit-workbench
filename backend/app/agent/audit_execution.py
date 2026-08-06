@@ -898,7 +898,7 @@ class AuditWorkflowExecution(ActionRunner):
 
         Only the datatest branch is audit-specific. Every Document Test unit kind
         is bound by :func:`doc_tests_execution.bind_document_test_unit`, the same
-        function the standalone ``doc_tests_workflow_v1`` composition uses, so a
+        function the standalone ``doc_tests_workflow_v2`` composition uses, so a
         worklist behaves identically whichever graph scheduled it.
         """
         self.ws = subject

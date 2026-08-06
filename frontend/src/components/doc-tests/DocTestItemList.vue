@@ -10,6 +10,7 @@ const kindLabel: Record<string, string> = {
   attribute: 'Attribute',
   review: 'Review',
   qa: 'Cited Q&A',
+  cycle_vouch: 'Cycle vouch',
 }
 </script>
 

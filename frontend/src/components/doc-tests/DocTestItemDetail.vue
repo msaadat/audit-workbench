@@ -57,6 +57,7 @@ const kindLabel: Record<string, string> = {
   attribute: 'Attribute test',
   review: 'Document review',
   qa: 'Cited Q&A',
+  cycle_vouch: 'Cycle vouch',
 }
 // Short labels: the field is already called "Control conclusion", so repeating
 // "Control" in every option only spent width the rail does not have.
@@ -85,7 +86,7 @@ const evidenceRequests = computed(() =>
 // 'confirmed'/'exception' are already a direct read of the model's (or the
 // deterministic comparison's) own outcome — nothing for an auditor to settle.
 // Only 'manual_review'/'agent_checked' mean the result itself is unresolved.
-const needsSignOff = computed(() => ['manual_review', 'agent_checked'].includes(props.item.state))
+const needsSignOff = computed(() => ['manual_review', 'agent_checked'].includes(props.item.state ?? 'pending'))
 
 
 // A cycle check names both sides by path; a legacy check searches page text for
@@ -444,7 +445,7 @@ function attach() {
          while the record beside it scrolls. -->
     <aside class="detail-rail" aria-label="Your assessment">
       <div class="rail-group rail-status">
-        <UiTestStatus :status="item.state" showLabel />
+        <UiTestStatus :status="item.state ?? item.evaluation?.state ?? 'pending'" showLabel />
         <Button
           label="Run test"
           icon="pi pi-play"
@@ -544,7 +545,7 @@ function attach() {
             icon="pi pi-refresh"
             size="small"
             text
-            :disabled="busy || item.state === 'pending'"
+            :disabled="busy || (item.state ?? 'pending') === 'pending'"
             @click="emit('setState', 'pending')"
           />
         </div>

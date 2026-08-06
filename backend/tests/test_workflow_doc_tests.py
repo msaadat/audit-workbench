@@ -94,6 +94,7 @@ def test_the_document_test_graph_is_declared_once_and_hash_identified():
     assert doc_tests_workflow.DEPENDENCIES == {
         "doc_tests.definitions_ready": (),
         "doc_tests.executed": ("doc_tests.definitions_ready",),
+        "doc_tests.dispositioned": ("doc_tests.executed",),
     }
     assert doc_tests_workflow.definition_hash().startswith("sha1:") or (
         len(doc_tests_workflow.definition_hash()) >= 40

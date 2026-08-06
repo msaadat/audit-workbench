@@ -5,7 +5,7 @@ Two things live here.
 :func:`bind_document_test_unit` is the *one* place a Document Test unit is bound
 to the execution it needs — deterministic local comparison, a bounded Q&A model
 turn through the registered worker, or an auditor-review settlement. Both graphs
-that schedule document tests use it: the standalone ``doc_tests_workflow_v1``
+that schedule document tests use it: the standalone ``doc_tests_workflow_v2``
 composition below, and the audit graph's ``fieldwork.executed`` binder, which
 keeps only its datatest branch and its own task identity. That is what makes the
 `P10.5` migration a deletion rather than a second implementation.
@@ -63,6 +63,7 @@ from .runtime import (
 from .workers import WORKERS
 
 DEFINITION_REVIEW_REQUIRED = "document_test_definition_needs_auditor_attention"
+AUDITOR_DISPOSITION_REQUIRED = "document_test_disposition_needs_auditor_attention"
 
 
 def unit_ref(unit: dict, prefix: str) -> str:
@@ -203,6 +204,7 @@ class DocTestWorkflowExecution(BaseRunner):
     stage_titles = {
         "doc_test_definitions": "Document test definitions",
         "doc_test_execution": "Document test execution",
+        "doc_test_disposition": "Auditor disposition",
     }
 
     def __init__(
@@ -380,6 +382,24 @@ class DocTestWorkflowExecution(BaseRunner):
         )
         return bind_document_test_unit(self, capability, unit, task=task)
 
+    # ------------------------------------------------ doc_tests.dispositioned
+    def _bind_disposition(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> DeterministicUnitResult:
+        """Expose the current result for review without manufacturing sign-off."""
+
+        self.ws = subject
+        return DeterministicUnitResult(
+            "awaiting_confirmation",
+            (unit_ref(unit, "doctest:"), unit_ref(unit, "docitem:")),
+            AUDITOR_DISPOSITION_REQUIRED,
+        )
+
     # ---------------------------------------------------------------- finish
     def _finish_projection(
         self,
@@ -470,6 +490,10 @@ _DETERMINISTIC_BINDERS = {
     "doc_tests.definitions_ready": (
         "_bind_definition",
         {"deterministic": "doc_tests.definition_review"},
+    ),
+    "doc_tests.dispositioned": (
+        "_bind_disposition",
+        {"deterministic": "doc_tests.auditor_disposition"},
     ),
 }
 
@@ -564,6 +588,7 @@ def build_doc_tests_workflow_runner(
 
 
 __all__ = [
+    "AUDITOR_DISPOSITION_REQUIRED",
     "DEFINITION_REVIEW_REQUIRED",
     "DocTestWorkflowExecution",
     "bind_document_qa",

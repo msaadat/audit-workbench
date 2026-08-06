@@ -128,6 +128,117 @@ export interface GeneratedDocumentAnalysis {
   }
 }
 
+export type CyclePackId = string
+export type EvidenceRecordKindId = string
+export type EvidenceIdentifierKindId = string
+export type EvidenceFieldKindId = string
+export type EvidenceKindId = string
+export type EvidenceSemanticType = 'identifier' | 'date' | 'number' | 'text' | 'boolean'
+
+export interface CycleRegistryReference {
+  pack_id: CyclePackId
+  pack_version: number
+  definition_hash: string
+}
+
+export interface EvidenceIdentifierKindDescriptor {
+  id: EvidenceIdentifierKindId
+  label: string
+  edge_policy: 'transaction' | 'non_linking'
+  value_type: EvidenceSemanticType
+  normalizer_id: string
+}
+
+export interface EvidenceFieldKindDescriptor {
+  id: EvidenceFieldKindId
+  label: string
+  group: string
+  kind: string
+  attributes: Array<{ id: string; semantic_type: EvidenceSemanticType }>
+}
+
+export interface EvidenceRecordKindDescriptor {
+  id: EvidenceRecordKindId
+  label: string
+  primary_identifier_kinds: EvidenceIdentifierKindId[]
+  available_field_kinds: EvidenceFieldKindId[]
+  bindable: boolean
+}
+
+export interface CyclePackDescriptor {
+  id: CyclePackId
+  label: string
+  version: number
+  definition_hash: string
+  normalizer_ids: string[]
+  identifier_kind_ids: EvidenceIdentifierKindId[]
+  field_kind_ids: EvidenceFieldKindId[]
+  record_kind_ids: EvidenceRecordKindId[]
+  identifier_kinds: EvidenceIdentifierKindDescriptor[]
+  field_kinds: EvidenceFieldKindDescriptor[]
+  record_kinds: EvidenceRecordKindDescriptor[]
+}
+
+export interface CycleRegistryMetadata {
+  packs: CyclePackDescriptor[]
+  evidence_kinds: Array<{
+    id: EvidenceKindId
+    label: string
+    record_kind_requirement: 'required' | 'forbidden'
+  }>
+}
+
+export interface CycleVouchMetadata {
+  schema_version: number
+  registry: CycleRegistryMetadata
+  cardinalities: Array<'one' | 'many'>
+  reuse_rules: Array<'exclusive' | 'allowed'>
+  selection_modes: Array<'evidence_linked' | 'sample'>
+  sampling_methods: Array<'random' | 'interval' | 'stratified'>
+  assurance_scopes: CycleAssuranceScope[]
+  operators: CycleOperator[]
+  entry_quantifiers: Array<'one' | 'any' | 'all'>
+  role_quantifiers: Array<'all' | 'any'>
+  limits: {
+    max_graph_hops: number
+    max_cycle_records: number
+    max_traversed_edges: number
+    max_roles: number
+    max_assertions: number
+    max_items: number
+  }
+}
+
+export interface NormalizedEvidenceValue<T = unknown> {
+  raw_value: string
+  value: T | null
+  normalization_status: 'normalized' | 'invalid'
+  normalization_error: string | null
+  citation: string | DocumentAnalysisCitation
+}
+
+export interface EvidenceRecordFragment {
+  registry: CycleRegistryReference
+  chunk_id: string
+  page_span: [number, number]
+  record_kind: EvidenceRecordKindId
+  candidate_record_kinds?: EvidenceRecordKindId[]
+  review_reason?: string
+  classification_evidence: Array<string | DocumentAnalysisCitation>
+  identifiers: Array<{ kind: EvidenceIdentifierKindId; value: NormalizedEvidenceValue<string> }>
+  fields: Array<{ group: string; kind: string; attribute: string; value: NormalizedEvidenceValue }>
+}
+
+export interface ReducedEvidenceRecord {
+  registry: CycleRegistryReference
+  record_id: string
+  document_id: string
+  record_kind: EvidenceRecordKindId
+  classification_evidence: Array<string | DocumentAnalysisCitation>
+  identifiers: Array<{ kind: EvidenceIdentifierKindId; value: NormalizedEvidenceValue<string> }>
+  fields: Array<{ group: string; kind: string; attribute: string; value: NormalizedEvidenceValue }>
+}
+
 export interface DocumentAnalysisDetail {
   document_id: string
   index_revision: number
@@ -221,8 +332,55 @@ export interface KnowledgePack {
   updated: string
 }
 
-export type DocTestKind = 'vouching' | 'attribute' | 'review' | 'qa'
+export type DocTestKind = 'vouching' | 'attribute' | 'review' | 'qa' | 'cycle_vouch'
 export type DocTestItemState = 'pending' | 'agent_checked' | 'confirmed' | 'exception' | 'manual_review'
+export type CycleEvaluationState = 'not_run' | 'passed' | 'failed' | 'incomplete' | 'needs_review' | 'stale'
+export type CycleDispositionState = 'pending' | 'confirmed' | 'exception'
+export type CycleAssertionVerdict = 'match' | 'mismatch' | 'missing_evidence' | 'invalid_extraction' | 'ambiguous' | 'not_run'
+export type CycleAssuranceScope = 'targeted_evidence_only' | 'sampled_population'
+export type CycleOperator = 'equal_exact' | 'equal_normalized' | 'numeric_within' | 'date_on_or_before' | 'date_within' | 'present'
+
+export interface CycleFieldSelector {
+  group: string
+  kind: string
+  attribute: string
+}
+
+export type CycleOperand =
+  | { source: 'row'; column: string; value_type?: 'text' | 'identifier' | 'number' | 'date' | 'boolean' }
+  | { source: 'role'; role: string; field: CycleFieldSelector }
+  | { source: 'roles'; roles: string[]; field: CycleFieldSelector; entry_quantifier: 'one' | 'any' | 'all' }
+
+export interface CycleAssertion {
+  key: string
+  label: string
+  left: CycleOperand
+  right?: CycleOperand
+  operator: CycleOperator
+  tolerance?: number | { absolute: number; percent: number }
+  role_quantifier?: 'all' | 'any'
+}
+
+export interface CycleVouchDefinition {
+  population: {
+    candidate_id: string
+    selection_reason: string
+    table: string
+    row_key: { column: string; identifier_kind: EvidenceIdentifierKindId }
+    cycle_keys: Array<{ column: string; identifier_kind: EvidenceIdentifierKindId }>
+    selection:
+      | { mode: 'evidence_linked'; assurance_scope: 'targeted_evidence_only' }
+      | { mode: 'sample'; assurance_scope: 'sampled_population'; method: 'random' | 'interval' | 'stratified'; size: number; seed: number; stratify_by?: string }
+  }
+  roles: Array<{
+    role: string
+    record_kind: EvidenceRecordKindId
+    required: boolean
+    cardinality: 'one' | 'many'
+    reuse_across_items: 'exclusive' | 'allowed'
+  }>
+  assertions: CycleAssertion[]
+}
 
 export interface DocComparison {
   document_id: string
@@ -279,7 +437,8 @@ export interface DocTestItem {
   label: string
   /** The procedure being performed on this item, always populated. */
   instruction: string
-  state: DocTestItemState
+  /** Legacy worklist state. cycle_vouch uses evaluation + disposition instead. */
+  state?: DocTestItemState
   document_ids: string[]
   evidence_refs: EvidenceRef[]
   frozen?: Record<string, unknown>
@@ -318,6 +477,31 @@ export interface DocTestItem {
     image_only: boolean
   }
   evidence_request_ids?: string[]
+  population_ref?: { table: string; source_row: number; source_sha1: string }
+  frozen_row?: Record<string, unknown>
+  cycle_identifiers?: Array<{ kind: EvidenceIdentifierKindId; value: string }>
+  role_bindings?: Array<{
+    role: string
+    document_id: string
+    record_id: string
+    matched_by: Array<Record<string, unknown>>
+  }>
+  unassigned_records?: Array<Record<string, unknown>>
+  result_by_assertion?: Record<string, {
+    assertion_sha1: string
+    registry_definition_hash: string
+    input_hashes: string[]
+    verdict: CycleAssertionVerdict
+    display?: string
+    comparisons: Array<Record<string, unknown>>
+    evidence_refs: EvidenceRef[]
+  }>
+  evaluation?: { state: CycleEvaluationState; definition_sha1: string }
+  disposition?: {
+    state: CycleDispositionState
+    evaluated_definition_sha1: string | null
+    stale: boolean
+  }
 }
 
 export interface DocTestRollup {
@@ -410,6 +594,11 @@ export interface DocTestSummaryPayload {
 export interface DocTest extends TestPlan, TestOutcome {
   id: string
   kind: DocTestKind | null
+  schema_version?: 2
+  registry?: CycleRegistryReference
+  requirement_refs?: string[]
+  procedure_key?: string
+  definition?: CycleVouchDefinition
   title: string
   status: TestStatus
   semantic_id: string
@@ -465,6 +654,7 @@ export interface RcmRow {
   risk: string
   risk_rating: 'low' | 'medium' | 'high' | 'critical'
   assertion: string
+  control_attributes?: RcmControlAttribute[]
   control: string
   control_type: string
   control_owner: string
@@ -479,6 +669,25 @@ export interface RcmRow {
   review_status: 'draft' | 'prepared' | 'review_required' | 'reviewed'
   updated: string
 }
+
+export interface RcmControlAttributeBase {
+  key: string
+  assertion: 'Existence' | 'Completeness' | 'Accuracy' | 'Authorization' | 'Valuation' | 'Cut-off' | 'Compliance' | 'Operational'
+  requirement: string
+}
+
+export type RcmControlAttribute = RcmControlAttributeBase & (
+  | {
+      evidence_kind: 'transaction_cycle'
+      registry: CycleRegistryReference
+      required_record_kinds: EvidenceRecordKindId[]
+    }
+  | {
+      evidence_kind: 'tabular_population' | 'document_content' | 'manual_inspection' | 'inquiry' | 'mixed'
+      registry?: never
+      required_record_kinds?: never
+    }
+)
 
 /** The one source a test is answered from. */
 export type TestSource = 'data' | 'document'
@@ -1642,7 +1851,7 @@ export interface AgentWorkflow {
     | 'audit_workflow_v2'
     | 'analysis_workflow_v1'
     | 'documents_workflow_v1'
-    | 'doc_tests_workflow_v1'
+    | 'doc_tests_workflow_v2'
     | string
   definition_hash?: string
   revision: number

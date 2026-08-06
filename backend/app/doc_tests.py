@@ -17,7 +17,7 @@ from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from . import analytics, document_analysis, documents, explore
+from . import analytics, cycle_vouching, document_analysis, documents, explore
 from .evidence import document_anchor, normalize_many
 from .workspaces import (
     CONTROL_CONCLUSIONS,
@@ -31,7 +31,7 @@ from .workspaces import (
     write_json_atomic,
 )
 
-KINDS = {"vouching", "attribute", "review", "qa"}
+KINDS = {"vouching", "attribute", "review", "qa", "cycle_vouch"}
 DIRECTIONS = {"vouching", "tracing"}
 STATES = {"pending", "agent_checked", "confirmed", "exception", "manual_review"}
 METHODS = {
@@ -112,6 +112,45 @@ def kind_from_steps(steps: list[dict]) -> str:
     raise WorkspaceError("Document Test steps must share one execution mode (question or vouch).")
 
 
+def is_cycle_test(test: dict) -> bool:
+    return str(test.get("kind") or "") == "cycle_vouch"
+
+
+def item_execution_pending(test: dict, item: dict) -> bool:
+    """Whether deterministic/model execution still owes work for this item."""
+
+    return cycle_vouching.execution_pending(item, cycle=is_cycle_test(test))
+
+
+def item_execution_current(test: dict, item: dict) -> bool:
+    """Whether the runner has produced a current outcome for this item."""
+
+    return cycle_vouching.execution_current(item, cycle=is_cycle_test(test))
+
+
+def item_disposition_current(test: dict, item: dict) -> bool:
+    """Whether the auditor has dispositioned the current item outcome."""
+
+    return cycle_vouching.disposition_current(item, cycle=is_cycle_test(test))
+
+
+def item_disposition_pending(test: dict, item: dict) -> bool:
+    return cycle_vouching.disposition_pending(item, cycle=is_cycle_test(test))
+
+
+def item_state_projection(test: dict, item: dict) -> str:
+    """Project clean cycle state into legacy list counters without persisting it."""
+
+    if not is_cycle_test(test):
+        return str(item.get("state") or "pending")
+    disposition = item.get("disposition") or {}
+    if item_disposition_current(test, item):
+        return str(disposition.get("state"))
+    if item_execution_current(test, item):
+        return "agent_checked"
+    return "pending"
+
+
 def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     # A drafted test has no kind until its spec pass runs, so ``kind`` stays
     # None rather than defaulting to a builder the plan never chose.
@@ -156,10 +195,25 @@ def _hydrate(test: dict, workspace: Workspace | None = None) -> dict:
     test.setdefault("items", [])
     test.setdefault("created", utcnow())
     test.setdefault("updated", test["created"])
-    for item in test["items"]:
+    if kind == "cycle_vouch":
+        try:
+            cycle_vouching.validate_cycle_test(test)
+        except cycle_vouching.CycleSchemaError as error:
+            raise WorkspaceError(str(error)) from error
+    for index, raw_item in enumerate(test["items"]):
+        item = raw_item
         item.setdefault("id", f"ITEM-{uuid.uuid4().hex[:8].upper()}")
         item.setdefault("instruction", "")
-        item.setdefault("state", "pending")
+        if kind == "cycle_vouch":
+            try:
+                item = cycle_vouching.normalize_cycle_item(
+                    item, registry_ref=test["registry"]
+                )
+            except cycle_vouching.CycleSchemaError as error:
+                raise WorkspaceError(str(error)) from error
+            test["items"][index] = item
+        else:
+            item.setdefault("state", "pending")
         item.setdefault("document_ids", [])
         item.setdefault("evidence_refs", [])
         item["evidence_refs"] = normalize_many(item.get("evidence_refs") or [])
@@ -242,13 +296,14 @@ def list_tests(workspace: Workspace) -> list[dict]:
             test = _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
         except (OSError, json.JSONDecodeError, WorkspaceError):
             continue
-        states = [item.get("state", "pending") for item in test["items"]]
+        states = [item_state_projection(test, item) for item in test["items"]]
         items.append({
             **{key: test.get(key) for key in (
                 "id", "kind", "title", "status", "semantic_id", "rcm_refs",
                 "procedure_refs", "rcm_id", "spec", "created",
                 "updated", "sha1", "created_by", "agent_run_id",
                 "workflow_parent_sha1", "objective", "criteria", "steps",
+                "schema_version", "registry", "requirement_refs", "procedure_key",
                 "conclusion", "conclusion_source", "control_conclusion", "control_conclusion_source", "result_summary", "next_action",
                 "exception_count", "open_exception_count", "scope_limitations",
             )},
@@ -318,7 +373,9 @@ def unlink_rcm(workspace: Workspace, rcm_id: str) -> list[str]:
 
 def _base_test(workspace: Workspace, payload: dict, kind: str | None) -> dict:
     if kind is not None and kind not in KINDS:
-        raise WorkspaceError("Document-test kind must be vouching, attribute, review, or qa.")
+        raise WorkspaceError(
+            "Document-test kind must be vouching, attribute, review, qa, or cycle_vouch."
+        )
     title = str(payload.get("title") or f"New {kind or 'document'} test").strip()
     if not title:
         raise WorkspaceError("Document-test title is required.")
@@ -385,7 +442,29 @@ def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
             raise WorkspaceError(
                 f"Document '{missing_documents[0]}' not found for Document Test item."
             )
-        if kind == "vouching":
+        if kind == "cycle_vouch":
+            try:
+                item = cycle_vouching.normalize_cycle_item(
+                    {**dict(raw), **item}, registry_ref=test["registry"]
+                )
+            except cycle_vouching.CycleSchemaError as error:
+                raise WorkspaceError(str(error)) from error
+            role_document_ids = [
+                str(binding.get("document_id") or "")
+                for binding in item.get("role_bindings") or []
+                if str(binding.get("document_id") or "")
+            ]
+            missing_role_documents = [
+                document_id
+                for document_id in role_document_ids
+                if document_id not in known_documents
+            ]
+            if missing_role_documents:
+                raise WorkspaceError(
+                    f"Document '{missing_role_documents[0]}' not found for cycle role binding."
+                )
+            item["document_ids"] = list(dict.fromkeys(role_document_ids))
+        elif kind == "vouching":
             item["frozen"] = {str(key): _json_value(value) for key, value in dict(raw.get("frozen") or {}).items()}
             item["checks"] = [_normalize_check(check) for check in (raw.get("checks") or [])]
             # Role-tagged attachments are what make a check's ``<role>.…`` path
@@ -412,8 +491,10 @@ def _build_items(workspace: Workspace, test: dict, raw_items: object) -> None:
             item["attributes"] = [_normalize_attribute(value) for value in (raw.get("attributes") or [])]
         elif kind == "review":
             item.update(page=raw.get("page"), review_kind=str(raw.get("review_kind") or "general"), summary=str(raw.get("summary") or ""), excerpt=str(raw.get("excerpt") or ""))
-        else:
+        elif kind == "qa":
             item.update(question=str(raw.get("question") or ""), response=str(raw.get("response") or ""), citations=normalize_many(raw.get("citations") or []))
+        else:
+            raise WorkspaceError(f"Unsupported Document Test kind '{kind}'.")
         test["items"].append(item)
 
 
@@ -428,6 +509,16 @@ def _apply_kind_spec(test: dict, payload: dict) -> None:
             raise WorkspaceError("Direction must be vouching or tracing.")
         test["spec"]["direction"] = direction
         test["spec"].setdefault("require_all_documents", True)
+    elif test["kind"] == "cycle_vouch":
+        test["schema_version"] = payload.get("schema_version")
+        test["registry"] = dict(payload.get("registry") or {})
+        test["requirement_refs"] = list(payload.get("requirement_refs") or [])
+        test["procedure_key"] = str(payload.get("procedure_key") or "")
+        test["definition"] = dict(payload.get("definition") or {})
+        try:
+            cycle_vouching.validate_cycle_test(test)
+        except cycle_vouching.CycleSchemaError as error:
+            raise WorkspaceError(str(error)) from error
 
 
 def create_test(workspace: Workspace, payload: dict) -> dict:
@@ -498,7 +589,7 @@ def apply_spec(workspace: Workspace, test_id: str, payload: dict) -> dict:
     test = load_test(workspace, test_id)
     settled = [
         item for item in test.get("items") or []
-        if item.get("state") in {"confirmed", "exception"}
+        if item_disposition_current(test, item)
     ]
     if settled:
         raise WorkspaceError(
@@ -506,7 +597,9 @@ def apply_spec(workspace: Workspace, test_id: str, payload: dict) -> dict:
         )
     kind = str(payload.get("kind") or "").lower()
     if kind not in KINDS:
-        raise WorkspaceError("Document-test kind must be vouching, attribute, review, or qa.")
+        raise WorkspaceError(
+            "Document-test kind must be vouching, attribute, review, qa, or cycle_vouch."
+        )
     test["kind"] = kind
     test["spec"] = dict(payload.get("spec") or {})
     test["items"] = []
@@ -1472,6 +1565,10 @@ def _item(test: dict, item_id: str) -> dict:
 
 def attach_document(workspace: Workspace, test_id: str, item_id: str, document_id: str) -> dict:
     test = load_test(workspace, test_id)
+    if is_cycle_test(test):
+        raise WorkspaceError(
+            "Cycle evidence is attached to a typed role binding, not a flat document list."
+        )
     item = _item(test, item_id)
     document = next((value for value in workspace.documents if value.get("id") == document_id), None)
     if document is None:
@@ -1493,6 +1590,10 @@ def attach_document(workspace: Workspace, test_id: str, item_id: str, document_i
 
 def detach_document(workspace: Workspace, test_id: str, item_id: str, document_id: str) -> dict:
     test = load_test(workspace, test_id)
+    if is_cycle_test(test):
+        raise WorkspaceError(
+            "Cycle evidence is detached from a typed role binding, not a flat document list."
+        )
     item = _item(test, item_id)
     item["document_ids"] = [value for value in item["document_ids"] if value != document_id]
     item["state"] = "pending"
@@ -1524,6 +1625,10 @@ def update_item(
     runner_note: str | None = None,
 ) -> dict:
     test = load_test(workspace, test_id)
+    if is_cycle_test(test):
+        raise WorkspaceError(
+            "Cycle evaluation and disposition use their typed mutation contracts."
+        )
     item = _item(test, item_id)
     allowed = {
         "attributes",
@@ -2152,6 +2257,16 @@ def execution_issues(test: dict) -> list[str]:
     items = list(test.get("items") or [])
     if not items:
         return ["the test has no items"]
+    if kind == "cycle_vouch":
+        try:
+            cycle_vouching.validate_cycle_test(test)
+            for item in items:
+                cycle_vouching.normalize_cycle_item(
+                    item, registry_ref=test["registry"]
+                )
+        except cycle_vouching.CycleSchemaError as error:
+            return [str(error)]
+        return []
     issues = []
     for index, item in enumerate(items, start=1):
         prefix = f"item {index}"
@@ -2187,6 +2302,46 @@ def evidence_blocked(test: dict) -> bool:
 
 def result_rollup(test: dict) -> dict:
     items = test.get("items") or []
+    if is_cycle_test(test):
+        results = [
+            result
+            for item in items
+            for result in (item.get("result_by_assertion") or {}).values()
+        ]
+        return {
+            "items": len(items),
+            "matched": sum(result.get("verdict") == "match" for result in results),
+            "mismatched": sum(
+                result.get("verdict")
+                in {
+                    "mismatch",
+                    "missing_evidence",
+                    "invalid_extraction",
+                    "ambiguous",
+                }
+                for result in results
+            ),
+            "confirmed": sum(
+                item_disposition_current(test, item)
+                and (item.get("disposition") or {}).get("state") == "confirmed"
+                for item in items
+            ),
+            "exceptions": sum(
+                item_disposition_current(test, item)
+                and (item.get("disposition") or {}).get("state") == "exception"
+                for item in items
+            ),
+            "manual_review": sum(
+                item_execution_current(test, item)
+                and not item_disposition_current(test, item)
+                for item in items
+            ),
+            "pending": sum(
+                item_execution_pending(test, item)
+                or item_disposition_pending(test, item)
+                for item in items
+            ),
+        }
     checks = [check for item in items for check in (item.get("checks") or [])]
     return {
         "items": len(items),
@@ -2210,6 +2365,7 @@ def meta_payload() -> dict:
         "directions": sorted(DIRECTIONS),
         "document_types": sorted(_DOCUMENT_TYPE_ALIASES),
         "comparison_methods": sorted(METHODS),
+        "cycle_vouch": cycle_vouching.metadata(),
     }
 
 
@@ -2217,9 +2373,9 @@ SUMMARY_CLASSES = ("exception", "needs_review", "awaiting_evidence", "confirmed"
 _SUMMARY_RANK = {name: index for index, name in enumerate(SUMMARY_CLASSES)}
 
 
-def _item_classification(item: dict) -> str:
+def _item_classification(test: dict, item: dict) -> str:
     """Bucket one worklist item by what the auditor has to do about it."""
-    state = str(item.get("state") or "pending")
+    state = item_state_projection(test, item)
     coverage = item.get("evidence_coverage") or {}
     if state == "exception":
         return "exception"
@@ -2252,7 +2408,7 @@ def summary_payload(workspace: Workspace) -> dict:
             continue
         test_counts = {name: 0 for name in SUMMARY_CLASSES}
         for item in test.get("items") or []:
-            classification = _item_classification(item)
+            classification = _item_classification(test, item)
             counts[classification] += 1
             test_counts[classification] += 1
             coverage = item.get("evidence_coverage") or {}
@@ -2267,7 +2423,7 @@ def summary_payload(workspace: Workspace) -> dict:
                 "item_id": item.get("id"),
                 "label": item.get("label") or "",
                 "instruction": item.get("instruction") or "",
-                "state": item.get("state"),
+                "state": item_state_projection(test, item),
                 "classification": classification,
                 "question": item.get("question") or "",
                 "response": item.get("response") or "",
