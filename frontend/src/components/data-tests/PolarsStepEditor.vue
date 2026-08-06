@@ -47,10 +47,10 @@ function remove(index: number) { steps.value.splice(index, 1) }
 <style scoped>
 .steps-author { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
 .steps-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.steps-header p { margin: 0; color: var(--aw-muted); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
-.step-card { display: flex; flex-direction: column; gap: 0.45rem; min-width: 0; padding: 0.7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
-.step-card-head { display: flex; align-items: center; justify-content: space-between; color: var(--aw-muted); font-size: 0.74rem; font-weight: 600; }
-label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: #46576d; font-size: 0.75rem; font-weight: 600; }
+.steps-header p { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+.step-card { display: flex; flex-direction: column; gap: 0.45rem; min-width: 0; padding: 0.7rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+.step-card-head { display: flex; align-items: center; justify-content: space-between; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
+label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label small { color: var(--aw-muted); font-weight: 400; }
 label :deep(.p-inputtext), label :deep(.p-textarea) { width: 100%; min-width: 0; }
 </style>

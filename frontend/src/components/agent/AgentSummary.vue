@@ -81,42 +81,40 @@ async function promote(finding: AgentFinding) {
 </template>
 
 <style scoped>
-.summary { font-size: 0.85rem; }
+.summary { font-size: var(--aw-text-base); }
 .audit-outcome { margin-bottom: .6rem; }
 .outcome-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem; margin-bottom: .45rem; }
-.outcome-grid span { display: grid; gap: .12rem; padding: .4rem; border: 1px solid var(--p-surface-200); border-radius: 6px; color: var(--p-surface-500); font-size: .68rem; }
-.outcome-grid strong { color: var(--p-text-color); font-size: .82rem; }
+.outcome-grid span { display: grid; gap: .12rem; padding: .4rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.outcome-grid strong { color: var(--aw-ink); font-size: var(--aw-text-sm); }
 .section-title {
   margin: 0.6rem 0 0.35rem;
-  font-size: 0.68rem;
+  font-size: var(--aw-text-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--p-surface-500);
+  color: var(--aw-muted);
 }
 .finding {
   display: flex;
   gap: 0.55rem;
   align-items: flex-start;
   padding: 0.45rem 0.5rem;
-  border: 1px solid var(--p-surface-200);
-  border-radius: 7px;
-  background: var(--p-surface-0);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-panel);
   margin-bottom: 0.4rem;
 }
 .finding-body { display: flex; flex-direction: column; gap: 0.15rem; line-height: 1.35; }
-.finding-body small { color: var(--p-surface-500); font-size: 0.7rem; }
+.finding-body small { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .narrative { line-height: 1.5; }
 .narrative :deep(h3), .narrative :deep(h4), .narrative :deep(h5), .narrative :deep(h6) {
   margin: 0.8rem 0 0.3rem;
-  font-size: 0.9rem;
+  font-size: var(--aw-text-base);
 }
 .narrative :deep(p) { margin: 0.3rem 0; }
 .narrative :deep(ul) { margin: 0.3rem 0; padding-left: 1.2rem; }
 .narrative :deep(code) {
-  background: var(--p-surface-100);
-  border-radius: 4px;
+  background: var(--aw-raised);
+  border-radius: var(--aw-radius-control);
   padding: 0 0.25rem;
-  font-size: 0.78rem;
+  font-size: var(--aw-text-sm);
 }
 </style>

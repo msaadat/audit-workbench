@@ -75,8 +75,6 @@ const stateLabel: Record<DashboardPhase['state'], string> = {
   color: var(--aw-muted);
   font-size: var(--aw-text-xs);
   font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
 }
 .rail-label:first-child { margin-top: 0; }
 
@@ -86,21 +84,21 @@ const stateLabel: Record<DashboardPhase['state'], string> = {
   gap: 0.5rem;
   padding: 0.5rem 0.55rem;
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   margin-bottom: 0.3rem;
-  background: var(--p-surface-0);
+  background: var(--aw-panel);
   color: inherit;
   text-decoration: none;
 }
 .phase:hover { border-color: var(--aw-teal); }
-.phase > i { padding-top: 0.1rem; font-size: 0.8rem; }
-.phase[data-state='not_started'] > i { color: #94a3b8; }
-.phase[data-state='in_progress'] > i { color: #2563eb; }
+.phase > i { padding-top: 0.1rem; font-size: var(--aw-text-sm); }
+.phase[data-state='not_started'] > i { color: var(--aw-muted-strong); }
+.phase[data-state='in_progress'] > i { color: var(--aw-info); }
 .phase[data-state='complete'] > i { color: var(--aw-ok); }
 .phase[data-state='attention'] > i { color: var(--aw-warn); }
 .phase .body { display: grid; gap: 0.1rem; min-width: 0; }
-.phase strong { font-size: 0.78rem; font-weight: 600; }
-.phase small { color: var(--aw-muted); font-size: 0.68rem; line-height: 1.35; }
+.phase strong { font-size: var(--aw-text-sm); font-weight: 600; }
+.phase small { color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.35; }
 .phase small.issue { color: var(--aw-warn); }
 
 .phase-group { cursor: default; }
@@ -112,19 +110,19 @@ const stateLabel: Record<DashboardPhase['state'], string> = {
   gap: 0.3rem;
   padding: 0.15rem 0.4rem;
   border: 1px solid var(--aw-border);
-  border-radius: 999px;
-  font-size: 0.65rem;
+  border-radius: var(--aw-radius-pill);
+  font-size: var(--aw-text-2xs);
   font-weight: 600;
   color: inherit;
   text-decoration: none;
   background: var(--aw-canvas);
 }
 .sub-btn:hover { border-color: var(--aw-teal); }
-.sub-btn > i { font-size: 0.6rem; }
-.sub-btn[data-state='not_started'] > i { color: #94a3b8; }
-.sub-btn[data-state='in_progress'] > i { color: #2563eb; }
+.sub-btn > i { font-size: var(--aw-text-2xs); }
+.sub-btn[data-state='not_started'] > i { color: var(--aw-muted-strong); }
+.sub-btn[data-state='in_progress'] > i { color: var(--aw-info); }
 .sub-btn[data-state='complete'] > i { color: var(--aw-ok); }
 .sub-btn[data-state='attention'] > i { color: var(--aw-warn); }
 
-.empty { padding: 0.5rem 0.15rem; color: var(--aw-muted); font-size: 0.72rem; }
+.empty { padding: 0.5rem 0.15rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
 </style>

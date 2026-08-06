@@ -540,7 +540,7 @@ function rangeText(p: ColumnProfile): string {
                   <Tag :value="data.inferred_type" :severity="typeSeverity[data.inferred_type] ?? 'secondary'" />
                 </template>
               </Column>
-              <Column field="blank_pct" header="Blank" style="width: 14rem">
+              <Column field="blank_pct" header="Blank" bodyClass="aw-figure" style="width: 14rem">
                 <template #body="{ data }">
                   <div class="blank-cell">
                     <ProgressBar :value="data.blank_pct" :showValue="false" style="height: 6px; flex: 1" />
@@ -548,13 +548,13 @@ function rangeText(p: ColumnProfile): string {
                   </div>
                 </template>
               </Column>
-              <Column field="distinct_count" header="Distinct">
+              <Column field="distinct_count" header="Distinct" bodyClass="aw-figure">
                 <template #body="{ data }">
                   {{ data.distinct_count.toLocaleString() }}
                   <span class="muted">({{ data.distinct_pct }}%)</span>
                 </template>
               </Column>
-              <Column header="Range / Mean">
+              <Column header="Range / Mean" bodyClass="aw-figure">
                 <template #body="{ data }">{{ rangeText(data) }}</template>
               </Column>
 
@@ -636,7 +636,7 @@ function rangeText(p: ColumnProfile): string {
   box-shadow: none;
 }
 
-.inventory-head { display: flex; flex: none; align-items: center; justify-content: space-between; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--aw-border); color: var(--aw-muted); font-size: 0.75rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+.inventory-head { display: flex; flex: none; align-items: center; justify-content: space-between; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--aw-border); color: var(--aw-muted); font-size: var(--aw-text-sm); font-weight: 750; }
 
 .inventory-filter {
   position: relative;
@@ -650,7 +650,7 @@ function rangeText(p: ColumnProfile): string {
   top: 50%;
   left: 1.2rem;
   transform: translateY(-50%);
-  font-size: 0.75rem;
+  font-size: var(--aw-text-sm);
   color: var(--aw-muted);
   pointer-events: none;
 }
@@ -659,7 +659,7 @@ function rangeText(p: ColumnProfile): string {
   width: 100%;
   padding: 0.35rem 0.5rem 0.35rem 1.7rem;
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
   font: inherit;
   font-size: var(--aw-text-sm);
@@ -683,8 +683,6 @@ function rangeText(p: ColumnProfile): string {
   color: var(--aw-muted);
   font-size: var(--aw-text-xs);
   font-weight: 700;
-  letter-spacing: .05em;
-  text-transform: uppercase;
 }
 
 .group-label + .group-label,
@@ -724,7 +722,7 @@ function rangeText(p: ColumnProfile): string {
 
 .row-icon {
   flex: none;
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
   color: var(--aw-muted);
 }
 
@@ -770,7 +768,7 @@ function rangeText(p: ColumnProfile): string {
   flex: none;
   padding: 0.15rem 0.5rem;
   border: 1px solid var(--aw-border-strong);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
   color: var(--aw-teal);
   font: inherit;
@@ -830,11 +828,11 @@ function rangeText(p: ColumnProfile): string {
 
 .profile-title {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: var(--aw-text-lg);
 }
 
 .dtype {
-  font-size: 0.75rem;
+  font-size: var(--aw-text-sm);
 }
 
 .blank-cell {
@@ -844,7 +842,7 @@ function rangeText(p: ColumnProfile): string {
 }
 
 .warn {
-  color: var(--p-orange-500);
+  color: var(--aw-warn);
 }
 
 .top-values {
@@ -867,14 +865,14 @@ function rangeText(p: ColumnProfile): string {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: Consolas, monospace;
-  font-size: 0.85rem;
+  font-size: var(--aw-text-base);
 }
 
 .tv-count {
   width: 9rem;
   text-align: right;
-  font-size: 0.85rem;
-  color: var(--p-surface-500);
+  font-size: var(--aw-text-base);
+  color: var(--aw-muted);
 }
 
 .rename-body {

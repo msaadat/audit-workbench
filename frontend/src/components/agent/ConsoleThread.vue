@@ -193,16 +193,16 @@ defineExpose({ rename, remove })
 <style scoped>
 /* Positioned so the chat-history panel, which pins itself below the head, has a
    containing block in both the console and the drawer. */
-.console-thread{position:relative;flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--p-surface-0)}
+.console-thread{position:relative;flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--aw-panel)}
 .thread-head{display:flex;align-items:center;gap:.45rem;min-height:3.1rem;padding:.55rem .7rem;border-bottom:1px solid var(--aw-border)}
 .thread-head>i{color:var(--aw-teal)}
 .title{display:flex;align-items:center;gap:.3rem;min-width:0;padding:.2rem;border:0;background:transparent;color:inherit;cursor:pointer}
 .title.static{cursor:default}
-.title strong{max-width:12rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.82rem}
-.title i{font-size:.6rem}
+.title strong{max-width:12rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--aw-text-sm)}
+.title i{font-size:var(--aw-text-2xs)}
 .grow{flex:1}
-.live-dot{width:.5rem;height:.5rem;border-radius:50%;background:#22c55e}
-.live-dot.off{background:var(--p-amber-500)}
-.loading{display:grid;place-content:center;place-items:center;gap:.4rem;flex:1;color:var(--aw-muted);font-size:.78rem}
+.live-dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--aw-ok)}
+.live-dot.off{background:var(--aw-warn)}
+.loading{display:grid;place-content:center;place-items:center;gap:.4rem;flex:1;color:var(--aw-muted);font-size:var(--aw-text-sm)}
 .rename-input{width:100%}
 </style>

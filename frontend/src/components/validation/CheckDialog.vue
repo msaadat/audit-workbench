@@ -362,35 +362,35 @@ watch(visible, (open) => {
   align-items: flex-start;
   gap: 0.55rem;
   text-align: left;
-  background: var(--p-surface-0);
-  border: 1px solid var(--p-surface-200);
-  border-radius: 8px;
+  background: var(--aw-panel);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-control);
   padding: 0.55rem 0.7rem;
   cursor: pointer;
   font: inherit;
   color: inherit;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.check-card:hover { border-color: var(--p-primary-300); }
-.check-card.active { border-color: var(--p-primary-500); box-shadow: 0 0 0 1px var(--p-primary-500); }
-.check-card i { color: var(--p-primary-500); margin-top: 0.15rem; }
+.check-card:hover { border-color: var(--aw-teal-line); }
+.check-card.active { border-color: var(--aw-teal-600); box-shadow: 0 0 0 1px var(--aw-teal-600); }
+.check-card i { color: var(--aw-teal-600); margin-top: 0.15rem; }
 .check-card div { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-.check-card strong { font-size: 0.85rem; }
-.check-card span { font-size: 0.74rem; color: var(--p-surface-500); line-height: 1.3; }
+.check-card strong { font-size: var(--aw-text-base); }
+.check-card span { font-size: var(--aw-text-xs); color: var(--aw-muted); line-height: 1.3; }
 
 .edit-strip {
   display: flex;
   align-items: flex-start;
   gap: 0.6rem;
   padding: 0.55rem 0.7rem;
-  border: 1px solid var(--p-surface-200);
-  border-radius: 8px;
-  background: var(--p-surface-50);
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-canvas);
   margin-bottom: 0.75rem;
 }
-.edit-strip i { color: var(--p-primary-500); margin-top: 0.15rem; }
+.edit-strip i { color: var(--aw-teal-600); margin-top: 0.15rem; }
 .edit-strip div { display: flex; flex-direction: column; gap: 0.15rem; }
-.edit-strip span { font-size: 0.78rem; color: var(--p-surface-500); }
+.edit-strip span { font-size: var(--aw-text-sm); color: var(--aw-muted); }
 
 .param-form {
   display: flex;
@@ -403,21 +403,21 @@ watch(visible, (open) => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.9rem;
+  font-size: var(--aw-text-base);
   cursor: pointer;
 }
 
 .code-input {
   width: 100%;
   font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
-  font-size: 0.85rem;
+  font-size: var(--aw-text-base);
 }
 
 .rule-controls {
   display: flex;
   gap: 2rem;
   align-items: flex-end;
-  border-top: 1px solid var(--p-surface-200);
+  border-top: 1px solid var(--aw-border);
   padding-top: 0.9rem;
 }
 

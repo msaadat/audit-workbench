@@ -41,7 +41,7 @@ defineEmits<{ select: [key: string] }>()
   padding: 0.6rem 0.7rem;
   border: 1px solid var(--aw-border);
   border-top: 3px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
   color: inherit;
   font: inherit;
@@ -49,8 +49,8 @@ defineEmits<{ select: [key: string] }>()
   cursor: pointer;
   transition: border-color .15s, background .15s;
 }
-.triage-card strong { font-size: 1.25rem; line-height: 1.1; }
-.triage-card span { color: var(--aw-muted); font-size: 0.72rem; }
+.triage-card strong { font-size: var(--aw-text-xl); line-height: 1.1; }
+.triage-card span { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .triage-card:hover { background: var(--aw-raised); }
 .triage-card.active { background: var(--aw-teal-soft); border-color: var(--aw-teal); }
 

@@ -67,11 +67,11 @@ function stopResize() { if (!resizing.value) return; resizing.value = false; doc
 /* The drawer is always a real layout column: it reserves its own width and
    pushes the surface content instead of covering it. Overlaying it hid the
    right edge of every master/detail surface at ordinary laptop widths. */
-.agent-drawer{position:relative;flex:0 0 auto;display:flex;flex-direction:column;min-width:0;overflow:hidden;border-left:1px solid var(--aw-border);background:var(--p-surface-0)}
+.agent-drawer{position:relative;flex:0 0 auto;display:flex;flex-direction:column;min-width:0;overflow:hidden;border-left:1px solid var(--aw-border);background:var(--aw-panel)}
 .agent-drawer.collapsed{flex:0 0 3.25rem}
 .agent-drawer.resizing{transition:none;user-select:none}
 :global(body.agent-drawer-resizing){cursor:col-resize;user-select:none}
 .resize-handle{position:absolute;z-index:7;inset:0 auto 0 -.3rem;width:.6rem;cursor:col-resize}
-.collapsed-toggle{flex:1;display:grid;place-items:center;width:100%;border:0;background:transparent;color:var(--aw-teal);font-size:1.05rem;cursor:pointer}
+.collapsed-toggle{flex:1;display:grid;place-items:center;width:100%;border:0;background:transparent;color:var(--aw-teal);font-size:var(--aw-text-lg);cursor:pointer}
 .collapsed-toggle:hover{background:var(--aw-teal-soft)}
 </style>

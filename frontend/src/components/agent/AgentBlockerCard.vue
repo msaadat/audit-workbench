@@ -42,14 +42,14 @@ const destinations: Record<string, string> = {
 </template>
 
 <style scoped>
-.blocker{display:grid;gap:.45rem;padding:.65rem .7rem;border:1px solid var(--p-amber-300);border-radius:.55rem;background:var(--p-amber-50)}
-.blocker.failed{border-color:var(--p-red-300);background:var(--p-red-50)}
-.blocker.review{border-color:var(--aw-border);background:var(--p-surface-50)}
+.blocker{display:grid;gap:.45rem;padding:.65rem .7rem;border:1px solid var(--aw-warn-line);border-radius:var(--aw-radius-control);background:var(--aw-warn-soft)}
+.blocker.failed{border-color:var(--aw-danger-line);background:var(--aw-danger-soft)}
+.blocker.review{border-color:var(--aw-border);background:var(--aw-canvas)}
 .head{display:grid;grid-template-columns:1rem minmax(0,1fr);gap:.5rem;align-items:start}
-.head>i{margin-top:.12rem;color:var(--p-amber-600)}
-.blocker.failed .head>i{color:var(--p-red-500)}
+.head>i{margin-top:.12rem;color:var(--aw-warn)}
+.blocker.failed .head>i{color:var(--aw-danger)}
 .blocker.review .head>i{color:var(--aw-muted)}
-.head p{margin:0;font-size:.79rem;line-height:1.45}
-.where{font-size:.68rem;color:var(--aw-muted)}
+.head p{margin:0;font-size:var(--aw-text-sm);line-height:1.45}
+.where{font-size:var(--aw-text-xs);color:var(--aw-muted)}
 .choices{display:flex;flex-wrap:wrap;gap:.35rem}
 </style>

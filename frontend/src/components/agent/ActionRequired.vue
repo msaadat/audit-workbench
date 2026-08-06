@@ -91,16 +91,16 @@ async function respond(interaction: AgentInteraction, response: Record<string, u
 .action-required { display: grid; gap: .5rem; padding-bottom: .8rem; border-bottom: 1px solid var(--aw-border); }
 .head { display: flex; align-items: flex-start; gap: .5rem; }
 .head > div { min-width: 0; flex: 1; }
-.rail-label { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
-.summary { margin: .18rem 0 0; color: #50617c; font-size: .7rem; line-height: 1.35; }
+.rail-label { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+.summary { margin: .18rem 0 0; color: var(--aw-ink-soft); font-size: var(--aw-text-xs); line-height: 1.35; }
 .head > i { padding-top: .08rem; color: var(--aw-ok); }
-.blocker { display: flex; gap: .45rem; padding: .5rem; border: 1px solid var(--p-amber-300); border-radius: var(--aw-radius-sm); background: var(--p-amber-50); }
-.blocker.failed { border-color: var(--p-red-300); background: var(--p-red-50); }
-.blocker > i { padding-top: .08rem; color: var(--p-amber-600); font-size: .8rem; }
-.blocker.failed > i { color: var(--p-red-500); }
+.blocker { display: flex; gap: .45rem; padding: .5rem; border: 1px solid var(--aw-warn-line); border-radius: var(--aw-radius-control); background: var(--aw-warn-soft); }
+.blocker.failed { border-color: var(--aw-danger-line); background: var(--aw-danger-soft); }
+.blocker > i { padding-top: .08rem; color: var(--aw-warn); font-size: var(--aw-text-sm); }
+.blocker.failed > i { color: var(--aw-danger); }
 .blocker span { display: grid; gap: .12rem; min-width: 0; }
-.blocker strong { font-size: .74rem; line-height: 1.3; }
-.blocker small { color: var(--aw-muted); font-size: .68rem; line-height: 1.35; }
+.blocker strong { font-size: var(--aw-text-xs); line-height: 1.3; }
+.blocker small { color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.35; }
 .clear { padding-bottom: .65rem; }
-.action-required :deep(.approval), .action-required :deep(.interaction) { font-size: .82rem; }
+.action-required :deep(.approval), .action-required :deep(.interaction) { font-size: var(--aw-text-sm); }
 </style>

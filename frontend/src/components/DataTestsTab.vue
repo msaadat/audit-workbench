@@ -343,7 +343,7 @@ onUnmounted(unsubscribe)
       <div class="toolbar">
         <IconField>
           <InputIcon class="pi pi-search" />
-          <InputText v-model="search" placeholder="Search titles and objectives" />
+          <InputText v-model="search" size="small" placeholder="Search titles and objectives" />
         </IconField>
         <Select
           v-if="rcmFacet.length"
@@ -352,6 +352,7 @@ onUnmounted(unsubscribe)
           optionLabel="label"
           optionValue="value"
           placeholder="All RCM rows"
+          size="small"
           showClear
           class="rcm-facet"
         />
@@ -513,28 +514,28 @@ onUnmounted(unsubscribe)
 </template>
 
 <style scoped>
-.data-tests { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; max-width: 100%; min-height: 100%; }
+.data-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; max-width: 100%; min-height: 100%; }
 .toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex-wrap: wrap; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 14rem; min-width: 0; max-width: 22rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }
 .rcm-facet { flex: 0 1 14rem; min-width: 0; }
-.muted { color: var(--aw-muted); font-size: 0.76rem; }
+.muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .layout { min-height: 32rem; }
 
 .detail { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; max-width: 100%; padding: 1rem; }
 .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; min-width: 0; }
 .head-copy { min-width: 0; }
-.eyebrow { margin: 0; color: var(--aw-teal); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.detail-head h3 { margin: 0.15rem 0 0.25rem; font-size: 1.05rem; line-height: 1.3; }
-.objective { margin: 0; color: var(--aw-muted); font-size: 0.82rem; line-height: 1.45; }
+.eyebrow { margin: 0; }
+.detail-head h3 { margin: 0.15rem 0 0.25rem; font-size: var(--aw-text-lg); line-height: 1.3; }
+.objective { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); line-height: 1.45; }
 .head-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
 .sign-off { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.6rem; }
 .sign-off label { flex: 0 1 16rem; }
 .sign-off label.conclusion-note { flex: 1 1 20rem; }
-.finding-action { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 0.8rem; border: 1px solid var(--p-blue-200); border-radius: var(--aw-radius-sm); background: var(--p-blue-50); }
-.finding-action strong { font-size: 0.8rem; }
-.finding-action p { margin: 0.15rem 0 0; color: var(--aw-muted); font-size: 0.76rem; }
+.finding-action { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 0.8rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); }
+.finding-action strong { font-size: var(--aw-text-sm); }
+.finding-action p { margin: 0.15rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .finding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
 
 .definition { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
@@ -542,7 +543,7 @@ onUnmounted(unsubscribe)
 .wide { grid-column: 1 / -1; }
 .save-row { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; }
 
-label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: #46576d; font-size: 0.75rem; font-weight: 600; }
+label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { width: 100%; min-width: 0; }
 
 @container master-detail-content (max-width: 34rem) {

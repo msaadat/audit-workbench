@@ -677,7 +677,7 @@ async function exportExcel() {
             :field="column"
             :header="column"
             :headerClass="{ 'num-col': numericFlatColumns.has(column) }"
-            :bodyClass="{ 'num-col': numericFlatColumns.has(column) }"
+            :bodyClass="{ 'num-col': numericFlatColumns.has(column), 'aw-figure': numericFlatColumns.has(column) }"
             sortable
           >
             <template #body="{ data }">
@@ -894,7 +894,7 @@ async function exportExcel() {
 .query-commandbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem; margin-bottom: 1rem; padding: .75rem .9rem; position: sticky; top: 0; z-index: 8; box-shadow: var(--aw-shadow-md); }
 .query-context { display: flex; flex-direction: column; align-self: center; min-width: 15rem; }
 .query-context .eyebrow { margin: 0; }
-.query-context strong { max-width: 36rem; overflow: hidden; color: var(--aw-muted); font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
+.query-context strong { max-width: 36rem; overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-sm); text-overflow: ellipsis; white-space: nowrap; }
 .query-layout {
   display: flex;
   gap: 1rem;
@@ -910,9 +910,9 @@ async function exportExcel() {
 }
 .result-titlebar { display: flex; align-items: center; justify-content: space-between; min-height: 3.7rem; padding: .7rem .9rem; border-bottom: 1px solid var(--aw-border); background: var(--aw-raised); }
 .result-titlebar .eyebrow { margin-bottom: .1rem; }
-.result-titlebar strong { font-size: .82rem; font-family: var(--aw-font-mono); letter-spacing: -0.01em; }
+.result-titlebar strong { font-size: var(--aw-text-sm); font-family: var(--aw-font-mono); letter-spacing: -0.01em; }
 .result-body { padding: .75rem; }
-.computing { display: flex; align-items: center; gap: .35rem; color: var(--aw-teal); font-size: .75rem; font-weight: 650; }
+.computing { display: flex; align-items: center; gap: .35rem; color: var(--aw-teal); font-size: var(--aw-text-sm); font-weight: 650; }
 .compact-empty { min-height: 24rem; border: 0; background: transparent; }
 
 .query-result.dim {
@@ -927,7 +927,7 @@ async function exportExcel() {
   color: var(--aw-danger);
   padding: 1rem;
   border: 1px solid var(--aw-danger);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-danger-soft);
 }
 
@@ -940,7 +940,7 @@ async function exportExcel() {
 }
 
 .small {
-  font-size: 0.85rem;
+  font-size: var(--aw-text-base);
 }
 
 .viz-controls {
@@ -961,15 +961,14 @@ async function exportExcel() {
 .chart-panel {
   background: var(--aw-panel);
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
-  box-shadow: var(--aw-shadow-sm);
+  border-radius: var(--aw-radius-control);
   padding: 1rem;
   margin-bottom: 0.75rem;
 }
 
 .cell-null::after {
   content: '∅';
-  color: var(--p-surface-300);
+  color: var(--aw-border-strong);
 }
 
 :deep(.query-table) {
@@ -977,9 +976,9 @@ async function exportExcel() {
   max-width: 100%;
   overflow: hidden;
   border: 1px solid var(--aw-border-strong);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
-  box-shadow: 0 1px 0 rgb(13 35 64 / 3%);
+  box-shadow: var(--aw-shadow-sm);
   font-size: var(--aw-text-sm);
 }
 
@@ -1003,7 +1002,7 @@ async function exportExcel() {
 
 :deep(.query-table .p-datatable-thead > tr > th) {
   border-bottom: 1px solid var(--aw-border-strong);
-  background: #f1f5f9;
+  background: var(--aw-raised);
   color: var(--aw-ink-strong);
   font-size: var(--aw-text-xs);
   font-weight: 700;
@@ -1023,11 +1022,11 @@ async function exportExcel() {
 }
 
 :deep(.query-table .p-datatable-thead > tr > th:first-child) {
-  border-top-left-radius: calc(var(--aw-radius-sm) - 1px);
+  border-top-left-radius: calc(var(--aw-radius-control) - 1px);
 }
 
 :deep(.query-table .p-datatable-thead > tr > th:last-child) {
-  border-top-right-radius: calc(var(--aw-radius-sm) - 1px);
+  border-top-right-radius: calc(var(--aw-radius-control) - 1px);
 }
 
 :deep(.query-table .p-datatable-tbody > tr > td) {
@@ -1037,7 +1036,7 @@ async function exportExcel() {
 }
 
 :deep(.query-table .p-datatable-tbody > tr:nth-child(even) > td) {
-  background: #f8fafc;
+  background: var(--aw-canvas);
 }
 
 :deep(.query-table.query-table--drillable .p-datatable-tbody > tr) {
@@ -1059,7 +1058,7 @@ async function exportExcel() {
   min-height: 3.1rem;
   padding: 0.45rem 0.65rem;
   border-top: 1px solid var(--aw-border);
-  background: #fbfcfe;
+  background: var(--aw-canvas);
   gap: 0.15rem;
 }
 
@@ -1070,7 +1069,7 @@ async function exportExcel() {
 :deep(.query-table .p-paginator .p-paginator-last) {
   min-width: 2.1rem;
   height: 2.1rem;
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   color: var(--aw-muted);
 }
 
@@ -1083,7 +1082,7 @@ async function exportExcel() {
 
 :deep(.query-table .p-paginator .p-select) {
   height: 2.35rem;
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
 }
 
 :deep(.query-table .p-paginator .p-select-label) {
@@ -1105,9 +1104,9 @@ async function exportExcel() {
   overflow: auto;
   max-height: 70vh;
   border: 1px solid var(--aw-border-strong);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
-  box-shadow: 0 1px 0 rgb(13 35 64 / 3%);
+  box-shadow: var(--aw-shadow-sm);
 }
 
 .pivot-grid {
@@ -1130,7 +1129,7 @@ async function exportExcel() {
 .pivot-grid thead th {
   position: sticky;
   top: 0;
-  background: #f1f5f9;
+  background: var(--aw-raised);
   border-bottom: 1px solid var(--aw-border-strong);
   font-size: var(--aw-text-xs);
   font-weight: 700;
@@ -1140,7 +1139,7 @@ async function exportExcel() {
 }
 
 .pivot-grid tbody tr:nth-child(even) td {
-  background: #f8fafc;
+  background: var(--aw-canvas);
 }
 
 .pivot-grid th.rowhead,
@@ -1201,15 +1200,14 @@ async function exportExcel() {
 .zone {
   background: var(--aw-panel);
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
-  box-shadow: var(--aw-shadow-sm);
+  border-radius: var(--aw-radius-control);
   padding: 0.6rem 0.75rem;
 }
 
 .zone { border-left-width: 3px; }
 .zone[data-zone='filters'] { border-left-color: var(--aw-warn); }
-.zone[data-zone='group'] { border-left-color: #2563eb; }
-.zone[data-zone='split'] { border-left-color: #7c3aed; }
+.zone[data-zone='group'] { border-left-color: var(--aw-info); }
+.zone[data-zone='split'] { border-left-color: var(--aw-accent); }
 .zone[data-zone='aggs'] { border-left-color: var(--aw-teal); }
 .zone[data-zone='sort'] { border-left-color: var(--aw-muted); }
 
@@ -1220,8 +1218,8 @@ async function exportExcel() {
 .advanced-zone > summary { min-height: 1.6rem; margin: 0; cursor: pointer; list-style: none; }
 .advanced-zone > summary::-webkit-details-marker { display: none; }
 .advanced-zone > summary span { display: flex; align-items: center; gap: .4rem; }
-.advanced-zone > summary small { margin-left: auto; color: var(--aw-muted); font-size: .62rem; font-weight: 600; text-transform: uppercase; }
-.advanced-zone > summary > .pi-chevron-down { color: var(--aw-muted); font-size: .65rem; transition: rotate .15s; }
+.advanced-zone > summary small { margin-left: auto; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-weight: 600; }
+.advanced-zone > summary > .pi-chevron-down { color: var(--aw-muted); font-size: var(--aw-text-2xs); transition: rotate .15s; }
 .advanced-zone[open] > summary > .pi-chevron-down { rotate: 180deg; }
 
 .zone.over {
@@ -1231,7 +1229,7 @@ async function exportExcel() {
 }
 
 .panel-head {
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
   font-weight: 600;
   color: var(--aw-ink);
   margin-bottom: 0.45rem;
@@ -1281,10 +1279,10 @@ async function exportExcel() {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
   background: var(--aw-raised);
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   padding: 0.25rem 0.6rem;
   cursor: grab;
   user-select: none;
@@ -1292,7 +1290,7 @@ async function exportExcel() {
 }
 
 .chip:hover {
-  background: #fff;
+  background: var(--aw-panel);
   border-color: var(--aw-teal);
 }
 
@@ -1314,14 +1312,14 @@ async function exportExcel() {
 }
 
 .chip i {
-  font-size: 0.7rem;
+  font-size: var(--aw-text-xs);
   color: var(--aw-muted);
 }
 
 .zone-chip {
   background: var(--aw-teal-soft);
-  border-color: #a7ded8;
-  color: #0b625c;
+  border-color: var(--aw-teal-line);
+  color: var(--aw-teal-strong);
   font-weight: 600;
 }
 
@@ -1348,9 +1346,9 @@ async function exportExcel() {
 }
 
 .empty {
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
   border: 1px dashed var(--aw-border-strong);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   padding: 0.5rem;
   text-align: center;
   margin: 0;

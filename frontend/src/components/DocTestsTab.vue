@@ -417,7 +417,7 @@ onUnmounted(unsubscribe)
       <div class="toolbar">
         <IconField>
           <InputIcon class="pi pi-search" />
-          <InputText v-model="search" placeholder="Search items, tests, and answers" />
+          <InputText v-model="search" size="small" placeholder="Search items, tests, and answers" />
         </IconField>
         <span class="muted">
           {{ visibleItems.length }} of {{ summary?.items.length ?? 0 }} · {{ activeFilterLabel }}
@@ -485,11 +485,11 @@ onUnmounted(unsubscribe)
 </template>
 
 <style scoped>
-.doc-tests { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; min-height: 100%; }
+.doc-tests { display: flex; flex-direction: column; gap: var(--aw-section-gap); min-width: 0; min-height: 100%; }
 .toolbar { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .toolbar :deep(.p-iconfield) { flex: 1 1 16rem; min-width: 0; max-width: 26rem; }
 .toolbar :deep(.p-inputtext) { width: 100%; }
-.muted { color: var(--aw-muted); font-size: 0.76rem; white-space: nowrap; }
+.muted { color: var(--aw-muted); font-size: var(--aw-text-sm); white-space: nowrap; }
 .layout { min-height: 32rem; }
 
 /* Sized against the tab's own box, so the assistant drawer taking width

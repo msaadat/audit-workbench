@@ -67,15 +67,15 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
 .grid-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
 .grid-head > div { display: flex; align-items: baseline; gap: 0.6rem; }
 .grid-head small, .muted { color: var(--aw-muted); }
-.refs { display:flex; flex-wrap:wrap; gap:.25rem }.refs button { border:1px solid var(--aw-border); border-radius:999px; background:var(--p-primary-50); color:var(--aw-teal); font-family:var(--aw-font-sans); font-size:var(--aw-text-xs); padding:.2rem .45rem; cursor:pointer }
-.refs button.exception { background:var(--p-red-50); color:var(--p-red-700) }.refs button.complete { background:var(--p-green-50); color:var(--p-green-700) }
-.refs button.finding { background:var(--p-orange-50); color:var(--p-orange-800) }
+.refs { display:flex; flex-wrap:wrap; gap:.25rem }.refs button { border:1px solid var(--aw-border); border-radius:var(--aw-radius-pill); background:var(--aw-teal-soft); color:var(--aw-teal); font-family:var(--aw-font-sans); font-size:var(--aw-text-xs); padding:.2rem .45rem; cursor:pointer }
+.refs button.exception { background:var(--aw-danger-soft); color:var(--aw-danger) }.refs button.complete { background:var(--aw-ok-soft); color:var(--aw-ok) }
+.refs button.finding { background:var(--aw-warn-soft); color:var(--aw-warn-ink) }
 .summary-link { display:flex; flex-direction:column; gap:.2rem; width:100%; padding:.25rem; border:0; background:transparent; text-align:left; color:inherit; cursor:pointer }.summary-link span { color:var(--aw-muted); font-size:var(--aw-text-xs); line-height:1.35 }.summary-link:hover strong { color:var(--aw-teal) }.rollup { display:flex; flex-direction:column; align-items:flex-start; gap:.3rem }.rollup small { color:var(--aw-muted) }.row-actions { display:flex }
 
 /* Prose grid, not a ledger: sans face at one size everywhere except the ID. */
 .rcm-grid :deep(.p-datatable-tbody > tr > td) { font-family: var(--aw-font-sans); font-size: var(--aw-text-sm); vertical-align: top; padding: .45rem .55rem; }
-.row-id { font-family: var(--aw-font-mono); font-size: 0.78rem; letter-spacing: -0.01em; }
-:deep(.p-datatable-thead > tr > th) { background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.row-id { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); letter-spacing: -0.01em; }
+:deep(.p-datatable-thead > tr > th) { background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 
 /* Ghost controls: read as table text, reveal editability on hover/focus. */
 :deep(.p-inputtext), :deep(.p-textarea), :deep(.p-select) { width: 100%; font-family: var(--aw-font-sans); font-size: var(--aw-text-sm); line-height: 1.45; }
@@ -89,13 +89,13 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
 :deep(.p-datatable-tbody > tr:hover td .p-select .p-select-dropdown) { color: var(--aw-muted); }
 :deep(.p-datatable-tbody > tr td .p-inputtext:focus),
 :deep(.p-datatable-tbody > tr td .p-textarea:focus),
-:deep(.p-datatable-tbody > tr td .p-select.p-focus) { background: #fff; border-color: var(--aw-border-strong); }
+:deep(.p-datatable-tbody > tr td .p-select.p-focus) { background: var(--aw-panel); border-color: var(--aw-border-strong); }
 
 /* Rating severity dot */
 .rating { display: inline-flex; align-items: center; gap: .4rem; font-size: var(--aw-text-sm); text-transform: capitalize; }
 .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--aw-muted); flex: none; }
-.dot[data-rating='low'] { background: #facc15; }
-.dot[data-rating='medium'] { background: #f59e0b; }
-.dot[data-rating='high'] { background: #dc2626; }
-.dot[data-rating='critical'] { background: #7f1d1d; }
+.dot[data-rating='low'] { background: var(--aw-low); }
+.dot[data-rating='medium'] { background: var(--aw-warn); }
+.dot[data-rating='high'] { background: var(--aw-danger); }
+.dot[data-rating='critical'] { background: var(--aw-danger-ink); }
 </style>

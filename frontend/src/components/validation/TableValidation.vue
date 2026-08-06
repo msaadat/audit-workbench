@@ -136,10 +136,10 @@ function onRan(rulesetId: string | null, verdict: string) {
   gap: 0.4rem;
   padding: 0.4rem 0.7rem;
   border: 1px solid var(--aw-border);
-  border-radius: 999px;
+  border-radius: var(--aw-radius-pill);
   background: var(--aw-panel);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
   color: inherit;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;

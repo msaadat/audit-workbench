@@ -143,16 +143,16 @@ function label(id: string) { return props.documents.find(doc => doc.id === id)?.
 
 <style scoped>
 .composer{padding:.55rem .7rem .65rem;border-top:1px solid var(--aw-border);background:var(--aw-canvas)}
-.composer-surface{position:relative;display:grid;gap:.35rem;padding:.38rem .55rem .45rem;border:1px solid var(--aw-border-strong);border-radius:6px;background:var(--p-surface-0);box-shadow:var(--aw-shadow-sm);transition:border-color .15s,box-shadow .15s}
+.composer-surface{position:relative;display:grid;gap:.35rem;padding:.38rem .55rem .45rem;border:1px solid var(--aw-border-strong);border-radius:var(--aw-radius-control);background:var(--aw-panel);transition:border-color .15s,box-shadow .15s}
 .composer-surface:focus-within{border-color:var(--aw-teal-600);box-shadow:0 0 0 2px rgb(13 148 136 / 10%)}
-.command-menu{position:absolute;left:0;right:0;bottom:100%;margin:0 0 .4rem;padding:.3rem;list-style:none;border:1px solid var(--aw-border-strong);border-radius:8px;background:var(--p-surface-0);box-shadow:var(--aw-shadow-md);max-height:14rem;overflow-y:auto;z-index:20}
-.command-menu li{display:flex;align-items:baseline;gap:.45rem;padding:.4rem .5rem;border-radius:6px;cursor:pointer}
+.command-menu{position:absolute;left:0;right:0;bottom:100%;margin:0 0 .4rem;padding:.3rem;list-style:none;border:1px solid var(--aw-border-strong);border-radius:var(--aw-radius-control);background:var(--aw-panel);max-height:14rem;overflow-y:auto;z-index:20}
+.command-menu li{display:flex;align-items:baseline;gap:.45rem;padding:.4rem .5rem;border-radius:var(--aw-radius-control);cursor:pointer}
 .command-menu li.active{background:var(--aw-teal-soft)}
-.command-slash{flex:0 0 auto;font-family:var(--aw-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:.72rem;font-weight:600;color:var(--aw-teal)}
-.command-label{flex:0 0 auto;font-size:.75rem;font-weight:600}
-.command-description{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.68rem;color:var(--aw-muted)}
-.composer :deep(textarea){width:100%;min-height:1.6rem;padding:.18rem 0;border:0;border-radius:0;background:transparent;box-shadow:none;font-size:.8rem;line-height:1.35;max-height:9rem;resize:none}
+.command-slash{flex:0 0 auto;font-family:var(--aw-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:var(--aw-text-xs);font-weight:600;color:var(--aw-teal)}
+.command-label{flex:0 0 auto;font-size:var(--aw-text-sm);font-weight:600}
+.command-description{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--aw-text-xs);color:var(--aw-muted)}
+.composer :deep(textarea){width:100%;min-height:1.6rem;padding:.18rem 0;border:0;border-radius:0;background:transparent;box-shadow:none;font-size:var(--aw-text-sm);line-height:1.35;max-height:9rem;resize:none}
 .composer :deep(textarea:enabled:focus){border-color:transparent;outline:0;box-shadow:none}
-.toolbar{display:flex;align-items:center;gap:.35rem}.grow{flex:1}.control{font-size:.68rem}.control :deep(.p-button-label){font-weight:600}.control :deep(.p-button-icon){font-size:.68rem}.mode{min-width:3.15rem}.send{font-size:.68rem}.send :deep(.p-button-label){font-weight:700}.send :deep(.p-button-icon){font-size:.65rem}.chips{display:flex;gap:.3rem;overflow:auto}.chips span{display:flex;align-items:center;gap:.25rem;flex:0 0 auto;max-width:11rem;padding:.25rem .4rem;border-radius:999px;background:var(--aw-teal-soft);color:var(--aw-teal);font-size:.65rem}.chips span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chips button{border:0;background:transparent;color:inherit;cursor:pointer;padding:0}
+.toolbar{display:flex;align-items:center;gap:.35rem}.grow{flex:1}.control{font-size:var(--aw-text-xs)}.control :deep(.p-button-label){font-weight:600}.control :deep(.p-button-icon){font-size:var(--aw-text-xs)}.mode{min-width:3.15rem}.send{font-size:var(--aw-text-xs)}.send :deep(.p-button-label){font-weight:700}.send :deep(.p-button-icon){font-size:var(--aw-text-2xs)}.chips{display:flex;gap:.3rem;overflow:auto}.chips span{display:flex;align-items:center;gap:.25rem;flex:0 0 auto;max-width:11rem;padding:.25rem .4rem;border-radius:var(--aw-radius-pill);background:var(--aw-teal-soft);color:var(--aw-teal);font-size:var(--aw-text-2xs)}.chips span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chips button{border:0;background:transparent;color:inherit;cursor:pointer;padding:0}
 @media(max-width:520px){.composer{padding:.4rem}.control{padding-inline:.4rem}.control :deep(.p-button-label){display:none}.mode :deep(.p-button-label){display:inline}.send{padding-inline:.5rem}}
 </style>

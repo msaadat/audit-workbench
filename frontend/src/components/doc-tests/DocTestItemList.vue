@@ -52,8 +52,8 @@ const kindLabel: Record<string, string> = {
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--aw-border);
   border-left: 3px solid var(--aw-muted);
-  border-radius: var(--aw-radius-sm);
-  background: #fff;
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-panel);
   color: inherit;
   font: inherit;
   text-align: left;
@@ -62,14 +62,14 @@ const kindLabel: Record<string, string> = {
 .row:hover { background: var(--aw-raised); }
 .row.active { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
 .row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.4rem; min-width: 0; }
-.row-head strong { min-width: 0; font-size: 0.82rem; line-height: 1.3; }
-.row-test { min-width: 0; overflow: hidden; color: var(--aw-ink); font-size: 0.74rem; text-overflow: ellipsis; white-space: nowrap; }
-.row-meta { color: var(--aw-muted); font-size: 0.7rem; }
+.row-head strong { min-width: 0; font-size: var(--aw-text-sm); line-height: 1.3; }
+.row-test { min-width: 0; overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.row-meta { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 
 .row[data-classification='exception'] { border-left-color: var(--aw-danger); }
 .row[data-classification='needs_review'],
 .row[data-classification='awaiting_evidence'] { border-left-color: var(--aw-warn); }
 .row[data-classification='confirmed'] { border-left-color: var(--aw-ok); }
 
-.empty { padding: 1rem 0.6rem; color: var(--aw-muted); font-size: 0.78rem; text-align: center; }
+.empty { padding: 1rem 0.6rem; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
 </style>

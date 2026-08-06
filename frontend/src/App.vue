@@ -40,16 +40,15 @@ const inWorkspace = computed(() => WORKSPACE_ROUTES.includes(String(route.name ?
   min-height: 3.5rem;
   padding: 0.45rem 1.5rem;
   background: linear-gradient(180deg, var(--aw-navy-900) 0%, var(--aw-navy-950) 100%);
-  border-bottom: 1px solid rgb(94 234 212 / 14%);
   box-shadow: var(--aw-shadow-sm);
-  color: #fff;
+  color: var(--aw-on-dark);
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
   gap: 0.7rem;
-  color: #fff;
+  color: var(--aw-on-dark);
   text-decoration: none;
 }
 
@@ -58,23 +57,23 @@ const inWorkspace = computed(() => WORKSPACE_ROUTES.includes(String(route.name ?
   place-items: center;
   width: 2rem;
   height: 2rem;
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   color: var(--aw-navy-950);
-  background: linear-gradient(135deg, var(--aw-mint) 0%, #2dd4bf 100%);
+  background: linear-gradient(135deg, var(--aw-mint) 0%, var(--aw-mint-600) 100%);
   box-shadow: 0 0 0 1px rgb(94 234 212 / 25%), 0 2px 8px rgb(45 212 191 / 30%);
-  font-size: 1rem;
+  font-size: var(--aw-text-md);
 }
 
-.brand strong { font-size: 0.98rem; font-weight: 700; letter-spacing: -0.01em; }
+.brand strong { font-size: var(--aw-text-md); font-weight: 700; letter-spacing: -0.01em; }
 .header-spacer { flex: 1; }
 
 .about-link {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.75rem;
+  font-size: var(--aw-text-sm);
 }
-.about-link { color: #e6edf6; text-decoration: none; padding: 0.35rem 0.6rem; border-radius: var(--aw-radius-sm); transition: background .15s; }
+.about-link { color: var(--aw-on-navy); text-decoration: none; padding: 0.35rem 0.6rem; border-radius: var(--aw-radius-control); transition: background .15s; }
 .about-link:hover { background: rgb(255 255 255 / 10%); }
 
 main {
@@ -92,6 +91,6 @@ main {
 @media (max-width: 640px) {
   .app-header { padding-inline: 1rem; }
   .about-link { font-size: 0; }
-  .about-link i { font-size: 1rem; }
+  .about-link i { font-size: var(--aw-text-md); }
 }
 </style>

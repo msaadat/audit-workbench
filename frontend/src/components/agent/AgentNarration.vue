@@ -26,8 +26,8 @@ const lastIndex = computed(() => visible.value.length - 1)
 
 <style scoped>
 .narration{display:grid;gap:.2rem;padding:.1rem 0 .15rem .1rem;border-left:2px solid var(--aw-border);padding-left:.55rem;margin:.1rem 0 .35rem}
-.line{display:grid;grid-template-columns:.85rem minmax(0,1fr);gap:.4rem;align-items:baseline;font-size:.71rem;line-height:1.45;color:var(--aw-muted)}
-.line>i{font-size:.62rem}
+.line{display:grid;grid-template-columns:.85rem minmax(0,1fr);gap:.4rem;align-items:baseline;font-size:var(--aw-text-xs);line-height:1.45;color:var(--aw-muted)}
+.line>i{font-size:var(--aw-text-2xs)}
 .line.current{color:var(--aw-ink,inherit)}
 .line.current>i{color:var(--aw-teal)}
 </style>

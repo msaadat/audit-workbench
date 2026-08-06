@@ -83,14 +83,14 @@ const html = computed(() => {
 
 <style scoped>
 .markdown-view { line-height: 1.55; overflow-wrap: anywhere; }
-.markdown-view :deep(h1) { font-size: 1.35rem; margin: 0 0 0.8rem; }
-.markdown-view :deep(h2) { font-size: 1.05rem; margin: 1rem 0 0.4rem; }
-.markdown-view :deep(h3), .markdown-view :deep(h4) { font-size: 0.92rem; margin: 0.8rem 0 0.3rem; }
+.markdown-view :deep(h1) { font-size: var(--aw-text-xl); margin: 0 0 0.8rem; }
+.markdown-view :deep(h2) { font-size: var(--aw-text-lg); margin: 1rem 0 0.4rem; }
+.markdown-view :deep(h3), .markdown-view :deep(h4) { font-size: var(--aw-text-md); margin: 0.8rem 0 0.3rem; }
 .markdown-view :deep(p) { margin: 0.35rem 0; }
 .markdown-view :deep(ul), .markdown-view :deep(ol) { margin: 0.35rem 0; padding-left: 1.25rem; }
-.markdown-view :deep(code) { background: var(--p-surface-100); border-radius: 4px; padding: 0 0.25rem; }
-.markdown-view :deep(a) { color: var(--aw-teal, var(--p-primary-color)); text-decoration: underline; text-underline-offset: 2px; }
-.markdown-view :deep(table) { width: 100%; margin: 0.75rem 0; border-collapse: collapse; font-size: 0.82rem; }
-.markdown-view :deep(th), .markdown-view :deep(td) { padding: 0.45rem 0.55rem; border: 1px solid var(--aw-border, var(--p-surface-200)); text-align: left; vertical-align: top; }
-.markdown-view :deep(th) { background: var(--aw-raised, var(--p-surface-50)); }
+.markdown-view :deep(code) { background: var(--aw-raised); border-radius: var(--aw-radius-control); padding: 0 0.25rem; }
+.markdown-view :deep(a) { color: var(--aw-teal, var(--aw-teal)); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-view :deep(table) { width: 100%; margin: 0.75rem 0; border-collapse: collapse; font-size: var(--aw-text-sm); }
+.markdown-view :deep(th), .markdown-view :deep(td) { padding: 0.45rem 0.55rem; border: 1px solid var(--aw-border, var(--aw-border)); text-align: left; vertical-align: top; }
+.markdown-view :deep(th) { background: var(--aw-raised, var(--aw-canvas)); }
 </style>

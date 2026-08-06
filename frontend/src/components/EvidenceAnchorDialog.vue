@@ -51,10 +51,10 @@ async function copyCitation() {
 <style scoped>
 .anchor-body { display: grid; gap: 1rem; }
 .anchor-facts { display: grid; grid-template-columns: 1.4fr .5fr; gap: .75rem; }
-.anchor-facts span, .excerpt { padding: .85rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
-small { display: block; margin-bottom: .3rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
-code { font-family: var(--aw-font-mono); font-size: .72rem; overflow-wrap: anywhere; }
-blockquote { margin: .5rem 0; padding: .85rem 1rem; border-left: 3px solid var(--aw-teal); background: #fff; white-space: pre-wrap; }
-.technical { display:grid; gap:.45rem; margin:0 }.technical div { display:grid; grid-template-columns:7rem 1fr; gap:.6rem }.technical dt { color:var(--aw-muted); font-size:.72rem; font-weight:700 }.technical dd { margin:0; overflow-wrap:anywhere }
+.anchor-facts span, .excerpt { padding: .85rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+small { display: block; margin-bottom: .3rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+code { font-family: var(--aw-font-mono); font-size: var(--aw-text-xs); overflow-wrap: anywhere; }
+blockquote { margin: .5rem 0; padding: .85rem 1rem; border-left: 3px solid var(--aw-teal); background: var(--aw-panel); white-space: pre-wrap; }
+.technical { display:grid; gap:.45rem; margin:0 }.technical div { display:grid; grid-template-columns:7rem 1fr; gap:.6rem }.technical dt { color:var(--aw-muted); font-size:var(--aw-text-xs); font-weight:700 }.technical dd { margin:0; overflow-wrap:anywhere }
 @media (max-width: 700px) { .anchor-facts { grid-template-columns: 1fr; } }
 </style>

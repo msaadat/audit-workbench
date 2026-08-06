@@ -119,41 +119,39 @@ function taskDuration(task: AgentTask): string {
 .tasks { display: flex; flex-direction: column; gap: 0.55rem; }
 .stage-title {
   margin: 0 0 0.25rem;
-  font-size: 0.68rem;
+  font-size: var(--aw-text-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--p-surface-500);
+  color: var(--aw-muted);
 }
 .task {
   display: flex;
   gap: 0.55rem;
   align-items: flex-start;
   padding: 0.4rem 0.5rem;
-  border-radius: 6px;
+  border-radius: var(--aw-radius-control);
 }
-.task > i { margin-top: 0.15rem; font-size: 0.85rem; color: var(--p-surface-400); }
-.task.running { background: var(--p-primary-50); }
-.task.running > i { color: var(--p-primary-500); }
-.task.awaiting_approval { background: #fff7e6; }
-.task.awaiting_approval > i { color: var(--p-amber-500); }
-.task.completed > i { color: var(--aw-teal, #0b625c); }
-.task.failed > i { color: var(--p-red-500); }
-.task.cancelled > i { color: var(--p-surface-500); }
+.task > i { margin-top: 0.15rem; font-size: var(--aw-text-base); color: var(--aw-border-strong); }
+.task.running { background: var(--aw-teal-soft); }
+.task.running > i { color: var(--aw-teal-600); }
+.task.awaiting_approval { background: var(--aw-warn-soft); }
+.task.awaiting_approval > i { color: var(--aw-warn); }
+.task.completed > i { color: var(--aw-teal); }
+.task.failed > i { color: var(--aw-danger); }
+.task.cancelled > i { color: var(--aw-muted); }
 .task.cancelled { opacity: 0.65; }
 .task.skipped { opacity: 0.65; }
 .task-body { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
-.task-title { font-size: 0.85rem; line-height: 1.3; }
-.task.completed .task-title { color: var(--p-surface-600); }
-.task-error { color: var(--p-red-500); font-size: 0.72rem; }
-.muted { color: var(--p-surface-500); font-size: 0.72rem; }
+.task-title { font-size: var(--aw-text-base); line-height: 1.3; }
+.task.completed .task-title { color: var(--aw-ink-soft); }
+.task-error { color: var(--aw-danger); font-size: var(--aw-text-xs); }
+.muted { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .refs { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.2rem; }
 .ref {
-  font-size: 0.65rem;
+  font-size: var(--aw-text-2xs);
   padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  background: var(--p-surface-100);
-  color: var(--p-surface-600);
+  border-radius: var(--aw-radius-pill);
+  background: var(--aw-raised);
+  color: var(--aw-ink-soft);
 }
 .empty { padding: 0.5rem; }
 </style>

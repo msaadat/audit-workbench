@@ -214,7 +214,7 @@ async function onDeleted() {
      page scrolling as one. */
   min-height: 32rem;
 }
-.analysis-shell { min-width:0; }.analysis-nav { display:flex; align-items:center; gap:.75rem; margin:0 0 1rem; }.muted { color:var(--aw-muted); font-size:.82rem; }
+.analysis-shell { min-width:0; }.analysis-nav { display:flex; align-items:center; gap:.75rem; margin:0 0 1rem; }.muted { color:var(--aw-muted); font-size:var(--aw-text-sm); }
 
 .rail {
   display: flex;
@@ -238,21 +238,18 @@ async function onDeleted() {
 
 .rail-title {
   margin: 0.5rem 0 0.15rem;
-  font-size: 0.75rem;
+  font-size: var(--aw-text-sm);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
   color: var(--aw-muted);
 }
 
-.small { font-size: 0.85rem; }
+.small { font-size: var(--aw-text-base); }
 
 .rail-item {
   text-align: left;
   background: var(--aw-panel);
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
-  box-shadow: var(--aw-shadow-sm);
+  border-radius: var(--aw-radius-control);
   padding: 0.65rem 0.8rem;
   cursor: pointer;
   font: inherit;
@@ -274,7 +271,7 @@ async function onDeleted() {
   -webkit-box-orient: vertical;
   overflow: hidden;
   line-height: 1.3;
-  font-size: 0.92rem;
+  font-size: var(--aw-text-md);
   font-weight: 600;
 }
 .rail-item-meta {
@@ -282,14 +279,14 @@ async function onDeleted() {
   align-items: center;
   gap: 0.3rem;
   margin-top: 0.3rem;
-  font-size: 0.75rem;
+  font-size: var(--aw-text-sm);
   color: var(--aw-muted);
 }
 .rail-item-meta .del {
   margin-left: auto;
   cursor: pointer;
   padding: 0.2rem;
-  border-radius: 4px;
+  border-radius: var(--aw-radius-control);
 }
 .rail-item-meta .del:hover { color: var(--aw-danger); }
 
@@ -303,10 +300,10 @@ async function onDeleted() {
 
 .empty {
   text-align: center;
-  color: var(--p-surface-500);
+  color: var(--aw-muted);
   padding: 3rem 1rem;
 }
-.empty i { font-size: 2rem; color: var(--p-primary-400); }
+.empty i { font-size: var(--aw-text-3xl); color: var(--aw-teal-600); }
 .empty p { margin-top: 0.6rem; }
 .analysis-empty { height: 100%; border: 0; background: transparent; }
 

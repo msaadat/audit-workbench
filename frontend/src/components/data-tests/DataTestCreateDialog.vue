@@ -178,13 +178,13 @@ function submit() {
 
 <style scoped>
 .body { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
-.switch { margin: 0; color: var(--aw-muted); font-size: 0.78rem; }
+.switch { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .switch button { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-weight: 600; }
 .scope, .details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.8rem; }
 .details label:last-child { grid-column: 1 / -1; }
-label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: #46576d; font-size: 0.75rem; font-weight: 600; }
+label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label small { color: var(--aw-muted); font-weight: 400; }
 label :deep(.p-select), label :deep(.p-inputtext), label :deep(.p-textarea) { width: 100%; min-width: 0; }
 .grow { flex: 1; }
-.blocker { color: var(--aw-warn); font-size: 0.75rem; }
+.blocker { color: var(--aw-warn); font-size: var(--aw-text-sm); }
 </style>

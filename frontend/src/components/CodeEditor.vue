@@ -56,14 +56,14 @@ onBeforeUnmount(() => view?.destroy())
 
 <style scoped>
 .code-editor {
-  border: 1px solid var(--p-surface-300);
-  border-radius: 6px;
+  border: 1px solid var(--aw-border-strong);
+  border-radius: var(--aw-radius-control);
   overflow: hidden;
-  background: var(--p-surface-0);
+  background: var(--aw-panel);
 }
 .code-editor:focus-within {
-  border-color: var(--p-primary-500);
-  box-shadow: 0 0 0 1px var(--p-primary-500);
+  border-color: var(--aw-teal-600);
+  box-shadow: 0 0 0 1px var(--aw-teal-600);
 }
 .code-editor :deep(.cm-editor) {
   max-height: 24rem;

@@ -496,7 +496,7 @@ function fail(summary: string, error: unknown) {
   position: sticky;
   top: -2px;
   z-index: 5;
-  background: var(--p-surface-0);
+  background: var(--aw-panel);
   padding: 0.4rem 0;
 }
 .detail-head .grow { flex: 1; }
@@ -504,13 +504,13 @@ function fail(summary: string, error: unknown) {
 
 .dirty-hint {
   margin: 0 0 0.75rem;
-  font-size: 0.78rem;
+  font-size: var(--aw-text-sm);
 }
-.dirty-hint i { font-size: 0.5rem; color: var(--p-amber-500); vertical-align: middle; margin-right: 0.25rem; }
+.dirty-hint i { font-size: var(--aw-text-2xs); color: var(--aw-warn); vertical-align: middle; margin-right: 0.25rem; }
 
 .grid-footer {
   margin-top: 0.6rem;
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
 }
 
 .suggest-bar {
@@ -520,5 +520,5 @@ function fail(summary: string, error: unknown) {
   margin-bottom: 0.6rem;
   flex-wrap: wrap;
 }
-.suggest-hint { font-size: 0.8rem; }
+.suggest-hint { font-size: var(--aw-text-sm); }
 </style>

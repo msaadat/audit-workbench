@@ -113,8 +113,8 @@ onUnmounted(() => {
 
 <style scoped>
 .thinking-block{display:grid;gap:.25rem;min-width:0}
-.thinking{display:inline-flex;align-items:baseline;gap:.35rem;min-width:0;font-size:.79rem;line-height:1.4}
-.thinking-block.inline .thinking{font-size:.68rem}
+.thinking{display:inline-flex;align-items:baseline;gap:.35rem;min-width:0;font-size:var(--aw-text-sm);line-height:1.4}
+.thinking-block.inline .thinking{font-size:var(--aw-text-xs)}
 /* The tail reads as provisional: dimmed, monospaced, fading at the top edge so
    it is legible as "being written" rather than as a finished statement.
    `column-reverse` pins the newest text to the bottom edge and lets older lines
@@ -125,14 +125,14 @@ onUnmounted(() => {
   max-height:4.2rem;overflow:hidden;
   padding-left:.55rem;border-left:2px solid var(--aw-border);
   color:var(--aw-muted);font-family:var(--aw-mono,ui-monospace,SFMono-Regular,Menlo,monospace);
-  font-size:.66rem;line-height:1.45;
+  font-size:var(--aw-text-2xs);line-height:1.45;
   mask-image:linear-gradient(to bottom,transparent 0,#000 1.4rem);
   -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 1.4rem);
 }
 .stream-text{white-space:pre-wrap;word-break:break-word}
 .checklist{display:grid;gap:.15rem;margin:0;padding-left:.55rem;border-left:2px solid var(--aw-border);list-style:none;max-height:8rem;overflow:hidden}
-.checklist li{display:flex;align-items:baseline;gap:.35rem;color:var(--aw-muted);font-size:.7rem;line-height:1.5}
-.checklist li>i{flex:0 0 auto;font-size:.62rem}
+.checklist li{display:flex;align-items:baseline;gap:.35rem;color:var(--aw-muted);font-size:var(--aw-text-xs);line-height:1.5}
+.checklist li>i{flex:0 0 auto;font-size:var(--aw-text-2xs)}
 .checklist li.done>i{color:var(--aw-ok)}
 .checklist li.current{color:var(--aw-ink,inherit)}
 .checklist li.current>i{color:var(--aw-teal)}
@@ -145,7 +145,7 @@ onUnmounted(() => {
   animation:thinking-sweep 2.4s linear infinite;
 }
 .ellipsis{letter-spacing:.05em}
-.meta{flex:0 0 auto;color:var(--aw-muted);font-size:.66rem;opacity:.8}
+.meta{flex:0 0 auto;color:var(--aw-muted);font-size:var(--aw-text-2xs);opacity:.8}
 @keyframes thinking-sweep{from{background-position:120% 0}to{background-position:-120% 0}}
 @media (prefers-reduced-motion: reduce){
   .word{animation:none;background:none;-webkit-text-fill-color:currentColor;color:var(--aw-muted)}

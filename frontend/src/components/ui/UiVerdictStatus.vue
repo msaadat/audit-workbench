@@ -37,7 +37,7 @@ const info = computed(() => meta[props.verdict] ?? {
   width: 1.6rem;
   height: 1.6rem;
   border-radius: 50%;
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
   flex-shrink: 0;
 }
 .verdict-icon.tone-secondary { color: var(--aw-muted); background: var(--aw-raised); }

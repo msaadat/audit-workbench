@@ -212,11 +212,11 @@ defineExpose({ reload: load })
 .provenance { display: flex; flex-direction: column; gap: 0.55rem; min-width: 0; }
 .provenance > header { display: flex; align-items: center; gap: 0.4rem; }
 .provenance > header strong { flex: 1; font-size: var(--aw-text-sm); }
-.provenance > header > i { color: var(--aw-teal); font-size: 0.85rem; }
-.refresh { padding: 0.15rem 0.3rem; border: 0; border-radius: 4px; background: transparent; color: var(--aw-muted); cursor: pointer; }
+.provenance > header > i { color: var(--aw-teal); font-size: var(--aw-text-base); }
+.refresh { padding: 0.15rem 0.3rem; border: 0; border-radius: var(--aw-radius-control); background: transparent; color: var(--aw-muted); cursor: pointer; }
 .refresh:hover { background: var(--aw-raised); color: var(--aw-ink); }
 
-.card { border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-panel); overflow: hidden; }
+.card { border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); overflow: hidden; }
 .card h6 {
   display: flex;
   gap: 0.4rem;
@@ -226,10 +226,8 @@ defineExpose({ reload: load })
   background: var(--aw-raised);
   color: var(--aw-muted);
   font-family: var(--aw-font-mono);
-  font-size: 0.6rem;
+  font-size: var(--aw-text-2xs);
   font-weight: 700;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
 }
 .card h6 span { margin-left: auto; font-variant-numeric: tabular-nums; }
 .card .body { display: grid; gap: 0.4rem; padding: 0.5rem 0.55rem; font-size: var(--aw-text-xs); }
@@ -238,24 +236,24 @@ defineExpose({ reload: load })
 .ic {
   flex: 0 0 1rem; height: 1rem;
   display: grid; place-items: center;
-  border-radius: 3px;
+  border-radius: var(--aw-radius-control);
   background: var(--aw-teal-soft); color: var(--aw-teal);
-  font-size: 0.55rem; font-weight: 700;
+  font-size: var(--aw-text-2xs); font-weight: 700;
 }
 .ic.warn { background: var(--aw-warn-soft); color: var(--aw-warn); }
 .ic.muted-ic { background: var(--aw-raised); color: var(--aw-muted); }
 .detail { display: grid; gap: 0.05rem; min-width: 0; }
 .detail b { font-size: var(--aw-text-xs); font-weight: 600; overflow-wrap: anywhere; }
-.detail small { color: var(--aw-muted); font-size: 0.66rem; line-height: 1.35; }
-.jump { justify-self: start; margin-top: 0.15rem; padding: 0; border: 0; background: none; color: var(--aw-teal); font-size: 0.66rem; text-decoration: underline; cursor: pointer; }
+.detail small { color: var(--aw-muted); font-size: var(--aw-text-2xs); line-height: 1.35; }
+.jump { justify-self: start; margin-top: 0.15rem; padding: 0; border: 0; background: none; color: var(--aw-teal); font-size: var(--aw-text-2xs); text-decoration: underline; cursor: pointer; }
 
-.total { margin: 0.15rem 0 0; padding-top: 0.35rem; border-top: 1px dashed var(--aw-border); color: var(--aw-muted); font-size: 0.66rem; }
+.total { margin: 0.15rem 0 0; padding-top: 0.35rem; border-top: 1px dashed var(--aw-border); color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 
 .kv { grid-template-columns: auto minmax(0, 1fr); gap: 0.25rem 0.6rem; align-items: baseline; }
-.kv > span { color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: 0.58rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.kv > span { color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs); }
 .kv > b { font-size: var(--aw-text-xs); font-weight: 600; overflow-wrap: anywhere; }
-.kv code, .body code { color: #6b7c94; font-family: var(--aw-font-mono); font-size: 0.62rem; overflow-wrap: anywhere; }
-.scope { display: block; color: var(--aw-muted); font-size: 0.62rem; font-style: normal; font-weight: 400; }
+.kv code, .body code { color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs); overflow-wrap: anywhere; }
+.scope { display: block; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-style: normal; font-weight: 400; }
 
 .verdict { display: flex; align-items: flex-start; gap: 0.35rem; margin: 0; font-size: var(--aw-text-xs); line-height: 1.45; }
 .verdict.ok { color: var(--aw-ok); }

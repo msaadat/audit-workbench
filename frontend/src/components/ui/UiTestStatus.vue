@@ -61,7 +61,7 @@ const info = computed(() => meta[props.status] ?? {
   width: 1.6rem;
   height: 1.6rem;
   border-radius: 50%;
-  font-size: 0.8rem;
+  font-size: var(--aw-text-sm);
   flex-shrink: 0;
 }
 
@@ -73,12 +73,12 @@ const info = computed(() => meta[props.status] ?? {
   gap: 0.3rem;
   flex-shrink: 0;
   padding: 0.12rem 0.45rem 0.12rem 0.35rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
+  border-radius: var(--aw-radius-pill);
+  font-size: var(--aw-text-xs);
   font-weight: 600;
   white-space: nowrap;
 }
-.status-chip .pi { font-size: 0.72rem; }
+.status-chip .pi { font-size: var(--aw-text-xs); }
 
 .status-icon.tone-secondary, .status-chip.tone-secondary { color: var(--aw-muted); background: var(--aw-raised); }
 .status-icon.tone-success, .status-chip.tone-success { color: var(--aw-ok); background: var(--aw-ok-soft); }

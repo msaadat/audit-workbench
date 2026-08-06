@@ -29,6 +29,18 @@ const numericColumns = computed(() => {
   return numeric
 })
 
+// Only figures get the mono ledger face. Putting whole tables in it — which is
+// what the old global `td { font-family: mono }` did — set vendor names and
+// status words in a code face and made every table read as noise.
+const figureColumns = computed(() => {
+  const figures = new Set(numericColumns.value)
+  props.frame.columns.forEach((column, index) => {
+    const dtype = props.frame.dtypes[index] ?? ''
+    if (/Date|Time|Bool/.test(dtype)) figures.add(column)
+  })
+  return figures
+})
+
 function format(value: unknown, column: string): string {
   if (value === null || value === undefined) return ''
   if (typeof value === 'number' && numericColumns.value.has(column)) {
@@ -52,7 +64,7 @@ function format(value: unknown, column: string): string {
       :key="column"
       :field="column"
       :header="column"
-      :class="{ 'num-col': numericColumns.has(column) }"
+      :class="{ 'num-col': numericColumns.has(column), 'aw-figure': figureColumns.has(column) }"
     >
       <template #body="{ data }">
         <span :class="{ 'cell-null': data[column] === null || data[column] === undefined }">
@@ -70,6 +82,6 @@ function format(value: unknown, column: string): string {
 
 .cell-null::after {
   content: '∅';
-  color: var(--p-surface-300);
+  color: var(--aw-border-strong);
 }
 </style>

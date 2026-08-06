@@ -65,9 +65,9 @@ onBeforeUnmount(() => void unmount())
 <style scoped>
 .markdown-editor {
   border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-md);
+  border-radius: var(--aw-radius-surface);
   overflow: auto;
-  background: #fff;
+  background: var(--aw-panel);
 }
 
 /* Compact the Crepe top bar (toolbar) and halve the editor's text margins. */

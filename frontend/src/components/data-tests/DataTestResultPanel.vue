@@ -102,38 +102,38 @@ const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.
 </template>
 
 <style scoped>
-.result { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; padding: 0.9rem; border: 1px solid var(--aw-border); border-left: 3px solid var(--aw-muted); border-radius: var(--aw-radius-md); background: #fff; }
+.result { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; padding: 0.9rem; border-left: 3px solid var(--aw-muted); border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .result[data-status='completed_with_exception'] { border-left-color: var(--aw-danger); }
 .result[data-status='completed_no_exception'] { border-left-color: var(--aw-ok); }
 .result[data-status='review_required'], .result[data-status='blocked'] { border-left-color: var(--aw-warn); }
 
 header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8rem; min-width: 0; }
 .headline { display: flex; align-items: flex-start; gap: 0.5rem; min-width: 0; }
-.headline p { margin: 0; font-size: 0.92rem; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.headline p { margin: 0; font-size: var(--aw-text-md); font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 .headline p.failed { color: var(--aw-danger); }
-.muted { flex: 0 0 auto; color: var(--aw-muted); font-size: 0.72rem; white-space: nowrap; }
+.muted { flex: 0 0 auto; color: var(--aw-muted); font-size: var(--aw-text-xs); white-space: nowrap; }
 
-.block-head { margin: 0 0 0.35rem; color: var(--aw-muted); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.block-head { margin: 0 0 0.35rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 .issues { margin: 0.25rem 0 0; padding-left: 1.1rem; }
 
 .stats { display: flex; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
-.stats span { display: flex; flex: 1 1 7rem; flex-direction: column; min-width: 0; padding: 0.5rem 0.6rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); }
-.stats small { color: var(--aw-muted); font-size: 0.7rem; }
-.stats strong { font-size: 1.05rem; }
+.stats span { display: flex; flex: 1 1 7rem; flex-direction: column; min-width: 0; padding: 0.5rem 0.6rem; border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+.stats small { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.stats strong { font-size: var(--aw-text-lg); }
 
 .steps { min-width: 0; }
-.step-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; padding: 0.4rem 0.55rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); font-size: 0.8rem; }
+.step-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; padding: 0.4rem 0.55rem; border-radius: var(--aw-radius-control); background: var(--aw-canvas); font-size: var(--aw-text-sm); }
 .step-row + .step-row { margin-top: 0.3rem; }
-.step-row small { color: var(--aw-muted); font-size: 0.74rem; }
-.step-error { color: var(--p-red-600); overflow-wrap: anywhere; }
+.step-row small { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.step-error { color: var(--aw-danger); overflow-wrap: anywhere; }
 
-.outcome p { margin: 0 0 0.3rem; font-size: 0.84rem; line-height: 1.5; }
-.outcome dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.25rem 0.7rem; margin: 0; font-size: 0.78rem; }
+.outcome p { margin: 0 0 0.3rem; font-size: var(--aw-text-base); line-height: 1.5; }
+.outcome dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.25rem 0.7rem; margin: 0; font-size: var(--aw-text-sm); }
 .outcome dt { color: var(--aw-muted); font-weight: 600; }
 .outcome dd { margin: 0; }
 
-details { min-width: 0; max-width: 100%; overflow-x: auto; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); padding: 0.6rem; }
-summary { cursor: pointer; font-size: 0.8rem; font-weight: 700; margin-bottom: 0.5rem; }
+details { min-width: 0; max-width: 100%; overflow-x: auto; border-radius: var(--aw-radius-control); background: var(--aw-canvas); padding: 0.6rem; }
+summary { cursor: pointer; font-size: var(--aw-text-sm); font-weight: 700; margin-bottom: 0.5rem; }
 
 @container master-detail-content (max-width: 32rem) {
   header { flex-direction: column; }

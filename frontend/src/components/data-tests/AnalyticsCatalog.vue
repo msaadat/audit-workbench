@@ -66,7 +66,7 @@ const groups = computed(() => {
 .catalog :deep(.p-iconfield) { width: 100%; }
 .catalog :deep(.p-inputtext) { width: 100%; }
 .groups { display: flex; flex-direction: column; gap: 0.7rem; max-height: 24rem; overflow-y: auto; }
-.group-name { margin: 0 0 0.25rem; color: var(--aw-muted); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.group-name { margin: 0 0 0.25rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 .row {
   display: flex;
   align-items: center;
@@ -75,7 +75,7 @@ const groups = computed(() => {
   min-width: 0;
   padding: 0.5rem 0.6rem;
   border: 1px solid transparent;
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -87,9 +87,9 @@ const groups = computed(() => {
 .row.active { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
 .row > i:first-child { flex: 0 0 auto; color: var(--aw-teal); }
 .row-copy { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.row-copy strong { font-size: 0.84rem; }
-.row-copy small { overflow: hidden; color: var(--aw-muted); font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; }
-.row-go { flex: 0 0 auto; color: var(--aw-muted); font-size: 0.7rem; opacity: 0; }
+.row-copy strong { font-size: var(--aw-text-base); }
+.row-copy small { overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.row-go { flex: 0 0 auto; color: var(--aw-muted); font-size: var(--aw-text-xs); opacity: 0; }
 .row:hover .row-go, .row.active .row-go { opacity: 1; }
-.empty { padding: 1.5rem 0; color: var(--aw-muted); font-size: 0.8rem; text-align: center; }
+.empty { padding: 1.5rem 0; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
 </style>

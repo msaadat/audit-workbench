@@ -281,19 +281,19 @@ function submit() {
 
 <style scoped>
 .steps { display: flex; gap: 0.5rem; margin: 0 0 1rem; padding: 0 0 0.6rem; border-bottom: 1px solid var(--aw-border); list-style: none; }
-.steps li { display: flex; align-items: center; gap: 0.4rem; color: var(--aw-muted); font-size: 0.74rem; font-weight: 700; }
+.steps li { display: flex; align-items: center; gap: 0.4rem; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 .steps li + li { margin-left: 0.6rem; }
-.steps i { display: grid; place-items: center; width: 1.4rem; height: 1.4rem; border-radius: 999px; background: var(--aw-raised); font-style: normal; }
+.steps i { display: grid; place-items: center; width: 1.4rem; height: 1.4rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); font-style: normal; }
 .steps li.active { color: var(--aw-teal); }
-.steps li.active i, .steps li.done i { color: #fff; background: var(--aw-teal); }
+.steps li.active i, .steps li.done i { color: var(--aw-on-dark); background: var(--aw-teal); }
 
 .form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.8rem; }
 .wide { grid-column: 1 / -1; }
-label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: #46576d; font-size: 0.75rem; font-weight: 600; }
+label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label small { color: var(--aw-muted); font-weight: 400; }
 label :deep(.p-inputtext), label :deep(.p-select), label :deep(.p-multiselect), label :deep(.p-autocomplete), label :deep(.p-inputnumber) { width: 100%; min-width: 0; }
 .check { display: flex; align-items: center; gap: 0.5rem; }
 .check label { flex-direction: row; font-weight: 500; }
 .grow { flex: 1; }
-.missing { color: var(--aw-warn); font-size: 0.75rem; }
+.missing { color: var(--aw-warn); font-size: var(--aw-text-sm); }
 </style>

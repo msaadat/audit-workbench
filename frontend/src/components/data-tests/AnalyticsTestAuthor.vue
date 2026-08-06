@@ -182,16 +182,16 @@ void loadTests()
 
 <style scoped>
 .author { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
-.selected { display: flex; align-items: center; gap: 0.7rem; padding: 0.65rem 0.75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: #fff; }
-.selected > i { color: var(--aw-teal); font-size: 1.1rem; }
+.selected { display: flex; align-items: center; gap: 0.7rem; padding: 0.65rem 0.75rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-panel); }
+.selected > i { color: var(--aw-teal); font-size: var(--aw-text-lg); }
 .selected div { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 0.1rem; }
-.selected span, .muted { color: var(--aw-muted); font-size: 0.78rem; }
-.selected button { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-size: 0.8rem; font-weight: 600; }
-.parameters { display: flex; flex-direction: column; gap: 0.55rem; padding: 0.8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
-.parameters-head { margin: 0; color: var(--aw-muted); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.selected span, .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.selected button { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-size: var(--aw-text-sm); font-weight: 600; }
+.parameters { display: flex; flex-direction: column; gap: 0.55rem; padding: 0.8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+.parameters-head { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 .parameter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.7rem; }
-label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: #46576d; font-size: 0.75rem; font-weight: 600; }
+label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label small { color: var(--aw-muted); font-weight: 400; }
 label :deep(.p-select), label :deep(.p-multiselect), label :deep(.p-inputnumber), label :deep(.p-inputtext) { width: 100%; min-width: 0; }
-.missing { margin: 0; color: var(--aw-warn); font-size: 0.75rem; }
+.missing { margin: 0; color: var(--aw-warn); font-size: var(--aw-text-sm); }
 </style>

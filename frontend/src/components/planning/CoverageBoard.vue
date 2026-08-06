@@ -97,14 +97,14 @@ const uncoveredSevere = computed(() => columns.value[0].severe)
   padding: 0.6rem 0.8rem;
   border: 1px solid var(--aw-border);
   border-left: 3px solid var(--aw-muted);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
   font-size: var(--aw-text-sm);
 }
 .board-alert.severe { border-left-color: var(--aw-danger); background: var(--aw-danger-soft); }
 .board-alert > i { color: var(--aw-muted); }
 .board-alert.severe > i { color: var(--aw-danger); }
-.board-alert > span { flex: 1; min-width: 0; color: #46587a; }
+.board-alert > span { flex: 1; min-width: 0; color: var(--aw-ink-soft); }
 .board-alert strong { color: var(--aw-ink); }
 
 .board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.7rem; align-items: start; }
@@ -115,10 +115,10 @@ const uncoveredSevere = computed(() => columns.value[0].severe)
 .severe-chip {
   margin-left: auto;
   padding: 0.05rem 0.4rem;
-  border-radius: 999px;
+  border-radius: var(--aw-radius-pill);
   background: var(--aw-danger-soft);
   color: var(--aw-danger);
-  font-size: 0.64rem;
+  font-size: var(--aw-text-2xs);
   font-weight: 700;
 }
 
@@ -128,21 +128,20 @@ const uncoveredSevere = computed(() => columns.value[0].severe)
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--aw-border);
   border-left: 3px solid var(--aw-border-strong);
-  border-radius: var(--aw-radius-sm);
+  border-radius: var(--aw-radius-control);
   background: var(--aw-panel);
-  box-shadow: var(--aw-shadow-sm);
   text-align: left;
   cursor: pointer;
   transition: border-color .12s, transform .12s;
 }
 .card:hover { border-color: var(--aw-teal); transform: translateY(-1px); }
 .card:focus-visible { outline: 2px solid var(--aw-teal); outline-offset: 1px; }
-.card[data-rating='critical'] { border-left-color: #7f1d1d; }
-.card[data-rating='high'] { border-left-color: #dc2626; }
-.card[data-rating='medium'] { border-left-color: #f59e0b; }
-.card[data-rating='low'] { border-left-color: #facc15; }
+.card[data-rating='critical'] { border-left-color: var(--aw-danger-ink); }
+.card[data-rating='high'] { border-left-color: var(--aw-danger); }
+.card[data-rating='medium'] { border-left-color: var(--aw-warn); }
+.card[data-rating='low'] { border-left-color: var(--aw-low); }
 
-.card-id { color: #93a5bd; font-family: var(--aw-font-mono); font-size: 0.62rem; letter-spacing: 0.02em; }
+.card-id { color: var(--aw-muted-strong); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs); letter-spacing: 0.02em; }
 .card-title {
   display: -webkit-box;
   overflow: hidden;
@@ -155,26 +154,27 @@ const uncoveredSevere = computed(() => columns.value[0].severe)
 .card-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.1rem; }
 .rating {
   padding: 0.05rem 0.35rem;
-  border-radius: 999px;
-  font-size: 0.62rem;
+  border-radius: var(--aw-radius-pill);
+  font-size: var(--aw-text-2xs);
   font-weight: 700;
   text-transform: capitalize;
   background: var(--aw-raised);
-  color: #46587a;
+  color: var(--aw-ink-soft);
 }
-.rating[data-rating='critical'] { background: #fee2e2; color: #7f1d1d; }
+.rating[data-rating='critical'] { background: var(--aw-danger-soft); color: var(--aw-danger-ink); }
 .rating[data-rating='high'] { background: var(--aw-danger-soft); color: var(--aw-danger); }
 .rating[data-rating='medium'] { background: var(--aw-warn-soft); color: var(--aw-warn); }
-.chip { padding: 0.05rem 0.35rem; border-radius: 999px; background: var(--aw-raised); color: var(--aw-muted); font-size: 0.62rem; }
+.rating[data-rating='low'] { background: var(--aw-low-soft); color: var(--aw-low-ink); }
+.chip { padding: 0.05rem 0.35rem; border-radius: var(--aw-radius-pill); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 .chip.bad { background: var(--aw-danger-soft); color: var(--aw-danger); }
-.chip.finding { background: #fff2e0; color: #9a3412; font-family: var(--aw-font-mono); }
+.chip.finding { background: var(--aw-warn-soft); color: var(--aw-warn-ink); font-family: var(--aw-font-mono); }
 
 .card-next {
   margin-top: 0.15rem;
   padding-top: 0.3rem;
   border-top: 1px dashed var(--aw-border);
   color: var(--aw-teal);
-  font-size: 0.68rem;
+  font-size: var(--aw-text-xs);
   line-height: 1.35;
 }
 .column[data-state='needs_you'] .card-next { color: var(--aw-warn); }

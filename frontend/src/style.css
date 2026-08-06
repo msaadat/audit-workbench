@@ -7,11 +7,19 @@ body {
   height: 100%;
 }
 
+/* =========================================================================
+   Design tokens. Every value a component needs lives here. Components must
+   not hard-code a colour, a type size, a radius or a shadow: if something is
+   missing, add a token rather than a literal, or the scales drift apart
+   again (they had: 78 type sizes, 103 hex values, 12 radii, 31 shadows).
+   Keep this file in lock-step with the PrimeVue preset in main.ts.
+   ========================================================================= */
 :root {
-  /* Typography */
+  /* --- Typography ------------------------------------------------------ */
   --aw-font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --aw-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
 
+  --aw-text-2xs: 0.68rem;
   --aw-text-xs: 0.72rem;
   --aw-text-sm: 0.8rem;
   --aw-text-base: 0.875rem;
@@ -19,53 +27,99 @@ body {
   --aw-text-lg: 1.1rem;
   --aw-text-xl: 1.35rem;
   --aw-text-2xl: 1.75rem;
+  --aw-text-3xl: 2.25rem;
 
+  /* --- Geometry -------------------------------------------------------- */
   /* Compact-readable control geometry, tuned for 1366×768 workstations. */
   --aw-control-height: 2.25rem;
+  --aw-control-height-sm: 1.9rem;
   --aw-row-height: 2.5rem;
   --aw-section-gap: 0.85rem;
 
-  /* Ink & text */
-  --aw-ink: #0d2340;
-  --aw-ink-strong: #07162b;
-  --aw-muted: #5f7088;
+  /* One spacing lane, 4px based. */
+  --aw-space-1: 0.25rem;
+  --aw-space-2: 0.5rem;
+  --aw-space-3: 0.75rem;
+  --aw-space-4: 1rem;
+  --aw-space-5: 1.5rem;
 
-  /* Surface layers */
-  --aw-canvas: #f6f8fb;
-  --aw-panel: #ffffff;
-  --aw-raised: #eef2f7;
+  /* --- Ink & text ------------------------------------------------------ */
+  --aw-ink: #0d2340;          /* primary body text */
+  --aw-ink-strong: #07162b;   /* headings, deepest navy */
+  --aw-ink-soft: #46576d;     /* form labels, secondary body */
+  --aw-muted: #5f7088;        /* tertiary text, captions */
+  --aw-muted-strong: #78899e; /* tertiary on tinted surfaces */
+
+  /* Text over the navy header/hero surfaces. */
+  --aw-on-dark: #ffffff;
+  --aw-on-navy: #e6edf6;
+  --aw-on-navy-muted: #8fa6c2;
+
+  /* --- Surface layers -------------------------------------------------- */
+  --aw-canvas: #f6f8fb;       /* page background */
+  --aw-panel: #ffffff;        /* cards, rails, dialogs */
+  --aw-raised: #eef2f7;       /* inset/tinted block inside a panel */
   --aw-navy-950: #07162b;
   --aw-navy-900: #0d2340;
   --aw-navy-800: #14294a;
 
-  /* Borders */
+  /* --- Borders --------------------------------------------------------- */
   --aw-border: #dce5ee;
   --aw-border-strong: #c5d2e0;
 
-  /* Brand + semantic accents */
+  /* --- Brand + semantic accents ---------------------------------------- */
+  /* Each accent has: ink (text/icon), soft (tinted fill), line (its border). */
   --aw-teal: #0f766e;
   --aw-teal-600: #0d9488;
+  --aw-teal-strong: #0b625c;
   --aw-teal-soft: #e7f7f4;
+  --aw-teal-line: #a7ded8;
   --aw-mint: #5eead4;
+  --aw-mint-600: #2dd4bf;
+
+  /* The one auxiliary accent: "this came from the model, not the
+     deterministic engine". Also serves as the 5th categorical hue in the
+     query builder's zone strip, where four were already spoken for. */
+  --aw-accent: #7c3aed;
+  --aw-accent-soft: #f5f0ff;
+
   --aw-ok: #16855b;
   --aw-ok-soft: #e5f6ee;
+  --aw-ok-line: #9fd9be;
+
   --aw-warn: #b45309;
+  --aw-warn-ink: #8a4308;
   --aw-warn-soft: #fdf1e3;
+  --aw-warn-line: #f0cf9f;
+
+  /* Risk ratings run critical > high > medium > low, so "low" needs its own
+     step below warn's burnt orange rather than sharing it — otherwise the two
+     lowest ratings render identically. Yellow, darkened for text contrast. */
+  --aw-low: #eab308;
+  --aw-low-ink: #854d0e;
+  --aw-low-soft: #fefce8;
+
   --aw-danger: #b42318;
+  --aw-danger-ink: #7f1d1d;
   --aw-danger-soft: #fdecea;
+  --aw-danger-line: #f2b8b2;
 
-  /* Radii — one deliberate lane */
-  --aw-radius-sm: 8px;
-  --aw-radius-md: 10px;
-  --aw-radius-lg: 14px;
-  --aw-button-radius: 4px;
+  --aw-info: #1d4ed8;
+  --aw-info-soft: #eff6ff;
+  --aw-info-line: #bfdbfe;
 
-  /* Elevation scale */
+  /* --- Radii — one lane, honoured this time ---------------------------- */
+  --aw-radius-control: 8px;   /* buttons, inputs, chips, list rows */
+  --aw-radius-surface: 12px;  /* cards, panels, dialogs */
+  --aw-radius-pill: 999px;
+
+  /* --- Elevation ------------------------------------------------------- */
+  /* An element takes a border OR a shadow, never both. A shadow means the
+     element floats above the page (dialog, popover, active nav item); a
+     border means it sits in the page. */
   --aw-shadow-sm: 0 1px 2px rgb(13 35 64 / 6%), 0 1px 3px rgb(13 35 64 / 4%);
   --aw-shadow-md: 0 2px 6px rgb(13 35 64 / 7%), 0 10px 24px rgb(13 35 64 / 6%);
   --aw-shadow-lg: 0 8px 20px rgb(7 22 43 / 12%), 0 24px 60px rgb(7 22 43 / 10%);
-  /* Back-compat alias for anything still referencing the old single shadow. */
-  --aw-shadow: var(--aw-shadow-sm);
 }
 
 body {
@@ -74,7 +128,6 @@ body {
   background: var(--aw-canvas);
   color: var(--aw-ink);
   font-size: var(--aw-text-base);
-  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -98,7 +151,9 @@ body {
 h1, h2, h3, h4 { color: var(--aw-ink); letter-spacing: -0.02em; font-weight: 700; }
 h1 { font-size: var(--aw-text-2xl); line-height: 1.15; }
 
-/* Ledger figures: monospaced, tabular numerals read as an audit worktool. */
+/* Ledger figures: monospaced tabular numerals mark a value as a *figure*.
+   This is opt-in — applying it to whole tables put vendor names and status
+   words in a code face, which reads as noise rather than as an audit tool. */
 .aw-figure,
 .stat-card .value,
 .portfolio-strip > span > strong,
@@ -116,27 +171,37 @@ button, input, textarea, select { font: inherit; }
   color: var(--aw-muted);
 }
 
+/* The one shouting treatment in the app: a section label. Everything that
+   used to be uppercase + letterspaced + 700 elsewhere is now ordinary muted
+   text, so that when something *is* set this way it reads as a label rather
+   than as another competing heading. */
+.aw-label,
+.eyebrow {
+  margin: 0;
+  color: var(--aw-muted);
+  font-size: var(--aw-text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .stat-cards {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
+  gap: var(--aw-space-3);
 }
 
 .stat-card {
   background: var(--aw-panel);
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-sm);
-  box-shadow: var(--aw-shadow-sm);
-  padding: 0.75rem 1.25rem;
+  border-radius: var(--aw-radius-control);
+  padding: var(--aw-space-3) var(--aw-space-5);
   min-width: 140px;
 }
 
 .stat-card .label {
-  font-size: var(--aw-text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: var(--aw-text-2xs);
   color: var(--aw-muted);
-  margin-bottom: 0.25rem;
+  margin-bottom: var(--aw-space-1);
   font-weight: 600;
 }
 
@@ -153,15 +218,15 @@ button, input, textarea, select { font: inherit; }
 .toolbar {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
+  align-items: center;
+  gap: var(--aw-space-3);
+  margin-bottom: var(--aw-space-4);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: var(--aw-space-1);
 }
 
 .field > label {
@@ -170,26 +235,25 @@ button, input, textarea, select { font: inherit; }
   color: var(--aw-ink);
 }
 
+/* A panel is a white fill on the canvas. The fill *is* the edge — it needs
+   neither a hairline nor a shadow to separate it from the page. */
 .surface-panel {
   background: var(--aw-panel);
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-md);
-  box-shadow: var(--aw-shadow-sm);
+  border-radius: var(--aw-radius-surface);
 }
 
 /* Shared page and master/detail primitives. */
-/* One line: the section rail already names the screen, so the header carries
-   the title and its actions and nothing else. */
 .ui-page-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--aw-space-4);
   margin-bottom: var(--aw-section-gap);
 }
 .ui-page-header__copy { min-width: 0; }
 .ui-page-header h2 { margin: 0; font-size: var(--aw-text-xl); }
-.ui-page-header__actions { display: flex; align-items: center; justify-content: flex-end; gap: .45rem; flex-wrap: wrap; }
+.ui-page-header__description { margin: .25rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.ui-page-header__actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--aw-space-2); flex-wrap: wrap; }
 
 .ui-master-detail {
   display: grid;
@@ -205,8 +269,7 @@ button, input, textarea, select { font: inherit; }
 .ui-master-detail__content { container: master-detail-content / inline-size; }
 .ui-master-detail__rail {
   overflow: auto;
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-md);
+  border-radius: var(--aw-radius-surface);
   background: var(--aw-panel);
 }
 
@@ -220,16 +283,16 @@ button, input, textarea, select { font: inherit; }
   align-items: stretch;
   gap: .16rem;
   overflow-y: auto;
-  padding: 1rem .65rem;
+  padding: var(--aw-space-4) .65rem;
   background: var(--aw-raised);
   border-right: 1px solid var(--aw-border);
 }
 .ui-surface__label {
   margin: 0 .6rem .45rem;
   color: var(--aw-muted);
-  font-size: var(--aw-text-xs);
+  font-size: var(--aw-text-2xs);
   font-weight: 700;
-  letter-spacing: .09em;
+  letter-spacing: .08em;
   text-transform: uppercase;
 }
 .ui-surface__item {
@@ -238,30 +301,31 @@ button, input, textarea, select { font: inherit; }
   justify-content: flex-start;
   gap: .65rem;
   width: 100%;
-  min-height: 2.35rem;
-  padding: .5rem .7rem;
-  border-radius: var(--aw-radius-sm);
-  color: #485b74;
+  min-height: var(--aw-row-height);
+  padding: var(--aw-space-2) .7rem;
+  border-radius: var(--aw-radius-control);
+  color: var(--aw-ink-soft);
   font-size: var(--aw-text-base);
   font-weight: 600;
   text-decoration: none;
   transition: background .15s, color .15s;
 }
 .ui-surface__item:hover:not(.active) { background: rgb(255 255 255 / 55%); color: var(--aw-ink); }
-.ui-surface__item.active { color: var(--aw-teal); background: #fff; box-shadow: var(--aw-shadow-sm); }
+/* Active nav lifts off the rail — one of the few places a shadow earns its keep. */
+.ui-surface__item.active { color: var(--aw-teal); background: var(--aw-panel); box-shadow: var(--aw-shadow-sm); }
 .ui-surface__item.active .pi { color: var(--aw-teal); }
 .ui-surface__item > small {
   margin-left: auto;
   min-width: 1.25rem;
   padding: .1rem .35rem;
-  border-radius: 999px;
-  background: var(--p-primary-50);
+  border-radius: var(--aw-radius-pill);
+  background: var(--aw-teal-soft);
   color: var(--aw-teal);
   text-align: center;
 }
-.ui-surface__item .phase-status { margin-left: auto; font-size: .78rem; }
-.ui-surface__item .phase-status[data-state='not_started'] { color: #94a3b8; }
-.ui-surface__item .phase-status[data-state='in_progress'] { color: #2563eb; }
+.ui-surface__item .phase-status { margin-left: auto; font-size: var(--aw-text-sm); }
+.ui-surface__item .phase-status[data-state='not_started'] { color: var(--aw-border-strong); }
+.ui-surface__item .phase-status[data-state='in_progress'] { color: var(--aw-info); }
 .ui-surface__item .phase-status[data-state='complete'] { color: var(--aw-ok); }
 .ui-surface__item .phase-status[data-state='attention'] { color: var(--aw-warn); }
 /* Sections size their own layout against this box, not the viewport. The
@@ -273,7 +337,7 @@ button, input, textarea, select { font: inherit; }
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 1rem 1.25rem 1.35rem;
+  padding: var(--aw-space-4) 1.25rem 1.35rem;
   background: var(--aw-canvas);
 }
 
@@ -284,33 +348,27 @@ button, input, textarea, select { font: inherit; }
   min-height: 18rem;
   padding: 2rem;
   border: 1px dashed var(--aw-border-strong);
-  border-radius: var(--aw-radius-md);
+  border-radius: var(--aw-radius-surface);
   background: rgb(255 255 255 / 55%);
   text-align: center;
 }
 .ui-empty-state--compact { min-height: 10rem; padding: 1.25rem; }
-.ui-empty-state__icon { display: grid; place-items: center; width: 3rem; height: 3rem; margin-bottom: .65rem; border-radius: var(--aw-radius-sm); color: var(--aw-teal); background: var(--aw-teal-soft); }
+.ui-empty-state__icon { display: grid; place-items: center; width: 3rem; height: 3rem; margin-bottom: .65rem; border-radius: var(--aw-radius-control); color: var(--aw-teal); background: var(--aw-teal-soft); }
 .ui-empty-state h3 { margin: 0; font-size: var(--aw-text-lg); }
 .ui-empty-state p { max-width: 32rem; margin: .35rem 0 0; color: var(--aw-muted); }
-.ui-empty-state__actions { display: flex; gap: .45rem; margin-top: .9rem; }
+.ui-empty-state__actions { display: flex; gap: var(--aw-space-2); margin-top: .9rem; }
 
-.ui-advanced { border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); background: var(--aw-canvas); }
+/* Tinted rather than outlined, and one step darker than the canvas so it reads
+   as a distinct block whether it sits on the canvas or inside a white card —
+   which is what let the border go. */
+.ui-advanced { border-radius: var(--aw-radius-control); background: var(--aw-raised); }
 .ui-advanced > summary { display: flex; align-items: center; gap: .6rem; min-height: var(--aw-row-height); padding: .45rem .7rem; cursor: pointer; list-style: none; }
 .ui-advanced > summary::-webkit-details-marker { display: none; }
-.ui-advanced > summary > span { display: flex; align-items: center; gap: .4rem; color: var(--aw-ink); font-size: var(--aw-text-sm); font-weight: 700; }
+.ui-advanced > summary > span { display: flex; align-items: center; gap: var(--aw-space-2); color: var(--aw-ink); font-size: var(--aw-text-sm); font-weight: 700; }
 .ui-advanced > summary small { flex: 1; color: var(--aw-muted); }
-.ui-advanced__chevron { transition: rotate .15s; color: var(--aw-muted); font-size: .7rem; }
+.ui-advanced__chevron { transition: rotate .15s; color: var(--aw-muted); font-size: var(--aw-text-2xs); }
 .ui-advanced[open] .ui-advanced__chevron { rotate: 180deg; }
-.ui-advanced__body { padding: .75rem; border-top: 1px solid var(--aw-border); background: #fff; }
-
-.eyebrow {
-  margin: 0 0 0.35rem;
-  color: var(--aw-teal);
-  font-size: var(--aw-text-xs);
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
+.ui-advanced__body { padding: var(--aw-space-3); border-radius: 0 0 var(--aw-radius-control) var(--aw-radius-control); background: var(--aw-panel); }
 
 .empty-state {
   display: grid;
@@ -319,31 +377,41 @@ button, input, textarea, select { font: inherit; }
   min-height: 15rem;
   padding: 2rem;
   border: 1px dashed var(--aw-border-strong);
-  border-radius: var(--aw-radius-md);
+  border-radius: var(--aw-radius-surface);
   background: rgb(255 255 255 / 55%);
 }
-.empty-state-icon { display: grid; place-items: center; width: 3rem; height: 3rem; margin-bottom: 0.75rem; border-radius: var(--aw-radius-sm); background: var(--aw-teal-soft); color: var(--aw-teal); font-size: 1.25rem; }
+.empty-state-icon { display: grid; place-items: center; width: 3rem; height: 3rem; margin-bottom: var(--aw-space-3); border-radius: var(--aw-radius-control); background: var(--aw-teal-soft); color: var(--aw-teal); font-size: var(--aw-text-xl); }
 .empty-state-icon i { position: relative; top: -0.03em; left: -0.01em; }
 .empty-state h3 { margin: 0; font-size: var(--aw-text-lg); }
-.empty-state p { max-width: 32rem; margin: 0.4rem 0 1rem; color: var(--aw-muted); }
+.empty-state p { max-width: 32rem; margin: .4rem 0 1rem; color: var(--aw-muted); }
 
-/* PrimeVue: one restrained, audit-console visual language. */
-.p-button { min-height: 2rem; border-radius: var(--aw-button-radius); font-weight: 600; letter-spacing: 0.005em; }
-.p-card, .p-dialog { border-radius: var(--aw-radius-md); }
-.p-card { box-shadow: var(--aw-shadow-sm); border: 1px solid var(--aw-border); }
+/* PrimeVue: one restrained, audit-console visual language. Buttons and inputs
+   share a radius so a toolbar reads as one row of controls rather than as a
+   pile of differently-cornered widgets. */
+.p-button { min-height: var(--aw-control-height); border-radius: var(--aw-radius-control); font-weight: 600; letter-spacing: 0.005em; }
+.p-button.p-button-sm { min-height: var(--aw-control-height-sm); }
+.p-inputtext, .p-select, .p-multiselect, .p-textarea { border-radius: var(--aw-radius-control); }
+/* Inputs match buttons, so a toolbar is one row of equal-height controls
+   rather than a stack of slightly different boxes. Textareas grow, so they
+   opt out. */
+.p-inputtext:not(textarea), .p-select, .p-multiselect { min-height: var(--aw-control-height); }
+.p-inputtext.p-inputtext-sm:not(textarea), .p-select.p-select-sm, .p-multiselect.p-multiselect-sm { min-height: var(--aw-control-height-sm); }
+.p-card, .p-dialog { border-radius: var(--aw-radius-surface); }
+/* Floating surfaces: shadow, no border. */
+.p-card { box-shadow: var(--aw-shadow-sm); border: 0; }
 .p-dialog { box-shadow: var(--aw-shadow-lg); }
-.p-inputtext, .p-select, .p-multiselect, .p-textarea { border-radius: var(--aw-radius-sm); }
-.p-tag { border-radius: 5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.68rem; }
-.p-datatable { border: 1px solid var(--aw-border); border-radius: var(--aw-radius-sm); overflow: hidden; }
+.p-tag { border-radius: var(--aw-radius-control); font-weight: 700; font-size: var(--aw-text-2xs); }
+.p-datatable { border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); overflow: hidden; }
 .p-datatable .p-datatable-thead > tr > th { background: var(--aw-raised); color: var(--aw-ink); font-weight: 600; letter-spacing: 0.02em; }
-.p-datatable .p-datatable-tbody > tr > td { border-color: var(--aw-border); }
-/* Data cells carry figures — keep them in the mono ledger face. */
-.p-datatable .p-datatable-tbody > tr > td { font-family: var(--aw-font-mono); font-size: 0.82rem; }
+.p-datatable .p-datatable-tbody > tr > td { border-color: var(--aw-border); font-size: var(--aw-text-sm); }
+/* Numeric and identifier cells opt into the ledger face via .aw-figure; text
+   columns stay in the sans face so a table reads as a table, not as code. */
+.p-datatable .p-datatable-tbody > tr > td.aw-figure { font-family: var(--aw-font-mono); }
 
 /* Dialogs share a stable header/body/footer hierarchy. */
-.p-dialog .p-dialog-header { padding: .9rem 1rem; border-bottom: 1px solid var(--aw-border); }
-.p-dialog .p-dialog-content { padding: 1rem; }
-.p-dialog .p-dialog-footer { position: sticky; bottom: 0; z-index: 1; padding: .75rem 1rem; border-top: 1px solid var(--aw-border); background: #fff; }
+.p-dialog .p-dialog-header { padding: .9rem var(--aw-space-4); border-bottom: 1px solid var(--aw-border); }
+.p-dialog .p-dialog-content { padding: var(--aw-space-4); }
+.p-dialog .p-dialog-footer { position: sticky; bottom: 0; z-index: 1; padding: var(--aw-space-3) var(--aw-space-4); border-top: 1px solid var(--aw-border); background: var(--aw-panel); }
 
 /* Keyed to the tab's own width: the nav rail and the assistant drawer both
    take width out of the viewport, so a viewport query fired far too late. */

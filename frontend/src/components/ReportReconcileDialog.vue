@@ -43,6 +43,6 @@ function synchronizeScroll(targetPane: HTMLElement | null, event: Event) {
 </template>
 
 <style scoped>
-.notice { display:flex; gap:.5rem; padding:.75rem; background:var(--p-blue-50); color:var(--p-blue-800); border-radius:var(--aw-radius-sm) }.reconcile-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem }.reconcile-grid label { display:flex; flex-direction:column; gap:.45rem; min-width:0 }.reconcile-grid span { display:flex; align-items:center; justify-content:space-between; gap:.5rem; font-size:.78rem; font-weight:700; color:var(--aw-muted) }.reconcile-grid :deep(textarea) { width:100%; min-height:28rem; resize:vertical; font-family:var(--aw-font-mono, monospace); font-size:.76rem; line-height:1.45 }
+.notice { display:flex; gap:.5rem; padding:.75rem; background:var(--aw-info-soft); color:var(--aw-info); border-radius:var(--aw-radius-control) }.reconcile-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem }.reconcile-grid label { display:flex; flex-direction:column; gap:.45rem; min-width:0 }.reconcile-grid span { display:flex; align-items:center; justify-content:space-between; gap:.5rem; font-size:var(--aw-text-sm); font-weight:700; color:var(--aw-muted) }.reconcile-grid :deep(textarea) { width:100%; min-height:28rem; resize:vertical; font-family:var(--aw-font-mono, monospace); font-size:var(--aw-text-sm); line-height:1.45 }
 @media (max-width:850px) { .reconcile-grid { grid-template-columns:1fr }.reconcile-grid :deep(textarea) { min-height:16rem } }
 </style>

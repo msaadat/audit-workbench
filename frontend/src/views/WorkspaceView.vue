@@ -210,58 +210,57 @@ onUnmounted(() => {
   gap: 0.85rem;
   min-height: 3.75rem;
   padding: 0.5rem 1.5rem;
-  color: #fff;
+  color: var(--aw-on-dark);
   background: linear-gradient(180deg, var(--aw-navy-900) 0%, var(--aw-navy-950) 100%);
-  border-bottom: 1px solid rgb(94 234 212 / 14%);
   box-shadow: var(--aw-shadow-sm);
 }
 
-.brand { display: inline-flex; align-items: center; gap: 0.65rem; flex: 0 0 auto; color: #fff; text-decoration: none; }
-.brand-mark { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-sm); color: var(--aw-navy-950); background: linear-gradient(135deg, var(--aw-mint) 0%, #2dd4bf 100%); box-shadow: 0 0 0 1px rgb(94 234 212 / 25%), 0 2px 8px rgb(45 212 191 / 30%); }
-.brand strong { font-size: 0.95rem; white-space: nowrap; }
+.brand { display: inline-flex; align-items: center; gap: 0.65rem; flex: 0 0 auto; color: var(--aw-on-dark); text-decoration: none; }
+.brand-mark { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-control); color: var(--aw-navy-950); background: linear-gradient(135deg, var(--aw-mint) 0%, var(--aw-mint-600) 100%); box-shadow: 0 0 0 1px rgb(94 234 212 / 25%), 0 2px 8px rgb(45 212 191 / 30%); }
+.brand strong { font-size: var(--aw-text-md); white-space: nowrap; }
 .header-divider { align-self: stretch; width: 1px; margin: 0.15rem 0.1rem; background: rgb(255 255 255 / 16%); }
 .engagement-title { min-width: 0; line-height: 1.1; }
-.engagement-title small { color: #8fa6c2; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-.engagement-title h1 { max-width: 18rem; margin: 0.15rem 0 0; overflow: hidden; color: #fff; font-size: 0.96rem; text-overflow: ellipsis; white-space: nowrap; }
+.engagement-title small { color: var(--aw-on-navy-muted); font-size: var(--aw-text-2xs); font-weight: 700; }
+.engagement-title h1 { max-width: 18rem; margin: 0.15rem 0 0; overflow: hidden; color: var(--aw-on-dark); font-size: var(--aw-text-md); text-overflow: ellipsis; white-space: nowrap; }
 .header-spacer { flex: 1; }
 
 /* The surface switcher is the primary navigation now, so it sits with the
    engagement identity rather than in the utility cluster on the right. */
-.surface-switcher { display: flex; gap: 0.15rem; margin-left: 0.5rem; padding: 0.15rem; border-radius: var(--aw-radius-sm); background: rgb(255 255 255 / 8%); }
+.surface-switcher { display: flex; gap: 0.15rem; margin-left: 0.5rem; padding: 0.15rem; border-radius: var(--aw-radius-control); background: rgb(255 255 255 / 8%); }
 .surface-switcher a {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0.35rem 0.7rem;
-  border-radius: 6px;
-  color: #c6d6ea;
-  font-size: 0.78rem;
+  border-radius: var(--aw-radius-control);
+  color: var(--aw-on-navy-muted);
+  font-size: var(--aw-text-sm);
   font-weight: 600;
   text-decoration: none;
   white-space: nowrap;
   transition: background .15s, color .15s;
 }
-.surface-switcher a:hover { background: rgb(255 255 255 / 10%); color: #fff; }
-.surface-switcher a.active { background: #fff; color: var(--aw-navy-900); box-shadow: var(--aw-shadow-sm); }
-.surface-switcher i { font-size: 0.8rem; }
+.surface-switcher a:hover { background: rgb(255 255 255 / 10%); color: var(--aw-on-dark); }
+.surface-switcher a.active { background: var(--aw-panel); color: var(--aw-navy-900); box-shadow: var(--aw-shadow-sm); }
+.surface-switcher i { font-size: var(--aw-text-sm); }
 /* The count is the point of the Decisions entry, so it survives the narrow
    breakpoint that drops the labels. */
 .surface-switcher em {
   min-width: 1.15rem;
   padding: 0.02rem 0.3rem;
-  border-radius: 999px;
+  border-radius: var(--aw-radius-pill);
   background: var(--aw-mint);
   color: var(--aw-navy-950);
-  font-size: 0.66rem;
+  font-size: var(--aw-text-2xs);
   font-style: normal;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
-.surface-switcher a.active em { background: var(--aw-navy-900); color: #fff; }
+.surface-switcher a.active em { background: var(--aw-navy-900); color: var(--aw-on-dark); }
 
-.workspace-header :deep(.p-button-secondary) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: #fff; }
-.header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-sm); color: #e6edf6; text-decoration: none; transition: background .15s; }
+.workspace-header :deep(.p-button-secondary) { border-color: rgb(255 255 255 / 18%); background: rgb(255 255 255 / 9%); color: var(--aw-on-dark); }
+.header-link { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--aw-radius-control); color: var(--aw-on-navy); text-decoration: none; transition: background .15s; }
 .header-link:hover { background: rgb(255 255 255 / 10%); }
 
 @media (max-width: 1280px) {
@@ -287,14 +286,14 @@ onUnmounted(() => {
   gap: 0.35rem;
   padding: 2.2rem 3rem;
   border: 2px dashed var(--aw-mint);
-  border-radius: 14px;
+  border-radius: var(--aw-radius-surface);
   background: var(--aw-navy-950);
-  color: #fff;
-  box-shadow: 0 18px 50px rgb(2 10 22 / 45%);
+  color: var(--aw-on-dark);
+  box-shadow: var(--aw-shadow-lg);
 }
-.drop-overlay-card i { font-size: 2.4rem; color: var(--aw-mint); }
-.drop-overlay-card strong { font-size: 1.05rem; }
-.drop-overlay-card span { color: #8fa6c2; font-size: 0.78rem; }
+.drop-overlay-card i { font-size: var(--aw-text-3xl); color: var(--aw-mint); }
+.drop-overlay-card strong { font-size: var(--aw-text-lg); }
+.drop-overlay-card span { color: var(--aw-on-navy-muted); font-size: var(--aw-text-sm); }
 
 .workspace-layout {
   position: relative;

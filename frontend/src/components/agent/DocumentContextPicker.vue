@@ -83,6 +83,6 @@ function apply() {
 <style scoped>
 .search { width:100%; margin:0 0 .65rem; }
 .document-list { display:grid; gap:.55rem; max-height:24rem; overflow:auto; padding:.1rem; }.document-list.loading { opacity:.55; }
-.document-card { display:flex; align-items:center; gap:.65rem; padding:.7rem; border:1px solid var(--p-surface-200); border-radius:9px; cursor:pointer; background:var(--p-surface-0); }.document-card:hover { border-color:var(--aw-teal); }
-.file-icon { display:grid; place-items:center; width:2.15rem; height:2.15rem; border-radius:8px; color:var(--p-blue-600); background:var(--p-blue-50); }.identity { display:grid; min-width:0; flex:1; gap:.12rem; }.identity strong,.identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.identity small,.empty,.budget-note { color:var(--p-surface-500); font-size:.7rem; }.empty { padding:2rem; text-align:center; }.budget-note { display:flex; gap:.4rem; margin:.75rem 0 0; }
+.document-card { display:flex; align-items:center; gap:.65rem; padding:.7rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); cursor:pointer; background:var(--aw-panel); }.document-card:hover { border-color:var(--aw-teal); }
+.file-icon { display:grid; place-items:center; width:2.15rem; height:2.15rem; border-radius:var(--aw-radius-control); color:var(--aw-info); background:var(--aw-info-soft); }.identity { display:grid; min-width:0; flex:1; gap:.12rem; }.identity strong,.identity small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.identity small,.empty,.budget-note { color:var(--aw-muted); font-size:var(--aw-text-xs); }.empty { padding:2rem; text-align:center; }.budget-note { display:flex; gap:.4rem; margin:.75rem 0 0; }
 </style>

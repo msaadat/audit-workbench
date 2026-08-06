@@ -48,8 +48,8 @@ function context(test: DataTest) {
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--aw-border);
   border-left: 3px solid var(--aw-muted);
-  border-radius: var(--aw-radius-sm);
-  background: #fff;
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-panel);
   color: inherit;
   font: inherit;
   text-align: left;
@@ -62,9 +62,9 @@ function context(test: DataTest) {
 .row[data-status='review_required'], .row[data-status='blocked'] { border-left-color: var(--aw-warn); }
 
 .row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.4rem; min-width: 0; }
-.row-head strong { min-width: 0; font-size: 0.82rem; line-height: 1.3; }
-.row-context { display: -webkit-box; overflow: hidden; color: var(--aw-muted); font-size: 0.73rem; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.row-head strong { min-width: 0; font-size: var(--aw-text-sm); line-height: 1.3; }
+.row-context { display: -webkit-box; overflow: hidden; color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .row-context.exploratory { font-style: italic; }
-.row-meta { color: var(--aw-danger); font-size: 0.7rem; font-weight: 600; }
-.empty { padding: 1rem 0.6rem; color: var(--aw-muted); font-size: 0.78rem; text-align: center; }
+.row-meta { color: var(--aw-danger); font-size: var(--aw-text-xs); font-weight: 600; }
+.empty { padding: 1rem 0.6rem; color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; }
 </style>
