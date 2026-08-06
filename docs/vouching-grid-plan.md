@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: revised against the current application and `Workspaces/procurement` on 2026-08-06. This is a clean target design, not a legacy-migration plan.
+Status: implementation-ready, revised against the current application and `Workspaces/procurement` on 2026-08-06. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -21,7 +21,7 @@ The implementation order is therefore:
 4. expose the result as a grid; and
 5. add column authoring, rollups, and working-paper output on top of the same canonical results.
 
-The existing synthetic cycle tests may be deleted and regenerated. Do not add compatibility readers, migration heuristics, or dual-write paths for their current schema.
+The existing synthetic cycle tests may be deleted and regenerated, but only by the user through the existing product UX at the checkpoints in section 9. Implementation and automated tests must not reset, delete, or regenerate `Workspaces/procurement`. Do not add compatibility readers, migration heuristics, dual-write paths, endpoints, or UI states for its current schema. The implementing model tells the user when the disposable workspace must be regenerated and pauses until the user confirms it.
 
 ## 2. What the procurement workspace demonstrates
 
@@ -45,7 +45,7 @@ Five analyzed vouchers form one evidenced procure-to-pay cycle:
 The current workspace also has 11 generated cycle-vouch tests containing 61 checks. Each test has only one linked item, while individual tests already contain between one and ten checks. This changes two assumptions in the earlier plan:
 
 - current generation is already grouping many attributes into one test, so test-list fragmentation is not the immediate problem; and
-- the grid is primarily needed to review a wide result and to support future multi-sample tests, not to solve the current one-item navigation alone.
+- the grid is primarily needed to review a wide result and to support future multi-item tests, not to solve the current one-item navigation alone.
 
 The inspection exposed these correctness defects.
 
@@ -149,6 +149,23 @@ citation: ...
 
 Improve the date normalizer for common human formats, but retain `raw_value` and an explicit `invalid` status whenever normalization still fails.
 
+#### Chunk-to-record reduction
+
+The voucher map worker runs on bounded source chunks, so it emits `record_fragments`, not durable records. One fragment represents one candidate voucher record visible in that chunk and contains its chunk ID/page span, candidate record kind, citation-anchored identifiers and fields, and no `record_id`. If a chunk contains two distinct values for a record kind's primary identifier, the worker must emit two fragments; the map validator rejects a fragment that blends them.
+
+After every chunk proposal has settled, a deterministic document-local reducer builds records:
+
+1. the record-kind registry defines an ordered set of primary identifier kinds for each record kind;
+2. fragments with the same specific record kind and same exact typed primary identifier join one component;
+3. fragments with different values of the same primary identifier kind never merge, even when they share a PO, payment, vendor, or another secondary identifier;
+4. a fragment without a primary identifier joins a component only when it has a typed transaction identifier shared by exactly one component of a compatible record kind and has no contradictory identifier;
+5. a fragment matching zero or several components remains in `unresolved_fragments` with `missing_identity` or `ambiguous_identity`; it contributes no comparable fact until auditor review assigns it; and
+6. `record_id` is computed from the completed component only after this grouping, using the stable identity rule in section 3.7.
+
+Within a component, identical normalized facts deduplicate while retaining every citation. Differing facts remain separate and resolve as ambiguous. `other` plus one specific record kind resolves to the specific kind; two different specific kinds produce `record_kind_conflict` and the component is not role-bindable. The reducer output is `{records, unresolved_fragments, conflicts}` and replaces the current first-non-empty `document_type` plus union behavior. Narrative map/reduction remains separate.
+
+Because map fragments have no durable IDs, two chunks cannot independently create competing record hashes. A later primary identifier can absorb an earlier partial fragment only through the exact unique rule above; page adjacency or list order alone is never sufficient. Auditor fragment assignments are stored as reviewed overrides, included in the extraction hash, and revalidated on reanalysis.
+
 ### 3.2 RCM control attributes
 
 Keep one risk and one asserted control per RCM row, but replace the single top-level `assertion` string with canonical `control_attributes`. These describe what the control requires; they do not contain executable table names, columns, document paths, or expected values.
@@ -194,6 +211,8 @@ requirement_refs:
 procedure_key: invoice-three-way-match
 definition:
   population:
+    candidate_id: CYCLE-CAND-...
+    selection_reason: Best eligible population for the invoice-stage control requirement.
     table: invoice_data
     row_key:
       column: INVOICE_ID
@@ -207,36 +226,47 @@ definition:
         identifier_kind: goods_receipt_number
     selection:
       mode: evidence_linked
+      assurance_scope: targeted_evidence_only
   roles:
     - role: vendor_invoice
       record_kind: vendor_invoice
       required: true
       cardinality: one
+      reuse_across_items: exclusive
     - role: purchase_order
       record_kind: purchase_order
       required: true
       cardinality: one
+      reuse_across_items: allowed
     - role: goods_receipt
       record_kind: goods_receipt
       required: true
       cardinality: one
+      reuse_across_items: allowed
     - role: payment_voucher
       record_kind: payment_voucher
       required: true
       cardinality: one
+      reuse_across_items: allowed
   assertions: []
 ```
 
-Supported selection modes are explicit:
+Supported selection modes and their structural assurance scope are explicit:
 
-- `evidence_linked`: include every population row connected to at least one transaction document; and
-- `sample`: materialize a deterministic sample from the stated population, including rows whose requested evidence is missing. It requires `method`, `size`, and `seed`, plus `stratify_by` when stratified.
+- `evidence_linked`: include every population row connected to at least one transaction document. This is targeted evidence selection, not sampling. Its derived `assurance_scope` is always `targeted_evidence_only`, even when every currently uploaded voucher passes or happens to cover the population.
+- `sample`: materialize a deterministic sample from the stated population, including rows whose requested evidence is missing. Its derived `assurance_scope` is `sampled_population`. `method` is exactly `random | interval | stratified`; `size` is 1 through 500; `seed` is a required integer; and `stratify_by` is required only for `stratified` and must name a real column.
+
+`assurance_scope` is computed by the domain service and cannot be supplied or upgraded by the model, route caller, or frontend. An evidence-linked test may prove and support an exception in a specific item, but cannot represent a population pass rate or control conclusion.
+
+The materializer still caps a test at 500 items, but a large evidence-linked population is not a dead-end error. When more than 500 rows qualify, the builder returns a `selection_confirmation` proposal containing the eligible-row count and a ready-to-use deterministic sample suggestion (`random`, size 25, seed 42). The manual dialog lets the auditor confirm or adjust method/size/seed/stratum; an agent-generated test carries the same proposal through its normal approval. No test is persisted and no rows are silently truncated until the user confirms a sampled definition.
 
 The first delivery admits transaction-level populations only: `row_key` must be non-null and unique. A line-level table with repeated transaction keys is rejected instead of silently taking one row. Grouped/aggregated populations require a later operand reducer contract.
 
-Coverage reports `population_rows`, `selected_rows`, `rows_with_evidence`, `complete_cycles`, and missing-role counts. It must not describe one evidenced row as assurance over the remaining population.
+Coverage reports `population_rows`, `selected_rows`, `rows_with_evidence`, `complete_cycles`, missing-role counts, selection basis, and assurance scope. It must not describe one evidenced row as assurance over the remaining population.
 
 The stable test identity is based on `(rcm_id, kind, procedure_key, population.table, population.row_key)`, never the editable title. Two controls may use the same population without being merged. One RCM row may have two tests only when `procedure_key` and the population or lifecycle scope are materially different.
+
+`cardinality` is the number of records that may fill the role within one item (`one | many`). `reuse_across_items` is independent and states whether the same record may support several population items (`exclusive | allowed`). A single PO, GRN, or consolidated payment can therefore be the one bound record in several invoice-grain items without becoming a collision. The generation validator derives or verifies these declarations against the population grain and control requirement; it must not infer cross-item exclusivity from `cardinality: one`.
 
 ### 3.4 Structured assertions instead of dotted paths
 
@@ -370,6 +400,64 @@ Keep deterministic evaluation separate from auditor disposition:
 
 This separation aligns `doc_tests.executed` with machine execution and `doc_tests.dispositioned` with the auditor's decision.
 
+### 3.7 Exact graph, identity, and limit rules
+
+A cycle edge is keyed by the exact pair `(identifier_kind, normalized_value)`. Values from different kinds never join even when their text is equal. Each identifier kind owns a deterministic normalizer. The default performs Unicode NFKC normalization, trims leading/trailing whitespace, collapses internal whitespace, and case-folds; punctuation and alphanumeric characters are preserved unless that kind registers an additional demonstrably safe rule. Thus `PO2024004` and `P02024004` remain different.
+
+The linker uses breadth-first traversal with these hard limits:
+
+- maximum six identifier edges from a population seed;
+- maximum 25 voucher records in one cycle closure;
+- maximum 100 traversed edges; and
+- maximum 20 declared roles and 50 assertions in one test.
+
+Crossing a limit produces `needs_review` with counts and the triggering identifier; the linker never returns a silently truncated cycle. These constants live in the cycle module, are returned by the metadata endpoint, and are shared by API validation, worker validation, and the frontend.
+
+Collision rules are deterministic:
+
+- a candidate whose row key is null or non-unique is rejected;
+- if one record reaches several population items through a role with `reuse_across_items: allowed`, retain a normal many-to-one relationship fact on every binding, including the other item IDs; do not change evaluation state merely because the record is shared;
+- if one record reaches several items through a role declared `reuse_across_items: exclusive`, mark those bindings as a cross-item collision and require review;
+- repeated statements of the same normalized fact in one record collapse to one fact while retaining all citations;
+- different facts matching a scalar selector are ambiguous; and
+- more than one record within one item for a `cardinality: one` role is a role conflict, not a list-order choice.
+
+Shared-record facts include role, record ID, identifier edge, related item IDs, and the declared reuse rule. Assertions may test whether a consolidated PO/payment allocation is valid; the linker itself does not convert an ordinary many-to-one relationship into a grey `needs_review` result. Generation also rejects a scalar amount-equality assertion between an item and a shared aggregate record unless the assertion declares an allocation or aggregation rule.
+
+Stable identities and invalidation are also fixed:
+
+- `record_id` hashes the parent document ID, record kind, registry-selected primary identifier kind, and normalized primary identifier. The citation fallback is used only after auditor review deliberately accepts a standalone component with no registered primary identifier; such a record is not transaction-linkable without an explicit reviewed role override. Duplicate fallback identities are an extraction conflict. A corrected primary identifier deliberately creates a new record identity.
+- `item_id` hashes the test semantic ID, population table, row-key identifier kind, and normalized row-key value. It survives source-row reordering; the table signature and frozen-row hash remain inputs that can make its results stale.
+- an automatic role binding stores the record content hash and complete `matched_by` edge chain.
+- a manual role override stores `(item_id, role, document_id, record_id)` plus the bound record hash. Reanalysis preserves it only when the same record identity and compatible record kind remain; otherwise the override is retained as stale for review and is never silently dropped or rebound.
+- assertion result reuse requires the same assertion hash, frozen-row hash, bound-record hashes, and extraction hashes. Any changed dependency stales only the affected results and aggregate disposition.
+
+### 3.8 Workflow state mapping
+
+Cycle items do not persist the old overloaded `item.state`. Phase 0 introduces shared accessors and makes every scheduler/readiness path call them instead of inspecting `state` directly:
+
+```text
+cycle evaluation          execution pending   execution current
+not_run                   yes                 no
+stale                     yes                 no
+passed                    no                  yes
+failed                    no                  yes
+incomplete                no                  yes
+needs_review              no                  yes
+
+cycle disposition         disposition current
+pending                   no
+confirmed, stale=false    yes
+exception, stale=false    yes
+confirmed/exception stale no
+```
+
+`incomplete` and `needs_review` mean deterministic execution finished; they do not masquerade as auditor disposition. The auditor still confirms or records an exception against the current definition. For the four existing kinds, the accessors preserve current behavior: `pending` is unexecuted; `agent_checked` is executed but not disposed; and `confirmed`, `exception`, or legacy `manual_review` are executed/disposed.
+
+Update `_outstanding`, `unexecuted_items`, `document_test_units`, `already_checked`, executed/disposition readiness, force/retry behavior, `run_document_test`, summaries, and rollups to use these accessors. A current cycle evaluation expands no further execution unit; a pending/stale disposition expands or exposes auditor review, never another execution unit.
+
+The standalone workflow is bumped to `doc_tests_workflow_v2` and declares `doc_tests.definitions_ready -> doc_tests.executed -> doc_tests.dispositioned`. Normal Run test requests may stop at `executed`; disposition is an auditor checkpoint that no model or deterministic executor can satisfy. The audit workflow may produce provisional rollups after execution, but `audit.verified` and any final control conclusion require current dispositions through the same accessor.
+
 ## 4. Candidate generation and test generation
 
 ### 4.1 Deterministic transaction-evidence manifest
@@ -384,7 +472,9 @@ Replace the current aggregate overlap list with a local manifest that describes:
 - uniqueness, collision, matched-row, reachable-record, reachable-document, and reachable-role counts; and
 - the complete cycle packs reached by each candidate, computed locally.
 
-Anchor ranking must penalize repeated entity-like values and candidate collisions. The model chooses only among manifest candidates that already pass deterministic safety checks. It never invents a table/column-to-identifier-kind mapping.
+Each candidate has a stable `candidate_id` derived from the table signature, row key, cycle-key mappings, and identifier-registry version. Safety validation runs before ranking. Eligible candidates are sorted by this tuple: required-role coverage descending, authoritative source table before derived join, complete-cycle count descending, linked-row count descending, collision count ascending, then table and row-key names ascending. The complete tuple is included in the manifest.
+
+The model chooses only among manifest candidates that already pass deterministic safety checks and returns the exact `candidate_id` plus `selection_reason`. It may choose a lower-ranked eligible candidate only when its lifecycle/population scope better matches the RCM requirement. The semantic validator verifies both fields; it never permits the model to invent a table/column-to-identifier-kind mapping.
 
 ### 4.2 Test-generation contract
 
@@ -395,7 +485,7 @@ For cycle tests it must:
 - reference every covered RCM control attribute;
 - choose one validated population candidate;
 - group all compatible assertions sharing that population and lifecycle scope into one `cycle_vouch` test;
-- use exact `record_kind` roles;
+- use exact `record_kind` roles with within-item cardinality and cross-item reuse semantics;
 - select fields only from the actual role profiles;
 - state evidence-linked or sampled reach explicitly; and
 - emit no narrative `steps[].checks` copy.
@@ -406,6 +496,7 @@ The semantic validator rejects:
 - entity identifiers used as cycle keys;
 - derived joins when an equivalent source-table population exists;
 - required roles not reachable in any candidate cycle;
+- role cardinality/reuse declarations inconsistent with the population grain or observed relationship facts;
 - an operand that compares unlike semantic types, such as vendor ID to vendor name;
 - unavailable field kinds or attributes;
 - implicit field attributes;
@@ -414,7 +505,29 @@ The semantic validator rejects:
 - duplicate assertion keys; and
 - multiple proposed cycle tests for the same RCM procedure/population that could be one assertion set.
 
-This is a quality gate, not a migration layer. Once the new pipeline is live, regenerate the procurement cycle tests from their RCM rows and discard the old records.
+If the chosen evidence-linked candidate would exceed 500 items, semantic validation returns the deterministic `selection_confirmation` proposal rather than accepting the definition or failing with an authoring dead end.
+
+This is a quality gate, not a migration layer. Once the new pipeline is live, the implementing model treats the old procurement records as unsuitable for validation, tells the user to perform Checkpoint B, and does not add a product compatibility path.
+
+### 4.3 Kind integration and manual authoring
+
+`cycle_vouch` is a fifth Document Test kind, not an internal alias for `vouching`. Phase 0 must enumerate and test every kind switch before vertical work begins. At minimum this includes:
+
+- `doc_tests.KINDS`, normalization/hydration, create/update/load/list/meta, `execution_issues`, `evidence_blocked`, `result_rollup`, and `summary_payload`;
+- `rcm_execution._specified`, `_executable`, test manifests, observation creation, and rollups;
+- `capabilities.doc_tests` scope resolution, outstanding/readiness accessors, four-shape unit expansion, and shared audit/standalone binders;
+- route request/response contracts and frontend API/types; and
+- `DocTestsTab`, `DocTestCreateDialog`, `DocTestItemList`, `DocTestItemDetail`, and the new grid component.
+
+Manual authoring survives with an explicit split:
+
+- `vouching` remains the auditor-authored single-document/listing test. `build_vouching`, `/doc-tests/build/vouching`, and the current literal-comparison detail editor remain available for this kind.
+- `prepare_evidence_aware_vouching` remains available only for that simple `vouching` kind. Its availability-biased selection is marked targeted and receives the same no-population-conclusion restriction as `evidence_linked` cycle tests.
+- manual cycle authoring is replaced, not dropped. `DocTestCreateDialog` gains a distinct Cycle vouch shape that uses the deterministic candidate list, typed roles, selection basis, and typed assertions, then calls the same `cycle_vouching.create_test` service as generated tests.
+- the old `build_cycle_vouching` implementation and `POST /doc-tests/build/cycle` contract are removed. Manual creation uses `POST /doc-tests/build/cycle-vouch` with the canonical typed request; there is no old-payload fallback.
+- `/prepare-evidence-aware` and the item comparisons patch route reject `cycle_vouch`. Cycle columns change only through the canonical test-level assertions service from section 7; the existing comparisons patch remains scoped to simple `vouching`.
+
+Generated and manual cycle tests therefore share definition validation, candidate identity, item construction, execution, and grid projection. No manual UX path writes `steps[].checks` or per-item cycle check copies.
 
 ## 5. Grid API
 
@@ -429,6 +542,7 @@ definition_sha1: ...
 title: ...
 population: {}
 coverage: {}
+assurance_scope: targeted_evidence_only
 columns:
   - key: invoice_amount_to_payment
     label: Invoice amount agrees to payment
@@ -469,6 +583,7 @@ Requirements:
 - support `offset` and `limit`, with a maximum page size of 200 rows;
 - cap assertion columns at a validated definition limit rather than silently truncating them;
 - compute column counts over the full test, not only the returned page;
+- return selection basis, assurance scope, and shared-record relationship facts;
 - return bounded display values and evidence counts, never excerpts or complete document text;
 - keep all per-document sub-results so generalized assertions are not collapsed to the first match;
 - return `409 stale_definition` if item results were produced for a different definition and cannot be projected safely; and
@@ -494,7 +609,7 @@ The summary API should expose discriminated entries rather than treating every r
 - a cycle-test entry, classified from its aggregate evaluation/disposition and coverage;
 - item entries for question/review tests where item-first triage is still appropriate.
 
-Keep `test_counts`, `sample_counts`, and assertion counts separate. A test with one failed sample and nine mismatched assertions has one failed sample, not ten exceptions.
+Keep `test_counts`, `tested_item_counts`, and assertion counts separate. A test with one failed item and nine mismatched assertions has one failed item, not ten exceptions.
 
 ### 6.2 Grid behavior
 
@@ -505,6 +620,7 @@ The grid provides:
 - compact icons/colors with accessible text labels;
 - column-header summaries and filters;
 - filters for evaluation, auditor disposition, missing role, and assertion verdict;
+- a persistent Targeted evidence or Sampled population scope label;
 - search over item label and frozen row display fields;
 - a cell popover listing every per-document comparison; and
 - a detail action that opens citations and the complete role-link path.
@@ -533,21 +649,30 @@ Agent authoring uses a target-specific `append_cycle_assertions` action. It is n
 
 ## 8. Rollups, working papers, and RCM execution
 
-Use the sample item as the exception-counting unit.
+Use the tested item as the exception-counting unit.
 
-- `failed_samples`: distinct items with at least one current mismatch;
-- `incomplete_samples`: distinct items with missing evidence or invalid extraction;
+- `failed_items`: distinct items with at least one current mismatch;
+- `incomplete_items`: distinct items with missing evidence or invalid extraction;
 - `assertion_mismatches`: diagnostic count of mismatched cells;
-- `confirmed_samples`: items signed off confirmed against the current definition; and
+- `confirmed_items`: items signed off confirmed against the current definition; and
 - `open_exceptions`: distinct items signed off exception and not resolved.
 
 Never add item exceptions and mismatched checks together. That is the current double-counting risk in RCM rollups.
 
-The RCM execution rollup should display test-level coverage, sample outcomes, and auditor disposition separately. It should not conclude that a control is ineffective from an unreviewed normalization failure or missing document.
+The RCM execution rollup displays test-level coverage, item outcomes, selection basis, assurance scope, and auditor disposition separately. `_rollup_doctest` returns `conclusion_eligible` and `assurance_scope` rather than deriving a control conclusion from result counts alone.
+
+For `targeted_evidence_only` tests, the restriction is structural:
+
+- the test's `control_conclusion` is fixed at `no_conclusion` for automated reconciliation and cannot contribute a population passed/failed count;
+- a clean targeted result cannot support effectiveness or a projected exception rate;
+- a confirmed mismatch may create an item-specific targeted observation/finding candidate with its evidence, but its summary must not extrapolate beyond the tested item; and
+- RCM completion and `audit.verified` treat it as supplemental item evidence, not as population coverage.
+
+Only a `sampled_population` test with current evaluation and auditor disposition is eligible to support a population-level control conclusion, and the auditor still owns that conclusion. An unreviewed normalization failure or missing document never concludes that a control is ineffective.
 
 The cycle working paper should render:
 
-- population and selection basis;
+- population, selection basis, and assurance scope, with an explicit `Targeted evidence - not a sample` label where applicable;
 - cycle coverage and missing-role limitations;
 - the same assertion columns as the grid;
 - one row per tested cycle;
@@ -557,100 +682,199 @@ The cycle working paper should render:
 
 The grid API, RCM rollup, and working paper must all consume `result_by_assertion`; none may reconstruct outcomes from narrative steps.
 
-## 9. Implementation map and delivery phases
+## 9. Manual regeneration checkpoints
+
+`Workspaces/procurement` is a user-owned disposable UX workspace, not an automated fixture. No implementation command, test setup, migration, executor, or agent action may delete, rewrite, reanalyze, or regenerate it on the user's behalf. Automated coverage must use temporary workspaces or the compact procurement fixture created in Phase 0.
+
+Regeneration notification is an implementation-conversation responsibility, not a product feature. Do not add backend status codes, recovery contracts, routes, banners, buttons, or frontend states solely to detect or explain this test-workspace regeneration.
+
+At each checkpoint the implementing model pauses and tells the user in chat:
+
+- what code/schema identity changed;
+- which procurement artifacts are now unsuitable for the next validation step;
+- exactly what to recreate or rerun through the UX that already exists at that point;
+- what result the user should expect to inspect; and
+- which implementation step is waiting for confirmation.
+
+If the existing UX has no in-place regeneration path, the model instructs the user to recreate the disposable workspace through the normal Home and intake flows. It does not add a product action for this purpose. No later implementation step may assume regenerated procurement state until the user confirms completion.
+
+### Checkpoint A - voucher reanalysis after Phase 1
+
+Trigger: the voucher-record schema, identifier registry, normalizer, or voucher worker identity changes.
+
+The implementing model tells the user to open `procurement` and re-run voucher analysis for the five voucher documents through the analysis UX or assistant command that already exists. If the current product cannot reanalyze them in place, the model instead tells the user to recreate the disposable workspace through the existing Home/intake flow. No new regeneration-only product action is added. The user reviews and accepts the resulting records through the UI.
+
+Expected result:
+
+- five distinct record kinds: purchase requisition, purchase order, goods receipt, vendor invoice, and payment voucher;
+- each record exposes typed transaction identifiers and its classification evidence;
+- fragment reduction shows no unexplained unresolved fragment or record-kind conflict for the five single-voucher sources;
+- the receipt/requisition raw dates are either normalized or explicitly marked invalid; and
+- no cycle test is run against the old analysis hashes.
+
+The implementation does not perform this reanalysis. Phase 2 may be coded against automated fixtures, but live-workspace UX validation waits for the user's checkpoint confirmation.
+
+### Checkpoint B - full clean regeneration after Phase 2
+
+Trigger: the RCM `control_attributes` or cycle-test definition schema becomes authoritative. This invalidates the current RCM-derived chain, including linked Data Tests, question/review Document Tests, cycle tests, execution rollups, working papers, findings support status, and report inputs.
+
+The canonical clean-break test is a full user-driven workspace regeneration through normal product UX. The implementer must tell the user to:
+
+1. create a fresh procurement workspace, or delete/recreate the disposable one through the Home UX;
+2. import the four original source data files and all original source documents through intake;
+3. run and review document analysis, including the five voucher records;
+4. generate planning context and APM;
+5. generate and review the RCM with `control_attributes`; and
+6. generate the complete RCM-linked test set, not only cycle tests.
+
+The checkpoint handoff must use the actual labels present in the implemented UI and state which steps are assistant/agent commands. The implementation must not copy old RCM rows, test records, findings, reports, or generated workspace artifacts into the new workspace.
+
+Expected result: test generation produces clean-schema tests for the new RCM IDs; compatible assertions are grouped per RCM procedure/population; and the procurement cycle tests show reachable, correctly classified roles before execution.
+
+This full rebuild is the reset cascade. There is no in-place product migration requirement for the old synthetic RCM or its dependent artifacts.
+
+### Checkpoint C - cycle execution after Phase 3
+
+Trigger: the new item builder and evaluator are available against the clean Phase 2 definitions.
+
+The implementer tells the user which cycle tests to run through the normal test-execution UX. The user initiates execution and reviews the PO-number mismatch, extraction state, role bindings, matched-by chains, and auditor disposition controls. The implementation must not run or sign off the tests.
+
+Expected result: evaluation produces current `result_by_assertion` entries, leaves auditor disposition pending, and distinguishes mismatch, missing evidence, invalid extraction, and ambiguity.
+
+### Checkpoint D - grid review after Phase 5
+
+Trigger: the grid frontend is available. No artifact regeneration is expected when the Phase 3 definition and result hashes remain current.
+
+The implementing model tells the user to reload `procurement`, open a cycle test, exercise grid filters and horizontal review, open multi-result cells, drill into citations, and return to the preserved grid state. If implementation changes since Checkpoint C invalidated results, the model explains that in chat and asks the user to rerun only those tests through the existing UX.
+
+### Checkpoint E - incremental assertion UX after Phase 6
+
+Trigger: assertion-column authoring and pending-result execution are available.
+
+The implementer tells the user to add or change an assertion through the UI or the target-specific assistant action, inspect the stale prior sign-off, initiate execution of the pending assertion, and re-sign off manually.
+
+Expected result: unaffected cells retain their hashes/results, only the new or changed column runs, and no old disposition appears current.
+
+### Checkpoint F - downstream regeneration after Phase 7
+
+Trigger: assurance-aware RCM rollups and cycle working papers are available.
+
+The user manually dispositions the tested cycle items and invokes the normal rollup, working-paper, and report-generation UX as applicable. The implementation does not generate or overwrite those artifacts. Existing report reconciliation rules continue to prevent silent replacement.
+
+Expected result: the grid, item detail, RCM execution rollup, working paper, findings support status, and report inputs agree on tested-item counts, assurance scope, conclusion eligibility, and current hashes.
+
+Any later implementation change that invalidates user-visible procurement artifacts adds a new checkpoint or explicitly reuses one above. The implementer never treats regeneration as an invisible setup step.
+
+## 10. Implementation map and delivery phases
 
 Primary touchpoints:
 
-- `document_analysis.py` and `agent/workers/documents.py`: voucher records, kinds, typed identifiers, and normalization status;
+- `document_analysis.py`, document workflow reduction, `agent/workers/documents.py`, document routes, and `DocumentsTab.vue`: voucher fragments, deterministic record reduction, reviewed-fragment assignment, kinds, typed identifiers, and normalization status;
 - new `cycle_vouching.py`: identifier registry, definition validation, candidate graph, item materialization, deterministic evaluation, and grid projection;
-- `doc_tests.py` and `routes/doc_test_routes.py`: generic persistence, role-aware item mutations, disposition, and grid/assertion routes;
+- `doc_tests.py` and `routes/doc_test_routes.py`: fifth-kind integration, retained simple-vouching builders, removal/replacement of the old cycle builder, generic persistence, role-aware mutations, disposition, and grid/assertion/manual-cycle routes;
 - `agent/context/adapters.py`, `agent/workers/tests.py`, and `agent/executors/tests.py`: evidence manifest, generation contract, semantic validation, identity, and commit;
 - `agent/workers/planning.py`, `agent/executors/planning.py`, `workspaces.py`, and Planning frontend types/components: RCM control attributes;
-- `agent/capabilities/doc_tests.py`, `doc_tests_execution.py`, and `agent/executors/fieldwork.py`: execution/readiness semantics shared by both workflows;
-- `rcm_execution.py` and working-paper assembly: sample-level rollups and the canonical grid result source; and
-- `frontend/src/types.ts`, `DocTestsTab.vue`, `DocTestItemDetail.vue`, and a new cycle-grid component: test-first review and drill-down.
+- `agent/workflows/doc_tests.py`, `agent/capabilities/doc_tests.py`, `doc_tests_execution.py`, `agent/executors/fieldwork.py`, and audit verification: state accessors, workflow-v2 disposition, and execution/readiness semantics;
+- `rcm_execution.py` and working-paper assembly: assurance-scope eligibility, tested-item rollups, and the canonical grid result source; and
+- `frontend/src/types.ts`, `DocTestsTab.vue`, `DocTestCreateDialog.vue`, `DocTestItemList.vue`, `DocTestItemDetail.vue`, and a new cycle-grid component: fifth-kind/manual authoring, test-first review, and drill-down.
 
 Keep cycle-specific schema and compute out of the generic document-test persistence module so the clean rewrite does not further expand `doc_tests.py`.
 
 ### Phase 0 - lock the clean schemas and procurement fixture
 
-- define `record_kind`, identifier-kind registry, normalized value envelope, RCM `control_attributes`, `cycle_vouch` definition, item/result states, and typed assertions;
+- define `record_kind`, identifier-kind/cardinality registry, fragment/reduced-record contracts, normalized value envelope, RCM `control_attributes`, `cycle_vouch` definition, assurance scope, typed assertions, and the evaluation/disposition workflow accessors;
+- enumerate every backend/frontend fifth-kind switch, the retained simple-vouching paths, the replacement manual-cycle path, and the `doc_tests_workflow_v2` graph;
 - create a compact test fixture from the five-document procurement cycle; and
 - add schema/validator tests before changing workers.
 
-Exit condition: the fixture expresses the complete requisition -> PO -> GRN -> invoice -> payment cycle without broad-type aliases or dotted paths.
+Exit condition: the fixture expresses the complete requisition -> PO -> GRN -> invoice -> payment cycle without broad-type aliases or dotted paths; Phase 0 tests prove cycle items expand exactly once for execution and remain pending only for auditor disposition.
 
 ### Phase 1 - extraction and deterministic cycle evidence
 
-- update document-analysis extraction and validators;
+- update document-analysis map extraction, fragment validators, deterministic record reduction, and reviewed-fragment overrides;
 - implement transaction-safe identifier indexing and bounded transitive cycle linkage;
 - implement candidate scoring over authoritative populations; and
-- reanalyze the five procurement vouchers.
+- stop at Checkpoint A, tell the user in chat what to reanalyze through the existing UX, and do not reanalyze the procurement workspace.
 
-Exit condition: the fixture yields five distinct roles in one connected cycle; vendor/buyer IDs cannot connect another row; the PO typo remains visible without breaking the whole cycle.
+Exit condition: automated fixtures reduce partial multi-chunk records without first-kind/list-order behavior, yield five distinct roles in one connected cycle, preserve normal shared PO/payment relationships, prevent vendor/buyer edges, and leave the PO typo visible without breaking the whole cycle. The user has been given the Checkpoint A instructions; live confirmation is recorded separately.
 
 ### Phase 2 - RCM and test generation
 
 - update the RCM worker, response schema, executor fields, hashes, and UI types for `control_attributes`;
 - replace the cycle branch of `tests.generate` with the new definition contract;
-- expand the transaction-evidence context manifest; and
-- implement the semantic quality gate and stable test identity.
+- expand the transaction-evidence context manifest;
+- integrate the fifth kind across persistence, RCM executability, workflow expansion, summaries, routes, and frontend types;
+- retain simple manual `vouching`, replace manual cycle authoring with the canonical Cycle vouch dialog/route, and remove the old cycle payload/comparison paths;
+- implement assurance-scope derivation and the large-population `selection_confirmation` proposal;
+- implement the semantic quality gate and stable test identity; and
+- stop at Checkpoint B with the full manual workspace-regeneration instructions.
 
-Exit condition: regenerated procurement tests group compatible assertions per RCM procedure, use valid typed operands, and contain no unreachable roles or fields.
+Exit condition: generated and manually authored cycle tests use the same clean definition service, group compatible assertions per RCM procedure, use valid typed operands, and contain no unreachable roles or fields. Simple manual vouching remains usable, and populations above 500 produce a confirmable sample proposal. The implementer does not claim live procurement success until the user completes Checkpoint B.
 
 ### Phase 3 - item builder and evaluator
 
 - materialize selected population rows and complete role bindings;
 - evaluate scalar and explicit role-set assertions;
 - preserve per-document sub-results and evidence anchors;
+- replace raw cycle `item.state` checks with the shared execution/disposition accessors across scheduler, binder, readiness, summary, and rollup paths;
+- add `doc_tests_workflow_v2` disposition readiness and audit-verification gating;
 - separate evaluation from auditor disposition; and
-- implement result/input hashes and staleness.
+- implement result/input hashes and staleness; then stop at Checkpoint C without running or signing off procurement tests.
 
-Exit condition: every procurement result is explainable as match, mismatch, missing evidence, invalid extraction, or ambiguity, with no role-collapse or first-match behavior.
+Exit condition: every procurement result is explainable as match, mismatch, missing evidence, invalid extraction, or ambiguity, with no role-collapse or first-match behavior. A current evaluation does not rerun, and a pending/stale auditor disposition does not satisfy final audit verification.
 
 ### Phase 4 - grid and summary APIs
 
 - add the paged read-only grid projection;
 - revise the engagement summary into discriminated test/item entries; and
-- expose sample, coverage, and assertion counts without double counting.
+- expose tested-item, coverage, assurance-scope, and assertion counts without double counting.
 
-Exit condition: the grid is bounded, stable, read-only, and consistent with the item endpoint and result rollups.
+Exit condition: the grid is bounded, stable, read-only, and consistent with the item endpoint and result rollups; targeted evidence is visibly distinct from a sampled population.
 
 ### Phase 5 - grid frontend
 
 - make cycle tests test-first and grid-first;
 - add filters, summaries, sticky columns, per-document cell popovers, and drill-down;
 - retain grid state across detail navigation; and
-- add frontend unit and browser coverage.
+- add frontend unit and browser coverage; then give the user Checkpoint D grid-review instructions.
 
-Exit condition: an auditor can scan the whole sample, identify the failed assertion, and reach the exact voucher citation without navigating nested rails.
+Exit condition: an auditor can scan the selected items, see whether they are targeted or sampled, identify the failed assertion, and reach the exact voucher citation without navigating nested rails.
 
 ### Phase 6 - incremental assertion authoring
 
 - add the assertion mutation route and agent action;
 - execute only new/stale assertion results; and
-- enforce stale disposition and re-sign-off.
+- enforce stale disposition and re-sign-off; then stop at Checkpoint E for user-driven authoring, execution, and sign-off.
 
 Exit condition: adding a column neither destroys prior results nor leaves an old sign-off appearing current.
 
-### Phase 7 - downstream outputs and workspace reset
+### Phase 7 - downstream outputs and manual regeneration handoff
 
-- update RCM rollups and working papers to use sample-level counts and canonical assertion results;
+- update RCM rollups, observation creation, audit verification, and working papers to use tested-item counts, assurance eligibility, and canonical assertion results;
 - remove superseded cycle builders, dotted-path code, duplicated check storage, and old UI branches; and
-- delete and regenerate the synthetic procurement cycle-test records under the new schema.
+- stop at Checkpoint F and tell the user in chat to disposition results and regenerate rollups, working papers, and report inputs through the existing UX.
 
-Exit condition: no production path reads the old cycle schema, and grid, detail, RCM, and working papers agree on the same counts.
+Exit condition: no production path reads the old cycle schema; automated fixtures show grid/detail/RCM/working-paper agreement; targeted evidence can create item-specific exceptions but never a population control conclusion; and the user receives the exact Checkpoint F actions. The implementation never resets or regenerates the procurement workspace itself.
 
-## 10. Required tests
+## 11. Required tests
 
 ### Backend
 
 - two formerly identical broad types resolve to distinct invoice/payment and requisition/PO roles;
 - cycle closure follows invoice -> PO -> GRN/requisition transaction identifiers;
+- graph edges require the same identifier kind and conservative kind-specific normalization;
 - vendor, buyer, employee, department, and account identifiers never form edges;
+- graph hop/record/edge limits fail visibly without truncation;
 - an authoritative source table outranks an equivalent derived join;
+- candidate ranking and lexical tie-breaking are deterministic;
 - multiple voucher records for a cardinality-one role produce ambiguity, not arbitrary selection;
 - multiple voucher records in one combined document retain distinct roles and citations;
+- a PO or consolidated payment reused across invoice-grain items is a normal shared binding when allowed, while an exclusive-role reuse is a collision;
+- equality to a shared aggregate amount is rejected unless allocation/aggregation semantics are declared;
+- chunk fragments with the same exact primary identity reduce to one record with all citations;
+- fragments with different primary identities never merge merely because they share a PO/payment identifier;
+- a primary-less fragment joins only one exact compatible component, while zero/multiple candidates remain unresolved;
+- durable record IDs are computed after reduction and record-kind conflicts remain non-bindable;
 - an exact identifier typo is a mismatch while other exact edges retain the cycle;
 - raw-but-unparseable dates return `invalid_extraction`, not `missing_evidence`;
 - date direction and typed tolerance validation are correct;
@@ -659,9 +883,14 @@ Exit condition: no production path reads the old cycle schema, and grid, detail,
 - assertion definitions exist once and results are keyed by immutable assertion key;
 - incremental assertion execution retains unaffected results and stales the prior disposition;
 - manual role-aware attachment updates bindings, missing-role coverage, and affected result staleness;
+- record and item identities survive reorder/reanalysis when their identity inputs are unchanged, while changed primary identifiers and bound-record hashes stale the correct artifacts;
+- cycle execution expands once for `not_run/stale`, current incomplete/review evaluations do not rerun, and stale/pending dispositions cannot satisfy final verification;
+- `random`, `interval`, and `stratified` are the only sampling methods, and a qualifying population above 500 returns a confirmable sample proposal instead of truncation or a dead-end error;
+- evidence-linked and evidence-aware targeted tests are structurally ineligible for population control conclusions while retaining item-specific exception evidence;
+- every fifth-kind switch accepts `cycle_vouch`, manual cycle creation uses the canonical service, and retained simple `vouching` routes reject cycle payloads;
 - grid pagination and full-test column summaries agree;
 - grid cells contain no excerpts and remain bounded with multiple evidence matches; and
-- RCM failed-sample and mismatch counts do not double count one item.
+- RCM failed-item and mismatch counts do not double count one item.
 
 ### Frontend
 
@@ -669,24 +898,32 @@ Exit condition: no production path reads the old cycle schema, and grid, detail,
 - selecting a row/cell opens the correct item and assertion context;
 - closing detail restores filters, scroll position, and selected cell;
 - generalized cells show all document sub-results;
+- the grid and working-paper preview distinguish Targeted evidence from Sampled population;
+- the create dialog preserves simple vouching, creates canonical cycle tests, and confirms/adjusts the large-population sample proposal;
 - stale, incomplete, failed, and auditor-disposition states remain visually distinct; and
 - non-cycle question/review worklists retain their item-first behavior.
 
 ### Regression gates
 
 - document-question tests still execute through the registered document-Q&A worker;
-- standalone `doc_tests_workflow_v1` and audit workflow use the same cycle item/evaluation binding;
+- manually authored simple `vouching`/tracing tests still build, edit comparisons, execute, and render outside the cycle grid;
+- standalone `doc_tests_workflow_v2` and audit workflow use the same cycle item/evaluation/disposition accessors and execution binding;
 - test-generation proposal recovery remains hash-identified and does not rebill on an unchanged proposal;
-- optimistic workspace revision and parent-hash conflicts fail closed; and
+- optimistic workspace revision and parent-hash conflicts fail closed;
+- automated tests and implementation scripts never write, delete, reanalyze, or regenerate `Workspaces/procurement`; and
 - the frontend production build passes in addition to the new unit/browser tests.
 
-## 11. Non-goals
+## 12. Non-goals
 
 - no compatibility or migration layer for the current synthetic cycle schema;
+- no backend or frontend feature whose only purpose is notifying or performing regeneration of the procurement test workspace;
 - no fuzzy auto-linking of transaction identifiers;
+- no treating an allowed shared PO, GRN, or consolidated payment as a collision merely because it supports several items;
 - no model execution for deterministic cycle comparisons;
 - no global consolidation across RCM rows merely because anchors match;
 - no set-to-set comparison until an explicit pairing contract is designed;
 - no grouped line-item population until row operand reducers are explicit;
+- no population control conclusion from evidence-linked or evidence-aware targeted selection;
+- no removal of auditor-authored simple vouching or manual cycle authoring; each keeps the explicit path in section 4.3;
 - no silent choice among conflicting documents or extracted facts; and
 - no second source of executable assertions in narrative steps, item copies, UI-only state, or working-paper code.
