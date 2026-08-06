@@ -206,11 +206,13 @@ async function save() {
   }
   saving.value = true
   try {
-    const viz = result.value?.viz ?? props.analysis?.viz ?? { type: 'table' as const }
+    // No viz is sent: the chosen test's own chart is authoritative, and the
+    // server derives (or re-derives, on a spec change) exactly that — never a
+    // stale chart left over from whatever the test used to be.
     if (props.analysis) {
       await api.patch<SavedAnalysis>(
         `/api/workspaces/${props.workspace.id}/analyses/${props.analysis.id}`,
-        { title: name, spec: spec(), viz },
+        { title: name, spec: spec() },
       )
       emit('changed')
       toast.add({ severity: 'success', summary: 'Saved', detail: name, life: 2500 })
@@ -222,7 +224,6 @@ async function save() {
           table: table.value,
           title: name,
           spec: spec(),
-          viz,
           source: 'library' as const,
         },
       )
@@ -534,10 +535,14 @@ watch(table, () => {
 
   <!-- What this procedure currently returns — loaded the moment it's opened,
        not only after Run. Nothing here is recorded; the outcome banner above
-       is the durable conclusion. -->
+       is the durable conclusion. The test's own suggested chart (bar, line,
+       ...) travels on `detail.viz`, computed fresh each time — never the
+       static "table" default a saved definition is created with — so
+       ChartView renders it directly and only falls back to a plain table
+       when the chart doesn't apply. -->
   <div v-else-if="detail?.frame" class="result">
-    <h4>Current result rows <span class="muted">({{ (detail.total_rows ?? 0).toLocaleString() }} total)</span></h4>
-    <FrameTable :frame="detail.frame" scrollHeight="34vh" />
+    <h4>Current result <span class="muted">({{ (detail.total_rows ?? 0).toLocaleString() }} row{{ (detail.total_rows ?? 0) === 1 ? '' : 's' }})</span></h4>
+    <ChartView :frame="detail.frame" :viz="detail.viz" height="280px" />
   </div>
   <p v-else-if="detail?.error" class="analysis-error">
     <i class="pi pi-exclamation-triangle" /> {{ detail.error }}

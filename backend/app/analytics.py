@@ -1250,3 +1250,20 @@ def run_test(df: pl.DataFrame, test_id: str, params: dict) -> AnalyticsResult:
     if meta is None:
         raise QueryError(f"Unknown analytics test '{test_id}'.")
     return meta["func"](df, canonicalize_params(df, test_id, params))
+
+
+def suggested_viz(df: pl.DataFrame, test_id: str, params: dict) -> dict | None:
+    """The chart a test suggests for its own summary frame, or ``None``.
+
+    Most tests report a chart shape that is structural — fixed column names,
+    or a column taken straight from ``params`` — rather than data-dependent, so
+    computing it once at definition time (here) is what a saved analysis's
+    static ``viz`` should hold, instead of always defaulting to a table. A
+    broken spec (bad params, missing column) degrades to ``None`` rather than
+    raising: creating or regenerating a definition must not fail just because
+    its chart preference could not be computed.
+    """
+    try:
+        return run_test(df, test_id, params).viz
+    except Exception:
+        return None

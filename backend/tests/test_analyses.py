@@ -70,6 +70,98 @@ def test_add_analysis_validation(workspace_with_data):
         ws.update_analysis(py["id"], {"spec": {"code": "  "}})
 
 
+def test_add_analysis_derives_the_tests_natural_chart(workspace_with_data):
+    """An analytics test that suggests a chart gets it as its saved viz —
+    not the "table" default — the moment it is created."""
+    ws = workspace_with_data
+    weekend = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Weekend postings",
+            "spec": {"test": "weekend_activity", "params": {"date_column": "tx_date"}},
+        }
+    )
+    assert weekend["viz"] == {"type": "bar", "x": "weekday", "y": ["count"]}
+
+    completeness = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Completeness",
+            "spec": {"test": "completeness", "params": {"columns": ["amount"]}},
+        }
+    )
+    assert completeness["viz"] == {"type": "bar", "x": "column", "y": ["missing"]}
+
+
+def test_add_analysis_keeps_the_table_default_when_the_test_has_no_chart(
+    workspace_with_data,
+):
+    """duplicates has no natural chart — it stays the plain table default,
+    and a broken spec degrades the same way rather than blocking the save."""
+    ws = workspace_with_data
+    duplicates = _library_analysis(ws)  # test 'duplicates', no viz in the registry
+    assert duplicates["viz"] == {"type": "table"}
+
+    broken = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Broken spec",
+            "spec": {"test": "weekend_activity", "params": {"date_column": "no_such_column"}},
+        }
+    )
+    assert broken["viz"] == {"type": "table"}
+
+
+def test_regenerating_a_definition_refreshes_its_chart(workspace_with_data):
+    """A definition an executor regenerates with a different test must not
+    keep the previous spec's chart preference."""
+    ws = workspace_with_data
+    analysis = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Duplicate invoices",
+            "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+        }
+    )
+    assert analysis["viz"] == {"type": "table"}
+
+    # Mirrors what execute_analysis_definitions does on an update: derive a
+    # fresh viz for the new spec and only overwrite when one exists.
+    new_spec = {"test": "weekend_activity", "params": {"date_column": "tx_date"}}
+    refreshed = ws._analytics_default_viz("transactions", new_spec)
+    assert refreshed == {"type": "bar", "x": "weekday", "y": ["count"]}
+
+
+def test_editing_a_spec_refreshes_its_chart_unless_viz_is_explicit(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)  # 'duplicates' — no chart
+    assert analysis["viz"] == {"type": "table"}
+
+    # Changing the test to one with a natural chart, without an explicit viz:
+    # the server derives it, the same as a fresh save would.
+    ws.update_analysis(
+        analysis["id"],
+        {"spec": {"test": "weekend_activity", "params": {"date_column": "tx_date"}}},
+    )
+    assert ws.analyses[0]["viz"] == {"type": "bar", "x": "weekday", "y": ["count"]}
+
+    # An explicit viz in the same request is honored over the derived one.
+    ws.update_analysis(
+        analysis["id"],
+        {"spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}}, "viz": {"type": "table"}},
+    )
+    assert ws.analyses[0]["viz"] == {"type": "table"}
+
+    # Re-saving the unchanged spec (a title edit) leaves viz untouched.
+    ws.update_analysis(analysis["id"], {"viz": {"type": "bar", "x": "band", "y": ["count"]}})
+    ws.update_analysis(analysis["id"], {"title": "Renamed"})
+    assert ws.analyses[0]["viz"] == {"type": "bar", "x": "band", "y": ["count"]}
+
+
 def test_python_analysis_table_is_optional_label(workspace_with_data):
     ws = workspace_with_data
     # An unknown table on a python analysis degrades to None (label only).

@@ -1243,6 +1243,19 @@ class Workspace:
             )
         return {"mode": mode}
 
+    def _analytics_default_viz(self, table: str | None, spec: dict) -> dict | None:
+        """The chart the chosen analytics test naturally suggests, if any."""
+        test_id = str(spec.get("test") or "")
+        if not table or not test_id:
+            return None
+        from . import analytics
+
+        try:
+            frame = self.get_frame(table)
+        except Exception:
+            return None
+        return analytics.suggested_viz(frame, test_id, dict(spec.get("params") or {}))
+
     def add_analysis(self, payload: dict) -> dict:
         kind = payload.get("kind")
         if kind not in ("analytics", "python"):
@@ -1260,14 +1273,22 @@ class Workspace:
         if kind == "python" and not str((payload.get("spec") or {}).get("code") or "").strip():
             raise WorkspaceError("A Python analysis needs code.")
 
+        spec = dict(payload.get("spec") or {})
+        viz = payload.get("viz")
+        if not isinstance(viz, dict) and kind == "analytics":
+            # The test itself knows its natural chart — computed once here so
+            # a saved definition's own viz is meaningful without recomputing,
+            # instead of always defaulting to a table.
+            viz = self._analytics_default_viz(table, spec)
+
         analysis = _apply_provenance(
             {
                 "id": str(payload.get("id") or uuid.uuid4().hex[:10]),
                 "title": title,
                 "kind": kind,
                 "table": table,
-                "spec": dict(payload.get("spec") or {}),
-                "viz": dict(payload.get("viz") or {"type": "table"}),
+                "spec": spec,
+                "viz": dict(viz or {"type": "table"}),
                 "note": str(payload.get("note") or "").strip(),
                 "source": payload.get("source") or ("ai" if kind == "python" else "library"),
                 "created": date.today().isoformat(),
@@ -1299,22 +1320,30 @@ class Workspace:
             analysis["title"] = title
         if "note" in changes:
             analysis["note"] = str(changes["note"] or "").strip()
-        if "viz" in changes and isinstance(changes["viz"], dict):
-            analysis["viz"] = dict(changes["viz"])
         # Unlike a tile, an analysis is an editing surface: params (library) and
         # code (AI) are re-saved by rewriting its spec.
+        spec_changed = False
         if "spec" in changes and isinstance(changes["spec"], dict):
             if analysis["kind"] == "python" and not str(changes["spec"].get("code") or "").strip():
                 raise WorkspaceError("A Python analysis needs code.")
             spec = dict(changes["spec"])
             if spec != (analysis.get("spec") or {}):
                 analysis["spec"] = spec
+                spec_changed = True
                 # A result belongs to an exact procedure definition. Do not
                 # carry an old conclusion forward after changing its code or
                 # parameters — but re-saving an unchanged definition (a title
                 # edit, a second press of Save) is not a change and must not
                 # discard a current result.
                 analysis.pop("last_result", None)
+        if "viz" in changes and isinstance(changes["viz"], dict):
+            analysis["viz"] = dict(changes["viz"])
+        elif spec_changed and analysis["kind"] == "analytics":
+            # An edited spec may now name a different test, so its chart
+            # preference is recomputed the same way a new definition's is —
+            # never left holding what the previous spec suggested.
+            viz = self._analytics_default_viz(analysis.get("table"), analysis["spec"])
+            analysis["viz"] = dict(viz or {"type": "table"})
         if "outcome_policy" in changes and isinstance(changes["outcome_policy"], dict):
             policy = self._outcome_policy(changes["outcome_policy"])
             if policy != (analysis.get("outcome_policy") or {}):

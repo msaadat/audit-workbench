@@ -6,6 +6,7 @@ import Button from 'primevue/button'
 import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
+import SelectButton from 'primevue/selectbutton'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
@@ -16,6 +17,7 @@ import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
 import AnalysisCode from './analysis/AnalysisCode.vue'
 import AnalysisList from './analysis/AnalysisList.vue'
+import AnalysisSummary from './analysis/AnalysisSummary.vue'
 import { BUCKET_CLASSIFICATIONS, OUTSTANDING } from './analysis/classification'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
@@ -23,12 +25,15 @@ import UiPageHeader from './ui/UiPageHeader.vue'
 import UiTriageCounts from './ui/UiTriageCounts.vue'
 import type { TriageCount } from './ui/UiTriageCounts.vue'
 
-// The Analysis tab: one triage screen over the engagement's saved procedures.
-// The rail lists them by what they concluded, the filter above it narrows to a
-// bucket, and the pane on the right is the editor for whichever one is open.
-// There is no separate summary view — filtering to "Needs review" *is* the
-// summary, and keeping one list means the rail and the review list can never
-// tell the auditor two different things about the same procedure.
+// The Analysis tab has two screens over the same saved procedures.
+//
+// Summary is the EDA entry point: only what is worth looking at without being
+// asked — the charts the procedures produced, and the ones that concluded an
+// exception. Procedures is the full triage rail: every saved procedure,
+// filterable by what it concluded, with an editor for whichever one is open.
+//
+// Both screens read the same loaded list, so a procedure can never disagree
+// with itself between the two — only what each screen chooses to show differs.
 //
 // Creating: Library (a predefined audit test) or Code (hand-written Polars).
 // The assistant writes analyses into this same rail.
@@ -41,6 +46,11 @@ const assistantChat = useAssistantChat(props.workspace.id)
 
 const analyses = ref<SavedAnalysis[]>([])
 const summary = ref<AnalysisSummaryPayload | null>(null)
+const view = ref<'summary' | 'procedures'>(route.query.view === 'procedures' ? 'procedures' : 'summary')
+const viewOptions = [
+  { label: 'Summary', value: 'summary' },
+  { label: 'Procedures', value: 'procedures' },
+]
 const filter = ref(String(route.query.filter || 'all'))
 const search = ref('')
 const selectedId = ref<string | null>(null)
@@ -101,18 +111,17 @@ async function load() {
 }
 watch(() => props.workspace.id, () => void load(), { immediate: true })
 
-// A deep link may name a procedure, a filter, or both. `view=summary` was the
-// old review screen, which combined several classifications into one bucket;
-// that bucket no longer exists (exception and unusual are now separate
-// pills), so the legacy link falls through to the unfiltered list instead of
-// guessing which one classification the auditor meant.
-watch(() => [route.query.filter, route.query.analysis, route.query.view], () => {
-  const wanted = String(route.query.filter || '')
-  if (wanted && wanted !== filter.value) filter.value = wanted
+// A deep link may name a screen, a filter, a procedure, or any combination.
+watch(() => [route.query.view, route.query.filter, route.query.analysis], () => {
+  const wantedView = String(route.query.view || '') === 'procedures' ? 'procedures' : null
+  if (wantedView && wantedView !== view.value) view.value = wantedView
+  const wantedFilter = String(route.query.filter || '')
+  if (wantedFilter && wantedFilter !== filter.value) filter.value = wantedFilter
   const analysisId = String(route.query.analysis || '')
   if (analysisId && analysisId !== selectedId.value) {
     selectedId.value = analysisId
     creating.value = null
+    view.value = 'procedures'
     if (!analyses.value.some(item => item.id === analysisId)) void load()
   }
 }, { immediate: true })
@@ -124,9 +133,23 @@ onUnmounted(unsubscribe)
 
 function locate() {
   return nav.replace('analysis', {
-    filter: filter.value === 'all' ? undefined : filter.value,
-    analysis: selectedId.value || undefined,
+    view: view.value === 'summary' ? undefined : view.value,
+    filter: view.value === 'procedures' && filter.value !== 'all' ? filter.value : undefined,
+    analysis: view.value === 'procedures' ? selectedId.value || undefined : undefined,
   })
+}
+
+function setView(next: string) {
+  view.value = next === 'procedures' ? 'procedures' : 'summary'
+  void locate()
+}
+
+/** A Summary card was opened: switch to Procedures with that one selected. */
+function openAnalysis(analysisId: string) {
+  view.value = 'procedures'
+  selectedId.value = analysisId
+  creating.value = null
+  void locate()
 }
 
 function pickFilter(key: string) {
@@ -147,12 +170,16 @@ function select(analysis: SavedAnalysis) {
 }
 
 function startLibrary() {
+  view.value = 'procedures'
   creating.value = 'library'
   selectedId.value = null
+  void locate()
 }
 function startCode() {
+  view.value = 'procedures'
   creating.value = 'code'
   selectedId.value = null
+  void locate()
 }
 
 async function reload() {
@@ -260,7 +287,19 @@ function fail(summaryText: string, error: unknown) {
       <Button label="Code" icon="pi pi-code" size="small" outlined @click="startCode" />
     </UiPageHeader>
 
-    <template v-if="analyses.length || creating">
+    <div v-if="analyses.length" class="analysis-nav">
+      <SelectButton :modelValue="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" @update:modelValue="setView" />
+      <span v-if="view === 'summary'" class="muted">The graphs and exceptions this engagement's procedures produced.</span>
+    </div>
+
+    <AnalysisSummary
+      v-if="view === 'summary' && analyses.length"
+      :workspace="workspace"
+      :analyses="analyses"
+      @open="openAnalysis"
+    />
+
+    <template v-else-if="analyses.length || creating">
       <UiTriageCounts v-if="analyses.length" :counts="triage" :active="filter" @select="pickFilter" />
 
       <div v-if="analyses.length" class="toolbar">
@@ -338,6 +377,13 @@ function fail(summaryText: string, error: unknown) {
 
 <style scoped>
 .analysis { min-width: 0; }
+
+.analysis-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--aw-space-3);
+  margin: 0 0 var(--aw-space-4);
+}
 
 .toolbar {
   display: flex;

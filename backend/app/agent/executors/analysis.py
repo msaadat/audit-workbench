@@ -509,6 +509,12 @@ def execute_analysis_definitions(
                     "title": definition["title"],
                     "kind": definition["kind"],
                     "table": definition["table"],
+                    # Identity is the semantic id, derived from (kind, table,
+                    # spec) — a match here means this spec is the one already
+                    # stored, so there is no viz to refresh: only a spec that
+                    # actually changed would need that, and a changed spec
+                    # never matches an existing semantic id, it creates a new
+                    # analysis instead.
                     "spec": dict(definition.get("spec") or {}),
                     "note": str(definition.get("note") or ""),
                     **(

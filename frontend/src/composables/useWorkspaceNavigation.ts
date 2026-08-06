@@ -50,8 +50,8 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   documents: { surface: 'bench', section: 'documents', keys: ['doc', 'page'] },
   data: { surface: 'bench', section: 'tables', keys: [] },
   query: { surface: 'bench', section: 'query', keys: [] },
-  // `view` is retained so links to the retired summary screen still resolve;
-  // the tab maps `view=summary` onto the "needs review" filter.
+  // `view` picks Summary vs. Procedures; `filter` and `analysis` are
+  // Procedures-only (a triage bucket and the open procedure).
   analysis: { surface: 'bench', section: 'analysis', keys: ['filter', 'analysis', 'view'] },
 }
 
