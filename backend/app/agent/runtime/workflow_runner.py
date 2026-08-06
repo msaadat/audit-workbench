@@ -715,15 +715,22 @@ class WorkflowRunner:
                 on_worker_completed=self._narrate_completion(capability),
             )
 
-        settled = self.stable_all_settled(runnable, execute)
-        for unit, outcome, failure in settled:
+        def fold_settled(
+            unit: dict[str, Any], outcome: Any | None, failure: Exception | None
+        ) -> None:
+            # Folded as each unit completes (not after the whole batch) so the
+            # run's activity counter and the "unit_update" events it drives —
+            # the chat status count and the plan spine's per-item spinners —
+            # advance live instead of jumping from 0 to N all at once.
             bound = bindings[str(unit["id"])]
             if failure is None and outcome is not None:
                 self._fold_pipeline_outcome(stage, unit, outcome, bound)
-                continue
+                return
             if isinstance(failure, (Cancelled, LimitExceeded)):
                 raise failure
             self._fold_pipeline_failure(stage, unit, bound, failure)
+
+        self.stable_all_settled(runnable, execute, on_settled=fold_settled)
 
     def _run_one_pipeline_unit(
         self,
