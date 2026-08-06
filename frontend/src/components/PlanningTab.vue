@@ -20,6 +20,7 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
 import CoverageBoard from './planning/CoverageBoard.vue'
 import RcmGrid from './planning/RcmGrid.vue'
+import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiTestStatus from './ui/UiTestStatus.vue'
 
@@ -346,12 +347,81 @@ const copyOptions = [
   { label: 'Copy Markdown', icon: 'pi pi-copy', command: () => void copyPaper('markdown') },
   { label: 'Copy HTML', icon: 'pi pi-code', command: () => void copyPaper('html') },
 ]
+
+// Everything the RCM bar used to spell out as its own button. Only generating
+// the missing tests is frequent enough to earn a place in the header; the rest
+// are occasional, so they live behind one menu instead of seven controls.
+const agentBusy = computed(() => isActive.value || !agent.state.status?.configured)
+const rcmActions = computed(() => [
+  {
+    label: 'Generate planning drafts',
+    icon: 'pi pi-sparkles',
+    disabled: agentBusy.value,
+    command: () => void generate(),
+  },
+  {
+    label: 'Generate all findings',
+    icon: 'pi pi-flag',
+    disabled: agentBusy.value || generatingFindings.value,
+    command: () => void generateAllFindings(),
+  },
+  { separator: true },
+  {
+    label: 'Run all Data Tests',
+    icon: 'pi pi-play',
+    disabled: !linkedDataTestCount.value || isActive.value || runningAllDataTests.value,
+    command: () => void runAllDataTests(),
+  },
+  {
+    label: 'Run all Document Tests',
+    icon: 'pi pi-play',
+    disabled: !linkedDocumentTestIds.value.length || isActive.value || runningAllDocumentTests.value,
+    command: () => void runAllDocumentTests(),
+  },
+  {
+    label: 'Refresh roll-up',
+    icon: 'pi pi-refresh',
+    command: () => void refreshRollup(),
+  },
+  { separator: true },
+  {
+    label: 'Export RCM',
+    icon: 'pi pi-download',
+    disabled: rcmExporting.value,
+    command: () => void exportRcm(),
+  },
+  {
+    label: 'Import RCM',
+    icon: 'pi pi-upload',
+    disabled: rcmImporting.value,
+    command: () => triggerRcmImport(),
+  },
+])
 </script>
 
 <template>
   <div v-if="data" class="planning-tab">
     <UiPageHeader :title="section === 'apm' ? 'APM' : 'RCM'">
-      <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate" />
+      <Button
+        v-if="section === 'apm'"
+        label="Generate planning drafts"
+        icon="pi pi-sparkles"
+        size="small"
+        :disabled="agentBusy"
+        @click="generate"
+      />
+      <template v-else>
+        <Button
+          v-if="rowsWithoutTests.length"
+          :label="`Generate planned tests (${rowsWithoutTests.length})`"
+          icon="pi pi-sparkles"
+          size="small"
+          :disabled="agentBusy"
+          :loading="generatingTests"
+          @click="generatePlannedTests()"
+        />
+        <UiOverflowMenu :items="rcmActions" tooltip="More RCM actions" />
+      </template>
     </UiPageHeader>
     <section v-if="section === 'apm'" class="apm-view">
       <div class="section-toolbar"><div><strong>Audit Planning Memorandum</strong><span class="muted">{{ data.planning.created_by === 'agent' ? 'Agent draft' : 'Auditor edited' }}</span></div><span/><Button :label="apmProvenanceOpen ? 'Hide provenance' : 'Provenance'" icon="pi pi-shield" size="small" :outlined="!apmProvenanceOpen" @click="apmProvenanceOpen = !apmProvenanceOpen"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="apmExporting" @click="exportApm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="apmImporting" @click="triggerApmImport"/><Button label="Template" icon="pi pi-file-edit" size="small" outlined @click="openTemplate"/><Button label="Save APM" icon="pi pi-save" size="small" :loading="saving" @click="savePlanning"/></div>
@@ -364,7 +434,6 @@ const copyOptions = [
       </div>
     </section>
     <section v-else>
-      <div class="rollup-bar"><span>Execution status is computed from linked durable Data and Document Test results.</span><Button v-if="rowsWithoutTests.length" :label="`Generate planned tests (${rowsWithoutTests.length})`" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" :loading="generatingTests" @click="generatePlannedTests()"/><Button label="Generate all findings" icon="pi pi-flag" size="small" outlined :disabled="isActive || !agent.state.status?.configured" :loading="generatingFindings" @click="generateAllFindings"/><Button label="Run all Data Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDataTestCount || isActive" :loading="runningAllDataTests" @click="runAllDataTests"/><Button label="Run all Document Tests" icon="pi pi-play" size="small" outlined :disabled="!linkedDocumentTestIds.length || isActive" :loading="runningAllDocumentTests" @click="runAllDocumentTests"/><Button label="Export" icon="pi pi-download" size="small" outlined :loading="rcmExporting" @click="exportRcm"/><Button label="Import" icon="pi pi-upload" size="small" outlined :loading="rcmImporting" @click="triggerRcmImport"/><Button label="Refresh roll-up" icon="pi pi-refresh" size="small" outlined @click="refreshRollup"/></div>
       <input ref="rcmImportInput" type="file" accept=".xlsx,.xls,.csv,.tsv" hidden @change="importRcm"/>
       <div class="view-toggle" role="group" aria-label="RCM view">
         <button :class="{ on: rcmView === 'board' }" :aria-pressed="rcmView === 'board'" @click="setRcmView('board')"><i class="pi pi-th-large"/>Board</button>
@@ -406,5 +475,5 @@ const copyOptions = [
 .view-toggle button.on { border-color:var(--aw-navy-900); background:var(--aw-navy-900); color:#fff }
 .view-toggle button i { font-size:.7rem }
 .view-hint { margin-left:.4rem; color:var(--aw-muted); font-size:var(--aw-text-xs) }
-.planning-tab { display:flex; flex-direction:column; gap:1rem; min-height:100% }.muted { color:var(--aw-muted); font-size:.78rem }.section-toolbar,.rollup-bar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span,.rollup-bar>span { flex:1 }.rollup-bar { padding:.6rem .8rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas); color:var(--aw-muted); font-size:.78rem }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:.8rem }.rcm-detail { display:flex; flex-direction:column; gap:1rem }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:.75rem }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:#fff; border-radius:999px; padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:6px }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:6px }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
+.planning-tab { display:flex; flex-direction:column; gap:1rem; min-height:100% }.muted { color:var(--aw-muted); font-size:.78rem }.section-toolbar,.detail-actions,.card-actions { display:flex; align-items:center; gap:.55rem }.section-toolbar>div { display:flex; flex-direction:column }.section-toolbar>span { flex:1 }.apm-editor { min-height:34rem }.apm-editor>:deep(.markdown-editor) { min-height:34rem }.template-editor { width:100%; font-family:var(--aw-font-mono); font-size:.8rem }.rcm-detail { display:flex; flex-direction:column; gap:1rem }.rcm-fields,.planned-fields,.outcome { display:grid; grid-template-columns:1fr 1fr; gap:.7rem }.wide { grid-column:1/-1 }label { display:flex; flex-direction:column; gap:.3rem; color:#46576d; font-size:.75rem; font-weight:600 }.planned-list { display:flex; flex-direction:column; gap:.8rem }.planned-card { padding:.85rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-md); background:#fff }.planned-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.7rem }.planned-head>div { display:flex; align-items:center; gap:.5rem }.planned-head>span { color:var(--aw-muted); font-size:.75rem }.execution-cards { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.75rem 0; padding:.65rem; border:1px solid var(--aw-border); border-radius:6px; background:var(--aw-canvas) }.execution-cards>strong { width:100% }.execution-cards button:not(.p-button) { border:1px solid var(--aw-border); background:#fff; border-radius:999px; padding:.3rem .55rem; color:var(--aw-teal); cursor:pointer }.execution-cards i { margin-right:.3rem }.card-actions { justify-content:flex-end; margin-top:.7rem }.observations { display:flex; flex-direction:column; gap:.75rem; padding:.8rem; border:1px solid var(--aw-border); border-radius:6px }.observations>div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.4rem .5rem; align-items:center; padding-bottom:.65rem; border-bottom:1px solid var(--aw-border) }.observations>div:last-child { border-bottom:0 }.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions { grid-column:2; color:var(--aw-muted) }.observation-actions { display:flex; flex-wrap:wrap; gap:.4rem }.empty { padding:1rem; color:var(--aw-muted); border:1px dashed var(--aw-border); border-radius:6px }.working-paper { max-width:52rem; margin:auto; line-height:1.6 }@media(max-width:800px){.rcm-fields,.planned-fields,.outcome{grid-template-columns:1fr}.wide{grid-column:auto}.detail-actions{flex-wrap:wrap}.observations>div{grid-template-columns:1fr}.observations small,.observations :deep(.p-select),.observations textarea,.observation-actions{grid-column:1}}
 </style>
