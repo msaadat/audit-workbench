@@ -156,6 +156,10 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
         # Phase 8 made data analysis a declared workflow goal; Phase 11 did the
         # same for both halves of the former ``document_testing`` template.
         ("data_analysis", "workflow", ["analysis.executed"]),
+        # Same terminal outcome as data_analysis, different request: with the
+        # definitions already in place the scheduler reuses them and executes
+        # without proposing more, which is what "run the saved analyses" means.
+        ("analysis_execution", "workflow", ["analysis.executed"]),
         ("table_relationships", "workflow", ["data.joins_ready"]),
         ("document_analysis", "workflow", ["documents.analysis_generated"]),
         ("document_test_preparation", "workflow", ["tests.specified"]),
@@ -175,6 +179,7 @@ def test_every_registered_goal_template_has_a_deterministic_local_route(
         "rcm_only",
         "finding_draft",
         "data_analysis",
+        "analysis_execution",
         "table_relationships",
         "document_analysis",
         "document_test_preparation",

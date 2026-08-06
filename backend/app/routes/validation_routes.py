@@ -18,7 +18,7 @@ from fastapi import APIRouter, Body
 from fastapi.responses import StreamingResponse
 
 from .. import validation, workspaces
-from .analysis_routes import _excel_response
+from .analysis_routes import excel_response
 
 router = APIRouter(prefix="/api", tags=["validation"])
 
@@ -91,7 +91,7 @@ async def export_failures(workspace_id: str, table_name: str, payload: dict = Bo
     rule = payload.get("rule") or {}
     failures = validation.rule_failures(ws.get_frame(table_name), rule, ws.get_frame)
     slug = workspaces.slugify(validation.rule_label(rule)).replace("-", "_")
-    return _excel_response(failures, f"{table_name}_{slug}_failures.xlsx")
+    return excel_response(failures, f"{table_name}_{slug}_failures.xlsx")
 
 
 def _sheet_name(index: int, base: str, used: set[str]) -> str:

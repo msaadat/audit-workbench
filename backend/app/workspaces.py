@@ -1225,6 +1225,24 @@ class Workspace:
     # than the dashboard. It comes from either the predefined library
     # (kind 'analytics') or AI-assisted code (kind 'python'). Pinning promotes
     # a copy to a dashboard tile; the two collections stay independent.
+    @staticmethod
+    def _outcome_policy(value: object) -> dict:
+        """Validate the audit meaning declared for a procedure's returned rows.
+
+        ``exception_rows`` says every returned row is a potential exception, so
+        an empty result is the clean outcome. ``informational`` says the rows are
+        context and carry no verdict of their own. The distinction decides what
+        an execution concludes, so an unrecognized mode is rejected rather than
+        silently read as informational.
+        """
+        mode = str((value or {}).get("mode") or "").strip()
+        if mode not in {"exception_rows", "informational"}:
+            raise WorkspaceError(
+                "Analysis outcome policy mode must be 'exception_rows' or "
+                "'informational'."
+            )
+        return {"mode": mode}
+
     def add_analysis(self, payload: dict) -> dict:
         kind = payload.get("kind")
         if kind not in ("analytics", "python"):
@@ -1254,7 +1272,7 @@ class Workspace:
                 "source": payload.get("source") or ("ai" if kind == "python" else "library"),
                 "created": date.today().isoformat(),
                 **(
-                    {"outcome_policy": dict(payload["outcome_policy"])}
+                    {"outcome_policy": self._outcome_policy(payload["outcome_policy"])}
                     if isinstance(payload.get("outcome_policy"), dict)
                     else {}
                 ),
@@ -1288,13 +1306,22 @@ class Workspace:
         if "spec" in changes and isinstance(changes["spec"], dict):
             if analysis["kind"] == "python" and not str(changes["spec"].get("code") or "").strip():
                 raise WorkspaceError("A Python analysis needs code.")
-            analysis["spec"] = dict(changes["spec"])
-            # A result belongs to an exact procedure definition.  Do not carry
-            # an old conclusion forward after changing its code or parameters.
-            analysis.pop("last_result", None)
+            spec = dict(changes["spec"])
+            if spec != (analysis.get("spec") or {}):
+                analysis["spec"] = spec
+                # A result belongs to an exact procedure definition. Do not
+                # carry an old conclusion forward after changing its code or
+                # parameters — but re-saving an unchanged definition (a title
+                # edit, a second press of Save) is not a change and must not
+                # discard a current result.
+                analysis.pop("last_result", None)
         if "outcome_policy" in changes and isinstance(changes["outcome_policy"], dict):
-            analysis["outcome_policy"] = dict(changes["outcome_policy"])
-            analysis.pop("last_result", None)
+            policy = self._outcome_policy(changes["outcome_policy"])
+            if policy != (analysis.get("outcome_policy") or {}):
+                # The policy is part of what the result means, so a changed
+                # policy invalidates the conclusion drawn under the old one.
+                analysis["outcome_policy"] = policy
+                analysis.pop("last_result", None)
         self.save()
         return analysis
 

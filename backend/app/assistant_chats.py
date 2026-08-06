@@ -679,6 +679,19 @@ def _launch_command(
             target_refs = [f"observation:{observation_id}"]
         elif rcm_id:
             target_refs = [f"rcm:{rcm_id}"]
+    elif goal_template in {"data_analysis", "table_relationships", "analysis_execution"}:
+        # The analysis capabilities resolve their scope from target refs, so the
+        # tables and procedures a caller names travel as refs rather than as a
+        # second scope channel the scheduler would have to reconcile.
+        target_refs = [
+            f"table:{name}"
+            for name in (planning_context.get("tables") or [])
+            if str(name or "").strip()
+        ] + [
+            f"analysis:{identifier}"
+            for name in (planning_context.get("analysis_ids") or [])
+            if (identifier := str(name or "").strip())
+        ]
     command = {
         "source": "goal_template" if goal_template else ("tab_button" if user.get("source") != "composer" else "chat"),
         "text": request, "goal_template": goal_template,

@@ -55,8 +55,15 @@ FULL_ANALYSIS_OUTCOMES = ["analysis.executed"]
 # previously an isolated ActionRunner intent; Phase 8 makes it a declared
 # workflow goal. Isolated "run this saved analysis" and "pin this result"
 # operations stay with ``ActionRunner`` and are intentionally absent here.
+#
+# ``analysis_execution`` requests the same terminal outcome as ``data_analysis``
+# but is not a synonym for it: the scheduler reuses every earlier capability
+# that is already satisfied, so with definitions in place the run executes them
+# and spends no model turn at all. It is the declared way to say "bring the
+# saved analyses up to date" without inviting new ones to be proposed.
 TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     "data_analysis": FULL_ANALYSIS_OUTCOMES,
+    "analysis_execution": ["analysis.executed"],
     "table_relationships": ["data.joins_ready"],
 }
 

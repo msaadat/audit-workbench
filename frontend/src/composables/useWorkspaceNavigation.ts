@@ -50,7 +50,9 @@ const DESTINATIONS: Record<WorkspaceDestination, DestinationSpec> = {
   documents: { surface: 'bench', section: 'documents', keys: ['doc', 'page'] },
   data: { surface: 'bench', section: 'tables', keys: [] },
   query: { surface: 'bench', section: 'query', keys: [] },
-  analysis: { surface: 'bench', section: 'analysis', keys: ['view', 'analysis'] },
+  // `view` is retained so links to the retired summary screen still resolve;
+  // the tab maps `view=summary` onto the "needs review" filter.
+  analysis: { surface: 'bench', section: 'analysis', keys: ['filter', 'analysis', 'view'] },
 }
 
 /** Sections in rail order, per surface. */

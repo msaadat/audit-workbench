@@ -43,6 +43,8 @@ backend/app/
 |- analytics.py                - canned analytics registry and result metadata
 |- validation.py               - durable table validation rules and run support
 |- dashboard.py                - dashboard tiles and saved analysis payloads
+|- analysis_results.py         - the saved-analysis execution contract: run it,
+|                                bound it, record it, classify it
 |- assistant.py                - read-only NL assistant tool loop
 |- assistant_chats.py          - durable workspace-scoped chats, artifacts,
 |                                ask/act routing, chat-run projections
@@ -80,7 +82,7 @@ backend/app/
 |- routes/
 |  |- workspace_routes.py      - workspace/table/join CRUD
 |  |- analysis_routes.py       - table preview/profile/query/analytics/export
-|  |- analyses_routes.py       - saved analyses CRUD
+|  |- analyses_routes.py       - saved analyses CRUD, execution, and export
 |  |- dashboard_routes.py      - dashboard tiles and engagement status
 |  |- validation_routes.py     - validation rules and runs
 |  |- assistant_routes.py      - legacy ask/run-python assistant endpoints
@@ -178,7 +180,7 @@ frontend/src/
    |- DashboardTab.vue         - dashboard and engagement home
    |- DataTab.vue              - data upload/list/remove
    |- QueryTab.vue             - interactive query builder and pin flow
-   |- AnalysisTab.vue          - saved analyses rail and editors
+   |- AnalysisTab.vue          - analysis triage rail, filters, and editors
    |- PlanningTab.vue          - planning context, APM, RCM, linked tests
    |- DocumentsTab.vue         - document inventory and review
    |- DocTestsTab.vue          - document test worklists and execution
@@ -194,7 +196,9 @@ frontend/src/
    |- ChartView.vue / FrameTable.vue / PinDialog.vue / JoinDialog.vue
    |- planning/RcmGrid.vue     - RCM grid
    |- validation/*             - validation authoring and run results
-   |- analysis/*               - saved analysis editors
+   |- analysis/*               - analysis list, recorded-outcome banner,
+   |                             classification vocabulary, and the three
+   |                             editors (library, saved python, new python)
    |- agent/*                  - persistent right-side assistant drawer:
    |                             chats, transcript, composer, approvals,
    |                             interactions, artifacts, run cards/history
@@ -562,6 +566,15 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   the SPA form renders from metadata.
 - Saved analyses and dashboard tiles are spec-not-data. They recompute against
   current workspace frames.
+- A saved analysis has exactly one recorded outcome, its bounded `last_result`,
+  and `app/analysis_results.py` owns that contract end to end — computing,
+  bounding, recording, and classifying it. Both origins go through it: the
+  auditor's Run (`POST /analyses/{id}/execute`) and the workflow's
+  `analysis.executed` capability. A live recomputation is a *preview* and never
+  the procedure's status.
+- Listing analyses executes nothing. `GET /analyses` returns definitions and
+  recorded outcomes; recomputation happens only where it was asked for — one
+  procedure (`GET /analyses/{id}`), an execution, or an export.
 - The assistant and agent do not use arbitrary tool loops inside `agent/`.
   Worker calls are single-turn, bounded, and budgeted through `BaseRunner`.
 - Existing uncommitted workspace or code changes may be user-owned. Do not
@@ -621,6 +634,18 @@ npm run build
   `analysis.executed` through the `data_analysis` goal template. There is no
   frontend caller left for that path (`useAgentRun.startRun` is deleted); the
   endpoint remains an active API surface.
+- `analysis_execution` is a second goal template requesting the same terminal
+  outcome (`analysis.executed`) as `data_analysis`, for "run the saved
+  analyses" / "/run analyses" — the scheduler reuses whatever definitions
+  already exist and spends no model turn when there is nothing left to
+  propose. `data_analysis` and `table_relationships` also accept a `tables`
+  run-context key (`analysis_execution` additionally accepts `analysis_ids`),
+  so the Analysis tab can scope a run to what is on screen instead of falling
+  into the bounded `MAX_SCOPE_TABLES` fallback and its scope-ambiguity
+  checkpoint. Manual analysis execution (`POST /analyses/{id}/execute`,
+  auditor-initiated) and workflow execution write through the same contract in
+  `app/analysis_results.py`; a manual result's `run_id` is prefixed
+  `manual_...` and opens nothing in the run drawer, unlike an agent run's id.
 - Document analysis is a declared workflow, not a leaf runner. The Documents tab
   still calls `/documents/analysis-runs`, but that endpoint now starts a
   `documents_workflow_v1` command run.

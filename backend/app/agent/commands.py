@@ -106,6 +106,15 @@ COMMANDS: dict[str, Command] = {
             phrases=("analyze the data", "analyse the data", "explore the data"),
         ),
         Command(
+            "run_analyses", "analysis_execution", "Run saved analyses",
+            slash=("run analyses", "analysis execution"),
+            description="Execute the saved analysis procedures and record their results.",
+            phrases=(
+                "run the saved analyses", "run the analyses", "run all analyses",
+                "execute the saved analyses", "refresh the analysis results",
+            ),
+        ),
+        Command(
             "relate_tables", "table_relationships", "Relate tables",
             slash=("relate tables", "table relationships"),
             description="Infer table relationships and materialize supported joins.",

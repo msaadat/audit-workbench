@@ -14,7 +14,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from . import analytics, data_tests, debug_store, explore, llm, rcm_execution, report, sandbox, validation
+from . import analysis_results, analytics, data_tests, debug_store, explore, llm, rcm_execution, report, sandbox, validation
 from .agent import capabilities as audit_capabilities
 from .agent.prompts import parse_json_object, validate_json_shape
 from .workspaces import Workspace, WorkspaceConflict, sync_workspace
@@ -672,21 +672,79 @@ Prefer specific, non-duplicative advice that adds judgment beyond the determinis
     return {**advice, "stale": stale}
 
 
-def analysis_payload(workspace: Workspace, analysis: dict) -> dict:
-    payload = compute_payload(workspace, analysis)
-    # Workflow execution retains a deliberately bounded result record on the
-    # saved analysis.  Keep it distinct from the live, rerunnable payload
-    # above: a live recomputation can fail after a successful execution (or
-    # vice versa), and the UI needs to present the outcome the run recorded.
+def analysis_export_frame(workspace: Workspace, analysis: dict):
+    """Recompute one saved analysis into the full frame an export writes.
+
+    The same spec, through the same services, without the display row caps —
+    an export is the way the auditor takes the whole result off the screen, so
+    it must not be the previewed slice of it.
+    """
+    import polars as pl
+
+    kind = str(analysis.get("kind") or "")
+    if kind == "python":
+        result, _ = sandbox.run(
+            (analysis.get("spec") or {}).get("code") or "", _python_frames(workspace)
+        )
+        return result
+    frame = workspace.get_frame(analysis["table"])
+    spec = analysis.get("spec") or {}
+    outcome = analytics.run_test(frame, spec.get("test"), spec.get("params"))
+    exported = outcome.export_frame()
+    if exported is not None:
+        return exported
+    # A test with no frame still has its statistics, which is what it concluded.
+    return pl.DataFrame(
+        {"stat": [item["label"] for item in outcome.stats],
+         "value": [item["value"] for item in outcome.stats]}
+    )
+
+
+def analysis_listing(workspace: Workspace, analysis: dict) -> dict:
+    """Describe one saved analysis without executing it.
+
+    A rail entry needs identity, definition, and the outcome the last execution
+    recorded — never result rows. Recomputing a spec is what the detail endpoint
+    is for, so listing an engagement's procedures costs no Polars work at all.
+    """
+    listing = {
+        key: analysis.get(key)
+        for key in (
+            "id", "title", "kind", "table", "note", "viz", "created", "source", "spec",
+        )
+    }
+    listing["outcome_policy"] = dict(analysis.get("outcome_policy") or {})
+    listing["created_by"] = analysis.get("created_by")
+    last_result = analysis.get("last_result")
+    if isinstance(last_result, dict):
+        listing["last_result"] = dict(last_result)
+    return {**listing, **analysis_results.analysis_state(workspace, analysis)}
+
+
+def analysis_payload(
+    workspace: Workspace, analysis: dict, *, computed: dict | None = None
+) -> dict:
+    """One saved analysis, computed, with the outcome it durably recorded.
+
+    ``computed`` lets a caller that has just executed the spec pass the result
+    it already has, so recording an outcome does not cost a second computation
+    of the same frame.
+    """
+    payload = dict(computed) if computed is not None else compute_payload(workspace, analysis)
+    # The recomputation above is a live preview of what the spec returns *now*.
+    # The bounded result record is what an execution durably concluded, and the
+    # two can legitimately disagree — a live recomputation can fail after a
+    # successful execution, or succeed after a failed one. Both travel, clearly
+    # separated, and the recorded outcome is the one the UI presents as the
+    # procedure's status.
     last_result = analysis.get("last_result")
     if isinstance(last_result, dict):
         payload["last_result"] = dict(last_result)
-    return payload
+    payload["outcome_policy"] = dict(analysis.get("outcome_policy") or {})
+    return {**payload, **analysis_results.analysis_state(workspace, analysis)}
 
 
 def analyses_payload(workspace: Workspace) -> dict:
-    # Keep the collection endpoint consistent with the single-analysis
-    # endpoint. The Analysis tab loads this collection, so omitting
-    # ``last_result`` here made an executed workflow appear unrun after a
-    # refresh even though its bounded result was safely persisted.
-    return {"analyses": [analysis_payload(workspace, a) for a in workspace.analyses]}
+    """List every saved analysis. Definitions and outcomes only — no compute."""
+
+    return {"analyses": [analysis_listing(workspace, a) for a in workspace.analyses]}

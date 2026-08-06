@@ -5,7 +5,7 @@ import urllib.error
 import polars as pl
 import pytest
 
-from app import assistant, assistant_settings, documents, llm, tooling, workspaces
+from app import analysis_results, assistant, assistant_settings, documents, llm, tooling, workspaces
 from app.agent import store
 from app.dashboard import tile_payload
 from app.routes import assistant_routes
@@ -326,6 +326,36 @@ def test_audit_artifact_tool_is_bounded_and_non_mutating(workspace_with_data):
     assert content["context"]["objective"] == "Review procurement"
     assert content["apm"]["excerpt"].startswith("# APM")
     assert workspace_with_data.revision == before_revision
+
+
+def test_analysis_area_reports_recorded_outcomes_without_re_running(workspace_with_data):
+    """"What did the analyses find?" is answered by reading, not by computing."""
+    ws = workspace_with_data
+    analysis = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Duplicate invoices",
+            "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+        }
+    )
+    analysis_results.execute_and_record(ws, analysis["id"])
+    before_revision = workspaces.load_workspace(ws.id).revision
+
+    content, artifact = assistant._Session(
+        workspaces.load_workspace(ws.id)
+    ).inspect_audit_artifacts({"area": "analysis"})
+
+    assert artifact is None
+    assert content["total"] == 1
+    reported = content["analyses"][0]
+    assert reported["title"] == "Duplicate invoices"
+    assert reported["state"] == "current"
+    assert reported["classification"] in assistant.analysis_results.SUMMARY_CLASSES
+    # Bounded: statistics and a verdict, never rows or code.
+    assert "rows" not in reported and "code" not in reported and "spec" not in reported
+    assert workspaces.load_workspace(ws.id).revision == before_revision
+    assert sum(content["counts"].values()) == 1
 
 
 def test_query_tool_shows_bounded_rows_for_aggregated_and_raw_results(workspace_with_data):

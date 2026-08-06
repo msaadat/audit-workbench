@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import workspaces
+from app import analysis_results, workspaces
 from app.analysis_results import analyses_summary_payload, analysis_input_sha1
 from app.agent.executors.analysis import run_analysis
 from app.dashboard import analyses_payload, analysis_payload
@@ -148,7 +148,8 @@ def test_analysis_summary_projects_only_bounded_outcomes(workspace_with_data):
     payload = analyses_summary_payload(ws)
 
     assert payload["counts"] == {
-        "needs_review": 1,
+        "exception": 1,
+        "unusual": 0,
         "errors": 0,
         "clear": 1,
         "informational": 0,
@@ -202,10 +203,49 @@ def test_broken_analysis_degrades_to_error(workspace_with_data):
     ws = workspace_with_data
     lib = _library_analysis(ws)
     ws.remove_table("transactions")
-    payload = analyses_payload(ws)
-    broken = next(a for a in payload["analyses"] if a["id"] == lib["id"])
+    broken = analysis_payload(ws, lib)
     assert broken["error"] is not None
     assert "transactions" in broken["error"]
+
+
+def test_listing_describes_analyses_without_executing_them(workspace_with_data):
+    """The rail costs no compute: definitions and recorded outcomes only."""
+    ws = workspace_with_data
+    lib = _library_analysis(ws)
+    py = _python_analysis(ws)
+    ws.remove_table("transactions")
+
+    listed = analyses_payload(ws)["analyses"]
+
+    # A spec that can no longer run does not raise, and does not report a live
+    # error either — nothing was executed to discover one.
+    assert [item["id"] for item in listed] == [lib["id"], py["id"]]
+    for item in listed:
+        assert "frame" not in item
+        assert "code" not in item
+        assert "verdict" not in item
+        assert item["state"] == "not_run"
+        assert item["classification"] == "not_run"
+    # The definition still travels, so the editor can open without a second call.
+    assert listed[0]["spec"]["test"] == "duplicates"
+
+
+def test_listing_reports_the_recorded_outcome(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis_results.record_analysis_result(
+        ws,
+        analysis["id"],
+        analysis_results.execute_analysis(
+            ws, analysis, run_id=analysis_results.manual_run_id()
+        ),
+    )
+
+    listed = analyses_payload(workspaces.load_workspace(ws.id))["analyses"][0]
+
+    assert listed["state"] == "current"
+    assert listed["classification"] in {"clear", "unusual", "exception", "informational"}
+    assert listed["last_result"]["status"] == "ok"
 
 
 def test_analyses_api_roundtrip(workspace_with_data):
@@ -240,6 +280,161 @@ def test_analyses_api_roundtrip(workspace_with_data):
         f"/api/workspaces/{ws.id}/analyses/{analysis_id}"
     ).json() == {"ok": True}
     assert client.get(f"/api/workspaces/{ws.id}/analyses").json()["analyses"] == []
+
+
+def test_execute_endpoint_records_the_same_contract_as_a_workflow_run(
+    workspace_with_data,
+):
+    """An auditor's Run is as durable, and as current, as the agent's."""
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    client = TestClient(create_app())
+
+    response = client.post(
+        f"/api/workspaces/{ws.id}/analyses/{analysis['id']}/execute"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # The response carries the rows for display *and* the record that persisted.
+    assert body["frame"] is not None
+    assert body["state"] == "current"
+    assert body["last_result"]["status"] == "ok"
+    assert body["last_result"]["run_id"].startswith(analysis_results.MANUAL_RUN_PREFIX)
+
+    fresh = workspaces.load_workspace(ws.id)
+    stored = fresh.analyses[0]["last_result"]
+    assert stored["result_sha1"] == body["last_result"]["result_sha1"]
+    assert stored["input_sha1"] == analysis_input_sha1(fresh, fresh.analyses[0])
+    # No result rows crossed into durable state.
+    assert set(stored) == set(
+        run_analysis(fresh, fresh.analyses[0], run_id="run-1")
+    )
+    assert analyses_summary_payload(fresh)["counts"]["not_run"] == 0
+
+
+def test_manual_execution_does_not_take_ownership_of_an_agent_analysis(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    analysis = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Agent duplicates",
+            "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+            "agent_run_id": "run-agent",
+        }
+    )
+    assert analysis["created_by"] == "agent"
+
+    analysis_results.execute_and_record(ws, analysis["id"])
+
+    fresh = workspaces.load_workspace(ws.id)
+    assert fresh.analyses[0]["created_by"] == "agent"
+
+
+def test_execute_all_brings_stale_and_unrun_procedures_current(workspace_with_data):
+    ws = workspace_with_data
+    first = _library_analysis(ws)
+    second = _python_analysis(ws)
+    client = TestClient(create_app())
+
+    response = client.post(f"/api/workspaces/{ws.id}/analyses/execute", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["analysis_id"] for item in body["executed"]} == {
+        first["id"], second["id"],
+    }
+    assert all(item["ok"] for item in body["executed"])
+    assert body["summary"]["counts"]["not_run"] == 0
+
+    # Nothing is stale now, so a second sweep has nothing to do.
+    again = client.post(f"/api/workspaces/{ws.id}/analyses/execute", json={})
+    assert again.json()["executed"] == []
+
+
+def test_execute_all_reports_one_broken_spec_without_blocking_the_others(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    good = _library_analysis(ws)
+    broken = ws.add_analysis(
+        {"kind": "python", "title": "Broken", "spec": {"code": "result = nope"}}
+    )
+    client = TestClient(create_app())
+
+    body = client.post(f"/api/workspaces/{ws.id}/analyses/execute", json={}).json()
+
+    outcomes = {item["analysis_id"]: item for item in body["executed"]}
+    assert outcomes[good["id"]]["ok"] is True
+    # A spec that raises is a recorded execution error, not a failed request:
+    # the auditor needs to see it on the procedure.
+    assert outcomes[broken["id"]]["ok"] is True
+    assert outcomes[broken["id"]]["result"]["status"] == "error"
+    assert body["summary"]["counts"]["errors"] == 1
+
+
+def test_detail_endpoint_computes_one_analysis(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _python_analysis(ws)
+    client = TestClient(create_app())
+
+    body = client.get(f"/api/workspaces/{ws.id}/analyses/{analysis['id']}").json()
+
+    assert body["code"] == "result = df.select(pl.len())"
+    assert body["total_rows"] == 1
+    assert body["state"] == "not_run"
+    # Opening a procedure shows what it returns; it does not record a result.
+    assert "last_result" not in body
+    assert workspaces.load_workspace(ws.id).analyses[0].get("last_result") is None
+
+
+def test_outcome_policy_is_validated_and_invalidates_its_result(workspace_with_data):
+    ws = workspace_with_data
+    analysis = ws.add_analysis(
+        {
+            "kind": "python",
+            "title": "Weekend postings",
+            "spec": {"code": "result = df.head(2)"},
+            "outcome_policy": {"mode": "exception_rows"},
+        }
+    )
+    analysis_results.execute_and_record(ws, analysis["id"])
+    assert ws.analyses[0]["last_result"]["verdict"] == "warn"
+
+    with pytest.raises(WorkspaceError, match="outcome policy"):
+        ws.add_analysis(
+            {
+                "kind": "python",
+                "title": "x",
+                "spec": {"code": "result = df"},
+                "outcome_policy": {"mode": "whatever"},
+            }
+        )
+
+    # Re-declaring the same policy is not a change and keeps the conclusion.
+    ws.update_analysis(analysis["id"], {"outcome_policy": {"mode": "exception_rows"}})
+    assert ws.analyses[0].get("last_result") is not None
+    # Changing it changes what the rows mean, so the old conclusion is dropped.
+    ws.update_analysis(analysis["id"], {"outcome_policy": {"mode": "informational"}})
+    assert ws.analyses[0].get("last_result") is None
+
+
+def test_resaving_an_unchanged_definition_keeps_its_result(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis_results.execute_and_record(ws, analysis["id"])
+    spec = dict(ws.analyses[0]["spec"])
+
+    ws.update_analysis(analysis["id"], {"title": "Renamed", "spec": spec})
+    assert ws.analyses[0].get("last_result") is not None
+
+    ws.update_analysis(
+        analysis["id"], {"spec": {"test": "duplicates", "params": {"columns": ["vendor"]}}}
+    )
+    assert ws.analyses[0].get("last_result") is None
 
 
 def test_pin_analysis_from_summary_creates_dashboard_tile(workspace_with_data):

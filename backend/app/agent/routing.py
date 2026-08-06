@@ -122,6 +122,13 @@ GOAL_TEMPLATES: dict[str, dict] = {
     "data_analysis": {
         "objective": "Analyze available structured data and preserve useful validated work.",
     },
+    "analysis_execution": {
+        "objective": "Execute the saved analysis procedures and record their results.",
+        "constraints": [
+            "Do not propose new analysis definitions.",
+            "Preserve auditor edits.",
+        ],
+    },
     "table_relationships": {
         "objective": "Infer table relationships and materialize supported joins.",
     },
@@ -140,6 +147,12 @@ TEMPLATE_RUN_CONTEXT_KEYS: dict[str, frozenset[str]] = {
     "document_analysis": frozenset({"document_ids", "action"}),
     "document_test_preparation": frozenset(),
     "document_test_execution": frozenset({"test_id", "test_ids"}),
+    # The Analysis tab knows which frames the auditor is looking at. Passing
+    # them as scope is what keeps an unscoped run from sweeping the workspace
+    # and then asking the auditor to settle a scope it could have been told.
+    "data_analysis": frozenset({"tables"}),
+    "table_relationships": frozenset({"tables"}),
+    "analysis_execution": frozenset({"analysis_ids", "tables"}),
 }
 
 
@@ -265,6 +278,29 @@ GENERATION_RULES: tuple[tuple[tuple[str, ...], str, list[str]], ...] = (
         documents_workflow.WORKFLOW_ID,
         list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
     ),
+    # Bringing the saved analyses up to date is workflow-owned and scope-wide.
+    # Like the document-test rule below it, this is execution rather than
+    # generation, and it is declared here so it outranks the target-specific
+    # "run the saved"/"rerun" markers. Every phrase is plural on purpose:
+    # "rerun this saved analysis" names one artifact and stays an isolated
+    # operation for the action catalog.
+    (
+        (
+            "run the saved analyses",
+            "run the analyses",
+            "run all the analyses",
+            "run all analyses",
+            "execute the analyses",
+            "execute the saved analyses",
+            "run the analysis procedures",
+            "execute the analysis procedures",
+            "refresh the analysis results",
+            "update the analysis results",
+            "bring the analyses up to date",
+        ),
+        analysis_workflow.WORKFLOW_ID,
+        ["analysis.executed"],
+    ),
     # Executing a named Document Test is workflow-owned: the worklist fans out
     # into declared units, and a Q&A item reaches the provider only through the
     # registered ``fieldwork.document_qa`` worker. The action catalog no longer
@@ -387,8 +423,12 @@ ISOLATED_OPERATION_MARKERS = (
     "validate ",
     "validation",
     "check report quality",
-    "analyze ",
-    "analyse ",
+    # The *noun* stays: "create a custom analysis", "pin this analysis" are
+    # artifact operations. The verb deliberately does not. "Analyze the vendor
+    # master" names one frame rather than the plural scope the rules above
+    # match, and forcing it onto the action catalog was answering a declared
+    # analysis request with an isolated mutation. Unmatched, it reaches the
+    # bounded router, which can resolve the frame it names into target refs.
     "analysis",
     "upload ",
     "attach ",

@@ -21,12 +21,10 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
-from ... import analysis_results, dashboard, sandbox
+from ... import analysis_results, sandbox
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import joins as join_diagnostics
@@ -47,17 +45,12 @@ AUDITOR_ANALYSIS_PRESERVED = "auditor_owned_analysis_preserved"
 AMBIGUOUS_RELATIONSHIP = "ambiguous_relationship_requires_confirmation"
 NO_SAFE_RELATIONSHIP = "no_safe_join_evidence"
 
-# Stats are the only result payload that crosses into durable state, and only
-# as the bounded label/value pairs the analytics service already computed.
-MAX_RESULT_STATS = 8
+# Re-exported from the result contract, which owns the bound.
+MAX_RESULT_STATS = analysis_results.MAX_RESULT_STATS
 
 
 def _sha256_text(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
-
-
-def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _plain_json(value: object) -> object:
@@ -66,13 +59,6 @@ def _plain_json(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_plain_json(item) for item in value]
     return value
-
-
-def _canonical_sha1(value: object) -> str:
-    encoded = json.dumps(
-        _plain_json(value), sort_keys=True, separators=(",", ":"), default=str
-    )
-    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
 
 
 # --------------------------------------------------------------------------- #
@@ -649,81 +635,12 @@ class AnalysisExecutionExecutorTarget:
             setattr(self, field_name, value)
 
 
-def bounded_result(
-    payload: Mapping[str, object],
-    *,
-    run_id: str,
-    workspace: Workspace,
-    analysis: Mapping[str, object],
-) -> dict:
-    """Project a computed analysis payload onto the durable result contract.
-
-    Only shape, verdict, and the analytics service's own bounded label/value
-    statistics are retained. The computed frame, its rows, and any stdout stay
-    local: a saved analysis is a rerunnable spec, and re-running it is how the
-    data is seen.
-    """
-    frame = payload.get("frame") if isinstance(payload.get("frame"), Mapping) else {}
-    stats = [
-        {"label": str(item.get("label") or ""), "value": str(item.get("value") or "")}
-        for item in (payload.get("stats") or [])
-        if isinstance(item, Mapping)
-    ]
-    error = payload.get("error")
-    verdict = str(payload.get("verdict") or "") or None
-    verdict_text = str(payload.get("verdict_text") or "") or None
-    row_count = int(payload.get("total_rows") or 0)
-    if not error and analysis.get("kind") == "python":
-        policy = str((analysis.get("outcome_policy") or {}).get("mode") or "informational")
-        if policy == "exception_rows":
-            verdict = "warn" if row_count else "ok"
-            verdict_text = (
-                f"{row_count:,} potential exception row(s) returned."
-                if row_count
-                else "No potential exception rows returned."
-            )
-        else:
-            verdict = "info"
-            verdict_text = f"{row_count:,} result row(s) returned."
-    record = {
-        "run_id": run_id,
-        "executed_at": _utcnow(),
-        "status": "error" if error else "ok",
-        "error": str(error) if error else None,
-        "verdict": verdict,
-        "verdict_text": verdict_text,
-        "row_count": row_count,
-        "column_count": len(list((frame or {}).get("columns") or [])),
-        "stat_count": len(stats),
-        "stats": stats[:MAX_RESULT_STATS],
-        "input_sha1": analysis_results.analysis_input_sha1(workspace, analysis),
-    }
-    record["result_sha1"] = _canonical_sha1(
-        {
-            key: record[key]
-            for key in (
-                "status",
-                "verdict",
-                "row_count",
-                "column_count",
-                "stats",
-                "input_sha1",
-            )
-        }
-    )
-    return record
-
-
-def run_analysis(workspace: Workspace, analysis: Mapping[str, object], *, run_id: str) -> dict:
-    """Compute one saved analysis locally and return its bounded result.
-
-    Execution goes through ``dashboard.compute_payload``, the same spec-not-data
-    recomputation the Analysis tab and dashboard tiles use, so analytics run
-    through the analytics registry and Polars code through the guarded local
-    sandbox. Nothing leaves the machine.
-    """
-    payload = dashboard.compute_payload(workspace, dict(analysis))
-    return bounded_result(payload, run_id=run_id, workspace=workspace, analysis=analysis)
+# The bounded result contract is owned by ``app.analysis_results`` so the two
+# origins of a result — this executor and the auditor's Run button — produce the
+# same record by construction. Re-exported here because the executor, its
+# reconciler, and the analysis bindings all address it under these names.
+bounded_result = analysis_results.bounded_result
+run_analysis = analysis_results.execute_analysis
 
 
 def _validated_execution(

@@ -1274,6 +1274,11 @@ export interface DashboardPayload {
 // A saved analysis: the computed payload the Analysis rail + detail render.
 // Same spec-recompute shape as DashboardTile, restricted to the two kinds the
 // Analysis tab creates, plus a `source` for the rail icon.
+/**
+ * A saved analysis as the rail lists it: definition and recorded outcome, never
+ * result data. `GET /analyses` executes nothing, so the compute-only fields
+ * below arrive solely from the detail endpoint (`AnalysisDetail`).
+ */
 export interface SavedAnalysis {
   id: string
   title: string
@@ -1283,6 +1288,29 @@ export interface SavedAnalysis {
   viz: VizSpec
   source: 'library' | 'ai' | 'code'
   created: string
+  created_by?: 'user' | 'agent' | string | null
+  spec?: Record<string, unknown>
+  outcome_policy?: AnalysisOutcomePolicy
+  /** Freshness of `last_result` against the current definition and inputs. */
+  state: AnalysisResultState
+  /** The triage meaning of the recorded outcome. Never derived from a preview. */
+  classification: AnalysisSummaryClassification
+  last_result?: AnalysisLastResult
+}
+
+/** What returned rows mean. Absent is read as `informational`. */
+export interface AnalysisOutcomePolicy {
+  mode?: 'exception_rows' | 'informational'
+}
+
+export type AnalysisResultState = 'current' | 'stale' | 'not_run'
+
+/**
+ * One recomputed analysis. The frame and stats here are a *preview* of what the
+ * spec returns now; `last_result` is what an execution durably concluded. They
+ * can legitimately disagree, and the recorded one is the procedure's status.
+ */
+export interface AnalysisDetail extends SavedAnalysis {
   error: string | null
   frame?: FramePayload | null
   total_rows?: number
@@ -1291,12 +1319,11 @@ export interface SavedAnalysis {
   stats?: StatChip[]
   code?: string
   stdout?: string | null
-  spec?: Record<string, unknown>
-  last_result?: AnalysisLastResult
 }
 
-/** Bounded outcome persisted by an exploratory-analysis workflow run. */
+/** Bounded outcome persisted by an analysis execution, agent-run or manual. */
 export interface AnalysisLastResult {
+  /** `manual_…` for an execution the auditor started; otherwise the run id. */
   run_id: string
   executed_at: string
   status: 'ok' | 'error'
@@ -1308,6 +1335,12 @@ export interface AnalysisLastResult {
   stat_count: number
   stats: StatChip[]
   input_sha1?: string
+  result_sha1?: string
+}
+
+/** True when a result was recorded by the auditor rather than by an agent run. */
+export function isManualResult(result: AnalysisLastResult | undefined | null): boolean {
+  return Boolean(result?.run_id?.startsWith('manual_'))
 }
 
 export type AnalysisSummaryClassification =
@@ -1326,8 +1359,9 @@ export interface AnalysisSummaryItem {
   kind: 'analytics' | 'python'
   source: 'library' | 'ai' | 'code'
   classification: AnalysisSummaryClassification
-  state: 'current' | 'stale' | 'not_run'
+  state: AnalysisResultState
   run_id: string | null
+  manual: boolean
   executed_at: string | null
   status: 'ok' | 'error' | null
   verdict: 'ok' | 'warn' | 'fail' | 'info' | null
@@ -1340,7 +1374,8 @@ export interface AnalysisSummaryItem {
 
 export interface AnalysisSummaryPayload {
   counts: {
-    needs_review: number
+    exception: number
+    unusual: number
     errors: number
     clear: number
     informational: number

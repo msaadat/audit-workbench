@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app import assistant_chats, llm
-from app.agent import store
+from app.agent import routing, store
 
 
 def configured(monkeypatch):
@@ -304,6 +304,61 @@ def test_slash_command_never_reaches_the_model(workspace_with_data, monkeypatch)
     assert result["outcome"]["kind"] == "run_started"
     assert launched["goal_template"] == "apm_only"
     assert result["chat"]["messages"][0]["resolved_intent"] == "act"
+
+
+def test_run_analyses_command_requests_execution_only(workspace_with_data, monkeypatch):
+    """"Run the saved analyses" executes; it does not invite new definitions."""
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    monkeypatch.setattr(
+        assistant_chats.assistant, "ask",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no model turn")),
+    )
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "/run analyses", "intent": "auto", "mode": "auto",
+        "request_id": "request-slash-run-analyses", "source": "composer",
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    assert launched["goal_template"] == "analysis_execution"
+    assert routing.template_outcomes("analysis_execution") == ["analysis.executed"]
+
+
+def test_analysis_tab_can_scope_a_run_to_the_tables_on_screen(workspace_with_data, monkeypatch):
+    ws = workspace_with_data
+    configured(monkeypatch)
+    launched = {}
+
+    def fake_start(workspace, mode, command, parent_run_id=None, **kwargs):
+        launched.update(command)
+        run = store.new_command_run(workspace, mode, command, parent_run_id=parent_run_id)
+        run["status"] = "completed"
+        store.save_run(workspace, run)
+        return run
+
+    monkeypatch.setattr(assistant_chats.runner, "start_command_run", fake_start)
+    chat = assistant_chats.create_chat(ws)
+    result = assistant_chats.send_message(ws, chat["id"], {
+        "content": "Analyse the data in this workspace.", "intent": "act", "mode": "auto",
+        "request_id": "request-scoped-analysis", "source": "tab_button",
+        "goal_template": "data_analysis",
+        "run_context": {"tables": ["transactions"]},
+    })
+
+    assert result["outcome"]["kind"] == "run_started"
+    # Scope travels as target refs, which is what the analysis capabilities read.
+    assert launched["target_refs"] == ["table:transactions"]
 
 
 def test_generate_rcm_slash_command_starts_rcm_run(workspace_with_data, monkeypatch):

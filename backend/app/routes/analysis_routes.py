@@ -23,7 +23,7 @@ def _frame(workspace_id: str, table_name: str) -> pl.DataFrame:
     return workspaces.load_workspace(workspace_id).get_frame(table_name)
 
 
-def _excel_response(df: pl.DataFrame, filename: str) -> StreamingResponse:
+def excel_response(df: pl.DataFrame, filename: str) -> StreamingResponse:
     buffer = io.BytesIO()
     df.write_excel(buffer)
     buffer.seek(0)
@@ -72,7 +72,7 @@ async def run_query(workspace_id: str, table_name: str, spec: dict = Body(...)):
 @router.post("/workspaces/{workspace_id}/tables/{table_name}/query/export")
 async def export_query(workspace_id: str, table_name: str, spec: dict = Body(...)):
     result, _ = explore.run_query_full(_frame(workspace_id, table_name), spec)
-    return _excel_response(result, f"{table_name}_query.xlsx")
+    return excel_response(result, f"{table_name}_query.xlsx")
 
 
 # ----------------------------------------------------------------- analytics
@@ -98,4 +98,4 @@ async def export_analytics(
     if frame is None:
         frame = pl.DataFrame({"stat": [s["label"] for s in result.stats],
                               "value": [s["value"] for s in result.stats]})
-    return _excel_response(frame, f"{table_name}_{test_id}.xlsx")
+    return excel_response(frame, f"{table_name}_{test_id}.xlsx")

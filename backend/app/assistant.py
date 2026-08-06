@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from . import analytics, debug_store, document_context as document_context_module, document_search, documents, explore, llm, model_context, sandbox, tooling
+from . import analysis_results, analytics, debug_store, document_context as document_context_module, document_search, documents, explore, llm, model_context, sandbox, tooling
 from .workspaces import Workspace, WorkspaceError
 
 MAX_STEPS = 8
@@ -109,6 +109,9 @@ def workspace_manifest(workspace: Workspace) -> dict:
         "report_available": bool(
             str((workspace.report or {}).get("markdown") or "").strip()
         ),
+        # Counts only, so a question about what the analyses found is answered
+        # by reading their recorded outcomes rather than re-running procedures.
+        "analysis_outcomes": analysis_results.analyses_summary_payload(workspace)["counts"],
     }
 
 
@@ -169,7 +172,10 @@ _TOOL_SCHEMAS = [
             "description": (
                 "Inspect bounded, read-only audit artifacts outside table data. "
                 "Use for questions about planning context or the APM, RCM rows, "
-                "fieldwork, findings, the report, or a general workspace overview."
+                "fieldwork, findings, the report, the outcomes of saved analysis "
+                "procedures, or a general workspace overview. Prefer area "
+                "'analysis' over re-running a test when the question is what the "
+                "analyses already found."
             ),
             "parameters": {
                 "type": "object",
@@ -183,6 +189,7 @@ _TOOL_SCHEMAS = [
                             "fieldwork",
                             "findings",
                             "report",
+                            "analysis",
                         ],
                     }
                 },
@@ -737,9 +744,36 @@ class _Session:
                 "excerpt": self._text(report.get("markdown"), 10_000),
                 "quality": report.get("quality"),
             }, None
+        if area == "analysis":
+            # What the saved procedures concluded, read from their durable
+            # results. No procedure is re-executed and no result row is
+            # returned: this is the same bounded record the Analysis tab shows.
+            summary = analysis_results.analyses_summary_payload(self.workspace)
+            return {
+                "counts": summary["counts"],
+                "total": len(summary["items"]),
+                "analyses": [
+                    {
+                        key: item[key]
+                        for key in (
+                            "analysis_id", "title", "table", "kind", "source",
+                            "classification", "state", "executed_at", "status",
+                            "verdict", "verdict_text", "error", "row_count", "stats",
+                        )
+                        if item.get(key) not in (None, "", [])
+                    }
+                    for item in summary["items"][:50]
+                ],
+                "truncated": len(summary["items"]) > 50,
+                "note": (
+                    "'stale' means the definition or its input data changed after "
+                    "the recorded result; 'not_run' means the procedure has never "
+                    "been executed. Neither is a finding."
+                ),
+            }, None
         raise WorkspaceError(
             "Audit artifact area must be overview, planning, rcm, fieldwork, "
-            "findings, or report."
+            "findings, report, or analysis."
         )
 
     def list_tables(self, _args: dict):

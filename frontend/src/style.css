@@ -370,6 +370,53 @@ button, input, textarea, select { font: inherit; }
 .ui-advanced[open] .ui-advanced__chevron { rotate: 180deg; }
 .ui-advanced__body { padding: var(--aw-space-3); border-radius: 0 0 var(--aw-radius-control) var(--aw-radius-control); background: var(--aw-panel); }
 
+/* Analysis editors. The three creation surfaces — library test, saved Python,
+   new Python — are one editor with different bodies, so their chrome is
+   declared once here rather than copied into each component's scoped block. */
+.analysis-editor-head {
+  display: flex;
+  align-items: center;
+  gap: var(--aw-space-2);
+  flex-wrap: wrap;
+  position: sticky;
+  top: -2px;
+  z-index: 5;
+  margin-bottom: var(--aw-space-4);
+  padding: 0.4rem 0;
+  background: var(--aw-panel);
+}
+.analysis-editor-head .grow { flex: 1; }
+.analysis-editor-head .title-input { min-width: 16rem; font-weight: 600; }
+
+.analysis-error {
+  color: var(--aw-danger);
+  background: var(--aw-danger-soft);
+  border: 1px solid var(--aw-danger-line);
+  border-radius: var(--aw-radius-control);
+  padding: 0.6rem 0.85rem;
+  margin-bottom: var(--aw-space-3);
+}
+
+.analysis-code-block { margin-bottom: var(--aw-space-4); }
+.analysis-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--aw-space-2);
+  margin-bottom: 0.25rem;
+  color: var(--aw-muted);
+  font-size: var(--aw-text-sm);
+}
+.analysis-stdout {
+  background: var(--aw-ink-strong);
+  color: var(--aw-panel);
+  border-radius: var(--aw-radius-control);
+  padding: 0.5rem 0.75rem;
+  margin: 0.4rem 0 0;
+  font-size: var(--aw-text-sm);
+  overflow-x: auto;
+}
+
 .empty-state {
   display: grid;
   place-items: center;

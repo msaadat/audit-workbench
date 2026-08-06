@@ -1,21 +1,29 @@
-"""Saved analyses: create, edit (params/code), remove, and compute.
+"""Saved analyses: create, edit (params/code), execute, remove, and compute.
 
 The working-set sibling of dashboard tiles — same spec-not-data model, but
 these live in the Analysis tab's rail. Pinning promotes a copy to a tile via
 the existing /tiles routes; the two collections stay independent.
+
+Reading is split by cost on purpose. The collection endpoint lists definitions
+and the outcome each one last recorded, and executes nothing. Recomputation
+happens only where it was asked for: opening one procedure, or running it.
 """
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Body
 
 from .. import analysis_results, dashboard, workspaces
+from .analysis_routes import excel_response
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["analyses"])
 
 
 @router.get("/analyses")
 async def get_analyses(workspace_id: str):
+    """List saved analyses without running any of them."""
     ws = workspaces.load_workspace(workspace_id)
     return dashboard.analyses_payload(ws)
 
@@ -25,6 +33,72 @@ async def get_analyses_summary(workspace_id: str):
     """Read persisted execution metadata without re-running any procedure."""
     ws = workspaces.load_workspace(workspace_id)
     return analysis_results.analyses_summary_payload(ws)
+
+
+@router.get("/analyses/{analysis_id}")
+async def get_analysis(workspace_id: str, analysis_id: str):
+    """Recompute one saved analysis for display, without recording a result.
+
+    Opening a procedure shows what its spec returns now. Making that the
+    procedure's recorded conclusion is a separate, deliberate act — ``/execute``.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    return dashboard.analysis_payload(ws, ws._analysis(analysis_id))
+
+
+@router.post("/analyses/{analysis_id}/execute")
+async def execute_analysis(workspace_id: str, analysis_id: str):
+    """Run one saved analysis and record what it concluded.
+
+    This is the auditor's counterpart to the workflow's execution capability,
+    and it writes the same bounded result contract — so a procedure the auditor
+    ran is as current, and as reviewable, as one the agent ran.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    executed = analysis_results.execute_and_record(ws, analysis_id)
+    # Same shape as the detail endpoint, carrying the rows this execution
+    # produced rather than recomputing them a second time to say so.
+    return {
+        **dashboard.analysis_payload(ws, executed.analysis, computed=executed.payload),
+    }
+
+
+@router.post("/analyses/execute")
+async def execute_analyses(workspace_id: str, payload: dict = Body(default={})):
+    """Execute several saved analyses in one pass.
+
+    ``ids`` names them explicitly; otherwise every procedure whose result is
+    missing or stale is brought current, which is what "rerun what needs it"
+    means on the Analysis tab. Each execution is committed on its own, so one
+    broken spec neither blocks nor rolls back the others.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    requested = [str(value) for value in (payload.get("ids") or []) if str(value or "").strip()]
+    if not requested:
+        requested = [
+            str(item.get("id"))
+            for item in ws.analyses
+            if analysis_results.analysis_result_state(ws, item) != "current"
+        ]
+    executed: list[dict] = []
+    for analysis_id in requested:
+        try:
+            outcome = analysis_results.execute_and_record(ws, analysis_id)
+        except workspaces.WorkspaceError as error:
+            executed.append({"analysis_id": analysis_id, "ok": False, "error": str(error)})
+            continue
+        executed.append(
+            {
+                "analysis_id": analysis_id,
+                "ok": True,
+                "title": outcome.analysis.get("title"),
+                "result": outcome.result,
+            }
+        )
+    return {
+        "executed": executed,
+        "summary": analysis_results.analyses_summary_payload(ws),
+    }
 
 
 @router.post("/analyses")
@@ -39,6 +113,21 @@ async def update_analysis(workspace_id: str, analysis_id: str, changes: dict = B
     ws = workspaces.load_workspace(workspace_id)
     analysis = ws.update_analysis(analysis_id, changes)
     return dashboard.analysis_payload(ws, analysis)
+
+
+@router.post("/analyses/{analysis_id}/export")
+async def export_analysis(workspace_id: str, analysis_id: str):
+    """Stream one saved analysis' full result as a workbook.
+
+    Both kinds export the same way, so a hand-written Polars procedure is as
+    exportable as a library test — the earlier split left python analyses with
+    no way off the screen at all.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    analysis = ws._analysis(analysis_id)
+    frame = dashboard.analysis_export_frame(ws, analysis)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(analysis.get("title") or analysis_id))
+    return excel_response(frame, f"{name}.xlsx")
 
 
 @router.post("/analyses/{analysis_id}/pin")

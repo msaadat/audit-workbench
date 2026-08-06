@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
+import SelectButton from 'primevue/selectbutton'
 
 import { api, ApiError } from '../../api'
 import type { FramePayload, RunPythonResult, SavedAnalysis, WorkspaceSummary } from '../../types'
@@ -54,12 +55,23 @@ function starterCode(): string {
 
 const title = ref('')
 const code = ref(starterCode())
+const policy = ref<'exception_rows' | 'informational'>('informational')
 const frame = ref<FramePayload | null>(null)
 const totalRows = ref(0)
 const stdout = ref<string | null>(null)
 const runError = ref<string | null>(null)
 const running = ref(false)
 const saving = ref(false)
+
+// Declared at creation, because it is what turns a row count into a verdict
+// once the procedure starts recording results.
+const policyOptions = [
+  { label: 'Exceptions', value: 'exception_rows', hint: 'Any returned row is a potential exception.' },
+  { label: 'Informational', value: 'informational', hint: 'Rows are context; no pass/fail conclusion.' },
+]
+const policyHint = computed(
+  () => policyOptions.find(option => option.value === policy.value)?.hint ?? '',
+)
 
 async function run() {
   running.value = true
@@ -95,6 +107,7 @@ async function save() {
         spec: { code: code.value },
         viz: { type: 'table' },
         source: 'code',
+        outcome_policy: { mode: policy.value },
       },
     )
     emit('saved', created)
@@ -109,74 +122,62 @@ async function save() {
 </script>
 
 <template>
-  <div class="detail-head">
+  <div class="analysis-editor-head">
     <InputText v-model="title" placeholder="Analysis title" class="title-input" />
     <span class="grow" />
     <Button label="Save" icon="pi pi-save" size="small" :loading="saving" @click="save" />
   </div>
 
-  <div v-if="runError" class="err">
+  <p class="intro">
+    Write the procedure, preview what it returns, then save it. Saving puts it in
+    the rail, where running it records what it concludes.
+  </p>
+
+  <div class="policy-row">
+    <div class="field">
+      <label>Returned rows are</label>
+      <SelectButton
+        v-model="policy"
+        :options="policyOptions"
+        optionLabel="label"
+        optionValue="value"
+        :allowEmpty="false"
+        size="small"
+      />
+    </div>
+    <span class="muted">{{ policyHint }}</span>
+  </div>
+
+  <div v-if="runError" class="analysis-error">
     <i class="pi pi-exclamation-triangle" /> {{ runError }}
   </div>
 
-  <div class="code-block">
-    <div class="code-head">
+  <div class="analysis-code-block">
+    <div class="analysis-code-head">
       <span><i class="pi pi-code" /> Python — runs in the local sandbox</span>
-      <Button label="Run" icon="pi pi-play" size="small" text :loading="running" @click="run" />
+      <Button label="Preview" icon="pi pi-eye" size="small" text :loading="running" @click="run" />
     </div>
     <CodeEditor v-model="code" />
-    <pre v-if="stdout" class="stdout">{{ stdout }}</pre>
+    <pre v-if="stdout" class="analysis-stdout">{{ stdout }}</pre>
   </div>
 
   <div v-if="frame" class="result">
-    <p class="muted rows">{{ totalRows.toLocaleString() }} row{{ totalRows === 1 ? '' : 's' }}</p>
+    <p class="muted rows">{{ totalRows.toLocaleString() }} row{{ totalRows === 1 ? '' : 's' }} · preview, not recorded</p>
     <ChartView :frame="frame" :viz="{ type: 'table' }" height="320px" />
   </div>
 
 </template>
 
 <style scoped>
-.detail-head {
+.intro { margin: 0 0 var(--aw-space-3); color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.policy-row {
   display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-bottom: 1rem;
+  align-items: flex-end;
+  gap: var(--aw-space-3);
   flex-wrap: wrap;
-  position: sticky;
-  top: -2px;
-  z-index: 5;
-  background: var(--aw-panel);
-  padding: 0.4rem 0;
+  margin-bottom: var(--aw-space-3);
 }
-.detail-head .grow { flex: 1; }
-.title-input { min-width: 16rem; font-weight: 600; }
-
-.err {
-  color: var(--aw-danger);
-  background: var(--aw-danger-soft);
-  border: 1px solid var(--aw-danger-line);
-  border-radius: var(--aw-radius-control);
-  padding: 0.6rem 0.85rem;
-  margin-bottom: 0.85rem;
-}
-
-.code-block { margin-bottom: 1rem; }
-.code-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: var(--aw-text-sm);
-  color: var(--aw-muted);
-  margin-bottom: 0.25rem;
-}
-.stdout {
-  background: var(--aw-ink-strong);
-  color: var(--aw-panel);
-  border-radius: var(--aw-radius-control);
-  padding: 0.5rem 0.75rem;
-  font-size: var(--aw-text-sm);
-  overflow-x: auto;
-  margin: 0.4rem 0 0;
-}
+.policy-row .muted { padding-bottom: 0.4rem; font-size: var(--aw-text-xs); }
+.muted { color: var(--aw-muted); }
 .rows { font-size: var(--aw-text-sm); margin: 0 0 0.5rem; }
 </style>
