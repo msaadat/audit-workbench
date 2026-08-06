@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 
-from .. import document_analysis, document_media
+from .. import cycle_vouching, document_analysis, document_media
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceError, load_workspace
 from . import narration, store, workflow
@@ -676,11 +676,9 @@ class DocumentWorkflowExecution(BaseRunner):
                     item.get("modality") == "image" for item in analyses
                 ),
                 # The structured half of a voucher analysis is reduced here,
-                # deterministically. Merging typed records through the reduction
-                # worker would be lossy and would cost a provider turn per
-                # document; a union with de-duplication is exact and free. The
-                # narrative half is still reduced by the worker above.
-                **self._voucher_fields(analyses),
+                # deterministically and only after every chunk proposal settles.
+                # The narrative half is still reduced by the worker above.
+                **self._cycle_evidence(document_id, analyses),
             }
 
         def on_committed(_stage, _unit, outcome) -> DeterministicUnitResult:
@@ -821,24 +819,26 @@ class DocumentWorkflowExecution(BaseRunner):
         ]
 
     @staticmethod
-    def _voucher_fields(analyses: list[dict]) -> dict:
-        """The merged structured record, for a document mapped as a voucher.
-
-        Returns an empty mapping for every other profile, so the reduction
-        proposal carries ``fields`` only when a voucher map actually produced
-        one — the structured half stays optional rather than becoming a second
-        artifact kind every document has to have.
-        """
+    def _cycle_evidence(document_id: str, analyses: list[dict]) -> dict:
+        """Reduce voucher fragments after every map proposal has settled."""
         voucher = [
             item for item in analyses if item.get("analysis_profile") == "voucher"
         ]
         if not voucher:
             return {}
+        fragments = [
+            dict(fragment)
+            for item in voucher
+            for fragment in item.get("record_fragments") or []
+        ]
+        reduction = cycle_vouching.reduce_record_fragments(document_id, fragments)
         return {
             "analysis_profile": "voucher",
-            "fields": document_analysis.merge_voucher_fields(
-                [dict(item.get("fields") or {}) for item in voucher]
-            ),
+            "registry": reduction["registry"],
+            "record_fragments": fragments,
+            "records": reduction["records"],
+            "unresolved_fragments": reduction["unresolved_fragments"],
+            "conflicts": reduction["conflicts"],
         }
 
     @staticmethod

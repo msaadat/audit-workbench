@@ -32,7 +32,8 @@ from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
-from ... import document_analysis
+from ... import cycle_vouching, document_analysis
+from ...cycle_registry import DEFAULT_REGISTRY, RegistryReference
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -315,17 +316,32 @@ def run_chunk_worker(
 #
 # The transaction-evidence profile. It reads the same bounded chunk the standard
 # map worker reads and returns the same narrative pair, plus a structured
-# `fields` record that a vouching comparison can resolve field-by-field. Every
-# structured entry carries a citation id, so the deterministic comparison that
-# consumes it is anchored to a verbatim excerpt rather than to model prose.
+# registry-backed `record_fragments`. Every extracted fact carries a citation id;
+# durable record identities are deliberately deferred to deterministic reduction.
 # --------------------------------------------------------------------------- #
+_VOUCHER_REGISTRY_DESCRIPTORS = json.dumps(
+    [
+        {
+            "registry": DEFAULT_REGISTRY.reference(str(pack["id"])).to_dict(),
+            **{
+                key: value
+                for key, value in pack.items()
+                if key not in {"id", "version", "definition_hash"}
+            },
+        }
+        for pack in DEFAULT_REGISTRY.metadata()["packs"]
+    ],
+    sort_keys=True,
+    separators=(",", ":"),
+)
 VOUCHER_SYSTEM = f"""[agent:document_analysis_voucher]
 Analyze the supplied chunk as transaction evidence — a voucher, invoice,
 purchase order, goods-received note, receipt, approval record, or similar.
 Report only what this chunk states. Do not infer a value from a filename, from
 metadata, or from what a document of this type usually contains.
 
-Return exactly summary_markdown, audit_notes_markdown, citations, and fields.
+Return exactly summary_markdown, audit_notes_markdown, citations, registry, and
+record_fragments.
 
 summary_markdown is a short neutral description of what this record is and what
 it evidences. audit_notes_markdown records observations visible on the face of
@@ -339,33 +355,47 @@ observations were identified on the face of this record.`
 citations is an array of objects with id, page, and a short exact excerpt copied
 verbatim from this chunk.
 
-fields is an object with document_type and these arrays. Every array entry must
-carry `citation`, the id of the citation that supports it. Omit an entry you
-cannot cite. Use an empty array for a group this chunk does not evidence.
-  document_type  one of {", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)}
-  identifiers    {{kind, value, citation}} — every reference number the record
-                 carries. kind is a short snake_case name such as claim_id,
-                 voucher_id, invoice_number, po_number, grn_number,
-                 receipt_reference, bank_reference.
-  parties        {{role, name, citation}} — role such as payee, vendor,
-                 supplier, employee, customer, bank.
-  dates          {{kind, value, citation}} — kind such as document_date,
-                 payment_date, invoice_date, approval_date, delivery_date,
-                 expense_date. value as it appears on the record.
-  amounts        {{kind, value, currency, citation}} — kind such as total,
-                 total_paid, subtotal, tax, discount, net, line_total.
-  line_items     {{description, amount, quantity, date, category,
-                 receipt_reference, citation}} — one entry per line the record
-                 itemizes. Include the keys the line actually shows.
-  approvals      {{approver, role, decision, date, citation}} — one entry per
-                 approval, signature, or authorization the record carries.
-  attachments    {{kind, reference, present, citation}} — supporting items the
-                 record refers to or encloses, such as a receipt or invoice
-                 copy. present is true when this chunk shows the item is
-                 attached or enclosed, false when it shows it is missing.
+Select exactly one registered pack from the descriptors below and copy its
+`registry` object exactly, including the keys `pack_id`, `pack_version`, and
+`definition_hash` at the response root. You may use only record, identifier,
+field, group, kind, and attribute IDs declared by that selected pack. Never
+invent or abbreviate an ID.
 
-Copy values as the record writes them; normalization happens downstream. Do not
-invent an identifier, an amount, or a date. {JSON_RULES}"""
+record_fragments is an array. Each fragment describes one candidate record in
+this chunk and contains:
+- record_kind, classification_evidence (one or more citation IDs), optional
+  candidate_record_kinds and review_reason for common.other;
+- identifiers: {{kind, value: {{raw_value, value, normalization_status,
+  normalization_error, citation}}}}; and
+- fields: {{group, kind, attribute, value: {{raw_value, value,
+  normalization_status, normalization_error, citation}}}}.
+
+Usually one physical source record produces one fragment. Identifiers that the
+record references belong on that physical record's fragment; a reference label
+or number alone does not justify a separate fragment for the referenced record.
+Emit multiple fragments only when the chunk actually contains multiple
+standalone records or distinct values for the physical record's same primary
+identifier kind. Classify the physical record from its overall purpose and
+operative fields or status, not from reference labels alone.
+
+Local code attaches the exact selected registry reference, supplied chunk_id,
+and inclusive two-integer page_span to every fragment. Do not derive those
+context-envelope fields. For a field, copy `group` and the short `kind` from its
+field_kinds descriptor; do not put the namespaced field `id` in `kind`. Use only
+field IDs listed in the selected record_kind's available_field_kinds. Select
+`attribute: value` for scalar amounts, dates, and quantities; `raw_value` belongs
+inside the value envelope and is not the selector. Use the source spelling in
+raw_value. Local code also recomputes normalized values, so do not correct
+transaction typos. Every classification, identifier, and field must cite this
+chunk. If two distinct values occur for the selected record kind's same primary
+identifier kind, emit separate fragments; never blend them. A continuation
+without a primary identifier may still emit a fragment so local reduction can
+attach it only when the exact evidence is unambiguous.
+
+REGISTERED PACK DESCRIPTORS:
+{_VOUCHER_REGISTRY_DESCRIPTORS}
+
+{JSON_RULES}"""
 
 
 def _voucher_response_schema(response: str) -> Mapping[str, Any]:
@@ -377,27 +407,67 @@ def _voucher_response_schema(response: str) -> Mapping[str, Any]:
         not isinstance(item, dict) for item in citations
     ):
         raise WorkerResponseValidationError("`citations` must be an array of objects")
-    fields = payload.get("fields")
-    if fields is None:
-        fields = {}
-    if not isinstance(fields, dict):
-        raise WorkerResponseValidationError("`fields` must be an object")
-    for group in document_analysis.VOUCHER_FIELD_GROUPS:
-        value = fields.get(group)
-        if value is None:
-            continue
-        if not isinstance(value, list) or any(
-            not isinstance(item, dict) for item in value
-        ):
-            raise WorkerResponseValidationError(
-                f"`fields.{group}` must be an array of objects"
-            )
+    fragments = payload.get("record_fragments")
+    if not isinstance(fragments, list) or not fragments or any(
+        not isinstance(item, dict) for item in fragments
+    ):
+        raise WorkerResponseValidationError(
+            "`record_fragments` must be a non-empty array of objects"
+        )
     return {
         "summary_markdown": payload.get("summary_markdown"),
         "audit_notes_markdown": payload.get("audit_notes_markdown"),
         "citations": citations,
-        "fields": fields,
+        "registry": payload.get("registry"),
+        "record_fragments": fragments,
     }
+
+
+def _canonicalize_voucher_fragment(
+    raw: object,
+    *,
+    reference: RegistryReference,
+    chunk: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Own deterministic envelope and registered field-selector mechanics locally."""
+
+    fragment = dict(_plain_json(raw))
+    pack_id = str(reference.pack_id)
+    record_kind = str(fragment.get("record_kind") or "")
+    record = DEFAULT_REGISTRY.record_kind(pack_id, record_kind)
+    pack = DEFAULT_REGISTRY.pack(pack_id)
+    allowed_fields = set(record.available_field_kinds)
+    fields = []
+    for raw_fact in fragment.get("fields") or []:
+        fact = dict(_plain_json(raw_fact))
+        supplied_kind = str(fact.get("kind") or "")
+        definition = DEFAULT_REGISTRY.field_kinds.get(supplied_kind)
+        if definition is not None and definition.id in pack.field_kind_ids:
+            fact["group"] = definition.group
+            fact["kind"] = definition.kind
+        else:
+            # Resolve a canonical group/short-kind selector. Unknown or cross-pack
+            # selectors deliberately continue to the strict fragment validator.
+            try:
+                definition = DEFAULT_REGISTRY.field_kind(
+                    pack_id,
+                    str(fact.get("group") or ""),
+                    supplied_kind,
+                )
+            except ValueError:
+                definition = None
+        if definition is not None and definition.id not in allowed_fields:
+            continue
+        if definition is not None and fact.get("attribute") == "raw_value":
+            if any(attribute.id == "value" for attribute in definition.attributes):
+                fact["attribute"] = "value"
+        fields.append(fact)
+    pages = [int(page) for page in chunk.get("pages") or []]
+    fragment["registry"] = reference.to_dict()
+    fragment["chunk_id"] = str(chunk.get("id") or "")
+    fragment["page_span"] = [min(pages), max(pages)]
+    fragment["fields"] = fields
+    return fragment
 
 
 def validate_voucher_proposal(
@@ -422,13 +492,38 @@ def validate_voucher_proposal(
         )
     except ValueError as error:
         raise WorkerResponseValidationError(str(error)) from error
-    fields = document_analysis.validate_voucher_fields(
-        _plain_json(proposal.get("fields") or {}), validated["citations"]
-    )
-    if not any(fields.get(group) for group in document_analysis.VOUCHER_FIELD_GROUPS):
-        raise WorkerResponseValidationError(
-            "fields carried no entry anchored to an exact excerpt from this chunk"
+    allowed = {str(value.get("id") or "") for value in validated["citations"]}
+    try:
+        reference = DEFAULT_REGISTRY.validate_reference(
+            _plain_json(proposal.get("registry"))
         )
+    except ValueError as error:
+        raise WorkerResponseValidationError(str(error)) from error
+    fragments = []
+    for index, raw in enumerate(proposal.get("record_fragments") or []):
+        try:
+            fragment = _canonicalize_voucher_fragment(
+                raw,
+                reference=reference,
+                chunk=chunk,
+            )
+        except ValueError as error:
+            raise WorkerResponseValidationError(str(error)) from error
+        cited = list(fragment.get("classification_evidence") or [])
+        for identifier in fragment.get("identifiers") or []:
+            cited.append((identifier.get("value") or {}).get("citation"))
+        for fact in fragment.get("fields") or []:
+            cited.append((fact.get("value") or {}).get("citation"))
+        if any(str(citation or "") not in allowed for citation in cited):
+            raise WorkerResponseValidationError(
+                f"record_fragments[{index}] contains evidence not grounded in this chunk"
+            )
+        try:
+            fragments.append(
+                cycle_vouching.normalize_record_fragment(fragment)
+            )
+        except (cycle_vouching.CycleSchemaError, ValueError) as error:
+            raise WorkerResponseValidationError(str(error)) from error
     return {
         "chunk_id": str(chunk.get("id") or ""),
         "document_id": str(document.get("document_id") or ""),
@@ -439,7 +534,8 @@ def validate_voucher_proposal(
         "summary_markdown": validated["summary_markdown"],
         "audit_notes_markdown": validated["audit_notes_markdown"],
         "citations": validated["citations"],
-        "fields": fields,
+        "registry": reference.to_dict(),
+        "record_fragments": fragments,
     }
 
 
@@ -456,7 +552,8 @@ def run_voucher_worker(
     # from the record's own text, and a voucher pack's filename routinely carries
     # the transaction identifiers the worker is asked to extract.
     user = (
-        f"SOURCE SHA: {document.get('source_sha1')}\nPAGE: {chunk['page']}\n"
+        f"SOURCE SHA: {document.get('source_sha1')}\nCHUNK ID: {chunk['id']}\n"
+        f"PAGE: {chunk['page']}\n"
         f"CHARACTER RANGE: {chunk['start_character']}..{chunk['end_character']}\n"
         "DOCUMENT OPENING CHUNK: "
         f"{'yes' if int(chunk['start_character']) == 0 else 'no'}\n\n"
@@ -837,7 +934,7 @@ VISUAL_WORKER = WorkerDefinition(
 VOUCHER_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="documents.analysis_voucher.response",
     schema_hash=_sha256_text(
-        "document-voucher-response:v1:summary-notes-citations-fields"
+        "document-voucher-response:v2:registry-record-fragments"
     ),
     validator=_voucher_response_schema,
 )
@@ -850,12 +947,15 @@ VOUCHER_WORKER = WorkerDefinition(
         max_repair_attempts=1,
         guidance_hash=_sha256_text(
             "Repair the voucher analysis against the supplied chunk text, its "
-            "exact excerpts, and the declared field groups."
+            "exact excerpts, and the selected registered cycle pack."
         ),
     ),
     implementation=run_voucher_worker,
     semantic_validation_hash=_sha256_text(
         inspect.getsource(validate_voucher_proposal)
+        + inspect.getsource(_canonicalize_voucher_fragment)
+        + inspect.getsource(cycle_vouching.normalize_record_fragment)
+        + _VOUCHER_REGISTRY_DESCRIPTORS
     ),
     semantic_validator=validate_voucher_proposal,
 )
@@ -879,6 +979,7 @@ REDUCTION_WORKER = WorkerDefinition(
     implementation=run_reduction_worker,
     semantic_validation_hash=_sha256_text(
         inspect.getsource(validate_reduction_proposal)
+        + inspect.getsource(cycle_vouching.reduce_record_fragments)
     ),
     semantic_validator=validate_reduction_proposal,
 )

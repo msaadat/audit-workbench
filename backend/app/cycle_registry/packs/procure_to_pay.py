@@ -122,7 +122,11 @@ RECORD_KINDS = (
     RecordKindDefinition(
         "procure_to_pay.payment_voucher",
         "Payment voucher",
-        ("procure_to_pay.payment_voucher_number",),
+        (
+            "procure_to_pay.payment_voucher_number",
+            "procure_to_pay.vendor_invoice_number",
+            "procure_to_pay.internal_invoice_id",
+        ),
         ("common.amount.total", "procure_to_pay.date.payment"),
     ),
 )
@@ -130,7 +134,7 @@ RECORD_KINDS = (
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Procure to pay",
-    version=1,
+    version=2,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),

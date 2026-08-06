@@ -7,8 +7,15 @@ model nor a workspace payload may introduce new kinds at runtime.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from typing import Mapping
+from collections import deque
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from typing import Iterable, Mapping
+
+import polars as pl
 
 from .cycle_registry import DEFAULT_REGISTRY, CycleRegistry, RegistryError
 from .cycle_registry.models import RegistryReference
@@ -75,6 +82,20 @@ MAX_ASSERTIONS = 50
 MAX_ITEMS = 500
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+    "%d-%b-%Y",
+    "%d-%B-%Y",
+    "%d %b %Y",
+    "%d %B %Y",
+    "%b %d, %Y",
+    "%B %d, %Y",
+)
+_NUMBER_RE = re.compile(r"[-+]?\d[\d,\s]*(?:\.\d+)?")
 
 
 def _object(value: object, label: str) -> dict:
@@ -170,6 +191,147 @@ def validate_normalized_value(value: object, *, label: str = "value") -> dict:
     if "citation" not in envelope or envelope.get("citation") in (None, ""):
         raise CycleSchemaError(f"{label}.citation is required.")
     return envelope
+
+
+def normalize_evidence_value(
+    raw_value: object,
+    *,
+    semantic_type: str,
+    citation: object,
+    identifier_kind: str | None = None,
+    registry_ref: object | None = None,
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict:
+    """Normalize one extracted value locally while retaining failed evidence.
+
+    Workers report the verbatim value and its citation.  They do not get to
+    choose the normalized transaction key used by the exact graph.
+    """
+
+    raw = str(raw_value or "").strip()
+    if not raw:
+        raise CycleSchemaError("An extracted raw value must not be empty.")
+    normalized: object | None = None
+    error: str | None = None
+    try:
+        if semantic_type == "identifier":
+            if not identifier_kind or registry_ref is None:
+                raise CycleSchemaError(
+                    "Identifier normalization requires a registered kind and pack."
+                )
+            normalized = normalized_identifier(
+                identifier_kind,
+                raw,
+                registry_ref=registry_ref,
+                registry=registry,
+            )
+        elif semantic_type == "date":
+            # Human-authored vouchers commonly contain whitespace around date
+            # separators (for example ``29-Apr -2024``).  Removing only that
+            # presentation whitespace is deterministic and does not guess a
+            # missing digit or swap day/month order.
+            candidate = re.sub(r"\s*-\s*", "-", raw)
+            for date_format in _DATE_FORMATS:
+                try:
+                    normalized = datetime.strptime(candidate, date_format).date().isoformat()
+                    break
+                except ValueError:
+                    continue
+            if normalized is None:
+                error = "unrecognized date format"
+        elif semantic_type == "number":
+            negative = raw.startswith("(") and raw.endswith(")")
+            match = _NUMBER_RE.search(raw)
+            if match is None:
+                error = "unrecognized numeric format"
+            else:
+                value = Decimal(re.sub(r"[,\s]", "", match.group(0)))
+                if negative:
+                    value = -value
+                normalized = int(value) if value == value.to_integral() else float(value)
+        elif semantic_type == "boolean":
+            token = raw.casefold()
+            if token in {"true", "yes", "y", "present", "1"}:
+                normalized = True
+            elif token in {"false", "no", "n", "absent", "missing", "0"}:
+                normalized = False
+            else:
+                error = "unrecognized boolean format"
+        elif semantic_type == "text":
+            normalized = raw
+        else:
+            raise CycleSchemaError(f"Unsupported evidence semantic type '{semantic_type}'.")
+    except (InvalidOperation, RegistryError, ValueError) as exc:
+        error = str(exc) or f"invalid {semantic_type} value"
+        normalized = None
+    return {
+        "raw_value": raw,
+        "value": normalized,
+        "normalization_status": "normalized" if normalized is not None else "invalid",
+        "normalization_error": None if normalized is not None else error,
+        "citation": citation,
+    }
+
+
+def normalize_record_fragment(
+    value: object,
+    *,
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict:
+    """Replace worker-supplied normalized values with deterministic envelopes."""
+
+    fragment = _object(value, "record fragment")
+    reference = _registry_reference(fragment.get("registry"), registry)
+    record_kind = _text(fragment.get("record_kind"), "record fragment.record_kind")
+    registry.record_kind(reference.pack_id, record_kind)
+    identifiers = []
+    for index, raw in enumerate(_list(fragment.get("identifiers") or [], "record fragment.identifiers")):
+        identifier = _object(raw, f"record fragment.identifiers[{index}]")
+        kind = _text(identifier.get("kind"), f"record fragment.identifiers[{index}].kind")
+        registry.identifier_kind(reference.pack_id, kind)
+        supplied = _object(identifier.get("value"), f"record fragment.identifiers[{index}].value")
+        identifiers.append(
+            {
+                "kind": kind,
+                "value": normalize_evidence_value(
+                    supplied.get("raw_value", supplied.get("value")),
+                    semantic_type="identifier",
+                    citation=supplied.get("citation"),
+                    identifier_kind=kind,
+                    registry_ref=reference.to_dict(),
+                    registry=registry,
+                ),
+            }
+        )
+    fields = []
+    for index, raw in enumerate(_list(fragment.get("fields") or [], "record fragment.fields")):
+        fact = _object(raw, f"record fragment.fields[{index}]")
+        definition, semantic_type = _field_definition(
+            fact,
+            f"record fragment.fields[{index}]",
+            pack_id=reference.pack_id,
+            registry=registry,
+        )
+        if definition.id not in registry.record_kind(reference.pack_id, record_kind).available_field_kinds:
+            raise CycleSchemaError(
+                f"record fragment.fields[{index}] is not available on record kind '{record_kind}'."
+            )
+        supplied = _object(fact.get("value"), f"record fragment.fields[{index}].value")
+        fields.append(
+            {
+                "group": definition.group,
+                "kind": definition.kind,
+                "attribute": _text(fact.get("attribute"), f"record fragment.fields[{index}].attribute"),
+                "value": normalize_evidence_value(
+                    supplied.get("raw_value", supplied.get("value")),
+                    semantic_type=semantic_type,
+                    citation=supplied.get("citation"),
+                    registry=registry,
+                ),
+            }
+        )
+    normalized = {**fragment, "registry": reference.to_dict(), "identifiers": identifiers, "fields": fields}
+    return validate_evidence_record_fragment(normalized, registry=registry)
 
 
 def _field_definition(
@@ -373,6 +535,797 @@ def validate_evidence_reduction(
         validate_evidence_record_fragment(unresolved, registry=registry)
     _list(reduction.get("conflicts"), "evidence reduction.conflicts")
     return reduction
+
+
+def _canonical_hash(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def fragment_identity(fragment: Mapping[str, object]) -> str:
+    """Content identity used by reviewed fragment assignments."""
+
+    return _canonical_hash(dict(fragment))
+
+
+def _normalized_identifier_facts(
+    value: Mapping[str, object],
+    reference: RegistryReference,
+    registry: CycleRegistry,
+    *,
+    transaction_only: bool = False,
+) -> dict[str, set[str]]:
+    facts: dict[str, set[str]] = {}
+    for raw in value.get("identifiers") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        kind = str(raw.get("kind") or "")
+        definition = registry.identifier_kind(reference.pack_id, kind)
+        if transaction_only and definition.edge_policy != "transaction":
+            continue
+        envelope = raw.get("value") or {}
+        if not isinstance(envelope, Mapping) or envelope.get("normalization_status") != "normalized":
+            continue
+        normalized = registry.normalize_identifier(
+            reference.pack_id, kind, envelope.get("value")
+        )
+        facts.setdefault(kind, set()).add(normalized)
+    return facts
+
+
+def _primary_facts(
+    fragment: Mapping[str, object],
+    reference: RegistryReference,
+    registry: CycleRegistry,
+) -> dict[str, set[str]]:
+    record = registry.record_kind(reference.pack_id, str(fragment.get("record_kind") or ""))
+    facts = _normalized_identifier_facts(fragment, reference, registry)
+    return {
+        kind: set(facts.get(kind) or ())
+        for kind in record.primary_identifier_kinds
+        if facts.get(kind)
+    }
+
+
+def _identifier_conflict(left: Mapping[str, set[str]], right: Mapping[str, set[str]]) -> bool:
+    return any(
+        kind in right and values and right[kind] and values.isdisjoint(right[kind])
+        for kind, values in left.items()
+    )
+
+
+def _specific_kinds(fragments: Iterable[Mapping[str, object]]) -> set[str]:
+    return {
+        str(fragment.get("record_kind") or "")
+        for fragment in fragments
+        if str(fragment.get("record_kind") or "") != "common.other"
+    }
+
+
+def _compatible_kind(fragment: Mapping[str, object], component: Mapping[str, object]) -> bool:
+    candidate = str(fragment.get("record_kind") or "")
+    existing = _specific_kinds(component["fragments"])
+    return candidate == "common.other" or not existing or existing == {candidate}
+
+
+def _dedupe_evidence(values: Iterable[object]) -> list[object]:
+    output: list[object] = []
+    seen: set[str] = set()
+    for value in values:
+        identity = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+        if identity not in seen:
+            seen.add(identity)
+            output.append(value)
+    return output
+
+
+def _merge_fact_entries(
+    fragments: Iterable[Mapping[str, object]], collection: str
+) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for fragment in fragments:
+        for raw in fragment.get(collection) or []:
+            if not isinstance(raw, Mapping):
+                continue
+            entry = json.loads(json.dumps(dict(raw), default=str))
+            envelope = dict(entry.get("value") or {})
+            citation = envelope.pop("citation", None)
+            identity = json.dumps(
+                {**entry, "value": envelope},
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            if identity not in grouped:
+                grouped[identity] = {**entry, "value": {**envelope, "citation": []}}
+            citations = grouped[identity]["value"]["citation"]
+            supplied = citation if isinstance(citation, list) else [citation]
+            for item in supplied:
+                if item not in citations:
+                    citations.append(item)
+    for entry in grouped.values():
+        entry["value"]["citation"].sort(
+            key=lambda value: json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def stable_record_id(
+    document_id: str,
+    reference: RegistryReference,
+    record_kind: str,
+    primary_kind: str,
+    normalized_primary: str,
+) -> str:
+    """Hash the completed component's exact pack and selected primary identity."""
+
+    material = [
+        str(document_id),
+        reference.definition_hash,
+        str(record_kind),
+        str(primary_kind),
+        str(normalized_primary),
+    ]
+    digest = hashlib.sha256(
+        json.dumps(material, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"REC-{digest[:24].upper()}"
+
+
+def reduce_record_fragments(
+    document_id: str,
+    fragments: Iterable[object],
+    *,
+    overrides: Iterable[object] = (),
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict:
+    """Reduce settled chunk fragments into document-local evidence records.
+
+    Grouping is exact and independent of chunk order.  Secondary identifiers
+    may attach a primary-less fragment only when they identify one compatible
+    component; they can never bridge conflicting primary identities.
+    """
+
+    normalized_fragments = [
+        normalize_record_fragment(value, registry=registry) for value in fragments
+    ]
+    prepared = list(
+        {
+            fragment_identity(value): value
+            for value in normalized_fragments
+        }.values()
+    )
+    if not prepared:
+        raise CycleSchemaError("Evidence reduction requires at least one fragment.")
+    references = {
+        tuple(_registry_reference(value.get("registry"), registry).to_dict().items())
+        for value in prepared
+    }
+    if len(references) != 1:
+        raise CycleSchemaError("Evidence fragments from different registry packs cannot be reduced together.")
+    reference = _registry_reference(prepared[0]["registry"], registry)
+    by_hash = {fragment_identity(value): value for value in prepared}
+    original_hash_by_object = {id(value): identity for identity, value in by_hash.items()}
+    forced_targets: dict[str, str] = {}
+    applied_overrides: list[dict] = []
+    for index, raw in enumerate(overrides):
+        override = _object(raw, f"fragment overrides[{index}]")
+        source_hash = _text(override.get("fragment_hash"), f"fragment overrides[{index}].fragment_hash")
+        fragment = by_hash.get(source_hash)
+        if fragment is None:
+            raise CycleSchemaError("A reviewed fragment override is stale for this extraction.")
+        if override.get("record_kind") is not None:
+            record_kind = _text(override.get("record_kind"), f"fragment overrides[{index}].record_kind")
+            registry.record_kind(reference.pack_id, record_kind)
+            fragment["record_kind"] = record_kind
+            validate_evidence_record_fragment(fragment, registry=registry)
+        target_hash = override.get("assign_to_fragment_hash")
+        if target_hash is not None:
+            target_hash = _text(target_hash, f"fragment overrides[{index}].assign_to_fragment_hash")
+            if target_hash not in by_hash or target_hash == source_hash:
+                raise CycleSchemaError("A reviewed fragment assignment names no current target fragment.")
+            forced_targets[source_hash] = target_hash
+        applied_overrides.append(dict(override))
+
+    primary: list[tuple[str, dict]] = []
+    partial: list[tuple[str, dict]] = []
+    for value in prepared:
+        identity = original_hash_by_object[id(value)]
+        (primary if _primary_facts(value, reference, registry) else partial).append((identity, value))
+    primary.sort(key=lambda item: item[0])
+    partial.sort(key=lambda item: item[0])
+    components: list[dict] = []
+    for identity, fragment in primary:
+        facts = _primary_facts(fragment, reference, registry)
+        matches = [
+            component
+            for component in components
+            if not _identifier_conflict(facts, component["primary"])
+            and any(
+                value in component["primary"].get(kind, set())
+                for kind, values in facts.items()
+                for value in values
+            )
+        ]
+        combined: dict[str, set[str]] = {kind: set(values) for kind, values in facts.items()}
+        for component in matches:
+            for kind, values in component["primary"].items():
+                combined.setdefault(kind, set()).update(values)
+        if matches and any(len(values) > 1 for values in combined.values()):
+            matches = []
+        if not matches:
+            components.append({"fragment_hashes": {identity}, "fragments": [fragment], "primary": combined})
+            continue
+        target = matches[0]
+        target["fragment_hashes"].add(identity)
+        target["fragments"].append(fragment)
+        target["primary"] = combined
+        for extra in matches[1:]:
+            target["fragment_hashes"].update(extra["fragment_hashes"])
+            target["fragments"].extend(extra["fragments"])
+            components.remove(extra)
+
+    unresolved: list[dict] = []
+    for identity, fragment in partial:
+        fragment_facts = _normalized_identifier_facts(
+            fragment, reference, registry, transaction_only=True
+        )
+        candidates = []
+        forced = forced_targets.get(identity)
+        for component in components:
+            if forced and forced not in component["fragment_hashes"]:
+                continue
+            component_facts: dict[str, set[str]] = {}
+            for member in component["fragments"]:
+                for kind, values in _normalized_identifier_facts(
+                    member, reference, registry, transaction_only=True
+                ).items():
+                    component_facts.setdefault(kind, set()).update(values)
+            shared = any(
+                values & component_facts.get(kind, set())
+                for kind, values in fragment_facts.items()
+            )
+            if (
+                (forced or shared)
+                and _compatible_kind(fragment, component)
+                and not _identifier_conflict(fragment_facts, component_facts)
+            ):
+                candidates.append(component)
+        if len(candidates) == 1:
+            candidates[0]["fragment_hashes"].add(identity)
+            candidates[0]["fragments"].append(fragment)
+        else:
+            unresolved.append(
+                {
+                    "reason": "missing_identity" if not candidates else "ambiguous_identity",
+                    "fragment": fragment,
+                    "candidate_component_count": len(candidates),
+                }
+            )
+
+    records: list[dict] = []
+    conflicts: list[dict] = []
+    for component in sorted(components, key=lambda item: sorted(item["fragment_hashes"])):
+        kinds = sorted(_specific_kinds(component["fragments"]))
+        if len(kinds) != 1:
+            conflicts.append(
+                {
+                    "kind": "record_kind_conflict",
+                    "record_kinds": kinds,
+                    "fragment_hashes": sorted(component["fragment_hashes"]),
+                    "bindable": False,
+                }
+            )
+            continue
+        record_kind = kinds[0]
+        definition = registry.record_kind(reference.pack_id, record_kind)
+        primary_kind = next(
+            (
+                kind
+                for kind in definition.primary_identifier_kinds
+                if len(component["primary"].get(kind, set())) == 1
+            ),
+            None,
+        )
+        if primary_kind is None:
+            # This can only arise after an invalid reviewed classification.
+            unresolved.extend(
+                {"reason": "missing_identity", "fragment": fragment}
+                for fragment in component["fragments"]
+            )
+            continue
+        normalized_primary = next(iter(component["primary"][primary_kind]))
+        record = {
+            "registry": reference.to_dict(),
+            "record_id": stable_record_id(
+                document_id,
+                reference,
+                record_kind,
+                primary_kind,
+                normalized_primary,
+            ),
+            "document_id": str(document_id),
+            "record_kind": record_kind,
+            "classification_evidence": _dedupe_evidence(
+                evidence
+                for fragment in component["fragments"]
+                for evidence in fragment.get("classification_evidence") or []
+            ),
+            "identifiers": _merge_fact_entries(component["fragments"], "identifiers"),
+            "fields": _merge_fact_entries(component["fragments"], "fields"),
+            "primary_identifier": {
+                "kind": primary_kind,
+                "normalized_value": normalized_primary,
+            },
+            "fragment_hashes": sorted(component["fragment_hashes"]),
+            "content_hash": "",
+        }
+        record["content_hash"] = _canonical_hash(
+            {key: value for key, value in record.items() if key != "content_hash"}
+        )
+        validate_evidence_record(record, registry=registry)
+        records.append(record)
+    result = {
+        "registry": reference.to_dict(),
+        "records": sorted(records, key=lambda item: item["record_id"]),
+        "unresolved_fragments": sorted(
+            unresolved,
+            key=lambda item: fragment_identity(item["fragment"]),
+        ),
+        "conflicts": sorted(conflicts, key=lambda item: json.dumps(item, sort_keys=True)),
+    }
+    if applied_overrides:
+        result["reviewed_fragment_overrides"] = applied_overrides
+    validate_evidence_reduction(result, registry=registry)
+    return result
+
+
+def build_identifier_index(
+    records: Iterable[object],
+    *,
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict[tuple[str, str, str], tuple[dict, ...]]:
+    """Index only exact transaction identifiers under their pack hash."""
+
+    edges: dict[tuple[str, str, str], list[dict]] = {}
+    for raw in records:
+        record = validate_evidence_record(raw, registry=registry)
+        reference = _registry_reference(record["registry"], registry)
+        if not registry.record_kind(reference.pack_id, record["record_kind"]).bindable:
+            continue
+        for kind, values in _normalized_identifier_facts(
+            record, reference, registry, transaction_only=True
+        ).items():
+            for normalized in values:
+                key = (reference.definition_hash, kind, normalized)
+                edges.setdefault(key, []).append(record)
+    return {
+        key: tuple(sorted(values, key=lambda item: (item["document_id"], item["record_id"])))
+        for key, values in sorted(edges.items())
+    }
+
+
+def _seed_keys(
+    reference: RegistryReference,
+    seeds: Iterable[object],
+    registry: CycleRegistry,
+) -> list[tuple[str, str, str]]:
+    keys = []
+    for index, raw in enumerate(seeds):
+        seed = _object(raw, f"cycle seed[{index}]")
+        kind = _text(seed.get("kind"), f"cycle seed[{index}].kind")
+        definition = registry.identifier_kind(reference.pack_id, kind)
+        if definition.edge_policy != "transaction":
+            raise CycleSchemaError("Entity identifiers cannot seed a transaction cycle.")
+        value = seed.get("normalized_value", seed.get("value"))
+        normalized = registry.normalize_identifier(reference.pack_id, kind, value)
+        keys.append((reference.definition_hash, kind, normalized))
+    return sorted(set(keys))
+
+
+def link_cycle_records(
+    *,
+    registry_ref: object,
+    seeds: Iterable[object],
+    records: Iterable[object],
+    roles: Iterable[object] = (),
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+    max_hops: int = MAX_GRAPH_HOPS,
+    max_records: int = MAX_CYCLE_RECORDS,
+    max_edges: int = MAX_TRAVERSED_EDGES,
+) -> dict:
+    """Traverse the bounded exact identifier/record graph breadth-first."""
+
+    reference = _registry_reference(registry_ref, registry)
+    record_values = [validate_evidence_record(value, registry=registry) for value in records]
+    if any(_registry_reference(value["registry"], registry) != reference for value in record_values):
+        raise CycleSchemaError("Cycle linkage cannot cross registry definitions.")
+    index = build_identifier_index(record_values, registry=registry)
+    queue = deque((key, []) for key in _seed_keys(reference, seeds, registry))
+    visited_keys: set[tuple[str, str, str]] = set()
+    reached: dict[str, dict] = {}
+    traversed_edges = 0
+
+    def limited(limit: str, trigger: tuple[str, str, str], hops: int) -> dict:
+        return {
+            "state": "needs_review",
+            "review_reason": f"graph_{limit}_limit_exceeded",
+            "limit": limit,
+            "counts": {
+                "hops": hops,
+                "records": len(reached),
+                "edges": traversed_edges,
+            },
+            "triggering_identifier": {
+                "registry_definition_hash": trigger[0],
+                "identifier_kind": trigger[1],
+                "normalized_value": trigger[2],
+            },
+            "records": [],
+            "role_bindings": [],
+            "role_conflicts": [],
+        }
+
+    while queue:
+        key, chain = queue.popleft()
+        if key in visited_keys:
+            continue
+        visited_keys.add(key)
+        next_hops = len(chain) + 1
+        matches = index.get(key, ())
+        for record in matches:
+            traversed_edges += 1
+            if traversed_edges > max_edges:
+                return limited("edges", key, next_hops)
+            record_id = str(record["record_id"])
+            edge = {
+                "registry_definition_hash": key[0],
+                "identifier_kind": key[1],
+                "normalized_value": key[2],
+                "from_record_id": chain[-1]["to_record_id"] if chain else None,
+                "to_record_id": record_id,
+            }
+            path = [*chain, edge]
+            if len(path) > max_hops:
+                return limited("hops", key, len(path))
+            if record_id not in reached:
+                if len(reached) + 1 > max_records:
+                    return limited("records", key, len(path))
+                reached[record_id] = {"record": record, "matched_by": path}
+                facts = _normalized_identifier_facts(
+                    record, reference, registry, transaction_only=True
+                )
+                for kind, values in sorted(facts.items()):
+                    for normalized in sorted(values):
+                        next_key = (reference.definition_hash, kind, normalized)
+                        if next_key not in visited_keys:
+                            queue.append((next_key, path))
+
+    role_values = [_object(value, f"roles[{index}]") for index, value in enumerate(roles)]
+    if len(role_values) > MAX_ROLES:
+        raise CycleSchemaError(f"A cycle may declare at most {MAX_ROLES} roles.")
+    bindings: list[dict] = []
+    role_conflicts: list[dict] = []
+    assigned: set[str] = set()
+    for role in role_values:
+        name = _key(role.get("role"), "role.role")
+        record_kind = _text(role.get("record_kind"), f"role '{name}'.record_kind")
+        definition = registry.record_kind(reference.pack_id, record_kind)
+        if not definition.bindable:
+            raise CycleSchemaError(f"Role '{name}' requires a bindable record kind.")
+        cardinality = role.get("cardinality") or "one"
+        if cardinality not in CARDINALITIES:
+            raise CycleSchemaError(f"Role '{name}' has unsupported cardinality.")
+        reuse_rule = role.get("reuse_across_items") or "exclusive"
+        if reuse_rule not in REUSE_RULES:
+            raise CycleSchemaError(f"Role '{name}' has unsupported reuse rule.")
+        matches = [
+            value
+            for value in reached.values()
+            if value["record"]["record_kind"] == record_kind
+        ]
+        if cardinality == "one" and len(matches) > 1:
+            role_conflicts.append(
+                {
+                    "kind": "role_cardinality_conflict",
+                    "role": name,
+                    "record_ids": sorted(value["record"]["record_id"] for value in matches),
+                    "bindable": False,
+                }
+            )
+            continue
+        for value in matches:
+            record = value["record"]
+            assigned.add(record["record_id"])
+            bindings.append(
+                {
+                    "role": name,
+                    "document_id": record["document_id"],
+                    "record_id": record["record_id"],
+                    "record_kind": record["record_kind"],
+                    "record_content_hash": record.get("content_hash") or _canonical_hash(record),
+                    "matched_by": value["matched_by"],
+                    "reuse_across_items": reuse_rule,
+                }
+            )
+    return {
+        "state": "needs_review" if role_conflicts else "linked",
+        "registry": reference.to_dict(),
+        "records": [
+            {**value["record"], "matched_by": value["matched_by"]}
+            for _, value in sorted(reached.items())
+        ],
+        "role_bindings": sorted(bindings, key=lambda item: (item["role"], item["record_id"])),
+        "role_conflicts": role_conflicts,
+        "unassigned_records": sorted(set(reached) - assigned),
+        "counts": {
+            "hops": max((len(value["matched_by"]) for value in reached.values()), default=0),
+            "records": len(reached),
+            "edges": traversed_edges,
+        },
+    }
+
+
+def apply_cross_item_reuse(items: Iterable[object], roles: Iterable[object]) -> list[dict]:
+    """Annotate shared records according to each role's cross-item reuse rule."""
+
+    role_rules = {}
+    for role in (_object(value, "role") for value in roles):
+        name = _key(role.get("role"), "role.role")
+        rule = str(role.get("reuse_across_items") or "exclusive")
+        if rule not in REUSE_RULES:
+            raise CycleSchemaError(f"Role '{name}' has an unsupported reuse rule.")
+        role_rules[name] = rule
+    output = [json.loads(json.dumps(_object(value, "cycle item"), default=str)) for value in items]
+    uses: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
+    for item in output:
+        for binding in item.get("role_bindings") or []:
+            key = (str(binding.get("role") or ""), str(binding.get("record_id") or ""))
+            uses.setdefault(key, []).append((item, binding))
+    for (role, record_id), values in sorted(uses.items()):
+        if len(values) < 2:
+            continue
+        rule = role_rules.get(role, "exclusive")
+        related = sorted(str(item.get("id") or "") for item, _binding in values)
+        for item, binding in values:
+            fact = {
+                "role": role,
+                "record_id": record_id,
+                "related_item_ids": [value for value in related if value != str(item.get("id") or "")],
+                "reuse_across_items": rule,
+                "identifier_edge": (binding.get("matched_by") or [None])[-1],
+            }
+            item.setdefault("shared_record_facts", []).append(fact)
+            if rule == "exclusive":
+                item.setdefault("collisions", []).append({**fact, "kind": "cross_item_collision"})
+                item["linkage_state"] = "needs_review"
+    return output
+
+
+def _frame_signature(frame: pl.DataFrame) -> str:
+    hashes = frame.hash_rows(seed=0).to_list() if frame.height else []
+    return _canonical_hash(
+        {
+            "schema": [(name, str(dtype)) for name, dtype in frame.schema.items()],
+            "height": frame.height,
+            "row_hashes": hashes,
+        }
+    )
+
+
+def generate_cycle_candidates(
+    workspace,
+    *,
+    registry_ref: object,
+    mappings: Iterable[object],
+    records: Iterable[object],
+    required_roles: Iterable[object],
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict:
+    """Build and rank content-free population candidates using local Polars frames."""
+
+    reference = _registry_reference(registry_ref, registry)
+    record_values = [validate_evidence_record(value, registry=registry) for value in records]
+    if any(_registry_reference(value["registry"], registry) != reference for value in record_values):
+        raise CycleSchemaError("Candidate generation cannot use cross-pack or stale records.")
+    roles = []
+    for index, raw in enumerate(required_roles):
+        if isinstance(raw, str):
+            record_kind = raw
+            role = record_kind.rsplit(".", 1)[-1]
+            value = {
+                "role": role,
+                "record_kind": record_kind,
+                "cardinality": "many",
+                "reuse_across_items": "allowed",
+            }
+        else:
+            value = _object(raw, f"required_roles[{index}]")
+        definition = registry.record_kind(
+            reference.pack_id, str(value.get("record_kind") or "")
+        )
+        if not definition.bindable:
+            raise CycleSchemaError("Candidate roles require bindable record kinds.")
+        roles.append(value)
+    candidates: list[dict] = []
+    rejected: list[dict] = []
+    base_names = {str(item.get("name") or "") for item in workspace.tables}
+    join_names = {str(item.get("name") or "") for item in workspace.joins}
+    for index, raw in enumerate(mappings):
+        mapping = _object(raw, f"mappings[{index}]")
+        table = _text(mapping.get("table"), f"mappings[{index}].table")
+        if table not in base_names | join_names:
+            raise CycleSchemaError(f"Candidate table '{table}' does not exist.")
+        if table in join_names and not str(mapping.get("join_justification") or "").strip():
+            rejected.append({"table": table, "reason": "derived_join_requires_justification"})
+            continue
+        frame = workspace.get_frame(table)
+        row_key = _object(mapping.get("row_key"), f"mappings[{index}].row_key")
+        row_column = _text(row_key.get("column"), f"mappings[{index}].row_key.column")
+        row_kind = _text(row_key.get("identifier_kind"), f"mappings[{index}].row_key.identifier_kind")
+        if row_column not in frame.columns:
+            rejected.append({"table": table, "reason": "row_key_missing", "row_key": row_column})
+            continue
+        if registry.identifier_kind(reference.pack_id, row_kind).edge_policy != "transaction":
+            rejected.append({"table": table, "reason": "row_key_not_transaction", "row_key": row_column})
+            continue
+        null_count = int(frame.select(pl.col(row_column).null_count()).item())
+        unique_count = int(frame.select(pl.col(row_column).n_unique()).item())
+        if null_count or unique_count != frame.height:
+            rejected.append(
+                {
+                    "table": table,
+                    "reason": "row_key_must_be_non_null_and_unique",
+                    "row_key": row_column,
+                    "null_count": null_count,
+                    "unique_count": unique_count,
+                    "population_rows": frame.height,
+                }
+            )
+            continue
+        cycle_keys = []
+        invalid_mapping = None
+        seen_columns = {row_column}
+        for key_index, key_raw in enumerate(_list(mapping.get("cycle_keys"), f"mappings[{index}].cycle_keys", nonempty=True)):
+            key = _object(key_raw, f"mappings[{index}].cycle_keys[{key_index}]")
+            column = _text(key.get("column"), f"mappings[{index}].cycle_keys[{key_index}].column")
+            kind = _text(key.get("identifier_kind"), f"mappings[{index}].cycle_keys[{key_index}].identifier_kind")
+            if column not in frame.columns:
+                invalid_mapping = "cycle_key_missing"
+                break
+            if column in seen_columns:
+                invalid_mapping = "duplicate_population_key_column"
+                break
+            seen_columns.add(column)
+            if registry.identifier_kind(reference.pack_id, kind).edge_policy != "transaction":
+                invalid_mapping = "cycle_key_not_transaction"
+                break
+            cycle_keys.append({"column": column, "identifier_kind": kind})
+        if invalid_mapping:
+            rejected.append({"table": table, "reason": invalid_mapping})
+            continue
+        linked_rows = 0
+        complete_cycles = 0
+        reachable_records: set[str] = set()
+        reachable_documents: set[str] = set()
+        reachable_kinds: set[str] = set()
+        record_rows: dict[str, set[int]] = {}
+        limit_reviews = 0
+        required_kinds = {str(role.get("record_kind") or "") for role in roles}
+        for row_index, row in enumerate(frame.iter_rows(named=True)):
+            seeds = [
+                {"kind": key["identifier_kind"], "value": row.get(key["column"])}
+                for key in cycle_keys
+                if row.get(key["column"]) is not None and str(row.get(key["column"])).strip()
+            ]
+            linkage = link_cycle_records(
+                registry_ref=reference.to_dict(),
+                seeds=seeds,
+                records=record_values,
+                roles=roles,
+                registry=registry,
+            )
+            if linkage["state"] == "needs_review" and linkage.get("limit"):
+                limit_reviews += 1
+                continue
+            reached = linkage.get("records") or []
+            if reached:
+                linked_rows += 1
+            row_kinds = {str(value.get("record_kind") or "") for value in reached}
+            if required_kinds <= row_kinds and not linkage.get("role_conflicts"):
+                complete_cycles += 1
+            for value in reached:
+                record_id = str(value.get("record_id") or "")
+                reachable_records.add(record_id)
+                reachable_documents.add(str(value.get("document_id") or ""))
+                reachable_kinds.add(str(value.get("record_kind") or ""))
+                record_rows.setdefault(record_id, set()).add(row_index)
+        collisions = sum(len(rows) - 1 for rows in record_rows.values() if len(rows) > 1)
+        table_signature = _frame_signature(frame)
+        identity_material = {
+            "registry": reference.to_dict(),
+            "table_signature": table_signature,
+            "table": table,
+            "row_key": {"column": row_column, "identifier_kind": row_kind},
+            "cycle_keys": cycle_keys,
+        }
+        candidate_id = f"CYCLE-CAND-{_canonical_hash(identity_material).split(':', 1)[1][:20].upper()}"
+        required_coverage = len(required_kinds & reachable_kinds)
+        reachable_role_names = sorted(
+            str(role.get("role") or "")
+            for role in roles
+            if str(role.get("record_kind") or "") in reachable_kinds
+        )
+        source_priority = 0 if table in base_names else 1
+        candidate = {
+            "candidate_id": candidate_id,
+            "registry": reference.to_dict(),
+            "table": table,
+            "table_signature": table_signature,
+            "source_kind": "authoritative" if source_priority == 0 else "derived_join",
+            "join_justification": str(mapping.get("join_justification") or "") or None,
+            "row_key": {"column": row_column, "identifier_kind": row_kind},
+            "cycle_keys": cycle_keys,
+            "population_rows": frame.height,
+            "linked_rows": linked_rows,
+            "local_coverage": {
+                "linked_rows": linked_rows,
+                "population_rows": frame.height,
+                "ratio": linked_rows / frame.height if frame.height else 0.0,
+            },
+            "collision_count": collisions,
+            "reachable_record_count": len(reachable_records),
+            "reachable_document_count": len(reachable_documents),
+            "reachable_role_count": len(reachable_role_names),
+            "reachable_roles": reachable_role_names,
+            "reachable_record_kinds": sorted(reachable_kinds),
+            "required_role_coverage": required_coverage,
+            "required_role_count": len(required_kinds),
+            "complete_cycle_count": complete_cycles,
+            "graph_limit_review_rows": limit_reviews,
+            "rank_tuple": [
+                -required_coverage,
+                source_priority,
+                -complete_cycles,
+                -linked_rows,
+                collisions,
+                table,
+                row_column,
+            ],
+        }
+        candidates.append(candidate)
+    candidates.sort(key=lambda item: tuple(item["rank_tuple"]))
+    return {
+        "registry": reference.to_dict(),
+        "candidates": candidates,
+        "rejected_candidates": sorted(rejected, key=lambda item: json.dumps(item, sort_keys=True)),
+    }
+
+
+def select_prevalidated_candidate(
+    manifest: object,
+    candidate_id: object,
+    selection_reason: object,
+) -> dict:
+    """Accept only an exact ID from the deterministic candidate manifest."""
+
+    value = _object(manifest, "candidate manifest")
+    selected = next(
+        (
+            candidate
+            for candidate in value.get("candidates") or []
+            if isinstance(candidate, dict) and candidate.get("candidate_id") == candidate_id
+        ),
+        None,
+    )
+    if selected is None:
+        raise CycleSchemaError("The selected candidate ID is not prevalidated.")
+    return {**selected, "selection_reason": _text(selection_reason, "selection_reason")}
 
 
 def validate_control_attributes(

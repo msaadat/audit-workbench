@@ -9,11 +9,11 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import embedding
+from . import cycle_vouching, embedding
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
-ANALYSIS_SCHEMA_VERSION = "3"
-ANALYSIS_PROMPT_VERSION = "document-analysis-v4-voucher-fields"
+ANALYSIS_SCHEMA_VERSION = "4"
+ANALYSIS_PROMPT_VERSION = "document-analysis-v5-cycle-record-fragments"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
 
@@ -80,6 +80,7 @@ def _empty_index(document_id: str) -> dict:
 def _empty_review(document_id: str) -> dict:
     return {"schema_version": 1, "document_id": document_id, "revision": 0,
             "summary_override": None, "audit_notes_override": None,
+            "fragment_overrides": [], "fragment_override_state": "current",
             "review_state": "not_applicable", "reviewed_at": None,
             "updated_at": None, "decisions": []}
 
@@ -151,10 +152,15 @@ def analysis_content_sha1(payload: dict) -> str:
         "citations": [
             dict(item) for item in payload.get("citations") or []
         ],
-        # The voucher profile's structured half is part of the artifact's
-        # content identity: without it a reconciler could not tell a committed
-        # voucher analysis from one carrying only the narrative fields.
+        # The retained generic field surface and the clean registry-backed
+        # evidence surface are both content-addressed; new cycle extraction
+        # populates only the latter.
         "fields": dict(payload.get("fields") or {}),
+        "registry": dict(payload.get("registry") or {}),
+        "record_fragments": list(payload.get("record_fragments") or []),
+        "records": list(payload.get("records") or []),
+        "unresolved_fragments": list(payload.get("unresolved_fragments") or []),
+        "conflicts": list(payload.get("conflicts") or []),
         "prepared_media_set_hash": str(
             payload.get("prepared_media_set_hash") or ""
         ),
@@ -201,6 +207,13 @@ _GENERATED_PROJECTION_FIELDS = (
     "generation_profiles",
     "citations",
     "coverage",
+    "analysis_profile",
+    "fields",
+    "registry",
+    "record_fragments",
+    "records",
+    "unresolved_fragments",
+    "conflicts",
 )
 
 
@@ -211,6 +224,57 @@ def generated_projection(workspace: Workspace, document_id: str) -> dict | None:
     if artifact is None:
         return None
     return {key: artifact.get(key) for key in _GENERATED_PROJECTION_FIELDS}
+
+
+def registry_evidence_records(
+    workspace: Workspace,
+    registry_ref: object,
+) -> list[dict]:
+    """Load current reduced records for one exact pack or fail closed.
+
+    This is the local choke point candidate/linking callers use. Legacy voucher
+    fields, stale pack hashes, and records whose child reference differs from
+    the reduction are never reinterpreted as current cycle evidence.
+    """
+
+    try:
+        expected = cycle_vouching.DEFAULT_REGISTRY.validate_reference(registry_ref)
+    except ValueError as error:
+        raise WorkspaceError(str(error)) from error
+    records: list[dict] = []
+    for document in workspace.documents:
+        detail = load_analysis(workspace, str(document.get("id") or ""), document=document)
+        artifact = detail.get("effective")
+        if not artifact or artifact.get("analysis_profile") != "voucher":
+            continue
+        if (detail.get("review") or {}).get("fragment_override_state") == "stale":
+            raise WorkspaceError(
+                f"Voucher analysis for document '{document.get('id')}' has stale reviewed fragment assignments."
+            )
+        if not artifact.get("registry"):
+            raise WorkspaceError(
+                f"Voucher analysis for document '{document.get('id')}' is not registry-backed."
+            )
+        try:
+            actual = cycle_vouching.DEFAULT_REGISTRY.validate_reference(
+                artifact.get("registry")
+            )
+        except ValueError as error:
+            raise WorkspaceError(
+                f"Voucher analysis for document '{document.get('id')}' has a stale registry reference."
+            ) from error
+        if actual != expected:
+            continue
+        reduction = cycle_vouching.validate_evidence_reduction(
+            {
+                "registry": artifact.get("registry"),
+                "records": artifact.get("records") or [],
+                "unresolved_fragments": artifact.get("unresolved_fragments") or [],
+                "conflicts": artifact.get("conflicts") or [],
+            }
+        )
+        records.extend(dict(record) for record in reduction["records"])
+    return records
 
 
 def _authoritative_status(workspace: Workspace, document: dict) -> dict:
@@ -636,9 +700,15 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
             "summary_markdown": str(output.get("summary_markdown") or "").strip(),
             "audit_notes_markdown": str(output.get("audit_notes_markdown") or "").strip(),
             "citations": list(output.get("citations") or []),
-            # Empty for every profile but the voucher one, which is what makes
-            # the structured half optional rather than a second artifact kind.
+            # Retained as the generic field surface used by simple/non-cycle
+            # vouching. New cycle extraction writes only the registry-backed
+            # collections below and does not dual-write this legacy shape.
             "fields": dict(output.get("fields") or {}),
+            "registry": dict(output.get("registry") or {}),
+            "record_fragments": list(output.get("record_fragments") or []),
+            "records": list(output.get("records") or []),
+            "unresolved_fragments": list(output.get("unresolved_fragments") or []),
+            "conflicts": list(output.get("conflicts") or []),
             "analysis_profile": str(output.get("analysis_profile") or "standard"),
             "coverage": coverage or {"state": "complete", "analyzed_pages": [int(p["page"]) for p in extracted.get("pages") or [] if p.get("text")], "omitted_pages": []},
         }
@@ -680,6 +750,33 @@ def load_analysis(workspace: Workspace, document_id: str, *, document: dict | No
         effective = {**generated,
                      "summary_markdown": review.get("summary_override") if review.get("summary_override") is not None else generated.get("summary_markdown", ""),
                      "audit_notes_markdown": review.get("audit_notes_override") if review.get("audit_notes_override") is not None else generated.get("audit_notes_markdown", "")}
+        if generated.get("record_fragments"):
+            try:
+                reduction = cycle_vouching.reduce_record_fragments(
+                    document_id,
+                    generated.get("record_fragments") or [],
+                    overrides=review.get("fragment_overrides") or [],
+                )
+                effective.update(
+                    registry=reduction["registry"],
+                    records=reduction["records"],
+                    unresolved_fragments=reduction["unresolved_fragments"],
+                    conflicts=reduction["conflicts"],
+                    evidence_content_sha256=hashlib.sha256(
+                        json.dumps(
+                            reduction,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            default=str,
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                )
+                review = {**review, "fragment_override_state": "current"}
+            except cycle_vouching.CycleSchemaError:
+                # Reanalysis never silently rebinds an auditor decision.  The
+                # stale override remains in review history and the generated
+                # reduction is exposed unchanged until the auditor resolves it.
+                review = {**review, "fragment_override_state": "stale"}
     return {"document_id": document_id, "index_revision": index["revision"],
             "review_revision": review["revision"], "generated": generated,
             "effective": effective, "candidate": candidate, "review": review,
@@ -700,6 +797,28 @@ def patch_review(workspace: Workspace, document_id: str, payload: dict) -> dict:
             if request_key in payload:
                 value = payload[request_key]
                 review[storage_key] = None if value is None else str(value)
+        if "fragment_overrides" in payload:
+            overrides = payload.get("fragment_overrides")
+            if not isinstance(overrides, list):
+                raise WorkspaceError("fragment_overrides must be an array.")
+            active = _load_generated(
+                workspace,
+                document_id,
+                load_index(workspace, document_id).get("active_analysis_id"),
+            ) or {}
+            fragments = active.get("record_fragments") or []
+            if not fragments and overrides:
+                raise WorkspaceError(
+                    "This analysis has no registry-backed fragments to assign."
+                )
+            try:
+                cycle_vouching.reduce_record_fragments(
+                    document_id, fragments, overrides=overrides
+                )
+            except cycle_vouching.CycleSchemaError as error:
+                raise WorkspaceError(str(error)) from error
+            review["fragment_overrides"] = list(overrides)
+            review["fragment_override_state"] = "current"
         if "review_state" in payload:
             state = str(payload["review_state"])
             if state not in {"needs_review", "reviewed"}:
@@ -727,6 +846,16 @@ def accept_candidate(workspace: Workspace, document_id: str, payload: dict) -> d
         candidate_artifact = _load_generated(workspace, document_id, candidate)
         if not candidate_artifact or candidate_artifact.get("source_sha1") != document.get("sha1"):
             raise WorkspaceError("The analysis candidate belongs to an earlier document source and cannot be accepted.")
+        if candidate_artifact.get("record_fragments") or review.get("fragment_overrides"):
+            try:
+                cycle_vouching.reduce_record_fragments(
+                    document_id,
+                    candidate_artifact.get("record_fragments") or [],
+                    overrides=review.get("fragment_overrides") or [],
+                )
+                review["fragment_override_state"] = "current"
+            except cycle_vouching.CycleSchemaError:
+                review["fragment_override_state"] = "stale"
         from .documents import utcnow
         review.setdefault("decisions", []).append({"candidate_analysis_id": candidate, "decision": "accepted", "at": utcnow()})
         review.update(revision=review["revision"] + 1, review_state="needs_review", updated_at=utcnow())

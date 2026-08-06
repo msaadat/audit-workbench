@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: Phase 0 and the domain-neutral Phase 0.1 refactor are implemented as of 2026-08-06. The remaining phases are implementation-ready. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0, the domain-neutral Phase 0.1 refactor, and Phase 1 are implemented as of 2026-08-06. Checkpoint A has passed automated and live procurement validation, including auditor review of the five regenerated voucher analyses. Phases 2 onward remain implementation-ready. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -800,6 +800,25 @@ Expected result:
 - the receipt/requisition raw dates are either normalized or explicitly marked invalid; and
 - no cycle test is run against the old analysis hashes.
 
+Completion record (2026-08-06): Checkpoint A passed. The user re-ran and
+reviewed the five voucher analyses through the existing UX. Their active
+evidence uses procure-to-pay pack version 2 with definition hash
+`sha256:e1853d61a0f8c97ec19166941e53057b0609a68232b796453c48afafe85e483c`,
+contains exactly one current record for each of purchase requisition, purchase
+order, goods receipt, vendor invoice, and payment voucher, and has no unresolved
+fragments or record-kind conflicts. Exact bounded linkage reaches all five
+records; entity identifiers remain non-linking; the `P0`/`PO` typo remains
+visible without fuzzy correction; and the receipt, requisition, and payment
+dates are normalized. No cycle test existed or ran against stale evidence.
+
+The payment-voucher heading and voucher reference were visible but absent from
+the PDF text layer. At the user's explicit request, the source was replaced
+through the normal document service with a visually identical PDF containing an
+extractable invisible text layer. Replacement changed the source hash,
+invalidated the prior analysis, and refreshed extraction; the user then re-ran
+and reviewed that analysis. The implementation did not regenerate or accept any
+workspace analysis on the user's behalf.
+
 The implementation does not perform this reanalysis. Phase 2 may be coded against automated fixtures, but live-workspace UX validation waits for the user's checkpoint confirmation.
 
 ### Checkpoint B - full clean regeneration after Phase 2
@@ -907,7 +926,7 @@ generic validators; the registry core contains no procurement name switch;
 stale and cross-pack references fail closed; and the metadata contract exposes
 both packs for dynamic frontend authoring.
 
-### Phase 1 - extraction and deterministic cycle evidence
+### Phase 1 - extraction and deterministic cycle evidence (completed)
 
 - update document-analysis map extraction to select a registered pack and emit
   exact registry references, then implement deterministic record reduction and
@@ -916,7 +935,12 @@ both packs for dynamic frontend authoring.
 - implement candidate scoring over authoritative populations; and
 - stop at Checkpoint A, tell the user in chat what to reanalyze through the existing UX, and do not reanalyze the procurement workspace.
 
-Exit condition: automated fixtures reduce partial multi-chunk records without first-kind/list-order behavior, yield five distinct roles in one connected cycle, preserve normal shared PO/payment relationships, prevent vendor/buyer edges, and leave the PO typo visible without breaking the whole cycle. The user has been given the Checkpoint A instructions; live confirmation is recorded separately.
+Exit condition met: automated fixtures reduce partial multi-chunk records
+without first-kind/list-order behavior, yield five distinct roles in one
+connected cycle, preserve normal shared PO/payment relationships, prevent
+vendor/buyer edges, and leave the PO typo visible without breaking the whole
+cycle. Checkpoint A's user-driven regeneration and auditor review are recorded
+in section 9.
 
 ### Phase 2 - RCM and test generation
 

@@ -116,6 +116,12 @@ export interface GeneratedDocumentAnalysis {
   audit_notes_markdown: string
   /** Profile-specific structured extraction, such as voucher IDs and approvals. */
   fields?: Record<string, unknown>
+  registry?: CycleRegistryReference
+  record_fragments?: EvidenceRecordFragment[]
+  records?: ReducedEvidenceRecord[]
+  unresolved_fragments?: Array<{ reason: 'missing_identity' | 'ambiguous_identity'; fragment: EvidenceRecordFragment; candidate_component_count?: number }>
+  conflicts?: Array<Record<string, unknown>>
+  evidence_content_sha256?: string
   citations: DocumentAnalysisCitation[]
   coverage: {
     state: DocumentAnalysisCoverageState
@@ -214,7 +220,7 @@ export interface NormalizedEvidenceValue<T = unknown> {
   value: T | null
   normalization_status: 'normalized' | 'invalid'
   normalization_error: string | null
-  citation: string | DocumentAnalysisCitation
+  citation: string | DocumentAnalysisCitation | Array<string | DocumentAnalysisCitation>
 }
 
 export interface EvidenceRecordFragment {
@@ -250,6 +256,8 @@ export interface DocumentAnalysisDetail {
     revision: number
     summary_override: string | null
     audit_notes_override: string | null
+    fragment_overrides?: Array<Record<string, unknown>>
+    fragment_override_state?: 'current' | 'stale'
     review_state: 'not_applicable' | 'needs_review' | 'reviewed'
     reviewed_at: string | null
     updated_at: string | null

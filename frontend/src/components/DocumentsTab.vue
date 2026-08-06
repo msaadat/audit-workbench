@@ -82,7 +82,16 @@ const groupOptions = [
 const visualPageLimit = 20
 const visionAvailable = computed(() => agent.state.status?.vision_configured === true)
 const structuredFieldsJson = computed(() => {
-  const fields = analysis.value?.effective?.fields
+  const effective = analysis.value?.effective
+  if (effective?.registry) {
+    return JSON.stringify({
+      registry: effective.registry,
+      records: effective.records || [],
+      unresolved_fragments: effective.unresolved_fragments || [],
+      conflicts: effective.conflicts || [],
+    }, null, 2)
+  }
+  const fields = effective?.fields
   return fields && Object.keys(fields).length ? JSON.stringify(fields, null, 2) : ''
 })
 const providerOptions = computed(() => settingsStatus.value?.providers || [])
@@ -719,7 +728,7 @@ onUnmounted(() => {
               <MarkdownEditor v-model="summaryDraft" />
             </section>
             <section v-if="structuredFieldsJson" class="analysis-fields">
-              <header><div><h4>Structured Fields</h4><small>Generated profile-specific extraction. Read-only.</small></div></header>
+              <header><div><h4>Structured Evidence</h4><small>Registry-backed records, normalization states, and reduction review items. Read-only.</small></div></header>
               <pre>{{ structuredFieldsJson }}</pre>
             </section>
             <section class="analysis-editor">

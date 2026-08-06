@@ -21,7 +21,7 @@ import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from ... import document_analysis, documents as document_service
+from ... import cycle_vouching, document_analysis, documents as document_service
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError
 from .model import (
@@ -146,10 +146,19 @@ def _validated_analysis(
             if isinstance(citation, Mapping)
         ],
         "coverage": _plain_json(coverage),
-        # Present only for the voucher profile. It is part of the accepted
-        # proposal, so it is covered by ``analysis_content_sha1`` and the
-        # reconciler can prove a structured commit landed.
+        # Retained for non-cycle/simple-vouching analyses already using this
+        # generic document field surface. New cycle evidence is persisted in
+        # the exact registry-backed collections below.
         "fields": _plain_json(request.proposal.get("fields") or {}),
+        "registry": _plain_json(request.proposal.get("registry") or {}),
+        "record_fragments": _plain_json(
+            request.proposal.get("record_fragments") or []
+        ),
+        "records": _plain_json(request.proposal.get("records") or []),
+        "unresolved_fragments": _plain_json(
+            request.proposal.get("unresolved_fragments") or []
+        ),
+        "conflicts": _plain_json(request.proposal.get("conflicts") or []),
         "analysis_profile": str(
             request.proposal.get("analysis_profile") or "standard"
         ),
@@ -163,6 +172,25 @@ def _validated_analysis(
             request.proposal.get("prepared_media_set_hash") or ""
         ),
     }
+    if payload["analysis_profile"] == "voucher":
+        try:
+            reduction = cycle_vouching.validate_evidence_reduction(
+                {
+                    "registry": payload["registry"],
+                    "records": payload["records"],
+                    "unresolved_fragments": payload["unresolved_fragments"],
+                    "conflicts": payload["conflicts"],
+                }
+            )
+            if any(
+                str(record.get("document_id") or "") != target.document_id
+                for record in reduction["records"]
+            ):
+                raise WorkspaceError(
+                    "A reduced evidence record names a different document."
+                )
+        except cycle_vouching.CycleSchemaError as error:
+            raise WorkspaceError(str(error)) from error
     return target, payload
 
 

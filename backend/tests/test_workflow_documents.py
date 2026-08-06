@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from app import document_analysis, document_context, documents, llm, workspaces
+from app import cycle_vouching, document_analysis, document_context, documents, llm, workspaces
 from app.agent import runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent.capabilities import documents as document_capabilities
@@ -44,6 +44,7 @@ from conftest import FakeAgentLLM, wait_run
 
 MAP_TAG = "agent:document_analysis_map"
 REDUCE_TAG = "agent:document_analysis_reduce"
+VOUCHER_TAG = "agent:document_analysis_voucher"
 
 # Long enough that ``ANALYSIS_CHUNK_CHARACTERS`` splits it into several chunks.
 LONG_PAGE = "\n\n".join(
@@ -910,6 +911,140 @@ def test_voucher_category_routes_to_the_voucher_profile():
         spec["kind"]
         for spec in document_capabilities.analysis_unit_specs(ws, policy["id"], {})
     } == {"document_chunk_analysis"}
+
+
+def test_voucher_workflow_persists_registry_backed_reduced_records(monkeypatch):
+    reference = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict()
+
+    def voucher_response(user: str) -> dict:
+        source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].strip()
+        page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
+        chunk_id = user.split("\nCHUNK ID: ", 1)[1].splitlines()[0]
+        return {
+            "summary_markdown": "Purchase order evidence. [C1]",
+            "audit_notes_markdown": "No observations were identified on the face of this record.",
+            "citations": [{"id": "C1", "page": page, "excerpt": source}],
+            "registry": reference,
+            "record_fragments": [
+                {
+                    # Deterministic envelope fields are deliberately malformed:
+                    # semantic validation must replace, not trust, model output.
+                    "registry": {"pack_id": "invented"},
+                    "chunk_id": "invented-chunk",
+                    "page_span": str(page),
+                    "record_kind": "procure_to_pay.purchase_order",
+                    "classification_evidence": ["C1"],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.purchase_order_number",
+                            "value": {
+                                "raw_value": "PO-2025-001",
+                                "value": "PO-2025-001",
+                                "normalization_status": "normalized",
+                                "normalization_error": None,
+                                "citation": "C1",
+                            },
+                        }
+                    ],
+                    "fields": [
+                        {
+                            # Registered for the pack but unavailable on a PO.
+                            "group": "parties",
+                            "kind": "common.party.name",
+                            "attribute": "name",
+                            "value": {
+                                "raw_value": "Vendor Ltd",
+                                "value": "Vendor Ltd",
+                                "normalization_status": "success",
+                                "citation": "C1",
+                            },
+                        },
+                        {
+                            "group": "amounts",
+                            # Model-facing aliases are canonicalized locally.
+                            "kind": "common.amount.total",
+                            "attribute": "raw_value",
+                            "value": {
+                                "raw_value": "4,800",
+                                "value": 4800,
+                                "normalization_status": "normalized",
+                                "normalization_error": None,
+                                "citation": "C1",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+    ws = workspaces.create_workspace("Registry voucher workflow")
+    voucher = documents.add_document(
+        ws,
+        "PO-2025-001.txt",
+        b"Purchase order PO-2025-001 has total PKR 4,800.",
+        category="voucher",
+    )
+    documents.extract_document(ws, voucher["id"])
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    finished = wait_run(
+        ws,
+        runner.start_command_run(
+            ws,
+            "auto",
+            {
+                "source": "tab_button",
+                "text": "Analyze the selected voucher.",
+                "goal_template": "document_analysis",
+                "requested_outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
+                "target_refs": [f"document:{voucher['id']}"],
+            },
+            context={"document_ids": [voucher["id"]], "action": "analyze"},
+        )["id"],
+    )
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+    assert analysis["registry"] == reference
+    assert len(analysis["record_fragments"]) == 1
+    assert analysis["record_fragments"][0]["registry"] == reference
+    assert analysis["record_fragments"][0]["chunk_id"] == "AC-0001"
+    assert analysis["record_fragments"][0]["page_span"] == [1, 1]
+    assert len(analysis["record_fragments"][0]["fields"]) == 1
+    assert analysis["record_fragments"][0]["fields"][0]["kind"] == "total"
+    assert analysis["record_fragments"][0]["fields"][0]["attribute"] == "value"
+    assert len(analysis["records"]) == 1
+    assert analysis["records"][0]["record_kind"] == "procure_to_pay.purchase_order"
+    assert analysis["records"][0]["identifiers"][0]["value"]["value"] == "po-2025-001"
+    assert analysis["records"][0]["fields"][0]["value"]["value"] == 4800
+    assert document_analysis.registry_evidence_records(
+        workspaces.load_workspace(ws.id), reference
+    )[0]["record_id"] == analysis["records"][0]["record_id"]
+
+
+def test_voucher_prompt_exposes_exact_registry_reference_objects():
+    descriptors = json.loads(document_workers._VOUCHER_REGISTRY_DESCRIPTORS)
+
+    assert descriptors
+    assert {
+        descriptor["registry"]["pack_id"] for descriptor in descriptors
+    } == {"procure_to_pay", "payroll"}
+    for descriptor in descriptors:
+        reference = descriptor["registry"]
+        assert reference == cycle_vouching.DEFAULT_REGISTRY.reference(
+            reference["pack_id"]
+        ).to_dict()
+        assert set(reference) == {"pack_id", "pack_version", "definition_hash"}
+        assert "id" not in descriptor
+        assert "version" not in descriptor
+        assert "definition_hash" not in descriptor
+
+    assert "copy its\n`registry` object exactly" in document_workers.VOUCHER_SYSTEM
+    assert "`pack_id`, `pack_version`, and" in document_workers.VOUCHER_SYSTEM
+    assert "pack_id, version, and definition_hash" not in document_workers.VOUCHER_SYSTEM
 
 
 def test_vouchers_stay_out_of_the_unscoped_planning_default():
