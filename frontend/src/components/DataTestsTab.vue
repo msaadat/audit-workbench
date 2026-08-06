@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
+import Drawer from 'primevue/drawer'
 import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
@@ -29,7 +30,6 @@ import DataTestList from './data-tests/DataTestList.vue'
 import DataTestResultPanel from './data-tests/DataTestResultPanel.vue'
 import PolarsStepEditor from './data-tests/PolarsStepEditor.vue'
 import { emptyPolarsStep, polarsStepsValid } from './data-tests/steps'
-import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
@@ -54,6 +54,11 @@ const requestedRcmId = String(route.query.rcm || '')
 const requestedEngine: DataTestEngine = String(route.query.create) === 'polars' ? 'polars' : 'analytics'
 const result = ref<DataTestResult | null>(null)
 const createOpen = ref(false)
+// Authoring is a mode, not a section of the record. It used to be an inline
+// accordion that sprang open for every test the agent had drafted but not run
+// — which is most of them — and pushed the result off the screen.
+const definitionOpen = ref(false)
+const definitionSnapshot = ref<Partial<DataTest> | null>(null)
 const creating = ref(false)
 const saving = ref(false)
 const running = ref(false)
@@ -136,8 +141,7 @@ async function load() {
   const target = tests.value.find(item => item.id === selectedId.value) ?? visibleTests.value[0] ?? tests.value[0]
   if (target) selectTest(target)
 }
-function selectTest(item: DataTest) {
-  selectedId.value = item.id
+function seedEditors(item: DataTest) {
   const params = item.spec.params
   editAnalyticsSpec.value = {
     test_id: String(item.spec.test_id ?? ''),
@@ -149,6 +153,39 @@ function selectTest(item: DataTest) {
     ? JSON.parse(JSON.stringify(item.spec.steps)) as DataTestStep[]
     : [emptyPolarsStep()]
   editAnalyticsReady.value = false
+}
+
+// The plan fields bind straight to the selected test, so leaving the drawer
+// without saving has to put the record back the way it was. Escape and a mask
+// click go through the same event, which is why the revert lives here and not
+// on the Cancel button. `hide` rather than `after-hide`: `after-hide` waits on
+// the leave animation, and a revert that silently does not happen is worse
+// than one that happens a frame early.
+function openDefinition() {
+  const item = selected.value
+  if (!item) return
+  definitionSnapshot.value = {
+    title: item.title,
+    objective: item.objective,
+    criteria: item.criteria,
+    rcm_id: item.rcm_id,
+    table_refs: [...item.table_refs],
+  }
+  definitionOpen.value = true
+}
+function onDefinitionHide() {
+  const item = selected.value
+  const snapshot = definitionSnapshot.value
+  if (item && snapshot) {
+    Object.assign(item, snapshot)
+    seedEditors(item)
+  }
+  definitionSnapshot.value = null
+}
+
+function selectTest(item: DataTest) {
+  selectedId.value = item.id
+  seedEditors(item)
   result.value = null
   void nav.replace('data-tests', { test: item.id })
   if (item.last_run) void loadResult(item, item.last_run.id)
@@ -200,6 +237,10 @@ async function save(thenRun: boolean) {
     }
     await load()
     emit('changed')
+    // The edit landed, so there is nothing to roll back — drop the snapshot
+    // before closing or `hide` would undo what was just saved.
+    definitionSnapshot.value = null
+    definitionOpen.value = false
     toast.add({
       severity: 'success',
       summary: thenRun ? 'Saved and run' : 'Definition saved',
@@ -376,74 +417,14 @@ onUnmounted(unsubscribe)
           </header>
 
           <div class="detail-main">
-          <DataTestResultPanel :test="selected" :result="result" />
-
-          <!-- Authoring is the rarer action, so it is here and closed. -->
-          <UiAdvancedSection
-            title="Definition"
-            description="What this test runs, and the plan it belongs to"
-            :open="!selected.last_run"
-          >
-            <div class="definition">
-              <div class="plan">
-                <label>Title<InputText v-model="selected.title" /></label>
-                <label>
-                  Risk and control
-                  <Select
-                    v-model="selected.rcm_id"
-                    :options="rcmOptions"
-                    optionLabel="label"
-                    optionValue="value"
-                    filter
-                    showClear
-                    placeholder="Exploratory"
-                  />
-                </label>
-                <label v-if="selected.engine !== 'polars'">
-                  Table
-                  <Select
-                    v-model="selected.table_refs[0]"
-                    :options="tableOptions"
-                    optionLabel="label"
-                    optionValue="value"
-                    filter
-                  />
-                </label>
-                <label class="wide">Objective<Textarea v-model="selected.objective" rows="2" autoResize /></label>
-                <label class="wide">Criteria<Textarea v-model="selected.criteria" rows="2" autoResize /></label>
-              </div>
-
-              <AnalyticsTestAuthor
-                v-if="selected.engine === 'analytics'"
-                :key="selected.id"
-                v-model="editAnalyticsSpec"
-                :workspace="workspace"
-                :table="selected.table_refs[0] || null"
-                @valid="editAnalyticsReady = $event"
-                @error="fail"
-              />
-              <PolarsStepEditor v-else-if="selected.engine === 'polars'" v-model="editPolarsSteps" />
-              <p v-else class="muted">This draft has no executable definition yet.</p>
-
-              <div class="save-row">
-                <Button label="Save only" size="small" text :loading="saving" :disabled="!definitionReady" @click="save(false)" />
-                <Button
-                  label="Save and run"
-                  icon="pi pi-play"
-                  size="small"
-                  :loading="saving || running"
-                  :disabled="!definitionReady"
-                  @click="save(true)"
-                />
-              </div>
-            </div>
-          </UiAdvancedSection>
+            <DataTestResultPanel :test="selected" :result="result" />
           </div>
 
           <!-- The rail: run it, and record what it means. -->
           <aside class="detail-rail" aria-label="Your assessment">
             <div class="rail-group">
               <Button label="Run" icon="pi pi-play" size="small" :loading="running" :disabled="runningAll" @click="runTest" />
+              <Button label="Edit definition" icon="pi pi-sliders-h" size="small" outlined @click="openDefinition" />
               <Button v-if="selected.rcm_id" label="Open RCM" icon="pi pi-map" size="small" outlined @click="openRcm" />
               <Button label="Pin" icon="pi pi-thumbtack" size="small" outlined :disabled="!selected.last_run" @click="pin" />
             </div>
@@ -515,6 +496,80 @@ onUnmounted(unsubscribe)
       @create="createTest"
       @error="fail"
     />
+
+    <!-- Authoring gets the width it needs instead of competing with the result
+         for the record column. -->
+    <Drawer
+      v-model:visible="definitionOpen"
+      position="right"
+      class="definition-drawer"
+      :style="{ width: 'min(52rem, 96vw)' }"
+      @hide="onDefinitionHide"
+    >
+      <template #header>
+        <div class="drawer-head">
+          <p class="eyebrow">Definition</p>
+          <strong>{{ selected?.title }}</strong>
+        </div>
+      </template>
+
+      <div v-if="selected" class="definition">
+        <div class="plan">
+          <label>Title<InputText v-model="selected.title" /></label>
+          <label>
+            Risk and control
+            <Select
+              v-model="selected.rcm_id"
+              :options="rcmOptions"
+              optionLabel="label"
+              optionValue="value"
+              filter
+              showClear
+              placeholder="Exploratory"
+            />
+          </label>
+          <label v-if="selected.engine !== 'polars'">
+            Table
+            <Select
+              v-model="selected.table_refs[0]"
+              :options="tableOptions"
+              optionLabel="label"
+              optionValue="value"
+              filter
+            />
+          </label>
+          <label class="wide">Objective<Textarea v-model="selected.objective" rows="2" autoResize /></label>
+          <label class="wide">Criteria<Textarea v-model="selected.criteria" rows="2" autoResize /></label>
+        </div>
+
+        <AnalyticsTestAuthor
+          v-if="selected.engine === 'analytics'"
+          :key="selected.id"
+          v-model="editAnalyticsSpec"
+          :workspace="workspace"
+          :table="selected.table_refs[0] || null"
+          @valid="editAnalyticsReady = $event"
+          @error="fail"
+        />
+        <PolarsStepEditor v-else-if="selected.engine === 'polars'" v-model="editPolarsSteps" />
+        <p v-else class="muted">This draft has no executable definition yet.</p>
+      </div>
+
+      <template #footer>
+        <div class="save-row">
+          <Button label="Cancel" size="small" text severity="secondary" @click="definitionOpen = false" />
+          <Button label="Save only" size="small" outlined :loading="saving" :disabled="!definitionReady" @click="save(false)" />
+          <Button
+            label="Save and run"
+            icon="pi pi-play"
+            size="small"
+            :loading="saving || running"
+            :disabled="!definitionReady"
+            @click="save(true)"
+          />
+        </div>
+      </template>
+    </Drawer>
   </div>
 </template>
 
@@ -552,6 +607,12 @@ onUnmounted(unsubscribe)
   .detail-rail { position: sticky; top: 0; align-self: start; }
 }
 
+/* The definition editor now lives in a drawer, which PrimeVue teleports to the
+   body. Scoped styles still reach it — the scope attribute is on these
+   elements — but a container query cannot, because `detail-main` is no longer
+   an ancestor. Hence a viewport query for the narrow case. */
+.drawer-head { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.drawer-head strong { font-size: var(--aw-text-md); }
 .definition { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
 .plan { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.7rem; }
 .wide { grid-column: 1 / -1; }
@@ -560,8 +621,7 @@ onUnmounted(unsubscribe)
 label { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label :deep(.p-inputtext), label :deep(.p-textarea), label :deep(.p-select) { width: 100%; min-width: 0; }
 
-/* Keyed to the record column: the rail takes width out of it. */
-@container detail-main (max-width: 30rem) {
+@media (max-width: 44rem) {
   .plan { grid-template-columns: minmax(0, 1fr); }
   .wide { grid-column: auto; }
 }

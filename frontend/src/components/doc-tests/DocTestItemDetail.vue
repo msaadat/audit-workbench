@@ -70,7 +70,6 @@ const controlConclusions = [
 
 const documentOptions = computed(() => props.documents.map(doc => ({ label: doc.title, value: doc.id })))
 const attachable = computed(() => documentOptions.value.filter(option => !props.item.document_ids.includes(option.value)))
-const executedLocally = computed(() => props.test.kind === 'vouching')
 // The per-document breakdown is the real answer whenever more than one
 // document was assessed; the flattened response loses which said what.
 const perDocumentAnswers = computed(() => Object.entries(props.item.qa_answers ?? {}))
@@ -166,25 +165,27 @@ function attach() {
     <!-- Identity only. The status, the run action, and everything the auditor
          records all live together in the rail. -->
     <header class="detail-head">
-      <p class="eyebrow">{{ kindLabel[test.kind ?? ''] ?? 'Document work' }} · {{ item.id }}</p>
-      <h3>{{ item.label || item.id }}</h3>
-      <p class="context">
-        <span>{{ test.title }}</span>
-        <button v-if="test.rcm_id" type="button" class="link" @click="emit('openRcm', test.rcm_id)">
-          {{ test.rcm_id }}
-        </button>
-        <em v-else>Not linked to an RCM row — this work does not count as coverage.</em>
-      </p>
+      <!-- The test title is the readable name of this work; the item label is
+           a slug, so it identifies the specific check rather than heading it. -->
+      <div class="head-copy">
+        <p class="eyebrow">{{ kindLabel[test.kind ?? ''] ?? 'Document work' }} · {{ item.id }}</p>
+        <h3>{{ test.title || item.label || item.id }}</h3>
+        <p v-if="item.label && item.label !== test.title" class="context">{{ item.label }}</p>
+      </div>
+      <Button
+        v-if="test.rcm_id"
+        :label="test.rcm_id"
+        icon="pi pi-map"
+        size="small"
+        outlined
+        class="rcm-link"
+        @click="emit('openRcm', test.rcm_id)"
+      />
+      <p v-else class="unlinked">Not linked to an RCM row — this work does not count as coverage.</p>
     </header>
 
     <!-- The record: what the procedure was and what the run found. -->
     <div class="detail-main">
-    <p class="mode-note">
-      <i class="pi pi-info-circle" />
-      {{ executedLocally
-        ? 'Comparison values are matched deterministically; the assistant orchestrates the run and records citations.'
-        : 'Assessed by the assistant against cited document text; every conclusion carries a page citation.' }}
-    </p>
     <p v-if="item.runner_note" class="runner-note"><i class="pi pi-info-circle" />{{ item.runner_note }}</p>
 
     <section class="block">
@@ -561,12 +562,13 @@ function attach() {
    taller than its rows, and the default stretch would pour that slack into the
    header row instead of leaving it at the bottom. */
 .detail { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--aw-space-4); min-width: 0; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
-.detail-head { min-width: 0; }
+.detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--aw-space-4); min-width: 0; }
+.head-copy { min-width: 0; }
 .eyebrow { margin: 0; }
 .detail-head h3 { margin: 0.15rem 0 0.25rem; font-size: var(--aw-text-lg); line-height: 1.3; }
-.context { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
-.context em { color: var(--aw-warn); font-style: normal; }
-.link { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-weight: 600; padding: 0; }
+.context { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); font-family: var(--aw-font-mono); }
+.rcm-link { flex: 0 0 auto; }
+.unlinked { flex: 0 1 16rem; margin: 0; color: var(--aw-warn); font-size: var(--aw-text-sm); text-align: right; }
 
 /* The record column is its own container: the panels inside it size against
    the space they actually have, which is now roughly a rail narrower than
@@ -595,10 +597,11 @@ function attach() {
   .detail-rail { position: sticky; top: 0; align-self: start; }
 }
 
-.mode-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-sm); }
-
-.block { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding: 0.85rem 0; border-top: 1px solid var(--aw-border); }
-.block h4 { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
+/* A muted 0.72rem heading sitting directly on body copy of the same weight did
+   not read as a section break. The heading now takes ink colour and the body
+   size, and the rule gets room to breathe on both sides. */
+.block { display: flex; flex-direction: column; gap: 0.55rem; min-width: 0; padding: 1.15rem 0 0.35rem; border-top: 1px solid var(--aw-border); }
+.block h4 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 700; letter-spacing: -0.01em; }
 .instruction { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
 .question { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .response { margin: 0; font-size: var(--aw-text-base); line-height: 1.55; }
@@ -609,7 +612,7 @@ function attach() {
 .answer p { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
 .citations { display: flex; flex-wrap: wrap; gap: 0.2rem; }
 blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-teal); background: var(--aw-raised); font-size: var(--aw-text-sm); line-height: 1.5; }
-.runner-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0.5rem 0 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); font-size: var(--aw-text-sm); }
+.runner-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0 0 0.15rem; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); font-size: var(--aw-text-sm); }
 
 .check { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.65rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
 .check-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
