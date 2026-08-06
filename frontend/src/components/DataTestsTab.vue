@@ -522,7 +522,8 @@ onUnmounted(unsubscribe)
 .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .layout { min-height: 32rem; }
 
-.detail { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; max-width: 100%; padding: 1rem; }
+/* One panel for the whole detail column — see DocTestItemDetail for why. */
+.detail { display: flex; flex-direction: column; gap: 0.8rem; min-width: 0; max-width: 100%; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; min-width: 0; }
 .head-copy { min-width: 0; }
 .eyebrow { margin: 0; }

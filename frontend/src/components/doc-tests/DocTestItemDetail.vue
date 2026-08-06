@@ -541,7 +541,11 @@ function attach() {
 </template>
 
 <style scoped>
-.detail { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; padding: 1rem; }
+/* The detail column is one panel, not a stack of them. Sections inside it are
+   separated by a rule and whitespace; only the repeated records inside a
+   section (an answer, a check, an evidence request) still take a fill. That
+   keeps the nesting to one level instead of the three it had. */
+.detail { display: flex; flex-direction: column; gap: 0; min-width: 0; min-height: 100%; padding: 1rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
 .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; min-width: 0; }
 .head-copy { min-width: 0; }
 .eyebrow { margin: 0; }
@@ -551,10 +555,9 @@ function attach() {
 .link { border: 0; background: transparent; color: var(--aw-teal); cursor: pointer; font: inherit; font-weight: 600; padding: 0; }
 .head-status { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
 
-.mode-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-canvas); color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.mode-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0.75rem 0 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
-.block { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding: 0.8rem; border-radius: var(--aw-radius-surface); background: var(--aw-panel); }
-.block[data-empty='true'] { background: var(--aw-raised); }
+.block { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding: 0.85rem 0; border-top: 1px solid var(--aw-border); }
 .block h4 { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 700; }
 .finding-action { align-items: center; flex-direction: row; justify-content: space-between; }
 .finding-action p { margin: 0.2rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
@@ -564,14 +567,14 @@ function attach() {
 .response { margin: 0; font-size: var(--aw-text-base); line-height: 1.55; }
 .muted { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
-.answer { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.6rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+.answer { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.6rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
 .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .answer p { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
 .citations { display: flex; flex-wrap: wrap; gap: 0.2rem; }
-blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-teal); background: var(--aw-canvas); font-size: var(--aw-text-sm); line-height: 1.5; }
-.runner-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); font-size: var(--aw-text-sm); }
+blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-teal); background: var(--aw-raised); font-size: var(--aw-text-sm); line-height: 1.5; }
+.runner-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0.5rem 0 0; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); font-size: var(--aw-text-sm); }
 
-.check { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.65rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+.check { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.65rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
 .check-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: 0.5rem; align-items: center; padding: 0.4rem 0; border-top: 1px solid var(--aw-border); font-size: var(--aw-text-sm); }
 .comparison-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -589,7 +592,7 @@ blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-
 .coverage { margin: 0 0 0.5rem; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .frozen { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; font-size: var(--aw-text-sm); color: var(--aw-muted); }
 code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-wrap: anywhere; }
-.attribute { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr); gap: 0.5rem; align-items: center; padding: 0.5rem 0.6rem; border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+.attribute { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr); gap: 0.5rem; align-items: center; padding: 0.5rem 0.6rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
 
 .attached { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .doc-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.5rem; border-radius: var(--aw-radius-pill); background: var(--aw-teal-soft); color: var(--aw-teal); font-size: var(--aw-text-xs); font-weight: 600; }
@@ -598,7 +601,7 @@ code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-
 .conflict { background: var(--aw-danger-soft); color: var(--aw-danger); }
 .gap strong, .conflict strong { display: flex; align-items: center; gap: 0.35rem; }
 .evidence-requests { display: grid; gap: 0.45rem; margin-top: 0.05rem; }
-.evidence-request { display: grid; gap: 0.25rem; padding: 0.55rem 0.65rem; border-left: 3px solid var(--aw-warn); border-radius: var(--aw-radius-control); background: var(--aw-canvas); }
+.evidence-request { display: grid; gap: 0.25rem; padding: 0.55rem 0.65rem; border-left: 3px solid var(--aw-warn); border-radius: 0 var(--aw-radius-control) var(--aw-radius-control) 0; background: var(--aw-raised); }
 .evidence-request[data-status='received'], .evidence-request[data-status='cancelled'] { border-left-color: var(--aw-ok); opacity: 0.8; }
 .evidence-request-head { display: flex; justify-content: space-between; gap: 0.5rem; }
 .evidence-request-head small { color: var(--aw-muted); font-family: var(--aw-font-mono); }
@@ -613,7 +616,8 @@ code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-
 .outcome dt { color: var(--aw-muted); font-weight: 600; }
 .outcome dd { margin: 0; }
 
-.sign-off { position: sticky; bottom: -1rem; z-index: 2; display: flex; flex-direction: column; gap: 0.55rem; margin: 0 -1rem -1rem; padding: 0.75rem 1rem; border-top: 1px solid var(--aw-border); background: var(--aw-panel); }
+/* Bleeds to the panel edge, so it has to carry the panel's bottom corners. */
+.sign-off { position: sticky; bottom: -1rem; z-index: 2; display: flex; flex-direction: column; gap: 0.55rem; margin: 0 -1rem -1rem; padding: 0.75rem 1rem; border-top: 1px solid var(--aw-border); border-radius: 0 0 var(--aw-radius-surface) var(--aw-radius-surface); background: var(--aw-panel); }
 .sign-off-note { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .dispositions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 label { display: flex; flex-direction: column; gap: 0.3rem; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
