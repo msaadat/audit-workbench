@@ -82,24 +82,72 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
     planning = _resolved_item(request, "planning_context")
     if isinstance(planning, Mapping):
         planning = planning.get("context") or {}
-    documents = _source_items(request, GENERATE_DOCUMENT_SOURCE_ID)
+    raw_tables = _source_items(request, GENERATE_TABLE_SOURCE_ID)
+    table_schemas = []
+    anchor_candidates = []
+    for raw in raw_tables:
+        if not isinstance(raw, Mapping):
+            table_schemas.append(raw)
+            continue
+        anchor_candidates.extend(
+            dict(item)
+            for item in raw.get("vouch_anchor_candidates") or []
+            if isinstance(item, Mapping)
+        )
+        table_schemas.append(
+            {
+                str(key): _plain_json(value)
+                for key, value in raw.items()
+                if key != "vouch_anchor_candidates"
+            }
+        )
+    raw_documents = _source_items(request, GENERATE_DOCUMENT_SOURCE_ID)
+    documents = []
+    vouch_documents = []
+    for raw in raw_documents:
+        if not isinstance(raw, Mapping):
+            documents.append(raw)
+            continue
+        profile = raw.get("vouch_profile")
+        if isinstance(profile, Mapping) and profile.get("document_type"):
+            vouch_documents.append(_plain_json(profile))
+        documents.append(
+            {
+                str(key): _plain_json(value)
+                for key, value in raw.items()
+                if key != "vouch_profile"
+            }
+        )
     # Which supplied documents are transaction evidence is the single fact that
     # decides whether a cycle test is possible, and it is otherwise buried in a
     # per-document category field. Surfacing it is context the model lacks, not a
     # thumb on the scale: the model still chooses the mode.
     evidence = [
         str(item.get("id") or "")
-        for item in documents
+        for item in raw_documents
         if isinstance(item, Mapping)
-        and str(item.get("category") or "") == _TRANSACTION_EVIDENCE_CATEGORY
+        and (
+            str(item.get("category") or "") == _TRANSACTION_EVIDENCE_CATEGORY
+            or bool(item.get("vouch_profile"))
+        )
     ]
+    available_document_types = sorted(
+        {
+            str(item.get("document_type") or "")
+            for item in vouch_documents
+            if str(item.get("document_type") or "")
+        }
+    )
     return {
         "target_rcm_row": _resolved_item(request, GENERATE_ROW_SOURCE_ID),
         "planning_context": planning,
-        "table_schemas": _source_items(request, GENERATE_TABLE_SOURCE_ID),
+        "table_schemas": table_schemas,
         "documents": documents,
         "transaction_evidence": {
             "document_ids": evidence,
+            "documents": vouch_documents,
+            "available_document_types": available_document_types,
+            "anchor_candidates": anchor_candidates,
             "note": (
                 "These documents carry an extracted structured record — "
                 "identifiers, parties, dates, amounts, line items, approvals, and "
@@ -142,13 +190,16 @@ def _context_metrics(request: WorkerRequest, worker_kind: str) -> dict:
     return activity
 
 
-def _repair_suffix(attempt: WorkerAttempt) -> str:
+def _repair_instruction(attempt: WorkerAttempt) -> str:
+    """Tell the model to correct the exact prior candidate in place."""
+
     if not attempt.is_repair:
-        return ""
+        raise WorkerContractError("Repair guidance requires a repair attempt.")
     return (
-        "\n\nYour previous response could not be used: "
+        "The preceding JSON response could not be used: "
         + "; ".join(attempt.validation_errors)
-        + ". Return a complete corrected JSON object."
+        + ". Correct those violations while preserving every unaffected test and "
+        "field. Return the complete corrected JSON object."
     )
 
 
@@ -177,9 +228,93 @@ _METHODOLOGY_REF_FIELDS = (
 # (docs/test-capability-merge-plan.md).
 # --------------------------------------------------------------------------- #
 GENERATE_WORKER_ID = "tests.generate"
+
+# Machine-readable authored contract. The prose below explains audit method;
+# this descriptor owns the response variants and is also the response-schema
+# identity. Keeping discriminator shapes in data makes the unary/binary and
+# question/evidence distinctions inspectable and testable without growing a
+# second hand-written pseudo-schema.
+GENERATE_RESPONSE_CONTRACT = {
+    "envelope": {"required": ["tests"], "additional_fields": False},
+    "test": {
+        "discriminator": ["source", "steps[].mode"],
+        "required": ["source", "title", "objective", "steps"],
+        "additional_fields": False,
+        "variants": {
+            "data": {
+                "when": {"source": "data"},
+                "step": {
+                    "required": ["label", "instruction", "code"],
+                    "additional_fields": False,
+                }
+            },
+            "document_question": {
+                "when": {"source": "document", "mode": "question"},
+                "step": {
+                    "required": [
+                        "label",
+                        "instruction",
+                        "mode",
+                        "document_ids",
+                        "question",
+                    ],
+                    "mode": "question",
+                    "variants": {
+                        "with_sources": {
+                            "document_ids": "non_empty",
+                            "optional": ["scope_limitation"],
+                            "forbidden": ["missing_evidence"],
+                        },
+                        "missing_evidence": {
+                            "document_ids": "empty",
+                            "required": ["missing_evidence"],
+                            "forbidden": ["scope_limitation"],
+                        },
+                    },
+                    "additional_fields": False,
+                }
+            },
+            "document_vouch": {
+                "when": {"source": "document", "mode": "vouch"},
+                "step": {
+                    "required": [
+                        "label",
+                        "instruction",
+                        "mode",
+                        "anchor_table",
+                        "anchor_key",
+                        "document_roles",
+                        "checks",
+                    ],
+                    "mode": "vouch",
+                    "count": 1,
+                    "check_variants": {
+                        "present": {
+                            "required": ["field", "left", "method"],
+                            "method": "present",
+                            "forbidden": ["right", "tolerance"],
+                        },
+                        "binary": {
+                            "required": ["field", "left", "right", "method"],
+                            "methods": sorted(
+                                set(doc_tests.METHODS) - set(doc_tests.UNARY_METHODS)
+                            ),
+                            "optional": ["tolerance"],
+                        },
+                    },
+                    "document_types": list(
+                        document_analysis.VOUCHER_DOCUMENT_TYPES
+                    ),
+                    "additional_fields": False,
+                }
+            },
+        },
+    },
+}
+
 GENERATE_SYSTEM = f"""[agent:test_generate]
 Generate the complete, executable tests that cover exactly one supplied RCM
-row. Return an object with `tests`, a discriminated array. Each test has
+row. Return an object with `tests`, a discriminated union. Each test has
 exactly these fields, all required:
   source      "data" if the test is answered by analysing an imported table,
               "document" if it is answered by reading documents
@@ -255,14 +390,19 @@ approved within limits, or paid after approval — is a "vouch" test whenever
 transaction evidence is available, because reading a policy cannot establish
 that. Prefer "vouch" over a question that merely asks whether evidence exists.
 
-A "question" step reads named documents and asks one question:
+A "question" step has exactly one of two shapes:
+  with sources      document_ids is non-empty; missing_evidence is omitted;
+                    scope_limitation may name evidence the supplied documents
+                    do not themselves provide
+  missing evidence  document_ids is empty; missing_evidence is a non-empty
+                    description of the evidence required
+
+Both question shapes also carry:
   label             short name for the step
   instruction       what the step determines
   mode              "question"
   document_ids      array of exact document ids the step reads
   question          the question to answer from those documents
-  missing_evidence  non-empty only when document_ids is empty, naming the
-                    specific evidence required
 Use only document ids from the supplied context. If the required evidence is
 missing, still return a concrete step with an empty document_ids array and a
 specific missing_evidence string — never invent a document id.
@@ -282,7 +422,18 @@ document is compared against. Fields:
                   this closed vocabulary, which is what the extraction records —
                   not the document's import category:
                   {", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)}
-  checks          array of {{field, left, right, method, tolerance}}
+  checks          array of discriminated check objects
+
+The supplied `transaction_evidence` manifest is authoritative. Choose
+`anchor_table` and `anchor_key` only from `anchor_candidates`, document types
+only from `available_document_types`, and document field paths only from each
+type's `available_path_suffixes`. Do not infer a path merely because it appears
+in an example or in the global field vocabulary below.
+
+A check has exactly one of these two shapes:
+  unary presence  {{field, left, method: "present"}}
+  binary          {{field, left, right, method, optional tolerance}}, where
+                  method is not "present"
 
 A check names both of its sides by path, never by value:
   row.<column>                   a value from the population row
@@ -302,7 +453,8 @@ Omitting <attr> reads the group's default: {", ".join(
 <method> is one of: {", ".join(sorted(doc_tests.METHODS))}. Use `date_order` when
 the left date must not fall after the right one, such as approval before
 payment. Use `present` when a single addressed value must be affirmatively true,
-such as a receipt being attached; it reads only `left`.
+such as a receipt being attached; it has no `right` field. If two values must
+both be present, return two unary checks.
 
 Both sides of a check may be documents, which is how one row tests a whole
 cycle: compare `purchase_order.amount.total` to `invoice.amount.total`, and
@@ -318,7 +470,12 @@ is limited to the transactions holding evidence, so a clean result is not read
 as assurance over the whole population.
 
 Choose each test's source from what is actually available in the supplied
-tables and documents. Add no other fields. {JSON_RULES}"""
+tables and documents. Add no other fields.
+
+Authoritative response contract:
+{json.dumps(GENERATE_RESPONSE_CONTRACT, sort_keys=True, separators=(",", ":"))}
+
+{JSON_RULES}"""
 
 GENERATE_ROW_SOURCE_ID = "rcm_row"
 GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
@@ -329,7 +486,8 @@ _GENERATE_COMMON_FIELDS = ("source", "title", "objective", "steps")
 _GENERATE_DATA_STEP_FIELDS = ("label", "instruction", "code")
 _GENERATE_DOCUMENT_STEP_FIELDS = (
     "label", "instruction", "mode", "document_ids", "question", "checks",
-    "missing_evidence", "anchor_table", "anchor_key", "document_roles",
+    "missing_evidence", "scope_limitation", "anchor_table", "anchor_key",
+    "document_roles",
 )
 _GENERATE_MODES = {"question", "vouch"}
 # The document category that carries a structured field record a vouch check can
@@ -456,10 +614,49 @@ def _generate_has_transaction_evidence(request: WorkerRequest) -> bool:
         content = item.content
         if (
             isinstance(content, Mapping)
-            and str(content.get("category") or "") == _TRANSACTION_EVIDENCE_CATEGORY
+            and (
+                str(content.get("category") or "")
+                == _TRANSACTION_EVIDENCE_CATEGORY
+                or bool(content.get("vouch_profile"))
+            )
         ):
             return True
     return False
+
+
+def _generate_vouch_grounding(
+    request: WorkerRequest,
+) -> tuple[bool, set[tuple[str, str]], dict[str, set[str]]]:
+    """Return verified anchor candidates and field paths by extracted type."""
+
+    declared = False
+    anchors: set[tuple[str, str]] = set()
+    paths_by_document_type: dict[str, set[str]] = {}
+    for item in request.context.items:
+        content = item.content
+        if not isinstance(content, Mapping):
+            continue
+        if item.source_id == GENERATE_TABLE_SOURCE_ID:
+            if "vouch_anchor_candidates" in content:
+                declared = True
+            for candidate in content.get("vouch_anchor_candidates") or []:
+                if not isinstance(candidate, Mapping):
+                    continue
+                table = str(candidate.get("table") or "").strip()
+                key = str(candidate.get("anchor_key") or "").strip()
+                if table and key:
+                    anchors.add((table, key))
+        elif item.source_id == GENERATE_DOCUMENT_SOURCE_ID:
+            profile = content.get("vouch_profile")
+            if isinstance(profile, Mapping):
+                document_type = str(profile.get("document_type") or "").strip()
+                if document_type:
+                    paths_by_document_type.setdefault(document_type, set()).update(
+                        str(value).strip()
+                        for value in profile.get("available_path_suffixes") or []
+                        if str(value).strip()
+                    )
+    return declared, anchors, paths_by_document_type
 
 
 def _generate_response_schema(response: str) -> Mapping[str, Any]:
@@ -530,6 +727,9 @@ def _validate_generate_cycle_step(
     step: dict,
     known_tables: Mapping[str, Mapping[str, str]],
     has_evidence: bool,
+    declared_anchors: bool,
+    grounded_anchors: set[tuple[str, str]],
+    paths_by_document_type: Mapping[str, set[str]],
     errors: list[str],
 ) -> dict:
     """Validate one transaction-cycle plan against the supplied schemas.
@@ -553,6 +753,19 @@ def _validate_generate_cycle_step(
     elif columns and anchor_key not in columns:
         errors.append(
             f"{path}.anchor_key '{anchor_key}' is not a column of '{anchor_table}'"
+        )
+    elif (
+        declared_anchors
+        and anchor_table
+        and anchor_key
+        and (anchor_table, anchor_key) not in grounded_anchors
+    ):
+        choices = ", ".join(
+            f"{table}.{key}" for table, key in sorted(grounded_anchors)
+        ) or "none"
+        errors.append(
+            f"{path} anchor '{anchor_table}.{anchor_key}' has no locally verified "
+            f"identifier overlap; supplied anchor candidates: {choices}"
         )
     if not has_evidence:
         errors.append(
@@ -590,6 +803,20 @@ def _validate_generate_cycle_step(
                 "an extracted document type; expected one of: "
                 + ", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)
             )
+        available_document_types = set(paths_by_document_type)
+        unavailable_types = [
+            value
+            for value in types
+            if value in document_analysis.VOUCHER_DOCUMENT_TYPES
+            and available_document_types
+            and value not in available_document_types
+        ]
+        if unavailable_types:
+            errors.append(
+                f"{role_path}.document_types has '{unavailable_types[0]}', but "
+                "the supplied evidence contains only: "
+                + ", ".join(sorted(available_document_types))
+            )
         roles.append(
             {
                 "role": name,
@@ -600,6 +827,15 @@ def _validate_generate_cycle_step(
     if not roles:
         errors.append(f"{path} needs at least one document role")
     declared_roles = {entry["role"] for entry in roles}
+    paths_by_role = {
+        entry["role"]: set().union(
+            *(
+                paths_by_document_type.get(document_type, set())
+                for document_type in entry["document_types"]
+            )
+        )
+        for entry in roles
+    }
 
     def validate_side(label: str, value: str) -> None:
         """Check one side of one comparison for resolvability."""
@@ -618,6 +854,14 @@ def _validate_generate_cycle_step(
                 )
         elif declared_roles and head not in declared_roles:
             errors.append(f"{label} references undeclared role '{head}'")
+        elif head in paths_by_role and paths_by_document_type:
+            suffix = value.split(".", 1)[1]
+            if suffix not in paths_by_role[head]:
+                choices = ", ".join(sorted(paths_by_role[head])) or "none"
+                errors.append(
+                    f"{label} references unavailable extracted path '{suffix}' "
+                    f"for role '{head}'; supplied paths: {choices}"
+                )
 
     checks = []
     raw_checks = step.get("checks")
@@ -686,6 +930,9 @@ def _validate_generate_document_step(
     *,
     known_tables: Mapping[str, Mapping[str, str]] | None = None,
     has_evidence: bool = False,
+    declared_anchors: bool = False,
+    grounded_anchors: set[tuple[str, str]] | None = None,
+    paths_by_document_type: Mapping[str, set[str]] | None = None,
 ) -> tuple[dict | None, str | None]:
     if not isinstance(raw_step, Mapping):
         errors.append(f"{path} must be an object")
@@ -715,6 +962,7 @@ def _validate_generate_document_step(
         errors.append(f"{path} references unknown document '{unknown[0]}'")
     question = str(step.get("question") or "").strip()
     missing_evidence = str(step.get("missing_evidence") or "").strip()
+    scope_limitation = str(step.get("scope_limitation") or "").strip()
     normalized = {
         "label": str(step.get("label") or "").strip(),
         "instruction": str(step.get("instruction") or "").strip(),
@@ -736,9 +984,21 @@ def _validate_generate_document_step(
                 f"{path} claims missing_evidence; a vouch step reports uncovered "
                 "population rows from its own coverage instead"
             )
+        if scope_limitation:
+            errors.append(
+                f"{path} has scope_limitation but mode is 'vouch'; state limited "
+                "transaction reach in the test objective"
+            )
         normalized.update(
             _validate_generate_cycle_step(
-                path, step, known_tables or {}, has_evidence, errors
+                path,
+                step,
+                known_tables or {},
+                has_evidence,
+                declared_anchors,
+                grounded_anchors or set(),
+                paths_by_document_type or {},
+                errors,
             )
         )
         return normalized, mode
@@ -751,14 +1011,23 @@ def _validate_generate_document_step(
         for key in ("anchor_table", "anchor_key", "document_roles"):
             if step.get(key):
                 errors.append(f"{path} has vouch-only field '{key}' on a question step")
+    # Older prompts caused the model to use `missing_evidence` for a useful but
+    # different statement: documents were reviewed, while some additional
+    # evidence remained unavailable. Preserve that meaning as the explicit
+    # sourced-question scope limitation instead of spending a repair turn on a
+    # harmless field-name mismatch.
+    if document_ids and missing_evidence:
+        if not scope_limitation:
+            scope_limitation = missing_evidence
+        missing_evidence = ""
     if not document_ids and not missing_evidence:
         errors.append(f"{path} has no documents; missing_evidence must name what is required")
-    if document_ids and missing_evidence:
-        errors.append(f"{path} has documents but also claims missing_evidence")
     normalized.update(
         document_ids=document_ids,
         missing_evidence=missing_evidence,
     )
+    if scope_limitation:
+        normalized["scope_limitation"] = scope_limitation
     if mode == "question":
         normalized["question"] = question
     return normalized, mode
@@ -782,6 +1051,11 @@ def validate_generate_proposal(
     known_tables = _generate_supplied_tables(request)
     known_document_ids = _generate_supplied_document_ids(request)
     has_transaction_evidence = _generate_has_transaction_evidence(request)
+    (
+        declared_anchors,
+        grounded_anchors,
+        paths_by_document_type,
+    ) = _generate_vouch_grounding(request)
     available = {
         "data": bool(known_tables),
         "document": any(
@@ -831,6 +1105,9 @@ def validate_generate_proposal(
                     errors,
                     known_tables=known_tables,
                     has_evidence=has_transaction_evidence,
+                    declared_anchors=declared_anchors,
+                    grounded_anchors=grounded_anchors,
+                    paths_by_document_type=paths_by_document_type,
                 )
                 if normalized_step is not None:
                     steps.append(normalized_step)
@@ -872,17 +1149,35 @@ def run_generate_worker(
         separators=(",", ":"),
         ensure_ascii=False,
     )
+    conversation = None
+    if attempt.is_repair:
+        if attempt.previous_response is None:
+            raise WorkerContractError(
+                "A test-generation repair requires the previous response."
+            )
+        conversation = [
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": attempt.previous_response},
+            {"role": "user", "content": _repair_instruction(attempt)},
+        ]
     return gateway.complete(
         GENERATE_SYSTEM,
-        user + _repair_suffix(attempt),
+        user,
         _context_metrics(request, "test_generation"),
         attempt=attempt.number,
+        conversation=conversation,
     )
 
 
 GENERATE_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="tests.generate.response",
-    schema_hash=_sha256_text("test-generate-response:json-object-with-tests-array"),
+    schema_hash=_sha256_text(
+        json.dumps(
+            GENERATE_RESPONSE_CONTRACT,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    ),
     validator=_generate_response_schema,
 )
 GENERATE_WORKER = WorkerDefinition(
@@ -907,6 +1202,7 @@ WORKERS.register(GENERATE_WORKER)
 __all__ = [
     "DEFAULT_COMPARISON_METHOD",
     "GENERATE_RESPONSE_SCHEMA",
+    "GENERATE_RESPONSE_CONTRACT",
     "GENERATE_SYSTEM",
     "GENERATE_WORKER",
     "GENERATE_WORKER_ID",

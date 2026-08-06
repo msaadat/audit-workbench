@@ -706,6 +706,22 @@ _DOCUMENT_TEST_DOCUMENT_FIELDS = (
 _MAX_DOCUMENT_TEST_CITATIONS = 12
 
 
+def _test_generate_vouch_profile(
+    workspace: Workspace,
+    document_id: str,
+) -> dict[str, object] | None:
+    """Project extracted voucher fields without their transaction values.
+
+    Generation needs the document type and the path keys extraction actually
+    produced.  It does not need the identifiers, amounts, dates, or parties
+    themselves: those remain local and are resolved by the deterministic cycle
+    executor.  Supplying only path suffixes prevents the model from inventing a
+    type or field key while preserving the row-data privacy boundary.
+    """
+
+    return doc_tests.voucher_document_profile(workspace, document_id)
+
+
 def _spec_test_record(workspace: Workspace, kind: str, test_id: str) -> dict:
     """Load one durable test record by kind, for scopes that reference it."""
     if kind == "datatest":
@@ -724,6 +740,7 @@ def document_test_document_candidates(
     *,
     document_ids: Iterable[str] | None = None,
     include_audit_notes: bool = True,
+    include_vouch_profile: bool = False,
 ) -> tuple[ContextCandidate, ...]:
     """Expose every document with the identity and citations an item may cite.
 
@@ -757,6 +774,10 @@ def document_test_document_candidates(
             ],
             "summary": context.get("content") or "",
         }
+        if include_vouch_profile:
+            content["vouch_profile"] = _test_generate_vouch_profile(
+                workspace, document_id
+            )
         candidates.append(
             ContextCandidate(
                 source_ref=f"document:{document_id}",
@@ -792,8 +813,32 @@ MIN_CATEGORY_ROWS = 20
 MIN_CATEGORY_REPETITION = 4
 
 
+def _test_generate_anchor_candidates(
+    workspace: Workspace,
+    table_name: str,
+    columns: list[dict],
+    document_ids: set[str],
+) -> list[dict[str, object]]:
+    """Return safe aggregate table/document identifier overlaps.
+
+    The values are compared locally and never leave the machine.  A candidate
+    exposes only the table and column names, matched-row/document counts, and
+    extracted document types, which is enough to stop the model guessing an
+    anchor that can never link.
+    """
+
+    return doc_tests.voucher_anchor_candidates(
+        workspace,
+        table_name,
+        columns,
+        document_ids=document_ids,
+    )
+
+
 def test_generate_table_metadata_candidates(
     workspace: Workspace,
+    *,
+    document_ids: Iterable[str] | None = None,
 ) -> tuple[ContextCandidate, ...]:
     """Expose table schemas plus the complete value set of each category column.
 
@@ -820,6 +865,7 @@ def test_generate_table_metadata_candidates(
     holds one entry per distinct value; every other column carries its distinct
     count alone, which says "do not guess" without implying a domain.
     """
+    allowed_documents = set(_normalized_document_ids(workspace, document_ids))
     candidates = []
     for table in assistant.schema_brief(workspace):
         table_name = str(table.get("table") or "").strip()
@@ -852,7 +898,16 @@ def test_generate_table_metadata_candidates(
                 ):
                     entry["values"] = values
             columns.append(entry)
-        content = {**table, "columns": columns}
+        content = {
+            **table,
+            "columns": columns,
+            "vouch_anchor_candidates": _test_generate_anchor_candidates(
+                workspace,
+                table_name,
+                columns,
+                allowed_documents,
+            ),
+        }
         candidates.append(
             ContextCandidate(
                 source_ref=f"table:{table_name}",
@@ -921,7 +976,9 @@ def test_generate_scope(
             ),
             TEST_GENERATE_ROW_SOURCE_ID: test_draft_row_candidates(workspace, rcm_id),
             TEST_GENERATE_TABLE_METADATA_SOURCE_ID: (
-                test_generate_table_metadata_candidates(workspace)
+                test_generate_table_metadata_candidates(
+                    workspace, document_ids=document_ids
+                )
             ),
             # A test obtains evidence about a control; the audit-notes block is a
             # numbered list of conclusions already drawn about the document, each
@@ -932,7 +989,10 @@ def test_generate_scope(
             # this unit, so nothing is lost by reasoning from the process
             # description alone.
             TEST_GENERATE_DOCUMENT_SOURCE_ID: document_test_document_candidates(
-                workspace, document_ids=document_ids, include_audit_notes=False
+                workspace,
+                document_ids=document_ids,
+                include_audit_notes=False,
+                include_vouch_profile=True,
             ),
             TEST_GENERATE_METHODOLOGY_SOURCE_ID: test_draft_methodology_candidates(
                 workspace

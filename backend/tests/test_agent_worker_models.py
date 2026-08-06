@@ -233,7 +233,11 @@ def test_invalid_response_receives_one_bounded_repair_then_succeeds():
     assert result.repaired is True
     assert attempts == [
         WorkerAttempt(1),
-        WorkerAttempt(2, ("missing apm_markdown", "empty draft")),
+        WorkerAttempt(
+            2,
+            ("missing apm_markdown", "empty draft"),
+            "invalid",
+        ),
     ]
 
 
@@ -265,6 +269,7 @@ def test_repair_guidance_is_bounded_by_error_count_and_characters():
     registry.execute(_request(), _Gateway())
 
     assert seen[1].validation_errors == ("123456789", "sec")
+    assert seen[1].previous_response == "bad"
     assert sum(map(len, seen[1].validation_errors)) == 12
 
 

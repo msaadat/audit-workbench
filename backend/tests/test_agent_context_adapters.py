@@ -17,7 +17,17 @@ from app.agent.context import ContextResolver, PRESETS
 import app.agent.context.adapters as context_adapters
 
 
-def _analyzed_document(workspace, filename, text, *, category="policy", summary, notes):
+def _analyzed_document(
+    workspace,
+    filename,
+    text,
+    *,
+    category="policy",
+    summary,
+    notes,
+    fields=None,
+    citations=(),
+):
     document = documents.add_document(
         workspace,
         filename,
@@ -32,7 +42,9 @@ def _analyzed_document(workspace, filename, text, *, category="policy", summary,
         {
             "summary_markdown": summary,
             "audit_notes_markdown": notes,
-            "citations": [],
+            "citations": list(citations),
+            "fields": dict(fields or {}),
+            "analysis_profile": "voucher" if fields else "generic",
         },
         provider="local",
         model="test",
@@ -471,6 +483,75 @@ def test_test_generate_metadata_withholds_a_truncated_category_vocabulary():
 
     assert columns["bank"]["distinct"] == 20
     assert "values" not in columns["bank"]
+
+
+def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
+    workspace = workspaces.create_workspace("Grounded test generation")
+    workspace.add_table(
+        "po_header.csv",
+        pl.DataFrame(
+            {
+                "po_number": ["PO-1001", "PO-1002"],
+                "amount": [50000, 7500],
+            }
+        ).write_csv().encode(),
+    )
+    document = _analyzed_document(
+        workspace,
+        "PO-1001.txt",
+        "Purchase order PO-1001 total PKR 50,000.",
+        category="voucher",
+        summary="Purchase order.",
+        notes="None.",
+        citations=(
+            {
+                "id": "C1",
+                "page": 1,
+                "excerpt": "Purchase order PO-1001 total PKR 50,000.",
+            },
+        ),
+        fields={
+            "document_type": "purchase_order",
+            "identifiers": [
+                {"kind": "po_number", "value": "PO-1001", "citation": "C1"}
+            ],
+            "amounts": [
+                {"kind": "total", "value": 50000.0, "citation": "C1"}
+            ],
+        },
+    )
+    row = workspace.add_rcm(
+        {
+            "process": "Purchasing",
+            "risk": "Purchase orders may be unsupported",
+            "control": "Orders require support",
+        }
+    )
+
+    scope = context_adapters.test_generate_scope(
+        workspaces.load_workspace(workspace.id),
+        row["id"],
+        document_ids=[document["id"]],
+    )
+
+    table = scope.candidates["table_metadata"][0].source
+    assert table["vouch_anchor_candidates"] == [
+        {
+            "table": "po_header",
+            "anchor_key": "po_number",
+            "matched_rows": 1,
+            "matched_document_count": 1,
+            "document_types": ["purchase_order"],
+        }
+    ]
+    profile = scope.candidates["documents"][0].source["vouch_profile"]
+    assert profile["document_type"] == "purchase_order"
+    assert profile["available_path_suffixes"] == [
+        "amount.total",
+        "identifier.po_number",
+    ]
+    assert "PO-1001" not in str(profile)
+    assert "50000" not in str(profile)
 
 
 def test_test_generate_scope_supplies_the_process_description_without_the_audit_notes():

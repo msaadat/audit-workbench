@@ -188,6 +188,7 @@ class WorkerAttempt:
 
     number: int
     validation_errors: tuple[str, ...] = ()
+    previous_response: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.number, bool) or not isinstance(self.number, int) or self.number < 1:
@@ -199,9 +200,17 @@ class WorkerAttempt:
             )
         if self.number == 1 and errors:
             raise ValueError("The initial worker attempt cannot contain repair guidance.")
+        previous = (
+            str(self.previous_response)
+            if self.previous_response is not None
+            else None
+        )
+        if self.number == 1 and previous is not None:
+            raise ValueError("The initial worker attempt cannot carry a previous response.")
         if self.number > 1 and not errors:
             raise ValueError("A worker repair attempt requires validation guidance.")
         object.__setattr__(self, "validation_errors", errors)
+        object.__setattr__(self, "previous_response", previous)
 
     @property
     def is_repair(self) -> bool:
@@ -502,9 +511,10 @@ class WorkerRegistry:
             raise WorkerContractError("Worker execution requires a ModelGateway.")
         definition = self.get(request.worker_id)
         errors: tuple[str, ...] = ()
+        previous_response: str | None = None
         total_attempts = 1 + definition.repair_policy.max_repair_attempts
         for attempt_number in range(1, total_attempts + 1):
-            attempt = WorkerAttempt(attempt_number, errors)
+            attempt = WorkerAttempt(attempt_number, errors, previous_response)
             gateway_context = getattr(gateway, "context", None)
             previous_capabilities = (
                 getattr(gateway_context, "required_model_capabilities", None)
@@ -541,6 +551,12 @@ class WorkerRegistry:
                     )
                     proposal = _frozen_json(json.loads(encoded))  # type: ignore[assignment]
             except WorkerResponseValidationError as error:
+                # A repair is a correction of this exact response, not a fresh
+                # generation that happens to know one thing the last response
+                # got wrong. The worker decides how to present the prior text;
+                # keeping it on the attempt leaves prompt structure local to
+                # the registered worker.
+                previous_response = response
                 errors = definition.repair_policy.bounded_errors(error.errors)
                 if attempt_number == total_attempts:
                     raise WorkerRunError(

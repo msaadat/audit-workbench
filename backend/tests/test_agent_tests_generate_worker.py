@@ -29,9 +29,23 @@ class _Gateway:
         self.responses = list(responses)
         self.calls = []
 
-    def complete(self, system, user, activity=None, *, attempt=1):
+    def complete(
+        self,
+        system,
+        user,
+        activity=None,
+        *,
+        attempt=1,
+        conversation=None,
+    ):
         self.calls.append(
-            {"system": system, "user": user, "activity": activity, "attempt": attempt}
+            {
+                "system": system,
+                "user": user,
+                "activity": activity,
+                "attempt": attempt,
+                "conversation": conversation,
+            }
         )
         return self.responses.pop(0)
 
@@ -55,6 +69,8 @@ def _bundle(
     table_columns=("invoice", "amount"),
     documents=("DOC-1",),
     document_categories=None,
+    document_vouch_profiles=None,
+    table_anchor_candidates=None,
 ):
     values = [
         (
@@ -84,34 +100,43 @@ def _bundle(
             if isinstance(table_columns, dict)
             else table_columns
         )
+        table_content = {
+            "table": table,
+            "rows": 3,
+            "columns": [{"name": column} for column in columns],
+        }
+        if table_anchor_candidates is not None:
+            table_content["vouch_anchor_candidates"] = list(
+                table_anchor_candidates.get(table, ())
+            )
         values.append(
             (
                 "table_metadata",
                 f"table:{table}",
                 ContextRepresentation("table_metadata"),
-                {
-                    "table": table,
-                    "rows": 3,
-                    "columns": [{"name": column} for column in columns],
-                },
+                table_content,
             )
         )
     categories = document_categories or {}
+    profiles = document_vouch_profiles or {}
     for document_id in documents:
+        document_content = {
+            "id": document_id,
+            "title": document_id,
+            "summary": "Policy.",
+            # A vouch step resolves its paths against fields only the
+            # voucher profile extracts, so the category is what tells the
+            # worker whether a cycle plan is proposable at all.
+            "category": categories.get(document_id, "policy"),
+        }
+        if document_id in profiles:
+            document_content["vouch_profile"] = profiles[document_id]
         values.append(
             (
                 "documents",
                 f"document:{document_id}",
                 ContextRepresentation("summary"),
-                {
-                    "id": document_id,
-                    "title": document_id,
-                    "summary": "Policy.",
-                    # A vouch step resolves its paths against fields only the
-                    # voucher profile extracts, so the category is what tells the
-                    # worker whether a cycle plan is proposable at all.
-                    "category": categories.get(document_id, "policy"),
-                },
+                document_content,
             )
         )
     for index, section in enumerate(methodology, start=1):
@@ -203,6 +228,36 @@ def _voucher_bundle(**overrides):
     """A bundle whose supplied document is transaction evidence."""
 
     return _bundle(document_categories={"DOC-1": "voucher"}, **overrides)
+
+
+def _grounded_voucher_bundle(**overrides):
+    """A bundle carrying the safe manifest produced by the live adapter."""
+
+    return _bundle(
+        document_categories={"DOC-1": "voucher"},
+        document_vouch_profiles={
+            "DOC-1": {
+                "document_id": "DOC-1",
+                "document_type": "invoice",
+                "available_path_suffixes": [
+                    "identifier.invoice_number",
+                    "amount.total",
+                ],
+            }
+        },
+        table_anchor_candidates={
+            "transactions": [
+                {
+                    "table": "transactions",
+                    "anchor_key": "invoice",
+                    "matched_rows": 1,
+                    "matched_document_count": 1,
+                    "document_types": ["invoice"],
+                }
+            ]
+        },
+        **overrides,
+    )
 
 
 def _data_test(**overrides):
@@ -326,6 +381,57 @@ def test_generate_worker_names_the_transaction_evidence_it_was_supplied():
     assert "extracted structured record" in evidence["note"]
 
 
+def test_generate_worker_supplies_only_grounded_vouch_candidates_and_paths():
+    gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
+
+    WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    evidence = payload["transaction_evidence"]
+    assert evidence["available_document_types"] == ["invoice"]
+    assert evidence["documents"] == [
+        {
+            "document_id": "DOC-1",
+            "document_type": "invoice",
+            "available_path_suffixes": [
+                "identifier.invoice_number",
+                "amount.total",
+            ],
+        }
+    ]
+    assert evidence["anchor_candidates"] == [
+        {
+            "table": "transactions",
+            "anchor_key": "invoice",
+            "matched_rows": 1,
+            "matched_document_count": 1,
+            "document_types": ["invoice"],
+        }
+    ]
+    # Transport-only grounding metadata appears once in the dedicated manifest,
+    # not duplicated through the ordinary schemas and document summaries.
+    assert "vouch_anchor_candidates" not in payload["table_schemas"][0]
+    assert "vouch_profile" not in payload["documents"][0]
+
+
+def test_generate_response_contract_discriminates_the_failure_prone_shapes():
+    contract = tests_workers.GENERATE_RESPONSE_CONTRACT["test"]
+    assert contract["discriminator"] == ["source", "steps[].mode"]
+    variants = contract["variants"]
+
+    question = variants["document_question"]["step"]["variants"]
+    assert question["with_sources"]["document_ids"] == "non_empty"
+    assert question["missing_evidence"]["document_ids"] == "empty"
+    checks = variants["document_vouch"]["step"]["check_variants"]
+    assert checks["present"] == {
+        "required": ["field", "left", "method"],
+        "method": "present",
+        "forbidden": ["right", "tolerance"],
+    }
+    assert "present" not in checks["binary"]["methods"]
+    assert "Authoritative response contract:" in tests_workers.GENERATE_SYSTEM
+
+
 def test_generate_worker_rejects_a_literal_expected_value_in_a_vouch_check():
     """The population supplies the expected value; a model has no row data."""
 
@@ -384,6 +490,22 @@ def test_generate_worker_rejects_a_vouch_plan_the_schemas_cannot_resolve():
 
     with pytest.raises(WorkerRunError, match="unknown table 'nope'"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
+
+
+def test_generate_worker_rejects_an_ungrounded_anchor_when_candidates_exist():
+    invalid = json.dumps(
+        {
+            "tests": [
+                _document_test(
+                    steps=[_vouch_step(anchor_key="amount")]
+                )
+            ]
+        }
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="no locally verified identifier overlap"):
+        WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
 
 
 def test_generate_worker_rejects_a_check_naming_an_undeclared_role():
@@ -529,6 +651,67 @@ def test_generate_worker_rejects_an_import_category_as_a_document_type():
 
     with pytest.raises(WorkerRunError, match="not an extracted document type"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
+
+
+def test_generate_worker_rejects_a_type_absent_from_the_supplied_evidence():
+    invalid = json.dumps(
+        {
+            "tests": [
+                _document_test(
+                    steps=[
+                        _vouch_step(
+                            document_roles=[
+                                {
+                                    "role": "purchase_order",
+                                    "required": True,
+                                    "document_types": ["purchase_order"],
+                                }
+                            ],
+                            checks=[
+                                {
+                                    "field": "amount agrees",
+                                    "method": "normalized",
+                                    "left": "row.amount",
+                                    "right": "purchase_order.amount.total",
+                                }
+                            ],
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="supplied evidence contains only: invoice"):
+        WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
+
+
+def test_generate_worker_rejects_a_path_absent_from_the_supplied_evidence():
+    invalid = json.dumps(
+        {
+            "tests": [
+                _document_test(
+                    steps=[
+                        _vouch_step(
+                            checks=[
+                                {
+                                    "field": "invoice date agrees",
+                                    "method": "normalized",
+                                    "left": "row.invoice",
+                                    "right": "invoice.date.invoice_date",
+                                }
+                            ]
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="unavailable extracted path 'date.invoice_date'"):
+        WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
 
 
 def test_generate_worker_rejects_two_vouch_steps_in_one_test():
@@ -695,8 +878,8 @@ def test_generate_worker_accepts_missing_evidence_as_a_concrete_blocked_step():
     assert step["missing_evidence"] == "Signed approval memo"
 
 
-def test_generate_worker_rejects_documents_that_also_claim_missing_evidence():
-    invalid = json.dumps(
+def test_generate_worker_preserves_missing_evidence_as_a_sourced_scope_limitation():
+    response = json.dumps(
         {
             "tests": [
                 _document_test(
@@ -705,10 +888,13 @@ def test_generate_worker_rejects_documents_that_also_claim_missing_evidence():
             ]
         }
     )
-    gateway = _Gateway([invalid, invalid, invalid])
+    gateway = _Gateway([response])
 
-    with pytest.raises(WorkerRunError, match="also claims missing_evidence"):
-        WORKERS.execute(_request(), gateway)
+    result = WORKERS.execute(_request(), gateway)
+
+    step = result.proposal["tests"][0]["steps"][0]
+    assert step["missing_evidence"] == ""
+    assert step["scope_limitation"] == "Signed approval memo"
 
 
 def test_generate_worker_rejects_sandbox_invalid_code():
@@ -754,10 +940,19 @@ def test_generate_worker_reports_every_contract_error_in_one_repair():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    guidance = gateway.calls[1]["user"]
+    conversation = gateway.calls[1]["conversation"]
+    assert [message["role"] for message in conversation] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert '"objective": ""' in conversation[1]["content"]
+    assert "ghost" in conversation[1]["content"]
+    guidance = conversation[2]["content"]
     assert "tests[0].objective" in guidance
     assert "unknown column 'ghost'" in guidance
     assert "mixes document modes" in guidance
+    assert "preserving every unaffected test and field" in guidance
 
 
 def test_generate_worker_rejects_a_source_the_workspace_cannot_supply():

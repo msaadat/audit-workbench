@@ -819,6 +819,97 @@ def voucher_field_index(workspace: Workspace) -> list[dict]:
     return index
 
 
+def voucher_anchor_candidates(
+    workspace: Workspace,
+    table: str,
+    columns: list[dict],
+    *,
+    document_ids: set[str] | None = None,
+) -> list[dict[str, object]]:
+    """Return aggregate table columns that overlap extracted identifiers.
+
+    Identifier values are compared only on the user's machine.  The projection
+    contains names, counts, and document types but no table row or extracted
+    identifier value, so context adapters can ground a generated cycle plan
+    without crossing the row-data privacy boundary.
+    """
+
+    index = [
+        item
+        for item in voucher_field_index(workspace)
+        if document_ids is None or str(item.get("document_id") or "") in document_ids
+    ]
+    if not index:
+        return []
+    frame = workspace.get_frame(table)
+    candidates = []
+    for column in columns:
+        name = str(column.get("name") or "").strip()
+        if not name or name not in frame.columns:
+            continue
+        matched_rows = 0
+        matched_documents: set[str] = set()
+        document_types: set[str] = set()
+        for value in frame.get_column(name).to_list():
+            normalized = normalize_value(value)
+            if not normalized:
+                continue
+            matches = [
+                item
+                for item in index
+                if normalized in item.get("identifiers", set())
+            ]
+            if not matches:
+                continue
+            matched_rows += 1
+            matched_documents.update(str(item["document_id"]) for item in matches)
+            document_types.update(str(item["role"]) for item in matches)
+        if matched_rows:
+            candidates.append(
+                {
+                    "table": table,
+                    "anchor_key": name,
+                    "matched_rows": matched_rows,
+                    "matched_document_count": len(matched_documents),
+                    "document_types": sorted(document_types),
+                }
+            )
+    return candidates
+
+
+def voucher_document_profile(
+    workspace: Workspace,
+    document_id: str,
+) -> dict[str, object] | None:
+    """Project one voucher's usable comparison paths without field values."""
+
+    record = document_analysis.generated_record(workspace, document_id) or {}
+    fields = record.get("fields") or {}
+    document_type = str(fields.get("document_type") or "").strip()
+    if not document_type:
+        return None
+    suffixes: set[str] = set()
+    for group, (collection, discriminator, default_attribute) in FIELD_GROUPS.items():
+        for entry in fields.get(collection) or []:
+            if not isinstance(entry, dict):
+                continue
+            key = str(entry.get(discriminator) or "").strip()
+            if not key:
+                continue
+            base = f"{group}.{key}"
+            suffixes.add(base)
+            for attribute in sorted(FIELD_GROUP_ATTRIBUTES[group]):
+                if attribute in {default_attribute, discriminator}:
+                    continue
+                if attribute in entry:
+                    suffixes.add(f"{base}.{attribute}")
+    return {
+        "document_id": document_id,
+        "document_type": document_type,
+        "available_path_suffixes": sorted(suffixes),
+    }
+
+
 def _role_fields(workspace: Workspace, item: dict) -> dict[str, list[tuple]]:
     """Group one item's attached documents by role, with their extracted fields."""
 
