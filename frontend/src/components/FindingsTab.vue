@@ -161,7 +161,7 @@ function openEvidence(value: EvidenceRef) {
 
 <template>
   <div class="findings-tab">
-    <UiPageHeader title="Findings" description="Evidence-linked issues and recommendations">
+    <UiPageHeader title="Findings">
       <Button label="Add manual finding" icon="pi pi-plus" size="small" @click="addManual" />
     </UiPageHeader>
     <div v-if="data?.items.length" class="findings-layout">

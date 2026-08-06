@@ -350,7 +350,7 @@ const copyOptions = [
 
 <template>
   <div v-if="data" class="planning-tab">
-    <UiPageHeader :title="section === 'apm' ? 'APM' : 'RCM'" :description="section === 'apm' ? 'Define the engagement context and audit approach.' : 'Manage risks, controls, coverage, and linked test execution.'">
+    <UiPageHeader :title="section === 'apm' ? 'APM' : 'RCM'">
       <Button label="Generate planning drafts" icon="pi pi-sparkles" size="small" :disabled="isActive || !agent.state.status?.configured" @click="generate" />
     </UiPageHeader>
     <section v-if="section === 'apm'" class="apm-view">

@@ -7,7 +7,6 @@ import Button from 'primevue/button'
 import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
-import SelectButton from 'primevue/selectbutton'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
@@ -57,8 +56,7 @@ const requestedTestId = ref<string | null>(String(route.query.test || '') || nul
 // RCM grid's "Add Document Test" link loses its own parameters.
 const createRequested = route.query.create === '1'
 const requestedRcmId = String(route.query.rcm || '')
-const filter = ref<'action' | 'all' | DocTestClassification>('action')
-const filterInitialised = ref(false)
+const filter = ref<'all' | DocTestClassification>('all')
 const search = ref('')
 const createOpen = ref(false)
 const creating = ref(false)
@@ -66,14 +64,13 @@ const running = ref(false)
 const anchorOpen = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
 
-const ACTION_CLASSES: DocTestClassification[] = ['exception', 'needs_review', 'awaiting_evidence']
-const scopeOptions = [
-  { label: 'Needs action', value: 'action' },
-  { label: 'All items', value: 'all' },
-]
+// The triage cards are the only filter. "Needs action" used to be a second
+// control over the same axis, and it was exactly the union of the three cards
+// beside it — the counts say the same thing without the extra row.
 const triage = computed<TriageCount[]>(() => {
   const counts = summary.value?.counts
   return [
+    { key: 'all', label: 'All items', value: summary.value?.items.length ?? 0 },
     { key: 'exception', label: 'Exceptions', value: counts?.exception ?? 0, tone: 'danger' },
     { key: 'needs_review', label: 'Need review', value: counts?.needs_review ?? 0, tone: 'warn' },
     { key: 'awaiting_evidence', label: 'Awaiting evidence', value: counts?.awaiting_evidence ?? 0, tone: 'warn' },
@@ -81,27 +78,18 @@ const triage = computed<TriageCount[]>(() => {
     { key: 'not_run', label: 'Not run', value: counts?.not_run ?? 0 },
   ]
 })
-// SelectButton clears when a specific triage card is driving the filter.
-const scope = computed({
-  get: () => (filter.value === 'action' || filter.value === 'all' ? filter.value : null),
-  set: (value: 'action' | 'all' | null) => { filter.value = value ?? 'action' },
-})
 const visibleItems = computed(() => {
   const items = summary.value?.items ?? []
   const query = search.value.trim().toLowerCase()
   return items.filter(item => {
-    if (filter.value === 'action' && !ACTION_CLASSES.includes(item.classification)) return false
-    if (filter.value !== 'action' && filter.value !== 'all' && item.classification !== filter.value) return false
+    if (filter.value !== 'all' && item.classification !== filter.value) return false
     if (!query) return true
     return [item.label, item.test_title, item.instruction, item.question, item.response]
       .some(value => value.toLowerCase().includes(query))
   })
 })
-const activeFilterLabel = computed(() => {
-  if (filter.value === 'all') return 'all items'
-  if (filter.value === 'action') return 'items needing action'
-  return triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items'
-})
+const activeFilterLabel = computed(() =>
+  triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items')
 const currentItem = computed<DocTestItem | null>(() =>
   currentTest.value?.items.find(item => item.id === selectedItemId.value) ?? null)
 const linkedFindings = computed<AuditFinding[]>(() => {
@@ -118,20 +106,13 @@ function fail(summary_: string, error: unknown) {
 async function loadSummary() {
   summary.value = await api.get<DocTestSummaryPayload>(`/api/workspaces/${props.workspace.id}/doc-tests/summary`)
   const items = summary.value.items
-  // In an engagement where nothing has run yet, "Needs action" is empty and
-  // would read as "no work here". Open on everything instead — but only on the
-  // first load, so an explicit choice is never overridden.
-  if (!filterInitialised.value) {
-    filterInitialised.value = true
-    if (!items.some(item => ACTION_CLASSES.includes(item.classification))) filter.value = 'all'
-  }
-  // A dashboard/deep link can point to a completed test that is not in the
-  // default "Needs action" scope. Keep the requested test visible instead of
-  // letting the selection watcher replace it with the first open item.
+  // A dashboard/deep link can point to a test the current filter hides. Keep
+  // the requested test visible instead of letting the selection watcher
+  // replace it with the first item that happens to match.
   const requested = requestedTestId.value
     ? items.find(item => item.test_id === requestedTestId.value)
     : undefined
-  if (requested && filter.value === 'action' && !ACTION_CLASSES.includes(requested.classification)) {
+  if (requested && filter.value !== 'all' && requested.classification !== filter.value) {
     filter.value = 'all'
   }
   // Honour a deep link first, then keep the current selection, then fall back
@@ -182,7 +163,7 @@ async function refresh() {
 }
 
 function pickFilter(key: string) {
-  filter.value = filter.value === key ? 'action' : key as DocTestClassification
+  filter.value = key as 'all' | DocTestClassification
 }
 
 async function createTest({ kind, direction, draft }: {
@@ -408,7 +389,7 @@ onUnmounted(unsubscribe)
 
 <template>
   <div class="doc-tests">
-    <UiPageHeader title="Document tests" description="Work through evidence-based fieldwork item by item.">
+    <UiPageHeader title="Document tests">
       <Button
         v-if="hasTests"
         label="Prepare with assistant"
@@ -431,21 +412,9 @@ onUnmounted(unsubscribe)
     </UiPageHeader>
 
     <template v-if="hasTests">
-      <UiTriageCounts
-        :counts="triage"
-        :active="filter === 'action' || filter === 'all' ? null : filter"
-        @select="pickFilter"
-      />
+      <UiTriageCounts :counts="triage" :active="filter" @select="pickFilter" />
 
       <div class="toolbar">
-        <SelectButton
-          v-model="scope"
-          :options="scopeOptions"
-          optionLabel="label"
-          optionValue="value"
-          size="small"
-          :allowEmpty="true"
-        />
         <IconField>
           <InputIcon class="pi pi-search" />
           <InputText v-model="search" placeholder="Search items, tests, and answers" />
@@ -483,8 +452,8 @@ onUnmounted(unsubscribe)
         <UiEmptyState
           v-else-if="!visibleItems.length"
           icon="pi pi-check-circle"
-          title="Nothing needs action"
-          description="Switch to All items to review confirmed and not-yet-run work."
+          title="Nothing in this view"
+          description="Pick All items above to review every worklist item."
         />
         <UiEmptyState v-else icon="pi pi-verified" title="Loading item" description="Opening the selected worklist item." />
       </UiMasterDetail>

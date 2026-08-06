@@ -8,7 +8,6 @@ import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
-import SelectButton from 'primevue/selectbutton'
 import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
@@ -59,7 +58,7 @@ const creating = ref(false)
 const saving = ref(false)
 const running = ref(false)
 const runningAll = ref(false)
-const filter = ref<'attention' | 'all' | string>('all')
+const filter = ref<string>('all')
 const search = ref('')
 const editAnalyticsSpec = ref<{ test_id: string; params: Record<string, unknown> }>({ test_id: '', params: {} })
 const editAnalyticsReady = ref(false)
@@ -72,20 +71,17 @@ const controlConclusions = [
   { label: 'Control ineffective', value: 'ineffective' },
   { label: 'Not applicable', value: 'not_applicable' },
 ]
-const ATTENTION_STATUSES = ['completed_with_exception', 'review_required', 'blocked', 'error']
-const scopeOptions = [
-  { label: 'Needs attention', value: 'attention' },
-  { label: 'All tests', value: 'all' },
-]
-
 const selected = computed(() => tests.value.find(item => item.id === selectedId.value) ?? null)
 const rcmRows = computed(() => planning.value?.rcm ?? [])
 const rcmOptions = computed(() => rcmRows.value.map(row => ({ label: `${row.id} · ${row.risk}`, value: row.id })))
 const tableOptions = computed(() => props.workspace.tables.map(item => ({ label: item.name, value: item.name })))
 
+// The cards are the only filter. "Needs attention" was a second control over
+// the same axis and was just the union of the three cards beside it.
 const triage = computed<TriageCount[]>(() => {
   const count = (predicate: (test: DataTest) => boolean) => tests.value.filter(predicate).length
   return [
+    { key: 'all', label: 'All tests', value: tests.value.length },
     { key: 'completed_with_exception', label: 'Exceptions', value: count(test => test.status === 'completed_with_exception'), tone: 'danger' },
     { key: 'review_required', label: 'Need review', value: count(test => test.status === 'review_required'), tone: 'warn' },
     { key: 'blocked', label: 'Blocked', value: count(test => test.status === 'blocked'), tone: 'warn' },
@@ -100,28 +96,19 @@ const rcmFacet = computed(() => {
   return linked.size > 1 ? rcmOptions.value.filter(option => linked.has(option.value)) : []
 })
 const filterRcm = ref<string | null>(null)
-const scope = computed({
-  get: () => (filter.value === 'attention' || filter.value === 'all' ? filter.value : null),
-  set: (value: 'attention' | 'all' | null) => { filter.value = value ?? 'all' },
-})
 const visibleTests = computed(() => {
   const query = search.value.trim().toLowerCase()
   return tests.value.filter(test => {
     if (filterRcm.value && test.rcm_id !== filterRcm.value) return false
-    if (filter.value === 'attention' && !ATTENTION_STATUSES.includes(test.status)) return false
     if (filter.value === 'not_run' && test.last_run) return false
-    if (filter.value !== 'attention' && filter.value !== 'all' && filter.value !== 'not_run'
-      && test.status !== filter.value) return false
+    if (filter.value !== 'all' && filter.value !== 'not_run' && test.status !== filter.value) return false
     if (!query) return true
     return [test.title, test.objective, test.criteria, test.rcm_id ?? '']
       .some(value => (value ?? '').toLowerCase().includes(query))
   })
 })
-const activeFilterLabel = computed(() => {
-  if (filter.value === 'all') return 'all tests'
-  if (filter.value === 'attention') return 'tests needing attention'
-  return triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'tests'
-})
+const activeFilterLabel = computed(() =>
+  triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'tests')
 const definitionReady = computed(() => {
   if (!selected.value) return false
   if (selected.value.engine === 'polars') return polarsStepsValid(editPolarsSteps.value)
@@ -315,7 +302,7 @@ function openRcm() {
   void nav.replace('rcm', { rcm: selected.value.rcm_id })
 }
 function pickFilter(key: string) {
-  filter.value = filter.value === key ? 'all' : key
+  filter.value = key
 }
 
 watch(visibleTests, items => {
@@ -335,7 +322,7 @@ onUnmounted(unsubscribe)
 
 <template>
   <div class="data-tests">
-    <UiPageHeader title="Data tests" description="Run analytics over the imported tables and record what they found.">
+    <UiPageHeader title="Data tests">
       <Button label="Run all" icon="pi pi-play" size="small" outlined :loading="runningAll" :disabled="running || runningAll" @click="runAllTests" />
       <Button label="New test" icon="pi pi-plus" size="small" @click="createOpen = true" />
       <Button
@@ -351,21 +338,9 @@ onUnmounted(unsubscribe)
     </UiPageHeader>
 
     <template v-if="tests.length">
-      <UiTriageCounts
-        :counts="triage"
-        :active="filter === 'attention' || filter === 'all' ? null : filter"
-        @select="pickFilter"
-      />
+      <UiTriageCounts :counts="triage" :active="filter" @select="pickFilter" />
 
       <div class="toolbar">
-        <SelectButton
-          v-model="scope"
-          :options="scopeOptions"
-          optionLabel="label"
-          optionValue="value"
-          size="small"
-          :allowEmpty="true"
-        />
         <IconField>
           <InputIcon class="pi pi-search" />
           <InputText v-model="search" placeholder="Search titles and objectives" />

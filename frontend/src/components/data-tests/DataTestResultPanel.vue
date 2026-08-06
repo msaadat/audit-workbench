@@ -8,14 +8,6 @@ import UiTestStatus from '../ui/UiTestStatus.vue'
 
 const props = defineProps<{ test: DataTest; result: DataTestResult | null }>()
 
-const conclusionLabel: Record<string, string> = {
-  effective: 'Control effective',
-  partially_effective: 'Control partially effective',
-  ineffective: 'Control ineffective',
-  no_conclusion: 'No conclusion recorded',
-  not_applicable: 'Not applicable',
-}
-
 const headline = computed(() => {
   if (props.result?.error) return props.result.error
   return props.result?.verdict_text || props.test.result_summary || 'This test has not been run yet.'
@@ -34,10 +26,10 @@ const ranAt = computed(() => {
   const runAt = props.result?.run_at ?? props.test.last_run?.run_at
   return runAt ? new Date(runAt).toLocaleString() : null
 })
-const hasOutcome = computed(() => Boolean(
-  props.test.conclusion || props.test.next_action || props.test.scope_limitations
-  || props.test.control_conclusion && props.test.control_conclusion !== 'no_conclusion',
-))
+// The conclusion and control conclusion are edited live directly below this
+// panel, so echoing them read-only here just showed the same words twice.
+// What the runner produced and the auditor cannot edit still belongs here.
+const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.scope_limitations))
 </script>
 
 <template>
@@ -86,13 +78,9 @@ const hasOutcome = computed(() => Boolean(
       </div>
     </div>
 
-    <div v-if="hasOutcome" class="outcome">
-      <p class="block-head">Conclusion</p>
-      <p v-if="test.conclusion">{{ test.conclusion }}</p>
+    <div v-if="hasFollowUp" class="outcome">
+      <p class="block-head">Follow-up</p>
       <dl>
-        <template v-if="test.control_conclusion && test.control_conclusion !== 'no_conclusion'">
-          <dt>Control</dt><dd>{{ conclusionLabel[test.control_conclusion] ?? test.control_conclusion }}</dd>
-        </template>
         <template v-if="test.next_action">
           <dt>Next action</dt><dd>{{ test.next_action }}</dd>
         </template>

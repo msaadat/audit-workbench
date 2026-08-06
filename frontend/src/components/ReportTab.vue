@@ -149,7 +149,7 @@ const secondaryActions = computed(() => [
 
 <template>
   <div v-if="report" class="report-tab">
-    <UiPageHeader title="Draft audit report" description="Generate, edit, and review the engagement report">
+    <UiPageHeader title="Draft audit report">
         <Tag v-if="report.edited" value="auditor edited" severity="info"/>
         <Button :label="report.generated_at ? 'Regenerate' : 'Generate report'" icon="pi pi-sparkles" size="small" :loading="busy" @click="generate"/>
         <UiOverflowMenu :items="secondaryActions" />

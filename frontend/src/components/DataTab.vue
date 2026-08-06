@@ -364,7 +364,7 @@ function rangeText(p: ColumnProfile): string {
 </script>
 
 <template>
-  <UiPageHeader title="Source tables" description="Loaded data and derived joins">
+  <UiPageHeader title="Source tables">
     <input ref="replaceInput" type="file" accept=".csv,.tsv,.xlsx,.xlsm,.xls" hidden @change="replaceData" />
     <Button label="Add files" icon="pi pi-upload" @click="emit('import-requested')" />
     <Button

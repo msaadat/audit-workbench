@@ -552,7 +552,7 @@ onUnmounted(() => {
 
 <template>
   <section class="documents-tab">
-    <UiPageHeader title="Documents" description="Engagement evidence and reference material">
+    <UiPageHeader title="Documents">
       <Button label="Add documents" icon="pi pi-plus" @click="emit('import-requested')" />
       <Button label="Analyze all" icon="pi pi-sparkles" severity="secondary" outlined :loading="analysisBusy" :disabled="!documents.length" @click="batchAnalyze" />
       <UiOverflowMenu :items="secondaryActions" />

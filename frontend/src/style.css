@@ -178,16 +178,17 @@ button, input, textarea, select { font: inherit; }
 }
 
 /* Shared page and master/detail primitives. */
+/* One line: the section rail already names the screen, so the header carries
+   the title and its actions and nothing else. */
 .ui-page-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: var(--aw-section-gap);
 }
 .ui-page-header__copy { min-width: 0; }
 .ui-page-header h2 { margin: 0; font-size: var(--aw-text-xl); }
-.ui-page-header__description { margin: .25rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 .ui-page-header__actions { display: flex; align-items: center; justify-content: flex-end; gap: .45rem; flex-wrap: wrap; }
 
 .ui-master-detail {
