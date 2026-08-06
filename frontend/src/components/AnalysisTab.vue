@@ -8,13 +8,26 @@ import SelectButton from 'primevue/selectbutton'
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { SavedAnalysis, WorkspaceSummary } from '../types'
+import type { AnalysisSummaryClassification, AnalysisSummaryPayload, SavedAnalysis, WorkspaceSummary } from '../types'
 import AnalysisLibrary from './analysis/AnalysisLibrary.vue'
 import AnalysisPython from './analysis/AnalysisPython.vue'
 import AnalysisCode from './analysis/AnalysisCode.vue'
 import AnalysisSummary from './analysis/AnalysisSummary.vue'
 import UiMasterDetail from './ui/UiMasterDetail.vue'
+import UiTriageCounts from './ui/UiTriageCounts.vue'
+import type { TriageCount } from './ui/UiTriageCounts.vue'
 import UiVerdictStatus from './ui/UiVerdictStatus.vue'
+
+// Buckets mirror the server's analyses_summary_payload() grouping, so the
+// pill counts here always match the ones on the Summary view.
+const BUCKET_CLASSIFICATIONS: Record<string, AnalysisSummaryClassification[]> = {
+  needs_review: ['exception', 'unusual'],
+  errors: ['execution_error'],
+  stale: ['stale'],
+  clear: ['clear'],
+  informational: ['informational'],
+  not_run: ['not_run'],
+}
 
 // The Analysis tab: a rail of saved analyses on the left, an editor on the
 // right. Two creation paths — the predefined Library or Code (hand-written
@@ -27,6 +40,8 @@ const route = useRoute()
 const nav = useWorkspaceNav()
 
 const analyses = ref<SavedAnalysis[]>([])
+const summary = ref<AnalysisSummaryPayload | null>(null)
+const procFilter = ref('all')
 const selectedId = ref<string | null>(null)
 const creating = ref<'library' | 'code' | null>(null)
 const loading = ref(false)
@@ -36,6 +51,31 @@ const views = [
   { label: 'Summary', value: 'summary' },
   { label: 'Procedures', value: 'procedures' },
 ]
+
+const classificationById = computed(() => {
+  const map = new Map<string, AnalysisSummaryClassification>()
+  for (const item of summary.value?.items ?? []) map.set(item.analysis_id, item.classification)
+  return map
+})
+
+const procTriage = computed<TriageCount[]>(() => {
+  const counts = summary.value?.counts
+  return [
+    { key: 'all', label: 'All procedures', value: analyses.value.length },
+    { key: 'needs_review', label: 'Needs review', value: counts?.needs_review ?? 0, tone: 'warn' },
+    { key: 'errors', label: 'Execution issues', value: counts?.errors ?? 0, tone: 'danger' },
+    { key: 'stale', label: 'Rerun required', value: counts?.stale ?? 0, tone: 'warn' },
+    { key: 'clear', label: 'Clear', value: counts?.clear ?? 0, tone: 'ok' },
+    { key: 'informational', label: 'Informational', value: counts?.informational ?? 0, tone: 'info' },
+    { key: 'not_run', label: 'Not run', value: counts?.not_run ?? 0 },
+  ]
+})
+
+const visibleAnalyses = computed(() => {
+  if (procFilter.value === 'all') return analyses.value
+  const wanted = BUCKET_CLASSIFICATIONS[procFilter.value] ?? []
+  return analyses.value.filter(a => wanted.includes(classificationById.value.get(a.id)!))
+})
 
 const sourceIcon: Record<string, string> = {
   library: 'pi pi-book', ai: 'pi pi-sparkles', code: 'pi pi-code',
@@ -49,9 +89,12 @@ const selected = computed(() => analyses.value.find((a) => a.id === selectedId.v
 async function load() {
   loading.value = true
   try {
-    analyses.value = (
-      await api.get<{ analyses: SavedAnalysis[] }>(`/api/workspaces/${props.workspace.id}/analyses`)
-    ).analyses
+    const [analysesResp, summaryResp] = await Promise.all([
+      api.get<{ analyses: SavedAnalysis[] }>(`/api/workspaces/${props.workspace.id}/analyses`),
+      api.get<AnalysisSummaryPayload>(`/api/workspaces/${props.workspace.id}/analyses/summary`),
+    ])
+    analyses.value = analysesResp.analyses
+    summary.value = summaryResp
     if (!creating.value && (!selectedId.value || !analyses.value.some(item => item.id === selectedId.value))) {
       selectedId.value = analyses.value[0]?.id ?? null
     }
@@ -142,6 +185,9 @@ async function onDeleted() {
       <SelectButton :modelValue="view" :options="views" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" @update:modelValue="setView" />
       <span v-if="view === 'procedures'" class="muted">Create, edit, and run saved procedures.</span>
     </div>
+    <div v-if="view === 'procedures'" class="analysis-filters">
+      <UiTriageCounts :counts="procTriage" :active="procFilter" @select="procFilter = $event" />
+    </div>
     <AnalysisSummary v-if="view === 'summary'" ref="summaryRef" :workspace="workspace" @open="openAnalysis" />
   <UiMasterDetail v-if="view === 'procedures'" railWidth="17rem" class="analysis">
     <template #rail><div class="rail">
@@ -154,7 +200,7 @@ async function onDeleted() {
       <p class="rail-title">Engagement analyses</p>
 
       <button
-        v-for="a in analyses"
+        v-for="a in visibleAnalyses"
         :key="a.id"
         class="rail-item"
         :class="{ active: selectedId === a.id }"
@@ -172,6 +218,7 @@ async function onDeleted() {
           <span v-if="a.last_result"> · executed</span>
         </div>
       </button>
+      <p v-if="!visibleAnalyses.length && analyses.length" class="rail-empty">No procedures match this filter.</p>
     </div></template>
 
     <section class="detail surface-panel">
@@ -215,6 +262,7 @@ async function onDeleted() {
   min-height: 32rem;
 }
 .analysis-shell { min-width:0; }.analysis-nav { display:flex; align-items:center; gap:.75rem; margin:0 0 1rem; }.muted { color:var(--aw-muted); font-size:var(--aw-text-sm); }
+.analysis-filters { margin: 0 0 1rem; }
 
 .rail {
   display: flex;
@@ -258,6 +306,8 @@ async function onDeleted() {
 }
 .rail-item:hover { border-color: var(--aw-teal); box-shadow: var(--aw-shadow-md); }
 .rail-item.active { border-color: var(--aw-teal); box-shadow: inset 3px 0 0 var(--aw-teal); background: var(--aw-teal-soft); }
+
+.rail-empty { color: var(--aw-muted); font-size: var(--aw-text-sm); text-align: center; padding: 1rem 0; }
 
 .rail-item-head {
   display: flex;

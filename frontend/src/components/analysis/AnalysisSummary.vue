@@ -88,15 +88,6 @@ defineExpose({ load })
       <Button label="Refresh" icon="pi pi-refresh" severity="secondary" outlined size="small" :loading="loading" @click="load" />
     </header>
 
-    <div v-if="data" class="count-grid">
-      <button class="count-card review" @click="filter = 'review'"><strong>{{ data.counts.needs_review }}</strong><span>Need review</span></button>
-      <button class="count-card error" @click="filter = 'review'"><strong>{{ data.counts.errors }}</strong><span>Execution issues</span></button>
-      <button class="count-card stale" @click="filter = 'review'"><strong>{{ data.counts.stale }}</strong><span>Rerun required</span></button>
-      <button class="count-card clear" @click="filter = 'all'"><strong>{{ data.counts.clear }}</strong><span>Clear</span></button>
-      <button class="count-card" @click="filter = 'all'"><strong>{{ data.counts.informational }}</strong><span>Informational</span></button>
-      <button class="count-card" @click="filter = 'all'"><strong>{{ data.counts.not_run }}</strong><span>Not run</span></button>
-    </div>
-
     <div class="summary-toolbar">
       <SelectButton v-model="filter" :options="filters" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" />
       <span v-if="data" class="muted">{{ visibleItems.length }} procedure{{ visibleItems.length === 1 ? '' : 's' }}</span>
@@ -136,9 +127,8 @@ defineExpose({ load })
 <style scoped>
 .analysis-summary { max-width: 1100px; margin: 0 auto; padding: .25rem 0 2rem; }
 .summary-head { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; margin-bottom:1rem; }.summary-head h2 { margin:.15rem 0 .25rem; font-size:var(--aw-text-xl); }.summary-head p { margin:0; color:var(--aw-muted); font-size:var(--aw-text-base); }.summary-head .eyebrow { margin-bottom:.15rem; }
-.count-grid { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:.55rem; margin-bottom:1rem; }.count-card { text-align:left; border:1px solid var(--aw-border); background:var(--aw-panel); border-radius:var(--aw-radius-control); padding:.65rem .7rem; cursor:pointer; color:inherit; display:flex; flex-direction:column; gap:.1rem; }.count-card strong { font-size:var(--aw-text-xl); }.count-card span { color:var(--aw-muted); font-size:var(--aw-text-xs); }.count-card.review { border-top:3px solid var(--aw-warn); }.count-card.error { border-top:3px solid var(--aw-danger); }.count-card.stale { border-top:3px solid var(--aw-warn); }.count-card.clear { border-top:3px solid var(--aw-ok); }
 .summary-toolbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem; }.muted, small { color:var(--aw-muted); }.error { color:var(--aw-danger); }.empty { min-height:15rem; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.45rem; color:var(--aw-muted); text-align:center; }.empty > i { font-size:var(--aw-text-3xl); color:var(--aw-ok); }.empty strong { color:var(--aw-ink); }
 .summary-list { display:flex; flex-direction:column; gap:.6rem; }.summary-item { display:flex; justify-content:space-between; gap:1rem; border:1px solid var(--aw-border); border-left:3px solid var(--aw-muted); border-radius:var(--aw-radius-control); background:var(--aw-panel); padding:.75rem .85rem; }.summary-item[data-classification='exception'],.summary-item[data-classification='execution_error'] { border-left-color:var(--aw-danger); }.summary-item[data-classification='unusual'],.summary-item[data-classification='stale'] { border-left-color:var(--aw-warn); }.summary-item[data-classification='clear'] { border-left-color:var(--aw-ok); }.item-main { display:flex; gap:.65rem; min-width:0; }.item-main :deep(.verdict-icon),.state-icon { flex:0 0 auto; margin-top:.12rem; }.state-icon { color:var(--aw-warn); font-size:var(--aw-text-md); }.item-title { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }.item-main p { margin:.25rem 0; font-size:var(--aw-text-base); }.item-actions { display:flex; flex-direction:column; align-items:flex-end; justify-content:space-between; gap:.5rem; min-width:12rem; }.action-buttons { display:flex; align-items:center; gap:.35rem; }.stat-chips { display:flex; gap:.35rem; flex-wrap:wrap; justify-content:flex-end; }.stat-chips span { display:flex; flex-direction:column; border-radius:var(--aw-radius-control); background:var(--aw-canvas); padding:.25rem .4rem; font-size:var(--aw-text-xs); }.row-count { font-size:var(--aw-text-sm); }
-@media (max-width:900px) { .count-grid { grid-template-columns:repeat(3, 1fr); }.summary-item { flex-direction:column; }.item-actions { align-items:flex-start; min-width:0; }.stat-chips { justify-content:flex-start; } }
-@media (max-width:600px) { .summary-head { flex-direction:column; }.count-grid { grid-template-columns:repeat(2, 1fr); } }
+@media (max-width:900px) { .summary-item { flex-direction:column; }.item-actions { align-items:flex-start; min-width:0; }.stat-chips { justify-content:flex-start; } }
+@media (max-width:600px) { .summary-head { flex-direction:column; } }
 </style>
