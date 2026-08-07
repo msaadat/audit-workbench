@@ -218,6 +218,90 @@ def test_rcm_scope_supplies_the_process_description_without_the_audit_notes():
     assert "Missing thresholds" in apm_summary
 
 
+def test_small_table_row_candidates_supplies_whole_small_reference_tables():
+    """A profile alone cannot say which row carries a correlated value.
+
+    A 4-row approval matrix profiled as ``max=10000000, nulls_pct=25`` cannot
+    distinguish "one row overrides the cap" from "the cap is 10,000,000" — the
+    aggregate is a faithful description of the wrong thing for a table this
+    small. Below ``MAX_SMALL_TABLE_ROWS`` the whole table is supplied instead.
+    """
+    workspace = workspaces.create_workspace("Small reference table")
+    workspace.add_table(
+        "approval_matrix.csv",
+        pl.DataFrame(
+            {
+                "role": ["Clerk", "Manager", "Director", "CEO"],
+                "max_approval_amount": [1_000_000, 5_000_000, 10_000_000, 10_000_000],
+                "limit_notes": [None, None, None, "No ceiling; board notified"],
+            }
+        ).write_csv().encode(),
+    )
+
+    candidates = context_adapters.small_table_row_candidates(workspace)
+
+    assert [candidate.source_ref for candidate in candidates] == [
+        "table:approval_matrix"
+    ]
+    content = candidates[0].representations["table_rows_small"]
+    assert content["table"] == "approval_matrix"
+    rows = content["rows"]
+    assert len(rows) == 4
+    # The CEO row's actual override reaches the candidate; no aggregate substitutes.
+    assert ["Clerk", 1_000_000, None] in rows
+    assert ["CEO", 10_000_000, "No ceiling; board notified"] in rows
+
+
+def test_small_table_row_candidates_withholds_tables_above_the_row_ceiling():
+    workspace = workspaces.create_workspace("Large table")
+    workspace.add_table(
+        "transactions.csv",
+        pl.DataFrame(
+            {
+                "id": list(range(context_adapters.MAX_SMALL_TABLE_ROWS + 1)),
+                "amount": [1.0] * (context_adapters.MAX_SMALL_TABLE_ROWS + 1),
+            }
+        ).write_csv().encode(),
+    )
+
+    assert context_adapters.small_table_row_candidates(workspace) == ()
+
+
+def test_planning_rcm_preset_declares_the_small_table_rows_source():
+    spec = PRESETS.compile("planning.rcm")
+
+    source_ids = [source.id for source in spec.sources]
+    assert "small_table_rows" in source_ids
+    small_table_source = next(
+        source for source in spec.sources if source.id == "small_table_rows"
+    )
+    assert small_table_source.required is False
+    assert [rep.kind for rep in small_table_source.representations] == [
+        "table_rows_small"
+    ]
+    assert spec.privacy.allow_small_table_rows is True
+    # The generic table-row permission stays denied even though this preset
+    # now admits whole small tables under its own, narrower permission.
+    assert spec.privacy.allow_table_rows is False
+
+
+def test_rcm_scope_supplies_small_table_rows_alongside_profiles():
+    workspace = workspaces.create_workspace("RCM small table scope")
+    workspace.add_table(
+        "approval_matrix.csv",
+        pl.DataFrame(
+            {"role": ["Clerk", "CEO"], "max_approval_amount": [1_000_000, 10_000_000]}
+        ).write_csv().encode(),
+    )
+
+    rcm = context_adapters.rcm_scope(workspace)
+
+    small_table_candidates = rcm.candidates["small_table_rows"]
+    assert [candidate.source_ref for candidate in small_table_candidates] == [
+        "table:approval_matrix"
+    ]
+
+
 def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
     monkeypatch,
 ):
@@ -258,7 +342,10 @@ def test_apm_table_adapters_supply_metadata_and_profiles_without_row_values(
     )
 
     assert schema_calls == [True]
-    assert profile_calls == [False]
+    # Category values are requested, but the table has only 2 rows — well
+    # under MIN_CATEGORY_ROWS — so the gate in apm_table_profile_candidates
+    # strips them before they reach the bundle (checked below).
+    assert profile_calls == [True]
     assert [item.representation.kind for item in bundle.items] == [
         "planning_context",
         "artifact_template",
@@ -321,11 +408,23 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     assert "assistant.table_metadata" in adapter_source
     assert "document_context.apm_document_context" in adapter_source
     assert "methodology.context_sections" in adapter_source
-    assert ".get_frame(" not in adapter_source
-    assert "project_frame" not in adapter_source
     assert "profiler" not in adapter_source
     assert "document_analysis" not in adapter_source
     assert "document_search" not in adapter_source
+
+    # planning.apm's own table sources stay metadata/profile-only: no adapter
+    # it declares fetches a real frame or a row preview. ``get_frame`` and
+    # ``project_frame`` do appear elsewhere in the module now, for the
+    # separate, row-count-gated ``small_table_rows`` source that only
+    # ``planning.rcm`` declares (see the small-table tests below).
+    for adapter in (
+        context_adapters.apm_table_metadata_candidates,
+        context_adapters.apm_table_profile_candidates,
+        context_adapters.apm_document_methodology_scope,
+    ):
+        source = inspect.getsource(adapter)
+        assert ".get_frame(" not in source
+        assert "project_frame" not in source
 
 
 def test_tests_generate_preset_declares_the_row_scoped_sources():

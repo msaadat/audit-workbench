@@ -48,6 +48,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "table_profile": "allow_table_profiles",
     "table_aggregate": "allow_table_aggregates",
     "table_rows": "allow_table_rows",
+    "table_rows_small": "allow_small_table_rows",
     "analysis_result": "allow_analysis_results",
     "analysis_exception_rows": "allow_analysis_exception_rows",
     "analysis_summary": "allow_analysis_summary",
@@ -749,6 +750,20 @@ PRESETS.register(
                     budget=ContextBudget(max_items=12, max_characters=16_000),
                 ),
                 ContextSource(
+                    id="small_table_rows",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # A profile's aggregates cannot describe a small reference or
+                    # dimension table faithfully — a 4-row approval matrix's
+                    # max/null statistics said nothing about which row carried
+                    # the override. Below the adapter's row-count ceiling the
+                    # whole table is supplied instead; above it, only the
+                    # profile and aggregate sources above apply.
+                    representations=(ContextRepresentation("table_rows_small"),),
+                    budget=ContextBudget(max_items=8, max_characters=16_000),
+                ),
+                ContextSource(
                     id="documents",
                     source_type="documents",
                     required=False,
@@ -785,13 +800,14 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            budget=ContextBudget(max_items=244, max_characters=100_000),
+            budget=ContextBudget(max_items=252, max_characters=116_000),
             privacy=ContextPrivacy(
                 allow_planning_context=True,
                 allow_template_text=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
                 allow_table_profiles=True,
+                allow_small_table_rows=True,
             ),
         ),
     )

@@ -1701,10 +1701,18 @@ def test_live_rcm_capability_commits_through_pipeline_binding(monkeypatch):
             "apm_markdown": "# Audit Planning Memorandum\n\n## Scope\nPurchasing.",
         }
     )
+    # A table above the small-table-rows ceiling: row content of a table this
+    # size must never reach the provider, only bounded aggregates/profiles.
+    # (A table at or under the ceiling is a deliberate, separate exception —
+    # see test_agent_context_adapters.py's small_table_row_candidates tests.)
+    ledger_size = context_adapters.MAX_SMALL_TABLE_ROWS + 1
     ws.add_table(
         "private-ledger.csv",
         pl.DataFrame(
-            {"invoice_id": [sentinel, "INV-2"], "amount": [100.0, 200.0]}
+            {
+                "invoice_id": [sentinel] + [f"INV-{index}" for index in range(2, ledger_size + 1)],
+                "amount": [100.0] * ledger_size,
+            }
         ).write_csv().encode(),
     )
     command, stage, unit = _rcm_only_runner(ws)

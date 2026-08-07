@@ -574,6 +574,11 @@ def test_selector_registry_rejects_unhashable_and_unsupported_definitions():
             "excerpt",
             "provider delivery is disabled",
         ),
+        (
+            ContextPrivacy(),
+            "table_rows_small",
+            "representation 'table_rows_small'.*requires privacy.allow_small_table_rows",
+        ),
     ],
 )
 def test_selector_registry_rejects_invalid_privacy_combinations(

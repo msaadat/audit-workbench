@@ -16,6 +16,7 @@ from ... import (
     document_context,
     intake,
     methodology,
+    model_context,
     templates_store,
 )
 from ...analysis_memo import flatten_embeds
@@ -317,25 +318,91 @@ def apm_table_metadata_candidates(workspace: Workspace) -> tuple[ContextCandidat
 
 
 def apm_table_profile_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
-    """Expose bounded statistical profiles without category or row values."""
+    """Expose bounded statistical profiles, plus category values where safe.
+
+    A value list is kept on a column only when it is a *category domain*, not
+    its rows restated: the table has a population and each value recurs
+    across it (``MIN_CATEGORY_ROWS``, ``MIN_CATEGORY_REPETITION`` — the same
+    gate ``test_generate_table_metadata_candidates`` applies), and the
+    underlying frequency list holds one entry per distinct value rather than a
+    truncated top-N. Anything narrower carries its distinct count alone.
+    """
     candidates = []
     for table_name in workspace.table_names():
         try:
             profile = assistant.table_metadata(
                 workspace,
                 table_name,
-                include_category_values=False,
+                include_category_values=True,
             )
         except (OSError, WorkspaceError):
             continue
-        columns = [str(column.get("name") or "") for column in profile.get("columns") or []]
+        rows = profile.get("rows")
+        rows = rows if isinstance(rows, int) else 0
+        columns = []
+        for column in profile.get("columns") or []:
+            entry = dict(column)
+            distinct = entry.get("distinct")
+            values = entry.get("values")
+            keep_values = (
+                isinstance(values, list)
+                and isinstance(distinct, int)
+                and len(values) == distinct
+                and rows >= MIN_CATEGORY_ROWS
+                and distinct * MIN_CATEGORY_REPETITION <= rows
+            )
+            if not keep_values:
+                entry.pop("values", None)
+            columns.append(entry)
+        profile = {**profile, "columns": columns}
         candidates.append(
             ContextCandidate(
                 source_ref=f"table:{table_name}",
                 source=profile,
                 representations={"table_profile": profile},
                 metadata={"table": table_name},
-                lexical_text=" ".join((table_name, *columns)),
+                lexical_text=" ".join(
+                    (table_name, *(str(column.get("name") or "") for column in columns))
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+# A table this small is one an aggregate profile cannot describe faithfully:
+# min/max/null statistics over a handful of rows lose exactly the correlation
+# (which row holds which value) that a reference or dimension table is for.
+# Below this ceiling the whole table is supplied instead of its profile.
+MAX_SMALL_TABLE_ROWS = 50
+
+
+def small_table_row_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Expose the complete rows of tables at or under the small-table ceiling.
+
+    Row count is read from the cached profile so this never triggers a fresh
+    scan; only a table already known to be small loads its frame at all.
+    """
+    candidates = []
+    for table_name in workspace.table_names():
+        try:
+            profile = workspace.get_profile(table_name)
+        except (OSError, WorkspaceError):
+            continue
+        rows = profile.get("rows")
+        if not isinstance(rows, int) or rows <= 0 or rows > MAX_SMALL_TABLE_ROWS:
+            continue
+        try:
+            frame = workspace.get_frame(table_name)
+        except (OSError, WorkspaceError):
+            continue
+        content = {"table": table_name, **model_context.project_frame(frame, row_limit=MAX_SMALL_TABLE_ROWS)}
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"table:{table_name}",
+                source=content,
+                representations={"table_rows_small": content},
+                metadata={"table": table_name},
+                lexical_text=table_name,
             )
         )
     return tuple(candidates)
@@ -508,6 +575,7 @@ RCM_DOCUMENT_SOURCE_ID = "documents"
 RCM_METHODOLOGY_SOURCE_ID = "methodology"
 RCM_TABLE_METADATA_SOURCE_ID = "table_metadata"
 RCM_TABLE_PROFILE_SOURCE_ID = "table_profiles"
+RCM_SMALL_TABLE_ROWS_SOURCE_ID = "small_table_rows"
 
 # The bounded identification and matching fields supplied per current RCM row.
 # Planned tests, roll-ups, and evidence references stay out of the provider
@@ -595,6 +663,7 @@ def rcm_scope(
             RCM_CURRENT_ROWS_SOURCE_ID: rcm_current_row_candidates(workspace),
             RCM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
             RCM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
+            RCM_SMALL_TABLE_ROWS_SOURCE_ID: small_table_row_candidates(workspace),
             RCM_DOCUMENT_SOURCE_ID: apm_document_candidates(
                 workspace,
                 document_ids=document_ids,
@@ -1361,10 +1430,11 @@ ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS = (
 # whole character budget before the resolver even sees it.
 MAX_AGGREGATE_COLUMNS = 24
 
-# Profiler fields that are literal values drawn from rows. Text ``min``/``max``
-# and ``top_values`` are exactly the category literals the planning presets
-# already withhold, so the aggregate projection drops them; numeric and date
-# summaries stay, matching the established table-profile policy.
+# Profiler fields that are literal values drawn from rows. ``top_values`` is
+# category-domain content that ``apm_table_profile_candidates`` admits under a
+# gate (a real population where every value recurs); this adapter's aggregates
+# stay value-free regardless, since analysis-definition context is metadata
+# and aggregates only, by design, independent of that gate.
 _LITERAL_PROFILE_FIELDS = ("top_values",)
 
 
@@ -2209,6 +2279,7 @@ __all__ = [
     "RCM_PLANNING_SOURCE_ID",
     "RCM_TABLE_METADATA_SOURCE_ID",
     "RCM_TABLE_PROFILE_SOURCE_ID",
+    "RCM_SMALL_TABLE_ROWS_SOURCE_ID",
     "RCM_TEMPLATE_SOURCE_ID",
     "apm_document_candidates",
     "apm_document_methodology_scope",
@@ -2216,6 +2287,8 @@ __all__ = [
     "supplied_source_provenance",
     "apm_table_metadata_candidates",
     "apm_table_profile_candidates",
+    "small_table_row_candidates",
+    "MAX_SMALL_TABLE_ROWS",
     "document_chunk_scope",
     "document_identity_candidate",
     "document_voucher_scope",

@@ -265,6 +265,14 @@ class ContextPrivacy(_JSONModel):
     allow_table_profiles: bool = False
     allow_table_aggregates: bool = False
     allow_table_rows: bool = False
+    # The complete rows of one table, gated on the table itself being small
+    # (row-count capped, checked by the adapter before a candidate is even
+    # built). Deliberately separate from ``allow_table_rows``: that permits an
+    # arbitrary slice of a table of any size, whereas this permits only a
+    # whole small table, where "small" is the reason a profile stops being a
+    # faithful description — a 4-row approval matrix's aggregate max/null
+    # statistics cannot say what its one exceptional row actually contains.
+    allow_small_table_rows: bool = False
     # What a saved procedure concluded: its definition, verdict, and bounded
     # statistics. Aggregate in the same sense as a table profile.
     allow_analysis_results: bool = False
@@ -294,6 +302,7 @@ class ContextPrivacy(_JSONModel):
         "allow_table_profiles",
         "allow_table_aggregates",
         "allow_table_rows",
+        "allow_small_table_rows",
         "allow_analysis_results",
         "allow_analysis_exception_rows",
         "allow_analysis_summary",
