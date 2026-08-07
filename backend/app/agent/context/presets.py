@@ -1128,6 +1128,20 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=12_000),
                 ),
                 ContextSource(
+                    id="table_joins",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # What each joined frame is: the columns matched, the
+                    # direction, and how well they matched. A procedure's frame
+                    # name does not carry its keys, so the section describing
+                    # the relationships tested has no other source for them —
+                    # and a per-row count over a frame that multiplied rows
+                    # means something different from one that did not.
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=40, max_characters=20_000),
+                ),
+                ContextSource(
                     id="table_metadata",
                     source_type="tables",
                     required=False,

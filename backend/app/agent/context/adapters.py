@@ -1690,6 +1690,7 @@ SUMMARY_RESULTS_SOURCE_ID = "analysis_results"
 SUMMARY_EXCEPTIONS_SOURCE_ID = "analysis_exceptions"
 SUMMARY_ANOMALIES_SOURCE_ID = "analysis_anomalies"
 SUMMARY_GAPS_SOURCE_ID = "coverage_gaps"
+SUMMARY_JOINS_SOURCE_ID = "table_joins"
 SUMMARY_TABLE_METADATA_SOURCE_ID = "table_metadata"
 SUMMARY_TABLE_PROFILE_SOURCE_ID = "table_profiles"
 SUMMARY_PLANNING_SOURCE_ID = "planning_context"
@@ -1711,6 +1712,22 @@ MAX_SUMMARY_EXCEPTION_ROWS = 12
 _FAILURE_VERDICTS = frozenset({"fail"})
 
 
+# A procedure's Polars source, bounded. Long enough for every analysis this
+# workflow writes and for an auditor's own one-expression checks; a genuinely
+# long script is truncated rather than allowed to crowd out other procedures,
+# and says so where it is cut.
+MAX_SUMMARY_CODE_CHARACTERS = 1_500
+
+
+def _bounded_code(spec: Mapping[str, object]) -> str | None:
+    code = str(spec.get("code") or "").strip()
+    if not code:
+        return None
+    if len(code) <= MAX_SUMMARY_CODE_CHARACTERS:
+        return code
+    return code[:MAX_SUMMARY_CODE_CHARACTERS] + "\n… truncated"
+
+
 def _summary_result_projection(
     workspace: Workspace, analysis: Mapping[str, object]
 ) -> dict[str, object]:
@@ -1718,6 +1735,7 @@ def _summary_result_projection(
     from ...analysis_results import analysis_state
 
     result = dict(analysis.get("last_result") or {})
+    spec = dict(analysis.get("spec") or {})
     state = analysis_state(workspace, analysis)
     return {
         "analysis_id": str(analysis.get("id") or ""),
@@ -1727,14 +1745,39 @@ def _summary_result_projection(
         "note": analysis.get("note"),
         "table": analysis.get("table"),
         "kind": analysis.get("kind"),
-        "test": (analysis.get("spec") or {}).get("test"),
+        "test": spec.get("test"),
+        # What the procedure actually did, not only what it was called. A title
+        # is authored text and can describe a test the spec does not implement:
+        # a duplicates test over two join keys titled as a mismatch check tests
+        # for repeated key groups, and a date-lag test reads as backdating in
+        # whichever direction its parameters happen to name. Without the
+        # parameters those are indistinguishable from the outside, and a memo
+        # that cannot distinguish them restates the title as a finding.
+        "parameters": spec.get("params") or {},
+        # The same problem in its sharpest form. A python procedure's audit
+        # meaning is its code together with its outcome policy: under
+        # ``exception_rows`` every returned row counts as a potential
+        # exception, so code that returns its frame unfiltered reports the
+        # population as exceptions. Both travel so the memo can tell the
+        # difference.
+        "code": _bounded_code(spec),
+        "outcome_policy": dict(analysis.get("outcome_policy") or {}),
         "created_by": analysis.get("created_by"),
         "classification": state["classification"],
         "state": state["state"],
         "verdict": result.get("verdict"),
         "verdict_text": result.get("verdict_text"),
+        # ``row_count`` is the size of the result frame, not of anything the
+        # conclusion is about. The three below are the denominators — see
+        # ``analysis_results.bounded_result``. Results recorded before they
+        # were computed carry none, which reads correctly as unknown.
         "row_count": result.get("row_count"),
+        "population": result.get("population"),
+        "tested": result.get("tested"),
+        "not_tested": result.get("not_tested"),
         "exception_count": result.get("exception_count"),
+        "exception_rate": result.get("exception_rate"),
+        "exception_rate_of": result.get("exception_rate_of"),
         "statistics": result.get("stats") or [],
         "error": result.get("error"),
     }
@@ -1802,6 +1845,60 @@ def analysis_summary_exception_candidates(
                 representations={"analysis_exception_rows": flagged},
                 metadata={"analysis_id": str(item.get("id") or "")},
                 lexical_text=str(item.get("title") or ""),
+            )
+        )
+    return tuple(candidates)
+
+
+def analysis_join_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
+    """Every join the engagement defined, with the keys it was actually built on.
+
+    A procedure runs against a frame, and for a joined frame what that frame
+    *is* — which columns were matched, in which direction, how many left rows
+    found a match, and whether the match multiplied rows — is not recoverable
+    from the frame's name. Supplied because a memo asked to describe the
+    relationships tested will otherwise describe plausible ones: join keys are
+    exactly the kind of detail that reads as established fact and is invented
+    silently. It also makes a duplicate-key result over a joined frame legible
+    as the fan-out it may be rather than as a mismatch between two systems.
+    """
+    candidates = []
+    for join in workspace.joins:
+        name = str(join.get("name") or "")
+        left, right = str(join.get("left") or ""), str(join.get("right") or "")
+        left_on = [str(item) for item in (join.get("left_on") or [])]
+        right_on = [str(item) for item in (join.get("right_on") or [])]
+        content: dict[str, object] = {
+            "frame": name,
+            "how": join.get("how"),
+            "left": left,
+            "right": right,
+            "left_on": left_on,
+            "right_on": right_on,
+        }
+        # Match quality, where the pair is single-key: ``diagnose`` reports one
+        # key pair, and a composite key is not the sum of its columns. A
+        # composite join still supplies its definition, which is the part a
+        # memo cannot otherwise know.
+        if len(left_on) == 1 and len(right_on) == 1:
+            try:
+                content["match"] = join_diagnostics.diagnose(
+                    workspace.get_frame(left),
+                    workspace.get_frame(right),
+                    left_on[0],
+                    right_on[0],
+                )
+            except (OSError, WorkspaceError, ValueError, KeyError):
+                # A frame that will not resolve leaves the definition standing
+                # without measurements, which reads correctly as unmeasured.
+                pass
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"join:{name}",
+                source=content,
+                representations={"table_metadata": content},
+                metadata={"join": name, "table": name},
+                lexical_text=" ".join([name, left, right, *left_on, *right_on]),
             )
         )
     return tuple(candidates)
@@ -1888,6 +1985,7 @@ def analysis_summary_scope(workspace: Workspace) -> ContextScope:
                     metadata={"kind": "coverage_gaps"},
                 ),
             ),
+            SUMMARY_JOINS_SOURCE_ID: analysis_join_candidates(workspace),
             SUMMARY_TABLE_METADATA_SOURCE_ID: tuple(
                 candidate
                 for candidate in apm_table_metadata_candidates(workspace)

@@ -39,6 +39,14 @@ class AnalyticsResult:
     stats: list = field(default_factory=list)  # [{"label", "value"}]
     summary: pl.DataFrame | None = None
     detail: pl.DataFrame | None = None
+    # How many source rows the test actually evaluated. Every test already
+    # computes this to build its own statistics, but only as a formatted
+    # label/value pair ("Rows compared", "Values tested", "Dated rows"), which
+    # is presentation rather than contract: a reader downstream had to guess
+    # which label carried the denominator, and a count of flagged rows without
+    # its denominator is not an audit conclusion. Declared here so the
+    # execution record can carry it typed.
+    tested: int | None = None
     # Suggested visualization of the summary frame for dashboard tiles,
     # e.g. {"type": "bar", "x": "digit", "y": ["observed_pct", "expected_pct"]}.
     viz: dict | None = None
@@ -49,6 +57,7 @@ class AnalyticsResult:
             "verdict": self.verdict,
             "verdict_text": self.verdict_text,
             "stats": self.stats,
+            "tested": self.tested,
             "viz": self.viz,
             "summary": frame_payload(self.summary, SUMMARY_MAX_ROWS)
             if self.summary is not None
@@ -190,6 +199,7 @@ def benford(df: pl.DataFrame, params: dict) -> AnalyticsResult:
             ),
         ],
         summary=table,
+        tested=n,
         viz={
             "type": "bar",
             "x": "digit" if digits == 1 else "digits",
@@ -238,6 +248,7 @@ def duplicates(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=counts,
         detail=detail,
+        tested=df.height,
     )
 
 
@@ -288,6 +299,7 @@ def gaps(df: pl.DataFrame, params: dict) -> AnalyticsResult:
             _stat("Reused numbers", total - distinct),
         ],
         summary=gap_rows,
+        tested=total,
     )
 
 
@@ -343,6 +355,7 @@ def sampling(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=summary,
         detail=sample,
+        tested=df.height,
     )
 
 
@@ -415,6 +428,7 @@ def period_compare(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         verdict_text=text,
         stats=stats,
         summary=table,
+        tested=frame.height,
         viz={"type": "line", "x": "period", "y": [measure]},
     )
 
@@ -463,6 +477,7 @@ def round_numbers(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=summary,
         detail=detail if detail.height else None,
+        tested=n,
         viz={"type": "bar", "x": "multiple_of", "y": ["pct", "expected_pct"]},
     )
 
@@ -528,6 +543,7 @@ def outliers(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=summary,
         detail=flagged if flagged.height else None,
+        tested=n,
     )
 
 
@@ -582,6 +598,7 @@ def threshold_check(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=summary,
         detail=just_below if below_count else None,
+        tested=n,
         viz={"type": "bar", "x": "band", "y": ["count"]},
     )
 
@@ -623,6 +640,7 @@ def weekend_activity(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=by_day,
         detail=detail,
+        tested=n,
         viz={"type": "bar", "x": "weekday", "y": ["count"]},
     )
 
@@ -677,6 +695,7 @@ def date_lag(df: pl.DataFrame, params: dict) -> AnalyticsResult:
             _stat("Backdated", backdated.height),
             _stat("Average lag (days)", round(avg_lag, 1)),
         ],
+        tested=n,
         summary=summary,
         detail=flagged if flagged.height else None,
     )
@@ -733,6 +752,7 @@ def stratify(df: pl.DataFrame, params: dict) -> AnalyticsResult:
             _stat("Bands", summary.height),
         ],
         summary=summary,
+        tested=total,
         viz={"type": "bar", "x": "band", "y": ["count"]},
     )
 
@@ -778,6 +798,7 @@ def completeness(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=summary,
         detail=detail,
+        tested=n,
         viz={"type": "bar", "x": "column", "y": ["missing"]},
     )
 
@@ -820,6 +841,7 @@ def sign_scan(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=summary,
         detail=detail if detail.height else None,
+        tested=n,
         viz={"type": "bar", "x": "sign", "y": ["count"]},
     )
 
@@ -875,6 +897,7 @@ def last_two_digits(df: pl.DataFrame, params: dict) -> AnalyticsResult:
             _stat("Most common ending", f"{top['last_two']:02d} ({top['observed_pct']}%)"),
         ],
         summary=table,
+        tested=n,
         viz={"type": "bar", "x": "last_two", "y": ["observed_pct", "expected_pct"]},
     )
 
@@ -912,6 +935,7 @@ def rare_values(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         ],
         summary=rare,
         detail=detail,
+        tested=df.height,
     )
 
 

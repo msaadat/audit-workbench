@@ -50,6 +50,21 @@ def _python_frames(workspace: Workspace) -> dict:
     return frames
 
 
+def _frame_height(workspace: Workspace, name: object) -> int | None:
+    """The row count of a named frame, or nothing if it will not resolve.
+
+    A missing denominator is reported as missing. Substituting a plausible one
+    would be worse than having none: it would read as measured.
+    """
+    text = str(name or "").strip()
+    if not text:
+        return None
+    try:
+        return workspace.get_frame(text).height
+    except Exception:
+        return None
+
+
 def compute_payload(workspace: Workspace, item: dict) -> dict:
     """Recompute a stored spec (tile or saved analysis) into a render-ready
     payload. Both collections store specs, not data, and share this logic; a
@@ -60,6 +75,13 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
     }
     payload["exceptions"] = None
     payload["exception_rows"] = 0
+    # The two denominators a conclusion needs. ``population`` is the frame the
+    # procedure ran against; ``tested`` is how much of it the procedure could
+    # actually evaluate, which is smaller wherever a key is null or a date
+    # unparseable. Neither is derivable from ``total_rows`` — that is the size
+    # of the *result*, which for an analytics test is its aggregate summary.
+    payload["population"] = None
+    payload["tested"] = None
     try:
         if item["kind"] == "python":
             code = (item.get("spec") or {}).get("code") or ""
@@ -68,6 +90,12 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
             payload["stdout"] = stdout or None
             payload["total_rows"] = result.height
             payload["frame"] = explore.frame_payload(result, _cap_for(payload["viz"]))
+            # Python code receives every frame and may use any of them, so the
+            # declared frame is the best available population — and the one the
+            # rows it returned are being counted against. Where it resolves, a
+            # result that returned its whole declared frame becomes visible as
+            # exactly that rather than as an exception count.
+            payload["population"] = _frame_height(workspace, item.get("table"))
             # A python analysis has no detail frame of its own: its declared
             # outcome policy is what says whether the rows it returned are
             # exceptions, the same policy ``bounded_result`` reads for the
@@ -82,9 +110,11 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
             return payload
 
         frame = workspace.get_frame(item["table"])
+        payload["population"] = frame.height
         if item["kind"] == "query":
             result, _ = explore.run_query_full(frame, item.get("spec") or {})
             payload["total_rows"] = result.height
+            payload["tested"] = frame.height
             payload["frame"] = explore.frame_payload(result, _cap_for(payload["viz"]))
         elif item["kind"] == "pivot":
             # Legacy pivot tiles (rows/columns/values) render through the query
@@ -103,6 +133,7 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
                 totals=spec.get("totals", True),
             )
             payload["total_rows"] = wide.height
+            payload["tested"] = frame.height
             payload["frame"] = explore.frame_payload(wide, _cap_for(payload["viz"]))
         elif item["kind"] == "validation":
             spec = item.get("spec") or {}
@@ -125,6 +156,7 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
             ]
             summary = validation.summary_frame(run)
             payload["total_rows"] = summary.height
+            payload["tested"] = int(run["rows"])
             payload["frame"] = explore.frame_payload(summary, _cap_for(payload["viz"]))
         else:
             spec = item.get("spec") or {}
@@ -135,6 +167,7 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
             payload["verdict"] = result.verdict
             payload["verdict_text"] = result.verdict_text
             payload["stats"] = result.stats
+            payload["tested"] = result.tested
             source = result.summary if result.summary is not None else result.detail
             if source is not None:
                 payload["total_rows"] = source.height

@@ -165,6 +165,17 @@ def bounded_result(
         else:
             verdict = "info"
             verdict_text = f"{row_count:,} result row(s) returned."
+    population = payload.get("population")
+    population = int(population) if isinstance(population, int) else None
+    tested = payload.get("tested")
+    tested = int(tested) if isinstance(tested, int) else None
+    # A rate is meaningless unless what it is a rate *of* travels with it. A
+    # python procedure evaluates whatever its code says and cannot report a
+    # tested count, so its rate falls back to the frame it declared — which is
+    # exactly the comparison that shows a procedure returning its whole
+    # population under an exception-counting policy. A procedure that errored
+    # measured nothing, and a rate of zero would read as a clean result.
+    denominator = None if error else (tested or population)
     record = {
         "run_id": run_id,
         "executed_at": _utcnow(),
@@ -177,13 +188,40 @@ def bounded_result(
         "stat_count": len(stats),
         "stats": stats[:MAX_RESULT_STATS],
         # How many rows the procedure flagged, and how many of them the
-        # evidence sidecar retained. The count is the population; the retained
-        # slice is what an auditor can read back without re-running. Both
-        # travel so a truncated sidecar can never be mistaken for the whole.
+        # evidence sidecar retained. The retained slice is what an auditor can
+        # read back without re-running, and both travel so a truncated sidecar
+        # can never be mistaken for the whole.
         "exception_count": exception_count,
         "exception_rows_retained": min(exception_count, EXCEPTION_ROWS),
+        # What the flagged count is a count *of*. ``row_count`` is the size of
+        # the result — for an analytics test, its aggregate summary frame — and
+        # was never a denominator, though it is the only one a reader
+        # previously had. ``population`` is the frame the procedure ran
+        # against; ``tested`` is how much of it the procedure could evaluate;
+        # ``not_tested`` is the difference, which is itself audit-relevant:
+        # rows dropped for a null key or an unparseable date are rows no
+        # conclusion covers. Any of them may be absent — a procedure that
+        # cannot establish its own denominator says so rather than implying one.
+        "population": population,
+        "tested": tested,
+        "not_tested": (
+            max(population - tested, 0)
+            if population is not None and tested is not None
+            else None
+        ),
+        "exception_rate": (
+            round(exception_count / denominator, 4) if denominator else None
+        ),
+        "exception_rate_of": (
+            ("tested" if tested else "population") if denominator else None
+        ),
         "input_sha1": analysis_input_sha1(workspace, analysis),
     }
+    # Deliberately excludes the denominators above. This hash binds a stored
+    # evidence sidecar to the conclusion it supports, and the denominators do
+    # not change which rows were flagged — folding them in would invalidate
+    # every sidecar already on disk to record something that cannot make the
+    # retained rows wrong.
     record["result_sha1"] = _sha1(
         {
             key: record[key]

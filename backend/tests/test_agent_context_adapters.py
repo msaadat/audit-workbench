@@ -704,11 +704,11 @@ def test_test_generate_scope_supplies_the_process_description_without_the_audit_
 FENCE = "```"
 
 MEMO = (
-    "## Data received and population characteristics\n"
+    "## Data received and its limitations\n"
     "118 invoices were received.\n\n"
     f"{FENCE}embed\nanalysis: A-0DAB063C\nas: exception_table\n"
     f"caption: the backdated invoice\n{FENCE}\n\n"
-    "## Exceptions noted\nInvoice INV2024008 was received before it was issued.\n"
+    "## What the analysis found\nInvoice INV2024008 was received before it was issued.\n"
 )
 
 

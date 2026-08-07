@@ -30,6 +30,7 @@ from app.agent.context import (
     analysis_definition_scope,
     analysis_summary_scope,
 )
+from app.agent.context import adapters
 from app.agent.executors import ExecutorRequest
 from app.agent.executors import analysis as analysis_executors
 from app.agent.routing import classify_command, resolve_route
@@ -74,13 +75,12 @@ def _scripted_summary(user: str) -> dict:
     )
     return {
         "content": (
-            "## Data received and population characteristics\n"
+            "The population is complete and the duplicate keys are the only issue.\n"
+            "\n## Data received and its limitations\n"
             f"{len(supplied)} procedure(s) were run over the imported data.\n"
             f"{embed}"
-            "\n## Relationships and joins established\nOne join was materialized.\n"
-            "\n## Procedures performed\nDuplicate and preview checks.\n"
-            "\n## Exceptions noted\nNone that require escalation.\n"
-            "\n## Data quality observations\nKeys are largely complete.\n"
+            "\n## What the analysis found\nNone that require escalation.\n"
+            "\n## How far these results can be relied on\nKeys are largely complete.\n"
             "\n## Further work required\nNothing outstanding.\n"
         )
     }
@@ -1123,8 +1123,9 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
     assert result["row_count"] >= 1
     assert result["result_sha1"]
     # Only the bounded contract is durable: no frame, no rows, no stdout.
-    # ``exception_count`` and ``exception_rows_retained`` are counts, not data —
-    # the flagged rows themselves live in the evidence sidecar, never here.
+    # ``exception_count``, ``exception_rows_retained``, and the denominators
+    # are counts, not data — the flagged rows themselves live in the evidence
+    # sidecar, never here.
     assert set(result) == {
         "run_id",
         "executed_at",
@@ -1138,9 +1139,22 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
         "stats",
         "exception_count",
         "exception_rows_retained",
+        "population",
+        "tested",
+        "not_tested",
+        "exception_rate",
+        "exception_rate_of",
         "input_sha1",
         "result_sha1",
     }
+    # The flagged count is recorded against what it is a count of, so a rate
+    # cannot be read off the wrong denominator downstream.
+    assert result["population"] == result["tested"]
+    assert result["not_tested"] == 0
+    assert result["exception_rate"] == round(
+        result["exception_count"] / result["tested"], 4
+    )
+    assert result["exception_rate_of"] == "tested"
     assert len(result["stats"]) <= analysis_executors.MAX_RESULT_STATS
     assert "1001" not in json.dumps(result)
     # The definition itself is still a spec that recomputes on demand.
@@ -1272,7 +1286,11 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     # The run's answer is the memo, written over the results it just recorded
     # and current against them.
     memo = fresh.analysis_summary
-    assert memo["markdown"].startswith("## Data received")
+    # It opens on what the analysis concluded, not on a heading: a reader who
+    # stops after the first paragraph should still have the answer.
+    assert not memo["markdown"].startswith("#")
+    assert memo["markdown"].split("\n", 1)[0].strip()
+    assert f"## {analysis_worker.SUMMARY_SECTIONS[0]}" in memo["markdown"]
     assert memo["run_id"] == started["id"]
     assert memo["basis_sha1"] == analysis_results.summary_basis_digest(fresh)
     assert memo["cited_analysis_ids"]
@@ -1854,12 +1872,15 @@ def _summary_request(workspace):
     )
 
 
-def _memo(sections=None, embeds: str = "") -> str:
-    body = ""
+def _memo(sections=None, embeds: str = "", findings: str = "Text.") -> str:
+    # The lead paragraph is part of the contract: a memo that opens straight
+    # into a heading has not said what the analysis concluded.
+    body = "The population reconciles and one issue is worth following up.\n\n"
     for section in analysis_worker.SUMMARY_SECTIONS if sections is None else sections:
-        body += f"## {section}\nText.\n"
-        if section == "Exceptions noted":
-            body += embeds
+        if section == analysis_worker.FINDINGS_SECTION:
+            body += f"## {section}\n{findings}\n{embeds}"
+        else:
+            body += f"## {section}\nText.\n"
     return body
 
 
@@ -1905,6 +1926,200 @@ def test_the_summary_is_shown_the_rows_a_procedure_flagged(workspace_with_data):
     assert 1006 in [
         row[payload["columns"].index("invoice_no")] for row in payload["rows"]
     ]
+
+
+def test_the_summary_is_shown_what_a_procedure_did_not_only_its_title(
+    workspace_with_data,
+):
+    """A title is authored text; the spec is what ran.
+
+    Without the parameters a duplicates test over two join columns and a
+    genuine cross-system mismatch check are indistinguishable, and a date-lag
+    test's direction — which decides whether its flagged rows are the exception
+    or the population — is invisible.
+    """
+    ws = workspace_with_data
+    lag = _saved(
+        ws,
+        "Detect backdating",
+        {"test": "date_lag", "params": {"from_date": "tx_date", "to_date": "tx_date"}},
+    )
+
+    scope = analysis_summary_scope(workspaces.load_workspace(ws.id))
+    supplied = {
+        candidate.metadata["analysis_id"]: candidate.source
+        for candidate in scope.candidates["analysis_results"]
+    }
+    assert supplied[lag["id"]]["test"] == "date_lag"
+    assert supplied[lag["id"]]["parameters"] == {
+        "from_date": "tx_date",
+        "to_date": "tx_date",
+    }
+
+
+def test_the_summary_is_shown_a_python_procedures_code_and_outcome_policy(
+    workspace_with_data,
+):
+    """Under ``exception_rows`` an unfiltered frame is counted as exceptions.
+
+    The memo can only decline to report that count as exceptions if it can see
+    that the code never narrowed anything.
+    """
+    ws = workspace_with_data
+    unfiltered = ws.add_analysis(
+        {
+            "kind": "python",
+            "table": "transactions",
+            "title": "Check for mismatched amounts",
+            "spec": {"code": "result = tables['transactions']"},
+            "outcome_policy": {"mode": "exception_rows"},
+        }
+    )
+    analysis_results.execute_and_record(ws, unfiltered["id"])
+
+    scope = analysis_summary_scope(workspaces.load_workspace(ws.id))
+    supplied = next(
+        candidate.source
+        for candidate in scope.candidates["analysis_results"]
+        if candidate.metadata["analysis_id"] == unfiltered["id"]
+    )
+    assert supplied["code"] == "result = tables['transactions']"
+    assert supplied["outcome_policy"] == {"mode": "exception_rows"}
+    # Every row of the declared frame came back, and the rate says so.
+    assert supplied["exception_count"] == supplied["population"]
+    assert supplied["exception_rate"] == 1.0
+    assert supplied["exception_rate_of"] == "population"
+
+
+def test_a_long_procedures_code_is_bounded_rather_than_dropped(workspace_with_data):
+    ws = workspace_with_data
+    code = "# " + "x" * (adapters.MAX_SUMMARY_CODE_CHARACTERS + 500)
+    analysis = ws.add_analysis(
+        {
+            "kind": "python",
+            "table": "transactions",
+            "title": "Long",
+            "spec": {"code": code},
+        }
+    )
+    supplied = adapters._summary_result_projection(
+        workspaces.load_workspace(ws.id),
+        next(item for item in ws.analyses if item["id"] == analysis["id"]),
+    )
+    assert len(supplied["code"]) < len(code)
+    assert supplied["code"].endswith("truncated")
+
+
+def test_the_summary_is_shown_the_keys_each_join_was_built_on(workspace_with_data):
+    """Join keys are exactly what a memo invents when it is not given them."""
+    ws = workspace_with_data
+    ws.add_join(
+        {
+            "name": "transactions_customers_joined",
+            "left": "transactions",
+            "right": "customers",
+            "how": "left",
+            "left_on": ["cust_id"],
+            "right_on": ["id"],
+        }
+    )
+
+    scope = analysis_summary_scope(workspaces.load_workspace(ws.id))
+    joins = {candidate.source["frame"]: candidate.source for candidate in scope.candidates["table_joins"]}
+    supplied = joins["transactions_customers_joined"]
+    assert supplied["left_on"] == ["cust_id"] and supplied["right_on"] == ["id"]
+    assert supplied["how"] == "left"
+    # And how well they matched: every transaction found a customer, and the
+    # customer side is unique on its key, so the join multiplied nothing.
+    assert supplied["match"]["match_rate"] == 1.0
+    assert supplied["match"]["unmatched_keys"] == 0
+    assert supplied["match"]["row_multiplication"] == 1.0
+
+
+def test_a_join_that_will_not_resolve_still_supplies_its_definition(
+    workspace_with_data,
+):
+    """An unmeasured join reads as unmeasured, not as a join that never existed."""
+    ws = workspace_with_data
+    ws.add_join(
+        {
+            "name": "transactions_customers_joined",
+            "left": "transactions",
+            "right": "customers",
+            "how": "left",
+            "left_on": ["cust_id"],
+            "right_on": ["id"],
+        }
+    )
+    fresh = workspaces.load_workspace(ws.id)
+
+    def broken(name, *args, **kwargs):
+        raise workspaces.WorkspaceError("gone")
+
+    fresh.get_frame = broken
+    supplied = adapters.analysis_join_candidates(fresh)[0].source
+    assert supplied["left_on"] == ["cust_id"]
+    assert "match" not in supplied
+
+
+def test_a_flagged_count_travels_with_what_it_is_a_count_of(workspace_with_data):
+    """``row_count`` sizes a result frame and was never a denominator."""
+    ws = workspace_with_data
+    weekend = _saved(
+        ws,
+        "Weekend activity",
+        {"test": "weekend_activity", "params": {"date_column": "tx_date"}},
+    )
+
+    scope = analysis_summary_scope(workspaces.load_workspace(ws.id))
+    supplied = next(
+        candidate.source
+        for candidate in scope.candidates["analysis_results"]
+        if candidate.metadata["analysis_id"] == weekend["id"]
+    )
+    assert supplied["population"] == 6
+    assert supplied["tested"] == 6
+    assert supplied["not_tested"] == 0
+    assert supplied["exception_rate_of"] == "tested"
+    # The summary frame is one row per weekday, which is not six of anything.
+    assert supplied["row_count"] != supplied["population"]
+
+
+def test_rows_a_procedure_could_not_evaluate_are_reported_as_untested(
+    workspace_with_data,
+):
+    """A row dropped for an unparseable date is a row no conclusion covers."""
+    ws = workspace_with_data
+    ws.add_table(
+        "partial.csv",
+        b"ref,started,finished\nR1,2026-01-05,2026-01-09\nR2,,\nR3,2026-02-01,2026-01-02\n",
+    )
+    lag = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "partial",
+            "title": "Lag",
+            "spec": {
+                "test": "date_lag",
+                "params": {"from_date": "started", "to_date": "finished"},
+            },
+        }
+    )
+    analysis_results.execute_and_record(ws, lag["id"])
+
+    supplied = adapters._summary_result_projection(
+        workspaces.load_workspace(ws.id),
+        next(
+            item
+            for item in workspaces.load_workspace(ws.id).analyses
+            if item["id"] == lag["id"]
+        ),
+    )
+    assert supplied["population"] == 3
+    assert supplied["tested"] == 2
+    assert supplied["not_tested"] == 1
+    assert supplied["exception_count"] == 1
+    assert supplied["exception_rate"] == 0.5
 
 
 def test_failures_get_their_own_budget_so_warnings_cannot_crowd_them_out():
@@ -1973,6 +2188,136 @@ def test_an_embed_fence_survives_the_response_unwrapper():
     assert analysis_worker.parse_embeds(unwrapped) == [
         {"analysis": "A-1", "as": "chart", "caption": "x"}
     ]
+
+
+def test_sections_out_of_order_are_rejected(workspace_with_data):
+    """The populations frame the findings; the limits qualify them."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    shuffled = list(analysis_worker.SUMMARY_SECTIONS)
+    shuffled[0], shuffled[1] = shuffled[1], shuffled[0]
+    with pytest.raises(WorkerResponseValidationError, match="out of order"):
+        analysis_worker.validate_analysis_summary(
+            {"markdown": _memo(sections=shuffled)}, request
+        )
+
+
+def test_a_summary_that_opens_on_a_heading_is_rejected(workspace_with_data):
+    """A reader who stops after the first paragraph should have the answer."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    headless = _memo().split("\n\n", 1)[1]
+    with pytest.raises(WorkerResponseValidationError, match="no paragraph"):
+        analysis_worker.validate_analysis_summary({"markdown": headless}, request)
+
+    # A title and a rule are punctuation, not an opening.
+    decorated = f"# Exploratory Data Analysis Summary\n\n---\n\n{headless}"
+    with pytest.raises(WorkerResponseValidationError, match="no paragraph"):
+        analysis_worker.validate_analysis_summary({"markdown": decorated}, request)
+
+
+def test_a_lead_paragraph_survives_the_response_unwrapper():
+    """The unwrapper used to discard everything before the first heading."""
+    memo = _memo()
+    unwrapped = analysis_worker._summary_response_schema(memo)["markdown"]
+    assert unwrapped.startswith("The population reconciles")
+    # A conversational hand-off is still dropped: that is what the rule was for.
+    preambled = analysis_worker._summary_response_schema(
+        "Here is the summary:\n\n" + memo
+    )["markdown"]
+    assert preambled.startswith("The population reconciles")
+
+
+def test_a_run_of_named_identifiers_is_rejected(workspace_with_data):
+    """Twelve identifiers in a sentence is a truncated copy of a table."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    dumped = _memo(
+        findings=(
+            "Vendor IDs do not match. Flagged rows include INV2024091, "
+            "INV2024032, INV2024024, INV2024021, INV2024068, INV2024029."
+        )
+    )
+    with pytest.raises(WorkerResponseValidationError, match="instance identifiers"):
+        analysis_worker.validate_analysis_summary({"markdown": dumped}, request)
+
+    # Naming the two or three that carry the finding is exactly what is wanted.
+    named = _memo(
+        findings=(
+            "Two invoices carry the exposure: INV2024091 at 120,000,000 and "
+            "INV2024032 at 115,268,880."
+        )
+    )
+    assert analysis_worker.validate_analysis_summary({"markdown": named}, request)
+
+
+def test_citing_several_procedures_is_not_a_run_of_identifiers(workspace_with_data):
+    """An auditor-saved procedure's id is a bare hex string, not an invoice."""
+    ws = workspace_with_data
+    ids = [
+        _saved(ws, f"Check {index}", COMPLETENESS)["id"] for index in range(5)
+    ]
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    cited = _memo(findings="Completeness held across the cycle (" + ", ".join(ids) + ").")
+    assert analysis_worker.validate_analysis_summary({"markdown": cited}, request)
+
+
+def test_a_count_stated_without_its_result_embedded_is_rejected(workspace_with_data):
+    """The embed is how the reader sees the rows a count is a count of."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    unlinked = _memo(findings=f"2 invoices are duplicated ({analysis['id']}).")
+    with pytest.raises(WorkerResponseValidationError, match="not embedded"):
+        analysis_worker.validate_analysis_summary({"markdown": unlinked}, request)
+
+    linked = _memo(
+        findings=f"2 invoices are duplicated ({analysis['id']}).",
+        embeds=_embed(analysis["id"], "exception_table"),
+    )
+    assert analysis_worker.validate_analysis_summary({"markdown": linked}, request)
+
+
+def test_a_procedure_argued_in_both_findings_and_reliance_is_rejected(
+    workspace_with_data,
+):
+    """The restatement the older three-section skeleton produced by construction."""
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    restated = _memo(
+        findings=f"Duplicate keys are the issue ({analysis['id']}).",
+        embeds=_embed(analysis["id"], "exception_table"),
+    ).replace(
+        f"## {analysis_worker.RELIANCE_SECTION}\nText.",
+        f"## {analysis_worker.RELIANCE_SECTION}\nAlso worth noting ({analysis['id']}).",
+    )
+    with pytest.raises(WorkerResponseValidationError, match="argued in both"):
+        analysis_worker.validate_analysis_summary({"markdown": restated}, request)
+
+
+def test_the_skeleton_is_finding_shaped(workspace_with_data):
+    """No section invites an inventory of procedures or a register of joins."""
+    assert analysis_worker.SUMMARY_SECTIONS == (
+        "Data received and its limitations",
+        "What the analysis found",
+        "How far these results can be relied on",
+        "Further work required",
+    )
+    prompt = analysis_worker.ANALYSIS_SUMMARY_SYSTEM
+    assert "organise \"What the analysis found\" by *issue*" in prompt
+    # The record of work performed survives as one coverage table, not as a
+    # section that asks for a list of procedures.
+    assert "coverage table" in prompt.lower()
 
 
 def test_the_summary_goes_stale_when_the_result_set_moves(workspace_with_data):

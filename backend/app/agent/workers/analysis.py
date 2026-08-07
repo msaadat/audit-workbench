@@ -895,12 +895,22 @@ ANALYSIS_SUMMARY_WORKER_ID = "analysis.summary"
 # The memo's structure is fixed in code rather than in an editable template: it
 # is a derived artifact regenerated from results, so its shape belongs to the
 # contract the validator enforces, not to a per-engagement preference.
+#
+# The sections are deliberately finding-shaped rather than procedure-shaped. An
+# earlier skeleton ran "Procedures performed", "Exceptions noted", and "Data
+# quality observations" as three sections, which sorted one set of facts three
+# ways — by procedure, then by severity, then by theme — and every failing
+# procedure is an exception, so the second pass restated the first almost
+# entirely. A heading is a stronger instruction than any sentence of guidance
+# below it: asked for a section of procedures performed, a writer supplies a
+# list of procedures performed, whatever the prose asks for. There is also no
+# "relationships and joins" section, because a register of joins established is
+# not a finding; what a join's match rate and unmatched count *mean* belongs
+# with the population they qualify and the results that rest on them.
 SUMMARY_SECTIONS: tuple[str, ...] = (
-    "Data received and population characteristics",
-    "Relationships and joins established",
-    "Procedures performed",
-    "Exceptions noted",
-    "Data quality observations",
+    "Data received and its limitations",
+    "What the analysis found",
+    "How far these results can be relied on",
     "Further work required",
 )
 
@@ -913,32 +923,89 @@ statement in the supplied procedures, their recorded verdicts and statistics,
 the flagged rows supplied for them, the table profiles, and the supplied
 coverage gaps. Never invent a count, a value, an identifier, or a procedure.
 
-Use exactly these level-2 sections, in this order, and no others:
+Open with a short paragraph, before any heading, saying what the analysis
+concluded — the two or three things a reader who stops there should leave with.
+Not what was performed: what it showed.
+
+Then use exactly these level-2 sections, in this order, and no others:
 {_SECTION_LIST}
+
+This is an analysis, not a register of procedures. Nobody reads it to learn
+which tests were run; they read it to learn what the data says about the
+engagement. So organise "What the analysis found" by *issue* — one thread per
+thing that is actually true of this population — and cite the procedures that
+establish each one as support inside that thread. Never organise by procedure,
+by test type, or by verdict label. If two procedures evidence one issue, they
+belong in one paragraph; if one procedure evidences two, it is cited twice.
+Order the issues by how much they matter — exposure, then how far the evidence
+carries — and say why the first one is first. A procedure that established
+nothing does not earn a mention here at all.
+
+Say each thing once. A fact that belongs to a finding goes in "What the
+analysis found"; a fact about how much the results can be trusted goes in "How
+far these results can be relied on". Restating a finding under a second heading
+because it is also a data-quality point is the single fastest way to make a
+memo unreadable.
 
 Write the way an auditor writes for the file. Use whichever form carries the
 content best, and mix them freely within a section:
 
 - Prose for judgment, cause, and anything qualified — what the data shows, what
-  it does not settle, and why it matters.
+  it does not settle, and why it matters. This should be most of the memo.
 - A Markdown table where the content is genuinely tabular. The data received is
   one: a row per source table with its record count, period covered, and a short
-  commentary. Coverage of procedures by cycle stage is another.
-- A list where the content is genuinely a set of items — exceptions to follow
-  up, outstanding work.
+  commentary. Coverage of procedures by cycle stage or by table is another, and
+  it belongs in "How far these results can be relied on" — one table there is
+  the record of work performed, and it replaces any enumeration of procedures.
+- A list where the content is genuinely a set of items — outstanding work, or
+  the corroboration a finding needs.
 
-Structure has to earn its place: do not emit a bullet per procedure, and do not
+Structure has to earn its place: never emit a bullet per procedure, and do not
 break a line of reasoning into fragments. A section that is one argument should
 be one or two paragraphs. Use standard Markdown tables with a `---` separator
 row of at least three dashes per column.
 
-Group procedures by what they were testing and what they showed. Where a
-procedure flagged rows, say what those rows actually are: name the document,
-vendor, or staff identifiers from the supplied flagged rows and give the amounts
-and dates, because an exception nobody can locate is not an exception anybody
-can follow up. State the population before the exceptions. Distinguish what the
-data establishes from what it merely suggests, and say plainly where a
-conclusion cannot yet be drawn.
+State the population before the exceptions. Distinguish what the data
+establishes from what it merely suggests, and say plainly where a conclusion
+cannot yet be drawn.
+
+An exception nobody can locate is not an exception anybody can follow up, so
+name instances — but name the two or three that carry the finding, chosen for
+size or egregiousness, with their amounts and dates, not the first few you were
+handed. For everything beyond that, embed the result: the reader gets the whole
+flagged set as a table they can open, which is more than a list of identifiers
+in a sentence gives them and costs the paragraph nothing. A run of bare
+identifiers is not evidence, it is a truncated copy of a table that already
+exists. Remember also that the rows you were shown are a capped sample —
+`rows_supplied` of `exception_count` — so never write or imply that they are
+the set.
+
+A procedure's title is what somebody called it; its `test` and `parameters` —
+or, for a python procedure, its `code` and `outcome_policy` — are what it did.
+Read those, and report what ran. Where the two disagree the title is wrong, and
+saying so is the finding: a duplicate-key test over two join columns found
+repeated keys, which is not the same as the two systems disagreeing; a date-lag
+test flags whichever order its parameters name, so one direction of a date pair
+is the exception and the reverse direction is the population behaving normally.
+Under `outcome_policy: exception_rows` every row a python procedure returns is
+counted as a potential exception, so code that returns its frame without
+narrowing it has counted the population — say that, rather than reporting the
+count as exceptions.
+
+Every count is a count of something. Give exceptions against `tested`, the rows
+the procedure could evaluate, and where `not_tested` is non-trivial say so and
+say why the rows fell out — a null key or an unparseable date is a row no
+conclusion covers, which is itself a limitation of the work. `row_count` is the
+size of a result frame and is never a denominator. Where a procedure records no
+denominator, do not supply one.
+
+Use joins only from the supplied join definitions, and never infer a join key
+from a column name or a frame name. There is no section for cataloguing them:
+what a join *shows* is what belongs in the memo. Its unmatched count is a
+population fact — records on one side with no counterpart on the other are
+records no procedure over that frame covers — and belongs with the data
+received. Where a join multiplied rows, every per-row count taken over that
+frame counts duplicated rows, so say so wherever you report one.
 
 You are shown the flagged rows of many procedures at once, so you will notice
 things no single procedure tested — the same vendor across two exception sets,
@@ -947,6 +1014,17 @@ established fact: no procedure computed it, and a handful of supplied rows is
 not the population. Write it as what it is — an observation to confirm — and
 say what would confirm it. Never state a count, a proportion, or "all" or
 "none" about a pattern no supplied result actually measured.
+
+"How far these results can be relied on" is about the instrument, not about the
+findings. It carries the coverage table — what was tested across the cycle and
+what was not — and then the things that bound how far the rest of the memo can
+be pushed: rows no procedure could evaluate, populations too small or too
+skewed for the method applied, and results that measured nothing. A test whose
+flagged rows are its whole population has not found anything; nor has one whose
+"rare" values are rare only because every value in the column is distinct, or
+one whose flagged share matches what the calendar or the arithmetic would
+produce anyway. Say so here, plainly, and do not let such a result appear as a
+finding above.
 
 "Further work required" must cover every outstanding, stale, and errored
 procedure named in the supplied coverage gaps, every frame carrying no
@@ -970,9 +1048,12 @@ as: <{" | ".join(EMBED_KINDS)}>
 caption: <one short line saying what the reader should see in it>
 ```
 Use the exact analysis_id of a supplied procedure; an id that was not supplied
-is rejected. Embed only where the result carries the paragraph — a chart for a
-distribution or trend, exception_table where you have named the exceptions.
-Six to twelve embeds across the memo is right; do not embed every procedure.
+is rejected. An embed is not a footnote — it renders the result itself, as a
+table the reader can read and open, so it is where the detail behind a finding
+belongs. Embed every result whose exceptions you state a count for, as
+`exception_table`; use `chart` for a distribution or a trend you are drawing a
+conclusion from, and `stats` where the numbers are the point. Do not embed a
+procedure you only mention in passing, and do not embed one twice.
 Return Markdown only, with no JSON wrapper and no outer code fence.
 """
 
@@ -984,24 +1065,138 @@ def _resolved_items(request: WorkerRequest, source_id: str) -> list[object]:
     return [item.content for item in request.context.items if item.source_id == source_id]
 
 
+FINDINGS_SECTION = "What the analysis found"
+RELIANCE_SECTION = "How far these results can be relied on"
+
+# How many instance identifiers one line may name. A finding names the two or
+# three instances that carry it; past that the writer has stopped choosing and
+# started copying the flagged-row table into a sentence, which hands the reader
+# a truncated sample where an embed would have given them the whole result as
+# something they can open.
+MAX_NAMED_INSTANCES_PER_LINE = 4
+
+_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9_-]{2,23}\b")
+# A conversational hand-off, not a lead paragraph: one short line ending in a
+# colon, before anything else. Bounded in length so a genuine opening sentence
+# that happens to introduce a list is not mistaken for chat.
+_PREAMBLE = re.compile(r"\A[^\n]{0,120}:[ \t]*\n+")
+
+
+def _is_instance_identifier(token: str) -> bool:
+    """Whether a token looks like an identifier for one record.
+
+    Letters and digits together is what separates ``INV2024017``, ``V1008``, or
+    ``REQ2024063`` from a column name, a table name, or an ordinary word. A
+    bare year or an amount carries no letters and never reaches here.
+    """
+    return any(c.isalpha() for c in token) and any(c.isdigit() for c in token)
+
+
+def _citation_pattern(supplied: set[str]) -> re.Pattern[str] | None:
+    """Match exactly the analysis ids this memo was shown, and nothing else.
+
+    Deliberately not a shape. A workflow-authored procedure is ``A-1F2E3D4C``
+    and one the auditor saved by hand is a bare hex string, so any regex
+    guessing the format would silently skip half the register — and read the
+    bare form as an instance identifier, since it too mixes letters and digits.
+    """
+    if not supplied:
+        return None
+    alternatives = "|".join(
+        re.escape(item) for item in sorted(supplied, key=len, reverse=True) if item
+    )
+    if not alternatives:
+        return None
+    return re.compile(rf"(?<![A-Za-z0-9_-])({alternatives})(?![A-Za-z0-9_-])")
+
+
+def _memo_sections(markdown: str) -> list[tuple[str, list[str]]]:
+    """The level-2 sections in document order, each with its prose lines.
+
+    Table rows and embed blocks are dropped: both legitimately carry many
+    identifiers, and neither is prose a reader has to wade through.
+    """
+    sections: list[tuple[str, list[str]]] = []
+    heading: str | None = None
+    body: list[str] = []
+    fenced = False
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or line.lstrip().startswith("|"):
+            continue
+        match = re.fullmatch(r"##\s+(.+?)\s*", line)
+        if match:
+            if heading is not None:
+                sections.append((heading, body))
+            heading, body = match.group(1).strip(), []
+        elif heading is not None:
+            body.append(line)
+    if heading is not None:
+        sections.append((heading, body))
+    return sections
+
+
+def _lead_paragraph(markdown: str) -> str:
+    """Whatever the memo actually *says* before its first section heading.
+
+    A title and a horizontal rule are not an opening: both are punctuation, and
+    a memo whose first words are a rule has still gone straight to its headings.
+    """
+    head = re.split(r"(?m)^##\s+", markdown, maxsplit=1)[0]
+    return "\n".join(
+        line
+        for line in head.splitlines()
+        if not line.lstrip().startswith("#")
+        and not re.fullmatch(r"\s*([-_*])(\s*\1){2,}\s*", line)
+    ).strip()
+
+
 def validate_analysis_summary(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
 ) -> Mapping[str, Any]:
-    """Enforce the memo skeleton and reject any citation that was not supplied."""
+    """Enforce the memo skeleton, its citations, and its shape.
+
+    The skeleton checks are the older half. The rest exist because a memo can
+    satisfy every structural rule and still be a catalogue: the failure mode
+    this guards is a document that lists procedures, restates each one under a
+    second heading, and pastes flagged-row identifiers into prose instead of
+    embedding the result the reader could have opened.
+    """
     markdown = str(proposal.get("markdown") or "").strip()
     if not markdown:
         raise WorkerResponseValidationError("the summary is empty")
 
-    headings = {
-        match.group(1).strip().casefold()
-        for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", markdown, re.MULTILINE)
-    }
+    sections = _memo_sections(markdown)
+    present = [name for name, _ in sections]
+    folded = {name.casefold() for name in present}
     missing = [
-        section for section in SUMMARY_SECTIONS if section.casefold() not in headings
+        section for section in SUMMARY_SECTIONS if section.casefold() not in folded
     ]
     if missing:
         raise WorkerResponseValidationError(f"missing section '{missing[0]}'")
+    # Order carries meaning here: the populations frame the findings, and the
+    # findings are what the reliance limits qualify. Read out of order they
+    # argue for nothing.
+    ordered = [name for name in present if name.casefold() in {
+        section.casefold() for section in SUMMARY_SECTIONS
+    }]
+    expected = [
+        section
+        for section in SUMMARY_SECTIONS
+        if section.casefold() in {name.casefold() for name in ordered}
+    ]
+    if [name.casefold() for name in ordered] != [name.casefold() for name in expected]:
+        raise WorkerResponseValidationError(
+            "sections are out of order: expected " + ", ".join(expected)
+        )
+
+    if not _lead_paragraph(markdown):
+        raise WorkerResponseValidationError(
+            "the summary opens with no paragraph saying what the analysis concluded"
+        )
 
     supplied = {
         str((item or {}).get("analysis_id") or "")
@@ -1012,6 +1207,7 @@ def validate_analysis_summary(
         raise WorkerContractError("The analysis summary context supplied no procedures.")
 
     embeds = parse_embeds(markdown)
+    embedded: list[str] = []
     for embed in embeds:
         analysis_id = embed.get("analysis")
         if not analysis_id:
@@ -1027,9 +1223,57 @@ def validate_analysis_summary(
             raise WorkerResponseValidationError(
                 f"embed for '{analysis_id}' uses unknown kind '{kind}'"
             )
+        if analysis_id in embedded:
+            raise WorkerResponseValidationError(
+                f"'{analysis_id}' is embedded more than once"
+            )
+        embedded.append(analysis_id)
+
+    citation = _citation_pattern(supplied)
+    cited: dict[str, set[str]] = {}
+    for name, body in sections:
+        for line in body:
+            # A citation is not an instance. Strip the ids the memo was shown
+            # before counting what is left, or a paragraph citing three
+            # auditor-saved procedures would read as three named invoices.
+            stripped = citation.sub(" ", line) if citation else line
+            named = {
+                token
+                for token in _TOKEN.findall(stripped)
+                if _is_instance_identifier(token)
+            }
+            if len(named) > MAX_NAMED_INSTANCES_PER_LINE:
+                raise WorkerResponseValidationError(
+                    f"'{name}' names {len(named)} instance identifiers in one line "
+                    f"({', '.join(sorted(named)[:4])}, …); name the two or three "
+                    "that carry the finding and embed the result for the rest"
+                )
+            on_line = citation.findall(line) if citation else []
+            for analysis_id in on_line:
+                cited.setdefault(analysis_id, set()).add(name)
+            # A count stated for a procedure is a claim about rows the reader
+            # should be able to see, and the embed is how they see them.
+            if name == FINDINGS_SECTION and any(c.isdigit() for c in stripped):
+                for analysis_id in on_line:
+                    if analysis_id not in embedded:
+                        raise WorkerResponseValidationError(
+                            f"'{analysis_id}' is discussed with a count but its "
+                            "result is not embedded; embed it as exception_table"
+                        )
+
+    # The two sections the memo must keep apart. Findings belong above,
+    # reliance limits below, and a procedure argued in both is the restatement
+    # the older skeleton produced by construction.
+    for analysis_id, names in cited.items():
+        if {FINDINGS_SECTION, RELIANCE_SECTION} <= names:
+            raise WorkerResponseValidationError(
+                f"'{analysis_id}' is argued in both '{FINDINGS_SECTION}' and "
+                f"'{RELIANCE_SECTION}'; say it once, in whichever it belongs to"
+            )
+
     return {
         "markdown": markdown,
-        "cited_analysis_ids": list(dict.fromkeys(embed["analysis"] for embed in embeds)),
+        "cited_analysis_ids": embedded,
     }
 
 
@@ -1045,9 +1289,13 @@ def _summary_response_schema(response: str) -> Mapping[str, Any]:
         inner = fenced.group(1).strip()
         if "```" not in inner:
             value = inner
-    heading = re.search(r"(?m)^#{1,6}\s+", value)
-    if heading:
-        value = value[heading.start() :].strip()
+    # Everything before the first heading used to be discarded as model
+    # preamble. The memo now opens with a paragraph saying what the analysis
+    # concluded, so that rule would delete the one part a reader who stops
+    # early actually reads. What is left is the narrow case it was written for:
+    # a single short line handing over to the document, which announces itself
+    # by ending in a colon.
+    value = _PREAMBLE.sub("", value, count=1).strip()
     return {"markdown": value}
 
 
@@ -1097,7 +1345,10 @@ ANALYSIS_SUMMARY_WORKER = WorkerDefinition(
     repair_policy=WorkerRepairPolicy(
         max_repair_attempts=1,
         guidance_hash=_sha256_text(
-            "Repair missing summary sections and citations to unsupplied procedures."
+            "Repair missing or misordered summary sections, a missing lead "
+            "paragraph, citations to unsupplied procedures, runs of named "
+            "instance identifiers, counts stated without an embedded result, "
+            "and findings restated under the reliance section."
         ),
     ),
     implementation=run_analysis_summary_worker,

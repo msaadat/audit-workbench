@@ -104,12 +104,11 @@ def _analysis_summary_response(_user: str) -> dict:
     """
     return {
         "content": (
-            "## Data received and population characteristics\n"
+            "The imported population reconciles and nothing requires escalation.\n"
+            "\n## Data received and its limitations\n"
             "The imported tables were profiled.\n"
-            "\n## Relationships and joins established\nRelationships were diagnosed.\n"
-            "\n## Procedures performed\nThe saved procedures were executed.\n"
-            "\n## Exceptions noted\nNothing requiring escalation.\n"
-            "\n## Data quality observations\nNo material gaps.\n"
+            "\n## What the analysis found\nNothing requiring escalation.\n"
+            "\n## How far these results can be relied on\nNo material gaps.\n"
             "\n## Further work required\nNothing outstanding.\n"
         )
     }
