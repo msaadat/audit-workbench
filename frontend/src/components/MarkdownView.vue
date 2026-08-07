@@ -40,6 +40,19 @@ function cells(line: string): string[] {
 const html = computed(() => {
   const out: string[] = []
   let listTag: 'ul' | 'ol' | null = null
+  /**
+   * Consecutive non-blank lines are one paragraph, ended by a blank line or by
+   * any other block. Markdown that is hard-wrapped — which generated prose
+   * routinely is — otherwise rendered as a stack of one-line paragraphs, each
+   * carrying its own margin, so flowing text came out as a ragged column with
+   * gaps between every line.
+   */
+  let paragraph: string[] = []
+  function flushParagraph() {
+    if (!paragraph.length) return
+    out.push(`<p>${inline(paragraph.join(' '))}</p>`)
+    paragraph = []
+  }
   function closeList() {
     if (listTag) { out.push(`</${listTag}>`); listTag = null }
   }
@@ -64,6 +77,7 @@ const html = computed(() => {
     const line = raw.trimEnd()
     const next = lines[index + 1]?.trim() ?? ''
     if (line.includes('|') && /^\|?\s*:?-{3,}/.test(next) && next.includes('|')) {
+      flushParagraph()
       closeList()
       const headers = cells(line)
       out.push(`<table><thead><tr>${headers.map(cell => `<th>${inline(cell)}</th>`).join('')}</tr></thead><tbody>`)
@@ -79,16 +93,20 @@ const html = computed(() => {
     const heading = /^(#{1,4})\s+(.*)$/.exec(line)
     const bullet = /^[-*]\s+(.*)$/.exec(line)
     const ordered = /^\d{1,3}[.)]\s+(.*)$/.exec(line)
-    if (bullet) { pushItem('ul', bullet[1]); continue }
-    if (ordered) { pushItem('ol', ordered[1]); continue }
+    if (bullet) { flushParagraph(); pushItem('ul', bullet[1]); continue }
+    if (ordered) { flushParagraph(); pushItem('ol', ordered[1]); continue }
     // A non-blank line directly under an open item is that item's wrapped
     // remainder. A blank line, a heading, or a table falls through and ends
     // the list, so a paragraph that genuinely follows one stays its own block.
     if (listTag && line.trim() && !heading) { continueItem(line.trim()); continue }
     closeList()
-    if (heading) out.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`)
-    else if (line.trim()) out.push(`<p>${inline(line)}</p>`)
+    if (heading) {
+      flushParagraph()
+      out.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`)
+    } else if (line.trim()) paragraph.push(line.trim())
+    else flushParagraph()
   }
+  flushParagraph()
   closeList()
   return out.join('\n')
 })
