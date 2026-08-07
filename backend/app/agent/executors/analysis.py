@@ -28,6 +28,7 @@ from ... import analysis_results, sandbox
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import joins as join_diagnostics
+from ..capabilities.analysis import frame_ref
 from .model import (
     EXECUTORS,
     ExecutorConcurrency,
@@ -42,6 +43,10 @@ DEFINITIONS_EXECUTOR_ID = "analysis.definitions"
 EXECUTION_EXECUTOR_ID = "analysis.execution"
 
 AUDITOR_ANALYSIS_PRESERVED = "auditor_owned_analysis_preserved"
+# Every accepted definition already exists against another frame built from the
+# same tables. Nothing is written and nothing is wrong: the computation is
+# saved, just not here.
+ANALYSIS_COVERED_ELSEWHERE = "analysis_covered_by_related_frame"
 AMBIGUOUS_RELATIONSHIP = "ambiguous_relationship_requires_confirmation"
 NO_SAFE_RELATIONSHIP = "no_safe_join_evidence"
 
@@ -161,15 +166,27 @@ class JoinExecutorTarget:
             setattr(self, field_name, value)
 
 
+def _side_refs(workspace: Workspace, target: JoinExecutorTarget) -> set[str]:
+    """Both source frames' parent references, by what each frame is.
+
+    A chained join's fact side is itself a join, whose durable entry projects
+    under ``join:``; guarding it as ``table:`` would hash a missing entry and
+    leave the commit unguarded.
+    """
+    return {
+        frame_ref(workspace, target.left),
+        frame_ref(workspace, target.right),
+    }
+
+
 def _validated_join(
     request: ExecutorRequest, target: object
 ) -> tuple[JoinExecutorTarget, dict]:
     if not isinstance(target, JoinExecutorTarget):
         raise WorkspaceError("Join executor requires a JoinExecutorTarget.")
-    expected = {f"table:{target.left}", f"table:{target.right}"}
-    if set(request.expected_parents) != expected:
+    if set(request.expected_parents) != _side_refs(target.workspace, target):
         raise WorkspaceError(
-            "Join executor requires exactly both source-table parent hashes."
+            "Join executor requires exactly both source-frame parent hashes."
         )
     raw = request.proposal.get("join")
     if not isinstance(raw, Mapping):
@@ -445,6 +462,7 @@ def _definitions_result(
     revision_before: int,
     written: list[dict],
     preserved: list[str],
+    covered: list[str] | None = None,
 ) -> ExecutorResult:
     refs = [analysis_ref(str(item["id"])) for item in written]
     return ExecutorResult(
@@ -468,6 +486,7 @@ def _definitions_result(
                 for item in written
             ],
             "preserved": list(preserved),
+            "covered": list(covered or []),
         },
     )
 
@@ -491,6 +510,7 @@ def execute_analysis_definitions(
         state["revision_before"] = fresh.revision
         written: list[dict] = []
         preserved: list[str] = []
+        covered: list[str] = []
         creates: list[dict] = []
         for definition in accepted:
             semantic = str(definition["semantic_id"])
@@ -504,17 +524,26 @@ def execute_analysis_definitions(
             ):
                 preserved.append(str(existing["id"]))
                 continue
+            if str(existing.get("table") or "") != str(definition["table"]):
+                # Identity is provenance-based, so this computation is already
+                # saved against another frame built from the same tables. The
+                # analysis stays where it is: rebinding it here would move a
+                # result the auditor has already seen onto a different frame
+                # without adding anything, since both frames compute it from
+                # the same columns.
+                covered.append(str(existing["id"]))
+                continue
             existing.update(
                 {
                     "title": definition["title"],
                     "kind": definition["kind"],
                     "table": definition["table"],
-                    # Identity is the semantic id, derived from (kind, table,
-                    # spec) — a match here means this spec is the one already
-                    # stored, so there is no viz to refresh: only a spec that
-                    # actually changed would need that, and a changed spec
-                    # never matches an existing semantic id, it creates a new
-                    # analysis instead.
+                    # Identity is the semantic id, derived from the kind, the
+                    # spec, and the tables its columns come from — a match here
+                    # means this spec is the one already stored, so there is no
+                    # viz to refresh: only a spec that actually changed would
+                    # need that, and a changed spec never matches an existing
+                    # semantic id, it creates a new analysis instead.
                     "spec": dict(definition.get("spec") or {}),
                     "note": str(definition.get("note") or ""),
                     **(
@@ -530,7 +559,9 @@ def execute_analysis_definitions(
             existing.pop("last_result", None)
             written.append({**existing, "action": "updated"})
         if not written and not creates:
-            raise AnalysisEditPreserved(AUDITOR_ANALYSIS_PRESERVED)
+            raise AnalysisEditPreserved(
+                ANALYSIS_COVERED_ELSEWHERE if covered else AUDITOR_ANALYSIS_PRESERVED
+            )
         for definition in creates:
             semantic = str(definition["semantic_id"])
             entry = fresh.add_analysis(
@@ -544,6 +575,7 @@ def execute_analysis_definitions(
             )
             written.append({**entry, "action": "created"})
         state["preserved"] = preserved
+        state["covered"] = covered
         return written
 
     committed = mutate(
@@ -558,6 +590,7 @@ def execute_analysis_definitions(
         revision_before=int(state["revision_before"]),
         written=list(committed.value),
         preserved=list(state.get("preserved") or []),
+        covered=list(state.get("covered") or []),
     )
 
 

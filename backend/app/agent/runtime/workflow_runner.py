@@ -55,6 +55,11 @@ OPEN_UNIT_STATUSES = frozenset(
 SETTLED_UNIT_STATUSES = frozenset({"succeeded", "skipped"})
 UNSETTLED_STAGE_STATUSES = frozenset({"failed", "blocked", "review_required"})
 
+# How many times a deterministic stage may re-expand after its units commit.
+# One wave covers the chained joins the analysis workflow needs; the bound is
+# what keeps a capability whose expansion never converges from looping.
+MAX_DETERMINISTIC_WAVES = 3
+
 
 def _units(stages: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return [unit for stage in stages for unit in stage.get("units") or []]
@@ -149,9 +154,14 @@ class BoundUnitPipeline:
     # default ``succeeded`` fold when the domain owns the unit's terminal meaning
     # (for example an answer that needs additional evidence);
     # ``conflict_handler`` may translate a domain-recognized ``UnitPipelineConflict``
-    # into a ``(status, error)`` override instead of the default ``conflict``.
+    # into a ``(status, error)`` override instead of the default ``conflict``;
+    # ``failure_handler`` does the same for any other error, so a domain can
+    # settle an outcome the scheduler can only read as a failure — a unit whose
+    # work turns out to be already done has no proposal to commit, but it has
+    # not failed either.
     on_committed: OutcomeHandler | None = None
     conflict_handler: ConflictHandler | None = None
+    failure_handler: ConflictHandler | None = None
 
 
 # A binder returns a bound pipeline for a unit that needs a model proposal, or a
@@ -598,6 +608,7 @@ class WorkflowRunner:
             self._run_pipeline_units(execution, capability, stage, units)
         else:
             self._run_deterministic_units(execution, capability, stage, units)
+            units = self._run_deterministic_waves(execution, capability, stage, units)
         final = self._fold_stage(units)
         # Serialized units may have committed a newer workspace revision. The
         # milestone must summarize the durable result, not the stage-start
@@ -856,9 +867,47 @@ class WorkflowRunner:
                 return
             self.set_unit(stage, unit, "conflict", error=str(error))
             return
+        override = (
+            bound.failure_handler(stage, unit, error)
+            if bound is not None and bound.failure_handler is not None and error is not None
+            else None
+        )
+        if override is not None:
+            status, message = override
+            self.set_unit(stage, unit, status, error=message)
+            return
         self.set_unit(
             stage, unit, "failed", error=str(error) if error else "Unit did not settle."
         )
+
+    def _run_deterministic_waves(
+        self,
+        execution: CapabilityExecution,
+        capability: workflow.Capability,
+        stage: dict[str, Any],
+        units: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Re-expand a deterministic stage until it stops producing new units.
+
+        A deterministic unit can commit state that brings a further unit into
+        existence: materializing a join makes a frame that a chained join can
+        then be built on, and that second unit cannot be named before the first
+        one runs. Expanding once at stage start would silently drop it.
+
+        Only genuinely new unit IDs run in a later wave. A unit that failed or
+        is awaiting confirmation keeps that outcome instead of being retried,
+        and the wave count bounds a capability whose expansion never converges.
+        """
+        seen = {str(unit["id"]) for unit in units}
+        for _ in range(MAX_DETERMINISTIC_WAVES):
+            self._refresh()
+            units = self.ensure_stage_units(stage)
+            fresh = [unit for unit in units if str(unit["id"]) not in seen]
+            if not fresh:
+                break
+            seen.update(str(unit["id"]) for unit in fresh)
+            self._run_deterministic_units(execution, capability, stage, fresh)
+        return units
 
     def _run_deterministic_units(
         self,

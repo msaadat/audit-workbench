@@ -23,7 +23,7 @@ import uuid
 
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
-from . import narration, store, workflow
+from . import joins as join_diagnostics, narration, store, workflow
 from .base import BaseRunner
 from .capabilities.analysis import (
     ANALYSIS_SCOPE_CHECKPOINT,
@@ -39,6 +39,7 @@ from .context import ContextResolver, analysis_definition_scope
 from .executors import EXECUTORS, ExecutorReceipt
 from .executors.analysis import (
     AMBIGUOUS_RELATIONSHIP,
+    ANALYSIS_COVERED_ELSEWHERE,
     AUDITOR_ANALYSIS_PRESERVED,
     AnalysisDefinitionExecutorTarget,
     AnalysisExecutionExecutorTarget,
@@ -68,6 +69,7 @@ from .runtime import (
     unsettled_capabilities,
 )
 from .workers import WORKERS
+from .workers.analysis import NOTHING_NEW_TO_ANALYSE
 
 
 class DeterministicCommitConflict(WorkspaceConflict):
@@ -443,15 +445,21 @@ class AnalysisWorkflowExecution(BaseRunner):
 
         candidate = None
         joinable = strong or moderate
+        ranked = sorted(joinable, key=join_diagnostics.evidence_rank)
         if len(strong) == 1:
             candidate = strong[0]
         elif self.run.get("mode") == "permission":
             candidate = self._approve_join(task, left, right, joinable)
-        elif joinable:
-            candidate = joinable[0]
+        elif join_diagnostics.decisive(joinable):
+            # Auto mode applies the best candidate only when the evidence
+            # actually names one. Several keys that diagnose identically — a
+            # table reaching the same person dimension as requester and as
+            # approver — are a question, not a ranking, and the answer changes
+            # what every downstream test measures.
+            candidate = ranked[0]
             diagnostics = candidate["diagnostics"]
             self.warn(
-                "Auto-selected the top-ranked join candidate for "
+                "Auto-selected the best-evidenced join candidate for "
                 f"'{left}' and '{right}': "
                 f"{candidate['left_on'][0]} → {candidate['right_on'][0]} "
                 f"({candidate['strength']} evidence, "
@@ -459,10 +467,14 @@ class AnalysisWorkflowExecution(BaseRunner):
                 f"row multiplication {diagnostics['row_multiplication']})."
             )
         if candidate is None:
-            reported = joinable
+            reported = ranked
+            keys = ", ".join(
+                f"{item['left_on'][0]} → {item['right_on'][0]}" for item in reported
+            )
             self.warn(
-                f"{len(reported)} join candidate(s) for '{left}' and '{right}' need "
-                "confirmation; none was applied."
+                f"{len(reported)} join candidate(s) for '{left}' and '{right}' are "
+                f"equally well evidenced ({keys}); none was applied. Confirm which "
+                "relationship to materialize."
             )
             self.task_status(task, "skipped")
             return DeterministicUnitResult(
@@ -471,7 +483,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                 AMBIGUOUS_RELATIONSHIP,
             )
 
-        expected = parent_hashes(self.ws, [f"table:{left}", f"table:{right}"])
+        expected = parent_hashes(self.ws, list(unit["parent_refs"]))
         target = JoinExecutorTarget(self.ws, self.run["id"], left, right)
         try:
             receipt = self._commit_with_receipt(
@@ -630,14 +642,40 @@ class AnalysisWorkflowExecution(BaseRunner):
                 )
             for preserved in output.get("preserved") or []:
                 self.warn(f"Preserved auditor-owned analysis '{preserved}'.")
+            for covered in output.get("covered") or []:
+                self.warn(
+                    f"Analysis '{covered}' already computes this from the same "
+                    "columns on a related frame; not duplicated here."
+                )
             self.task_status(task, "completed")
 
         def conflict_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            if str(error) == ANALYSIS_COVERED_ELSEWHERE:
+                # Nothing to write because everything proposed is already saved
+                # against a frame built from the same tables. That is the
+                # de-duplication working, not an outcome needing an auditor.
+                return (
+                    "skipped",
+                    "Every proposed analysis is already covered by a related frame.",
+                )
             if str(error) != AUDITOR_ANALYSIS_PRESERVED:
                 return None
             return (
                 "awaiting_confirmation",
                 "Auditor-owned analysis definitions were preserved.",
+            )
+
+        def failure_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            # The worker had its repair turn and still found nothing this frame
+            # computes that its join family does not already hold. A joined
+            # frame that adds no analysis of its own is a real answer about the
+            # data, so the unit settles instead of failing the run.
+            if NOTHING_NEW_TO_ANALYSE not in str(error):
+                return None
+            return (
+                "skipped",
+                "Every analysis this frame supports is already saved against a "
+                "frame built from the same tables.",
             )
 
         return BoundUnitPipeline(
@@ -679,6 +717,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             readiness_provider=None,
             on_committed=on_committed,
             conflict_handler=conflict_handler,
+            failure_handler=failure_handler,
         )
 
     # ----------------------------------------------------- analysis.executed

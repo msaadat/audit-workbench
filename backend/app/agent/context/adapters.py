@@ -19,6 +19,7 @@ from ... import (
     templates_store,
 )
 from ...workspaces import Workspace, WorkspaceError
+from .. import joins as join_diagnostics
 from ..workflows import analysis as analysis_workflow
 from .resolver import ContextCandidate, ContextScope
 
@@ -1500,14 +1501,34 @@ def analysis_definition_scope(
             if item["id"] not in ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS
         ]
     )
+    # Analyses already saved anywhere in this frame's join family, not only on
+    # the frame itself. A join is a view over its sides, so the same
+    # computation is reachable from every frame sharing a base table with the
+    # target; showing only the target's own analyses is what let one invoice
+    # date-lag check be proposed three times, once per frame that could see the
+    # invoice columns. A proposal can only avoid repeating what it was shown.
+    target_lineage = join_diagnostics.frame_lineage(workspace, target)
+    family = {
+        name
+        for name in workspace.table_names()
+        if join_diagnostics.frame_lineage(workspace, name) & target_lineage
+    }
     current = [
         {
             key: item.get(key)
             for key in ("id", "title", "kind", "table", "spec", "semantic_id", "created_by")
         }
         for item in workspace.analyses
-        if str(item.get("table") or "") == target
+        if str(item.get("table") or "") in family
     ]
+    # Which base table each column comes from. Identity for an analysis is the
+    # computation — these columns, from these tables — rather than the frame it
+    # was written against, so the worker needs the mapping to recognise its
+    # own proposal in a sibling frame's saved analysis.
+    schema = {
+        **schema,
+        "column_origins": join_diagnostics.column_origins(workspace, target),
+    }
     return ContextScope(
         candidates={
             ANALYSIS_TARGET_SCHEMA_SOURCE_ID: (

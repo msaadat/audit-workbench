@@ -461,7 +461,7 @@ def test_auto_mode_materializes_the_top_ranked_moderate_join(monkeypatch):
     assert fresh.joins[0]["left_on"] == ["order_ref"]
     assert fresh.joins[0]["right_on"] == ["order_ref"]
     assert any(
-        "Auto-selected the top-ranked join candidate" in warning
+        "Auto-selected the best-evidenced join candidate" in warning
         for warning in run["warnings"]
     )
 
@@ -1196,10 +1196,18 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     ] * 4
     fresh = workspaces.load_workspace(ws.id)
     assert [item["name"] for item in fresh.joins] == ["transactions_customers_joined"]
-    # One definition unit per scoped frame — both tables and the new join.
-    assert len(fresh.analyses) == 6
+    # One definition unit per scoped frame — both tables and the new join — but
+    # five analyses, not six. The script proposes the same duplicate check on
+    # every frame it is given, and on the join that check reads only columns
+    # originating in ``transactions``: the same computation, so it is dropped
+    # rather than saved twice. The join keeps only the analysis that is
+    # genuinely its own.
+    assert len(fresh.analyses) == 5
+    assert [item["table"] for item in fresh.analyses].count(
+        "transactions_customers_joined"
+    ) == 1
     assert all(item["last_result"]["status"] == "ok" for item in fresh.analyses)
-    assert "Analyses executed: 6" in completed["summary_markdown"]
+    assert "Analyses executed: 5" in completed["summary_markdown"]
     assert [item["capability"] for item in completed["milestones"]] == [
         "analysis.executed"
     ]
@@ -1208,7 +1216,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     assert next(
         item["value"] for item in milestone["metrics"]
         if item["label"] == "Checks executed"
-    ) == 6
+    ) == 5
     assert "rows" not in milestone and "table_rows" not in milestone
     first_turns = len(fake.calls)
     assert first_turns == 3
@@ -1233,7 +1241,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     assert len(fake.calls) == first_turns, "a repeat run must not re-bill the provider"
     unchanged = workspaces.load_workspace(ws.id)
     assert len(unchanged.joins) == 1
-    assert len(unchanged.analyses) == 6
+    assert len(unchanged.analyses) == 5
 
 
 def test_analysis_and_audit_requests_use_one_scheduler_with_different_outcomes(
@@ -1279,3 +1287,263 @@ def test_analysis_and_audit_requests_use_one_scheduler_with_different_outcomes(
         *audit_workflow.DEPENDENCIES,
     ):
         assert capability_id not in scheduler_source
+
+
+# --------------------------------------------------------------------------- #
+# Analysis identity is the computation, not the frame it was written against
+# --------------------------------------------------------------------------- #
+def _joined(workspace):
+    workspace.add_join(
+        {
+            "name": "tx_customers",
+            "left": "transactions",
+            "right": "customers",
+            "how": "left",
+            "left_on": ["cust_id"],
+            "right_on": ["id"],
+        }
+    )
+    return workspaces.load_workspace(workspace.id)
+
+
+def test_one_computation_has_one_identity_across_a_join_family(workspace_with_data):
+    """The same check on a table and on a join built from it is one analysis.
+
+    This is what stops a single invoice date-lag check being saved once per
+    frame that can see the invoice columns.
+    """
+    ws = _joined(workspace_with_data)
+    spec = {"test": "duplicates", "params": {"columns": ["invoice_no"]}}
+
+    base = analysis_worker.analysis_semantic_id(
+        "analytics",
+        "transactions",
+        spec,
+        join_diagnostics.column_origins(ws, "transactions"),
+    )
+    joined = analysis_worker.analysis_semantic_id(
+        "analytics",
+        "tx_customers",
+        spec,
+        join_diagnostics.column_origins(ws, "tx_customers"),
+    )
+    assert base == joined
+
+    # A spec reaching across the join is its own computation, not a repeat.
+    spanning = analysis_worker.analysis_semantic_id(
+        "analytics",
+        "tx_customers",
+        {"test": "duplicates", "params": {"columns": ["invoice_no", "customer"]}},
+        join_diagnostics.column_origins(ws, "tx_customers"),
+    )
+    assert spanning != base
+
+    # Without provenance the frame name still carries identity, so the two
+    # frames disagree — the behaviour every caller had before.
+    assert analysis_worker.analysis_semantic_id(
+        "analytics", "transactions", spec
+    ) != analysis_worker.analysis_semantic_id("analytics", "tx_customers", spec)
+
+
+def test_definition_context_supplies_the_whole_join_family(workspace_with_data):
+    """A proposal can only avoid repeating an analysis it was actually shown."""
+    ws = _joined(workspace_with_data)
+    ws.add_analysis(
+        {
+            "title": "Duplicate invoice numbers",
+            "kind": "analytics",
+            "table": "transactions",
+            "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+            "semantic_id": "analysis:already-saved",
+        }
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    scope = analysis_definition_scope(ws, "tx_customers")
+    shown = {
+        str(candidate.source["table"])
+        for candidate in scope.candidates["current_analyses"]
+    }
+    assert shown == {"transactions"}, (
+        "the join must see the analyses already saved on the tables behind it"
+    )
+    schema = scope.candidates["target_schema"][0].source
+    assert schema["column_origins"]["invoice_no"] == "transactions"
+    assert schema["column_origins"]["customer"] == "customers"
+
+
+def test_a_repeat_from_a_sibling_frame_is_dropped_not_saved(workspace_with_data):
+    """The duplicate is dropped and the rest of the response still stands."""
+    ws = _joined(workspace_with_data)
+    ws.add_analysis(
+        {
+            "title": "Duplicate invoice numbers",
+            "kind": "analytics",
+            "table": "transactions",
+            "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+            "semantic_id": analysis_worker.analysis_semantic_id(
+                "analytics",
+                "transactions",
+                {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+                join_diagnostics.column_origins(ws, "transactions"),
+            ),
+        }
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    capability = capability_registries.ANALYSIS_REGISTRY.get(
+        "analysis.definitions_ready"
+    )
+    _, bundle = ContextResolver().resolve(
+        ws,
+        capability,
+        {"id": "analysis_definitions:tx_customers"},
+        analysis_definition_scope(ws, "tx_customers"),
+    )
+    request = WorkerRequest(
+        worker_id="analysis.definitions",
+        capability_id="analysis.definitions_ready",
+        unit_id="analysis_definitions:tx_customers",
+        context=bundle,
+        activity={},
+    )
+
+    accepted = analysis_worker.validate_analysis_proposal(
+        {
+            "analyses": [
+                {
+                    "title": "Duplicate invoice numbers",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "duplicates",
+                        "params": {"columns": ["invoice_no"]},
+                    },
+                },
+                {
+                    "title": "Duplicates across the join",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "duplicates",
+                        "params": {"columns": ["invoice_no", "customer"]},
+                    },
+                },
+            ]
+        },
+        request,
+    )
+    assert [item["title"] for item in accepted["analyses"]] == [
+        "Duplicates across the join"
+    ]
+
+
+def test_a_frame_with_nothing_of_its_own_reports_it_instead_of_erroring(
+    workspace_with_data,
+):
+    """Every proposal repeats a sibling's: a real answer about the data, and
+    the binder settles the unit rather than failing the run over it."""
+    ws = _joined(workspace_with_data)
+    spec = {"test": "duplicates", "params": {"columns": ["invoice_no"]}}
+    ws.add_analysis(
+        {
+            "title": "Duplicate invoice numbers",
+            "kind": "analytics",
+            "table": "transactions",
+            "spec": spec,
+            "semantic_id": analysis_worker.analysis_semantic_id(
+                "analytics",
+                "transactions",
+                spec,
+                join_diagnostics.column_origins(ws, "transactions"),
+            ),
+        }
+    )
+    ws = workspaces.load_workspace(ws.id)
+
+    capability = capability_registries.ANALYSIS_REGISTRY.get(
+        "analysis.definitions_ready"
+    )
+    _, bundle = ContextResolver().resolve(
+        ws,
+        capability,
+        {"id": "analysis_definitions:tx_customers"},
+        analysis_definition_scope(ws, "tx_customers"),
+    )
+    request = WorkerRequest(
+        worker_id="analysis.definitions",
+        capability_id="analysis.definitions_ready",
+        unit_id="analysis_definitions:tx_customers",
+        context=bundle,
+        activity={},
+    )
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_proposal(
+            {
+                "analyses": [
+                    {
+                        "title": "Duplicate invoice numbers",
+                        "kind": "analytics",
+                        "spec": spec,
+                    }
+                ]
+            },
+            request,
+        )
+    assert analysis_worker.NOTHING_NEW_TO_ANALYSE in str(raised.value)
+
+
+def _three_hop_workspace() -> workspaces.Workspace:
+    """A limit that only meets its transaction two hops away.
+
+    ``orders`` and ``plans`` share no column, exactly as a requisition and an
+    approval matrix share none: the limit is held against the customer's plan
+    code, so the two can only be tested together through ``customers``.
+    """
+    ws = workspaces.create_workspace("Three hops")
+    orders = pl.DataFrame(
+        {
+            "order_id": [f"O{index}" for index in range(1, 7)],
+            "cust_id": ["C1", "C2", "C3", "C1", "C2", "C3"],
+            "amount": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+        }
+    )
+    customers = pl.DataFrame(
+        {"id": ["C1", "C2", "C3"], "plan_code": ["P1", "P2", "P1"]}
+    )
+    plans = pl.DataFrame({"plan_code": ["P1", "P2"], "credit_limit": [25.0, 55.0]})
+    ws.add_table("orders.csv", orders.write_csv().encode())
+    ws.add_table("customers.csv", customers.write_csv().encode())
+    ws.add_table("plans.csv", plans.write_csv().encode())
+    return ws
+
+
+def test_the_join_stage_builds_a_chain_its_first_wave_could_not_name(monkeypatch):
+    """The chain unit does not exist until its first hop is committed, so the
+    stage has to re-expand rather than settle on the units it started with."""
+    ws = _three_hop_workspace()
+    _fake_model(monkeypatch)
+    run = _analysis_run(ws, text="join these tables and analyse them")
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.joins_ready")
+
+    fresh = workspaces.load_workspace(ws.id)
+    lineages = {
+        join_diagnostics.frame_lineage(fresh, str(item["name"]))
+        for item in fresh.joins
+    }
+    assert frozenset({"orders", "customers", "plans"}) in lineages, (
+        "the three-table frame is the only place a limit meets its order"
+    )
+
+    chained = next(
+        item
+        for item in fresh.joins
+        if join_diagnostics.frame_lineage(fresh, str(item["name"]))
+        == frozenset({"orders", "customers", "plans"})
+    )
+    frame = fresh.get_frame(str(chained["name"]))
+    assert {"amount", "credit_limit"} <= set(frame.columns)
+    assert frame.height == 6, "a chain must not multiply the fact rows"
+    over = frame.filter(pl.col("amount") > pl.col("credit_limit"))
+    assert over.height == 3

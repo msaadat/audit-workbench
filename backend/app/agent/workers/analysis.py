@@ -63,8 +63,12 @@ tables before it can be saved. Set outcome_policy to ``exception_rows`` only
 when every returned row is a potential exception; otherwise use
 ``informational``. Every analysis must be relevant to the supplied schema, profile,
 aggregates, and relationship evidence, and must not repeat an analysis already
-supplied in current_analyses. You are never shown table rows and must not invent
-values, counts, or relationships. {JSON_RULES}"""
+supplied in current_analyses. Those cover the target frame's whole join family,
+so a check on columns that all come from one table is already covered wherever
+it is saved: on a joined frame, prefer analyses that use columns from more than
+one of the joined tables, since that is what the join makes possible. You are
+never shown table rows and must not invent values, counts, or relationships.
+{JSON_RULES}"""
 
 TARGET_SCHEMA_SOURCE_ID = "target_schema"
 ANALYTICS_REGISTRY_SOURCE_ID = "analytics_registry"
@@ -73,6 +77,12 @@ ANALYSIS_SUBMISSION_TOOL = "submit_analysis_definitions"
 
 MAX_PROPOSED_ANALYSES = 4
 ANALYSIS_KINDS = ("analytics", "python")
+
+# Carried in the validation error when every proposal repeats a computation the
+# frame's join family already holds. A frame that adds nothing is a settled
+# outcome, not a contract violation, so the binder matches on this to settle
+# the unit as skipped once the repair turn has had its chance.
+NOTHING_NEW_TO_ANALYSE = "nothing_new_to_analyse"
 
 
 def _sha256_text(value: str) -> str:
@@ -107,15 +117,68 @@ def _target_schema(request: WorkerRequest) -> dict[str, Any]:
     return schema
 
 
-def analysis_semantic_id(kind: str, table: str, spec: Mapping[str, Any]) -> str:
+def _resolve_provenance(
+    value: object, origins: Mapping[str, str]
+) -> tuple[object, set[str]]:
+    """Rewrite every column name in a spec to ``origin_table.column``.
+
+    Walks the spec structurally rather than consulting the parameter contract:
+    a column is recognised by being a name the frame actually has, which holds
+    for every test in the library without this needing to know any of them.
+    """
+    if isinstance(value, Mapping):
+        resolved: dict[str, object] = {}
+        scope: set[str] = set()
+        for key, item in value.items():
+            resolved[str(key)], found = _resolve_provenance(item, origins)
+            scope |= found
+        return resolved, scope
+    if isinstance(value, (list, tuple)):
+        items: list[object] = []
+        scope = set()
+        for item in value:
+            resolved_item, found = _resolve_provenance(item, origins)
+            items.append(resolved_item)
+            scope |= found
+        return items, scope
+    if isinstance(value, str) and value in origins:
+        return f"{origins[value]}.{value}", {origins[value]}
+    return value, set()
+
+
+def analysis_semantic_id(
+    kind: str,
+    table: str,
+    spec: Mapping[str, Any],
+    origins: Mapping[str, str] | None = None,
+) -> str:
     """Stable identity for one analysis definition.
 
-    Derived from the frame and the canonical spec rather than the title, so a
-    reworded proposal for the same computation deduplicates against the analysis
-    already saved instead of creating a second one.
+    Derived from the canonical spec rather than the title, so a reworded
+    proposal for the same computation deduplicates against the analysis already
+    saved instead of creating a second one.
+
+    ``origins`` maps the frame's columns to the base tables they come from. With
+    it, identity is the computation itself — which columns, from which tables —
+    rather than the frame it happened to be written against. That is what makes
+    an invoice date lag proposed on ``invoice_data`` and the identical lag
+    proposed on ``invoice_data_po_data_joined`` one analysis instead of two:
+    the join adds columns, but it does not make an invoice-only test a
+    different test. A spec spanning both sides of a join still resolves to its
+    own identity, because its scope names both tables.
+
+    Without ``origins`` the frame name carries identity, as before — a Python
+    analysis reaches frames the spec never names, so its code is only
+    meaningfully identified against the frame it was written for.
     """
+    resolved_spec: object = _plain_json(spec)
+    scope = str(table)
+    if origins and str(kind) != "python":
+        resolved_spec, tables = _resolve_provenance(resolved_spec, origins)
+        if tables:
+            scope = "+".join(sorted(tables))
     canonical = json.dumps(
-        {"kind": str(kind), "table": str(table), "spec": _plain_json(spec)},
+        {"kind": str(kind), "table": scope, "spec": resolved_spec},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -154,7 +217,26 @@ def _column_types(schema: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-def _existing_semantic_ids(request: WorkerRequest) -> set[str]:
+def _column_origins(schema: Mapping[str, Any]) -> dict[str, str]:
+    """The base table each supplied column originates in, when declared."""
+    raw = schema.get("column_origins")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(column): str(origin)
+        for column, origin in raw.items()
+        if str(column or "").strip() and str(origin or "").strip()
+    }
+
+
+def _existing_semantic_ids(request: WorkerRequest, origins: Mapping[str, str]) -> set[str]:
+    """Semantic ids of every analysis the request was shown.
+
+    These come from the target frame's whole join family, so an id here may
+    belong to a sibling frame. That is the point: identity is provenance-based,
+    so a sibling's saved computation and this frame's proposal of it are the
+    same id, and the repeat is caught before it is written.
+    """
     ids: set[str] = set()
     for raw in _source_items(request, CURRENT_ANALYSES_SOURCE_ID):
         item = _plain_json(raw)
@@ -169,6 +251,7 @@ def _existing_semantic_ids(request: WorkerRequest) -> set[str]:
                 str(item.get("kind") or ""),
                 str(item.get("table") or ""),
                 item.get("spec") or {},
+                origins,
             )
         )
     return ids
@@ -507,8 +590,9 @@ def validate_analysis_proposal(
     target = str(schema["table"])
     columns = _column_names(schema)
     column_types = _column_types(schema)
+    origins = _column_origins(schema)
     registry = _analytics_contract(request)
-    existing = _existing_semantic_ids(request)
+    existing = _existing_semantic_ids(request, origins)
     related = {
         str((_plain_json(item) or {}).get("table"))
         for item in _source_items(request, "related_frames")
@@ -518,6 +602,7 @@ def validate_analysis_proposal(
 
     proposed = list(proposal.get("analyses") or [])
     errors: list[str] = []
+    duplicates: list[str] = []
     if len(proposed) > MAX_PROPOSED_ANALYSES:
         errors.append(
             f"return at most {MAX_PROPOSED_ANALYSES} analyses; {len(proposed)} were proposed"
@@ -561,12 +646,12 @@ def validate_analysis_proposal(
         errors.extend(spec_errors)
         if spec_errors or not title:
             continue
-        semantic = analysis_semantic_id(kind, target, spec)
+        semantic = analysis_semantic_id(kind, target, spec, origins)
         if semantic in existing:
-            errors.append(
-                f"{label} repeats an analysis already saved for '{target}'; "
-                "propose a different computation"
-            )
+            # Dropped rather than rejected: the rest of the response is still
+            # good work, and spending the repair turn to re-ask for four when
+            # three were fine would cost a model call to gain nothing.
+            duplicates.append(label)
             continue
         if semantic in seen:
             errors.append(f"{label} duplicates an earlier proposal in this response")
@@ -588,6 +673,18 @@ def validate_analysis_proposal(
     if errors:
         raise WorkerResponseValidationError(errors)
     if not accepted:
+        if duplicates:
+            # Worth one repair turn — a joined frame usually has something its
+            # sides cannot compute. If the retry says the same thing, the frame
+            # genuinely adds nothing, and the binder settles the unit as
+            # skipped rather than failing the run over it.
+            raise WorkerResponseValidationError(
+                f"{NOTHING_NEW_TO_ANALYSE}: every proposed analysis repeats a "
+                "computation already saved for these columns, on this frame or "
+                "another built from the same tables. Propose a different "
+                "computation, or one that uses columns from more than one of the "
+                "joined tables."
+            )
         raise WorkerResponseValidationError(
             "propose at least one analysis that is not already saved"
         )

@@ -22,6 +22,7 @@ from itertools import combinations
 from ... import analytics
 from ...analysis_results import analysis_result_state
 from ...workspaces import Workspace
+from .. import joins as join_diagnostics
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import analysis as analysis_workflow
 
@@ -152,11 +153,14 @@ def resolve_table_scope(workspace: Workspace, scope: dict) -> TableScope:
                 f"({', '.join(tables)}). Name the tables to analyse instead."
             )
 
+    # A join belongs to the scope when every base table it was built from is
+    # scoped — which admits a chained join whose sides are themselves joins,
+    # where checking the two immediate sides for membership would not.
     scoped = set(tables)
     materialized = tuple(
         name
-        for name, join in sorted(joins.items())
-        if str(join.get("left")) in scoped and str(join.get("right")) in scoped
+        for name in sorted(joins)
+        if join_diagnostics.frame_lineage(workspace, name) <= scoped
     )
     return TableScope(
         tables=tables,
@@ -196,6 +200,60 @@ def uncovered_pairs(
         for pair in table_scope.pairs()
         if pair_join(workspace, pair[0], pair[1]) is None
     )
+
+
+def frame_ref(workspace: Workspace, name: str) -> str:
+    """The parent reference for a frame, by what the frame actually is.
+
+    A join and a base table project differently, so a chained join used as a
+    fact side must be guarded as ``join:`` — asking for ``table:`` would hash
+    a missing entry and guard nothing.
+    """
+
+    if any(str(item.get("name")) == name for item in workspace.joins):
+        return f"join:{name}"
+    return f"table:{name}"
+
+
+def chain_pairs(
+    workspace: Workspace, table_scope: TableScope
+) -> tuple[tuple[str, str], ...]:
+    """(materialized join, scoped table) pairs that could extend a chain.
+
+    A dimension two hops from the transaction that needs it — an approval limit
+    held against the approver's job title — is only reachable once the first
+    hop exists, so these pairs come into being *during* the join stage rather
+    than at its start. Pairs already connected, and tables the chain already
+    contains, are excluded.
+    """
+
+    scoped = set(table_scope.tables)
+    # One frame per set of base tables. Without this, invoice+PO+staff is built
+    # once from the invoice-PO join and again from the invoice-staff join —
+    # different frames, different names, identical content — and every one of
+    # them then costs a model call to analyse.
+    claimed = {
+        join_diagnostics.frame_lineage(workspace, name)
+        for name in workspace.table_names()
+    }
+    pairs = []
+    for chain in join_diagnostics.chain_fact_frames(workspace):
+        lineage = join_diagnostics.frame_lineage(workspace, chain)
+        if not lineage <= scoped:
+            continue
+        for table in table_scope.tables:
+            if table in lineage:
+                continue
+            if pair_join(workspace, chain, table) is not None:
+                continue
+            combined = lineage | {table}
+            if combined in claimed:
+                continue
+            if not join_diagnostics.chain_extends_reach(workspace, lineage, table):
+                continue
+            claimed.add(combined)
+            pairs.append((chain, table))
+    return tuple(pairs)
 
 
 def agent_analyses(workspace: Workspace, table_scope: TableScope) -> list[dict]:
@@ -279,7 +337,7 @@ def _relationship_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             semantic_unit_id("relationship", left, right),
             "relationship_inference",
             f"Diagnose {left} ↔ {right}",
-            (f"table:{left}", f"table:{right}"),
+            (frame_ref(workspace, left), frame_ref(workspace, right)),
             {"left": left, "right": right},
         )
         for left, right in pairs
@@ -329,17 +387,22 @@ def _joins_ready(workspace: Workspace, scope: dict) -> Readiness:
 
 def _join_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
     table_scope = resolve_table_scope(workspace, scope)
-    pairs = (
+    pairs = list(
         table_scope.pairs()
         if _forced(scope)
         else uncovered_pairs(workspace, table_scope)
     )
+    # Chain pairs exist only once a first hop has been materialized, so this
+    # expansion yields more units each time the stage re-expands. Readiness
+    # stays on the base pairs: a chain that finds no strong evidence is a
+    # relationship that is not there, not an unfinished stage.
+    pairs.extend(chain_pairs(workspace, table_scope))
     return [
         UnitSpec(
             semantic_unit_id("join", left, right),
             "join_materialization",
             f"Join {left} → {right}",
-            (f"table:{left}", f"table:{right}"),
+            (frame_ref(workspace, left), frame_ref(workspace, right)),
             {"left": left, "right": right},
         )
         for left, right in pairs

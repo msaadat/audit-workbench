@@ -1007,10 +1007,14 @@ PRESETS.register(
                     required=False,
                     selector=ContextSelector(selector_id="artifacts.current"),
                     representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=20, max_characters=12_000),
+                    # Sized for a frame's whole join family, not just the frame
+                    # itself: a proposal can only avoid repeating an analysis it
+                    # was actually shown, and the same computation is reachable
+                    # from every frame sharing a base table with this one.
+                    budget=ContextBudget(max_items=40, max_characters=16_000),
                 ),
             ),
-            budget=ContextBudget(max_items=47, max_characters=60_000),
+            budget=ContextBudget(max_items=67, max_characters=68_000),
             # Row-level table data is structurally impossible here: the
             # permission is denied and ``table_rows`` is rejected by the
             # resolver boundary before a candidate can become a bundle item.
