@@ -300,11 +300,13 @@ async function runTest() {
   if (!test) return
   running.value = true
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       `Run document test ${test.id} and preserve its results.`,
       'act', launchMode.value,
       { command: 'run_document_tests', source: 'tab_button', runContext: { test_id: test.id } },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start the document test', error) }
   finally { running.value = false }
@@ -313,11 +315,13 @@ async function generateFinding(regenerate: boolean) {
   const test = currentTest.value
   if (!test?.rcm_id || !test.status.startsWith('completed')) return
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       `${regenerate ? 'Regenerate' : 'Draft'} findings for RCM row ${test.rcm_id}.`,
       'act', launchMode.value,
-      { command: 'draft_findings', goalTemplate: 'finding_draft', source: 'tab_button', runContext: { rcm_id: test.rcm_id } },
+      { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: test.rcm_id } },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
@@ -356,10 +360,12 @@ async function prepareTests() {
     return
   }
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       'Write the executable specification for each drafted Document Test, prioritizing imported evidence-covered transactions and creating explicit evidence requests for missing support.',
       'act', launchMode.value, { command: 'prepare_document_tests', source: 'tab_button' },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({ severity: 'info', summary: 'Preparing document tests', detail: 'Review progress in the assistant.', life: 3000 })
   } catch (error) { fail('Could not start document test preparation', error) }
 }

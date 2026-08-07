@@ -412,12 +412,17 @@ async function batchAnalyze() {
   }
   analysisBusy.value = true
   try {
-    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/documents/analysis-runs`, {
-      document_ids: eligible.map(document => document.id),
-      action: 'analyze',
-      full_visual_coverage: false,
-    })
-    await waitForAnalysis(run.id); await loadDocuments(); if (selectedId.value) await loadAnalysis()
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Analyze ${eligible.length === 1 ? 'this document' : `these ${eligible.length} documents`}.`,
+      'act', agent.launchMode.value,
+      {
+        command: 'analyze_documents', source: 'tab_button',
+        runContext: { document_ids: eligible.map(document => document.id), action: 'analyze' },
+      },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({ severity: 'info', summary: 'Document analysis started', detail: 'Progress is visible in the assistant.', life: 3000 })
   } catch (error) { toast.add({ severity: 'error', summary: 'Batch analysis unavailable', detail: String(error), life: 5000 }) }
   finally { analysisBusy.value = false }
 }

@@ -29,6 +29,7 @@ async function startPlanningUpdate() {
     if (!agent.state.status?.configured) {
       throw new Error('The planning assistant is not configured. Set an assistant provider and model before running this update.')
     }
+    await assistantChat.createChat()
     await assistantChat.send(
       `Review newly imported documents ${props.action.document_ids.join(', ')} and update planning context, APM, RCM rows, and the tests that cover them.`,
       'act', launchMode.value, {
@@ -36,6 +37,7 @@ async function startPlanningUpdate() {
         runContext: { document_ids: props.action.document_ids },
       },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     confirmOpen.value = false
     emit('planning-started')
   } catch (cause) {

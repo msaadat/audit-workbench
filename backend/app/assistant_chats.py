@@ -45,6 +45,10 @@ REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{8,160}\Z")
 RUN_ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}\Z")
 INTENTS = {"auto", "ask", "act"}
 SOURCES = {"composer", "shortcut", "tab_button", "folder_intake"}
+# Scope keys a requested-outcomes message (no goal template) may carry — the
+# chat-side equivalent of the `target_refs` the direct run-creation endpoint
+# accepts, so a caller can name specific rows without a registered template.
+OUTCOME_RUN_CONTEXT_KEYS = frozenset({"target_refs"})
 
 _file_locks: dict[str, threading.RLock] = {}
 _file_locks_guard = threading.Lock()
@@ -590,13 +594,25 @@ def send_message(workspace: Workspace, chat_id: str, payload: dict) -> dict:
                 raise WorkspaceError("Specialized run context is only accepted for folder intake actions.")
             if run_context and not run_kind:
                 # Run context is scope, never a routing override: a template
-                # accepts only the scope keys routing declares for it.
-                allowed = routing.TEMPLATE_RUN_CONTEXT_KEYS.get(goal_template or "")
+                # accepts only the scope keys routing declares for it. A
+                # requested-outcomes message has no template, so it may only
+                # narrow scope through `target_refs` — the same mechanism the
+                # direct run-creation endpoint accepts.
+                allowed = (
+                    routing.TEMPLATE_RUN_CONTEXT_KEYS.get(goal_template)
+                    if goal_template else (OUTCOME_RUN_CONTEXT_KEYS if requested_outcomes else None)
+                )
                 if requested != "act" or allowed is None or not set(run_context) <= allowed:
                     raise WorkspaceError(
                         "Command run context is only accepted for a registered "
                         "goal template's declared scope keys."
                     )
+                if not goal_template and "target_refs" in run_context:
+                    raw_refs = run_context.get("target_refs")
+                    if not isinstance(raw_refs, list) or any(
+                        not isinstance(value, str) or not value.strip() for value in raw_refs
+                    ):
+                        raise WorkspaceError("target_refs must be a list of non-empty strings.")
             outcome = _process_message(
                 workspace, chat_id, user, record, mode, goal_template, run_kind,
                 run_context, requested_outcomes, local_handler,
@@ -660,7 +676,7 @@ def _launch_command(
         )
 
     refs = []
-    if not goal_template and re.search(r"\b(that|it|this)\b", request, re.I):
+    if not goal_template and not requested_outcomes and re.search(r"\b(that|it|this)\b", request, re.I):
         preceding = next((item for item in reversed(record.get("messages") or []) if item.get("role") == "assistant"), None)
         ids = list((preceding or {}).get("artifact_ids") or [])
         if len(ids) != 1:
@@ -691,6 +707,15 @@ def _launch_command(
             f"analysis:{identifier}"
             for name in (planning_context.get("analysis_ids") or [])
             if (identifier := str(name or "").strip())
+        ]
+    elif not goal_template and requested_outcomes:
+        # A requested-outcomes message has no template to derive scope from,
+        # so a caller names it directly the same way the direct run-creation
+        # endpoint does.
+        target_refs = [
+            str(item).strip()
+            for item in (planning_context.get("target_refs") or [])
+            if str(item or "").strip()
         ]
     command = {
         "source": "goal_template" if goal_template else ("tab_button" if user.get("source") != "composer" else "chat"),

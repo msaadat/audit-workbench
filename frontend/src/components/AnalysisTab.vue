@@ -233,11 +233,13 @@ function runAll() { return runAnalyses(analyses.value.map(item => item.id)) }
 async function analyzeWithAssistant() {
   const tables = props.workspace.tables.map(table => table.name)
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       'Analyse the data in this workspace and save the procedures that hold up.',
       'act', agent.launchMode.value,
-      { command: 'analyze_data', goalTemplate: 'data_analysis', source: 'tab_button', runContext: { tables } },
+      { command: 'analyze_data', source: 'tab_button', runContext: { tables } },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({
       severity: 'info', summary: 'Analysis started',
       detail: 'Progress is visible in the assistant.', life: 3000,

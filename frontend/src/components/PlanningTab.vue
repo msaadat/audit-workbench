@@ -15,7 +15,7 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AgentRun, AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
 import CoverageBoard from './planning/CoverageBoard.vue'
@@ -134,10 +134,12 @@ async function importApm(event: Event) {
 async function generate() {
   try {
     await savePlanning()
+    await assistantChat.createChat()
     await assistantChat.send(
       'Update the planning context and APM, then create or reconcile the RCM and the Document and Data Tests that cover it. Do not create a separate audit program.',
       'act', launchMode.value, { command: 'plan', source: 'tab_button' },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
   } catch (error) { fail('Could not start planning', error) }
 }
 async function openTemplate() {
@@ -235,6 +237,7 @@ function linkedTests(row: RcmRow): TestRollup[] {
 }
 async function promoteObservation(item: AuditObservation) {
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       `Draft a finding from observation ${item.id}.`,
       'act', 'permission', {
@@ -242,6 +245,7 @@ async function promoteObservation(item: AuditObservation) {
         runContext: { observation_id: item.id },
       },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({ severity: 'success', summary: 'Finding-draft workflow started', detail: 'Review the proposed finding in the assistant before it is saved.', life: 3200 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
@@ -265,13 +269,16 @@ async function generatePlannedTests(rowIds: string[] = rowsWithoutTests.value.ma
   if (!rowIds.length) return
   generatingTests.value = true
   try {
-    const run = await api.post<AgentRun>(`/api/workspaces/${props.workspace.id}/agent/runs`, {
-      mode: launchMode.value,
-      requested_outcomes: ['tests.specified'],
-      target_refs: rowIds.map(id => `rcm:${id}`),
-      generation_mode: 'reuse_existing',
-    })
-    await agent.openRun(run.id)
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Generate planned test${rowIds.length === 1 ? '' : 's'} for ${rowIds.length} RCM row${rowIds.length === 1 ? '' : 's'}.`,
+      'act', launchMode.value,
+      {
+        source: 'tab_button', requestedOutcomes: ['tests.specified'],
+        runContext: { target_refs: rowIds.map(id => `rcm:${id}`) },
+      },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({ severity: 'success', summary: `Generating planned test${rowIds.length === 1 ? '' : 's'} for ${rowIds.length} RCM row${rowIds.length === 1 ? '' : 's'}`, life: 3000 })
   } catch (error) { fail('Could not start planned test generation', error) }
   finally { generatingTests.value = false }
@@ -279,11 +286,13 @@ async function generatePlannedTests(rowIds: string[] = rowsWithoutTests.value.ma
 async function generateAllFindings() {
   generatingFindings.value = true
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       'Draft all eligible findings from the RCM observations.',
       'act', launchMode.value,
       { command: 'draft_findings', source: 'tab_button' },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({
       severity: 'success',
       summary: 'Generating all eligible findings',
@@ -315,6 +324,7 @@ async function runAllDocumentTests() {
   if (!testIds.length) return
   runningAllDocumentTests.value = true
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       `Run all ${testIds.length} RCM-linked Document Test${testIds.length === 1 ? '' : 's'} and preserve the results.`,
       'act', launchMode.value,
@@ -324,6 +334,7 @@ async function runAllDocumentTests() {
         runContext: { test_ids: testIds },
       },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({
       severity: 'info',
       summary: `Running ${testIds.length} RCM Document Test${testIds.length === 1 ? '' : 's'}`,

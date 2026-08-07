@@ -328,11 +328,13 @@ async function pin() {
 async function draftFinding(regenerate = false) {
   if (!selected.value?.rcm_id || !selected.value.last_run) return
   try {
+    await assistantChat.createChat()
     await assistantChat.send(
       `${regenerate ? 'Regenerate' : 'Draft'} findings for RCM row ${selected.value.rcm_id}.`,
       'act', 'permission',
-      { command: 'draft_findings', goalTemplate: 'finding_draft', source: 'tab_button', runContext: { rcm_id: selected.value.rcm_id } },
+      { command: 'draft_findings', source: 'tab_button', runContext: { rcm_id: selected.value.rcm_id } },
     )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({ severity: 'success', summary: regenerate ? 'Finding regeneration started' : 'Finding-draft workflow started', detail: 'Exception observations will be used directly.', life: 3600 })
   } catch (error) { fail('Could not start the finding-draft workflow', error) }
 }
