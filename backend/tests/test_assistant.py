@@ -862,6 +862,13 @@ def test_llm_error_detail_keeps_plain_text_body():
 
 
 def test_openrouter_rate_limit_error_includes_retry_hint(monkeypatch):
+    clock = [0.0]
+    sleeps = []
+
+    def advance_clock(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
     def fake_urlopen(request, timeout):
         error = urllib.error.HTTPError(
             url=request.full_url,
@@ -884,7 +891,8 @@ def test_openrouter_rate_limit_error_includes_retry_hint(monkeypatch):
     assistant_settings.save({"provider": "openrouter", "model": "openai/test-model"})
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(llm.time, "sleep", lambda delay: None)
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(llm.time, "sleep", advance_clock)
 
     with pytest.raises(llm.LLMError) as raised:
         llm.chat([{"role": "user", "content": "hello"}])
@@ -893,6 +901,96 @@ def test_openrouter_rate_limit_error_includes_retry_hint(monkeypatch):
     assert "Rate limit exceeded (rate_limit_exceeded)" in message
     assert "Retry after 60 seconds" in message
     assert "Assistant settings" in message
+    assert sleeps == [60.0, 60.0]
+
+
+def test_llm_429_pauses_all_new_requests_until_the_cooldown_expires(monkeypatch):
+    """A terminal 429 gates the next caller, not only its own retry."""
+    clock = [0.0]
+    sleeps = []
+    calls = 0
+
+    def advance_clock(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            error = urllib.error.HTTPError(
+                request.full_url, 429, "Too Many Requests", {}, None,
+            )
+            error.read = lambda: b'{"error":{"message":"slow down"}}'
+            raise error
+        return FakeResponse()
+
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
+    monkeypatch.setattr(llm, "MAX_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(llm.time, "sleep", advance_clock)
+
+    with pytest.raises(llm.LLMError, match=r"request failed \(429\)"):
+        llm.chat([{"role": "user", "content": "first"}])
+    assert llm.chat([{"role": "user", "content": "second"}]) == {"content": "ok"}
+    assert calls == 2
+    assert sleeps == [60.0]
+
+
+def test_llm_in_band_429_uses_the_shared_cooldown(monkeypatch):
+    """Aggregators sometimes return the rate-limit payload with HTTP 200."""
+    clock = [0.0]
+    sleeps = []
+    calls = 0
+
+    def advance_clock(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return FakeResponse(
+                {"error": {"code": 429, "message": "Rate limit exceeded"}}
+            )
+        return FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+
+    assistant_settings.save({"provider": "lmstudio", "model": ""})
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(llm.time, "sleep", advance_clock)
+
+    assert llm.chat([{"role": "user", "content": "hello"}]) == {"content": "ok"}
+    assert calls == 2
+    assert sleeps == [60.0]
 
 
 def test_lmstudio_model_error_includes_local_hint(monkeypatch):

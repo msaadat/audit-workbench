@@ -13,6 +13,14 @@ from app.agent import runner as agent_runner  # noqa: E402
 from app.agent import store as agent_store  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def reset_llm_rate_limit_cooldown():
+    """Do not let the transport's process-wide gate leak between tests."""
+    llm._reset_rate_limit_cooldown_for_tests()
+    yield
+    llm._reset_rate_limit_cooldown_for_tests()
+
+
 # Every test has one primary tier.  Keeping this classification at collection
 # time avoids obscuring otherwise straightforward tests with repetitive marker
 # decorators, while still making each tier selectable with ``pytest -m``.

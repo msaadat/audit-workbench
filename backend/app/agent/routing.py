@@ -1018,7 +1018,7 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         ) + _analysis_model_turns(workspace, scope)
     run.setdefault("limits", {}).update(
         max_llm_concurrency=int(
-            run.get("limits", {}).get("max_llm_concurrency") or 4
+            run.get("limits", {}).get("max_llm_concurrency") or 1
         ),
         max_compute_concurrency=int(
             run.get("limits", {}).get("max_compute_concurrency") or 2

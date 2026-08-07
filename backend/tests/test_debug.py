@@ -107,6 +107,11 @@ def test_workspace_and_run_saves_create_deduplicated_transitions_and_graph_revis
 
 
 def test_retry_attempts_retain_http_error_payload_and_delay(workspace_with_data, monkeypatch):
+    clock = [0.0]
+
+    def advance_clock(delay):
+        clock[0] += delay
+
     assistant_settings.save({"provider": "groq", "model": "test-model"})
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     responses = [
@@ -122,7 +127,8 @@ def test_retry_attempts_retain_http_error_payload_and_delay(workspace_with_data,
         if isinstance(response, Exception): raise response
         return response
     monkeypatch.setattr(llm.urllib.request, "urlopen", fake_open)
-    monkeypatch.setattr(llm.time, "sleep", lambda delay: None)
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(llm.time, "sleep", advance_clock)
     with debug_store.trace_context(
         workspace_id=workspace_with_data.id, workspace_root=str(workspace_with_data.root),
         stage="retry.test", purpose="retry_test",
@@ -132,7 +138,8 @@ def test_retry_attempts_retain_http_error_payload_and_delay(workspace_with_data,
     assert len(record["attempts"]) == 2
     assert record["attempts"][0]["http_status"] == 429
     assert record["attempts"][0]["error_response"]["error"]["message"] == "slow down"
-    assert record["attempts"][0]["retry_delay_ms"] == 1000
+    assert record["attempts"][0]["retry_delay_ms"] == 60000
+    assert record["attempts"][1]["rate_limit_wait_ms"] == 60000
 
 
 def test_timing_metrics_show_parallel_overlap_retry_and_waits():

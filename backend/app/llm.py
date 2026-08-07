@@ -14,6 +14,8 @@ provider and model are normal application settings saved through the UI:
     CEREBRAS_API_KEY         Cerebras API key
     LMSTUDIO_API_KEY         optional local dummy key
     LLM_REQUEST_TIMEOUT      optional request timeout in seconds
+    LLM_RATE_LIMIT_COOLDOWN  optional minimum cooldown after a HTTP 429,
+                             in seconds (defaults to 60)
     AGENT_PROVIDER           optional provider override for agent runs
     AGENT_MODEL              optional model override for agent runs
 
@@ -30,6 +32,7 @@ import hashlib
 import json
 import os
 import base64
+import threading
 import time
 from typing import Any
 import urllib.error
@@ -45,6 +48,7 @@ REQUEST_TIMEOUT = 60  # seconds
 LOCAL_REQUEST_TIMEOUT = 300  # seconds
 MAX_REQUEST_ATTEMPTS = 3
 MAX_RETRY_DELAY = 2.0
+DEFAULT_RATE_LIMIT_COOLDOWN = 60.0  # seconds
 RETRYABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 # Symbolic equivalents of the codes above, as used by providers that report an
 # upstream failure inside an HTTP 200 body rather than as an HTTP status. These
@@ -85,6 +89,14 @@ TRANSIENT_PROVIDER_MARKERS = (
     "try again",
     "unavailable",
 )
+
+
+# A rate limit is shared by the provider account, not by an individual
+# workflow unit. Keep one process-wide gate here so every LLM entry point
+# (assistant, report generation, and agent workflows) observes it before
+# opening a connection.
+_rate_limit_gate_lock = threading.Lock()
+_rate_limit_not_before = 0.0
 
 
 class LLMError(RuntimeError):
@@ -148,6 +160,62 @@ def _request_timeout(default: int) -> int:
     if timeout <= 0:
         raise LLMError("LLM_REQUEST_TIMEOUT must be a positive integer.")
     return timeout
+
+
+def _rate_limit_cooldown() -> float:
+    """Return the configured minimum pause after a provider rate limit."""
+    configured = _env("LLM_RATE_LIMIT_COOLDOWN")
+    if not configured:
+        return DEFAULT_RATE_LIMIT_COOLDOWN
+    try:
+        cooldown = float(configured)
+    except ValueError as error:
+        raise LLMError("LLM_RATE_LIMIT_COOLDOWN must be a non-negative number.") from error
+    if cooldown < 0:
+        raise LLMError("LLM_RATE_LIMIT_COOLDOWN must be a non-negative number.")
+    return cooldown
+
+
+def _rate_limit_delay(retry_after: str | None = None) -> float:
+    """Use the configured minute by default, respecting a longer provider hint."""
+    delay = _rate_limit_cooldown()
+    if retry_after:
+        try:
+            delay = max(delay, float(retry_after))
+        except ValueError:
+            pass
+    return delay
+
+
+def _pause_all_llm_requests(retry_after: str | None = None) -> float:
+    """Extend the shared 429 pause and return the delay that was installed."""
+    global _rate_limit_not_before
+    delay = _rate_limit_delay(retry_after)
+    with _rate_limit_gate_lock:
+        _rate_limit_not_before = max(
+            _rate_limit_not_before,
+            time.monotonic() + delay,
+        )
+    return delay
+
+
+def _wait_for_rate_limit_cooldown() -> float:
+    """Block this request until the process-wide 429 pause has elapsed."""
+    waited = 0.0
+    while True:
+        with _rate_limit_gate_lock:
+            remaining = _rate_limit_not_before - time.monotonic()
+        if remaining <= 0:
+            return waited
+        time.sleep(remaining)
+        waited += remaining
+
+
+def _reset_rate_limit_cooldown_for_tests() -> None:
+    """Clear process-wide transport state between isolated test cases."""
+    global _rate_limit_not_before
+    with _rate_limit_gate_lock:
+        _rate_limit_not_before = 0.0
 
 
 def _profile_hash(
@@ -538,9 +606,12 @@ def chat(
         debug_store.update_call(trace_workspace_id, call_id, actual_request_metrics)
 
     for attempt in range(MAX_REQUEST_ATTEMPTS):
+        cooldown_wait = _wait_for_rate_limit_cooldown()
         attempt_started_wall = debug_store.utcnow()
         attempt_started = time.monotonic()
         attempt_record: dict = {"number": attempt + 1, "started_at": attempt_started_wall}
+        if cooldown_wait:
+            attempt_record["rate_limit_wait_ms"] = round(cooldown_wait * 1000, 3)
         payload = None
         response_headers = None
         raw_body = b""
@@ -581,7 +652,18 @@ def chat(
                 "response_size_bytes": len(raw_error),
                 "response_sha256": hashlib.sha256(raw_error).hexdigest(),
             })
-            if error.code in RETRYABLE_HTTP_CODES and attempt + 1 < MAX_REQUEST_ATTEMPTS:
+            if error.code == 429:
+                delay = _pause_all_llm_requests(
+                    error.headers.get("Retry-After") if error.headers else None
+                )
+                attempt_record["rate_limit_cooldown_ms"] = round(delay * 1000, 3)
+                if attempt + 1 < MAX_REQUEST_ATTEMPTS:
+                    attempt_record["retry_delay_ms"] = round(delay * 1000, 3)
+                    _finish_attempt(attempt_record, attempt_started)
+                    if call_id:
+                        debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                    continue
+            elif error.code in RETRYABLE_HTTP_CODES and attempt + 1 < MAX_REQUEST_ATTEMPTS:
                 delay = _wait_before_retry(
                     attempt, error.headers.get("Retry-After") if error.headers else None
                 )
@@ -645,7 +727,16 @@ def chat(
             # sees it. A transient upstream code must exhaust the same ladder
             # here or a rate-limited provider kills the unit — and, because a
             # failed unit folds the whole run to failed, the run with it.
-            if (
+            if _is_rate_limit_error(error_code):
+                delay = _pause_all_llm_requests(_retry_after_header(response_headers))
+                attempt_record["rate_limit_cooldown_ms"] = round(delay * 1000, 3)
+                if attempt + 1 < MAX_REQUEST_ATTEMPTS:
+                    attempt_record["retry_delay_ms"] = round(delay * 1000, 3)
+                    _finish_attempt(attempt_record, attempt_started)
+                    if call_id:
+                        debug_store.add_attempt(trace_workspace_id, call_id, attempt_record)
+                    continue
+            elif (
                 _retryable_provider_error(error_code, detail)
                 and attempt + 1 < MAX_REQUEST_ATTEMPTS
             ):
@@ -798,6 +889,14 @@ def _retryable_provider_error(code: object, detail: str) -> bool:
         numeric = code if isinstance(code, int) else int(text)
         return numeric in RETRYABLE_HTTP_CODES and _transient_provider_detail(detail)
     return bool(text) and text in RETRYABLE_PROVIDER_CODES
+
+
+def _is_rate_limit_error(code: object) -> bool:
+    """Recognize both HTTP-style and aggregator rate-limit error codes."""
+    if isinstance(code, bool):
+        return False
+    text = str(code or "").strip().lower()
+    return text == "429" or text in {"rate_limit_exceeded", "rate_limited"}
 
 
 def _transient_provider_detail(detail: str) -> bool:
