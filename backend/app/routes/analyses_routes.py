@@ -46,6 +46,30 @@ async def get_analysis(workspace_id: str, analysis_id: str):
     return dashboard.analysis_payload(ws, ws._analysis(analysis_id))
 
 
+@router.get("/analyses/{analysis_id}/exceptions")
+async def get_analysis_exceptions(workspace_id: str, analysis_id: str):
+    """Read back the rows the recorded result flagged, without recomputing.
+
+    This is deliberately not the detail endpoint. Opening a procedure asks
+    "what does this spec return now"; this asks "which rows did the conclusion
+    on record concern" — the question a reviewer reading a verdict actually
+    has. It costs a file read rather than a Polars run, and it cannot show rows
+    that disagree with the verdict printed beside them.
+    """
+    ws = workspaces.load_workspace(workspace_id)
+    analysis = ws._analysis(analysis_id)
+    evidence = analysis_results.read_exception_evidence(ws, analysis)
+    result = analysis.get("last_result") or {}
+    return {
+        "analysis_id": analysis_id,
+        "exception_count": int(result.get("exception_count") or 0),
+        "retained": int(result.get("exception_rows_retained") or 0),
+        "run_id": result.get("run_id"),
+        "executed_at": result.get("executed_at"),
+        "frame": (evidence or {}).get("frame"),
+    }
+
+
 @router.post("/analyses/{analysis_id}/execute")
 async def execute_analysis(workspace_id: str, analysis_id: str):
     """Run one saved analysis and record what it concluded.

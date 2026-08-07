@@ -292,6 +292,13 @@ _ARTIFACT_OBJECTS: dict[str, str] = {
     "report": "Reports/current.json",
     "dashboard_advice": "Dashboard/advice.json",
 }
+# Row-level exception evidence for a saved analysis lives beside the
+# definitions, never inside them.  ``Analyses/*.json`` is an artifact
+# collection whose every file is parsed on each workspace load, so flagged
+# rows stored inline would make an ordinary load carry the engagement's whole
+# evidence base.  The dot prefix also keeps the directory outside the
+# collection's own ``*.json`` glob.
+_ANALYSIS_EVIDENCE_DIRNAME = "Analyses/.results"
 _MANIFEST_FIELDS = (
     "schema_version", "revision", "id", "name", "description", "created",
     "tables", "joins",
@@ -322,6 +329,14 @@ def _artifact_index_path(root: Path, collection: str) -> Path:
 
 def _artifact_object_path(root: Path, name: str) -> Path:
     return root / _ARTIFACT_OBJECTS[name]
+
+
+def analysis_evidence_path(root: Path, analysis_id: str) -> Path:
+    """Where one saved analysis' bounded exception rows are stored."""
+    analysis_id = str(analysis_id or "")
+    if not _ARTIFACT_ID_RE.fullmatch(analysis_id):
+        raise WorkspaceError("Invalid analyses artifact ID.")
+    return root / _ANALYSIS_EVIDENCE_DIRNAME / f"{analysis_id}.json"
 
 
 def _load_artifact_collection(root: Path, collection: str) -> list[dict]:
@@ -1383,6 +1398,7 @@ class Workspace:
                 # edit, a second press of Save) is not a change and must not
                 # discard a current result.
                 analysis.pop("last_result", None)
+                self._drop_analysis_evidence(analysis_id)
         if "viz" in changes and isinstance(changes["viz"], dict):
             analysis["viz"] = dict(changes["viz"])
         elif spec_changed and analysis["kind"] == "analytics":
@@ -1398,11 +1414,23 @@ class Workspace:
                 # policy invalidates the conclusion drawn under the old one.
                 analysis["outcome_policy"] = policy
                 analysis.pop("last_result", None)
+                self._drop_analysis_evidence(analysis_id)
         self.save()
         return analysis
 
+    def _drop_analysis_evidence(self, analysis_id: str) -> None:
+        """Discard the flagged rows a superseded result concluded about.
+
+        Exception evidence belongs to one exact execution of one exact
+        definition. Whenever the conclusion it supported is dropped — an edited
+        spec, a changed outcome policy, a deleted procedure — the rows go with
+        it, so nothing can later read evidence that no recorded result claims.
+        """
+        analysis_evidence_path(self.root, analysis_id).unlink(missing_ok=True)
+
     def remove_analysis(self, analysis_id: str) -> None:
         self.analyses.remove(self._analysis(analysis_id))
+        self._drop_analysis_evidence(analysis_id)
         self.save()
 
     # ---------------------------------------------------------------- rulesets

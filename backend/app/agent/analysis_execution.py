@@ -764,7 +764,8 @@ class AnalysisWorkflowExecution(BaseRunner):
             "analysis_execution", "workflow:analysis_execution", "Analysis results"
         )
         self.task_status(task, "running")
-        result = run_analysis(self.ws, analysis, run_id=self.run["id"])
+        executed = run_analysis(self.ws, analysis, run_id=self.run["id"])
+        result = executed.result
         expected = parent_hashes(self.ws, [analysis_ref(analysis_id)])
         target = AnalysisExecutionExecutorTarget(self.ws, self.run["id"], analysis_id)
         try:
@@ -772,7 +773,10 @@ class AnalysisWorkflowExecution(BaseRunner):
                 capability=capability,
                 unit=unit,
                 executor_id="analysis.execution",
-                proposal={"result": result},
+                # The flagged rows are part of the proposal, not a side effect
+                # of it: persisting them with the result is what lets a resumed
+                # commit restore the same evidence without re-running Polars.
+                proposal={"result": result, "evidence": executed.evidence},
                 target=target,
                 expected_parents=expected,
             )

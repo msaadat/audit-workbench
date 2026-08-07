@@ -1342,8 +1342,26 @@ export interface AnalysisLastResult {
   column_count: number
   stat_count: number
   stats: StatChip[]
+  /** How many rows the procedure flagged. `exception_rows_retained` of them
+   *  are readable back through the exceptions endpoint; the rest were capped. */
+  exception_count: number
+  exception_rows_retained: number
   input_sha1?: string
   result_sha1?: string
+}
+
+/**
+ * The rows a recorded result concluded about, read back without recomputing.
+ * `frame` is null when the procedure flagged nothing, or when the evidence no
+ * longer belongs to the result currently on the definition.
+ */
+export interface AnalysisExceptions {
+  analysis_id: string
+  exception_count: number
+  retained: number
+  run_id: string | null
+  executed_at: string | null
+  frame: FramePayload | null
 }
 
 /** True when a result was recorded by the auditor rather than by an agent run. */

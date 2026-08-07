@@ -737,6 +737,11 @@ def execute_analysis_run(request: ExecutorRequest, raw_target: object) -> Execut
     """
     target, result = _validated_execution(request, raw_target)
     state: dict[str, int] = {}
+    # The flagged rows travel in the proposal, so a resumed run commits the
+    # evidence its own execution produced rather than recomputing the frame.
+    raw_evidence = request.proposal.get("evidence")
+    evidence = dict(_plain_json(raw_evidence)) if isinstance(raw_evidence, Mapping) else None
+    writer = analysis_results.EvidenceWriter()
 
     def commit(fresh: Workspace) -> dict:
         state["revision_before"] = fresh.revision
@@ -747,13 +752,19 @@ def execute_analysis_run(request: ExecutorRequest, raw_target: object) -> Execut
         if analysis is None:
             raise WorkspaceError(f"Analysis '{target.analysis_id}' not found.")
         analysis["last_result"] = dict(result)
+        writer.stage(fresh, target.analysis_id, evidence)
         return analysis
 
-    committed = mutate(
-        target.workspace,
-        commit,
-        expected_parents=request.expected_parents,
-    )
+    try:
+        committed = mutate(
+            target.workspace,
+            commit,
+            expected_parents=request.expected_parents,
+        )
+    except Exception:
+        writer.rollback()
+        raise
+    writer.finish()
     target.workspace = committed.workspace
     return _execution_result(
         request,

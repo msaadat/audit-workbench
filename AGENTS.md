@@ -429,8 +429,10 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   `analysis.definitions_ready` → `analysis.executed`. It introduces no workspace
   collection — relationship evidence is run-durable, joins land in
   `workspace.joins`, definitions in `workspace.analyses`, and each execution
-  records a bounded `last_result` (shape, verdict, and the analytics service's
-  own statistics) rather than result data. Relationship facts are never
+  records a bounded `last_result` (shape, verdict, the analytics service's own
+  statistics, and the count of rows it flagged) rather than result data. The
+  flagged rows themselves are the one exception, and they live in an evidence
+  sidecar, not on the definition — see §4. Relationship facts are never
   model-generated: they come from the deterministic diagnostics in
   `agent/joins.py`, and a join is applied automatically only on a single strong
   candidate. Requests such as "perform relevant joins and data analysis" and the
@@ -572,9 +574,23 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   auditor's Run (`POST /analyses/{id}/execute`) and the workflow's
   `analysis.executed` capability. A live recomputation is a *preview* and never
   the procedure's status.
+- Spec-not-data has exactly one exception: the rows a procedure *flagged*. A
+  conclusion of "2 rows are duplicated" is not reviewable until an auditor can
+  see which two, so every execution retains up to
+  `analysis_results.EXCEPTION_ROWS` of the analytics test's `detail` frame. They
+  are stored under `Analyses/.results/<id>.json`, never on the definition —
+  `Analyses/*.json` is an artifact collection whose every file is parsed on each
+  workspace load. Both commit paths write them through
+  `analysis_results.EvidenceWriter` as a journalled linked write, so the rows and
+  the result they support share one revision. Evidence is stamped with its
+  `result_sha1` and is discarded whenever the conclusion it supported is: an
+  edited spec, a changed outcome policy, a deleted procedure, or a rerun that
+  flags nothing. `GET /analyses/{id}/exceptions` reads it back without
+  recomputing; the Data Test `exception_frame` is the precedent it follows.
 - Listing analyses executes nothing. `GET /analyses` returns definitions and
   recorded outcomes; recomputation happens only where it was asked for — one
-  procedure (`GET /analyses/{id}`), an execution, or an export.
+  procedure (`GET /analyses/{id}`), an execution, or an export. Reading flagged
+  rows executes nothing either — it is a file read.
 - The assistant and agent do not use arbitrary tool loops inside `agent/`.
   Worker calls are single-turn, bounded, and budgeted through `BaseRunner`.
 - Existing uncommitted workspace or code changes may be user-owned. Do not

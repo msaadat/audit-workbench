@@ -4,7 +4,12 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
 import { api } from '../../api'
-import type { AnalysisDetail, SavedAnalysis, WorkspaceSummary } from '../../types'
+import type {
+  AnalysisDetail,
+  AnalysisExceptions,
+  SavedAnalysis,
+  WorkspaceSummary,
+} from '../../types'
 import ChartView from '../ChartView.vue'
 import FrameTable from '../FrameTable.vue'
 import UiEmptyState from '../ui/UiEmptyState.vue'
@@ -55,11 +60,48 @@ async function loadDetails(ids: string[]) {
   failed.value = nextFailed
 }
 
+// An exception card states a recorded conclusion, so it shows the rows that
+// conclusion was drawn from — read back from the run's evidence, not recomputed.
+// A recompute would cost a Polars run per card and could return rows that
+// disagree with the verdict printed directly above them.
+const flagged = ref<Record<string, AnalysisExceptions>>({})
+const flaggedFailed = ref<Set<string>>(new Set())
+
+async function loadFlagged(ids: string[]) {
+  const missing = ids.filter(id => !(id in flagged.value) && !flaggedFailed.value.has(id))
+  if (!missing.length) return
+  const fetched = await Promise.all(
+    missing.map(id =>
+      api.get<AnalysisExceptions>(`/api/workspaces/${props.workspace.id}/analyses/${id}/exceptions`)
+        .then(rows => ({ id, rows }))
+        .catch(() => ({ id, rows: null })),
+    ),
+  )
+  const next = { ...flagged.value }
+  const nextFailed = new Set(flaggedFailed.value)
+  for (const entry of fetched) {
+    if (entry.rows) next[entry.id] = entry.rows
+    else nextFailed.add(entry.id)
+  }
+  flagged.value = next
+  flaggedFailed.value = nextFailed
+}
+
 watch(
-  () => [...chartCandidates.value.map(item => item.id), ...exceptions.value.map(item => item.id)],
+  () => chartCandidates.value.map(item => item.id),
   ids => void loadDetails(ids),
   { immediate: true },
 )
+watch(
+  () => exceptions.value.map(item => item.id),
+  ids => void loadFlagged(ids),
+  { immediate: true },
+)
+
+function truncated(id: string): boolean {
+  const rows = flagged.value[id]
+  return Boolean(rows && rows.exception_count > rows.retained)
+}
 </script>
 
 <template>
@@ -108,13 +150,28 @@ watch(
             <Button label="Open procedure" icon="pi pi-arrow-right" iconPos="right" text size="small" @click="emit('open', item.id)" />
           </header>
           <p class="exception-text">{{ item.last_result?.error || item.last_result?.verdict_text }}</p>
-          <FrameTable
-            v-if="details[item.id]?.frame"
-            :frame="details[item.id]!.frame!"
-            scrollHeight="220px"
-          />
-          <div v-else-if="failed.has(item.id)" class="chart-card-error">
-            <i class="pi pi-exclamation-triangle" /> Could not recompute the flagged rows
+          <template v-if="flagged[item.id]">
+            <!-- The verdict names the condition that failed; the table holds
+                 every row the procedure flagged, which can be a larger set —
+                 a date-lag test fails on backdating but also flags rows over
+                 its day limit. Captioning the table keeps the two counts from
+                 reading as a contradiction. -->
+            <p v-if="flagged[item.id]!.frame" class="muted exception-note">
+              {{ flagged[item.id]!.exception_count.toLocaleString() }} flagged row(s)<span
+                v-if="truncated(item.id)"
+              > — showing the first {{ flagged[item.id]!.retained }}, export for all</span>
+            </p>
+            <FrameTable
+              v-if="flagged[item.id]!.frame"
+              :frame="flagged[item.id]!.frame!"
+              scrollHeight="220px"
+            />
+            <p v-else class="muted exception-note">
+              This result recorded no flagged rows. Re-run the procedure to capture them.
+            </p>
+          </template>
+          <div v-else-if="flaggedFailed.has(item.id)" class="chart-card-error">
+            <i class="pi pi-exclamation-triangle" /> Could not read the flagged rows
           </div>
           <div v-else class="chart-card-loading"><i class="pi pi-spin pi-spinner" /></div>
         </article>
@@ -179,4 +236,5 @@ watch(
 }
 .exception-head { display: flex; align-items: center; justify-content: space-between; gap: var(--aw-space-3); flex-wrap: wrap; }
 .exception-text { margin: 0.35rem 0 0.6rem; font-size: var(--aw-text-sm); }
+.exception-note { margin: 0 0 0.5rem; font-size: var(--aw-text-xs); }
 </style>

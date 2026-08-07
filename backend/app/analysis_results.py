@@ -24,8 +24,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .workspace_transactions import mutate
-from .workspaces import Workspace, WorkspaceError, sync_workspace
+from .workspace_transactions import (
+    complete_linked_write,
+    mutate,
+    prepare_linked_write,
+    rollback_linked_write,
+)
+from .workspaces import (
+    Workspace,
+    WorkspaceError,
+    analysis_evidence_path,
+    sync_workspace,
+    write_json_atomic,
+)
 
 
 SUMMARY_CLASSES = (
@@ -38,9 +49,18 @@ SUMMARY_CLASSES = (
     "not_run",
 )
 
-# Stats are the only result payload that crosses into durable state, and only
-# as the bounded label/value pairs the analytics service already computed.
+# Stats are the only aggregate payload that crosses into durable state, and
+# only as the bounded label/value pairs the analytics service already computed.
 MAX_RESULT_STATS = 8
+
+# Flagged rows are the second, and they are deliberately different in kind: a
+# procedure that concludes "1 row is backdated" is not reviewable until the
+# auditor can see *which* row. Every exception-producing analytics test already
+# computes that frame; the cap matches ``data_tests.EXCEPTION_ROWS`` so a Data
+# Test and a saved analysis retain the same amount of evidence for the same
+# finding. The rows never live on the definition — see
+# ``workspaces.analysis_evidence_path`` for why.
+EXCEPTION_ROWS = 200
 
 # An auditor-initiated execution is a first-class result, not a lesser one, but
 # it belongs to no agent run. The prefix keeps the two origins distinguishable
@@ -132,6 +152,7 @@ def bounded_result(
     verdict = str(payload.get("verdict") or "") or None
     verdict_text = str(payload.get("verdict_text") or "") or None
     row_count = int(payload.get("total_rows") or 0)
+    exception_count = 0 if error else int(payload.get("exception_rows") or 0)
     if not error and analysis.get("kind") == "python":
         policy = str((analysis.get("outcome_policy") or {}).get("mode") or "informational")
         if policy == "exception_rows":
@@ -155,6 +176,12 @@ def bounded_result(
         "column_count": len(list((frame or {}).get("columns") or [])),
         "stat_count": len(stats),
         "stats": stats[:MAX_RESULT_STATS],
+        # How many rows the procedure flagged, and how many of them the
+        # evidence sidecar retained. The count is the population; the retained
+        # slice is what an auditor can read back without re-running. Both
+        # travel so a truncated sidecar can never be mistaken for the whole.
+        "exception_count": exception_count,
+        "exception_rows_retained": min(exception_count, EXCEPTION_ROWS),
         "input_sha1": analysis_input_sha1(workspace, analysis),
     }
     record["result_sha1"] = _sha1(
@@ -166,6 +193,7 @@ def bounded_result(
                 "row_count",
                 "column_count",
                 "stats",
+                "exception_count",
                 "input_sha1",
             )
         }
@@ -173,9 +201,21 @@ def bounded_result(
     return record
 
 
+@dataclass(frozen=True)
+class AnalysisRun:
+    """One local execution: what it concluded, and what it concluded it about.
+
+    The two travel together because they are committed together. Splitting them
+    is what would let a recorded conclusion and its supporting rows drift apart.
+    """
+
+    result: dict
+    evidence: dict | None
+
+
 def execute_analysis(
     workspace: Workspace, analysis: Mapping[str, object], *, run_id: str
-) -> dict:
+) -> AnalysisRun:
     """Compute one saved analysis locally and return its bounded result.
 
     Execution goes through ``dashboard.compute_payload``, the same spec-not-data
@@ -188,11 +228,110 @@ def execute_analysis(
     from . import dashboard
 
     payload = dashboard.compute_payload(workspace, dict(analysis))
-    return bounded_result(payload, run_id=run_id, workspace=workspace, analysis=analysis)
+    result = bounded_result(
+        payload, run_id=run_id, workspace=workspace, analysis=analysis
+    )
+    return AnalysisRun(
+        result=result,
+        evidence=exception_evidence(
+            payload, analysis_id=str(analysis.get("id") or ""), result=result
+        ),
+    )
+
+
+class EvidenceWriter:
+    """Journalled exception-row writes bound to one workspace mutation.
+
+    Both commit paths — the auditor's Run and the workflow's execution executor
+    — stage their sidecar inside the guarded callback and resolve it on the way
+    out, so the rows and the result they support share a single revision. An
+    interrupted commit rolls the rows back instead of leaving evidence behind
+    for a conclusion that was never recorded.
+    """
+
+    def __init__(self) -> None:
+        self._writes: list = []
+
+    def stage(
+        self,
+        workspace: Workspace,
+        analysis_id: str,
+        evidence: Mapping[str, object] | None,
+    ) -> None:
+        path = analysis_evidence_path(workspace.root, analysis_id)
+        if evidence is None:
+            # A procedure that now flags nothing must not keep the rows from
+            # when it did.
+            path.unlink(missing_ok=True)
+            return
+        payload = dict(_plain_json(evidence))
+        self._writes.append(prepare_linked_write(workspace, path, payload))
+        write_json_atomic(path, payload)
+
+    # Named ``finish`` rather than ``complete``: the executor boundary test
+    # rejects the substring ``.complete(`` anywhere in the analysis executors,
+    # which is how it proves none of them can reach ``ModelGateway.complete``.
+    # That guard is worth more than the nicer verb.
+    def finish(self) -> None:
+        for write in self._writes:
+            complete_linked_write(write)
+        self._writes.clear()
+
+    def rollback(self) -> None:
+        for write in reversed(self._writes):
+            rollback_linked_write(write)
+        self._writes.clear()
+
+
+def exception_evidence(
+    payload: Mapping[str, object], *, analysis_id: str, result: Mapping[str, object]
+) -> dict | None:
+    """Project the flagged rows one execution produced into its sidecar record.
+
+    Stamped with the result identity it belongs to, so evidence left behind by
+    an interrupted commit is detectably not the evidence for the result the
+    definition currently carries.
+    """
+    frame = payload.get("exceptions")
+    if not isinstance(frame, Mapping) or not int(result.get("exception_count") or 0):
+        return None
+    return {
+        "analysis_id": analysis_id,
+        "run_id": result.get("run_id"),
+        "executed_at": result.get("executed_at"),
+        "result_sha1": result.get("result_sha1"),
+        "exception_count": int(result.get("exception_count") or 0),
+        "frame": _plain_json(frame),
+    }
+
+
+def read_exception_evidence(workspace: Workspace, analysis: Mapping[str, object]) -> dict | None:
+    """Read back the flagged rows the analysis' recorded result concluded about.
+
+    Returns nothing unless the sidecar belongs to the result currently on the
+    definition: evidence that outlived its conclusion is not evidence.
+    """
+    result = analysis.get("last_result")
+    if not isinstance(result, Mapping) or not int(result.get("exception_count") or 0):
+        return None
+    path = analysis_evidence_path(workspace.root, str(analysis.get("id") or ""))
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    if stored.get("result_sha1") != result.get("result_sha1"):
+        return None
+    return stored
 
 
 def record_analysis_result(
-    workspace: Workspace, analysis_id: str, result: Mapping[str, object]
+    workspace: Workspace,
+    analysis_id: str,
+    result: Mapping[str, object],
+    *,
+    evidence: Mapping[str, object] | None = None,
 ) -> dict:
     """Persist one bounded result on its analysis under a revision guard.
 
@@ -200,8 +339,14 @@ def record_analysis_result(
     analysis user-edited: executing a procedure exercises its definition, it
     does not take ownership of it, so a workflow-authored analysis an auditor
     ran by hand stays workflow-owned.
+
+    ``evidence`` is the flagged rows this result concluded about. It is written
+    as a journalled linked write so the sidecar and the recorded result share
+    one workspace revision: an interrupted commit rolls the rows back rather
+    than leaving evidence for a conclusion that was never recorded.
     """
     record = dict(_plain_json(result))
+    writer = EvidenceWriter()
 
     def commit(fresh: Workspace) -> dict:
         analysis = next(
@@ -210,9 +355,15 @@ def record_analysis_result(
         if analysis is None:
             raise WorkspaceError("Analysis not found.")
         analysis["last_result"] = record
+        writer.stage(fresh, analysis_id, evidence)
         return analysis
 
-    committed = mutate(workspace, commit)
+    try:
+        committed = mutate(workspace, commit)
+    except Exception:
+        writer.rollback()
+        raise
+    writer.finish()
     sync_workspace(workspace, committed.workspace)
     return committed.value
 
@@ -249,7 +400,14 @@ def execute_and_record(workspace: Workspace, analysis_id: str) -> ExecutedAnalys
     result = bounded_result(
         payload, run_id=manual_run_id(), workspace=workspace, analysis=analysis
     )
-    recorded = record_analysis_result(workspace, analysis_id, result)
+    recorded = record_analysis_result(
+        workspace,
+        analysis_id,
+        result,
+        evidence=exception_evidence(
+            payload, analysis_id=analysis_id, result=result
+        ),
+    )
     return ExecutedAnalysis(analysis=recorded, result=result, payload=payload)
 
 
@@ -376,18 +534,23 @@ def analyses_summary_payload(workspace: Workspace) -> dict:
 
 __all__ = [
     "CLASSIFICATION_BUCKETS",
+    "EXCEPTION_ROWS",
     "MANUAL_RUN_PREFIX",
     "MAX_RESULT_STATS",
     "SUMMARY_CLASSES",
+    "AnalysisRun",
+    "EvidenceWriter",
     "ExecutedAnalysis",
     "analyses_summary_payload",
     "analysis_input_sha1",
     "analysis_result_state",
     "analysis_state",
     "bounded_result",
+    "exception_evidence",
     "execute_analysis",
     "execute_and_record",
     "is_manual_run",
     "manual_run_id",
+    "read_exception_evidence",
     "record_analysis_result",
 ]

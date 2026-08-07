@@ -16,7 +16,7 @@ import json
 import polars as pl
 import pytest
 
-from app import analytics, dashboard, llm, workspaces
+from app import analysis_results, analytics, dashboard, llm, workspaces
 from app.agent import narration, runner, store, workflow
 from app.agent import capabilities as capability_registries
 from app.agent import joins as join_diagnostics
@@ -1072,6 +1072,8 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
     assert result["row_count"] >= 1
     assert result["result_sha1"]
     # Only the bounded contract is durable: no frame, no rows, no stdout.
+    # ``exception_count`` and ``exception_rows_retained`` are counts, not data —
+    # the flagged rows themselves live in the evidence sidecar, never here.
     assert set(result) == {
         "run_id",
         "executed_at",
@@ -1083,6 +1085,8 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
         "column_count",
         "stat_count",
         "stats",
+        "exception_count",
+        "exception_rows_retained",
         "input_sha1",
         "result_sha1",
     }
@@ -1090,6 +1094,15 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
     assert "1001" not in json.dumps(result)
     # The definition itself is still a spec that recomputes on demand.
     assert dashboard.compute_payload(fresh, duplicates)["error"] is None
+
+    # The workflow writes the rows it flagged to the same evidence sidecar the
+    # auditor's Run button writes, under the same result identity — so a
+    # procedure is equally reviewable whichever origin executed it.
+    evidence = analysis_results.read_exception_evidence(fresh, duplicates)
+    assert (evidence is not None) == bool(result["exception_count"])
+    if evidence is not None:
+        assert evidence["result_sha1"] == result["result_sha1"]
+        assert len(evidence["frame"]["rows"]) == result["exception_rows_retained"]
 
 
 def test_a_broken_definition_is_rejected_before_it_is_saved(

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -285,10 +287,16 @@ def test_python_exception_policy_turns_nonempty_result_into_a_review_signal(work
             "outcome_policy": {"mode": "exception_rows"},
         }
     )
-    result = run_analysis(ws, analysis, run_id="run-summary")
+    executed = run_analysis(ws, analysis, run_id="run-summary")
+    result = executed.result
     assert result["verdict"] == "warn"
     assert result["verdict_text"] == "2 potential exception row(s) returned."
     assert result["input_sha1"] == analysis_input_sha1(ws, analysis)
+    # An exception_rows policy makes the returned rows the flagged rows, so the
+    # execution carries evidence a reviewer can read back.
+    assert result["exception_count"] == 2
+    assert executed.evidence is not None
+    assert len(executed.evidence["frame"]["rows"]) == 2
 
 
 def test_broken_analysis_degrades_to_error(workspace_with_data):
@@ -325,12 +333,11 @@ def test_listing_describes_analyses_without_executing_them(workspace_with_data):
 def test_listing_reports_the_recorded_outcome(workspace_with_data):
     ws = workspace_with_data
     analysis = _library_analysis(ws)
+    executed = analysis_results.execute_analysis(
+        ws, analysis, run_id=analysis_results.manual_run_id()
+    )
     analysis_results.record_analysis_result(
-        ws,
-        analysis["id"],
-        analysis_results.execute_analysis(
-            ws, analysis, run_id=analysis_results.manual_run_id()
-        ),
+        ws, analysis["id"], executed.result, evidence=executed.evidence
     )
 
     listed = analyses_payload(workspaces.load_workspace(ws.id))["analyses"][0]
@@ -398,10 +405,12 @@ def test_execute_endpoint_records_the_same_contract_as_a_workflow_run(
     stored = fresh.analyses[0]["last_result"]
     assert stored["result_sha1"] == body["last_result"]["result_sha1"]
     assert stored["input_sha1"] == analysis_input_sha1(fresh, fresh.analyses[0])
-    # No result rows crossed into durable state.
+    # The durable record is the bounded contract and nothing else: result rows
+    # live in the evidence sidecar, never on the definition.
     assert set(stored) == set(
-        run_analysis(fresh, fresh.analyses[0], run_id="run-1")
+        run_analysis(fresh, fresh.analyses[0], run_id="run-1").result
     )
+    assert "frame" not in stored and "exceptions" not in stored
     assert analyses_summary_payload(fresh)["counts"]["not_run"] == 0
 
 
@@ -544,3 +553,154 @@ def test_pin_analysis_from_summary_creates_dashboard_tile(workspace_with_data):
     assert fresh.tiles[0]["analysis_id"] == analysis["id"]
     assert fresh.tiles[0]["result_ref"] == f"analysis:{analysis['id']}:run-pin"
     assert response.json()["error"] is None
+
+
+# --------------------------------------------------------- exception evidence
+# A procedure that concludes "2 rows are duplicated" is not reviewable until an
+# auditor can see *which* rows. Every exception-producing analytics test already
+# computes that frame; these cover it reaching durable state, staying bounded,
+# staying attached to the exact result it supports, and being discarded with it.
+def _evidence_file(ws, analysis_id):
+    return workspaces.analysis_evidence_path(ws.root, analysis_id)
+
+
+def test_execution_records_the_rows_it_flagged(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+
+    executed = analysis_results.execute_and_record(ws, analysis["id"])
+
+    # invoice_no 1006 appears twice in the fixture.
+    assert executed.result["exception_count"] == 2
+    assert executed.result["exception_rows_retained"] == 2
+    stored = json.loads(_evidence_file(ws, analysis["id"]).read_text(encoding="utf-8"))
+    assert stored["result_sha1"] == executed.result["result_sha1"]
+    flagged = stored["frame"]
+    invoices = [
+        row[flagged["columns"].index("invoice_no")] for row in flagged["rows"]
+    ]
+    assert invoices == [1006, 1006]
+
+    # The definition itself never carries rows.
+    fresh = workspaces.load_workspace(ws.id)
+    definition = fresh.analyses[0]
+    assert "frame" not in json.dumps(definition["last_result"])
+    assert "1006" not in json.dumps(definition["last_result"])
+
+
+def test_a_procedure_that_flags_nothing_stores_no_evidence(workspace_with_data):
+    ws = workspace_with_data
+    clean = ws.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Amounts are populated",
+            "spec": {"test": "completeness", "params": {"columns": ["amount"]}},
+        }
+    )
+
+    executed = analysis_results.execute_and_record(ws, clean["id"])
+
+    assert executed.result["exception_count"] == 0
+    assert not _evidence_file(ws, clean["id"]).exists()
+    assert analysis_results.read_exception_evidence(ws, ws.analyses[0]) is None
+
+
+def test_a_rerun_that_clears_the_exception_discards_its_evidence(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis_results.execute_and_record(ws, analysis["id"])
+    assert _evidence_file(ws, analysis["id"]).exists()
+
+    # The same definition, re-recorded with a result that flags nothing.
+    clean = dict(analysis["last_result"])
+    clean["exception_count"] = 0
+    analysis_results.record_analysis_result(ws, analysis["id"], clean, evidence=None)
+
+    assert not _evidence_file(ws, analysis["id"]).exists()
+
+
+def test_evidence_from_a_superseded_result_is_not_read_back(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis_results.execute_and_record(ws, analysis["id"])
+    path = _evidence_file(ws, analysis["id"])
+
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    stored["result_sha1"] = "a-conclusion-that-is-no-longer-on-the-definition"
+    path.write_text(json.dumps(stored), encoding="utf-8")
+
+    fresh = workspaces.load_workspace(ws.id)
+    assert analysis_results.read_exception_evidence(fresh, fresh.analyses[0]) is None
+
+
+def test_editing_the_definition_discards_the_rows_it_flagged(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis_results.execute_and_record(ws, analysis["id"])
+    assert _evidence_file(ws, analysis["id"]).exists()
+
+    ws.update_analysis(
+        analysis["id"],
+        {"spec": {"test": "duplicates", "params": {"columns": ["cust_id"]}}},
+    )
+
+    # The conclusion went; so did the evidence that supported it.
+    assert ws.analyses[0].get("last_result") is None
+    assert not _evidence_file(ws, analysis["id"]).exists()
+
+
+def test_removing_an_analysis_discards_the_rows_it_flagged(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis_results.execute_and_record(ws, analysis["id"])
+    path = _evidence_file(ws, analysis["id"])
+    assert path.exists()
+
+    ws.remove_analysis(analysis["id"])
+
+    assert not path.exists()
+
+
+def test_retained_rows_are_capped_and_the_cap_is_reported(
+    workspace_with_data, monkeypatch
+):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    monkeypatch.setattr(analysis_results, "EXCEPTION_ROWS", 1)
+
+    executed = analysis_results.execute_and_record(ws, analysis["id"])
+
+    # The count is the population; the retained slice is what was kept. A
+    # truncated sidecar must never read as the whole set.
+    assert executed.result["exception_count"] == 2
+    assert executed.result["exception_rows_retained"] == 1
+    stored = json.loads(_evidence_file(ws, analysis["id"]).read_text(encoding="utf-8"))
+    assert len(stored["frame"]["rows"]) == 1
+
+
+def test_exceptions_endpoint_reads_the_record_without_recomputing(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _library_analysis(ws)
+    analysis_results.execute_and_record(ws, analysis["id"])
+    client = TestClient(create_app())
+
+    # Remove the frame the spec needs. A recompute is now impossible, which is
+    # exactly what proves this endpoint is a read of what was recorded.
+    workspaces.load_workspace(ws.id).remove_table("transactions")
+
+    response = client.get(
+        f"/api/workspaces/{ws.id}/analyses/{analysis['id']}/exceptions"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["exception_count"] == 2
+    assert body["retained"] == 2
+    assert body["run_id"].startswith(analysis_results.MANUAL_RUN_PREFIX)
+    assert len(body["frame"]["rows"]) == 2
+
+    # The detail endpoint, by contrast, has to recompute and now cannot.
+    assert client.get(
+        f"/api/workspaces/{ws.id}/analyses/{analysis['id']}"
+    ).json()["error"] is not None

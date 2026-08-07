@@ -58,6 +58,8 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
         key: item.get(key)
         for key in ("id", "title", "kind", "table", "note", "viz", "created", "source", "spec")
     }
+    payload["exceptions"] = None
+    payload["exception_rows"] = 0
     try:
         if item["kind"] == "python":
             code = (item.get("spec") or {}).get("code") or ""
@@ -66,6 +68,16 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
             payload["stdout"] = stdout or None
             payload["total_rows"] = result.height
             payload["frame"] = explore.frame_payload(result, _cap_for(payload["viz"]))
+            # A python analysis has no detail frame of its own: its declared
+            # outcome policy is what says whether the rows it returned are
+            # exceptions, the same policy ``bounded_result`` reads for the
+            # verdict. Under any other policy the rows are a result, not a
+            # finding, and this payload carries no exceptions at all.
+            if str((item.get("outcome_policy") or {}).get("mode") or "") == "exception_rows":
+                payload["exceptions"] = explore.frame_payload(
+                    result, analysis_results.EXCEPTION_ROWS
+                )
+                payload["exception_rows"] = result.height
             payload["error"] = None
             return payload
 
@@ -129,6 +141,16 @@ def compute_payload(workspace: Workspace, item: dict) -> dict:
                 payload["frame"] = explore.frame_payload(source, _cap_for(payload["viz"]))
             else:
                 payload["frame"] = None
+            # ``frame`` is what the test concluded — the aggregate a chart is
+            # drawn from. ``detail`` is which rows it concluded it about, and
+            # every exception-producing test computes one. Collapsing the two
+            # into a single frame is what previously left an auditor reading
+            # "1 row is backdated" with no way to learn which invoice.
+            if result.detail is not None:
+                payload["exceptions"] = explore.frame_payload(
+                    result.detail, analysis_results.EXCEPTION_ROWS
+                )
+                payload["exception_rows"] = result.detail.height
         payload["error"] = None
     except Exception as error:
         payload["error"] = str(error)
