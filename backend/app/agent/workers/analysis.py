@@ -940,11 +940,28 @@ can follow up. State the population before the exceptions. Distinguish what the
 data establishes from what it merely suggests, and say plainly where a
 conclusion cannot yet be drawn.
 
+You are shown the flagged rows of many procedures at once, so you will notice
+things no single procedure tested — the same vendor across two exception sets,
+a value that recurs, a pattern spanning frames. Say so, but never as an
+established fact: no procedure computed it, and a handful of supplied rows is
+not the population. Write it as what it is — an observation to confirm — and
+say what would confirm it. Never state a count, a proportion, or "all" or
+"none" about a pattern no supplied result actually measured.
+
 "Further work required" must cover every outstanding, stale, and errored
 procedure named in the supplied coverage gaps, every frame carrying no
 procedure, and the judgment items the results themselves raise — corroboration
 a data test cannot supply, populations needing a different cut, controls the
 data cannot see. Do not invent work the supplied material does not support.
+
+Where the outstanding work is a procedure this workspace could run, specify it
+so the reader can write it without re-deriving your reasoning: name the frame
+or the tables to join, the columns, and the comparison. "Join requisitions to
+financial_approval_matrix through the approver's job title and test
+ESTIMATED_TOTAL_COST against MAX_APPROVAL_AMOUNT" is a usable instruction;
+"perform further approval testing" is not. Where the work is corroboration
+outside the data — a document, a person, a system behaviour — say what evidence
+is wanted and from whom.
 
 To place a result in the memo, emit a fenced block on its own lines:
 ```{EMBED_FENCE}
