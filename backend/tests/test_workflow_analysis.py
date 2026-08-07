@@ -1547,3 +1547,55 @@ def test_the_join_stage_builds_a_chain_its_first_wave_could_not_name(monkeypatch
     assert frame.height == 6, "a chain must not multiply the fact rows"
     over = frame.filter(pl.col("amount") > pl.col("credit_limit"))
     assert over.height == 3
+
+
+def _role_tie_workspace() -> workspaces.Workspace:
+    """One table reaching a person dimension through two equally-perfect roles."""
+    ws = workspaces.create_workspace("Role tie")
+    requisitions = pl.DataFrame(
+        {
+            "requisition_id": [f"R{index}" for index in range(1, 7)],
+            "requested_by_id": ["S1", "S2", "S3", "S1", "S2", "S3"],
+            "approved_by_id": ["S3", "S3", "S1", "S2", "S1", "S2"],
+            "amount": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+        }
+    )
+    staff = pl.DataFrame(
+        {"staff_id": ["S1", "S2", "S3"], "job_title": ["CFO", "Head", "Analyst"]}
+    )
+    ws.add_table("requisitions.csv", requisitions.write_csv().encode())
+    ws.add_table("staff.csv", staff.write_csv().encode())
+    return ws
+
+
+def test_auto_mode_applies_a_tied_role_join_and_names_what_it_passed_over(monkeypatch):
+    """Auto mode is unattended: leaving the pair unjoined would delete the frame
+    every downstream analysis needs, so it proceeds — and says what it chose
+    between, because the two roles do not mean the same thing."""
+    ws = _role_tie_workspace()
+    _fake_model(monkeypatch)
+    run = _analysis_run(ws, text="join these tables and analyse them")
+
+    _drive(ws, run, "data.relationships_inferred")
+    record = run["analysis"]["relationships"][0]
+    assert len(record["strong"]) == 2, "both roles should diagnose identically"
+    assert not join_diagnostics.decisive(record["strong"])
+
+    _drive(ws, run, "data.joins_ready")
+    unit = _stage(run, "data.joins_ready")["units"][0]
+    assert unit["status"] == "succeeded"
+
+    fresh = workspaces.load_workspace(ws.id)
+    assert len(fresh.joins) == 1
+    assert fresh.joins[0]["right_on"] == ["staff_id"]
+    assert fresh.joins[0]["left_on"][0] in {"approved_by_id", "requested_by_id"}
+
+    applied = fresh.joins[0]["left_on"][0]
+    passed_over = (
+        "requested_by_id" if applied == "approved_by_id" else "approved_by_id"
+    )
+    assert any(
+        "related by more than one key with identical evidence" in warning
+        and passed_over in warning
+        for warning in run["warnings"]
+    ), "the road not taken has to be visible in the run"

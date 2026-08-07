@@ -449,13 +449,11 @@ class AnalysisWorkflowExecution(BaseRunner):
         if len(strong) == 1:
             candidate = strong[0]
         elif self.run.get("mode") == "permission":
+            # Only permission mode stops to ask. Auto mode is an unattended
+            # run: leaving a pair unjoined there does not protect anyone, it
+            # just removes the frame every downstream analysis needed.
             candidate = self._approve_join(task, left, right, joinable)
-        elif join_diagnostics.decisive(joinable):
-            # Auto mode applies the best candidate only when the evidence
-            # actually names one. Several keys that diagnose identically — a
-            # table reaching the same person dimension as requester and as
-            # approver — are a question, not a ranking, and the answer changes
-            # what every downstream test measures.
+        elif ranked:
             candidate = ranked[0]
             diagnostics = candidate["diagnostics"]
             self.warn(
@@ -466,15 +464,29 @@ class AnalysisWorkflowExecution(BaseRunner):
                 f"{diagnostics['match_rate']:.0%} match rate, "
                 f"row multiplication {diagnostics['row_multiplication']})."
             )
+            if not join_diagnostics.decisive(joinable):
+                # Several keys diagnose identically — a table reaching the same
+                # person dimension as requester and as approver. Rank order
+                # picks one, but the choice decides what every analysis on this
+                # frame measures, so the alternatives are named rather than
+                # silently discarded.
+                alternatives = ", ".join(
+                    f"{item['left_on'][0]} → {item['right_on'][0]}"
+                    for item in ranked[1:]
+                    if join_diagnostics.evidence_rank(item)
+                    == join_diagnostics.evidence_rank(candidate)
+                )
+                self.warn(
+                    f"'{left}' and '{right}' are related by more than one key with "
+                    f"identical evidence; {alternatives} would each give a "
+                    "different frame and were not materialized. Review the applied "
+                    "relationship before relying on analyses built on it."
+                )
         if candidate is None:
             reported = ranked
-            keys = ", ".join(
-                f"{item['left_on'][0]} → {item['right_on'][0]}" for item in reported
-            )
             self.warn(
-                f"{len(reported)} join candidate(s) for '{left}' and '{right}' are "
-                f"equally well evidenced ({keys}); none was applied. Confirm which "
-                "relationship to materialize."
+                f"{len(reported)} join candidate(s) for '{left}' and '{right}' need "
+                "confirmation; none was applied."
             )
             self.task_status(task, "skipped")
             return DeterministicUnitResult(

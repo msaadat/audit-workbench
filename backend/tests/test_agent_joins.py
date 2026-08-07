@@ -1,6 +1,7 @@
 import polars as pl
 import pytest
 
+from app import workspaces
 from app.agent import joins
 
 
@@ -278,3 +279,67 @@ def test_existing_join_not_reproposed(workspace_with_data):
         != ("transactions", "customers", ["cust_id"], ["id"])
         for c in candidates
     )
+
+
+def test_a_second_hop_does_not_collide_with_the_first_hop_s_suffix():
+    """Both sides of the first join carry ``vendor_id``, so the joined frame
+    already holds ``vendor_id_right``. A second hop onto a third frame that
+    also carries ``vendor_id`` must not ask Polars for that name again — the
+    real shape of invoice ⨝ PO ⨝ requisitions, which failed outright.
+    """
+    ws = workspaces.create_workspace("Second hop suffix")
+    for name, extra in (("invoices", "amount"), ("orders", "total"), ("reqs", "est")):
+        frame = pl.DataFrame(
+            {
+                "po": ["P1", "P2", "P3"],
+                "vendor_id": ["V1", "V2", "V3"],
+                extra: [1.0, 2.0, 3.0],
+            }
+        )
+        ws.add_table(f"{name}.csv", frame.write_csv().encode())
+
+    ws.add_join(
+        {
+            "name": "invoices_orders",
+            "left": "invoices",
+            "right": "orders",
+            "how": "left",
+            "left_on": ["po"],
+            "right_on": ["po"],
+        }
+    )
+    first = workspaces.load_workspace(ws.id).get_frame("invoices_orders")
+    assert "vendor_id_right" in first.columns
+
+    # add_join executes the join before persisting, so a collision raises here
+    # rather than leaving a broken derived table behind.
+    ws = workspaces.load_workspace(ws.id)
+    ws.add_join(
+        {
+            "name": "invoices_orders_reqs",
+            "left": "invoices_orders",
+            "right": "reqs",
+            "how": "left",
+            "left_on": ["po"],
+            "right_on": ["po"],
+        }
+    )
+    second = workspaces.load_workspace(ws.id).get_frame("invoices_orders_reqs")
+    assert len(set(second.columns)) == len(second.columns)
+    assert second.height == first.height
+    assert "vendor_id_reqs" in second.columns
+
+    origins = joins.column_origins(workspaces.load_workspace(ws.id), "invoices_orders_reqs")
+    assert origins["vendor_id"] == "invoices"
+    assert origins["vendor_id_right"] == "orders"
+    assert origins["vendor_id_reqs"] == "reqs"
+
+
+def test_join_suffix_keeps_the_default_until_it_actually_collides():
+    assert workspaces.join_suffix(["a", "b"], ["c"], [], "other") == "_right"
+    # A collision on ``a`` with no existing ``a_right``: the default still works.
+    assert workspaces.join_suffix(["a", "b"], ["a"], [], "other") == "_right"
+    # ``a_right`` is taken, so the suffix escalates to the right frame's name.
+    assert workspaces.join_suffix(["a", "a_right"], ["a"], [], "orders") == "_orders"
+    # A key column is coalesced away and so is never the collision.
+    assert workspaces.join_suffix(["a", "a_right"], ["a"], ["a"], "orders") == "_right"

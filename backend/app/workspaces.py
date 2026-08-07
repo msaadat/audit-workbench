@@ -41,41 +41,10 @@ from .field_names import resolve_columns
 SCHEMA_VERSION = 4
 JOIN_TYPES = ("inner", "left", "full", "semi", "anti", "cross")
 
-# The one status vocabulary shared by Document Tests and Data Tests. ``draft`` is
-# a test whose plan exists but whose executable spec has not been written yet;
-# ``completed`` is what a runner writes when every item is settled, which roll-up
-# then refines into the exception-bearing pair from the durable results.
-TEST_STATUSES = {
-    "draft",
-    "ready",
-    "in_progress",
-    "review_required",
-    "blocked",
-    "completed",
-    "completed_no_exception",
-    "completed_with_exception",
-    "not_applicable",
-}
-CONTROL_CONCLUSIONS = {
-    "effective",
-    "partially_effective",
-    "ineffective",
-    "no_conclusion",
-    "not_applicable",
-}
-REVIEW_STATUSES = {"draft", "prepared", "review_required", "reviewed"}
-# The plain-content RCM columns a spreadsheet export/reimport round-trips.
-# Identity (id/semantic_id), provenance, and reference fields (test_refs,
-# execution_rollup, finding_refs, evidence_refs) are deliberately excluded —
-# those are maintained by linking, not by editing free text in a cell.
-RCM_IMPORT_FIELDS = (
-    "process", "risk", "risk_rating", "assertion", "control", "control_type",
-    "control_owner", "criteria", "prepared_by", "reviewed_by", "review_status",
-)
-WORKSPACES_DIR = Path(
-    os.environ.get("WORKBENCH_DATA", "")
-    or Path(__file__).resolve().parents[2] / "Workspaces"
-)
+# Polars renames a right-hand column that collides with a left-hand one by
+# appending this. It is only safe while the left side has no column already
+# carrying it — which stops being true the moment a join is built on a join.
+DEFAULT_JOIN_SUFFIX = "_right"
 
 
 def slugify(text: str) -> str:
@@ -213,6 +182,84 @@ _workspace_write_locks: dict[str, threading.RLock] = {}
 _workspace_write_locks_guard = threading.Lock()
 _request_revision: ContextVar[dict[str, int] | None] = ContextVar(
     "workspace_request_revision", default=None
+)
+
+
+def join_suffix(
+    left_columns: list[str],
+    right_columns: list[str],
+    right_on: list[str] | tuple[str, ...] = (),
+    right_name: str = "",
+) -> str:
+    """A suffix that renames colliding right-hand columns without colliding again.
+
+    ``invoice_data`` and ``po_data`` both carry ``VENDOR_ID``, so their join
+    holds ``VENDOR_ID`` and ``VENDOR_ID_right``. Joining *that* frame to
+    ``requisitions`` — which carries ``VENDOR_ID`` too — asks Polars to produce
+    a second ``VENDOR_ID_right`` and the join fails outright. The default
+    suffix is kept whenever it is free, so frames already materialized keep the
+    column names they have; only a genuine second collision escalates, first to
+    the right frame's own name and then to a counter.
+
+    Join keys are excluded: a coalesced key contributes no separate right-hand
+    column, so it can never be the collision.
+    """
+    left = set(left_columns)
+    reserved = left | set(right_columns)
+    keys = {str(value) for value in right_on or ()}
+    colliding = [
+        column for column in right_columns if column in left and column not in keys
+    ]
+    if not colliding:
+        return DEFAULT_JOIN_SUFFIX
+    slug = slugify(str(right_name)).replace("-", "_")
+    options = [DEFAULT_JOIN_SUFFIX]
+    if slug:
+        options.append(f"_{slug}")
+    options.extend(f"{DEFAULT_JOIN_SUFFIX}_{index}" for index in range(2, 20))
+    for suffix in options:
+        renamed = [column + suffix for column in colliding]
+        if len(set(renamed)) == len(renamed) and not set(renamed) & reserved:
+            return suffix
+    raise WorkspaceError(
+        f"Cannot join '{right_name or 'the right frame'}' without renaming "
+        f"{len(colliding)} colliding column(s); rename them first."
+    )
+
+# The one status vocabulary shared by Document Tests and Data Tests. ``draft`` is
+# a test whose plan exists but whose executable spec has not been written yet;
+# ``completed`` is what a runner writes when every item is settled, which roll-up
+# then refines into the exception-bearing pair from the durable results.
+TEST_STATUSES = {
+    "draft",
+    "ready",
+    "in_progress",
+    "review_required",
+    "blocked",
+    "completed",
+    "completed_no_exception",
+    "completed_with_exception",
+    "not_applicable",
+}
+CONTROL_CONCLUSIONS = {
+    "effective",
+    "partially_effective",
+    "ineffective",
+    "no_conclusion",
+    "not_applicable",
+}
+REVIEW_STATUSES = {"draft", "prepared", "review_required", "reviewed"}
+# The plain-content RCM columns a spreadsheet export/reimport round-trips.
+# Identity (id/semantic_id), provenance, and reference fields (test_refs,
+# execution_rollup, finding_refs, evidence_refs) are deliberately excluded —
+# those are maintained by linking, not by editing free text in a cell.
+RCM_IMPORT_FIELDS = (
+    "process", "risk", "risk_rating", "assertion", "control", "control_type",
+    "control_owner", "criteria", "prepared_by", "reviewed_by", "review_status",
+)
+WORKSPACES_DIR = Path(
+    os.environ.get("WORKBENCH_DATA", "")
+    or Path(__file__).resolve().parents[2] / "Workspaces"
 )
 
 
@@ -1758,13 +1805,28 @@ class Workspace:
         left = self.get_frame(join["left"], seen)
         right = self.get_frame(join["right"], seen)
         if join["how"] == "cross":
-            return left.join(right, how="cross")
+            return left.join(
+                right,
+                how="cross",
+                suffix=join_suffix(
+                    left.columns, right.columns, (), str(join["right"])
+                ),
+            )
         return left.join(
             right,
             how=join["how"],
             left_on=join["left_on"],
             right_on=join["right_on"],
             coalesce=True,
+            # A join built on a join already carries suffixed columns, so the
+            # default suffix can collide a second time. Derived from the two
+            # frames, so a join that never collides keeps the names it has.
+            suffix=join_suffix(
+                left.columns,
+                right.columns,
+                join["right_on"],
+                str(join["right"]),
+            ),
         )
 
     def _table_signature(self, name: str, _seen: frozenset = frozenset()) -> tuple:

@@ -7,8 +7,11 @@ effect of a left join. All computation is local Polars; only the resulting
 aggregate metrics may be shown to the model or the user.
 
 The agent creates a join automatically only when the evidence is *strong*
-(see :func:`classify`) *and* decisive (see :func:`decisive`); weaker or tied
-candidates become approval proposals or warnings, never silent joins.
+(see :func:`classify`); weaker candidates become approval proposals or
+warnings, never silent joins. When several candidates tie, the best-ranked one
+is applied and :func:`decisive` decides whether that choice was forced by the
+evidence or merely by rank — a tie between keys that mean different things is
+reported so it is never silent.
 
 Two shapes of relationship need more than a same-name key comparison:
 
@@ -19,8 +22,8 @@ dimension through the person's role in the workflow — ``APPROVED_BY_ID``,
 :func:`_name_affinity` recognizes them, but only against the workspace's own
 table names: a stem that names another imported table is that table's key, not
 a role. One pair can then hold several equally-strong role keys, and the choice
-between them changes what a downstream test *means*, so :func:`decisive`
-reports that particular tie for confirmation instead of resolving it by rank.
+between them changes what a downstream test *means*, so :func:`decisive` marks
+that particular tie as unresolved by evidence and the run says so.
 
 *Chained joins.* A dimension is sometimes two hops away — a requisition's
 approval limit lives in the approval matrix, reachable only through the
@@ -38,7 +41,7 @@ import re
 
 import polars as pl
 
-from ..workspaces import Workspace
+from ..workspaces import Workspace, join_suffix
 
 # Candidate discovery caps: comparing every column pair is quadratic, so only
 # plausible key columns (ids, codes, low-null, reasonable cardinality) enter.
@@ -382,20 +385,23 @@ def _stable_order(candidate: dict) -> tuple:
 
 
 def decisive(candidates: list[dict]) -> bool:
-    """Whether the best candidate can be applied without asking.
+    """Whether the evidence names one candidate, rather than merely ordering them.
 
-    Ties are only a question when the tied keys mean different things. A frame
+    Ties only change meaning when the tied keys mean different things. A frame
     reaching one person dimension as requester, verifier, and approver has
     several perfect keys whose rank order is an artifact of sorting, and the
     choice decides what every downstream test measures: an approval-limit check
     against the requester's limit is not a weaker answer, it is the wrong one.
-    Those must be confirmed.
 
     Two entity keys that tie — ``PO_NUMBER`` and ``REQUISITION_ID`` both linking
     purchase orders to requisitions, or the same key seen from either side — are
-    a different case. They express one relationship, so applying the
-    best-ranked one is a choice of route, not of meaning, and asking would stall
-    a join the evidence plainly supports.
+    a different case. They express one relationship, so which is applied is a
+    choice of route, not of meaning.
+
+    This reports the distinction; it does not decide what to do about it. A run
+    still materializes the best-ranked candidate either way — an unattended run
+    that left the pair unjoined would remove the frame rather than protect it —
+    and uses this to say plainly when a real alternative was passed over.
     """
     if not candidates:
         return False
@@ -483,14 +489,23 @@ def column_origins(
     seen = _seen | {name}
     left = column_origins(workspace, str(join.get("left")), seen)
     right = column_origins(workspace, str(join.get("right")), seen)
+    # The same suffix the join itself was materialized with, recomputed from the
+    # two sides rather than stored, so this stays correct for frames built
+    # before the suffix could vary.
+    suffix = join_suffix(
+        list(left),
+        list(right),
+        join.get("right_on") or (),
+        str(join.get("right")),
+    )
     origins: dict[str, str] = {}
     for column in columns:
         if column in left:
             origins[column] = left[column]
         elif column in right:
             origins[column] = right[column]
-        elif column.endswith("_right") and column[: -len("_right")] in right:
-            origins[column] = right[column[: -len("_right")]]
+        elif column.endswith(suffix) and column[: -len(suffix)] in right:
+            origins[column] = right[column[: -len(suffix)]]
     return origins
 
 
