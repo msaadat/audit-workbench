@@ -18,6 +18,7 @@ from ... import (
     methodology,
     templates_store,
 )
+from ...analysis_memo import flatten_embeds
 from ...workspaces import Workspace, WorkspaceError
 from .. import joins as join_diagnostics
 from ..workflows import analysis as analysis_workflow
@@ -31,6 +32,7 @@ APM_TABLE_PROFILE_SOURCE_ID = "table_profiles"
 APM_PLANNING_SOURCE_ID = "planning_context"
 APM_TEMPLATE_SOURCE_ID = "apm_template"
 APM_CURRENT_ARTIFACT_SOURCE_ID = "current_apm"
+APM_SUMMARY_SOURCE_ID = "analysis_summary"
 
 
 def _normalized_document_ids(
@@ -254,6 +256,46 @@ def supplied_source_provenance(
     return tuple(entries[key] for key in sorted(entries))
 
 
+def apm_analysis_summary_candidates(
+    workspace: Workspace,
+) -> tuple[ContextCandidate, ...]:
+    """The EDA memo, if one has been written, as planning can consume it.
+
+    Embed directives are flattened to inline citations first. Planning has no
+    renderer for them, and a raw ``embed`` fence copied into an APM would print
+    as stray text — so the reference survives as prose instead of as markup the
+    reader cannot resolve.
+
+    The memo is supplied whether or not it is current against the latest
+    results. A memo written from slightly older results still describes this
+    engagement's data far better than nothing; the Summary screen is where its
+    freshness is reported and acted on.
+    """
+    summary = dict(workspace.analysis_summary or {})
+    markdown = str(summary.get("markdown") or "").strip()
+    if not markdown:
+        return ()
+    titles = {
+        str(item.get("id") or ""): str(item.get("title") or "")
+        for item in workspace.analyses
+    }
+    flattened = flatten_embeds(markdown, titles)
+    content = {
+        "markdown": flattened,
+        "generated_at": summary.get("generated_at"),
+        "cited_analysis_ids": list(summary.get("cited_analysis_ids") or []),
+    }
+    return (
+        ContextCandidate(
+            source_ref="analysis_summary:current",
+            source=content,
+            representations={"analysis_summary": content},
+            metadata={"artifact": "analysis_summary"},
+            lexical_text=flattened,
+        ),
+    )
+
+
 def apm_table_metadata_candidates(workspace: Workspace) -> tuple[ContextCandidate, ...]:
     """Expose schema-only table metadata through the existing assistant builder."""
     candidates = []
@@ -346,6 +388,7 @@ def apm_document_methodology_scope(
                     metadata={"artifact": "apm"},
                 ),
             ),
+            APM_SUMMARY_SOURCE_ID: apm_analysis_summary_candidates(workspace),
             APM_TABLE_METADATA_SOURCE_ID: apm_table_metadata_candidates(workspace),
             APM_TABLE_PROFILE_SOURCE_ID: apm_table_profile_candidates(workspace),
             APM_DOCUMENT_SOURCE_ID: apm_document_candidates(

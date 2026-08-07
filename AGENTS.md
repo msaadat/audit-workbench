@@ -49,6 +49,10 @@ backend/app/
 |- dashboard.py                - dashboard tiles and saved analysis payloads
 |- analysis_results.py         - the saved-analysis execution contract: run it,
 |                                bound it, record it, classify it
+|- analysis_memo.py            - the EDA memo's embed grammar: parsing and
+|                                flattening, shared by the worker that writes
+|                                the memo and the context adapter that hands it
+|                                to planning (neither may import the other)
 |- assistant.py                - read-only NL assistant tool loop
 |- assistant_chats.py          - durable workspace-scoped chats, artifacts,
 |                                ask/act routing, chat-run projections
@@ -623,6 +627,19 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   failures, `analysis_anomalies` for warnings) because deterministic selectors
   order candidates by reference: one source let a truncated budget drop a
   backdating failure while keeping a weekend-activity warning.
+- **The memo feeds the APM.** `planning.apm` declares an optional
+  `analysis_summary` source under its own `allow_analysis_summary` permission —
+  planning sees the written memo, never the flagged rows behind it, and never
+  `allow_analysis_exception_rows`. `apm.md` carries a matching **Data analytics
+  performed** section before *Key risks and planned response*, since the risks
+  are argued from it; the APM worker's existing validator enforces every
+  template heading, so the section is answered for rather than optional.
+  Embed directives are flattened to inline citations
+  (`analysis_memo.flatten_embeds`) before planning sees them — planning has no
+  renderer for a fence, and a raw directive copied into an APM prints as stray
+  text. With no memo the source supplies nothing and the section says so; the
+  edge is deliberately *not* a graph dependency, so an APM-only request stays
+  independent of data analysis.
 - The assistant and agent do not use arbitrary tool loops inside `agent/`.
   Worker calls are single-turn, bounded, and budgeted through `BaseRunner`.
 - Existing uncommitted workspace or code changes may be user-owned. Do not

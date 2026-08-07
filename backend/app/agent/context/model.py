@@ -276,6 +276,12 @@ class ContextPrivacy(_JSONModel):
     # them. A summary that can say "1 invoice was backdated" but not which one
     # is not a summary an auditor can use.
     allow_analysis_exception_rows: bool = False
+    # The written EDA memo. Its own permission rather than a reuse of
+    # ``allow_analysis_results``: the memo is prose that may quote the
+    # identifiers of flagged rows, so it is a wider content class than the
+    # bounded verdicts and statistics that permission covers — and a narrower
+    # one than the raw flagged rows.
+    allow_analysis_summary: bool = False
 
     _FIELDS: ClassVar[tuple[str, ...]] = (
         "allow_provider",
@@ -290,6 +296,7 @@ class ContextPrivacy(_JSONModel):
         "allow_table_rows",
         "allow_analysis_results",
         "allow_analysis_exception_rows",
+        "allow_analysis_summary",
     )
 
     def __post_init__(self) -> None:

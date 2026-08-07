@@ -50,6 +50,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "table_rows": "allow_table_rows",
     "analysis_result": "allow_analysis_results",
     "analysis_exception_rows": "allow_analysis_exception_rows",
+    "analysis_summary": "allow_analysis_summary",
 }
 
 
@@ -614,6 +615,19 @@ PRESETS.register(
                     budget=ContextBudget(max_items=1, max_characters=20_000),
                 ),
                 ContextSource(
+                    id="analysis_summary",
+                    source_type="analyses",
+                    required=False,
+                    selector=ContextSelector(selector_id="analyses.all"),
+                    # The EDA memo, when one has been written. This is what
+                    # lets planning state a risk assessment grounded in what
+                    # the data actually showed rather than in schema shape
+                    # alone. Absent before any analysis has run, which is why
+                    # the source is optional and the section degrades.
+                    representations=(ContextRepresentation("analysis_summary"),),
+                    budget=ContextBudget(max_items=1, max_characters=24_000),
+                ),
+                ContextSource(
                     id="table_metadata",
                     source_type="tables",
                     required=False,
@@ -666,13 +680,17 @@ PRESETS.register(
                     budget=ContextBudget(max_items=5, max_characters=8_000),
                 ),
             ),
-            budget=ContextBudget(max_items=44, max_characters=70_000),
+            budget=ContextBudget(max_items=45, max_characters=94_000),
             privacy=ContextPrivacy(
                 allow_planning_context=True,
                 allow_template_text=True,
                 allow_document_text=True,
                 allow_table_metadata=True,
                 allow_table_profiles=True,
+                # The memo only. Planning never sees the flagged rows
+                # themselves — it sees what the auditor's summary said about
+                # them, with embed directives already flattened to citations.
+                allow_analysis_summary=True,
             ),
         ),
     )

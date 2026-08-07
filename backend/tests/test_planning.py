@@ -29,6 +29,7 @@ PLANNING_RESPONSES = {
             "## Introduction and background\nPlanning background.\n\n"
             "## Process flow and understanding\nAccounts payable processing.\n\n"
             "## Prior audit findings\nNo information available.\n\n"
+            "## Data analytics performed\nNo data analysis has been performed.\n\n"
             "## Key risks and planned response\nTest duplicate payments."
         )
     },
@@ -584,7 +585,10 @@ def test_apm_accepts_malformed_legacy_json_wrapper_without_retry(monkeypatch):
     assert completed["status"] == "completed"
     assert reloaded.planning["apm_markdown"] == valid_apm
     assert len(apm_calls) == 1
-    assert "markdown\nonly" in apm_calls[0][0]["content"].casefold()
+    # The instruction matters, not where the prompt happens to wrap: assert on
+    # the normalized text so reflowing the system prompt cannot fail this.
+    prompt = " ".join(apm_calls[0][0]["content"].casefold().split())
+    assert "return the memorandum as markdown only" in prompt
 
 
 def test_permission_planning_uses_three_editable_approval_gates(monkeypatch):
@@ -622,6 +626,7 @@ def test_apm_unfilled_placeholders_become_not_available_notes(monkeypatch):
                 "## Introduction and background\n{{introduction}}\n\n"
                 "## Process flow and understanding\n{{process_flow}}\n\n"
                 "## Prior audit findings\n{{prior_audit_findings}}\n\n"
+                "## Data analytics performed\n{{data_analytics}}\n\n"
                 "## Key risks and planned response\n{{key_risks}}"
             )
         },

@@ -31,8 +31,19 @@ must be cited by pack/version/section. Preserve the
 selected Markdown template's structure. Where a fact is unavailable, do not
 leave the raw {{placeholder}} token — replace it with a short italic note
 such as _[entity — context not available]_ so the reader knows the information
-was missing; clearly label assumptions. Return the memorandum as Markdown
-only, without a JSON wrapper or Markdown code fence."""
+was missing; clearly label assumptions.
+
+An analysis summary may be supplied: the memorandum written from this
+engagement's own exploratory data analysis. Where it is present, it is evidence
+about this population rather than background, so let it carry the analytics
+section and inform the risk assessment — a risk the data has already evidenced
+or contradicted should be described as such, not restated as an open question.
+Do not repeat the summary wholesale; take from it what bears on planning. Where
+no summary is supplied, say plainly that no data analysis has been performed
+rather than implying coverage that does not exist.
+
+Return the memorandum as Markdown only, without a JSON wrapper or Markdown code
+fence."""
 
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 

@@ -1426,6 +1426,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         "## Introduction and background\n\nProcurement background.\n\n"
         "## Process flow and understanding\n\nRequisition through payment.\n\n"
         "## Prior audit findings\n\nNo information available.\n\n"
+        "## Data analytics performed\n\nNo data analysis has been performed.\n\n"
         "## Key risks and planned response\n\nTest approval compliance."
     )
 

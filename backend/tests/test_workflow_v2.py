@@ -1496,6 +1496,7 @@ def test_apm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
         "## Introduction and background\nPurchasing.\n\n"
         "## Process flow and understanding\nApprovals precede commitment.\n\n"
         "## Prior audit findings\nNo information available.\n\n"
+        "## Data analytics performed\nNo data analysis has been performed.\n\n"
         "## Key risks and planned response\nTest approval evidence."
     )
     fake = FakeAgentLLM({"agent:apm": {"apm_markdown": response}})
@@ -1557,6 +1558,7 @@ def test_apm_proposal_reuse_rejects_changed_context_execution_identity(
         "## Introduction and background\nPurchasing.\n\n"
         "## Process flow and understanding\nApprovals precede commitment.\n\n"
         "## Prior audit findings\nNo information available.\n\n"
+        "## Data analytics performed\nNo data analysis has been performed.\n\n"
         "## Key risks and planned response\nTest approval evidence."
     )
     fake = FakeAgentLLM({"agent:apm": {"apm_markdown": response}})
@@ -1636,6 +1638,7 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
         "## Introduction and background\nPurchasing.\n\n"
         "## Process flow and understanding\nApprovals precede commitment.\n\n"
         "## Prior audit findings\nNo information available.\n\n"
+        "## Data analytics performed\nNo data analysis has been performed.\n\n"
         "## Key risks and planned response\nTest approval evidence."
     )
     command, stage, unit = _apm_only_runner(ws)
@@ -2570,6 +2573,7 @@ def test_full_workflow_runs_capability_closure_and_records_exception_observation
                     "## Introduction and background\nPayment processing.\n\n"
                     "## Process flow and understanding\nInvoices are approved and paid.\n\n"
                     "## Prior audit findings\nNo information available.\n\n"
+                    "## Data analytics performed\nNo data analysis has been performed.\n\n"
                     "## Key risks and planned response\nTest duplicate invoices."
                 )
             },

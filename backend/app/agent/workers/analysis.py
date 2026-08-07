@@ -32,6 +32,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import analytics, sandbox
+# The memo's embed grammar is shared with the context adapter that hands the
+# memo to the APM. It lives outside ``agent/`` because a worker may not import
+# the context package and vice versa; the module has no dependencies of its own.
+from ...analysis_memo import EMBED_FENCE, EMBED_KINDS, parse_embeds
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -900,18 +904,6 @@ SUMMARY_SECTIONS: tuple[str, ...] = (
     "Further work required",
 )
 
-# An embedded result. A fenced block rather than a JSON block list because the
-# memo has to survive being read as plain text — in the APM, in the report, in
-# an export — and a fence degrades to something legible rather than to broken
-# markup.
-EMBED_FENCE = "embed"
-EMBED_KINDS: tuple[str, ...] = ("chart", "summary_table", "exception_table", "stats")
-_EMBED_BLOCK = re.compile(
-    r"^```embed[ \t]*\n(.*?)^```[ \t]*$",
-    re.DOTALL | re.MULTILINE,
-)
-_EMBED_FIELD = re.compile(r"^([a-z_]+)\s*:\s*(.*)$")
-
 _SECTION_LIST = "\n".join(f"## {section}" for section in SUMMARY_SECTIONS)
 
 ANALYSIS_SUMMARY_SYSTEM = f"""[agent:analysis_summary]
@@ -973,19 +965,6 @@ SUMMARY_EXCEPTIONS_SOURCE_ID = "analysis_exceptions"
 
 def _resolved_items(request: WorkerRequest, source_id: str) -> list[object]:
     return [item.content for item in request.context.items if item.source_id == source_id]
-
-
-def parse_embeds(markdown: str) -> list[dict[str, str]]:
-    """Extract the embed directives from a memo, in document order."""
-    embeds: list[dict[str, str]] = []
-    for match in _EMBED_BLOCK.finditer(markdown or ""):
-        fields: dict[str, str] = {}
-        for line in match.group(1).splitlines():
-            field = _EMBED_FIELD.match(line.strip())
-            if field:
-                fields[field.group(1)] = field.group(2).strip()
-        embeds.append(fields)
-    return embeds
 
 
 def validate_analysis_summary(

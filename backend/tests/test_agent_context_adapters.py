@@ -3,6 +3,7 @@ import inspect
 import polars as pl
 
 from app import (
+    analysis_memo,
     assistant,
     data_tests,
     doc_tests,
@@ -10,6 +11,7 @@ from app import (
     document_context,
     documents,
     methodology,
+    templates_store,
     workspaces,
 )
 from app.agent import context as agent_context
@@ -287,6 +289,7 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
         "planning_context",
         "apm_template",
         "current_apm",
+        "analysis_summary",
         "table_metadata",
         "table_profiles",
         "documents",
@@ -296,6 +299,7 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
         "planning.current",
         "templates.current",
         "artifacts.current",
+        "analyses.all",
         "tables.all",
         "tables.all",
         "documents.lexical",
@@ -306,6 +310,10 @@ def test_planning_apm_preset_declares_all_current_adapter_sources():
     assert spec.privacy.allow_document_text is True
     assert spec.privacy.allow_table_metadata is True
     assert spec.privacy.allow_table_profiles is True
+    # Planning sees the written memo, never the flagged rows behind it.
+    assert spec.privacy.allow_analysis_summary is True
+    assert spec.privacy.allow_analysis_exception_rows is False
+    assert spec.privacy.allow_table_rows is False
     assert spec.privacy.allow_table_rows is False
 
     adapter_source = inspect.getsource(context_adapters)
@@ -589,3 +597,94 @@ def test_test_generate_scope_supplies_the_process_description_without_the_audit_
     assert "requisition, approval, and purchase order issue" in summary
     assert "AUDIT NOTES" not in summary
     assert "Missing thresholds" not in summary
+
+
+# --------------------------------------------------------------------------- #
+# The EDA memo reaches planning
+# --------------------------------------------------------------------------- #
+FENCE = "```"
+
+MEMO = (
+    "## Data received and population characteristics\n"
+    "118 invoices were received.\n\n"
+    f"{FENCE}embed\nanalysis: A-0DAB063C\nas: exception_table\n"
+    f"caption: the backdated invoice\n{FENCE}\n\n"
+    "## Exceptions noted\nInvoice INV2024008 was received before it was issued.\n"
+)
+
+
+def _memo_workspace(name: str = "APM analysis basis"):
+    ws = workspaces.create_workspace(name)
+    ws.analysis_summary.update(
+        {
+            "markdown": MEMO,
+            "cited_analysis_ids": ["A-0DAB063C"],
+            "basis_sha1": "digest",
+            "generated_at": "2026-08-07T00:00:00+00:00",
+            "run_id": "run-1",
+        }
+    )
+    ws.save()
+    return workspaces.load_workspace(ws.id)
+
+
+def test_the_analysis_memo_reaches_the_apm_bundle():
+    ws = _memo_workspace()
+    scope = context_adapters.apm_document_methodology_scope(ws)
+
+    candidates = scope.candidates[context_adapters.APM_SUMMARY_SOURCE_ID]
+    assert len(candidates) == 1
+    content = candidates[0].source
+    assert "INV2024008" in content["markdown"]
+    assert content["cited_analysis_ids"] == ["A-0DAB063C"]
+
+
+def test_embed_directives_are_flattened_before_planning_sees_them():
+    """Planning has no renderer for an embed fence.
+
+    A raw directive copied into an APM prints as stray text, so the reference
+    survives as a readable citation instead of as markup nobody can resolve.
+    """
+    ws = _memo_workspace("APM flattening")
+
+    markdown = context_adapters.apm_document_methodology_scope(ws).candidates[context_adapters.APM_SUMMARY_SOURCE_ID][
+        0
+    ].source["markdown"]
+
+    assert f"{FENCE}embed" not in markdown
+    assert "as: exception_table" not in markdown
+    assert "See analysis A-0DAB063C" in markdown
+    assert "the backdated invoice" in markdown
+
+
+def test_a_flattened_citation_names_the_procedure_when_the_title_is_known():
+    titles = {"A-0DAB063C": "Invoice-to-Receipt Date Lag"}
+    flattened = analysis_memo.flatten_embeds(MEMO, titles)
+
+    assert "See analysis Invoice-to-Receipt Date Lag (A-0DAB063C)" in flattened
+    assert f"{FENCE}" not in flattened
+
+
+def test_a_workspace_with_no_memo_supplies_no_analysis_source():
+    """Exploratory analysis frequently has not run when the APM is drafted."""
+    ws = workspaces.create_workspace("APM without analysis")
+
+    scope = context_adapters.apm_document_methodology_scope(workspaces.load_workspace(ws.id))
+
+    assert scope.candidates[context_adapters.APM_SUMMARY_SOURCE_ID] == ()
+
+
+def test_the_apm_template_requires_the_analytics_section():
+    """The worker's validator enforces every template heading, so adding the
+    section to the template is what makes the APM answer for the analysis."""
+    ws = workspaces.create_workspace("APM template sections")
+    template = templates_store.get_template(ws, "apm")["markdown"]
+
+    assert "## Data analytics performed" in template
+    headings = [
+        line.strip() for line in template.splitlines() if line.startswith("## ")
+    ]
+    # It belongs before the risk response: the risks are argued from it.
+    assert headings.index("## Data analytics performed") < headings.index(
+        "## Key risks and planned response"
+    )
