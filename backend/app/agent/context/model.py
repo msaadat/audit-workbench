@@ -265,6 +265,17 @@ class ContextPrivacy(_JSONModel):
     allow_table_profiles: bool = False
     allow_table_aggregates: bool = False
     allow_table_rows: bool = False
+    # What a saved procedure concluded: its definition, verdict, and bounded
+    # statistics. Aggregate in the same sense as a table profile.
+    allow_analysis_results: bool = False
+    # The rows a procedure *flagged*, and the one permission in this contract
+    # that admits row-level engagement data to a provider. It is deliberately
+    # separate from ``allow_table_rows``: that permits an arbitrary slice of a
+    # table, whereas this permits only rows a declared test already identified
+    # as exceptions, capped, and only for a capability that has to describe
+    # them. A summary that can say "1 invoice was backdated" but not which one
+    # is not a summary an auditor can use.
+    allow_analysis_exception_rows: bool = False
 
     _FIELDS: ClassVar[tuple[str, ...]] = (
         "allow_provider",
@@ -277,6 +288,8 @@ class ContextPrivacy(_JSONModel):
         "allow_table_profiles",
         "allow_table_aggregates",
         "allow_table_rows",
+        "allow_analysis_results",
+        "allow_analysis_exception_rows",
     )
 
     def __post_init__(self) -> None:

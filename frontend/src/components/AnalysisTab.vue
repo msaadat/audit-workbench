@@ -249,6 +249,31 @@ async function analyzeWithAssistant() {
   }
 }
 
+/**
+ * Write (or rewrite) the EDA summary.
+ *
+ * The memo is derived, so there is nothing to overwrite and no confirmation to
+ * ask for. It goes through the same assistant path as any other workflow
+ * request, so the run is visible and budgeted like the rest.
+ */
+async function writeSummary() {
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      'Summarise the data analysis performed in this workspace.',
+      'act', agent.launchMode.value,
+      { command: 'analyze_data', source: 'tab_button' },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({
+      severity: 'info', summary: 'Writing the summary',
+      detail: 'Progress is visible in the assistant.', life: 3000,
+    })
+  } catch (error) {
+    fail('Could not start the summary', error)
+  }
+}
+
 function fail(summaryText: string, error: unknown) {
   const detail = error instanceof ApiError ? error.message : String(error)
   toast.add({ severity: 'error', summary: summaryText, detail, life: 6000 })
@@ -291,7 +316,7 @@ function fail(summaryText: string, error: unknown) {
 
     <div v-if="analyses.length" class="analysis-nav">
       <SelectButton :modelValue="view" :options="viewOptions" optionLabel="label" optionValue="value" :allowEmpty="false" size="small" @update:modelValue="setView" />
-      <span v-if="view === 'summary'" class="muted">The graphs and exceptions this engagement's procedures produced.</span>
+      <span v-if="view === 'summary'" class="muted">What the analysis found — the population, the exceptions, and the work outstanding.</span>
     </div>
 
     <AnalysisSummary
@@ -299,6 +324,7 @@ function fail(summaryText: string, error: unknown) {
       :workspace="workspace"
       :analyses="analyses"
       @open="openAnalysis"
+      @regenerate="writeSummary"
     />
 
     <template v-else-if="analyses.length || creating">

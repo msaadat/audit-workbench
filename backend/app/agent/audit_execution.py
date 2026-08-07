@@ -1252,6 +1252,10 @@ _PARTIAL_DEPENDENCIES = {
     # actually committed, matching the standalone analysis workflow.
     "analysis.definitions_ready": {"data.joins_ready"},
     "analysis.executed": {"analysis.definitions_ready"},
+    # One procedure that would not execute must not withhold the memo. A
+    # summary written over the results that did land is the useful artifact,
+    # and the procedure that failed is itself reported in "further work".
+    "analysis.summarized": {"analysis.executed"},
     # A document the run could not extract or analyze must never stop the audit:
     # planning consumes the document material that exists, which is exactly what
     # the scoped document dependency is for. The document chain's own edges are
@@ -1368,10 +1372,17 @@ def build_audit_workflow_runner(
         context_resolver=adapter.context_resolver,
     )
     analysis_adapter.unit_pipeline = unit_pipeline
+    # Both graphs bind the analysis capabilities through the same analysis
+    # adapter methods, so a capability behaves identically whether an audit run
+    # or a standalone analysis request scheduled it.
     _ANALYSIS_PIPELINE_BINDERS = {
         "analysis.definitions_ready": (
             analysis_adapter._bind_definitions,
             {"worker": "analysis.definitions", "executor": "analysis.definitions"},
+        ),
+        "analysis.summarized": (
+            analysis_adapter._bind_summary,
+            {"worker": "analysis.summary", "executor": "analysis.summary"},
         ),
     }
     _ANALYSIS_DETERMINISTIC_BINDERS = {

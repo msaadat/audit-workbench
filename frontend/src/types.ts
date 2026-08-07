@@ -1355,6 +1355,19 @@ export interface AnalysisLastResult {
  * `frame` is null when the procedure flagged nothing, or when the evidence no
  * longer belongs to the result currently on the definition.
  */
+/**
+ * The exploratory-analysis memo. Derived and read-only: it is regenerated from
+ * the recorded results rather than edited, which is why it always agrees with
+ * the procedures it cites. `stale` means the results moved after it was written.
+ */
+export interface AnalysisMemo {
+  markdown: string
+  cited_analysis_ids: string[]
+  generated_at: string | null
+  run_id: string | null
+  stale: boolean
+}
+
 export interface AnalysisExceptions {
   analysis_id: string
   exception_count: number

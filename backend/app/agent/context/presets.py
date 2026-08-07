@@ -48,6 +48,8 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "table_profile": "allow_table_profiles",
     "table_aggregate": "allow_table_aggregates",
     "table_rows": "allow_table_rows",
+    "analysis_result": "allow_analysis_results",
+    "analysis_exception_rows": "allow_analysis_exception_rows",
 }
 
 
@@ -498,6 +500,15 @@ _register_selectors(
             supported_source_types=("tables",),
             implementation_hash=_implementation_hash(
                 "tables.all:metadata-all:source-ref-ascending"
+            ),
+            strategy="metadata",
+        ),
+        SelectorDefinition(
+            selector_id="analyses.all",
+            selector_kind="deterministic",
+            supported_source_types=("analyses",),
+            implementation_hash=_implementation_hash(
+                "analyses.all:metadata-all:source-ref-ascending"
             ),
             strategy="metadata",
         ),
@@ -1023,6 +1034,105 @@ PRESETS.register(
                 allow_table_metadata=True,
                 allow_table_profiles=True,
                 allow_table_aggregates=True,
+            ),
+        ),
+    )
+)
+PRESETS.register(
+    ContextPreset(
+        preset_id="analysis.summary",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="analysis_results",
+                    source_type="analyses",
+                    required=True,
+                    selector=ContextSelector(selector_id="analyses.all"),
+                    # Every saved procedure and what it concluded: title, the
+                    # note explaining why it was proposed, the frame it ran
+                    # against, verdict, and bounded statistics. This is the
+                    # inventory the memo narrates.
+                    representations=(ContextRepresentation("analysis_result"),),
+                    budget=ContextBudget(max_items=120, max_characters=60_000),
+                ),
+                ContextSource(
+                    id="analysis_exceptions",
+                    source_type="analyses",
+                    required=False,
+                    selector=ContextSelector(selector_id="analyses.all"),
+                    # The rows identified by procedures that concluded a
+                    # failure. The one row-level source class in the contract,
+                    # and the reason the memo can name a backdated invoice
+                    # rather than merely count it.
+                    representations=(ContextRepresentation("analysis_exception_rows"),),
+                    budget=ContextBudget(max_items=40, max_characters=45_000),
+                ),
+                ContextSource(
+                    id="analysis_anomalies",
+                    source_type="analyses",
+                    required=False,
+                    selector=ContextSelector(selector_id="analyses.all"),
+                    # The same rows for procedures that flagged something
+                    # unusual without concluding a failure. Declared separately
+                    # so a truncated budget can never drop a failure's evidence
+                    # in favour of a warning's: deterministic selection orders
+                    # candidates by reference, not by severity.
+                    representations=(ContextRepresentation("analysis_exception_rows"),),
+                    budget=ContextBudget(max_items=40, max_characters=30_000),
+                ),
+                ContextSource(
+                    id="coverage_gaps",
+                    source_type="analyses",
+                    required=False,
+                    selector=ContextSelector(selector_id="analyses.all"),
+                    # Deterministic, locally computed: procedures never run or
+                    # stale, ones that errored, tables carrying no procedure at
+                    # all, and table pairs never joined. Supplied as fact so the
+                    # "further work" section reports the gaps that exist rather
+                    # than the ones a model happens to think of.
+                    representations=(ContextRepresentation("analysis_result"),),
+                    budget=ContextBudget(max_items=1, max_characters=12_000),
+                ),
+                ContextSource(
+                    id="table_metadata",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=24, max_characters=12_000),
+                ),
+                ContextSource(
+                    id="table_profiles",
+                    source_type="tables",
+                    required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    # The population characteristics the memo's opening section
+                    # describes: row counts, ranges, blank rates, cardinality.
+                    representations=(ContextRepresentation("table_profile"),),
+                    budget=ContextBudget(max_items=24, max_characters=24_000),
+                ),
+                ContextSource(
+                    id="planning_context",
+                    source_type="planning",
+                    required=False,
+                    selector=ContextSelector(selector_id="planning.current"),
+                    # Present only once planning has run. The memo frames itself
+                    # against the stated objective and period when they exist,
+                    # and reads perfectly well when they do not — exploratory
+                    # analysis frequently precedes planning.
+                    representations=(ContextRepresentation("planning_context"),),
+                    budget=ContextBudget(max_items=1, max_characters=8_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=250, max_characters=170_000),
+            privacy=ContextPrivacy(
+                allow_planning_context=True,
+                allow_table_metadata=True,
+                allow_table_profiles=True,
+                allow_analysis_results=True,
+                # The deliberate widening. Bounded by the per-source character
+                # budget above and by the row cap the adapter applies.
+                allow_analysis_exception_rows=True,
             ),
         ),
     )

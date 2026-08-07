@@ -63,6 +63,9 @@ def test_every_capability_has_exactly_one_execution_binding(workspace_with_data)
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
         "analysis.definitions_ready",
+        # The memo is model-backed and bound through the same analysis adapter
+        # the standalone analysis workflow uses.
+        "analysis.summarized",
         "planning.context_ready",
         "planning.apm_ready",
         "planning.rcm_ready",

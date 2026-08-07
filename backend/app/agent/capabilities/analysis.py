@@ -2,7 +2,8 @@
 
 Owns every outcome of the authoritative analysis graph in
 :mod:`agent.workflows.analysis`: ``data.relationships_inferred``,
-``data.joins_ready``, ``analysis.definitions_ready``, and ``analysis.executed``.
+``data.joins_ready``, ``analysis.definitions_ready``, ``analysis.executed``, and
+``analysis.summarized``.
 
 Each capability is declared here: its readiness (existence and structural
 usability only), its semantic unit expansion, and the registry key for its
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from ... import analytics
-from ...analysis_results import analysis_result_state
+from ...analysis_results import analysis_result_state, summary_basis_digest
 from ...workspaces import Workspace
 from .. import joins as join_diagnostics
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
@@ -31,7 +32,11 @@ CAPABILITY_IDS: tuple[str, ...] = (
     "data.joins_ready",
     "analysis.definitions_ready",
     "analysis.executed",
+    "analysis.summarized",
 )
+
+# The memo is a single workspace artifact, so it takes exactly one reference.
+ANALYSIS_SUMMARY_REF = "analysis_summary:current"
 
 # The bounded fallback: with no explicit target the workflow analyses at most
 # this many base tables. Pair-wise relationship diagnosis is quadratic in the
@@ -537,6 +542,74 @@ def _analysis_executed() -> Capability:
     )
 
 
+# --------------------------------------------------------------------------- #
+# analysis.summarized
+# --------------------------------------------------------------------------- #
+# The memo covers every saved analysis, not only the workflow's own and not only
+# the requested scope. An auditor reading "what did the EDA find" is asking
+# about the engagement, and a procedure they wrote by hand is part of that
+# answer exactly as much as one the workflow proposed. Scope governs what a run
+# *does*; it does not narrow what the memo is about.
+def _summarized_ready(workspace: Workspace, scope: dict) -> Readiness:
+    table_scope = resolve_table_scope(workspace, scope)
+    blocked = _no_tables(table_scope)
+    if blocked is not None:
+        return blocked
+    executed = [
+        item
+        for item in workspace.analyses
+        if analysis_result_state(workspace, item) == "current"
+    ]
+    details = {"analyses": len(workspace.analyses), "executed": len(executed)}
+    if not executed:
+        return Readiness(
+            "missing",
+            ("no executed analysis has a current result to summarize",),
+            details=details,
+        )
+    memo = workspace.analysis_summary or {}
+    if not str(memo.get("markdown") or "").strip():
+        return Readiness("missing", ("no analysis summary has been written",), details=details)
+    if str(memo.get("basis_sha1") or "") != summary_basis_digest(workspace):
+        # Results moved after the memo was written, so its prose describes a
+        # state that no longer holds. Nothing is wrong with the memo; it is
+        # simply out of date, which is a missing outcome rather than a failure.
+        return Readiness(
+            "missing",
+            ("the analysis summary predates the current results",),
+            details=details,
+        )
+    return Readiness("satisfied", details=details)
+
+
+def _summary_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    # Exactly one unit: the memo reads across every frame at once, which is the
+    # whole reason it can say anything a per-procedure card cannot.
+    return [
+        UnitSpec(
+            semantic_unit_id("analysis_summary"),
+            "analysis_summary",
+            "Summarize the analysis",
+            (ANALYSIS_SUMMARY_REF,),
+            {},
+        )
+    ]
+
+
+def _analysis_summarized() -> Capability:
+    return Capability(
+        "analysis.summarized",
+        "analysis_summary",
+        "Analysis summary",
+        "analysis_summary",
+        analysis_workflow.dependencies("analysis.summarized"),
+        _summarized_ready,
+        _summary_units,
+        context="analysis.summary",
+        invalidate_on=("analyses",),
+    )
+
+
 # Declared auditor-judgment checkpoints for this group, resolved to concrete
 # blocking handlers by the composition (which owns the live run and runtime).
 # Scope ambiguity is a question only the auditor can settle, and it must be
@@ -556,6 +629,7 @@ _BUILDERS = {
     "data.joins_ready": _data_joins_ready,
     "analysis.definitions_ready": _analysis_definitions_ready,
     "analysis.executed": _analysis_executed,
+    "analysis.summarized": _analysis_summarized,
 }
 
 
@@ -568,6 +642,7 @@ def capabilities() -> tuple[Capability, ...]:
 __all__ = [
     "AGENT_OWNER",
     "ANALYSIS_SCOPE_CHECKPOINT",
+    "ANALYSIS_SUMMARY_REF",
     "STAGE_CHECKPOINTS",
     "CAPABILITY_IDS",
     "MAX_SCOPE_TABLES",

@@ -28,6 +28,7 @@ from app.agent.context import (
     PRESETS,
     ContextResolver,
     analysis_definition_scope,
+    analysis_summary_scope,
 )
 from app.agent.executors import ExecutorRequest
 from app.agent.executors import analysis as analysis_executors
@@ -38,10 +39,51 @@ from app.agent.workflow_dispatch import build_workflow_runner
 from app.agent.workflows import analysis as analysis_workflow
 from app.agent.workflows import audit as audit_workflow
 from app.workspace_transactions import parent_hashes
+from fastapi.testclient import TestClient
+
+from app.main import create_app
 from conftest import FakeAgentLLM, wait_run
 
 
 ANALYSIS_TAG = "agent:analysis_definitions"
+SUMMARY_TAG = "agent:analysis_summary"
+
+
+def _scripted_summary(user: str) -> dict:
+    """A memo that cites whichever procedures the bundle actually supplied.
+
+    Citing a real supplied id matters: the worker's validator rejects an embed
+    naming a procedure it was not shown, so a script with a hardcoded id would
+    pass or fail for reasons unrelated to what is being tested.
+
+    Returned as a ``content`` message rather than a bare value because this
+    worker answers in Markdown; ``FakeAgentLLM`` JSON-encodes anything else,
+    which would deliver the memo as one quoted line.
+    """
+    payload = json.loads(user.split("\n\nThe previous summary failed")[0])
+    supplied = [
+        item["content"]["analysis_id"]
+        for item in payload["RESOLVED CONTEXT"]["items"]
+        if item["source_id"] == "analysis_results"
+    ]
+    embed = (
+        "\n```embed\nanalysis: %s\nas: summary_table\ncaption: what it showed\n```\n"
+        % supplied[0]
+        if supplied
+        else ""
+    )
+    return {
+        "content": (
+            "## Data received and population characteristics\n"
+            f"{len(supplied)} procedure(s) were run over the imported data.\n"
+            f"{embed}"
+            "\n## Relationships and joins established\nOne join was materialized.\n"
+            "\n## Procedures performed\nDuplicate and preview checks.\n"
+            "\n## Exceptions noted\nNone that require escalation.\n"
+            "\n## Data quality observations\nKeys are largely complete.\n"
+            "\n## Further work required\nNothing outstanding.\n"
+        )
+    }
 
 
 def _scripted_definitions(user: str) -> dict:
@@ -70,7 +112,9 @@ def _scripted_definitions(user: str) -> dict:
 
 
 def _fake_model(monkeypatch, script=None) -> FakeAgentLLM:
-    fake = FakeAgentLLM({ANALYSIS_TAG: script or _scripted_definitions})
+    fake = FakeAgentLLM(
+        {ANALYSIS_TAG: script or _scripted_definitions, SUMMARY_TAG: _scripted_summary}
+    )
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(
         llm,
@@ -148,18 +192,25 @@ def test_analysis_graph_declares_a_linear_closure_with_a_stable_hash():
         "data.joins_ready": ("data.relationships_inferred",),
         "analysis.definitions_ready": ("data.joins_ready",),
         "analysis.executed": ("analysis.definitions_ready",),
+        "analysis.summarized": ("analysis.executed",),
     }
-    assert analysis_workflow.FULL_ANALYSIS_OUTCOMES == ["analysis.executed"]
+    assert analysis_workflow.FULL_ANALYSIS_OUTCOMES == ["analysis.summarized"]
     assert analysis_workflow.outcomes_for_template("data_analysis") == [
+        "analysis.summarized"
+    ]
+    # "Bring the saved analyses up to date" stays a zero-model-turn request:
+    # summarising is a model turn, and this template exists not to spend one.
+    assert analysis_workflow.outcomes_for_template("analysis_execution") == [
         "analysis.executed"
     ]
 
     registry = capability_registries.build_analysis_registry()
-    assert registry.closure(["analysis.executed"]) == [
+    assert registry.closure(["analysis.summarized"]) == [
         "data.relationships_inferred",
         "data.joins_ready",
         "analysis.definitions_ready",
         "analysis.executed",
+        "analysis.summarized",
     ]
 
     baseline = analysis_workflow.definition_hash()
@@ -1157,7 +1208,7 @@ def test_data_analysis_requests_route_to_the_analysis_workflow(text):
     assert resolution is not None
     assert resolution["route"] == "workflow"
     assert resolution["workflow_definition"] == analysis_workflow.WORKFLOW_ID
-    assert resolution["requested_outcomes"] == ["analysis.executed"]
+    assert resolution["requested_outcomes"] == ["analysis.summarized"]
 
 
 @pytest.mark.parametrize(
@@ -1216,8 +1267,19 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     assert completed["status"] == "completed"
     assert [stage["status"] for stage in completed["workflow"]["stages"]] == [
         "succeeded"
-    ] * 4
+    ] * 5
     fresh = workspaces.load_workspace(ws.id)
+    # The run's answer is the memo, written over the results it just recorded
+    # and current against them.
+    memo = fresh.analysis_summary
+    assert memo["markdown"].startswith("## Data received")
+    assert memo["run_id"] == started["id"]
+    assert memo["basis_sha1"] == analysis_results.summary_basis_digest(fresh)
+    assert memo["cited_analysis_ids"]
+    assert all(
+        any(item["id"] == cited for item in fresh.analyses)
+        for cited in memo["cited_analysis_ids"]
+    )
     assert [item["name"] for item in fresh.joins] == ["transactions_customers_joined"]
     # One definition unit per scoped frame — both tables and the new join — but
     # five analyses, not six. The script proposes the same duplicate check on
@@ -1242,7 +1304,9 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     ) == 5
     assert "rows" not in milestone and "table_rows" not in milestone
     first_turns = len(fake.calls)
-    assert first_turns == 3
+    # One definition turn per scoped frame (both tables and the join), plus the
+    # single workspace-wide summary turn.
+    assert first_turns == 4
 
     repeat = runner.start_command_run(
         # Materialization reads the caller's workspace, which is how a route
@@ -1297,7 +1361,7 @@ def test_analysis_and_audit_requests_use_one_scheduler_with_different_outcomes(
 
     assert type(analysis_scheduler) is type(audit_scheduler)
     assert analysis_scheduler.registry is not audit_scheduler.registry
-    assert analysis_run["workflow"]["requested_outcomes"] == ["analysis.executed"]
+    assert analysis_run["workflow"]["requested_outcomes"] == ["analysis.summarized"]
     assert audit_run["workflow"]["requested_outcomes"] == ["planning.apm_ready"]
     assert analysis_run["workflow"]["definition"] != audit_run["workflow"]["definition"]
 
@@ -1754,3 +1818,236 @@ def test_a_joined_frame_with_only_one_sided_proposals_settles(workspace_with_dat
         )
     assert analysis_worker.NOTHING_NEW_TO_ANALYSE in str(raised.value)
     assert "only one of the tables this frame joins" in str(raised.value)
+
+
+# --------------------------------------------------------------------------- #
+# analysis.summarized
+# --------------------------------------------------------------------------- #
+FENCE = "```"
+
+
+def _embed(analysis_id: str, kind: str = "chart") -> str:
+    return f"{FENCE}embed\nanalysis: {analysis_id}\nas: {kind}\ncaption: x\n{FENCE}\n"
+
+
+def _summary_request(workspace):
+    """A resolved worker request for the summary unit of this workspace."""
+    capability = next(
+        item
+        for item in capability_registries.ANALYSIS_REGISTRY.all()
+        if item.id == "analysis.summarized"
+    )
+    unit = {
+        "id": "analysis_summary",
+        "kind": "analysis_summary",
+        "parent_refs": ["analysis_summary:current"],
+    }
+    _manifest, bundle = ContextResolver().resolve(
+        workspace, capability, unit, analysis_summary_scope(workspace)
+    )
+    return WorkerRequest(
+        worker_id="analysis.summary",
+        capability_id="analysis.summarized",
+        unit_id="analysis_summary",
+        context=bundle,
+        activity={},
+    )
+
+
+def _memo(sections=None, embeds: str = "") -> str:
+    body = ""
+    for section in analysis_worker.SUMMARY_SECTIONS if sections is None else sections:
+        body += f"## {section}\nText.\n"
+        if section == "Exceptions noted":
+            body += embeds
+    return body
+
+
+def _saved(ws, title: str, spec: dict, **extra) -> dict:
+    analysis = ws.add_analysis(
+        {"kind": "analytics", "table": "transactions", "title": title, "spec": spec, **extra}
+    )
+    analysis_results.execute_and_record(ws, analysis["id"])
+    return analysis
+
+
+DUPLICATES = {"test": "duplicates", "params": {"columns": ["invoice_no"]}}
+COMPLETENESS = {"test": "completeness", "params": {"columns": ["amount"]}}
+
+
+def test_the_summary_reads_every_saved_analysis_not_only_the_workflows(
+    workspace_with_data,
+):
+    """A procedure the auditor wrote is part of the EDA the memo describes."""
+    ws = workspace_with_data
+    agent_owned = _saved(ws, "Duplicates", DUPLICATES, agent_run_id="run-1")
+    auditor_owned = _saved(ws, "Auditor completeness check", COMPLETENESS)
+
+    scope = analysis_summary_scope(workspaces.load_workspace(ws.id))
+    supplied = {
+        candidate.metadata["analysis_id"]
+        for candidate in scope.candidates["analysis_results"]
+    }
+    assert supplied == {agent_owned["id"], auditor_owned["id"]}
+
+
+def test_the_summary_is_shown_the_rows_a_procedure_flagged(workspace_with_data):
+    """The memo can name a flagged item because the rows reach the worker."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicate invoices", DUPLICATES)
+
+    scope = analysis_summary_scope(workspaces.load_workspace(ws.id))
+    # 'duplicates' concludes a failure, so its rows are in the failure half.
+    flagged = scope.candidates["analysis_exceptions"]
+    assert len(flagged) == 1
+    payload = flagged[0].source
+    assert payload["exception_count"] == 2
+    assert 1006 in [
+        row[payload["columns"].index("invoice_no")] for row in payload["rows"]
+    ]
+
+
+def test_failures_get_their_own_budget_so_warnings_cannot_crowd_them_out():
+    """Deterministic selection orders by reference, not by severity.
+
+    A single flagged-rows source would drop whichever procedures sorted late by
+    analysis ID, which could cut a backdating failure while keeping a weekend
+    activity warning. The two declared sources are what prevent that.
+    """
+    spec = PRESETS.compile("analysis.summary")
+    sources = {source.id: source for source in spec.sources}
+    assert "analysis_exceptions" in sources and "analysis_anomalies" in sources
+    for source_id in ("analysis_exceptions", "analysis_anomalies"):
+        assert [item.kind for item in sources[source_id].representations] == [
+            "analysis_exception_rows"
+        ]
+    assert (
+        sources["analysis_exceptions"].budget.max_characters
+        > sources["analysis_anomalies"].budget.max_characters
+    )
+
+
+def test_the_summary_context_permits_flagged_rows_and_nothing_wider():
+    """The memo's row access is the declared exception rows, not table rows."""
+    spec = PRESETS.compile("analysis.summary")
+    assert spec.privacy.allow_analysis_exception_rows is True
+    assert spec.privacy.allow_analysis_results is True
+    # The general row permission stays denied: this capability may see rows a
+    # declared test flagged, never an arbitrary slice of a table.
+    assert spec.privacy.allow_table_rows is False
+
+
+def test_a_summary_citing_an_unsupplied_procedure_is_rejected(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    with pytest.raises(WorkerResponseValidationError, match="not a supplied procedure"):
+        analysis_worker.validate_analysis_summary(
+            {"markdown": _memo(embeds=_embed("A-NOTREAL"))}, request
+        )
+
+    # The same memo citing a procedure it was actually shown is accepted, and
+    # the accepted proposal reports what it cited.
+    accepted = analysis_worker.validate_analysis_summary(
+        {"markdown": _memo(embeds=_embed(analysis["id"], "exception_table"))}, request
+    )
+    assert accepted["cited_analysis_ids"] == [analysis["id"]]
+
+
+def test_a_summary_missing_a_section_is_rejected(workspace_with_data):
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    partial = _memo(sections=analysis_worker.SUMMARY_SECTIONS[:-1])
+    with pytest.raises(WorkerResponseValidationError, match="Further work required"):
+        analysis_worker.validate_analysis_summary({"markdown": partial}, request)
+
+
+def test_an_embed_fence_survives_the_response_unwrapper():
+    """A memo carrying fences must not be mistaken for a fenced document."""
+    memo = _memo(embeds=_embed("A-1"))
+    unwrapped = analysis_worker._summary_response_schema(memo)["markdown"]
+    assert f"{FENCE}embed" in unwrapped
+    assert analysis_worker.parse_embeds(unwrapped) == [
+        {"analysis": "A-1", "as": "chart", "caption": "x"}
+    ]
+
+
+def test_the_summary_goes_stale_when_the_result_set_moves(workspace_with_data):
+    """Readiness is content-hashed against the results the memo was written from."""
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    capability = next(
+        item
+        for item in capability_registries.ANALYSIS_REGISTRY.all()
+        if item.id == "analysis.summarized"
+    )
+
+    fresh = workspaces.load_workspace(ws.id)
+    assert capability.readiness(fresh, {}).state == "missing"
+
+    fresh.analysis_summary.update(
+        {
+            "markdown": "## Data received and population characteristics\nText.\n",
+            "basis_sha1": analysis_results.summary_basis_digest(fresh),
+            "generated_at": "2026-08-07T00:00:00+00:00",
+            "run_id": "run-1",
+        }
+    )
+    fresh.save()
+    assert capability.readiness(workspaces.load_workspace(ws.id), {}).state == "satisfied"
+
+    later = workspaces.load_workspace(ws.id)
+    later.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Completeness",
+            "spec": COMPLETENESS,
+        }
+    )
+    readiness = capability.readiness(workspaces.load_workspace(ws.id), {})
+    assert readiness.state == "missing"
+    assert "predates the current results" in readiness.reasons[0]
+
+
+def test_the_memo_endpoint_reports_staleness(workspace_with_data):
+    ws = workspace_with_data
+    analysis = _saved(ws, "Duplicates", DUPLICATES)
+    fresh = workspaces.load_workspace(ws.id)
+    fresh.analysis_summary.update(
+        {
+            "markdown": "## Data received and population characteristics\nText.\n",
+            "cited_analysis_ids": [analysis["id"]],
+            "basis_sha1": analysis_results.summary_basis_digest(fresh),
+            "generated_at": "2026-08-07T00:00:00+00:00",
+            "run_id": "run-1",
+        }
+    )
+    fresh.save()
+
+    client = TestClient(create_app())
+    body = client.get(f"/api/workspaces/{ws.id}/analyses/memo").json()
+    assert body["stale"] is False
+    assert body["cited_analysis_ids"] == [analysis["id"]]
+
+    # Re-running a procedure that concludes the same thing does *not* stale the
+    # memo. The basis hashes what the procedures found, not when they were run,
+    # so pressing Run cannot invalidate prose that still describes reality.
+    analysis_results.execute_and_record(workspaces.load_workspace(ws.id), analysis["id"])
+    assert client.get(f"/api/workspaces/{ws.id}/analyses/memo").json()["stale"] is False
+
+    # A procedure whose conclusion is not in the memo does stale it.
+    later = workspaces.load_workspace(ws.id)
+    added = later.add_analysis(
+        {
+            "kind": "analytics",
+            "table": "transactions",
+            "title": "Completeness",
+            "spec": COMPLETENESS,
+        }
+    )
+    analysis_results.execute_and_record(later, added["id"])
+    assert client.get(f"/api/workspaces/{ws.id}/analyses/memo").json()["stale"] is True

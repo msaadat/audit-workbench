@@ -14,9 +14,13 @@ XlsxWriter/fastexcel for Excel I/O. The frontend is Vue 3 + TypeScript + Vite +
 PrimeVue 4. There is no Tailwind, pandas, or DuckDB in the core path.
 
 **Privacy boundary:** Computation runs on the user's machine. The read-only
-assistant and the audit agent can call local tools, but row-level table data is
-not sent to the model provider. The privacy choke points are the assistant
-context builders and the bounded agent context bundles.
+assistant and the audit agent can call local tools, and row-level table data is
+withheld from the model provider with exactly one declared exception: the rows a
+saved analysis *flagged as exceptions* reach the EDA-summary capability, capped
+per procedure, under its own `allow_analysis_exception_rows` permission. Nothing
+else may request rows — `allow_table_rows` is denied everywhere and the resolver
+rejects the `table_rows` representation structurally. The privacy choke points
+are the assistant context builders and the bounded agent context bundles.
 
 **Current product shape:** The original data-workbench surfaces still exist
 (`Data`, `Query`, saved analyses, dashboard tiles), but the shipped product is
@@ -107,7 +111,8 @@ backend/app/
    |- workers/                 - immutable model-worker contracts, registry,
    |                             bounded validation/repair, and the registered
    |                             planning/fieldwork/reporting/analysis/document/
-   |                             intake workers
+   |                             intake workers (analysis owns both the
+   |                             definition worker and the EDA summary worker)
    |- executors/               - deterministic mutation/reconciliation
    |                             contracts, registry, receipts, and the
    |                             registered domain executors
@@ -426,7 +431,8 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   generation as a declared dependency.
 - Phase 8 added the exploratory data-analysis workflow on the same scheduler:
   `data.relationships_inferred` → `data.joins_ready` →
-  `analysis.definitions_ready` → `analysis.executed`. It introduces no workspace
+  `analysis.definitions_ready` → `analysis.executed` → `analysis.summarized`
+  (the last added later; see the analysis-summary note below). It introduces no workspace
   collection — relationship evidence is run-durable, joins land in
   `workspace.joins`, definitions in `workspace.analyses`, and each execution
   records a bounded `last_result` (shape, verdict, the analytics service's own
@@ -591,6 +597,32 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   recorded outcomes; recomputation happens only where it was asked for — one
   procedure (`GET /analyses/{id}`), an execution, or an export. Reading flagged
   rows executes nothing either — it is a file read.
+- The Analysis tab's Summary screen is the **EDA memo**, not a gallery of every
+  procedure. `analysis.summarized` is the terminal outcome of the
+  `data_analysis` template and of `FULL_AUDIT_OUTCOMES`, so a full audit writes
+  it before planning reads it — while still not being a planning *dependency*.
+  `analysis_execution` deliberately stops at `analysis.executed`: it exists to
+  spend no model turn, and summarising is one.
+  The memo is a **derived, read-only artifact** (`Analyses/.summary.json`, one
+  `_ARTIFACT_OBJECTS` entry): there is no editor, no `PUT`, and no
+  `created_by` ownership flip, so regenerating always replaces it and it cannot
+  drift from the results it cites. `dashboard_advice` is the lifecycle
+  precedent; the worker/executor contract is the modern one.
+  Its structure is fixed in code (`workers.analysis.SUMMARY_SECTIONS`) and
+  enforced by the semantic validator, which also rejects any `embed` fence
+  citing a procedure the bundle did not supply — a citation that resolves to
+  nothing is worse than none. Staleness is content-hashed by
+  `analysis_results.summary_basis_digest`, over each analysis' `result_sha1`,
+  so re-running a procedure that concludes the same thing does *not* stale the
+  memo; only a changed conclusion does.
+  `analysis.summary` is the one context preset that admits row-level
+  engagement data, under its own `allow_analysis_exception_rows` permission —
+  never `allow_table_rows`. It permits only rows a declared test already
+  flagged, capped per procedure by `adapters.MAX_SUMMARY_EXCEPTION_ROWS`, and
+  splits them across two sources by severity (`analysis_exceptions` for
+  failures, `analysis_anomalies` for warnings) because deterministic selectors
+  order candidates by reference: one source let a truncated budget drop a
+  backdating failure while keeping a weekend-activity warning.
 - The assistant and agent do not use arbitrary tool loops inside `agent/`.
   Worker calls are single-turn, bounded, and budgeted through `BaseRunner`.
 - Existing uncommitted workspace or code changes may be user-owned. Do not

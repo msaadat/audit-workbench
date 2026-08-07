@@ -1570,6 +1570,238 @@ def analysis_definition_scope(
     )
 
 
+# --------------------------------------------------------------------------- #
+# analysis.summary
+# --------------------------------------------------------------------------- #
+SUMMARY_RESULTS_SOURCE_ID = "analysis_results"
+SUMMARY_EXCEPTIONS_SOURCE_ID = "analysis_exceptions"
+SUMMARY_ANOMALIES_SOURCE_ID = "analysis_anomalies"
+SUMMARY_GAPS_SOURCE_ID = "coverage_gaps"
+SUMMARY_TABLE_METADATA_SOURCE_ID = "table_metadata"
+SUMMARY_TABLE_PROFILE_SOURCE_ID = "table_profiles"
+SUMMARY_PLANNING_SOURCE_ID = "planning_context"
+
+# How many flagged rows one procedure contributes to a summary turn. The
+# durable sidecar retains far more (``analysis_results.EXCEPTION_ROWS``); a memo
+# needs enough rows to characterise an exception and name its worst instances,
+# not the whole population — the reader clicks through for that. With dozens of
+# flagging procedures in a real engagement this bound is what keeps the bundle
+# inside its token budget.
+MAX_SUMMARY_EXCEPTION_ROWS = 12
+
+# Flagged rows are split across two declared sources by severity, and that split
+# is what makes truncation safe. Deterministic selectors order candidates by
+# source_ref, so a single source dropped whichever procedures sorted late by
+# analysis ID — a failed backdating test could be cut while a weekend-activity
+# warning survived. Failures now have their own budget and cannot be crowded out
+# by the merely unusual.
+_FAILURE_VERDICTS = frozenset({"fail"})
+
+
+def _summary_result_projection(
+    workspace: Workspace, analysis: Mapping[str, object]
+) -> dict[str, object]:
+    """What one saved procedure concluded, as the memo needs to read it."""
+    from ...analysis_results import analysis_state
+
+    result = dict(analysis.get("last_result") or {})
+    state = analysis_state(workspace, analysis)
+    return {
+        "analysis_id": str(analysis.get("id") or ""),
+        "title": analysis.get("title"),
+        # The authored rationale. A memo that can say *why* a procedure was run
+        # reads like an auditor wrote it; one that only has titles does not.
+        "note": analysis.get("note"),
+        "table": analysis.get("table"),
+        "kind": analysis.get("kind"),
+        "test": (analysis.get("spec") or {}).get("test"),
+        "created_by": analysis.get("created_by"),
+        "classification": state["classification"],
+        "state": state["state"],
+        "verdict": result.get("verdict"),
+        "verdict_text": result.get("verdict_text"),
+        "row_count": result.get("row_count"),
+        "exception_count": result.get("exception_count"),
+        "statistics": result.get("stats") or [],
+        "error": result.get("error"),
+    }
+
+
+def analysis_summary_result_candidates(
+    workspace: Workspace,
+) -> tuple[ContextCandidate, ...]:
+    """Every saved procedure and the outcome it recorded.
+
+    Deliberately every one, not only the workflow's own: a procedure the
+    auditor wrote is part of the EDA the memo describes.
+    """
+    return tuple(
+        ContextCandidate(
+            source_ref=f"analysis:{item['id']}",
+            source=projection,
+            representations={"analysis_result": projection},
+            metadata={"analysis_id": str(item.get("id") or "")},
+            lexical_text=" ".join(
+                str(value or "")
+                for value in (item.get("title"), item.get("table"), item.get("note"))
+            ),
+        )
+        for item in workspace.analyses
+        for projection in (_summary_result_projection(workspace, item),)
+    )
+
+
+def analysis_summary_exception_candidates(
+    workspace: Workspace, *, failures: bool
+) -> tuple[ContextCandidate, ...]:
+    """The rows each flagging procedure identified, bounded per procedure.
+
+    ``failures`` selects the severity half: the procedures that concluded a
+    failure, or the ones that merely flagged something unusual.
+    """
+    from ...analysis_results import read_exception_evidence
+
+    candidates = []
+    for item in workspace.analyses:
+        verdict = str((item.get("last_result") or {}).get("verdict") or "")
+        if (verdict in _FAILURE_VERDICTS) is not failures:
+            continue
+        evidence = read_exception_evidence(workspace, item)
+        if evidence is None:
+            continue
+        frame = dict(evidence.get("frame") or {})
+        rows = list(frame.get("rows") or [])[:MAX_SUMMARY_EXCEPTION_ROWS]
+        flagged = {
+            "analysis_id": str(item.get("id") or ""),
+            "title": item.get("title"),
+            "table": item.get("table"),
+            "verdict": verdict,
+            "verdict_text": (item.get("last_result") or {}).get("verdict_text"),
+            "exception_count": evidence.get("exception_count"),
+            "rows_supplied": len(rows),
+            "columns": list(frame.get("columns") or []),
+            "rows": rows,
+        }
+        candidates.append(
+            ContextCandidate(
+                source_ref=f"analysis:{item['id']}",
+                source=flagged,
+                representations={"analysis_exception_rows": flagged},
+                metadata={"analysis_id": str(item.get("id") or "")},
+                lexical_text=str(item.get("title") or ""),
+            )
+        )
+    return tuple(candidates)
+
+
+def analysis_coverage_gaps(workspace: Workspace) -> dict[str, object]:
+    """Locally computed inventory of what the analysis has not established.
+
+    Supplied as fact rather than left to the model's imagination: an auditor's
+    "further work" section is only trustworthy if the plainly outstanding items
+    are in it, and those are knowable without a model.
+    """
+    from ...analysis_results import analysis_state
+
+    outstanding: list[dict[str, object]] = []
+    errored: list[dict[str, object]] = []
+    for item in workspace.analyses:
+        state = analysis_state(workspace, item)
+        entry = {
+            "analysis_id": str(item.get("id") or ""),
+            "title": item.get("title"),
+            "table": item.get("table"),
+            "reason": state["classification"],
+        }
+        if state["classification"] in {"not_run", "stale"}:
+            outstanding.append(entry)
+        elif state["classification"] == "execution_error":
+            entry["error"] = (item.get("last_result") or {}).get("error")
+            errored.append(entry)
+
+    covered = {str(item.get("table") or "") for item in workspace.analyses}
+    frames = list(workspace.table_names())
+    uncovered = sorted(name for name in frames if name not in covered)
+
+    joined: set[frozenset[str]] = set()
+    for join in workspace.joins:
+        joined.add(frozenset({str(join.get("left")), str(join.get("right"))}))
+    base = sorted(str(item.get("name") or "") for item in workspace.tables)
+    unjoined = sorted(
+        f"{left} + {right}"
+        for index, left in enumerate(base)
+        for right in base[index + 1 :]
+        if frozenset({left, right}) not in joined
+    )
+    return {
+        "outstanding_procedures": outstanding,
+        "errored_procedures": errored,
+        "frames_without_any_procedure": uncovered,
+        "table_pairs_never_joined": unjoined,
+        "totals": {
+            "analyses": len(workspace.analyses),
+            "outstanding": len(outstanding),
+            "errored": len(errored),
+            "frames": len(frames),
+            "joins": len(workspace.joins),
+        },
+    }
+
+
+def analysis_summary_scope(workspace: Workspace) -> ContextScope:
+    """Build the local candidate scope for the one analysis-summary unit."""
+    gaps = analysis_coverage_gaps(workspace)
+    planning_context = dict(workspace.planning.get("context") or {})
+    # Base tables only. A join is a view over its sides, so its profile restates
+    # populations already described and — because deterministic selectors order
+    # by source_ref — enough joins would crowd the base tables out of the budget
+    # entirely. The memo describes the data received; the joins built over it
+    # are their own section.
+    base_tables = {str(item.get("name") or "") for item in workspace.tables}
+    return ContextScope(
+        candidates={
+            SUMMARY_RESULTS_SOURCE_ID: analysis_summary_result_candidates(workspace),
+            SUMMARY_EXCEPTIONS_SOURCE_ID: analysis_summary_exception_candidates(
+                workspace, failures=True
+            ),
+            SUMMARY_ANOMALIES_SOURCE_ID: analysis_summary_exception_candidates(
+                workspace, failures=False
+            ),
+            SUMMARY_GAPS_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="analysis:coverage_gaps",
+                    source=gaps,
+                    representations={"analysis_result": gaps},
+                    metadata={"kind": "coverage_gaps"},
+                ),
+            ),
+            SUMMARY_TABLE_METADATA_SOURCE_ID: tuple(
+                candidate
+                for candidate in apm_table_metadata_candidates(workspace)
+                if candidate.metadata.get("table") in base_tables
+            ),
+            SUMMARY_TABLE_PROFILE_SOURCE_ID: tuple(
+                candidate
+                for candidate in apm_table_profile_candidates(workspace)
+                if candidate.metadata.get("table") in base_tables
+            ),
+            SUMMARY_PLANNING_SOURCE_ID: (
+                (
+                    ContextCandidate(
+                        source_ref="planning:context",
+                        source=planning_context,
+                        representations={"planning_context": planning_context},
+                        metadata={"artifact": "planning_context"},
+                    ),
+                )
+                if any(str(value or "").strip() for value in planning_context.values())
+                else ()
+            ),
+        },
+        selector_context={},
+    )
+
+
 DOCUMENT_ANALYSIS_METADATA_SOURCE_ID = "document_metadata"
 DOCUMENT_ANALYSIS_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_ANALYSIS_CHUNK_SOURCE_ID = "document_chunk"

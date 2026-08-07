@@ -63,7 +63,7 @@ def _configured(monkeypatch, overrides: dict | None = None) -> FakeAgentLLM:
             "reuse_existing",
         ),
         # Infer joins and analyze tables.
-        ("Perform relevant joins and data analysis", "workflow", ANALYSIS, ["analysis.executed"], "reuse_existing"),
+        ("Perform relevant joins and data analysis", "workflow", ANALYSIS, ["analysis.summarized"], "reuse_existing"),
         # Analyze selected documents.
         ("Analyse the selected documents", "workflow", DOCUMENTS, ["documents.analysis_generated"], "reuse_existing"),
         # Declared RCM fieldwork.

@@ -38,11 +38,13 @@ WORKFLOW_ID = "audit_workflow_v3"
 # every document capability's readiness is satisfied and no unit expands, so an
 # audit that carries no documents runs exactly as before.
 #
-# A full audit also schedules the exploratory data-analysis branch. The full
-# outcome set requests that branch before the planning outcomes, so the
-# sequential workflow scheduler completes it before APM preparation. It is *not*
-# a dependency of either planning capability: an APM request on its own remains
-# independent of data analysis.
+# A full audit also schedules the exploratory data-analysis branch, through to
+# the memo that branch produces. The full outcome set requests it before the
+# planning outcomes, so the sequential workflow scheduler completes it before
+# APM preparation and the memo exists by the time planning reads it. It is
+# still *not* a dependency of either planning capability: an APM request on its
+# own remains independent of data analysis, and planning consumes whatever
+# analysis material exists rather than forcing it into being.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "documents.text_ready": documents_workflow.dependencies("documents.text_ready"),
     "documents.analysis_chunks_ready": documents_workflow.dependencies(
@@ -59,6 +61,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "analysis.definitions_ready"
     ),
     "analysis.executed": analysis_workflow.dependencies("analysis.executed"),
+    "analysis.summarized": analysis_workflow.dependencies("analysis.summarized"),
     "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
@@ -83,7 +86,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
 # Complete-audit outcome set requested by "complete the audit" style goals. The
 # transitive closure of these outcomes is the whole graph above.
 FULL_AUDIT_OUTCOMES = [
-    "analysis.executed",
+    "analysis.summarized",
     "findings.drafted",
     "working_papers.generated",
     "dashboard.curated",

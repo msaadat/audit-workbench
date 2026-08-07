@@ -883,14 +883,237 @@ ANALYSIS_DEFINITION_WORKER = WorkerDefinition(
 WORKERS.register(ANALYSIS_DEFINITION_WORKER)
 
 
+# --------------------------------------------------------------------------- #
+# analysis.summary
+# --------------------------------------------------------------------------- #
+ANALYSIS_SUMMARY_WORKER_ID = "analysis.summary"
+
+# The memo's structure is fixed in code rather than in an editable template: it
+# is a derived artifact regenerated from results, so its shape belongs to the
+# contract the validator enforces, not to a per-engagement preference.
+SUMMARY_SECTIONS: tuple[str, ...] = (
+    "Data received and population characteristics",
+    "Relationships and joins established",
+    "Procedures performed",
+    "Exceptions noted",
+    "Data quality observations",
+    "Further work required",
+)
+
+# An embedded result. A fenced block rather than a JSON block list because the
+# memo has to survive being read as plain text — in the APM, in the report, in
+# an export — and a fence degrades to something legible rather than to broken
+# markup.
+EMBED_FENCE = "embed"
+EMBED_KINDS: tuple[str, ...] = ("chart", "summary_table", "exception_table", "stats")
+_EMBED_BLOCK = re.compile(
+    r"^```embed[ \t]*\n(.*?)^```[ \t]*$",
+    re.DOTALL | re.MULTILINE,
+)
+_EMBED_FIELD = re.compile(r"^([a-z_]+)\s*:\s*(.*)$")
+
+_SECTION_LIST = "\n".join(f"## {section}" for section in SUMMARY_SECTIONS)
+
+ANALYSIS_SUMMARY_SYSTEM = f"""[agent:analysis_summary]
+Write the exploratory data analysis summary for one audit engagement, as the
+auditor who performed the work would write it for the file. Ground every
+statement in the supplied procedures, their recorded verdicts and statistics,
+the flagged rows supplied for them, the table profiles, and the supplied
+coverage gaps. Never invent a count, a value, an identifier, or a procedure.
+
+Use exactly these level-2 sections, in this order, and no others:
+{_SECTION_LIST}
+
+Write continuous prose an auditor would recognise, not a bullet inventory of
+every test. Group procedures by what they were testing and what they showed.
+Where a procedure flagged rows, say what those rows actually are: name the
+document, vendor, or staff identifiers from the supplied flagged rows and give
+the amounts and dates, because an exception nobody can locate is not an
+exception anybody can follow up. State the population before the exceptions.
+Distinguish what the data establishes from what it merely suggests, and say
+plainly where a conclusion cannot yet be drawn.
+
+"Further work required" must cover every outstanding, stale, and errored
+procedure named in the supplied coverage gaps, every frame carrying no
+procedure, and the judgment items the results themselves raise — corroboration
+a data test cannot supply, populations needing a different cut, controls the
+data cannot see. Do not invent work the supplied material does not support.
+
+To place a result in the memo, emit a fenced block on its own lines:
+```{EMBED_FENCE}
+analysis: <analysis_id>
+as: <{" | ".join(EMBED_KINDS)}>
+caption: <one short line saying what the reader should see in it>
+```
+Use the exact analysis_id of a supplied procedure; an id that was not supplied
+is rejected. Embed only where the result carries the paragraph — a chart for a
+distribution or trend, exception_table where you have named the exceptions.
+Six to twelve embeds across the memo is right; do not embed every procedure.
+Return Markdown only, with no JSON wrapper and no outer code fence.
+"""
+
+SUMMARY_RESULTS_SOURCE_ID = "analysis_results"
+SUMMARY_EXCEPTIONS_SOURCE_ID = "analysis_exceptions"
+
+
+def _resolved_items(request: WorkerRequest, source_id: str) -> list[object]:
+    return [item.content for item in request.context.items if item.source_id == source_id]
+
+
+def parse_embeds(markdown: str) -> list[dict[str, str]]:
+    """Extract the embed directives from a memo, in document order."""
+    embeds: list[dict[str, str]] = []
+    for match in _EMBED_BLOCK.finditer(markdown or ""):
+        fields: dict[str, str] = {}
+        for line in match.group(1).splitlines():
+            field = _EMBED_FIELD.match(line.strip())
+            if field:
+                fields[field.group(1)] = field.group(2).strip()
+        embeds.append(fields)
+    return embeds
+
+
+def validate_analysis_summary(
+    proposal: Mapping[str, Any],
+    request: WorkerRequest,
+) -> Mapping[str, Any]:
+    """Enforce the memo skeleton and reject any citation that was not supplied."""
+    markdown = str(proposal.get("markdown") or "").strip()
+    if not markdown:
+        raise WorkerResponseValidationError("the summary is empty")
+
+    headings = {
+        match.group(1).strip().casefold()
+        for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", markdown, re.MULTILINE)
+    }
+    missing = [
+        section for section in SUMMARY_SECTIONS if section.casefold() not in headings
+    ]
+    if missing:
+        raise WorkerResponseValidationError(f"missing section '{missing[0]}'")
+
+    supplied = {
+        str((item or {}).get("analysis_id") or "")
+        for item in _resolved_items(request, SUMMARY_RESULTS_SOURCE_ID)
+        if isinstance(item, Mapping)
+    }
+    if not supplied:
+        raise WorkerContractError("The analysis summary context supplied no procedures.")
+
+    embeds = parse_embeds(markdown)
+    for embed in embeds:
+        analysis_id = embed.get("analysis")
+        if not analysis_id:
+            raise WorkerResponseValidationError("an embed names no analysis")
+        # A citation the reader cannot open is worse than no citation at all: it
+        # looks like evidence and resolves to nothing.
+        if analysis_id not in supplied:
+            raise WorkerResponseValidationError(
+                f"embed cites '{analysis_id}', which is not a supplied procedure"
+            )
+        kind = embed.get("as") or ""
+        if kind not in EMBED_KINDS:
+            raise WorkerResponseValidationError(
+                f"embed for '{analysis_id}' uses unknown kind '{kind}'"
+            )
+    return {
+        "markdown": markdown,
+        "cited_analysis_ids": list(dict.fromkeys(embed["analysis"] for embed in embeds)),
+    }
+
+
+def _summary_response_schema(response: str) -> Mapping[str, Any]:
+    value = str(response or "").strip()
+    fenced = re.fullmatch(
+        r"```(?:markdown|md)?\s*\n?(.*?)\n?```", value, re.DOTALL | re.IGNORECASE
+    )
+    # Only unwrap an outer fence that wraps the whole document. A memo whose
+    # body carries embed fences must not be mistaken for a fenced document and
+    # gutted down to its first block.
+    if fenced:
+        inner = fenced.group(1).strip()
+        if "```" not in inner:
+            value = inner
+    heading = re.search(r"(?m)^#{1,6}\s+", value)
+    if heading:
+        value = value[heading.start() :].strip()
+    return {"markdown": value}
+
+
+def run_analysis_summary_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Transform only the supplied bundle into one budgeted model request."""
+    user = json.dumps(
+        {"RESOLVED CONTEXT": request.context.to_dict()},
+        indent=1,
+        ensure_ascii=False,
+        default=str,
+    )
+    if attempt.is_repair:
+        user += (
+            "\n\nThe previous summary failed validation: "
+            + "; ".join(attempt.validation_errors)
+            + ". Return the complete corrected summary."
+        )
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": "analysis_summary",
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return gateway.complete(
+        ANALYSIS_SUMMARY_SYSTEM, user, activity, attempt=attempt.number
+    )
+
+
+ANALYSIS_SUMMARY_RESPONSE_SCHEMA = WorkerResponseSchema(
+    schema_id="analysis.summary.response",
+    schema_hash=_sha256_text("analysis-summary-response:markdown-with-embed-fences"),
+    validator=_summary_response_schema,
+)
+ANALYSIS_SUMMARY_WORKER = WorkerDefinition(
+    worker_id=ANALYSIS_SUMMARY_WORKER_ID,
+    implementation_hash=_sha256_text(inspect.getsource(run_analysis_summary_worker)),
+    prompt_hash=_sha256_text(ANALYSIS_SUMMARY_SYSTEM),
+    response_schema=ANALYSIS_SUMMARY_RESPONSE_SCHEMA,
+    repair_policy=WorkerRepairPolicy(
+        max_repair_attempts=1,
+        guidance_hash=_sha256_text(
+            "Repair missing summary sections and citations to unsupplied procedures."
+        ),
+    ),
+    implementation=run_analysis_summary_worker,
+    semantic_validation_hash=_sha256_text(inspect.getsource(validate_analysis_summary)),
+    semantic_validator=validate_analysis_summary,
+)
+
+WORKERS.register(ANALYSIS_SUMMARY_WORKER)
+
+
 __all__ = [
     "ANALYSIS_DEFINITION_RESPONSE_SCHEMA",
     "ANALYSIS_DEFINITION_SYSTEM",
     "ANALYSIS_DEFINITION_WORKER",
     "ANALYSIS_DEFINITION_WORKER_ID",
     "ANALYSIS_KINDS",
+    "ANALYSIS_SUMMARY_RESPONSE_SCHEMA",
+    "ANALYSIS_SUMMARY_SYSTEM",
+    "ANALYSIS_SUMMARY_WORKER",
+    "ANALYSIS_SUMMARY_WORKER_ID",
+    "EMBED_KINDS",
     "MAX_PROPOSED_ANALYSES",
+    "SUMMARY_SECTIONS",
     "analysis_semantic_id",
+    "parse_embeds",
     "run_analysis_definition_worker",
+    "run_analysis_summary_worker",
     "validate_analysis_proposal",
+    "validate_analysis_summary",
 ]

@@ -18,6 +18,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'data.joins_ready': 'Materialized joins',
   'analysis.definitions_ready': 'Analysis definitions',
   'analysis.executed': 'Analysis results',
+  'analysis.summarized': 'Analysis summary',
   'planning.context_ready': 'Planning context',
   'planning.apm_ready': 'Audit planning memorandum',
   'planning.rcm_ready': 'Risk and control matrix',

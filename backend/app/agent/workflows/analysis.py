@@ -45,11 +45,17 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "data.joins_ready": ("data.relationships_inferred",),
     "analysis.definitions_ready": ("data.joins_ready",),
     "analysis.executed": ("analysis.definitions_ready",),
+    "analysis.summarized": ("analysis.executed",),
 }
 
 # Complete-analysis outcome set requested by "analyze these tables" style goals.
 # The transitive closure of this outcome is the whole graph above.
-FULL_ANALYSIS_OUTCOMES = ["analysis.executed"]
+#
+# The terminal outcome is the memo, not the results: a request to analyse the
+# data is answered by what the analysis *found*, and a screen of executed
+# procedures is not that answer. The memo is what an auditor reads, and what
+# the APM later consumes.
+FULL_ANALYSIS_OUTCOMES = ["analysis.summarized"]
 
 # Goal-template routing to requested outcome sets. ``data_analysis`` was
 # previously an isolated ActionRunner intent; Phase 8 makes it a declared
@@ -61,6 +67,12 @@ FULL_ANALYSIS_OUTCOMES = ["analysis.executed"]
 # that is already satisfied, so with definitions in place the run executes them
 # and spends no model turn at all. It is the declared way to say "bring the
 # saved analyses up to date" without inviting new ones to be proposed.
+#
+# ``analysis_execution`` deliberately stops at ``analysis.executed`` rather than
+# following ``data_analysis`` to the memo. Its whole point is that it spends no
+# model turn when there is nothing left to propose, and summarising is a model
+# turn. Re-running the procedures does make an existing memo stale; that is
+# reported on the Summary screen, where regenerating is one deliberate click.
 TEMPLATE_OUTCOMES: dict[str, list[str]] = {
     "data_analysis": FULL_ANALYSIS_OUTCOMES,
     "analysis_execution": ["analysis.executed"],

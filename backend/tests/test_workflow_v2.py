@@ -155,7 +155,7 @@ def test_finding_draft_scope_expands_only_the_selected_observation():
         ("report", "workflow", ["report.working_draft", "audit.verified"]),
         # Phase 8 made data analysis a declared workflow goal; Phase 11 did the
         # same for both halves of the former ``document_testing`` template.
-        ("data_analysis", "workflow", ["analysis.executed"]),
+        ("data_analysis", "workflow", ["analysis.summarized"]),
         # Same terminal outcome as data_analysis, different request: with the
         # definitions already in place the scheduler reuses them and executes
         # without proposing more, which is what "run the saved analyses" means.
@@ -405,6 +405,7 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "data.joins_ready": ("data.relationships_inferred",),
         "analysis.definitions_ready": ("data.joins_ready",),
         "analysis.executed": ("analysis.definitions_ready",),
+        "analysis.summarized": ("analysis.executed",),
         "planning.context_ready": ("documents.analysis_generated",),
         "planning.apm_ready": ("planning.context_ready",),
         "planning.rcm_ready": ("planning.apm_ready",),
@@ -442,6 +443,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "data.joins_ready",
         "analysis.definitions_ready",
         "analysis.executed",
+        "analysis.summarized",
         "documents.text_ready",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
@@ -458,7 +460,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
         "audit.verified",
     ]
     position = {capability_id: index for index, capability_id in enumerate(resolved)}
-    assert position["analysis.executed"] < position["planning.apm_ready"]
+    assert position["analysis.summarized"] < position["planning.apm_ready"]
     assert all(
         position[dependency] < position[capability.id]
         for capability in audit_capabilities.REGISTRY.all()

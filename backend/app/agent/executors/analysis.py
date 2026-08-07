@@ -23,12 +23,13 @@ import hashlib
 import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from ... import analysis_results, sandbox
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
 from ...workspaces import Workspace, WorkspaceError, slugify
 from .. import joins as join_diagnostics
-from ..capabilities.analysis import frame_ref
+from ..capabilities.analysis import ANALYSIS_SUMMARY_REF, frame_ref
 from .model import (
     EXECUTORS,
     ExecutorConcurrency,
@@ -41,6 +42,7 @@ from .model import (
 JOIN_EXECUTOR_ID = "analysis.join"
 DEFINITIONS_EXECUTOR_ID = "analysis.definitions"
 EXECUTION_EXECUTOR_ID = "analysis.execution"
+SUMMARY_EXECUTOR_ID = "analysis.summary"
 
 AUDITOR_ANALYSIS_PRESERVED = "auditor_owned_analysis_preserved"
 # Every accepted definition already exists against another frame built from the
@@ -56,6 +58,10 @@ MAX_RESULT_STATS = analysis_results.MAX_RESULT_STATS
 
 def _sha256_text(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _plain_json(value: object) -> object:
@@ -827,6 +833,149 @@ def reconcile_analysis_run(
     )
 
 
+# --------------------------------------------------------------------------- #
+# analysis.summarized
+# --------------------------------------------------------------------------- #
+@dataclass
+class AnalysisSummaryExecutorTarget:
+    """Mutable target for the one analysis-summary commit."""
+
+    workspace: Workspace
+    run_id: str
+
+    def __post_init__(self) -> None:
+        if not str(self.run_id or "").strip():
+            raise ValueError("Analysis summary target requires a run_id.")
+
+
+def _validated_summary(
+    request: ExecutorRequest, target: object
+) -> tuple[AnalysisSummaryExecutorTarget, dict]:
+    if not isinstance(target, AnalysisSummaryExecutorTarget):
+        raise WorkspaceError(
+            "Analysis summary executor requires an AnalysisSummaryExecutorTarget."
+        )
+    if set(request.expected_parents) != {ANALYSIS_SUMMARY_REF}:
+        raise WorkspaceError(
+            "Analysis summary executor requires exactly its summary parent hash."
+        )
+    markdown = str(request.proposal.get("markdown") or "").strip()
+    if not markdown:
+        raise WorkspaceError("The analysis summary proposal carries no markdown.")
+    cited = [
+        str(value)
+        for value in (request.proposal.get("cited_analysis_ids") or [])
+        if str(value or "").strip()
+    ]
+    return target, {"markdown": markdown, "cited_analysis_ids": cited}
+
+
+def execute_analysis_summary(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorResult:
+    """Commit the analysis memo under its own parent guard.
+
+    The memo is derived, not authored: there is no auditor-edit branch here
+    because the artifact is read-only in the product. Regenerating replaces it
+    outright, which is what makes it always agree with the results it cites.
+    """
+    target, proposal = _validated_summary(request, raw_target)
+    state: dict[str, int] = {}
+
+    def commit(fresh: Workspace) -> dict:
+        state["revision_before"] = fresh.revision
+        summary = {
+            **proposal,
+            # Stamped with the exact result set it was written from, so the
+            # capability can tell "written and current" from "written, then the
+            # results moved" without re-reading the prose.
+            "basis_sha1": analysis_results.summary_basis_digest(fresh),
+            "generated_at": _utcnow(),
+            "run_id": target.run_id,
+        }
+        fresh.analysis_summary.clear()
+        fresh.analysis_summary.update(summary)
+        return summary
+
+    committed = mutate(
+        target.workspace, commit, expected_parents=request.expected_parents
+    )
+    target.workspace = committed.workspace
+    refs = [ANALYSIS_SUMMARY_REF]
+    return ExecutorResult(
+        executor_id=request.executor_id,
+        capability_id=request.capability_id,
+        unit_id=request.unit_id,
+        workspace_revision_before=state["revision_before"],
+        workspace_revision_after=committed.workspace.revision,
+        artifact_refs=refs,
+        applied_parents=dict(request.expected_parents),
+        postcondition_hashes=parent_hashes(committed.workspace, refs),
+        output={
+            "status": "ok",
+            "action": "summarized",
+            "cited": len(proposal["cited_analysis_ids"]),
+            "characters": len(proposal["markdown"]),
+        },
+    )
+
+
+def reconcile_analysis_summary(
+    request: ExecutorRequest, raw_target: object
+) -> ExecutorReconciliation:
+    """Classify an interrupted summary commit.
+
+    The commit changes the guarded artifact itself, so an unchanged parent
+    proves it never ran. A changed parent is proven applied only when the memo
+    now on the workspace is the exact prose this run proposed.
+    """
+    target, proposal = _validated_summary(request, raw_target)
+    current = Workspace(target.workspace.root)
+    actual = parent_hashes(current, [ANALYSIS_SUMMARY_REF])[ANALYSIS_SUMMARY_REF]
+    if actual == request.expected_parents[ANALYSIS_SUMMARY_REF]:
+        return ExecutorReconciliation("not_applied")
+    stored = current.analysis_summary or {}
+    if (
+        str(stored.get("markdown") or "") == proposal["markdown"]
+        and str(stored.get("run_id") or "") == target.run_id
+    ):
+        target.workspace = current
+        refs = [ANALYSIS_SUMMARY_REF]
+        return ExecutorReconciliation(
+            "already_applied",
+            result=ExecutorResult(
+                executor_id=request.executor_id,
+                capability_id=request.capability_id,
+                unit_id=request.unit_id,
+                workspace_revision_before=max(
+                    request.expected_revision, current.revision - 1
+                ),
+                workspace_revision_after=current.revision,
+                artifact_refs=refs,
+                applied_parents=dict(request.expected_parents),
+                postcondition_hashes=parent_hashes(current, refs),
+                output={
+                    "status": "ok",
+                    "action": "summarized",
+                    "cited": len(proposal["cited_analysis_ids"]),
+                    "characters": len(proposal["markdown"]),
+                },
+            ),
+            reason="This run's analysis summary already holds.",
+        )
+    return ExecutorReconciliation(
+        "conflict",
+        reason=str(
+            ParentConflict(
+                ANALYSIS_SUMMARY_REF,
+                request.expected_parents[ANALYSIS_SUMMARY_REF],
+                actual,
+                current.revision,
+            )
+        ),
+    )
+
+
 JOIN_EXECUTOR = ExecutorDefinition(
     executor_id=JOIN_EXECUTOR_ID,
     implementation_hash=_sha256_text(inspect.getsource(execute_join)),
@@ -854,9 +1003,19 @@ EXECUTION_EXECUTOR = ExecutorDefinition(
     reconciler=reconcile_analysis_run,
 )
 
+SUMMARY_EXECUTOR = ExecutorDefinition(
+    executor_id=SUMMARY_EXECUTOR_ID,
+    implementation_hash=_sha256_text(inspect.getsource(execute_analysis_summary)),
+    reconciliation_hash=_sha256_text(inspect.getsource(reconcile_analysis_summary)),
+    concurrency=ExecutorConcurrency("parent_hashes"),
+    implementation=execute_analysis_summary,
+    reconciler=reconcile_analysis_summary,
+)
+
 EXECUTORS.register(JOIN_EXECUTOR)
 EXECUTORS.register(DEFINITIONS_EXECUTOR)
 EXECUTORS.register(EXECUTION_EXECUTOR)
+EXECUTORS.register(SUMMARY_EXECUTOR)
 
 
 __all__ = [
@@ -866,6 +1025,7 @@ __all__ = [
     "AnalysisDefinitionExecutorTarget",
     "AnalysisEditPreserved",
     "AnalysisExecutionExecutorTarget",
+    "AnalysisSummaryExecutorTarget",
     "DEFINITIONS_EXECUTOR",
     "DEFINITIONS_EXECUTOR_ID",
     "EXECUTION_EXECUTOR",
@@ -873,12 +1033,15 @@ __all__ = [
     "JOIN_EXECUTOR",
     "JOIN_EXECUTOR_ID",
     "JoinExecutorTarget",
+    "SUMMARY_EXECUTOR",
+    "SUMMARY_EXECUTOR_ID",
     "MAX_RESULT_STATS",
     "NO_SAFE_RELATIONSHIP",
     "analysis_ref",
     "analysis_stable_id",
     "bounded_result",
     "execute_analysis_definitions",
+    "execute_analysis_summary",
     "execute_analysis_run",
     "execute_join",
     "infer_relationship",

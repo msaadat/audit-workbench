@@ -80,7 +80,7 @@ def test_full_run_over_api(client, ws_id, workspace_with_data, fake_agent_llm):
     assert run["engine"] == "workflow"
     assert run["kind"] == "audit"
     assert run["workflow"]["definition"] == "analysis_workflow_v1"
-    assert run["workflow"]["requested_outcomes"] == ["analysis.executed"]
+    assert run["workflow"]["requested_outcomes"] == ["analysis.summarized"]
     assert run["command"]["goal_template"] == "data_analysis"
     assert run["route"]["route"] == "workflow"
     assert run["context"]["objective"] == "revenue completeness"

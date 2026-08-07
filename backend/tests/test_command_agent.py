@@ -11,8 +11,11 @@ from app.agent import capabilities as audit_capabilities
 from conftest import FakeAgentLLM, wait_run
 
 
-def configured(monkeypatch, response):
-    fake = FakeAgentLLM({"agent:command_interpreter": response})
+def configured(monkeypatch, response, *, router_response=None):
+    responses = {"agent:command_interpreter": response}
+    if router_response is not None:
+        responses["agent:workflow_router"] = router_response
+    fake = FakeAgentLLM(responses)
     monkeypatch.setattr(llm, "chat", fake)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "backend": "fake", "model": "fake"})
     return fake
@@ -103,7 +106,8 @@ def test_command_interpreter_repairs_semantically_invalid_action_graph(monkeypat
     assert completed["status"] == "completed"
     assert [item["type"] for item in completed["actions"]] == ["run_report_quality"]
     assert [call["tag"] for call in fake.calls] == [
-        "agent:command_interpreter", "agent:command_interpreter",
+        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
     ]
     rejected = completed["rejected_proposals"][0]
     assert rejected["stage"] == "command_interpreter"
@@ -189,7 +193,11 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
             ],
         }
 
-    fake = configured(monkeypatch, interpret)
+    fake = configured(monkeypatch, interpret, router_response={
+        "route": "action", "requested_outcomes": [], "objective": "Analyze data",
+        "target_refs": [], "generation_mode": "reuse_existing",
+        "action_intent": None, "constraints": [],
+    })
     started = runner.start_command_run(
         workspace_with_data, "auto", {"source": "chat", "text": "join customer data"}
     )
@@ -203,7 +211,8 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
     assert completed["actions"][1]["args"]["params"]["columns"] == ["invoice_no"]
     assert workspaces.load_workspace(workspace_with_data.id).joins[0]["name"] == "enriched"
     assert [call["tag"] for call in fake.calls] == [
-        "agent:command_interpreter", "agent:command_interpreter",
+        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
     ]
     assert fake.calls[0]["tools"] is not None
     assert tooling.TABLE_SCHEMAS_TOOL in action_tools.TOOL_SCHEMAS
@@ -262,7 +271,11 @@ def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
             }],
         }
 
-    fake = configured(monkeypatch, interpret)
+    fake = configured(monkeypatch, interpret, router_response={
+        "route": "action", "requested_outcomes": [], "objective": "Analyze data",
+        "target_refs": [], "generation_mode": "reuse_existing",
+        "action_intent": None, "constraints": [],
+    })
     started = runner.start_command_run(
         workspace_with_data, "auto",
         {
@@ -276,7 +289,8 @@ def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
     saved = workspaces.load_workspace(workspace_with_data.id).rulesets[0]
     assert saved["rules"][0]["check"] == "required"
     assert [call["tag"] for call in fake.calls] == [
-        "agent:command_interpreter", "agent:command_interpreter",
+        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
     ]
     assert fake.calls[0]["tools"] is not None
 
@@ -315,7 +329,11 @@ def test_command_interpreter_repairs_semantically_empty_validation_rule(
             }
         return {**common, "actions": []}
 
-    fake = configured(monkeypatch, interpret)
+    fake = configured(monkeypatch, interpret, router_response={
+        "route": "action", "requested_outcomes": [], "objective": "Analyze data",
+        "target_refs": [], "generation_mode": "reuse_existing",
+        "action_intent": None, "constraints": [],
+    })
     started = runner.start_command_run(
         workspace_with_data, "auto", {"source": "chat", "text": "validate approvals"}
     )
@@ -325,7 +343,8 @@ def test_command_interpreter_repairs_semantically_empty_validation_rule(
     assert not workspaces.load_workspace(workspace_with_data.id).rulesets
     assert "matches zero rows" in completed["rejected_proposals"][0]["error"]
     assert [call["tag"] for call in fake.calls] == [
-        "agent:command_interpreter", "agent:command_interpreter",
+        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
     ]
 
 
@@ -359,7 +378,11 @@ def test_command_interpreter_reports_all_unsupported_analytics_and_repairs(
         assert "create_custom_analysis" in user
         return {**common, "actions": []}
 
-    fake = configured(monkeypatch, interpret)
+    fake = configured(monkeypatch, interpret, router_response={
+        "route": "action", "requested_outcomes": [], "objective": "Analyze data",
+        "target_refs": [], "generation_mode": "reuse_existing",
+        "action_intent": None, "constraints": [],
+    })
     started = runner.start_command_run(
         workspace_with_data, "auto",
         {
@@ -373,7 +396,8 @@ def test_command_interpreter_reports_all_unsupported_analytics_and_repairs(
         "Unknown analytics tests: approval_limits, three_way_match."
     )
     assert [call["tag"] for call in fake.calls] == [
-        "agent:command_interpreter", "agent:command_interpreter",
+        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
     ]
 
 
@@ -411,7 +435,11 @@ def test_command_interpreter_repairs_unsafe_custom_analysis_contract(
             }],
         }
 
-    fake = configured(monkeypatch, interpret)
+    fake = configured(monkeypatch, interpret, router_response={
+        "route": "action", "requested_outcomes": [], "objective": "Analyze data",
+        "target_refs": [], "generation_mode": "reuse_existing",
+        "action_intent": None, "constraints": [],
+    })
     started = runner.start_command_run(
         workspace_with_data, "auto",
         {"source": "chat", "text": "Analyze data"},
@@ -423,7 +451,8 @@ def test_command_interpreter_repairs_unsafe_custom_analysis_contract(
     saved = workspaces.load_workspace(workspace_with_data.id).analyses[0]
     assert saved["spec"]["code"].startswith("result = transactions")
     assert [call["tag"] for call in fake.calls] == [
-        "agent:command_interpreter", "agent:command_interpreter",
+        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
     ]
 
 
@@ -442,6 +471,11 @@ def test_failed_custom_analysis_gets_repaired_code_before_retry(
         }],
     }
     fake = FakeAgentLLM({
+        "agent:workflow_router": {
+            "route": "action", "requested_outcomes": [], "objective": "Analyze data",
+            "target_refs": [], "generation_mode": "reuse_existing",
+            "action_intent": None, "constraints": [],
+        },
         "agent:command_interpreter": response,
         "agent:fix_code": {
             "code": "result = transactions.group_by('cust_id').agg(pl.col('amount').sum())"
@@ -466,7 +500,7 @@ def test_failed_custom_analysis_gets_repaired_code_before_retry(
     assert action["error"] is None
     assert "cust_id" in action["args"]["spec"]["code"]
     assert [call["tag"] for call in fake.calls] == [
-        "agent:command_interpreter", "agent:fix_code",
+        "agent:workflow_router", "agent:command_interpreter", "agent:fix_code",
     ]
 
 

@@ -27,6 +27,7 @@ from . import joins as join_diagnostics, narration, store, workflow
 from .base import BaseRunner
 from .capabilities.analysis import (
     ANALYSIS_SCOPE_CHECKPOINT,
+    ANALYSIS_SUMMARY_REF,
     STAGE_CHECKPOINTS,
     MAX_SCOPE_TABLES,
     TableScope,
@@ -35,7 +36,11 @@ from .capabilities.analysis import (
     resolve_table_scope,
 )
 from .capabilities import ANALYSIS_REGISTRY
-from .context import ContextResolver, analysis_definition_scope
+from .context import (
+    ContextResolver,
+    analysis_definition_scope,
+    analysis_summary_scope,
+)
 from .executors import EXECUTORS, ExecutorReceipt
 from .executors.analysis import (
     AMBIGUOUS_RELATIONSHIP,
@@ -43,6 +48,7 @@ from .executors.analysis import (
     AUDITOR_ANALYSIS_PRESERVED,
     AnalysisDefinitionExecutorTarget,
     AnalysisExecutionExecutorTarget,
+    AnalysisSummaryExecutorTarget,
     JoinExecutorTarget,
     analysis_ref,
     infer_relationship,
@@ -88,6 +94,7 @@ class AnalysisWorkflowExecution(BaseRunner):
         "joins": "Materialized joins",
         "analysis_definitions": "Analysis definitions",
         "analysis_execution": "Analysis results",
+        "analysis_summary": "Analysis summary",
     }
 
     def __init__(
@@ -109,13 +116,14 @@ class AnalysisWorkflowExecution(BaseRunner):
     def _refresh_dynamic_limits(self) -> None:
         """Size the model budget from the frames actually in scope.
 
-        Only one analysis capability is model-backed and it runs one turn per
-        target frame, so the budget follows the resolved scope rather than a
-        fixed constant.
+        Two analysis capabilities are model-backed: definitions runs one turn
+        per target frame, and the summary runs exactly one more for the whole
+        workspace. The budget follows the resolved scope rather than a fixed
+        constant, with headroom for the summary's own repair turn.
         """
         table_scope = self.scope()
         targets = max(1, len(table_scope.targets))
-        calculated = 10 + 2 * targets
+        calculated = 12 + 2 * targets
         self.update_limits(
             {
                 "max_model_turns": calculated,
@@ -732,6 +740,107 @@ class AnalysisWorkflowExecution(BaseRunner):
             failure_handler=failure_handler,
         )
 
+    # --------------------------------------------------- analysis.summarized
+    def _bind_summary(
+        self,
+        subject: Workspace,
+        run: dict,
+        capability: workflow.Capability,
+        stage: dict,
+        unit: dict,
+    ) -> BoundUnitPipeline:
+        """Bind the one analysis-summary unit to the shared pipeline.
+
+        Unlike every other unit in this graph the memo is workspace-wide, not
+        frame-scoped: it is the one place the results are read together, which
+        is the only vantage from which the engagement-level statements in it
+        can be made at all.
+        """
+        self.ws = subject
+        expected = parent_hashes(self.ws, [ANALYSIS_SUMMARY_REF])
+        target = AnalysisSummaryExecutorTarget(self.ws, self.run["id"])
+        task = self.add_task(
+            "analysis_summary", "workflow:analysis_summary", "Analysis summary"
+        )
+
+        def context_provider():
+            return self.context_resolver.resolve(
+                self.ws,
+                capability,
+                unit,
+                analysis_summary_scope(self.ws),
+            )
+
+        def approval_provider(proposal):
+            accepted = self.request_approval(
+                "analysis_summary",
+                task,
+                [
+                    self.proposal_item(
+                        "Analysis summary",
+                        "The EDA summary written from the recorded results.",
+                        dict(proposal),
+                    )
+                ],
+            )
+            return dict(accepted[0]["spec"]) if accepted else None
+
+        def on_committed(_stage, _unit, outcome) -> None:
+            self.ws = target.workspace
+            if outcome.receipt is None:
+                return
+            output = outcome.receipt.output
+            self.record_artifact(
+                "analysis_summary", "current", "analysis_summary:current",
+                str(output.get("action") or "summarized"), task,
+            )
+            self.task_detail(
+                task,
+                f"{output.get('characters', 0)} characters, "
+                f"{output.get('cited', 0)} result(s) cited.",
+            )
+            self.task_status(task, "completed")
+            self.emit(
+                "workspace_changed",
+                {"kind": "analysis_summary", "id": "current", "action": "summarized"},
+            )
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id,
+                unit_id=unit["id"],
+                worker_id="analysis.summary",
+                executor_id="analysis.summary",
+                unit_input={
+                    "kind": unit.get("kind"),
+                    "input_sha1": unit.get("input_sha1"),
+                    "parent_refs": list(unit.get("parent_refs") or []),
+                },
+                activity={
+                    "artifact_refs": [ANALYSIS_SUMMARY_REF],
+                    "task_id": task["id"],
+                },
+                expected_revision=self.ws.revision,
+                expected_parents=expected,
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                approval_kind=(
+                    "analysis_summary" if self.run["mode"] == "permission" else None
+                ),
+                proposal_reference=unit.get("proposal_sidecar"),
+                receipt_reference=unit.get("receipt_sidecar"),
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(
+                capability, manifest
+            ),
+            target=target,
+            approval_provider=(
+                approval_provider if self.run["mode"] == "permission" else None
+            ),
+            readiness_provider=None,
+            on_committed=on_committed,
+        )
+
     # ----------------------------------------------------- analysis.executed
     def _bind_execution(
         self,
@@ -938,6 +1047,10 @@ _PARTIAL_DEPENDENCIES = {
     "data.joins_ready": {"data.relationships_inferred"},
     "analysis.definitions_ready": {"data.joins_ready"},
     "analysis.executed": {"analysis.definitions_ready"},
+    # One procedure that would not execute must not withhold the memo. A
+    # summary written over the results that did land is the useful artifact,
+    # and the procedure that failed is itself reported in "further work".
+    "analysis.summarized": {"analysis.executed"},
 }
 
 
@@ -970,6 +1083,10 @@ def build_analysis_workflow_runner(
         "analysis.definitions_ready": (
             adapter._bind_definitions,
             {"worker": "analysis.definitions", "executor": "analysis.definitions"},
+        ),
+        "analysis.summarized": (
+            adapter._bind_summary,
+            {"worker": "analysis.summary", "executor": "analysis.summary"},
         ),
     }
     _DETERMINISTIC_BINDERS = {

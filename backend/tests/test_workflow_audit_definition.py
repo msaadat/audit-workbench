@@ -30,6 +30,7 @@ EXPECTED_DEPENDENCIES = {
     "data.joins_ready": ("data.relationships_inferred",),
     "analysis.definitions_ready": ("data.joins_ready",),
     "analysis.executed": ("analysis.definitions_ready",),
+    "analysis.summarized": ("analysis.executed",),
     "planning.context_ready": ("documents.analysis_generated",),
     "planning.apm_ready": ("planning.context_ready",),
     "planning.rcm_ready": ("planning.apm_ready",),
@@ -72,6 +73,7 @@ def test_full_audit_closure_is_topological():
         "data.joins_ready",
         "analysis.definitions_ready",
         "analysis.executed",
+        "analysis.summarized",
         "documents.text_ready",
         "documents.analysis_chunks_ready",
         "documents.analysis_generated",
@@ -93,7 +95,8 @@ def test_full_audit_closure_is_topological():
         for capability_id, deps in audit.DEPENDENCIES.items()
         for dependency in deps
     )
-    assert resolved.index("analysis.executed") < resolved.index("planning.apm_ready")
+    # The EDA branch, memo included, completes before planning reads it.
+    assert resolved.index("analysis.summarized") < resolved.index("planning.apm_ready")
 
 
 def test_rollup_fans_out_into_parallel_branches():

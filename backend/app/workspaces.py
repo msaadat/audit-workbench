@@ -291,6 +291,11 @@ _ARTIFACT_COLLECTIONS: dict[str, tuple[str, str]] = {
 _ARTIFACT_OBJECTS: dict[str, str] = {
     "report": "Reports/current.json",
     "dashboard_advice": "Dashboard/advice.json",
+    # The exploratory-analysis memo. A single derived artifact, read-only to
+    # the auditor and regenerated from the results rather than edited, so
+    # unlike the APM it needs no separate ``.md`` file to edit and no
+    # ownership flip — the markdown rides inside the object.
+    "analysis_summary": "Analyses/.summary.json",
 }
 # Row-level exception evidence for a saved analysis lives beside the
 # definitions, never inside them.  ``Analyses/*.json`` is an artifact
@@ -480,13 +485,13 @@ def sync_workspace(target: "Workspace", source: "Workspace") -> "Workspace":
     }
     for attribute, key in list_keys.items():
         merge_list(getattr(target, attribute), getattr(source, attribute), key)
-    for attribute in ("planning", "report", "dashboard_advice"):
+    for attribute in ("planning", "report", "dashboard_advice", "analysis_summary"):
         current = getattr(target, attribute)
         current.clear()
         current.update(getattr(source, attribute))
     for attribute, value in source.__dict__.items():
         if attribute not in list_keys and attribute not in {
-            "planning", "report", "dashboard_advice",
+            "planning", "report", "dashboard_advice", "analysis_summary",
         }:
             setattr(target, attribute, value)
     return target
@@ -726,6 +731,7 @@ class Workspace:
         self.evidence_requests: list[dict] = _load_artifact_collection(self.root, "evidence_requests")
         self.findings: list[dict] = _load_artifact_collection(self.root, "findings")
         self.dashboard_advice: dict = _load_artifact_object(self.root, "dashboard_advice")
+        self.analysis_summary: dict = _load_artifact_object(self.root, "analysis_summary")
         legacy_finding_statuses = {
             str(item.get("id")): item.get("status")
             for item in self.findings

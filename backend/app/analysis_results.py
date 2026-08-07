@@ -411,6 +411,27 @@ def execute_and_record(workspace: Workspace, analysis_id: str) -> ExecutedAnalys
     return ExecutedAnalysis(analysis=recorded, result=result, payload=payload)
 
 
+def summary_basis_digest(workspace: Workspace) -> str:
+    """Fingerprint the result set an analysis summary would be written from.
+
+    A memo is only as current as the conclusions it read. The digest covers
+    every saved analysis and the exact result recorded against it, so adding a
+    procedure, deleting one, re-running one, or editing a definition (which
+    drops its result) all move the digest and mark the memo stale. Definition
+    text is deliberately absent: retitling a procedure does not change what the
+    analysis found.
+    """
+    return _sha1(
+        sorted(
+            (
+                str(item.get("id") or ""),
+                str((item.get("last_result") or {}).get("result_sha1") or ""),
+            )
+            for item in workspace.analyses
+        )
+    )
+
+
 def analysis_result_state(workspace: Workspace, analysis: Mapping[str, object]) -> str:
     """Return ``not_run``, ``current``, or ``stale`` for an analysis result."""
     result = analysis.get("last_result")
@@ -553,4 +574,5 @@ __all__ = [
     "manual_run_id",
     "read_exception_evidence",
     "record_analysis_result",
+    "summary_basis_digest",
 ]

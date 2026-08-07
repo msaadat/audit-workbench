@@ -111,11 +111,18 @@ def test_every_declared_context_preset_is_registered():
         assert PRESETS.compile(preset) is not None
 
 
-def test_generic_data_analysis_is_a_declared_workflow_ending_in_execution():
-    assert analysis_workflow.FULL_ANALYSIS_OUTCOMES == ["analysis.executed"]
-    assert "analysis.executed" in capabilities.ANALYSIS_REGISTRY.closure(
+def test_generic_data_analysis_is_a_declared_workflow_ending_in_the_summary():
+    """The workflow answers with what the analysis found, not with a run log.
+
+    Execution stays in the closure: the memo is written from recorded results,
+    so requesting it necessarily requires them.
+    """
+    assert analysis_workflow.FULL_ANALYSIS_OUTCOMES == ["analysis.summarized"]
+    closure = capabilities.ANALYSIS_REGISTRY.closure(
         analysis_workflow.FULL_ANALYSIS_OUTCOMES
     )
+    assert "analysis.summarized" in closure
+    assert "analysis.executed" in closure
 
 
 def test_document_analysis_and_document_tests_have_one_implementation_each():

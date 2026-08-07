@@ -338,6 +338,20 @@ def artifact_projection(workspace: Workspace, ref: str) -> object:
         return next((item for item in workspace.findings if item.get("id") == item_id), None)
     if kind == "report":
         return workspace.report
+    if kind == "analysis_summary":
+        # The EDA memo is a single derived artifact, so the only reference it
+        # takes is ``analysis_summary:current``. Its material projection
+        # deliberately excludes the generation stamp: what makes a memo the same
+        # memo is its prose and the result basis it was written against, not
+        # which run produced it.
+        if item_id == "current":
+            summary = workspace.analysis_summary or {}
+            return material_projection(
+                {
+                    "markdown": summary.get("markdown") or "",
+                    "basis_sha1": summary.get("basis_sha1") or "",
+                }
+            )
     raise WorkspaceError(f"Unsupported parent reference '{ref}'.")
 
 

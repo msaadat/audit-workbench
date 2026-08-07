@@ -37,6 +37,27 @@ def _analysis_definitions_response(user: str) -> dict:
     }
 
 
+def _analysis_summary_response(_user: str) -> dict:
+    """A structurally valid EDA memo for any workspace.
+
+    Returned as a ``content`` message because this worker answers in Markdown;
+    anything else is JSON-encoded and arrives as one quoted line. It cites no
+    procedures on purpose — embeds are optional, and a default that named an id
+    could cite one the bundle never supplied, which the validator rejects.
+    """
+    return {
+        "content": (
+            "## Data received and population characteristics\n"
+            "The imported tables were profiled.\n"
+            "\n## Relationships and joins established\nRelationships were diagnosed.\n"
+            "\n## Procedures performed\nThe saved procedures were executed.\n"
+            "\n## Exceptions noted\nNothing requiring escalation.\n"
+            "\n## Data quality observations\nNo material gaps.\n"
+            "\n## Further work required\nNothing outstanding.\n"
+        )
+    }
+
+
 def _document_analysis_response(user: str) -> dict:
     source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].strip()
     page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
@@ -120,6 +141,7 @@ class FakeAgentLLM:
         # pipeline's planning/rules/analyses/dashboard/summary scripts went
         # with it in Phase 12.
         "agent:analysis_definitions": _analysis_definitions_response,
+        "agent:analysis_summary": _analysis_summary_response,
         "agent:fix_code": {"code": "result = transactions.head(0)"},
         "agent:document_analysis_map": _document_analysis_response,
     }
