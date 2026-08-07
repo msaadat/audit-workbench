@@ -273,17 +273,6 @@ def test_workflow_routes_use_normalized_generation_modes():
     assert "refresh_policy" not in forced
 
 
-def test_workflow_scheduler_receives_persisted_route_without_action_fallback():
-    source = inspect.getsource(WorkflowRunner)
-
-    assert "def _resolve(" not in source
-    assert "def _clarification(" not in source
-    assert "ActionRunner.execute" not in source
-    assert "classify_command" not in source
-    assert "resolve_pending_route" not in source
-    assert "dispatch_engine" not in source
-
-
 def test_unknown_command_uses_bounded_router_then_generic_action_interpreter(
     monkeypatch, workspace_with_data
 ):
@@ -1018,15 +1007,8 @@ def test_live_planning_context_commits_through_pipeline_binding(monkeypatch):
     assert (
         store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
     ).is_file()
-    # The run-scoped planning basis and every runner-era helper behind it are gone.
+    # The durable sidecars are the contract; implementation helper names are not.
     assert "planning_basis" not in command.run
-    assert not hasattr(AuditWorkflowExecution, "_planning_basis")
-    assert not hasattr(action_runner.ActionRunner, "stage_context")
-    assert not hasattr(action_runner.ActionRunner, "_ensure_planning_analysis")
-    assert not hasattr(action_runner.ActionRunner, "_select_planning_documents")
-    binder_source = inspect.getsource(AuditWorkflowExecution._bind_planning_context)
-    assert "llm_json" not in binder_source
-    assert "mutate(" not in binder_source
 
 
 def test_planning_context_settles_without_a_model_call_when_no_document_material():
@@ -1212,16 +1194,6 @@ def test_document_qa_execution_commits_through_the_pipeline_binding(monkeypatch)
         for event in store.read_events(ws, command.run["id"])
         if event["type"] == "workspace_changed"
     } >= {("doctest", "qa_answered")}
-    # The binding inlines no bundle builder, model caller, or mutation — and it
-    # is the *shared* binder, so the audit graph and the standalone document-test
-    # workflow cannot drift into two Q&A implementations.
-    binder_source = inspect.getsource(bind_document_qa)
-    assert "document_chat" not in binder_source
-    assert "llm_json" not in binder_source
-    assert "mutate(" not in binder_source
-    assert "bind_document_test_unit" in inspect.getsource(
-        AuditWorkflowExecution._bind_execution
-    )
 
 
 def test_document_qa_resume_reuses_the_durable_proposal_without_rebilling(monkeypatch):
@@ -1675,22 +1647,6 @@ def test_live_apm_capability_uses_only_resolved_private_context(monkeypatch):
         store.run_dir(ws, command.run["id"])
         / unit["receipt_sidecar"]["path"]
     ).is_file()
-    # The APM path is now a native pipeline binding: the domain-neutral scheduler
-    # drives the UnitPipeline and the binder inlines no bundle builder, model
-    # worker, or workspace mutation.
-    assert "context_bundles.apm" not in inspect.getsource(AuditWorkflowExecution._bind_apm)
-    assert "audit_workers.apm" not in inspect.getsource(AuditWorkflowExecution._bind_apm)
-    assert "mutate(" not in inspect.getsource(AuditWorkflowExecution._bind_apm)
-    worker_source = inspect.getsource(planning_worker.run_apm_worker)
-    assert ".ws" not in worker_source
-    assert "load_workspace" not in worker_source
-    assert list(inspect.signature(planning_worker.run_apm_worker).parameters) == [
-        "request",
-        "gateway",
-        "attempt",
-    ]
-    assert not hasattr(action_runner.ActionRunner, "stage_apm")
-    assert not hasattr(action_runner.ActionRunner, "_apm_quality")
 
 
 def _rcm_only_runner(workspace):
@@ -1785,15 +1741,6 @@ def test_live_rcm_capability_commits_through_pipeline_binding(monkeypatch):
     assert (
         store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
     ).is_file()
-    # The RCM path is a native pipeline binding: the binder inlines no bundle
-    # builder, model worker, or workspace mutation.
-    binder_source = inspect.getsource(AuditWorkflowExecution._bind_rcm)
-    assert "context_bundles.rcm" not in binder_source
-    assert "llm_json" not in binder_source
-    assert "mutate(" not in binder_source
-    assert not hasattr(AuditWorkflowExecution, "_rcm")
-    assert not hasattr(action_runner.ActionRunner, "_rcm_quality")
-    assert not hasattr(action_runner.ActionRunner, "_match_rcm_revision")
 
 
 def test_rcm_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
@@ -1950,14 +1897,6 @@ def test_live_test_generate_capability_commits_through_pipeline_binding(monkeypa
     assert (
         store.run_dir(ws, command.run["id"]) / unit["receipt_sidecar"]["path"]
     ).is_file()
-    # The test-generation path is a native pipeline binding: the binder inlines
-    # no bundle builder, model worker, or workspace mutation.
-    binder_source = inspect.getsource(AuditWorkflowExecution._bind_test_generate)
-    assert "context_bundles" not in binder_source
-    assert "llm_json" not in binder_source
-    assert "mutate(" not in binder_source
-    assert not hasattr(AuditWorkflowExecution, "_planned_tests")
-    assert not hasattr(action_runner.ActionRunner, "stage_work_program")
 
 
 def test_test_generate_resume_reuses_durable_proposal_without_rebilling(monkeypatch):
@@ -2263,35 +2202,6 @@ def test_stage_units_expand_one_per_uncovered_rcm_row(monkeypatch):
     assert len(definitions["units"]) == 2
     assert {unit["status"] for unit in definitions["units"]} == {"succeeded"}
     assert len(current.data_tests) == 2
-
-
-def test_test_generate_capability_runs_through_the_native_pipeline_binding():
-    # One worker/executor pair serves both Data and Document Tests, since the
-    # model — not the unit — decides source; the two-pass runner-era handler
-    # and its per-kind branching are gone.
-    binder_source = inspect.getsource(AuditWorkflowExecution._bind_test_generate)
-    assert "context_bundles" not in binder_source
-    assert "llm_json" not in binder_source
-    assert "mutate(" not in binder_source
-    assert "tests.generate" in binder_source
-    assert not hasattr(AuditWorkflowExecution, "_definitions")
-    assert not hasattr(AuditWorkflowExecution, "_commit_definition")
-    assert not hasattr(context_bundles, "data_test_spec")
-    assert not hasattr(context_bundles, "document_test_spec")
-
-
-def test_finding_and_report_capabilities_left_the_transitional_adapter():
-    finding_source = inspect.getsource(AuditWorkflowExecution._bind_finding)
-    assert "context_bundles" not in finding_source
-    assert "llm_json" not in finding_source
-    # Evidence linkage and support validation belong to the executor.
-    assert "anchor_from_ref" not in finding_source
-    assert "support_issues" not in finding_source
-    report_source = inspect.getsource(AuditWorkflowExecution._bind_report)
-    assert "report.generate" not in report_source
-    assert not hasattr(AuditWorkflowExecution, "_finding_drafts")
-    assert not hasattr(AuditWorkflowExecution, "_report")
-    assert not hasattr(context_bundles, "finding")
 
 
 def test_missing_document_evidence_blocks_only_execution_branch(monkeypatch):

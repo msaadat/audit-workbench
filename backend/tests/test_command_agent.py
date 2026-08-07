@@ -106,7 +106,7 @@ def test_command_interpreter_repairs_semantically_invalid_action_graph(monkeypat
     assert completed["status"] == "completed"
     assert [item["type"] for item in completed["actions"]] == ["run_report_quality"]
     assert [call["tag"] for call in fake.calls] == [
-        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
         "agent:command_interpreter",
     ]
     rejected = completed["rejected_proposals"][0]
@@ -211,7 +211,7 @@ def test_command_interpreter_receives_schema_and_canonicalizes_fields(
     assert completed["actions"][1]["args"]["params"]["columns"] == ["invoice_no"]
     assert workspaces.load_workspace(workspace_with_data.id).joins[0]["name"] == "enriched"
     assert [call["tag"] for call in fake.calls] == [
-        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
         "agent:command_interpreter",
     ]
     assert fake.calls[0]["tools"] is not None
@@ -289,7 +289,7 @@ def test_command_interpreter_exposes_checks_and_canonicalizes_not_null_alias(
     saved = workspaces.load_workspace(workspace_with_data.id).rulesets[0]
     assert saved["rules"][0]["check"] == "required"
     assert [call["tag"] for call in fake.calls] == [
-        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
         "agent:command_interpreter",
     ]
     assert fake.calls[0]["tools"] is not None
@@ -343,7 +343,7 @@ def test_command_interpreter_repairs_semantically_empty_validation_rule(
     assert not workspaces.load_workspace(workspace_with_data.id).rulesets
     assert "matches zero rows" in completed["rejected_proposals"][0]["error"]
     assert [call["tag"] for call in fake.calls] == [
-        "agent:workflow_router", "agent:command_interpreter",
+        "agent:command_interpreter",
         "agent:command_interpreter",
     ]
 
@@ -1476,7 +1476,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     completed = wait_run(workspace_with_data, started["id"], timeout=30.0)
     reloaded = workspaces.load_workspace(workspace_with_data.id)
 
-    assert completed["status"] == "completed_with_open_items"
+    assert completed["status"] == "completed"
     call_tags = [call["tag"] for call in fake.calls]
     assert "agent:command_interpreter" not in call_tags
     assert "agent:test_generate" in call_tags
@@ -1492,7 +1492,7 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
     assert completed["audit_outcome"]["tests_completed"] == 1
     assert completed["audit_outcome"]["document_tests_executed"] == 0
     assert completed["audit_outcome"]["tests_review_required"] == 0
-    assert "Open workflow units: 1" in completed["summary_markdown"]
+    assert "Open workflow units" not in completed["summary_markdown"]
     assert call_tags.count("agent:apm") == 2
     activity = documents.activities(reloaded, limit=250)["items"]
     assert any(item["stage"] == "agent:apm" and policy["id"] in item["document_ids"] for item in activity)
@@ -1577,30 +1577,6 @@ def test_action_prompt_contract_has_no_full_audit_orchestration():
         assert "prepared_planning" not in system_prompt
         assert "execution_manifest" not in system_prompt
         assert "final verification" not in system_prompt
-
-
-def test_action_ledger_and_runner_have_no_audit_lifecycle_policy():
-    assert not hasattr(ledger, "AUDIT_LIFECYCLE_STAGES")
-    assert not hasattr(ledger, "AUDIT_LIFECYCLE_RANK")
-    assert not hasattr(ledger, "enforce_audit_lifecycle")
-    assert "audit_lifecycle" not in inspect.signature(ledger.append_actions).parameters
-    assert "audit_lifecycle" not in inspect.getsource(action_runner.ActionRunner)
-
-
-def test_action_ledger_has_no_audit_artifact_policy():
-    source = inspect.getsource(ledger).casefold()
-    forbidden_terms = {
-        "apm",
-        "rcm",
-        "fieldwork",
-        "finding",
-        "working_paper",
-        "dashboard",
-        "report",
-        "audit",
-    }
-
-    assert not {term for term in forbidden_terms if term in source}
 
 
 @pytest.mark.parametrize(

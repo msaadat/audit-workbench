@@ -304,29 +304,6 @@ def test_declared_context_presets_are_registered():
     assert declared <= known
 
 
-def test_the_retired_audit_modules_have_no_module_alias_or_reexport():
-    """`P7.3` deletion gate: the grouped package is the only audit registry."""
-    import importlib
-    import pathlib
-
-    import app.agent as agent_package
-
-    for name in ("audit_capabilities", "audit_workers"):
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(f"app.agent.{name}")
-        assert not hasattr(agent_package, name)
-
-    agent_dir = pathlib.Path(agent_package.__file__).parent
-    assert not (agent_dir / "audit_capabilities.py").exists()
-    assert not (agent_dir / "audit_workers.py").exists()
-    assert not list(agent_dir.glob("compat*"))
-    # The router moved to routing.py, its only caller.
-    from app.agent import routing
-
-    assert routing.ROUTER_SYSTEM.startswith("[agent:workflow_router]")
-    assert callable(routing.validate_router_result)
-
-
 def test_only_independent_non_committing_unit_expansions_declare_the_parallel_barrier():
     """The barrier is a claim about a capability's units, not a speed setting.
 

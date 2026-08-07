@@ -13,6 +13,55 @@ from app.agent import runner as agent_runner  # noqa: E402
 from app.agent import store as agent_store  # noqa: E402
 
 
+# Every test has one primary tier.  Keeping this classification at collection
+# time avoids obscuring otherwise straightforward tests with repetitive marker
+# decorators, while still making each tier selectable with ``pytest -m``.
+_ARCHITECTURE_MODULES = {
+    "test_agent_architecture_contracts.py",
+    "test_agent_capability_composition.py",
+    "test_agent_runtime_import_boundaries.py",
+    "test_agent_final_boundaries.py",
+}
+_E2E_MODULES = {"test_rcm_central_e2e.py"}
+_INTEGRATION_PREFIXES = (
+    "test_workflow_",
+    "test_cycle_vouching",
+    "test_document_",
+)
+_UNIT_MODULES = {
+    "test_agent_context_models.py",
+    "test_agent_executor_models.py",
+    "test_agent_joins.py",
+    "test_agent_narration.py",
+    "test_agent_routing.py",
+    "test_agent_suggest.py",
+    "test_agent_worker_models.py",
+    "test_analytics.py",
+    "test_explore.py",
+    "test_field_names.py",
+    "test_validation.py",
+}
+
+
+def _test_tier(path: Path) -> str:
+    name = path.name
+    if name in _ARCHITECTURE_MODULES:
+        return "architecture"
+    if name in _E2E_MODULES:
+        return "e2e"
+    if name in _UNIT_MODULES:
+        return "unit"
+    if name.startswith(_INTEGRATION_PREFIXES):
+        return "integration"
+    return "contract"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Apply exactly one documented tier to every collected test item."""
+    for item in items:
+        item.add_marker(getattr(pytest.mark, _test_tier(Path(str(item.fspath)))))
+
+
 def _analysis_definitions_response(user: str) -> dict:
     """Answer for whichever frame the analysis-definitions worker was given."""
     payload = json.loads(user.split("\n\nYour previous response")[0])
