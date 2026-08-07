@@ -50,6 +50,7 @@ from .executors.analysis import (
     AnalysisExecutionExecutorTarget,
     AnalysisSummaryExecutorTarget,
     JoinExecutorTarget,
+    NO_INFORMATIVE_ANALYSIS,
     analysis_ref,
     infer_relationship,
     join_ref,
@@ -690,13 +691,22 @@ class AnalysisWorkflowExecution(BaseRunner):
             # computes that its join family does not already hold. A joined
             # frame that adds no analysis of its own is a real answer about the
             # data, so the unit settles instead of failing the run.
-            if NOTHING_NEW_TO_ANALYSE not in str(error):
-                return None
-            return (
-                "skipped",
-                "Every analysis this frame supports is already saved against a "
-                "frame built from the same tables.",
-            )
+            if NOTHING_NEW_TO_ANALYSE in str(error):
+                return (
+                    "skipped",
+                    "Every analysis this frame supports is already saved against "
+                    "a frame built from the same tables.",
+                )
+            # The same shape of answer, reached by running the proposals rather
+            # than by comparing them: every one of them flagged nearly its whole
+            # population, which establishes nothing about any row in it.
+            if NO_INFORMATIVE_ANALYSIS in str(error):
+                return (
+                    "skipped",
+                    "No proposed analysis for this frame separated any of its "
+                    "rows from the rest.",
+                )
+            return None
 
         return BoundUnitPipeline(
             request=UnitPipelineRequest(

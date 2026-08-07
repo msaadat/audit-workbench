@@ -67,6 +67,75 @@ EXCEPTION_ROWS = 200
 # wherever a result is attributed without adding a second contract field.
 MANUAL_RUN_PREFIX = "manual_"
 
+# A procedure that flags nearly everything it tested has not found exceptions —
+# it has described its population, usually because it set two things against
+# each other that were never meant to agree. Left unmarked this is the most
+# dangerous shape a result can take: the count is large, the verdict says
+# "fail", and the finding reads as systemic.
+#
+# Set from where the two populations actually separate rather than at a round
+# number. Across a real engagement the saturated results cluster at 87–100% and
+# the next comparison result down sits near a third; anything between is a
+# procedure that found a great deal and still left most of its rows alone.
+SATURATION_THRESHOLD = 0.8
+
+# Saturation only proves nothing was measured where flagging everything cannot
+# itself be the finding. A completeness test flagging every row found a wholly
+# blank column; a duplicates test flagging every row found a frame with no
+# unique key; a sign scan flagging every row found an all-negative amount
+# column. Those are findings, and suppressing them would be worse than the
+# noise this guards against. The tests below are different in kind: each sets
+# values against something else — another column, or the rest of their own
+# distribution — so separating nothing means the something else was wrong.
+SATURATION_SENSITIVE_TESTS = frozenset({"date_lag", "outliers", "rare_values"})
+
+_SATURATION_WORDING: dict[str, str] = {
+    "date_lag": (
+        "so the ordering it checked holds for the whole frame; a date pair that "
+        "never runs the other way is two unrelated dates, not backdating"
+    ),
+    "outliers": (
+        "so the bound sits outside the data it was computed from and nothing is "
+        "being distinguished from anything"
+    ),
+    "rare_values": (
+        "so every value in the column is rare by the threshold given; where a "
+        "column is unique per row this measures nothing"
+    ),
+}
+
+
+def uninformative_reason(
+    analysis: Mapping[str, object],
+    *,
+    exception_count: int,
+    denominator: int | None,
+    rate: float | None,
+) -> str | None:
+    """Why this result establishes nothing, or ``None`` if it establishes something.
+
+    Computed rather than judged. A reader shown a 96% exception rate can work
+    this out, but only if they stop to divide — and the whole failure mode is
+    that nobody does.
+    """
+    if not denominator or not exception_count or rate is None:
+        return None
+    if rate < SATURATION_THRESHOLD:
+        return None
+    share = f"{rate:.0%} of the {denominator:,} rows it tested"
+    if str(analysis.get("kind") or "") == "python":
+        policy = str((analysis.get("outcome_policy") or {}).get("mode") or "")
+        if policy != "exception_rows":
+            return None
+        return (
+            f"returns {share} as potential exceptions, so the code never "
+            "narrowed the frame to an exception; the count is the population"
+        )
+    test = str((analysis.get("spec") or {}).get("test") or "")
+    if test in SATURATION_SENSITIVE_TESTS:
+        return f"flags {share}, {_SATURATION_WORDING[test]}"
+    return None
+
 
 def manual_run_id() -> str:
     """Return the run identity for an execution the auditor started."""
@@ -216,6 +285,23 @@ def bounded_result(
             ("tested" if tested else "population") if denominator else None
         ),
         "input_sha1": analysis_input_sha1(workspace, analysis),
+    }
+    # Whether the result establishes anything at all. An errored result carries
+    # no reason here — ``error`` already says why it concluded nothing, and
+    # calling it uninformative as well would say the same thing twice.
+    reason = (
+        None
+        if error
+        else uninformative_reason(
+            analysis,
+            exception_count=exception_count,
+            denominator=denominator,
+            rate=record["exception_rate"],
+        )
+    )
+    record |= {
+        "informative": reason is None,
+        "uninformative_reason": reason,
     }
     # Deliberately excludes the denominators above. This hash binds a stored
     # evidence sidecar to the conclusion it supports, and the denominators do

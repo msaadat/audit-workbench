@@ -106,6 +106,7 @@ def _scripted_definitions(user: str) -> dict:
                 "title": f"Preview {table}",
                 "kind": "python",
                 "spec": {"code": f"result = tables['{table}'].head(3)"},
+                "note": "Expected to hold across these columns.",
             },
         ]
     }
@@ -319,6 +320,7 @@ def test_explicit_targets_and_selected_artifacts_resolve_the_same_scope(
             "kind": "analytics",
             "table": "transactions",
             "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+            "note": "Expected to hold across these columns.",
         }
     )
     from_analysis = analysis_capabilities.resolve_table_scope(
@@ -796,6 +798,7 @@ def test_analysis_worker_enforces_library_test_contract(
                         "title": "Outlier test",
                         "kind": "analytics",
                         "spec": {"test": "outliers", "params": params},
+                        "note": "Expected to hold across these columns.",
                     }
                 ]
             },
@@ -834,6 +837,7 @@ def test_analysis_worker_rejects_repeated_columns_locally(workspace_with_data):
                                 "columns": ["invoice_no", "invoice_no"],
                             },
                         },
+                        "note": "Expected to hold across these columns.",
                     }
                 ]
             },
@@ -983,11 +987,13 @@ def test_invalid_definitions_are_repaired_once_and_never_commit(
                         "title": "Invented test",
                         "kind": "analytics",
                         "spec": {"test": "three_way_match", "params": {}},
+                        "note": "Expected to hold across these columns.",
                     },
                     {
                         "title": "Unsafe code",
                         "kind": "python",
                         "spec": {"code": "import os\nresult = 1"},
+                        "note": "Expected to hold across these columns.",
                     },
                     {
                         "title": "Wrong column",
@@ -996,6 +1002,7 @@ def test_invalid_definitions_are_repaired_once_and_never_commit(
                             "test": "duplicates",
                             "params": {"columns": ["not_a_column"]},
                         },
+                        "note": "Expected to hold across these columns.",
                     },
                 ]
             }
@@ -1144,6 +1151,8 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
         "not_tested",
         "exception_rate",
         "exception_rate_of",
+        "informative",
+        "uninformative_reason",
         "input_sha1",
         "result_sha1",
     }
@@ -1155,6 +1164,9 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
         result["exception_count"] / result["tested"], 4
     )
     assert result["exception_rate_of"] == "tested"
+    # Two of six rows are duplicated, which separates them from the rest.
+    assert result["informative"] is True
+    assert result["uninformative_reason"] is None
     assert len(result["stats"]) <= analysis_executors.MAX_RESULT_STATS
     assert "1001" not in json.dumps(result)
     # The definition itself is still a spec that recomputes on demand.
@@ -1170,6 +1182,187 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
         assert len(evidence["frame"]["rows"]) == result["exception_rows_retained"]
 
 
+ORDERS_CSV = (
+    b"ref,ordered,delivered,memo\n"
+    b"R1,2026-01-01,2026-01-05,\n"
+    b"R2,2026-02-01,2026-02-06,\n"
+    b"R3,2026-03-01,2026-03-04,\n"
+)
+
+
+def test_a_comparison_that_separates_nothing_is_marked_uninformative(
+    workspace_with_data,
+):
+    """Every row flagged means the two sides were never comparable."""
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+
+    def lag(from_date: str, to_date: str) -> dict:
+        analysis = ws.add_analysis({
+            "kind": "analytics",
+            "table": "orders",
+            "title": f"{from_date} to {to_date}",
+            "spec": {
+                "test": "date_lag",
+                "params": {"from_date": from_date, "to_date": to_date},
+            },
+        })
+        return analysis_results.execute_analysis(ws, analysis, run_id="t").result
+
+    # Delivery always follows the order, so asking for the reverse flags every
+    # row — which establishes nothing about any of them.
+    backwards = lag("delivered", "ordered")
+    assert backwards["exception_rate"] == 1.0
+    assert backwards["informative"] is False
+    assert "never runs the other way" in backwards["uninformative_reason"]
+
+    forwards = lag("ordered", "delivered")
+    assert forwards["exception_count"] == 0
+    assert forwards["informative"] is True
+
+
+def test_a_wholly_blank_column_stays_a_finding(workspace_with_data):
+    """Saturation is only meaningless where flagging everything cannot be the point.
+
+    A completeness test that flags every row found a column with nothing in it.
+    That is exactly what an auditor needs told, so the saturation rule must not
+    reach it.
+    """
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+    analysis = ws.add_analysis({
+        "kind": "analytics",
+        "table": "orders",
+        "title": "Completeness of memo",
+        "spec": {"test": "completeness", "params": {"columns": ["memo"]}},
+    })
+    result = analysis_results.execute_analysis(ws, analysis, run_id="t").result
+    assert result["exception_rate"] == 1.0
+    assert result["informative"] is True
+    assert result["uninformative_reason"] is None
+
+
+def test_an_uninformative_proposal_is_run_and_dropped_before_it_is_saved(
+    workspace_with_data, monkeypatch
+):
+    """Whether a comparison holds is not knowable from the schema — only by running it."""
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+
+    def script(user: str) -> dict:
+        return {
+            "analyses": [
+                {
+                    "title": "Deliveries before their order",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "date_lag",
+                        "params": {"from_date": "delivered", "to_date": "ordered"},
+                    },
+                    "note": "A delivery cannot precede the order it fulfils.",
+                },
+                {
+                    "title": "Duplicate references",
+                    "kind": "analytics",
+                    "spec": {"test": "duplicates", "params": {"columns": ["ref"]}},
+                    "note": "One reference should identify one order.",
+                },
+            ]
+        }
+
+    _fake_model(monkeypatch, script)
+    run = _analysis_run(
+        ws,
+        command={
+            "source": "chat",
+            "text": "Analyse the tables",
+            "target_refs": ["table:orders"],
+        },
+    )
+    _drive(ws, run, "analysis.definitions_ready")
+
+    saved = {item["title"] for item in workspaces.load_workspace(ws.id).analyses}
+    # The good proposal survives; the one that flags its whole population never
+    # becomes a procedure with a verdict for the memo to narrate.
+    assert saved == {"Duplicate references"}
+
+
+def test_a_frame_whose_every_proposal_separates_nothing_settles(
+    workspace_with_data, monkeypatch
+):
+    """A frame supporting no discriminating procedure is an answer, not a failure."""
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+
+    def script(user: str) -> dict:
+        return {
+            "analyses": [
+                {
+                    "title": "Deliveries before their order",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "date_lag",
+                        "params": {"from_date": "delivered", "to_date": "ordered"},
+                    },
+                    "note": "A delivery cannot precede the order it fulfils.",
+                }
+            ]
+        }
+
+    _fake_model(monkeypatch, script)
+    run = _analysis_run(
+        ws,
+        command={
+            "source": "chat",
+            "text": "Analyse the tables",
+            "target_refs": ["table:orders"],
+        },
+    )
+    _drive(ws, run, "analysis.definitions_ready")
+
+    unit = _stage(run, "analysis.definitions_ready")["units"][0]
+    assert unit["status"] == "skipped"
+    assert "separated any of its rows" in unit["error"]
+    assert not workspaces.load_workspace(ws.id).analyses
+
+
+def test_a_proposal_without_its_rationale_is_rejected(workspace_with_data):
+    """Writing why the two columns belong together is the check."""
+    ws = workspace_with_data
+    request = _definition_request(workspaces.load_workspace(ws.id), "transactions")
+    proposal = {
+        "analyses": [
+            {
+                "title": "Duplicate invoice numbers",
+                "kind": "analytics",
+                "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+            }
+        ]
+    }
+    with pytest.raises(WorkerResponseValidationError, match="missing a note"):
+        analysis_worker.validate_analysis_proposal(proposal, request)
+
+    proposal["analyses"][0]["note"] = "One invoice number should identify one invoice."
+    accepted = analysis_worker.validate_analysis_proposal(proposal, request)
+    assert accepted["analyses"][0]["note"].startswith("One invoice number")
+
+
+def test_the_budget_is_a_ceiling_and_a_frame_may_propose_nothing(workspace_with_data):
+    """Padding a frame that supports nothing is what produced the bad procedures."""
+    ws = workspace_with_data
+    request = _definition_request(workspaces.load_workspace(ws.id), "transactions")
+    tool = analysis_worker._analysis_submission_tool(request)
+    array = tool["function"]["parameters"]["properties"]["analyses"]
+    assert array["minItems"] == 0
+    assert array["maxItems"] >= 1
+
+    # An empty answer settles the unit rather than failing the run, by the same
+    # route as a frame whose every proposal was already saved.
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_proposal({"analyses": []}, request)
+    assert analysis_worker.NOTHING_NEW_TO_ANALYSE in str(raised.value)
+
+
 def test_a_broken_definition_is_rejected_before_it_is_saved(
     workspace_with_data, monkeypatch
 ):
@@ -1182,6 +1375,7 @@ def test_a_broken_definition_is_rejected_before_it_is_saved(
                     "title": "Broken preview",
                     "kind": "python",
                     "spec": {"code": "result = tables['transactions'].group_by('nope').len()"},
+                    "note": "Expected to hold across these columns.",
                 }
             ]
         }
@@ -1523,6 +1717,7 @@ def test_a_repeat_from_a_sibling_frame_is_dropped_not_saved(workspace_with_data)
                         "test": "duplicates",
                         "params": {"columns": ["invoice_no"]},
                     },
+                    "note": "Expected to hold across these columns.",
                 },
                 {
                     "title": "Duplicates across the join",
@@ -1531,6 +1726,7 @@ def test_a_repeat_from_a_sibling_frame_is_dropped_not_saved(workspace_with_data)
                         "test": "duplicates",
                         "params": {"columns": ["invoice_no", "customer"]},
                     },
+                    "note": "Expected to hold across these columns.",
                 },
             ]
         },
@@ -1589,6 +1785,7 @@ def test_a_frame_with_nothing_of_its_own_reports_it_instead_of_erroring(
                         "title": "Duplicate invoice numbers",
                         "kind": "analytics",
                         "spec": spec,
+                        "note": "One invoice number should appear once.",
                     }
                 ]
             },
@@ -1779,6 +1976,7 @@ def test_a_joined_frame_may_not_restate_one_side_s_own_work(workspace_with_data)
                         "test": "duplicates",
                         "params": {"columns": ["invoice_no", "cust_id"]},
                     },
+                    "note": "Expected to hold across these columns.",
                 },
                 {
                     # Spans the join: an invoice column and a customer column.
@@ -1788,6 +1986,7 @@ def test_a_joined_frame_may_not_restate_one_side_s_own_work(workspace_with_data)
                         "test": "duplicates",
                         "params": {"columns": ["invoice_no", "customer"]},
                     },
+                    "note": "Expected to hold across these columns.",
                 },
             ]
         },
@@ -1808,6 +2007,7 @@ def test_a_base_table_may_of_course_use_its_own_columns(workspace_with_data):
                     "title": "Duplicate invoice numbers",
                     "kind": "analytics",
                     "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+                    "note": "Expected to hold across these columns.",
                 }
             ]
         },
@@ -1829,6 +2029,7 @@ def test_a_joined_frame_with_only_one_sided_proposals_settles(workspace_with_dat
                             "test": "duplicates",
                             "params": {"columns": ["invoice_no"]},
                         },
+                        "note": "Expected to hold across these columns.",
                     }
                 ]
             },
@@ -1972,6 +2173,7 @@ def test_the_summary_is_shown_a_python_procedures_code_and_outcome_policy(
             "table": "transactions",
             "title": "Check for mismatched amounts",
             "spec": {"code": "result = tables['transactions']"},
+            "note": "Expected to hold across these columns.",
             "outcome_policy": {"mode": "exception_rows"},
         }
     )
@@ -2000,6 +2202,7 @@ def test_a_long_procedures_code_is_bounded_rather_than_dropped(workspace_with_da
             "table": "transactions",
             "title": "Long",
             "spec": {"code": code},
+            "note": "Expected to hold across these columns.",
         }
     )
     supplied = adapters._summary_result_projection(
@@ -2103,6 +2306,7 @@ def test_rows_a_procedure_could_not_evaluate_are_reported_as_untested(
                 "test": "date_lag",
                 "params": {"from_date": "started", "to_date": "finished"},
             },
+            "note": "Expected to hold across these columns.",
         }
     )
     analysis_results.execute_and_record(ws, lag["id"])
@@ -2303,6 +2507,43 @@ def test_a_procedure_argued_in_both_findings_and_reliance_is_rejected(
     )
     with pytest.raises(WorkerResponseValidationError, match="argued in both"):
         analysis_worker.validate_analysis_summary({"markdown": restated}, request)
+
+
+def test_a_result_that_established_nothing_cannot_be_a_finding(workspace_with_data):
+    """The backstop for anything that reaches the memo already saturated.
+
+    Definition-time screening stops these being created, but an auditor may
+    have saved one by hand, and a frame can change under a saved procedure.
+    """
+    ws = workspace_with_data
+    ws.add_table("orders.csv", ORDERS_CSV)
+    saturated = ws.add_analysis({
+        "kind": "analytics",
+        "table": "orders",
+        "title": "Deliveries before their order",
+        "spec": {
+            "test": "date_lag",
+            "params": {"from_date": "delivered", "to_date": "ordered"},
+        },
+    })
+    analysis_results.execute_and_record(ws, saturated["id"])
+    request = _summary_request(workspaces.load_workspace(ws.id))
+
+    as_finding = _memo(
+        findings=f"Deliveries systematically precede their orders ({saturated['id']}).",
+        embeds=_embed(saturated["id"], "exception_table"),
+    )
+    with pytest.raises(WorkerResponseValidationError, match="cannot be a finding"):
+        analysis_worker.validate_analysis_summary({"markdown": as_finding}, request)
+
+    # Reported where it belongs — as a limit on the work — it is accepted.
+    as_limit = _memo().replace(
+        f"## {analysis_worker.RELIANCE_SECTION}\nText.",
+        f"## {analysis_worker.RELIANCE_SECTION}\n"
+        f"One procedure ({saturated['id']}) flagged its whole population and is "
+        "not treated as a finding.",
+    )
+    assert analysis_worker.validate_analysis_summary({"markdown": as_limit}, request)
 
 
 def test_the_skeleton_is_finding_shaped(workspace_with_data):

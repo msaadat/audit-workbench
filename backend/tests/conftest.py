@@ -89,6 +89,7 @@ def _analysis_definitions_response(user: str) -> dict:
                 "title": f"Preview {table}",
                 "kind": "python",
                 "spec": {"code": f"result = tables['{table}'].head(3)"},
+                "note": "A first look at the frame's shape.",
             },
         ]
     }

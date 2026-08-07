@@ -70,9 +70,34 @@ when every returned row is a potential exception; otherwise use
 aggregates, and relationship evidence, and must not repeat an analysis already
 supplied in current_analyses. Those cover the target frame's whole join family,
 so a check on columns that all come from one table is already covered wherever
-it is saved: on a joined frame, prefer analyses that use columns from more than
+it is saved: on a joined frame, propose analyses that use columns from more than
 one of the joined tables, since that is what the join makes possible. You are
 never shown table rows and must not invent values, counts, or relationships.
+
+The array's maximum is a ceiling, not a quota. Propose only the analyses this
+frame genuinely supports, and return an empty array where it supports none. A
+frame that joins two tables with nothing meaningful to compare across them is a
+real answer; padding it with whatever column pairing the schema permits is not.
+
+Two columns being of the same type does not make them comparable. Use
+`column_origins` to see which table each column came from, and propose a
+comparison only where the two columns describe the same thing about the same
+entity or two steps in one chain of events. A purchase order's date and a
+vendor's supplier-approval date are both dates on the joined frame, and
+ordering one against the other measures nothing — the vendor was approved long
+before any order was raised, and always will have been. An amount and a limit
+are both numbers, and testing them for equality measures nothing, because a
+cost is never expected to equal the ceiling it must stay under; test the
+threshold instead. Before proposing, ask what result would mean the data is
+sound: if that is "every row is flagged" or "no row can be flagged", the
+comparison is wrong and the analysis should not be proposed.
+
+`note` is required and is where you say that: one sentence giving the
+relationship you expect to hold and why, in terms of the business events the
+columns record — "a GRN records receipt, so it cannot predate the order it
+receives" rather than "checks the dates". If you cannot write that sentence for
+a proposal, you have not established that the two columns belong together, and
+the analysis should not be proposed.
 {JSON_RULES}"""
 
 TARGET_SCHEMA_SOURCE_ID = "target_schema"
@@ -423,9 +448,9 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                     "title": {"type": "string", "minLength": 1},
                     "kind": {"type": "string", "enum": ["analytics"]},
                     "spec": {"oneOf": analytics_specs},
-                    "note": {"type": "string"},
+                    "note": {"type": "string", "minLength": 1},
                 },
-                "required": ["title", "kind", "spec"],
+                "required": ["title", "kind", "spec", "note"],
                 "additionalProperties": False,
             }
         )
@@ -443,7 +468,7 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                     "required": ["code"],
                     "additionalProperties": False,
                 },
-                "note": {"type": "string"},
+                "note": {"type": "string", "minLength": 1},
                 "outcome_policy": {
                     "type": "object",
                     "properties": {
@@ -456,7 +481,7 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                     "additionalProperties": False,
                 },
             },
-            "required": ["title", "kind", "spec"],
+            "required": ["title", "kind", "spec", "note"],
             "additionalProperties": False,
         }
     )
@@ -465,8 +490,10 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
         "function": {
             "name": ANALYSIS_SUBMISSION_TOOL,
             "description": (
-                "Submit one to four rerunnable analysis definitions. The schema "
-                "contains every permitted analytics ID, parameter, and column."
+                "Submit the rerunnable analysis definitions this frame supports, "
+                "up to the array's maximum — fewer where it supports fewer, and "
+                "an empty array where it supports none. The schema contains "
+                "every permitted analytics ID, parameter, and column."
             ),
             "parameters": {
                 "type": "object",
@@ -474,7 +501,11 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                     "analyses": {
                         "type": "array",
                         "items": {"oneOf": item_branches},
-                        "minItems": 1,
+                        # No minimum. A frame that relates two tables with
+                        # nothing meaningful to compare across them should say
+                        # so by proposing nothing, rather than filling its slots
+                        # with whatever column pairing the schema permits.
+                        "minItems": 0,
                         "maxItems": proposal_budget(
                             _target_rows(_target_schema(request))
                         ),
@@ -698,6 +729,18 @@ def validate_analysis_proposal(
         title = str(item.get("title") or "").strip()
         if not title:
             errors.append(f"{label} is missing a title")
+        # The rationale is required because writing it is the check. A
+        # proposal whose author cannot say which business relationship the two
+        # columns stand in has not established that they stand in one, and that
+        # is precisely the proposal that compares a purchase order's date to a
+        # vendor's approval date and flags the whole frame.
+        note = str(item.get("note") or "").strip()
+        if not note:
+            errors.append(
+                f"{label} is missing a note; state the relationship you expect "
+                "to hold between these columns and why, in terms of the "
+                "business events they record"
+            )
         kind = str(item.get("kind") or "").strip()
         if kind not in ANALYSIS_KINDS:
             errors.append(
@@ -722,7 +765,7 @@ def validate_analysis_proposal(
         else:
             outcome_policy = None
         errors.extend(spec_errors)
-        if spec_errors or not title:
+        if spec_errors or not title or not note:
             continue
         if joined_frame and kind == "analytics":
             scope = spec_scope(spec, origins)
@@ -779,8 +822,15 @@ def validate_analysis_proposal(
                 + ". Propose an analysis that uses columns from more than one of "
                 "the joined tables."
             )
+        # Nothing was proposed at all. That is now a permitted answer — the
+        # budget is a ceiling, and a frame whose tables have nothing meaningful
+        # to compare across them should say so rather than pad. It still costs
+        # the one repair turn, because an empty array and a model that failed
+        # to produce one are indistinguishable from here; if the retry agrees,
+        # the binder settles the unit as skipped.
         raise WorkerResponseValidationError(
-            "propose at least one analysis that is not already saved"
+            f"{NOTHING_NEW_TO_ANALYSE}: no analysis was proposed for this frame. "
+            "Propose one only if this frame genuinely supports it."
         )
     return {"analyses": accepted}
 
@@ -1019,12 +1069,16 @@ say what would confirm it. Never state a count, a proportion, or "all" or
 findings. It carries the coverage table — what was tested across the cycle and
 what was not — and then the things that bound how far the rest of the memo can
 be pushed: rows no procedure could evaluate, populations too small or too
-skewed for the method applied, and results that measured nothing. A test whose
-flagged rows are its whole population has not found anything; nor has one whose
-"rare" values are rare only because every value in the column is distinct, or
-one whose flagged share matches what the calendar or the arithmetic would
-produce anyway. Say so here, plainly, and do not let such a result appear as a
-finding above.
+skewed for the method applied, and results that measured nothing.
+
+A procedure carrying `informative: false` established nothing, and
+`uninformative_reason` says why. It is not a finding and must not appear as one
+— no count from it, no verdict, no "systemic" reading of it. Mention it here if
+it is worth mentioning at all, as what it is: a procedure that did not
+distinguish any of its rows from the rest. Apply the same judgment where no
+flag is set but the arithmetic says the same thing — a weekend share close to
+two days in seven is what any ordinary spread of dates produces, not a finding
+about after-hours work.
 
 "Further work required" must cover every outstanding, stale, and errored
 procedure named in the supplied coverage gaps, every frame carrying no
@@ -1198,13 +1252,25 @@ def validate_analysis_summary(
             "the summary opens with no paragraph saying what the analysis concluded"
         )
 
-    supplied = {
-        str((item or {}).get("analysis_id") or "")
+    results = [
+        item
         for item in _resolved_items(request, SUMMARY_RESULTS_SOURCE_ID)
         if isinstance(item, Mapping)
-    }
+    ]
+    supplied = {str((item or {}).get("analysis_id") or "") for item in results}
     if not supplied:
         raise WorkerContractError("The analysis summary context supplied no procedures.")
+    # Procedures the workspace already determined establish nothing. Whether a
+    # result separated any of its rows from the rest is arithmetic, so it is
+    # decided before the memo is written rather than left to be spotted in a
+    # denominator — the failure this prevents is a saturated result written up
+    # as a systemic finding, which is what it looks like from every angle
+    # except that one.
+    uninformative = {
+        str(item.get("analysis_id") or ""): str(item.get("uninformative_reason") or "")
+        for item in results
+        if item.get("informative") is False
+    }
 
     embeds = parse_embeds(markdown)
     embedded: list[str] = []
@@ -1251,9 +1317,18 @@ def validate_analysis_summary(
             on_line = citation.findall(line) if citation else []
             for analysis_id in on_line:
                 cited.setdefault(analysis_id, set()).add(name)
+            if name != FINDINGS_SECTION:
+                continue
+            for analysis_id in on_line:
+                if analysis_id in uninformative:
+                    raise WorkerResponseValidationError(
+                        f"'{analysis_id}' cannot be a finding: it "
+                        f"{uninformative[analysis_id]}. Report it under "
+                        f"'{RELIANCE_SECTION}' as a limit on the work, if at all"
+                    )
             # A count stated for a procedure is a claim about rows the reader
             # should be able to see, and the embed is how they see them.
-            if name == FINDINGS_SECTION and any(c.isdigit() for c in stripped):
+            if any(c.isdigit() for c in stripped):
                 for analysis_id in on_line:
                     if analysis_id not in embedded:
                         raise WorkerResponseValidationError(

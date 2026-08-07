@@ -45,6 +45,11 @@ EXECUTION_EXECUTOR_ID = "analysis.execution"
 SUMMARY_EXECUTOR_ID = "analysis.summary"
 
 AUDITOR_ANALYSIS_PRESERVED = "auditor_owned_analysis_preserved"
+# Every accepted definition was run and none of them separated anything. Like
+# ``NOTHING_NEW_TO_ANALYSE`` this is an answer about the data rather than a
+# contract violation — the frame supports no procedure that distinguishes some
+# of its rows from the rest — so the unit settles instead of failing the run.
+NO_INFORMATIVE_ANALYSIS = "no_informative_analysis"
 # Every accepted definition already exists against another frame built from the
 # same tables. Nothing is written and nothing is wrong: the computation is
 # saved, just not here.
@@ -449,6 +454,45 @@ def _validate_generated_python_definitions(
             ) from error
 
 
+def _screen_uninformative_definitions(
+    workspace: Workspace, definitions: list[dict]
+) -> tuple[list[dict], list[str]]:
+    """Run each proposal once and drop the ones that establish nothing.
+
+    A proposal is a hypothesis about the data, and whether it holds is not
+    knowable from the schema the worker was shown: two date columns are two
+    date columns whether or not the events they record are in the same chain.
+    Running it is what answers that, and running it here — before it becomes a
+    saved procedure with a verdict, a row count, and a place in the memo — is
+    what stops a comparison between unrelated columns from being narrated as a
+    systemic finding downstream.
+
+    Dropped rather than raised, like a repeat or a single-sided spec: the rest
+    of the response is still good work.
+    """
+    kept: list[dict] = []
+    dropped: list[str] = []
+    for definition in definitions:
+        try:
+            result = analysis_results.execute_analysis(
+                workspace, definition, run_id="screening"
+            ).result
+        except Exception:
+            # A proposal that will not run is not this screen's business. It
+            # either failed python validation above or will record its own
+            # error when the execution stage runs it.
+            kept.append(definition)
+            continue
+        if result.get("informative", True):
+            kept.append(definition)
+            continue
+        dropped.append(
+            f"'{definition.get('title') or definition.get('semantic_id')}' "
+            f"{result.get('uninformative_reason')}"
+        )
+    return kept, dropped
+
+
 def _existing_analysis(workspace: Workspace, semantic_id: str) -> dict | None:
     stable = analysis_stable_id(semantic_id)
     return next(
@@ -510,6 +554,14 @@ def execute_analysis_definitions(
     """
     target, accepted = _validated_definitions(request, raw_target)
     _validate_generated_python_definitions(target.workspace, accepted)
+    accepted, uninformative = _screen_uninformative_definitions(
+        target.workspace, accepted
+    )
+    if not accepted:
+        raise WorkspaceError(
+            f"{NO_INFORMATIVE_ANALYSIS}: every proposed analysis was run and "
+            "established nothing — " + "; ".join(uninformative)
+        )
     state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> dict:

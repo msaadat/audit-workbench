@@ -1778,6 +1778,12 @@ def _summary_result_projection(
         "exception_count": result.get("exception_count"),
         "exception_rate": result.get("exception_rate"),
         "exception_rate_of": result.get("exception_rate_of"),
+        # Whether the result establishes anything, decided locally rather than
+        # left to be noticed. A saturated result is the shape most likely to be
+        # written up as a systemic finding, because everything about it except
+        # the denominator looks like one.
+        "informative": result.get("informative"),
+        "uninformative_reason": result.get("uninformative_reason"),
         "statistics": result.get("stats") or [],
         "error": result.get("error"),
     }
