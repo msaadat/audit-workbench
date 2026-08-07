@@ -2,12 +2,23 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-from app import workspaces
+from app import main, workspaces
 from app.main import create_app
 
 
 @pytest.fixture
 def client():
+    return TestClient(create_app())
+
+
+@pytest.fixture
+def spa_client(tmp_path, monkeypatch):
+    """A client for an app built with a production frontend build present,
+    which is the only case where the SPA history fallback is mounted."""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>shell</title>", "utf-8")
+    monkeypatch.setattr(main, "FRONTEND_DIST", dist)
     return TestClient(create_app())
 
 
@@ -134,3 +145,20 @@ def test_join_via_api(client, ws_id):
         json={"name": "x", "left": "transactions", "right": "ghost", "how": "left"},
     )
     assert bad.status_code == 400
+
+
+def test_unknown_api_route_404s_instead_of_serving_the_spa(spa_client, ws_id):
+    """The history fallback must not answer /api with the SPA shell — a 200
+    text/html body gets cached and the frontend then parses markup as JSON."""
+    missing = spa_client.get(f"/api/workspaces/{ws_id}/does-not-exist")
+
+    assert missing.status_code == 404
+    assert missing.headers["content-type"].startswith("application/json")
+    assert "detail" in missing.json()
+
+
+def test_spa_fallback_still_serves_the_shell_for_app_routes(spa_client):
+    shell = spa_client.get("/workspaces/anything/deep/link")
+
+    assert shell.status_code == 200
+    assert shell.headers["content-type"].startswith("text/html")

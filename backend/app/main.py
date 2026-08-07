@@ -200,6 +200,11 @@ def create_app() -> FastAPI:
 
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str):
+            if path == "api" or path.startswith("api/"):
+                # Never answer an unmatched API route with the SPA shell: a 200
+                # text/html body is cacheable and leaves the frontend parsing
+                # markup as JSON with no error to go on.
+                return JSONResponse({"detail": "Not found."}, status_code=404)
             candidate = (FRONTEND_DIST / path).resolve()
             if (
                 path
