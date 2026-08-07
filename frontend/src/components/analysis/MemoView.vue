@@ -199,7 +199,16 @@ function statsFor(id: string) {
 </template>
 
 <style scoped>
-.memo { max-width: 62rem; }
+/* The memo fills its pane. An article measure would be the typographic choice
+   for a page of pure prose, but this is a workbench surface: the memo carries
+   wide evidence tables and charts, and capping it left the prose visibly
+   narrower than the cards sitting inside it. */
+.memo { min-width: 0; }
+
+/* Tables the memo writes itself — a data-received summary, a coverage matrix —
+   scroll rather than forcing the page to. */
+.memo :deep(.markdown-view) { overflow-x: auto; }
+.memo :deep(.markdown-view table) { min-width: max-content; }
 .memo-embed {
   margin: var(--aw-space-4) 0;
   padding: var(--aw-space-3);

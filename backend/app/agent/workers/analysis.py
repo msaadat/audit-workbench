@@ -924,14 +924,29 @@ coverage gaps. Never invent a count, a value, an identifier, or a procedure.
 Use exactly these level-2 sections, in this order, and no others:
 {_SECTION_LIST}
 
-Write continuous prose an auditor would recognise, not a bullet inventory of
-every test. Group procedures by what they were testing and what they showed.
-Where a procedure flagged rows, say what those rows actually are: name the
-document, vendor, or staff identifiers from the supplied flagged rows and give
-the amounts and dates, because an exception nobody can locate is not an
-exception anybody can follow up. State the population before the exceptions.
-Distinguish what the data establishes from what it merely suggests, and say
-plainly where a conclusion cannot yet be drawn.
+Write the way an auditor writes for the file. Use whichever form carries the
+content best, and mix them freely within a section:
+
+- Prose for judgment, cause, and anything qualified — what the data shows, what
+  it does not settle, and why it matters.
+- A Markdown table where the content is genuinely tabular. The data received is
+  one: a row per source table with its record count, period covered, and a short
+  commentary. Coverage of procedures by cycle stage is another.
+- A list where the content is genuinely a set of items — exceptions to follow
+  up, outstanding work.
+
+Structure has to earn its place: do not emit a bullet per procedure, and do not
+break a line of reasoning into fragments. A section that is one argument should
+be one or two paragraphs. Use standard Markdown tables with a `---` separator
+row of at least three dashes per column.
+
+Group procedures by what they were testing and what they showed. Where a
+procedure flagged rows, say what those rows actually are: name the document,
+vendor, or staff identifiers from the supplied flagged rows and give the amounts
+and dates, because an exception nobody can locate is not an exception anybody
+can follow up. State the population before the exceptions. Distinguish what the
+data establishes from what it merely suggests, and say plainly where a
+conclusion cannot yet be drawn.
 
 "Further work required" must cover every outstanding, stale, and errored
 procedure named in the supplied coverage gaps, every frame carrying no

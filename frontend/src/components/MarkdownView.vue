@@ -47,6 +47,17 @@ const html = computed(() => {
     if (listTag !== tag) { closeList(); out.push(`<${tag}>`); listTag = tag }
     out.push(`<li>${inline(content)}</li>`)
   }
+  /**
+   * Continue the open list item with a wrapped line (CommonMark lazy
+   * continuation). Without this, a bullet spanning two source lines rendered as
+   * a one-item list plus a stray paragraph, and hard-wrapped prose — which is
+   * what a generated memo or APM contains — came out as a run of single-item
+   * lists.
+   */
+  function continueItem(content: string) {
+    const last = out.pop() ?? ''
+    out.push(last.replace(/<\/li>$/, ` ${inline(content)}</li>`))
+  }
   const lines = (props.markdown || '').split('\n')
   for (let index = 0; index < lines.length; index += 1) {
     const raw = lines[index]
@@ -70,6 +81,10 @@ const html = computed(() => {
     const ordered = /^\d{1,3}[.)]\s+(.*)$/.exec(line)
     if (bullet) { pushItem('ul', bullet[1]); continue }
     if (ordered) { pushItem('ol', ordered[1]); continue }
+    // A non-blank line directly under an open item is that item's wrapped
+    // remainder. A blank line, a heading, or a table falls through and ends
+    // the list, so a paragraph that genuinely follows one stays its own block.
+    if (listTag && line.trim() && !heading) { continueItem(line.trim()); continue }
     closeList()
     if (heading) out.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`)
     else if (line.trim()) out.push(`<p>${inline(line)}</p>`)
