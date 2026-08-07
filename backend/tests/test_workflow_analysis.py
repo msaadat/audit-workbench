@@ -827,12 +827,22 @@ def test_analysis_generation_is_constrained_by_a_forced_target_specific_tool(
         item["properties"]["test"]["enum"][0] for item in spec_branches
     }
     assert ANALYSIS_WORKFLOW_EXCLUDED_TEST_IDS.isdisjoint(allowed_ids)
-    outliers = next(
+    # The fixture holds six rows, so tests that answer a question about a
+    # population are not offered at all: an IQR fence over six values is
+    # arithmetic without a finding in it. Per-row integrity checks remain.
+    assert analysis_worker.POPULATION_TEST_IDS.isdisjoint(allowed_ids)
+    assert {"completeness", "duplicates", "date_lag", "sign_scan"} <= allowed_ids
+    # A frame this small is also asked for fewer analyses than a populous one.
+    assert tool["function"]["parameters"]["properties"]["analyses"]["maxItems"] == (
+        analysis_worker.SMALL_FRAME_ANALYSES
+    )
+
+    sign_scan = next(
         item
         for item in spec_branches
-        if item["properties"]["test"]["enum"] == ["outliers"]
+        if item["properties"]["test"]["enum"] == ["sign_scan"]
     )
-    amount_columns = outliers["properties"]["params"]["properties"]["column"]["enum"]
+    amount_columns = sign_scan["properties"]["params"]["properties"]["column"]["enum"]
     assert "amount" in amount_columns
     assert "cust_id" not in amount_columns
 
@@ -1599,3 +1609,135 @@ def test_auto_mode_applies_a_tied_role_join_and_names_what_it_passed_over(monkey
         and passed_over in warning
         for warning in run["warnings"]
     ), "the road not taken has to be visible in the run"
+
+
+# --------------------------------------------------------------------------- #
+# A frame is asked only for work it can actually support
+# --------------------------------------------------------------------------- #
+def test_proposal_budget_follows_frame_size():
+    assert analysis_worker.proposal_budget(4) == analysis_worker.SMALL_FRAME_ANALYSES
+    assert analysis_worker.proposal_budget(52) == analysis_worker.MODEST_FRAME_ANALYSES
+    assert analysis_worker.proposal_budget(118) == analysis_worker.MAX_PROPOSED_ANALYSES
+    # An undeclared row count must not silently shrink the contract.
+    assert analysis_worker.proposal_budget(None) == analysis_worker.MAX_PROPOSED_ANALYSES
+
+
+def _definition_request(workspace, target):
+    capability = capability_registries.ANALYSIS_REGISTRY.get(
+        "analysis.definitions_ready"
+    )
+    _, bundle = ContextResolver().resolve(
+        workspace,
+        capability,
+        {"id": f"analysis_definitions:{target}"},
+        analysis_definition_scope(workspace, target),
+    )
+    return WorkerRequest(
+        worker_id="analysis.definitions",
+        capability_id="analysis.definitions_ready",
+        unit_id=f"analysis_definitions:{target}",
+        context=bundle,
+        activity={},
+    )
+
+
+def test_a_populous_frame_keeps_its_population_tests(workspace_with_data):
+    """The gate is about frame size, not about the tests being unwelcome."""
+    ws = workspace_with_data
+    wide = pl.DataFrame(
+        {
+            "row_id": [f"R{index}" for index in range(200)],
+            "amount": [float(index) for index in range(200)],
+        }
+    )
+    ws.add_table("ledger.csv", wide.write_csv().encode())
+    ws = workspaces.load_workspace(ws.id)
+
+    tool = analysis_worker._analysis_submission_tool(_definition_request(ws, "ledger"))
+    branches = next(
+        item
+        for item in tool["function"]["parameters"]["properties"]["analyses"]["items"]["oneOf"]
+        if item["properties"]["kind"]["enum"] == ["analytics"]
+    )["properties"]["spec"]["oneOf"]
+    allowed = {item["properties"]["test"]["enum"][0] for item in branches}
+    assert "outliers" in allowed and "stratify" in allowed
+    assert tool["function"]["parameters"]["properties"]["analyses"]["maxItems"] == (
+        analysis_worker.MAX_PROPOSED_ANALYSES
+    )
+
+
+def test_a_joined_frame_may_not_restate_one_side_s_own_work(workspace_with_data):
+    """A join exists to relate its sides. An analytics spec there that reads
+    only one of them computes what that table alone computes, so it belongs on
+    the table — this is what filled joined frames with their sides' analyses."""
+    ws = _joined(workspace_with_data)
+    request = _definition_request(ws, "tx_customers")
+
+    accepted = analysis_worker.validate_analysis_proposal(
+        {
+            "analyses": [
+                {
+                    # Both columns originate in transactions.
+                    "title": "Duplicate invoice and customer id",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "duplicates",
+                        "params": {"columns": ["invoice_no", "cust_id"]},
+                    },
+                },
+                {
+                    # Spans the join: an invoice column and a customer column.
+                    "title": "Duplicate invoice per customer name",
+                    "kind": "analytics",
+                    "spec": {
+                        "test": "duplicates",
+                        "params": {"columns": ["invoice_no", "customer"]},
+                    },
+                },
+            ]
+        },
+        request,
+    )
+    assert [item["title"] for item in accepted["analyses"]] == [
+        "Duplicate invoice per customer name"
+    ]
+
+
+def test_a_base_table_may_of_course_use_its_own_columns(workspace_with_data):
+    """The cross-side rule applies to joined frames only."""
+    request = _definition_request(workspace_with_data, "transactions")
+    accepted = analysis_worker.validate_analysis_proposal(
+        {
+            "analyses": [
+                {
+                    "title": "Duplicate invoice numbers",
+                    "kind": "analytics",
+                    "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+                }
+            ]
+        },
+        request,
+    )
+    assert len(accepted["analyses"]) == 1
+
+
+def test_a_joined_frame_with_only_one_sided_proposals_settles(workspace_with_data):
+    ws = _joined(workspace_with_data)
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_proposal(
+            {
+                "analyses": [
+                    {
+                        "title": "Duplicate invoice numbers",
+                        "kind": "analytics",
+                        "spec": {
+                            "test": "duplicates",
+                            "params": {"columns": ["invoice_no"]},
+                        },
+                    }
+                ]
+            },
+            _definition_request(ws, "tx_customers"),
+        )
+    assert analysis_worker.NOTHING_NEW_TO_ANALYSE in str(raised.value)
+    assert "only one of the tables this frame joins" in str(raised.value)

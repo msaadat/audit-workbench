@@ -49,9 +49,10 @@ from .model import (
 ANALYSIS_DEFINITION_WORKER_ID = "analysis.definitions"
 ANALYSIS_DEFINITION_SYSTEM = f"""[agent:analysis_definitions]
 Propose rerunnable data analyses for exactly one supplied target frame. Submit
-1 to 4 objects through the required function tool; its JSON Schema is the
-authoritative output contract. For analytics, use only a test ID and parameters
-permitted by that schema, with exact supplied column names.
+them through the required function tool; its JSON Schema is the authoritative
+output contract, including how many analyses this frame takes and which tests
+its size supports. For analytics, use only a test ID and parameters permitted
+by that schema, with exact supplied column names.
 For python, spec contains code: safe Polars that reads the supplied frames
 through the `tables` mapping or their bare table variables and assigns the
 result DataFrame to `result`; imports and any file or network access are
@@ -78,10 +79,53 @@ ANALYSIS_SUBMISSION_TOOL = "submit_analysis_definitions"
 MAX_PROPOSED_ANALYSES = 4
 ANALYSIS_KINDS = ("analytics", "python")
 
-# Carried in the validation error when every proposal repeats a computation the
-# frame's join family already holds. A frame that adds nothing is a settled
-# outcome, not a contract violation, so the binder matches on this to settle
-# the unit as skipped once the repair turn has had its chance.
+# Tests whose answer is a property of a population rather than of a row. An
+# IQR fence over four values, a "rare" category among four, or a monthly trend
+# across two months is arithmetic without a finding in it — and it still spends
+# one of the frame's proposal slots and one execution. Below the threshold
+# these are dropped from the tool schema, so they cannot be proposed at all
+# rather than being rejected after the model has already spent a turn on them.
+# Integrity checks — completeness, duplicates, sequence gaps, date lags, sign
+# scans — are per-row and stay available at any size.
+POPULATION_TEST_IDS = frozenset(
+    {
+        "outliers",
+        "stratify",
+        "period_compare",
+        "threshold_check",
+        "rare_values",
+        "weekend_activity",
+        "sampling",
+    }
+)
+MIN_ROWS_FOR_POPULATION_TESTS = 30
+
+# How many analyses one frame may be asked for. A frame supports a certain
+# amount of distinct, useful work and no more: a four-row lookup table has a
+# completeness check and a duplicate check in it, and asking for four means the
+# last two are padding that later has to be deduplicated, executed, and read.
+SMALL_FRAME_ROWS = 30
+MODEST_FRAME_ROWS = 100
+SMALL_FRAME_ANALYSES = 2
+MODEST_FRAME_ANALYSES = 3
+
+
+def proposal_budget(rows: int | None) -> int:
+    """How many analyses to ask of a frame, from the size of the frame."""
+    if rows is None:
+        return MAX_PROPOSED_ANALYSES
+    if rows < SMALL_FRAME_ROWS:
+        return SMALL_FRAME_ANALYSES
+    if rows < MODEST_FRAME_ROWS:
+        return MODEST_FRAME_ANALYSES
+    return MAX_PROPOSED_ANALYSES
+
+
+# Carried in the validation error when a frame has nothing of its own left to
+# contribute — every proposal either repeats a computation its join family
+# already holds, or reads only one of the tables the frame was built from. That
+# is a settled outcome, not a contract violation, so the binder matches on this
+# to settle the unit as skipped once the repair turn has had its chance.
 NOTHING_NEW_TO_ANALYSE = "nothing_new_to_analyse"
 
 
@@ -144,6 +188,12 @@ def _resolve_provenance(
     if isinstance(value, str) and value in origins:
         return f"{origins[value]}.{value}", {origins[value]}
     return value, set()
+
+
+def spec_scope(spec: Mapping[str, Any], origins: Mapping[str, str]) -> set[str]:
+    """The base tables a spec's columns actually come from."""
+    _, tables = _resolve_provenance(_plain_json(spec), origins)
+    return tables
 
 
 def analysis_semantic_id(
@@ -215,6 +265,14 @@ def _column_types(schema: Mapping[str, Any]) -> dict[str, str]:
         for column in schema.get("columns") or []
         if str(column.get("name") or "").strip()
     }
+
+
+def _target_rows(schema: Mapping[str, Any]) -> int | None:
+    """The target frame's row count, when the supplied schema declares one."""
+    raw = schema.get("rows")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return int(raw)
 
 
 def _column_origins(schema: Mapping[str, Any]) -> dict[str, str]:
@@ -299,8 +357,12 @@ def _analytics_spec_schemas(
     schema = _target_schema(request)
     columns = _column_names(schema)
     column_types = _column_types(schema)
+    rows = _target_rows(schema)
+    populous = rows is None or rows >= MIN_ROWS_FOR_POPULATION_TESTS
     branches: list[dict[str, Any]] = []
     for test_id, metadata in sorted(_analytics_contract(request).items()):
+        if not populous and test_id in POPULATION_TEST_IDS:
+            continue
         properties: dict[str, Any] = {}
         required: list[str] = []
         usable = True
@@ -409,7 +471,9 @@ def _analysis_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                         "type": "array",
                         "items": {"oneOf": item_branches},
                         "minItems": 1,
-                        "maxItems": MAX_PROPOSED_ANALYSES,
+                        "maxItems": proposal_budget(
+                            _target_rows(_target_schema(request))
+                        ),
                     }
                 },
                 "required": ["analyses"],
@@ -603,11 +667,21 @@ def validate_analysis_proposal(
     proposed = list(proposal.get("analyses") or [])
     errors: list[str] = []
     duplicates: list[str] = []
-    if len(proposed) > MAX_PROPOSED_ANALYSES:
+    single_sided: list[str] = []
+    # A frame built from more than one table exists to relate them. An analytics
+    # spec there that reads only one of those tables computes what that table
+    # alone computes, so it belongs on the table, not here — and it is exactly
+    # the shape that filled a joined frame's slots with its sides' work.
+    joined_frame = len(set(origins.values())) > 1
+    budget = proposal_budget(_target_rows(schema))
+    if len(proposed) > budget:
+        # Reported, but every proposal is still validated: an over-budget
+        # response raises anyway, and trimming first would hide the violations
+        # the one repair turn exists to correct together.
         errors.append(
-            f"return at most {MAX_PROPOSED_ANALYSES} analyses; {len(proposed)} were proposed"
+            f"return at most {budget} analyses for a frame of this size; "
+            f"{len(proposed)} were proposed"
         )
-        proposed = proposed[:MAX_PROPOSED_ANALYSES]
 
     accepted: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -646,6 +720,13 @@ def validate_analysis_proposal(
         errors.extend(spec_errors)
         if spec_errors or not title:
             continue
+        if joined_frame and kind == "analytics":
+            scope = spec_scope(spec, origins)
+            if len(scope) < 2:
+                # Dropped, not rejected, for the same reason a repeat is: the
+                # rest of the response is still good work.
+                single_sided.append(label)
+                continue
         semantic = analysis_semantic_id(kind, target, spec, origins)
         if semantic in existing:
             # Dropped rather than rejected: the rest of the response is still
@@ -673,17 +754,26 @@ def validate_analysis_proposal(
     if errors:
         raise WorkerResponseValidationError(errors)
     if not accepted:
-        if duplicates:
+        if duplicates or single_sided:
             # Worth one repair turn — a joined frame usually has something its
             # sides cannot compute. If the retry says the same thing, the frame
             # genuinely adds nothing, and the binder settles the unit as
             # skipped rather than failing the run over it.
+            reasons = []
+            if duplicates:
+                reasons.append(
+                    "repeats a computation already saved for these columns, on "
+                    "this frame or another built from the same tables"
+                )
+            if single_sided:
+                reasons.append(
+                    "reads columns from only one of the tables this frame joins"
+                )
             raise WorkerResponseValidationError(
-                f"{NOTHING_NEW_TO_ANALYSE}: every proposed analysis repeats a "
-                "computation already saved for these columns, on this frame or "
-                "another built from the same tables. Propose a different "
-                "computation, or one that uses columns from more than one of the "
-                "joined tables."
+                f"{NOTHING_NEW_TO_ANALYSE}: every proposed analysis "
+                + ", or ".join(reasons)
+                + ". Propose an analysis that uses columns from more than one of "
+                "the joined tables."
             )
         raise WorkerResponseValidationError(
             "propose at least one analysis that is not already saved"
