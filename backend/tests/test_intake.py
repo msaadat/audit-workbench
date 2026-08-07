@@ -39,6 +39,39 @@ def test_deterministic_document_categories_use_safe_filename_metadata():
     assert classify("Planning/Minutes of Meeting - CFO.docx") == "minutes"
     assert classify("Planning/Email from Senior.docx") == "correspondence"
     assert classify("Samples/INV001_Signed_Payment_Voucher.pdf") == "voucher"
+    for filename in (
+        "INV2024004_Invoice.pdf",
+        "PO2024004_Purchase_Order.pdf",
+        "REQ2024009_Purchase_Requisition.pdf",
+        "GRN2024004_Signed_Receipt.pdf",
+        "Supplier_Quotation_1042.pdf",
+    ):
+        assert classify(f"Samples/Transaction-104/{filename}") == "voucher"
+
+    # A broad "approval" match used to classify ordinary planning records as
+    # transaction evidence. Transaction classification now relies on a
+    # document signal in the filename instead.
+    assert classify("Planning/Financial_Approval_Matrix.docx") == "policy"
+    assert classify("Planning/March_Approval_Memo.pdf") == "other"
+
+
+def test_model_cannot_replace_high_confidence_transaction_category():
+    item = {
+        "id": "invoice",
+        "relative_path": "Samples/INV2024004_Invoice.pdf",
+        "local_metadata": {"route": "document", "parse_ok": True},
+    }
+    item["classification"] = intake.deterministic_classification(item)
+    batch = {"items": [item]}
+
+    intake.merge_model_classifications(batch, [{
+        "id": "invoice",
+        "route": "document",
+        "document_category": "evidence",
+        "confidence": "high",
+    }])
+
+    assert item["classification"]["document_category"] == "voucher"
 
 
 def test_manifest_compare_is_incremental_and_reports_exclusions():

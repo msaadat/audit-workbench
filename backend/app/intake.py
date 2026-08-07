@@ -48,6 +48,18 @@ PLANNING_DOCUMENT_TERMS = re.compile(
     r"standard|regulation|control|charter|terms of reference|prior audit|minutes)\b",
     re.IGNORECASE,
 )
+# A ``voucher`` category denotes transaction-level source material, rather
+# than only a document literally titled "voucher". Keep this filename-only so
+# intake remains within its privacy boundary: it has no document contents at
+# this point. The common abbreviations deliberately require a numeric record
+# suffix (for example INV-1042 or PO2025-17), avoiding ordinary words such as
+# "point" or "request".
+TRANSACTION_EVIDENCE_FILENAME = re.compile(
+    r"(?:\b(?:payment\s+(?:voucher|request)|voucher|invoice|purchase\s+"
+    r"(?:order|requisition)|goods?\s+(?:receipt|received)|receipt|delivery\s+"
+    r"note|packing\s+slip|quotation|quote)\b|\b(?:inv|po|req|grn)[\s-]*\d)",
+    re.IGNORECASE,
+)
 MAX_SUGGESTED_PLANNING_DOCUMENTS = 8
 DIRECT_UPLOADS_LABEL = "Direct uploads"
 EXCLUDED_NAMES = frozenset({".ds_store", "thumbs.db"})
@@ -431,12 +443,16 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
     route = meta.get("route") if meta.get("parse_ok") else "unsupported"
     route = route if route in ROUTES else "unsupported"
     name = slugify(Path(item["relative_path"]).stem).replace("-", "_") or "imported_file"
-    label = str(item.get("relative_path") or "").casefold()
+    label = re.sub(r"[_.-]+", " ", str(item.get("relative_path") or "").casefold())
+    # Folder names often describe the engagement rather than the individual
+    # record. Category signals should therefore come from the filename, not a
+    # potentially unrelated parent directory.
+    filename = re.sub(r"[_.-]+", " ", Path(item["relative_path"]).stem)
     document_category = None
     if route == "document":
         if any(token in label for token in ("minute", "meeting note")):
             document_category = "minutes"
-        elif any(token in label for token in ("policy", "procedure", "sop", "guideline", "manual")):
+        elif any(token in label for token in ("policy", "procedure", "sop", "guideline", "manual", "approval matrix", "authority matrix", "delegation of authority")):
             document_category = "policy"
         elif any(token in label for token in ("regulation", "regulatory", "statute")):
             document_category = "regulation"
@@ -444,10 +460,8 @@ def deterministic_classification(item: dict, duplicate: dict | None = None) -> d
             document_category = "contract"
         elif any(token in label for token in ("email", "correspondence", "letter")):
             document_category = "correspondence"
-        elif any(token in label for token in ("voucher", "payment request")):
+        elif TRANSACTION_EVIDENCE_FILENAME.search(filename):
             document_category = "voucher"
-        elif any(token in label for token in ("invoice", "receipt", "requisition", "purchase order", "quotation", "approval")):
-            document_category = "evidence"
         elif any(token in label for token in ("prior audit", "audit report")):
             document_category = "prior_report"
         elif any(token in label for token in ("org chart", "organisation chart", "organization chart", "briefing", "background")):
@@ -513,7 +527,16 @@ def merge_model_classifications(batch: dict, proposals: list[dict]) -> None:
         confidence = proposal.get("confidence")
         if route in ROUTES:
             current["route"] = route
-        if proposal.get("document_category") in DOCUMENT_CATEGORIES:
+        # The model receives the same filename and technical metadata as the
+        # deterministic classifier, but no document text. It must not undo a
+        # high-confidence deterministic category in auto mode. Auditor edits
+        # still flow through ``apply_batch`` and remain unrestricted.
+        category_conflict = (
+            current.get("confidence") == "high"
+            and current.get("document_category")
+            and proposal.get("document_category") != current.get("document_category")
+        )
+        if proposal.get("document_category") in DOCUMENT_CATEGORIES and not category_conflict:
             current["document_category"] = proposal["document_category"]
         if confidence in ("high", "medium", "low"):
             current["confidence"] = confidence
