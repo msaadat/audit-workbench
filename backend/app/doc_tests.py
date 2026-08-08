@@ -7,6 +7,7 @@ checkpoint an atomic, resumable write.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import random
@@ -14,6 +15,8 @@ import re
 import unicodedata
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -273,14 +276,54 @@ def write_test(workspace: Workspace, test: dict) -> dict:
     return test
 
 
+# Readiness checks and worklist/report projections each resolve their own
+# Document Test scope independently, so a single read-only computation (a
+# capability workflow-state pass, a report render) can call ``list_tests``
+# and ``load_test`` for the same tests many times over. Cycle-vouching tests
+# re-validate every evidence record against every assertion on each call, so
+# that fan-out is not free. ``request_cache_scope`` lets a caller that is
+# certain no test write happens in its span memoize both functions for its
+# duration; it is reentrant, so nesting is safe and only the outermost scope
+# pays for setup and teardown.
+_cache: ContextVar[dict | None] = ContextVar("doc_tests_request_cache", default=None)
+
+
+@contextmanager
+def request_cache_scope():
+    if _cache.get() is not None:
+        yield
+        return
+    token = _cache.set({})
+    try:
+        # Cycle-vouching materialization is the expensive step underneath
+        # both functions here, and is called directly by some readers
+        # (bypassing load_test/list_tests), so it needs the same scope.
+        with cycle_vouching.request_cache_scope():
+            yield
+    finally:
+        _cache.reset(token)
+
+
 def load_test(workspace: Workspace, test_id: str) -> dict:
+    cache = _cache.get()
+    if cache is not None:
+        tests = cache.setdefault("tests", {})
+        cached = tests.get(test_id)
+        if cached is not None:
+            return copy.deepcopy(cached)
     path = _test_path(workspace, test_id)
     if not path.exists():
         raise WorkspaceError(f"Document test '{test_id}' not found.")
     try:
-        return _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
+        result = _project_cycle_items(
+            workspace,
+            _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace),
+        )
     except json.JSONDecodeError as error:
         raise WorkspaceError(f"Document test '{test_id}' is unreadable.") from error
+    if cache is not None:
+        cache["tests"][test_id] = copy.deepcopy(result)
+    return result
 
 
 def exists(workspace: Workspace, test_id: str) -> bool:
@@ -290,13 +333,45 @@ def exists(workspace: Workspace, test_id: str) -> bool:
         return False
 
 
+def _project_cycle_items(workspace: Workspace, test: dict) -> dict:
+    """Expose the local item-builder projection without turning a GET into a write."""
+
+    if not is_cycle_test(test):
+        return test
+    table = str(
+        (((test.get("definition") or {}).get("population") or {}).get("table"))
+        or ""
+    )
+    known_tables = {
+        str(value.get("name") or "")
+        for value in [*workspace.tables, *workspace.joins]
+    }
+    if table not in known_tables:
+        return test
+    test["items"] = cycle_vouching.materialize_cycle_items(workspace, test)
+    return test
+
+
 def list_tests(workspace: Workspace) -> list[dict]:
+    cache = _cache.get()
+    if cache is not None:
+        cached = cache.get("list_tests")
+        if cached is not None:
+            return copy.deepcopy(cached)
     items = []
     for path in tests_dir(workspace).glob("*.json"):
         try:
-            test = _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
+            test = _project_cycle_items(
+                workspace,
+                _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace),
+            )
         except (OSError, json.JSONDecodeError, WorkspaceError):
             continue
+        # This projection already paid for cycle-item materialization; a
+        # ``load_test`` call for the same test within this scope should reuse
+        # it rather than materializing a second time.
+        if cache is not None and test.get("id"):
+            cache.setdefault("tests", {})[test["id"]] = copy.deepcopy(test)
         states = [item_state_projection(test, item) for item in test["items"]]
         items.append({
             **{key: test.get(key) for key in (
@@ -313,7 +388,10 @@ def list_tests(workspace: Workspace) -> list[dict]:
             "item_count": len(states),
             "state_counts": {state: states.count(state) for state in sorted(STATES)},
         })
-    return sorted(items, key=lambda item: item.get("updated") or "", reverse=True)
+    result = sorted(items, key=lambda item: item.get("updated") or "", reverse=True)
+    if cache is not None:
+        cache["list_tests"] = copy.deepcopy(result)
+    return result
 
 
 def _validate_links(workspace: Workspace, rcm_refs: list[str], procedure_refs: list[str]) -> None:
@@ -1404,9 +1482,47 @@ def update_item(
 ) -> dict:
     test = load_test(workspace, test_id)
     if is_cycle_test(test):
-        raise WorkspaceError(
-            "Cycle evaluation and disposition use their typed mutation contracts."
+        if set(changes) != {"state"}:
+            raise WorkspaceError(
+                "Cycle items accept only the typed auditor disposition mutation."
+            )
+        state = str(changes.get("state") or "")
+        if state not in MANUAL_SIGNOFF_STATES:
+            raise WorkspaceError(
+                "An auditor may only set a cycle disposition to confirmed, "
+                "exception, or pending."
+            )
+        # Re-materialize in memory before accepting sign-off.  A changed table,
+        # extraction, record hash, or role closure makes the prior result stale
+        # and must never be confirmed against yesterday's inputs.
+        test["items"] = cycle_vouching.materialize_cycle_items(workspace, test)
+        item = _item(test, item_id)
+        evaluation = item.get("evaluation") or {}
+        if state != "pending" and not item_execution_current(test, item):
+            raise WorkspaceError(
+                "A cycle item must have a current deterministic evaluation before disposition."
+            )
+        if state == "pending":
+            item["disposition"] = {
+                "state": "pending",
+                "evaluated_definition_sha1": None,
+                "stale": False,
+            }
+            item["runner_note"] = "Auditor disposition cleared; evaluation retained."
+        else:
+            item["disposition"] = {
+                "state": state,
+                "evaluated_definition_sha1": evaluation.get("definition_sha1"),
+                "stale": False,
+            }
+            item["runner_note"] = "Auditor sign-off."
+        test["status"] = (
+            "completed"
+            if test.get("items")
+            and all(item_disposition_current(test, value) for value in test["items"])
+            else "review_required"
         )
+        return save_test(workspace, test)
     item = _item(test, item_id)
     allowed = {
         "attributes",
@@ -2181,7 +2297,10 @@ def summary_payload(workspace: Workspace) -> dict:
     tests: list[dict] = []
     for path in tests_dir(workspace).glob("*.json"):
         try:
-            test = _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace)
+            test = _project_cycle_items(
+                workspace,
+                _hydrate(json.loads(path.read_text(encoding="utf-8")), workspace),
+            )
         except (OSError, json.JSONDecodeError, WorkspaceError):
             continue
         test_counts = {name: 0 for name in SUMMARY_CLASSES}

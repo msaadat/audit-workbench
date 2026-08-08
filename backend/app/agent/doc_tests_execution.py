@@ -296,7 +296,7 @@ class DocTestWorkflowExecution(BaseRunner):
                 "manual_review",
             )
         }
-        unexecuted = sum(unexecuted_items(test) for test in tests)
+        unexecuted = sum(unexecuted_items(test, subject) for test in tests)
         needs_review = totals["exceptions"] + totals["manual_review"] + unexecuted
         return {
             "status": "completed_with_issues" if needs_review else "completed",
@@ -430,7 +430,7 @@ class DocTestWorkflowExecution(BaseRunner):
                 "manual_review",
             )
         }
-        unexecuted = sum(unexecuted_items(test) for test in tests)
+        unexecuted = sum(unexecuted_items(test, subject) for test in tests)
         next_outcomes = list(unsettled_capabilities(stages))
         self.run["workflow"]["workspace_revision"] = subject.revision
         self.run["doc_tests"] = {

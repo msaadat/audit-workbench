@@ -558,19 +558,36 @@ export interface DocTestItem {
     role: string
     document_id: string
     record_id: string
+    record_kind?: string
+    record_content_hash?: string
+    extraction_hash?: string
     matched_by: Array<Record<string, unknown>>
   }>
-  unassigned_records?: Array<Record<string, unknown>>
+  unassigned_records?: Array<string | Record<string, unknown>>
+  role_conflicts?: Array<Record<string, unknown>>
+  shared_record_facts?: Array<Record<string, unknown>>
+  collisions?: Array<Record<string, unknown>>
+  linkage_state?: 'linked' | 'needs_review'
+  linkage_review?: Record<string, unknown>
   result_by_assertion?: Record<string, {
     assertion_sha1: string
     registry_definition_hash: string
-    input_hashes: string[]
+    input_hashes: {
+      population_source_sha1: string
+      frozen_row_sha1: string
+      bound_record_hashes: string[][]
+      extraction_hashes: string[][]
+      role_binding_sha1: string
+      input_sha1: string
+    }
     verdict: CycleAssertionVerdict
     display?: string
     comparisons: Array<Record<string, unknown>>
     evidence_refs: EvidenceRef[]
+    stale?: boolean
+    result_sha1?: string | null
   }>
-  evaluation?: { state: CycleEvaluationState; definition_sha1: string }
+  evaluation?: { state: CycleEvaluationState; definition_sha1: string; result_sha1?: string | null }
   disposition?: {
     state: CycleDispositionState
     evaluated_definition_sha1: string | null
@@ -676,6 +693,7 @@ export interface DocTest extends TestPlan, TestOutcome {
   requirement_refs?: string[]
   procedure_key?: string
   definition?: CycleVouchDefinition
+  coverage?: Record<string, unknown>
   title: string
   status: TestStatus
   semantic_id: string

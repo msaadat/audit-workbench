@@ -209,10 +209,17 @@ def run_document_test(
             "execute as document Q&A units, not as a local document test."
         )
     if test.get("kind") == "cycle_vouch":
-        raise WorkspaceError(
-            f"Document Test '{test_id}' uses the Phase 0 cycle_vouch contract; "
-            "its deterministic evaluator is introduced in Phase 3."
-        )
+        evaluated = doc_tests.cycle_vouching.evaluate_cycle_test(workspace, test)
+        if (
+            evaluated.get("items") == test.get("items")
+            and evaluated.get("status") == test.get("status")
+        ):
+            return ExecutionOutcome(reference, "succeeded", executed=False)
+        # The deterministic outcome is complete, but it is not an auditor
+        # decision.  The test remains review_required until every current item
+        # has a current confirmed/exception disposition.
+        doc_tests.save_test(workspace, evaluated)
+        return ExecutionOutcome(reference, "succeeded")
     for item in test.get("items") or []:
         if not doc_tests.item_execution_pending(test, item):
             continue

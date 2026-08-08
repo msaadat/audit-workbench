@@ -86,7 +86,21 @@ const evidenceRequests = computed(() =>
 // 'confirmed'/'exception' are already a direct read of the model's (or the
 // deterministic comparison's) own outcome — nothing for an auditor to settle.
 // Only 'manual_review'/'agent_checked' mean the result itself is unresolved.
-const needsSignOff = computed(() => ['manual_review', 'agent_checked'].includes(props.item.state ?? 'pending'))
+const isCanonicalCycle = computed(() => props.test.kind === 'cycle_vouch')
+const needsSignOff = computed(() => {
+  if (isCanonicalCycle.value) {
+    return Boolean(
+      props.item.evaluation
+      && !['not_run', 'stale'].includes(props.item.evaluation.state)
+      && (props.item.disposition?.state === 'pending' || props.item.disposition?.stale),
+    )
+  }
+  return ['manual_review', 'agent_checked'].includes(props.item.state ?? 'pending')
+})
+const canClearSignOff = computed(() => isCanonicalCycle.value
+  ? props.item.disposition?.state !== 'pending'
+  : (props.item.state ?? 'pending') !== 'pending')
+const cycleResults = computed(() => Object.entries(props.item.result_by_assertion ?? {}))
 
 
 // A cycle check names both sides by path; a legacy check searches page text for
@@ -138,18 +152,44 @@ function sideAnchor(side: DocTestCheckSide): EvidenceRef | null {
 
 const cycleSpec = computed(() => (props.test.spec ?? {}) as Record<string, any>)
 const cycleCoverage = computed(() => {
-  const coverage = cycleSpec.value.coverage
+  const coverage = props.test.coverage ?? cycleSpec.value.coverage
   if (!coverage || typeof coverage !== 'object') return null
   return coverage as {
-    population: number
-    linked: number
-    unlinked: number
-    incomplete_roles: number
+    population_rows: number
+    selected_rows: number
+    rows_with_evidence: number | null
+    complete_cycles: number
+    assurance_scope: string
   }
 })
-const cycleDocuments = computed(() => props.item.documents ?? [])
+const cycleDocuments = computed<Array<{
+  document_id: string
+  role: string
+  document_type?: string
+  matched_by?: string | Array<Record<string, unknown>>
+}>>(() => {
+  if (props.item.role_bindings?.length) return props.item.role_bindings.map(binding => ({
+    document_id: binding.document_id,
+    role: binding.role,
+    matched_by: binding.matched_by,
+  }))
+  return props.item.documents ?? []
+})
 const missingRoles = computed(() => props.item.missing_roles ?? [])
-const frozenRow = computed(() => Object.entries(props.item.frozen ?? {}))
+const frozenRow = computed(() => Object.entries(props.item.frozen_row ?? props.item.frozen ?? {}))
+
+function edgeLabel(edge: Record<string, unknown>) {
+  return `${String(edge.identifier_kind ?? 'identifier')} = ${String(edge.normalized_value ?? '—')}`
+}
+function comparisonEvidence(comparison: Record<string, any>): EvidenceRef[] {
+  return (comparison.entries ?? []).flatMap((entry: Record<string, any>) => entry.evidence_refs ?? [])
+}
+function comparisonRecordIds(comparison: Record<string, unknown>) {
+  return Array.isArray(comparison.record_ids) ? comparison.record_ids.join(', ') : ''
+}
+function comparisonEntryCount(comparison: Record<string, unknown>) {
+  return Array.isArray(comparison.entries) ? comparison.entries.length : 0
+}
 
 function documentTitle(id: string) {
   return props.documents.find(doc => doc.id === id)?.title || id
@@ -252,6 +292,13 @@ function attach() {
           class="role-type"
           :title="'Extracted document type, mapped into this role'"
         >{{ entry.document_type }}</span>
+        <small v-if="Array.isArray(entry.matched_by) && entry.matched_by.length" class="matched-chain">
+          {{ entry.matched_by.map(edgeLabel).join(' → ') }}
+        </small>
+      </div>
+      <div v-if="item.role_conflicts?.length || item.collisions?.length" class="conflict">
+        <strong><i class="pi pi-exclamation-triangle" />Role binding requires review</strong>
+        <span>{{ item.role_conflicts?.length ?? 0 }} within-item conflict(s) · {{ item.collisions?.length ?? 0 }} cross-item collision(s)</span>
       </div>
       <UiAdvancedSection title="Population record" description="The frozen row this cycle is tested against">
         <div class="frozen">
@@ -260,6 +307,42 @@ function attach() {
           </span>
         </div>
       </UiAdvancedSection>
+    </section>
+
+    <section v-if="cycleResults.length" class="block">
+      <h4>Assertion results</h4>
+      <article v-for="[key, result] in cycleResults" :key="key" class="check">
+        <div class="check-head">
+          <strong>{{ test.definition?.assertions?.find(assertion => assertion.key === key)?.label ?? key }}</strong>
+          <UiTestStatus :status="result.stale ? 'stale' : result.verdict" showLabel />
+        </div>
+        <p v-if="result.display" class="check-note">{{ result.display }}</p>
+        <div
+          v-for="(comparison, comparisonIndex) in result.comparisons"
+          :key="`${key}:${comparisonIndex}`"
+          class="comparison cycle-result-comparison"
+        >
+          <span class="comparison-source">
+            {{ comparison.role ?? comparison.side ?? 'Comparison' }}
+            <template v-if="comparison.document_id"> · {{ documentTitle(String(comparison.document_id)) }}</template>
+          </span>
+          <code>{{ comparison.verdict ?? comparison.state ?? '—' }}</code>
+          <span class="path">
+            {{ comparisonRecordIds(comparison) || `${comparisonEntryCount(comparison)} value(s)` }}
+          </span>
+          <div class="citations">
+            <Button
+              v-for="anchor in comparisonEvidence(comparison)"
+              :key="anchor.id"
+              :label="`Page ${anchor.page ?? '—'}`"
+              icon="pi pi-link"
+              size="small"
+              text
+              @click="emit('anchor', anchor)"
+            />
+          </div>
+        </div>
+      </article>
     </section>
 
     <!-- 2b. Comparison detail, for the vouching branch only. -->
@@ -394,7 +477,7 @@ function attach() {
         <span>Resolve the duplication before accepting this item.</span>
       </div>
 
-      <div class="attach">
+      <div v-if="!isCanonicalCycle" class="attach">
         <Select
           v-model="attachId"
           :options="attachable"
@@ -414,14 +497,12 @@ function attach() {
       <!-- Coverage is what makes a cycle conclusion honest: how much of the
            population was actually reached, stated beside the result. -->
       <p v-if="cycleCoverage" class="coverage">
-        Tested <strong>{{ cycleCoverage.linked }}</strong> of
-        <strong>{{ cycleCoverage.population }}</strong> population row(s) from
-        <code>{{ cycleSpec.table }}.{{ cycleSpec.anchor_key }}</code>.
-        <span v-if="cycleCoverage.unlinked">
-          {{ cycleCoverage.unlinked }} row(s) had no linked document.
-        </span>
-        <span v-if="cycleCoverage.incomplete_roles">
-          {{ cycleCoverage.incomplete_roles }} linked row(s) are missing a required role.
+        Selected <strong>{{ cycleCoverage.selected_rows }}</strong> of
+        <strong>{{ cycleCoverage.population_rows }}</strong> population row(s) from
+        <code>{{ test.definition?.population.table }}.{{ test.definition?.population.row_key.column }}</code>.
+        <span>{{ cycleCoverage.assurance_scope === 'sampled_population' ? 'Sampled population' : 'Targeted evidence — not a sample' }}.</span>
+        <span v-if="cycleCoverage.rows_with_evidence !== null">
+          {{ cycleCoverage.rows_with_evidence }} row(s) have linked evidence and {{ cycleCoverage.complete_cycles }} complete cycle(s) were identified.
         </span>
       </p>
       <dl v-if="test.next_action || test.scope_limitations || test.exception_count || test.open_exception_count">
@@ -445,7 +526,7 @@ function attach() {
          while the record beside it scrolls. -->
     <aside class="detail-rail" aria-label="Your assessment">
       <div class="rail-group rail-status">
-        <UiTestStatus :status="item.state ?? item.evaluation?.state ?? 'pending'" showLabel />
+        <UiTestStatus :status="item.disposition?.stale ? 'stale' : item.state ?? item.evaluation?.state ?? 'pending'" showLabel />
         <Button
           label="Run test"
           icon="pi pi-play"
@@ -516,8 +597,12 @@ function attach() {
         <h4>Sign-off</h4>
         <p class="rail-note">
           {{ needsSignOff
-            ? (item.runner_note || 'The model could not settle this item on its own — confirm the result or mark an exception.')
-            : 'This result was derived directly from the model\'s assessment. Reset it to force a re-check.' }}
+            ? (isCanonicalCycle
+                ? 'The deterministic evaluation is complete. Confirm it or record an exception against the current definition and evidence hashes.'
+                : (item.runner_note || 'The model could not settle this item on its own — confirm the result or mark an exception.'))
+            : (isCanonicalCycle
+                ? (item.disposition?.stale ? 'The prior disposition is stale and cannot satisfy audit verification.' : 'The current evaluation and auditor disposition are recorded separately.')
+                : 'This result was derived directly from the model\'s assessment. Reset it to force a re-check.') }}
         </p>
         <div class="dispositions">
           <template v-if="needsSignOff">
@@ -541,11 +626,11 @@ function attach() {
             />
           </template>
           <Button
-            label="Reset to pending"
+            :label="isCanonicalCycle ? 'Clear sign-off' : 'Reset to pending'"
             icon="pi pi-refresh"
             size="small"
             text
-            :disabled="busy || (item.state ?? 'pending') === 'pending'"
+            :disabled="busy || !canClearSignOff"
             @click="emit('setState', 'pending')"
           />
         </div>
@@ -626,6 +711,8 @@ blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-
 .unresolved { color: var(--aw-warn); }
 .check-note { margin: 0.2rem 0 0; color: var(--aw-warn); font-size: var(--aw-text-sm); }
 .role-row { display: grid; grid-template-columns: 10rem minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; padding: 0.3rem 0; border-top: 1px solid var(--aw-border); font-size: var(--aw-text-sm); }
+.matched-chain { grid-column: 2 / -1; color: var(--aw-muted); overflow-wrap: anywhere; }
+.cycle-result-comparison { grid-template-columns: minmax(9rem, 0.8fr) minmax(7rem, 0.6fr) minmax(0, 1fr) auto; }
 .role-name { font-weight: 700; }
 .role-doc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .role-type { color: var(--aw-muted); font-size: var(--aw-text-xs); }

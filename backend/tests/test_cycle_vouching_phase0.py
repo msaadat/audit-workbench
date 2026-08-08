@@ -493,8 +493,8 @@ def test_fifth_kind_meta_and_legacy_mutations_fail_closed(procurement_contract):
         doc_tests.attach_document(ws, test["id"], item_id, document_id)
     with pytest.raises(workspaces.WorkspaceError, match="only to vouching"):
         doc_tests.update_comparisons(ws, test["id"], item_id, [])
-    with pytest.raises(workspaces.WorkspaceError, match="typed mutation contracts"):
-        doc_tests.update_item(ws, test["id"], item_id, {"state": "confirmed"})
+    with pytest.raises(workspaces.WorkspaceError, match="typed auditor disposition"):
+        doc_tests.update_item(ws, test["id"], item_id, {"summary": "legacy write"})
 
 
 def test_legacy_state_accessors_preserve_the_four_existing_kinds():

@@ -7,11 +7,15 @@ model nor a workspace payload may introduce new kinds at runtime.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
+import unicodedata
 from collections import deque
-from datetime import datetime
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, Mapping
 
@@ -1318,7 +1322,7 @@ def generate_cycle_candidates(
         for row_index, row in enumerate(frame.iter_rows(named=True)):
             seeds = [
                 {"kind": key["identifier_kind"], "value": row.get(key["column"])}
-                for key in cycle_keys
+                for key in [{"column": row_column, "identifier_kind": row_kind}, *cycle_keys]
                 if row.get(key["column"]) is not None and str(row.get(key["column"])).strip()
             ]
             linkage = link_cycle_records(
@@ -2693,10 +2697,979 @@ def build_cycle_vouch_test(workspace, payload: Mapping[str, object]) -> dict:
             for key in _PRESERVED_ON_REGENERATION
             if key in existing
         }
+        # Definition regeneration does not discard prior evaluation or auditor
+        # history.  The Phase 3 materializer reconciles these semantic item IDs
+        # against current rows/evidence and marks only changed inputs stale.
+        prior_items = list(existing.get("items") or [])
         existing.clear()
-        existing.update({**validated, **preserved})
+        existing.update({**validated, **preserved, "items": prior_items})
         return doc_tests.save_test(workspace, existing)
     return doc_tests.create_test(workspace, validated)
+
+
+def _sha1_hash(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return f"sha1:{hashlib.sha1(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _plain_json(value: object) -> object:
+    return json.loads(json.dumps(value, default=str))
+
+
+def cycle_definition_sha1(test: Mapping[str, object]) -> str:
+    """Hash the exact executable definition and registry identity."""
+
+    return _sha1_hash(
+        {
+            "schema_version": test.get("schema_version"),
+            "registry": test.get("registry"),
+            "rcm_id": test.get("rcm_id"),
+            "requirement_refs": test.get("requirement_refs") or [],
+            "procedure_key": test.get("procedure_key"),
+            "definition": test.get("definition") or {},
+        }
+    )
+
+
+def stable_cycle_item_id(test: Mapping[str, object], row_key_value: object) -> str:
+    """Semantic item identity, independent of source-row ordering."""
+
+    definition = _object(test.get("definition"), "definition")
+    population = _object(definition.get("population"), "definition.population")
+    row_key = _object(population.get("row_key"), "definition.population.row_key")
+    reference = _registry_reference(test.get("registry"), DEFAULT_REGISTRY)
+    normalized = DEFAULT_REGISTRY.normalize_identifier(
+        reference.pack_id,
+        str(row_key.get("identifier_kind") or ""),
+        row_key_value,
+    )
+    digest = hashlib.sha256(
+        json.dumps(
+            [
+                str(test.get("semantic_id") or stable_test_semantic_id(test)),
+                reference.definition_hash,
+                str(population.get("table") or ""),
+                str(row_key.get("identifier_kind") or ""),
+                normalized,
+            ],
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"ITEM-{digest[:24].upper()}"
+
+
+def _sample_row_indices(frame: pl.DataFrame, selection: Mapping[str, object]) -> list[int]:
+    """Return a deterministic sample using Polars-backed row ranking."""
+
+    size = min(int(selection.get("size") or 0), frame.height)
+    if size <= 0:
+        return []
+    method = str(selection.get("method") or "")
+    seed = int(selection.get("seed") or 0)
+    indexed = frame.with_row_index("__cycle_source_row")
+    if method == "interval":
+        # Evenly spaced, stable positions; no hidden random starting point.
+        return sorted({min((index * frame.height) // size, frame.height - 1) for index in range(size)})
+    rank = pl.struct(frame.columns).hash(seed=seed).alias("__cycle_rank")
+    ranked = indexed.with_columns(rank)
+    if method == "random":
+        return sorted(
+            int(value)
+            for value in ranked.sort(["__cycle_rank", "__cycle_source_row"])
+            .head(size)["__cycle_source_row"]
+            .to_list()
+        )
+    if method != "stratified":
+        raise CycleSchemaError(f"Unsupported sampling method '{method}'.")
+    stratum = str(selection.get("stratify_by") or "")
+    ordered = ranked.sort([stratum, "__cycle_rank", "__cycle_source_row"])
+    queues: dict[str, list[int]] = {}
+    for row in ordered.select([stratum, "__cycle_source_row"]).iter_rows(named=True):
+        queues.setdefault(json.dumps(row[stratum], default=str), []).append(
+            int(row["__cycle_source_row"])
+        )
+    chosen: list[int] = []
+    keys = sorted(queues)
+    while len(chosen) < size and any(queues.values()):
+        for key in keys:
+            if queues[key] and len(chosen) < size:
+                chosen.append(queues[key].pop(0))
+    return sorted(chosen)
+
+
+def _current_records(workspace, registry_ref: object) -> tuple[list[dict], dict[str, str]]:
+    from . import document_analysis
+
+    records = document_analysis.registry_evidence_records(workspace, registry_ref)
+    extraction_hashes: dict[str, str] = {}
+    for document in workspace.documents:
+        document_id = str(document.get("id") or "")
+        detail = document_analysis.load_analysis(
+            workspace, document_id, document=document
+        )
+        artifact = detail.get("effective") or {}
+        if artifact.get("analysis_profile") != "voucher":
+            continue
+        extraction_hashes[document_id] = str(
+            artifact.get("evidence_content_sha256")
+            or artifact.get("content_sha1")
+            or artifact.get("source_sha1")
+            or ""
+        )
+    return records, extraction_hashes
+
+
+def _assertion_roles(assertion: Mapping[str, object]) -> set[str]:
+    roles: set[str] = set()
+    for operand in (assertion.get("left"), assertion.get("right")):
+        if not isinstance(operand, Mapping):
+            continue
+        if operand.get("source") == "role":
+            roles.add(str(operand.get("role") or ""))
+        elif operand.get("source") == "roles":
+            roles.update(str(value) for value in operand.get("roles") or [])
+    return {value for value in roles if value}
+
+
+def _assertion_inputs(
+    assertion: Mapping[str, object],
+    *,
+    item: Mapping[str, object],
+) -> dict:
+    roles = _assertion_roles(assertion)
+    bindings = [
+        binding
+        for binding in item.get("role_bindings") or []
+        if str(binding.get("role") or "") in roles
+    ]
+    material = {
+        "population_source_sha1": str(
+            (item.get("population_ref") or {}).get("source_sha1") or ""
+        ),
+        "frozen_row_sha1": _sha1_hash(item.get("frozen_row") or {}),
+        "bound_record_hashes": [
+            list(value)
+            for value in sorted({
+                str(binding.get("record_id") or ""): str(
+                    binding.get("record_content_hash") or ""
+                )
+                for binding in bindings
+            }.items())
+        ],
+        "extraction_hashes": [
+            list(value)
+            for value in sorted({
+                str(binding.get("document_id") or ""): str(
+                    binding.get("extraction_hash") or ""
+                )
+                for binding in bindings
+            }.items())
+        ],
+        "role_binding_sha1": _sha1_hash(
+            [
+                {
+                    "role": binding.get("role"),
+                    "document_id": binding.get("document_id"),
+                    "record_id": binding.get("record_id"),
+                    "matched_by": binding.get("matched_by") or [],
+                }
+                for binding in bindings
+            ]
+        ),
+    }
+    material["input_sha1"] = _sha1_hash(material)
+    return material
+
+
+def _result_reusable(
+    result: Mapping[str, object],
+    *,
+    assertion_sha1: str,
+    inputs: Mapping[str, object],
+    registry_definition_hash: str,
+) -> bool:
+    return bool(
+        result.get("verdict") in ASSERTION_VERDICTS - {"not_run"}
+        and not result.get("stale")
+        and result.get("assertion_sha1") == assertion_sha1
+        and result.get("registry_definition_hash") == registry_definition_hash
+        and result.get("input_hashes") == inputs
+    )
+
+
+def _aggregate_evaluation(item: Mapping[str, object]) -> str:
+    results = list((item.get("result_by_assertion") or {}).values())
+    if not results or any(result.get("verdict") == "not_run" for result in results):
+        return "stale" if any(result.get("stale") for result in results) else "not_run"
+    verdicts = {str(result.get("verdict") or "not_run") for result in results}
+    if "mismatch" in verdicts:
+        return "failed"
+    if (
+        "ambiguous" in verdicts
+        or item.get("role_conflicts")
+        or item.get("collisions")
+        or item.get("linkage_state") == "needs_review"
+    ):
+        return "needs_review"
+    if verdicts & {"missing_evidence", "invalid_extraction"}:
+        return "incomplete"
+    return "passed"
+
+
+# Every evidence record is re-validated against every assertion on each call,
+# so this is the expensive step in a Document Test read. Several independent
+# read-only projections (capability readiness, worklist summaries, report
+# rendering) each resolve their own test scope and call this for the same
+# test within a single request. ``request_cache_scope`` lets a caller certain
+# no write happens in its span memoize by (workspace instance, test id, and
+# the exact prior items the test carries in), so a materialization that
+# would reproduce an identical result is skipped rather than redone.
+# Reentrant: nesting is safe and only the outermost scope pays for teardown.
+_cache: ContextVar[dict | None] = ContextVar("cycle_vouching_request_cache", default=None)
+
+
+@contextmanager
+def request_cache_scope():
+    if _cache.get() is not None:
+        yield
+        return
+    token = _cache.set({})
+    try:
+        yield
+    finally:
+        _cache.reset(token)
+
+
+def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]:
+    """Select population rows and bind their complete exact record closures."""
+
+    cache = _cache.get()
+    cache_key = None
+    if cache is not None:
+        test_id = str(test.get("id") or "")
+        if test_id:
+            cache_key = (id(workspace), test_id, _sha1_hash(test.get("items") or []))
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+
+    validated = validate_cycle_test(test)
+    definition = validated["definition"]
+    population = definition["population"]
+    roles = definition["roles"]
+    assertions = definition["assertions"]
+    frame = workspace.get_frame(population["table"])
+    source_sha1 = _frame_signature(frame)
+    records, extraction_hashes = _current_records(workspace, validated["registry"])
+    selection = population["selection"]
+    selected_indices = (
+        list(range(frame.height))
+        if selection.get("mode") == "evidence_linked"
+        else _sample_row_indices(frame, selection)
+    )
+    existing_by_id = {
+        str(item.get("id") or ""): item for item in test.get("items") or []
+    }
+    definition_sha1 = cycle_definition_sha1(validated)
+    reference = _registry_reference(validated["registry"], DEFAULT_REGISTRY)
+    row_key = population["row_key"]
+    key_specs = [row_key, *population["cycle_keys"]]
+    materialized: list[dict] = []
+    for source_row in selected_indices:
+        row = frame.row(source_row, named=True)
+        seeds = [
+            {"kind": spec["identifier_kind"], "value": row.get(spec["column"])}
+            for spec in key_specs
+            if row.get(spec["column"]) is not None
+            and str(row.get(spec["column"])).strip()
+        ]
+        linkage = link_cycle_records(
+            registry_ref=validated["registry"],
+            seeds=seeds,
+            records=records,
+            roles=roles,
+        )
+        if selection.get("mode") == "evidence_linked" and not linkage.get("records"):
+            continue
+        item_id = stable_cycle_item_id(validated, row[row_key["column"]])
+        bindings = [
+            {
+                **binding,
+                "extraction_hash": extraction_hashes.get(
+                    str(binding.get("document_id") or ""), ""
+                ),
+            }
+            for binding in linkage.get("role_bindings") or []
+        ]
+        bound_roles = {str(binding.get("role") or "") for binding in bindings}
+        item = {
+            "id": item_id,
+            "label": str(row[row_key["column"]]),
+            "instruction": str(test.get("objective") or "Vouch the transaction cycle."),
+            "population_ref": {
+                "table": population["table"],
+                "source_row": source_row,
+                "source_sha1": source_sha1,
+            },
+            "frozen_row": _plain_json(row),
+            "cycle_identifiers": [
+                {
+                    "kind": spec["identifier_kind"],
+                    "value": _plain_json(row.get(spec["column"])),
+                }
+                for spec in key_specs
+                if row.get(spec["column"]) is not None
+                and str(row.get(spec["column"])).strip()
+            ],
+            "role_bindings": bindings,
+            "document_ids": list(
+                dict.fromkeys(
+                    str(binding.get("document_id") or "") for binding in bindings
+                )
+            ),
+            "unassigned_records": list(linkage.get("unassigned_records") or []),
+            "missing_roles": [
+                str(role["role"])
+                for role in roles
+                if role.get("required") and str(role["role"]) not in bound_roles
+            ],
+            "role_conflicts": list(linkage.get("role_conflicts") or []),
+            "linkage_state": str(linkage.get("state") or "linked"),
+            **(
+                {
+                    "linkage_review": {
+                        key: linkage.get(key)
+                        for key in (
+                            "review_reason",
+                            "limit",
+                            "counts",
+                            "triggering_identifier",
+                        )
+                        if linkage.get(key) is not None
+                    }
+                }
+                if linkage.get("state") == "needs_review"
+                else {}
+            ),
+            "result_by_assertion": {},
+            "evaluation": {
+                "state": "not_run",
+                "definition_sha1": definition_sha1,
+                "result_sha1": None,
+            },
+            "disposition": {
+                "state": "pending",
+                "evaluated_definition_sha1": None,
+                "stale": False,
+            },
+            "evidence_refs": [],
+        }
+        old = existing_by_id.get(item_id) or {}
+        old_results = old.get("result_by_assertion") or {}
+        for assertion in assertions:
+            key = str(assertion["key"])
+            assertion_sha1 = _sha1_hash(assertion)
+            inputs = _assertion_inputs(assertion, item=item)
+            old_result = old_results.get(key) or {}
+            if _result_reusable(
+                old_result,
+                assertion_sha1=assertion_sha1,
+                inputs=inputs,
+                registry_definition_hash=reference.definition_hash,
+            ):
+                item["result_by_assertion"][key] = dict(old_result)
+            else:
+                item["result_by_assertion"][key] = {
+                    **dict(old_result),
+                    "registry_definition_hash": reference.definition_hash,
+                    "assertion_sha1": assertion_sha1,
+                    "input_hashes": inputs,
+                    "verdict": "not_run",
+                    "comparisons": [],
+                    "evidence_refs": [],
+                    "stale": bool(old_result),
+                    "result_sha1": None,
+                }
+        item["evaluation"]["state"] = _aggregate_evaluation(item)
+        if item["evaluation"]["state"] in CURRENT_EVALUATION_STATES:
+            item["evaluation"]["result_sha1"] = _sha1_hash(
+                item["result_by_assertion"]
+            )
+        item["evidence_refs"] = _dedupe_evidence(
+            anchor
+            for result in item["result_by_assertion"].values()
+            for anchor in result.get("evidence_refs") or []
+        )
+        if old.get("runner_note"):
+            item["runner_note"] = str(old["runner_note"])
+        old_disposition = dict(old.get("disposition") or {})
+        if old_disposition:
+            item["disposition"] = {
+                "state": str(old_disposition.get("state") or "pending"),
+                "evaluated_definition_sha1": old_disposition.get(
+                    "evaluated_definition_sha1"
+                ),
+                "stale": bool(old_disposition.get("stale")),
+            }
+            if (
+                item["disposition"]["state"] != "pending"
+                and (
+                    item["evaluation"]["state"] not in CURRENT_EVALUATION_STATES
+                    or item["disposition"]["evaluated_definition_sha1"]
+                    != definition_sha1
+                )
+            ):
+                item["disposition"]["stale"] = True
+        materialized.append(item)
+    materialized = apply_cross_item_reuse(materialized, roles)
+    for item in materialized:
+        projected_state = _aggregate_evaluation(item)
+        if item["evaluation"].get("state") != projected_state:
+            item["evaluation"]["state"] = projected_state
+            if (item.get("disposition") or {}).get("state") != "pending":
+                item["disposition"]["stale"] = True
+    result = sorted(materialized, key=lambda item: item["id"])
+    if cache is not None and cache_key is not None:
+        cache[cache_key] = copy.deepcopy(result)
+    return result
+
+
+def project_cycle_staleness(workspace, test: dict) -> dict:
+    """Project current inputs without persisting or evaluating them."""
+
+    if test.get("kind") != "cycle_vouch" or not test.get("items"):
+        return test
+    test["items"] = materialize_cycle_items(workspace, test)
+    return test
+
+
+def _evidence_catalog(workspace, document_ids: Iterable[str]) -> dict[tuple[str, str], dict]:
+    """Resolve analysis citation IDs to stable typed document anchors."""
+
+    from . import document_analysis
+    from .evidence import normalize_anchor
+
+    documents_by_id = {
+        str(document.get("id") or ""): document for document in workspace.documents
+    }
+    catalog: dict[tuple[str, str], dict] = {}
+    for document_id in sorted(set(document_ids)):
+        document = documents_by_id.get(document_id)
+        if document is None:
+            continue
+        artifact = (
+            document_analysis.load_analysis(
+                workspace, document_id, document=document
+            ).get("effective")
+            or {}
+        )
+        for citation in artifact.get("citations") or []:
+            citation_id = str(citation.get("id") or "")
+            if not citation_id:
+                continue
+            anchor_id = "EV-CYCLE-" + hashlib.sha1(
+                f"{document_id}:{citation_id}".encode("utf-8")
+            ).hexdigest()[:12].upper()
+            catalog[(document_id, citation_id)] = normalize_anchor(
+                {
+                    "id": anchor_id,
+                    "source_kind": "document",
+                    "source_id": document_id,
+                    "source_sha1": citation.get("source_sha1")
+                    or document.get("sha1"),
+                    "page": citation.get("page"),
+                    "excerpt": str(citation.get("excerpt") or "")[:400],
+                    "excerpt_hash": citation.get("excerpt_hash"),
+                    "generated_by": "cycle-vouching",
+                },
+                require_hash=True,
+            )
+    return catalog
+
+
+def _fact_entries(
+    records_by_id: Mapping[str, Mapping[str, object]],
+    bindings: Iterable[Mapping[str, object]],
+    operand: Mapping[str, object],
+    catalog: Mapping[tuple[str, str], dict],
+) -> list[dict]:
+    field = operand.get("field") or {}
+    roles = (
+        {str(operand.get("role") or "")}
+        if operand.get("source") == "role"
+        else {str(value) for value in operand.get("roles") or []}
+    )
+    entries: list[dict] = []
+    for binding in bindings:
+        if str(binding.get("role") or "") not in roles:
+            continue
+        record = records_by_id.get(str(binding.get("record_id") or "")) or {}
+        for fact in record.get("fields") or []:
+            if (
+                str(fact.get("group") or "") != str(field.get("group") or "")
+                or str(fact.get("kind") or "") != str(field.get("kind") or "")
+                or str(fact.get("attribute") or "")
+                != str(field.get("attribute") or "")
+            ):
+                continue
+            envelope = fact.get("value") or {}
+            citations = envelope.get("citation")
+            citation_ids = citations if isinstance(citations, list) else [citations]
+            evidence = [
+                catalog[(str(binding.get("document_id") or ""), str(citation_id))]
+                for citation_id in citation_ids
+                if (
+                    str(binding.get("document_id") or ""), str(citation_id)
+                )
+                in catalog
+            ]
+            entries.append(
+                {
+                    "role": str(binding.get("role") or ""),
+                    "document_id": str(binding.get("document_id") or ""),
+                    "record_id": str(binding.get("record_id") or ""),
+                    "entry": int(fact.get("entry") or 0),
+                    "raw_value": _plain_json(envelope.get("raw_value")),
+                    "value": _plain_json(envelope.get("value")),
+                    "normalization_status": str(
+                        envelope.get("normalization_status") or "invalid"
+                    ),
+                    "normalization_error": envelope.get("normalization_error"),
+                    "evidence_refs": evidence,
+                }
+            )
+    return entries
+
+
+def _bounded_value(value: object) -> object:
+    plain = _plain_json(value)
+    if isinstance(plain, str) and len(plain) > 200:
+        return plain[:197] + "..."
+    return plain
+
+
+def _comparison(operator: str, left: object, right: object, tolerance: object) -> str:
+    if operator == "present":
+        if left in (None, ""):
+            return "missing_evidence"
+        return "match"
+    if operator == "equal_exact":
+        return "match" if str(left) == str(right) else "mismatch"
+    if operator == "equal_normalized":
+        normalize = lambda value: " ".join(
+            re.sub(
+                r"\s+",
+                " ",
+                unicodedata.normalize("NFKC", str(value or "")).strip(),
+            )
+            .casefold()
+            .split()
+        )
+        return "match" if normalize(left) == normalize(right) else "mismatch"
+    if operator == "numeric_within":
+        try:
+            left_number = Decimal(str(left).replace(",", ""))
+            right_number = Decimal(str(right).replace(",", ""))
+        except (InvalidOperation, ValueError):
+            return "invalid_extraction"
+        config = tolerance if isinstance(tolerance, Mapping) else {}
+        absolute = Decimal(str(config.get("absolute") or 0))
+        percent = Decimal(str(config.get("percent") or 0))
+        allowed = max(absolute, abs(left_number) * percent / Decimal("100"))
+        return "match" if abs(left_number - right_number) <= allowed else "mismatch"
+
+    def parsed(value: object) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        try:
+            return datetime.fromisoformat(str(value)[:10]).date()
+        except ValueError:
+            return None
+
+    left_date, right_date = parsed(left), parsed(right)
+    if left_date is None or right_date is None:
+        return "invalid_extraction"
+    if operator == "date_on_or_before":
+        return "match" if left_date <= right_date else "mismatch"
+    if operator == "date_within":
+        return (
+            "match"
+            if abs((left_date - right_date).days) <= int(tolerance or 0)
+            else "mismatch"
+        )
+    raise CycleSchemaError(f"Unsupported assertion operator '{operator}'.")
+
+
+def _scalar_operand(
+    item: Mapping[str, object],
+    operand: Mapping[str, object],
+    records_by_id: Mapping[str, Mapping[str, object]],
+    catalog: Mapping[tuple[str, str], dict],
+) -> dict:
+    if operand.get("source") == "row":
+        column = str(operand.get("column") or "")
+        value = (item.get("frozen_row") or {}).get(column)
+        if value in (None, ""):
+            return {"state": "missing_evidence", "entries": []}
+        return {
+            "state": "resolved",
+            "value": value,
+            "entries": [{"value": _bounded_value(value), "column": column}],
+        }
+    conflicted_role = str(operand.get("role") or "")
+    conflict = next(
+        (
+            value
+            for value in item.get("role_conflicts") or []
+            if str(value.get("role") or "") == conflicted_role
+        ),
+        None,
+    )
+    if conflict is not None:
+        return {
+            "state": "ambiguous",
+            "entries": [],
+            "record_ids": list(conflict.get("record_ids") or []),
+        }
+    entries = _fact_entries(
+        records_by_id, item.get("role_bindings") or [], operand, catalog
+    )
+    normalized = [
+        entry
+        for entry in entries
+        if entry["normalization_status"] == "normalized"
+        and entry.get("value") not in (None, "")
+    ]
+    invalid = [entry for entry in entries if entry["normalization_status"] == "invalid"]
+    if not entries:
+        return {"state": "missing_evidence", "entries": []}
+    if invalid:
+        return {"state": "invalid_extraction", "entries": entries}
+    distinct = {
+        json.dumps(entry.get("value"), sort_keys=True, default=str)
+        for entry in normalized
+    }
+    if not normalized:
+        return {"state": "missing_evidence", "entries": entries}
+    if len(distinct) != 1:
+        return {"state": "ambiguous", "entries": entries}
+    return {"state": "resolved", "value": normalized[0]["value"], "entries": entries}
+
+
+def _aggregate_verdict(verdicts: list[str], quantifier: str) -> str:
+    if not verdicts:
+        return "missing_evidence"
+    if quantifier == "any" and "match" in verdicts:
+        return "match"
+    if quantifier == "all" and all(verdict == "match" for verdict in verdicts):
+        return "match"
+    if "mismatch" in verdicts and (
+        quantifier == "all" or all(verdict == "mismatch" for verdict in verdicts)
+    ):
+        return "mismatch"
+    if "ambiguous" in verdicts:
+        return "ambiguous"
+    if "invalid_extraction" in verdicts:
+        return "invalid_extraction"
+    if "missing_evidence" in verdicts:
+        return "missing_evidence"
+    return "mismatch"
+
+
+def _evaluate_role_set(
+    item: Mapping[str, object],
+    assertion: Mapping[str, object],
+    scalar: Mapping[str, object],
+    set_operand: Mapping[str, object],
+    *,
+    set_is_left: bool,
+    records_by_id: Mapping[str, Mapping[str, object]],
+    catalog: Mapping[tuple[str, str], dict],
+) -> tuple[str, list[dict], list[dict]]:
+    if scalar["state"] != "resolved":
+        return str(scalar["state"]), [{"side": "scalar", **dict(scalar)}], []
+    all_entries = _fact_entries(
+        records_by_id, item.get("role_bindings") or [], set_operand, catalog
+    )
+    comparisons: list[dict] = []
+    evidence: list[dict] = []
+    entry_quantifier = str(set_operand.get("entry_quantifier") or "one")
+    for role in set_operand.get("roles") or []:
+        role_bindings = [
+            binding
+            for binding in item.get("role_bindings") or []
+            if str(binding.get("role") or "") == str(role)
+        ]
+        if not role_bindings:
+            conflict = next(
+                (
+                    value
+                    for value in item.get("role_conflicts") or []
+                    if str(value.get("role") or "") == str(role)
+                ),
+                None,
+            )
+            comparisons.append(
+                {
+                    "role": role,
+                    "document_id": None,
+                    "record_ids": list((conflict or {}).get("record_ids") or []),
+                    "verdict": "ambiguous" if conflict else "missing_evidence",
+                    "entries": [],
+                }
+            )
+            continue
+        by_document: dict[str, list[dict]] = {}
+        for entry in all_entries:
+            if entry["role"] == role:
+                by_document.setdefault(entry["document_id"], []).append(entry)
+        for document_id in sorted(
+            {str(binding.get("document_id") or "") for binding in role_bindings}
+        ):
+            entries = by_document.get(document_id, [])
+            valid = [
+                entry
+                for entry in entries
+                if entry["normalization_status"] == "normalized"
+                and entry.get("value") not in (None, "")
+            ]
+            invalid = [
+                entry for entry in entries if entry["normalization_status"] == "invalid"
+            ]
+            entry_results: list[dict] = []
+            for entry in valid:
+                verdict = _comparison(
+                    str(assertion["operator"]),
+                    entry["value"] if set_is_left else scalar["value"],
+                    scalar["value"] if set_is_left else entry["value"],
+                    assertion.get("tolerance"),
+                )
+                entry_results.append(
+                    {"value": _bounded_value(entry["value"]), "verdict": verdict}
+                )
+                evidence.extend(entry.get("evidence_refs") or [])
+            if not entries:
+                verdict = "missing_evidence"
+            elif invalid:
+                verdict = "invalid_extraction"
+            elif entry_quantifier == "one":
+                distinct = {
+                    json.dumps(entry["value"], sort_keys=True, default=str)
+                    for entry in valid
+                }
+                verdict = (
+                    "missing_evidence"
+                    if not valid
+                    else "ambiguous"
+                    if len(distinct) != 1
+                    else entry_results[0]["verdict"]
+                )
+            else:
+                verdict = _aggregate_verdict(
+                    [entry["verdict"] for entry in entry_results], entry_quantifier
+                )
+            comparisons.append(
+                {
+                    "role": role,
+                    "document_id": document_id,
+                    "record_ids": sorted(
+                        str(binding.get("record_id") or "")
+                        for binding in role_bindings
+                        if str(binding.get("document_id") or "") == document_id
+                    ),
+                    "verdict": verdict,
+                    "entries": [
+                        {
+                            "entry": entry.get("entry"),
+                            "raw_value": _bounded_value(entry.get("raw_value")),
+                            "value": _bounded_value(entry.get("value")),
+                            "normalization_status": entry.get("normalization_status"),
+                            "normalization_error": entry.get("normalization_error"),
+                            "evidence_refs": entry.get("evidence_refs") or [],
+                        }
+                        for entry in entries
+                    ],
+                    "entry_results": entry_results,
+                }
+            )
+    verdict = _aggregate_verdict(
+        [str(comparison["verdict"]) for comparison in comparisons],
+        str(assertion.get("role_quantifier") or "all"),
+    )
+    return verdict, comparisons, _dedupe_evidence(evidence)
+
+
+def evaluate_cycle_item(
+    workspace,
+    test: Mapping[str, object],
+    item: dict,
+    *,
+    records: Iterable[Mapping[str, object]] | None = None,
+) -> dict:
+    """Evaluate pending/stale assertions locally, retaining every sub-result."""
+
+    validated = validate_cycle_test(test)
+    reference = _registry_reference(validated["registry"], DEFAULT_REGISTRY)
+    record_values = list(records or _current_records(workspace, validated["registry"])[0])
+    records_by_id = {str(record["record_id"]): record for record in record_values}
+    catalog = _evidence_catalog(
+        workspace,
+        [str(binding.get("document_id") or "") for binding in item.get("role_bindings") or []],
+    )
+    results = item.setdefault("result_by_assertion", {})
+    for assertion in validated["definition"]["assertions"]:
+        key = str(assertion["key"])
+        current = results.get(key) or {}
+        if _result_reusable(
+            current,
+            assertion_sha1=_sha1_hash(assertion),
+            inputs=_assertion_inputs(assertion, item=item),
+            registry_definition_hash=reference.definition_hash,
+        ):
+            continue
+        left = assertion["left"]
+        right = assertion.get("right")
+        set_operand = next(
+            (
+                operand
+                for operand in (left, right)
+                if isinstance(operand, Mapping) and operand.get("source") == "roles"
+            ),
+            None,
+        )
+        evidence: list[dict] = []
+        if set_operand is not None:
+            scalar_operand = right if set_operand is left else left
+            scalar = _scalar_operand(item, scalar_operand, records_by_id, catalog)
+            for entry in scalar.get("entries") or []:
+                evidence.extend(entry.get("evidence_refs") or [])
+            verdict, comparisons, set_evidence = _evaluate_role_set(
+                item,
+                assertion,
+                scalar,
+                set_operand,
+                set_is_left=set_operand is left,
+                records_by_id=records_by_id,
+                catalog=catalog,
+            )
+            evidence.extend(set_evidence)
+        elif assertion["operator"] == "present":
+            resolved = _scalar_operand(item, left, records_by_id, catalog)
+            evidence = [
+                anchor
+                for entry in resolved.get("entries") or []
+                for anchor in entry.get("evidence_refs") or []
+            ]
+            if resolved["state"] in {
+                "missing_evidence",
+                "invalid_extraction",
+                "ambiguous",
+            }:
+                verdict = str(resolved["state"])
+            else:
+                verdict = (
+                    "match"
+                    if any(
+                        entry.get("normalization_status") == "normalized"
+                        and entry.get("value") not in (None, "")
+                        for entry in resolved.get("entries") or []
+                    )
+                    else "missing_evidence"
+                )
+            comparisons = [{"side": "left", **resolved}]
+        else:
+            left_value = _scalar_operand(item, left, records_by_id, catalog)
+            right_value = _scalar_operand(item, right, records_by_id, catalog)
+            states = {left_value["state"], right_value["state"]}
+            verdict = (
+                "ambiguous"
+                if "ambiguous" in states
+                else "invalid_extraction"
+                if "invalid_extraction" in states
+                else "missing_evidence"
+                if "missing_evidence" in states
+                else _comparison(
+                    str(assertion["operator"]),
+                    left_value["value"],
+                    right_value["value"],
+                    assertion.get("tolerance"),
+                )
+            )
+            comparisons = [
+                {"side": "left", **left_value},
+                {"side": "right", **right_value},
+            ]
+            evidence = [
+                anchor
+                for resolved in (left_value, right_value)
+                for entry in resolved.get("entries") or []
+                for anchor in entry.get("evidence_refs") or []
+            ]
+        result = {
+            "registry_definition_hash": reference.definition_hash,
+            "assertion_sha1": _sha1_hash(assertion),
+            "input_hashes": _assertion_inputs(assertion, item=item),
+            "verdict": verdict,
+            "display": " vs ".join(
+                str(_bounded_value(value))
+                for value in (
+                    (
+                        comparisons[0].get("value")
+                        if comparisons and comparisons[0].get("state") == "resolved"
+                        else None
+                    ),
+                    (
+                        comparisons[1].get("value")
+                        if len(comparisons) > 1
+                        and comparisons[1].get("state") == "resolved"
+                        else None
+                    ),
+                )
+                if value is not None
+            )[:240],
+            "comparisons": comparisons,
+            "evidence_refs": _dedupe_evidence(evidence),
+            "stale": False,
+        }
+        result["result_sha1"] = _sha1_hash(result)
+        results[key] = result
+    item["evaluation"] = {
+        "state": _aggregate_evaluation(item),
+        "definition_sha1": cycle_definition_sha1(validated),
+        "result_sha1": _sha1_hash(results),
+    }
+    item["evidence_refs"] = _dedupe_evidence(
+        anchor
+        for result in results.values()
+        for anchor in result.get("evidence_refs") or []
+    )
+    disposition = item.get("disposition") or {}
+    if disposition.get("state") in {"confirmed", "exception"}:
+        disposition["stale"] = True
+    item["disposition"] = {
+        "state": str(disposition.get("state") or "pending"),
+        "evaluated_definition_sha1": disposition.get("evaluated_definition_sha1"),
+        "stale": bool(disposition.get("stale")),
+    }
+    return item
+
+
+def evaluate_cycle_test(workspace, test: Mapping[str, object]) -> dict:
+    """Materialize current inputs and evaluate only work that is not current."""
+
+    output = dict(test)
+    output["items"] = materialize_cycle_items(workspace, output)
+    records, _extraction_hashes = _current_records(workspace, output["registry"])
+    for item in output["items"]:
+        if execution_pending(item, cycle=True):
+            evaluate_cycle_item(workspace, output, item, records=records)
+    dispositions_current = bool(output["items"]) and all(
+        disposition_current(item, cycle=True) for item in output["items"]
+    )
+    output["status"] = "completed" if dispositions_current else "review_required"
+    return output
 
 
 def normalize_cycle_item(

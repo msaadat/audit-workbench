@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import assistant, dashboard, debug_store, llm
+from . import assistant, dashboard, debug_store, doc_tests, llm
 from .agent import commands, narration, routing, runner, store
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
@@ -1376,23 +1376,29 @@ def get_chat(workspace: Workspace, chat_id: str) -> dict:
     ))
 
     workflow_state = None
-    try:
-        from .agent import capabilities as audit_capabilities
-
-        workflow_state = audit_capabilities.workflow_state(workspace)
-    except Exception:
-        # Recommendation UI must not make an otherwise durable chat unreadable.
-        workflow_state = None
-    if workflow_state is not None:
+    # Both calls below independently resolve Document Test scope for every
+    # capability they check, which otherwise re-materializes the same
+    # cycle-vouching tests many times over for one read-only chat render.
+    # Nothing in this span writes a test, so the two calls can safely share
+    # one cache.
+    with doc_tests.request_cache_scope():
         try:
-            workflow_state = {
-                **workflow_state,
-                **audit_capabilities.doc_tests_workflow_state(workspace),
-            }
+            from .agent import capabilities as audit_capabilities
+
+            workflow_state = audit_capabilities.workflow_state(workspace)
         except Exception:
-            # Keep audit recommendations available if a standalone worklist
-            # cannot be inspected.
-            pass
+            # Recommendation UI must not make an otherwise durable chat unreadable.
+            workflow_state = None
+        if workflow_state is not None:
+            try:
+                workflow_state = {
+                    **workflow_state,
+                    **audit_capabilities.doc_tests_workflow_state(workspace),
+                }
+            except Exception:
+                # Keep audit recommendations available if a standalone worklist
+                # cannot be inspected.
+                pass
 
     result = dict(record)
     result.update({

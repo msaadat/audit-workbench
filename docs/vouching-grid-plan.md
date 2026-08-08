@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, and Phase 2 are implemented as of 2026-08-08. Checkpoint A has passed automated and live procurement validation, including auditor review of the five regenerated voucher analyses. Phase 2 has passed its automated contract and production-build gates; Checkpoint B is now waiting on the required user-driven clean procurement rebuild. Phases 3 onward remain implementation-ready but must not begin until that confirmation. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, Phase 2, and Phase 3 are implemented as of 2026-08-08. Checkpoint A passed automated and live procurement validation, including auditor review of the five regenerated voucher analyses. The user completed the clean procurement rebuild through test generation for Checkpoint B, and the implementer verified the complete linked test set and Cycle vouch definitions read-only without executing a test. Phase 3 has passed its focused backend, workflow, and production-build gates; Checkpoint C now awaits user-driven cycle execution and review. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -946,7 +946,7 @@ Expected result: test generation produces clean-schema tests for the new RCM IDs
 
 This full rebuild is the reset cascade. There is no in-place product migration requirement for the old synthetic RCM or its dependent artifacts.
 
-Phase 2 handoff (2026-08-08; awaiting user confirmation): use these exact
+Phase 2 handoff (2026-08-08; completed): the user used these exact
 current UI actions, and do not copy any generated artifact from the existing
 workspace.
 
@@ -986,14 +986,54 @@ workspace.
 Expected inspection before confirmation: all tests use the new RCM IDs, no
 cycle definition contains narrative `steps[].checks`, compatible assertions
 are grouped by procedure/population, and no role or field is unreachable. Phase
-3 remains blocked on the user's confirmation that this clean rebuild and review
-are complete.
+3 remained blocked on the user's confirmation that this clean rebuild and
+review were complete.
+
+Checkpoint B completion record (2026-08-08): the user confirmed the clean
+procurement workspace had been regenerated through complete test generation.
+The implementer then inspected point 6 read-only. The workspace contains 21 RCM
+rows, 17 Data Tests, 10 Document Tests, and 27 linked test references; no RCM
+row is missing a linked test and no current control attribute is invalid. Its
+three Cycle vouch tests contain seven grouped typed assertions, use exact
+registered roles, have current population manifests, and pass the semantic
+definition gate with no narrative `steps[].checks`, unreachable role, or
+unreachable field. Their durable item lists remained empty, so no procurement
+test was executed or signed off during the checkpoint.
 
 ### Checkpoint C - cycle execution after Phase 3
 
 Trigger: the new item builder and evaluator are available against the clean Phase 2 definitions.
 
-The implementer tells the user which cycle tests to run through the normal test-execution UX. The user initiates execution and reviews the PO-number mismatch, extraction state, role bindings, matched-by chains, and auditor disposition controls. The implementation must not run or sign off the tests.
+Use these exact current UI actions. The user, not the implementer, performs all
+execution and review steps:
+
+1. Reload the `procurement` engagement and open **Document Tests**.
+2. Open **Vouch GRN Accuracy Against Purchase Order**, select its projected
+   not-run item, and select **Run test** in the action rail. Wait for the
+   assistant run to finish. Repeat this for **Completeness of Supporting
+   Documents for Purchase Requisitions and Orders** and **Vouch PO references
+   to specifications or contracts against purchase requisition**.
+3. For every evaluated item, open **Transaction cycle**. Confirm every required
+   role appears separately, inspect its document/record identity and extraction
+   state, and follow the complete matched-by chain. A role with multiple
+   candidates must be reported as ambiguity; it must not silently use the first
+   match.
+4. Open **Assertion results** and review every assertion and every document
+   sub-result. Use the **Page N** evidence controls to inspect cited source
+   anchors. Check the quantity and receipt-date assertions in the GRN/PO test,
+   all three requisition/PO reachability assertions, and the specification or
+   contract-reference and normalized-description assertions in the third test.
+   Confirm that any differing source identifier remains an exact mismatch, and
+   that missing evidence, invalid extraction, and ambiguity are not collapsed
+   into mismatch.
+5. Confirm the deterministic evaluation is current, then inspect **Your
+   conclusion**. It must still be pending after execution, and final audit
+   verification must remain blocked. At this checkpoint, stop before selecting
+   **Confirm result** or **Mark exception**; those controls record the auditor's
+   separate disposition and the implementer must not select them.
+6. Report the observed verdicts, any missing/invalid/ambiguous role, and whether
+   each evidence control opened the expected source. Do not regenerate the
+   workspace or rerun document analysis as part of this checkpoint.
 
 Expected result: evaluation produces current `result_by_assertion` entries, leaves auditor disposition pending, and distinguishes mismatch, missing evidence, invalid extraction, and ambiguity.
 
@@ -1091,7 +1131,7 @@ vendor/buyer edges, and leave the PO typo visible without breaking the whole
 cycle. Checkpoint A's user-driven regeneration and auditor review are recorded
 in section 9.
 
-### Phase 2 - RCM and test generation (implemented; Checkpoint B pending)
+### Phase 2 - RCM and test generation (implemented; Checkpoint B passed)
 
 - update the RCM worker, response schema, executor fields, hashes, and UI for
   discriminated `control_attributes`; only transaction-cycle attributes select
@@ -1132,7 +1172,7 @@ run against the regenerated procurement workspace, found and fixed:
 - the manual dialog authored presence assertions only; it now authors every
   registered operator with type-constrained operands and tolerances.
 
-The regenerated RCM's own quality is a separate matter for Checkpoint B review:
+The pre-Checkpoint-B RCM's own quality was a separate matter for review:
 all 28 rows carry exactly one attribute, and 13 use `transaction_cycle` against
 zero `tabular_population`, several for requirements the imported tables can
 answer across the whole population. The prompt and validator changes above
@@ -1151,10 +1191,10 @@ stable test identity excludes editable title text, and evidence-linked reaches
 above 500 return the confirmable random-25/seed-42 proposal without persisting
 or truncating a test. Focused Phase 0-2, planning, context, generation, and
 executor gates pass, and the Vue/TypeScript production build passes. The live
-procurement exit condition remains deliberately unclaimed until the user
-completes Checkpoint B above.
+procurement exit condition was claimed only after the user completed Checkpoint
+B and the implementer performed the read-only verification recorded above.
 
-### Phase 3 - item builder and evaluator
+### Phase 3 - item builder and evaluator (implemented; Checkpoint C pending)
 
 - materialize selected population rows and complete role bindings;
 - evaluate scalar and explicit role-set assertions;
@@ -1165,6 +1205,22 @@ completes Checkpoint B above.
 - implement result/input hashes and staleness; then stop at Checkpoint C without running or signing off procurement tests.
 
 Exit condition: every procurement result is explainable as match, mismatch, missing evidence, invalid extraction, or ambiguity, with no role-collapse or first-match behavior. A current evaluation does not rerun, and a pending/stale auditor disposition does not satisfy final audit verification.
+
+Automated exit record (2026-08-08): selected population rows are materialized
+locally with stable semantic item identities and complete exact role bindings.
+Scalar and explicit role-set assertions evaluate deterministically with Polars
+selection, typed comparisons, per-document sub-results, evidence anchors,
+definition/assertion/input/result hashes, selective staleness, and current-result
+reuse. Cardinality conflicts remain explicit ambiguity and never choose a first
+record. Shared execution/disposition accessors now drive scheduling, binding,
+readiness, summaries, rollups, and final audit verification. Evaluation leaves
+auditor disposition pending; only a current auditor disposition can satisfy the
+final gate. Simple manual vouching is unchanged. Focused Phase 0-3 and relevant
+workflow tests and the Vue/TypeScript production build pass. The broader
+Document Test workflow file has a separately reported endpoint-test hang, and
+one broader RCM completion expectation is separately reported; neither was
+hidden or treated as a Phase 3 sign-off. The procurement tests remain
+unexecuted and unsigned pending Checkpoint C above.
 
 ### Phase 4 - grid and summary APIs
 

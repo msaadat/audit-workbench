@@ -362,7 +362,15 @@ def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, 
 def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, int, int, int, list]:
     rollup = doc_tests.result_rollup(item)
     status = str(item.get("status") or "draft")
-    exceptions = int(rollup["exceptions"] + rollup["mismatched"])
+    # A deterministic mismatch is an evaluation result, not an auditor-owned
+    # exception disposition.  Cycle tests keep those concepts separate all the
+    # way through the rollup; downstream Phase 7 work can enrich the assurance
+    # presentation without reviving the old double count.
+    exceptions = int(
+        rollup["exceptions"]
+        if doc_tests.is_cycle_test(item)
+        else rollup["exceptions"] + rollup["mismatched"]
+    )
     open_exceptions = 0
     current_items = bool(item.get("items")) and all(
         doc_tests.item_execution_current(item, test_item)
@@ -373,6 +381,11 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
         if doc_tests.is_cycle_test(item)
         else status in _DURABLE_DOC_TEST_STATUSES or current_items
     )
+    if doc_tests.is_cycle_test(item) and current_items and not all(
+        doc_tests.item_disposition_current(item, test_item)
+        for test_item in item.get("items") or []
+    ):
+        status = "review_required"
     evidence_refs = [
         anchor
         for test_item in item.get("items") or []
@@ -578,6 +591,19 @@ def completion(
             for test in _tests(workspace, row["id"], document_tests)
         )
     ]
+    pending_cycle_dispositions = [
+        {
+            "rcm_id": row["id"],
+            "test_id": test["id"],
+            "item_id": str(item.get("id") or "") or None,
+        }
+        for row, test in linked
+        if test["kind"] == "doctest"
+        and doc_tests.is_cycle_test(test["item"])
+        for item in (test["item"].get("items") or [{}])
+        if not item
+        or not doc_tests.item_disposition_current(test["item"], item)
+    ]
     technical = bool(cov["invalid_test_parents"] or cov["completed_without_durable_result"])
     open_items = bool(
         cov["issue_count"]
@@ -585,6 +611,7 @@ def completion(
         or blank_conclusions
         or blocked_without_plan
         or rcm_without_conclusion
+        or pending_cycle_dispositions
         or any(
             test["item"].get("status") in {"blocked", "review_required"}
             for _row, test in linked
@@ -598,4 +625,5 @@ def completion(
         "blank_conclusions": blank_conclusions,
         "blocked_without_plan": blocked_without_plan,
         "rcm_without_conclusion": rcm_without_conclusion,
+        "pending_cycle_dispositions": pending_cycle_dispositions,
     }

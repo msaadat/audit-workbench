@@ -75,9 +75,38 @@ def _requested_ids(scope: dict) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
-def _outstanding(test: dict) -> bool:
+def _execution_projection(workspace: Workspace | None, test: dict) -> dict:
+    """Return current cycle inputs for readiness without persisting them."""
+
+    if (
+        workspace is None
+        or not doc_test_service.is_cycle_test(test)
+        or not test.get("items")
+    ):
+        return test
+    table = str(
+        (((test.get("definition") or {}).get("population") or {}).get("table"))
+        or ""
+    )
+    known_tables = {
+        str(value.get("name") or "")
+        for value in [*workspace.tables, *workspace.joins]
+    }
+    if table not in known_tables:
+        return test
+    projected = dict(test)
+    projected["items"] = doc_test_service.cycle_vouching.materialize_cycle_items(
+        workspace, projected
+    )
+    return projected
+
+
+def _outstanding(workspace: Workspace, test: dict) -> bool:
     """Whether this test still owes execution or auditor disposition."""
 
+    test = _execution_projection(workspace, test)
+    if doc_test_service.is_cycle_test(test) and not test.get("items"):
+        return True
     return any(
         doc_test_service.item_execution_pending(test, item)
         or not doc_test_service.item_disposition_current(test, item)
@@ -102,7 +131,7 @@ def resolve_doc_test_scope(workspace: Workspace, scope: dict) -> DocTestScope:
         eligible = tuple(
             test_id
             for test_id in sorted(known)
-            if _outstanding(doc_test_service.load_test(workspace, test_id))
+            if _outstanding(workspace, doc_test_service.load_test(workspace, test_id))
         )
         test_ids = eligible[:MAX_SCOPE_TESTS]
         if len(eligible) > MAX_SCOPE_TESTS:
@@ -176,6 +205,7 @@ def document_test_units(
     owns.
     """
     test = doc_test_service.load_test(workspace, test_id)
+    test = _execution_projection(workspace, test)
     prefix = tuple(parent_refs)
     test_refs = prefix + (f"doctest:{test_id}",)
     if test.get("kind") in {"qa", "attribute", "review"}:
@@ -335,7 +365,7 @@ def _doc_tests_definitions_ready() -> Capability:
 # --------------------------------------------------------------------------- #
 # doc_tests.executed
 # --------------------------------------------------------------------------- #
-def unexecuted_items(test: dict) -> int:
+def unexecuted_items(test: dict, workspace: Workspace | None = None) -> int:
     """Items the agent has not yet checked.
 
     Deliberately *not* ``result_rollup(...)['pending']``, which also counts
@@ -345,6 +375,10 @@ def unexecuted_items(test: dict) -> int:
     leave ``doc_tests.executed`` permanently unsatisfied and re-run every item on
     every request.
     """
+    test = _execution_projection(workspace, test)
+    if doc_test_service.is_cycle_test(test) and not test.get("items"):
+        # The item builder itself is the first deterministic execution work.
+        return 1
     return sum(
         doc_test_service.item_execution_pending(test, item)
         for item in test.get("items") or []
@@ -363,7 +397,7 @@ def _executed_ready(workspace: Workspace, scope: dict) -> Readiness:
         if doc_test_service.evidence_blocked(test):
             evidence_blocked += 1
             continue
-        if unexecuted_items(test):
+        if unexecuted_items(test, workspace):
             pending += 1
     details = {
         "tests": len(test_scope.test_ids),
@@ -395,7 +429,7 @@ def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
             # An unusable definition is reported by the upstream capability; it
             # is not silently executed here.
             continue
-        if not forced and not unexecuted_items(test):
+        if not forced and not unexecuted_items(test, workspace):
             continue
         units.extend(
             document_test_units(
@@ -446,7 +480,7 @@ def _dispositioned_ready(workspace: Workspace, scope: dict) -> Readiness:
         doc_test_service.load_test(workspace, test_id)
         for test_id in test_scope.test_ids
     ]
-    awaiting_execution = sum(unexecuted_items(test) for test in tests)
+    awaiting_execution = sum(unexecuted_items(test, workspace) for test in tests)
     pending = sum(undispositioned_items(test) for test in tests)
     details = {
         "tests": len(test_scope.test_ids),
