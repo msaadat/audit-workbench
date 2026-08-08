@@ -2379,8 +2379,18 @@ def validate_cycle_test_semantics(
     test = _object(value, "cycle test")
     if str(test.get("rcm_id") or "") != str(rcm_row.get("id") or ""):
         raise CycleSchemaError("The cycle test does not name its target RCM row.")
-    group = manifest_group_for_test(test, manifest)
-    definition = _object(test.get("definition"), "definition")
+    # Validate the closed canonical shape before looking up its candidate.  A
+    # missing or misplaced candidate_id must produce the exact structural path,
+    # not the misleading claim that an absent value was a non-prevalidated ID.
+    structurally_validated = validate_cycle_test(
+        test,
+        registry=registry,
+        table_columns=None,
+    )
+    group = manifest_group_for_test(structurally_validated, manifest)
+    definition = _object(
+        structurally_validated.get("definition"), "definition"
+    )
     population = _object(definition.get("population"), "definition.population")
     candidate = next(
         (
@@ -2395,7 +2405,7 @@ def validate_cycle_test_semantics(
         raise CycleSchemaError("The selected candidate ID is not prevalidated.")
     table_columns = dict(candidate.get("column_types") or {})
     validated = validate_cycle_test(
-        test,
+        structurally_validated,
         registry=registry,
         table_columns=table_columns,
     )

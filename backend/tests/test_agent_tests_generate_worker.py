@@ -307,7 +307,8 @@ def test_generate_worker_produces_a_ready_data_test():
     assert proposed[0]["rcm_id"] == "RCM-1"
     assert "table_refs" not in proposed[0]["steps"][0]
     assert "result" in proposed[0]["steps"][0]["code"]
-    assert gateway.calls[0]["system"] == tests_workers.GENERATE_SYSTEM
+    assert gateway.calls[0]["system"].startswith(tests_workers.GENERATE_SYSTEM)
+    assert "[agent:test_generate_variant_gate]" in gateway.calls[0]["system"]
     assert (
         gateway.calls[0]["activity"]["context_metrics"]["worker_kind"]
         == "test_generation"
@@ -327,6 +328,7 @@ def test_generate_worker_sends_a_compact_context_projection():
         "documents",
         "transaction_evidence",
         "methodology",
+        "allowed_test_variants",
         "instructions",
     }
     assert payload["transaction_evidence"]["groups"] == []
@@ -334,6 +336,8 @@ def test_generate_worker_sends_a_compact_context_projection():
     assert payload["target_rcm_row"]["id"] == "RCM-1"
     assert payload["planning_context"] == {"objective": "Assess procurement approvals"}
     assert payload["table_schemas"][0]["table"] == "transactions"
+    assert payload["allowed_test_variants"] == ["data", "document_question"]
+    assert "Cycle Vouch is forbidden" in payload["instructions"]
     assert "table_profiles" not in payload
     assert "supplied_size" not in gateway.calls[0]["user"]
     assert "representation" not in gateway.calls[0]["user"]
@@ -352,7 +356,81 @@ def test_generate_worker_produces_a_ready_document_question_test():
     assert "checks" not in step
 
 
-def test_generate_worker_accepts_the_canonical_cycle_definition():
+def test_generate_worker_defaults_document_mode_and_question_from_instruction():
+    response = _document_test(
+        steps=[
+            {
+                "label": "Inspect approval workflow",
+                "instruction": "Was the requisition approved by authorized staff?",
+                "document_ids": ["DOC-1"],
+            }
+        ]
+    )
+
+    result = WORKERS.execute(
+        _request(), _Gateway([json.dumps({"tests": [response]})])
+    )
+
+    step = result.proposal["tests"][0]["steps"][0]
+    assert step["mode"] == "question"
+    assert step["question"] == response["steps"][0]["instruction"]
+
+
+def test_generate_worker_repairs_unavailable_cycle_to_document_question():
+    bundle = _bundle(
+        rcm_payload={
+            "id": "RCM-1",
+            "risk": "Unauthorized requisitions may be initiated.",
+            "control": "Authorized staff initiate requisitions.",
+            "control_attributes": [
+                {
+                    "key": "authorization",
+                    "requirement": "Inspect authorization evidence.",
+                    "evidence_kind": "manual_inspection",
+                }
+            ],
+        }
+    )
+    invalid_cycle = {
+        "source": "document",
+        "kind": "cycle_vouch",
+        "title": "Authorization",
+        "objective": "Inspect authorization.",
+        "requirement_refs": ["RCM-1:authorization"],
+        "procedure_key": "authorization",
+        "candidate_id": "DOC-1",
+        "selection_reason": "The document is relevant.",
+        "selection": {"mode": "evidence_linked"},
+        "assertions": [],
+    }
+    repaired_question = _document_test(
+        steps=[
+            {
+                "label": "Inspect authorization",
+                "instruction": "Was the requisition initiated by authorized staff?",
+                "document_ids": ["DOC-1"],
+            }
+        ]
+    )
+    gateway = _Gateway(
+        [
+            json.dumps({"tests": [invalid_cycle]}),
+            json.dumps({"tests": [repaired_question]}),
+        ]
+    )
+
+    result = WORKERS.execute(_request(bundle), gateway)
+
+    assert result.repaired is True
+    assert "allows only these variants: document_question" in gateway.calls[0]["system"]
+    assert "Cycle Vouch section above does not apply" in gateway.calls[0]["system"]
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "cycle_vouch is unavailable" in guidance
+    assert "Never return an empty tests array" in guidance
+    assert result.proposal["tests"][0]["steps"][0]["mode"] == "question"
+
+
+def test_generate_worker_hydrates_the_canonical_cycle_definition_locally():
     from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
 
     contract = json.loads(
@@ -361,20 +439,18 @@ def test_generate_worker_accepts_the_canonical_cycle_definition():
         )
     )
     cycle = _test_payload(contract)
+    population = cycle["definition"]["population"]
     response = {
         "source": "document",
         "kind": "cycle_vouch",
-        **{
-            key: cycle[key]
-            for key in (
-                "title",
-                "objective",
-                "registry",
-                "requirement_refs",
-                "procedure_key",
-                "definition",
-            )
-        },
+        "title": cycle["title"],
+        "objective": cycle["objective"],
+        "requirement_refs": cycle["requirement_refs"],
+        "procedure_key": cycle["procedure_key"],
+        "candidate_id": population["candidate_id"],
+        "selection_reason": population["selection_reason"],
+        "selection": {"mode": "evidence_linked"},
+        "assertions": cycle["definition"]["assertions"],
     }
     bundle = _bundle(
         rcm_rows=(cycle["rcm_id"],),
@@ -388,7 +464,18 @@ def test_generate_worker_accepts_the_canonical_cycle_definition():
     proposed = result.proposal["tests"][0]
     assert proposed["kind"] == "cycle_vouch"
     assert list(proposed["requirement_refs"]) == cycle["requirement_refs"]
+    assert proposed["registry"] == cycle["registry"]
+    assert proposed["definition"]["population"]["table"] == population["table"]
+    assert [dict(role) for role in proposed["definition"]["roles"]] == cycle[
+        "definition"
+    ]["roles"]
     assert "steps" not in proposed
+    model_manifest = json.loads(gateway.calls[0]["user"])["transaction_evidence"]
+    assert "document_id" not in model_manifest["groups"][0]["records"][0]
+    assert "record_id" not in model_manifest["groups"][0]["records"][0]
+    model_payload = json.loads(gateway.calls[0]["user"])
+    assert model_payload["documents"] == []
+    assert model_payload["allowed_test_variants"] == ["cycle_vouch"]
 
 
 def test_generate_worker_produces_a_ready_document_vouch_test():
@@ -412,6 +499,104 @@ def test_generate_worker_names_the_transaction_evidence_it_was_supplied():
     assert evidence["groups"] == []
 
 
+def test_generate_worker_keeps_document_fallback_when_cycle_has_no_candidates():
+    rcm_payload = {
+        "id": "RCM-1",
+        "risk": "A transaction cycle may be incomplete.",
+        "control": "Supporting cycle records are retained.",
+        "control_attributes": [
+            {
+                "key": "complete_cycle",
+                "requirement": "The transaction cycle is complete.",
+                "evidence_kind": "transaction_cycle",
+            }
+        ],
+    }
+    bundle = _bundle(rcm_payload=rcm_payload)
+    gateway = _Gateway([json.dumps({"tests": [_document_test()]})])
+
+    WORKERS.execute(_request(bundle), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert payload["documents"]
+    assert payload["table_schemas"] == []
+    assert payload["allowed_test_variants"] == ["document_question"]
+
+
+def test_generate_worker_bounds_tabular_schema_projection():
+    tables = tuple(f"table_{index}" for index in range(8))
+    bundle = _bundle(
+        tables=tables,
+        table_columns={table: ("invoice", "amount") for table in tables},
+        rcm_payload={
+            "id": "RCM-1",
+            "risk": "Invoice amounts may be duplicated.",
+            "control": "Invoice tables are checked.",
+            "control_attributes": [
+                {
+                    "key": "duplicate_invoice",
+                    "requirement": "Detect duplicated invoice amounts.",
+                    "evidence_kind": "tabular_population",
+                }
+            ],
+        },
+    )
+    gateway = _Gateway(
+        [
+            json.dumps(
+                {
+                    "tests": [
+                        _data_test(
+                            steps=[
+                                _data_step(
+                                    code=(
+                                        "result = table_0.filter("
+                                        "pl.col('invoice').is_duplicated())"
+                                    )
+                                )
+                            ]
+                        )
+                    ]
+                }
+            )
+        ]
+    )
+
+    WORKERS.execute(_request(bundle), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert len(payload["table_schemas"]) == 6
+
+
+def test_generate_worker_bounds_document_projection():
+    documents = tuple(f"DOC-{index}" for index in range(8))
+    bundle = _bundle(
+        documents=documents,
+        rcm_payload={
+            "id": "RCM-1",
+            "risk": "Authorization evidence may be missing.",
+            "control": "Authorization is inspected.",
+            "control_attributes": [
+                {
+                    "key": "authorization",
+                    "requirement": "Inspect authorization evidence.",
+                    "evidence_kind": "manual_inspection",
+                }
+            ],
+        },
+    )
+    response = _document_test(
+        steps=[_question_step(document_ids=["DOC-0"])]
+    )
+    gateway = _Gateway([json.dumps({"tests": [response]})])
+
+    WORKERS.execute(_request(bundle), gateway)
+
+    payload = json.loads(gateway.calls[0]["user"])
+    assert len(payload["documents"]) == 6
+    assert payload["allowed_test_variants"] == ["document_question"]
+
+
 def test_generate_worker_supplies_only_grounded_vouch_candidates_and_paths():
     gateway = _Gateway([json.dumps({"tests": [_data_test()]})])
 
@@ -426,8 +611,49 @@ def test_generate_response_contract_discriminates_the_failure_prone_shapes():
     assert set(variants) == {"data", "document_question", "cycle_vouch"}
     assert variants["cycle_vouch"]["kind"] == "cycle_vouch"
     assert "steps" in variants["cycle_vouch"]["forbidden"]
+    assert "definition" in variants["cycle_vouch"]["forbidden"]
+    assert "candidate_id" in variants["cycle_vouch"]["required"]
     assert "Cycle Vouch" in tests_workers.GENERATE_SYSTEM
     assert "Do not emit dotted paths" in tests_workers.GENERATE_SYSTEM
+    assert "never use `df`" in tests_workers.GENERATE_SYSTEM
+    assert "Every step runs separately" in tests_workers.GENERATE_SYSTEM
+
+
+def test_generate_worker_rejects_a_misplaced_cycle_candidate_with_exact_guidance():
+    """Regression: a valid ID under candidate_selection used to look invented."""
+    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cycle = _test_payload(contract)
+    population = cycle["definition"]["population"]
+    misplaced = {
+        "source": "document",
+        "kind": "cycle_vouch",
+        "title": cycle["title"],
+        "objective": cycle["objective"],
+        "requirement_refs": cycle["requirement_refs"],
+        "procedure_key": cycle["procedure_key"],
+        "definition": {"population": {"table": population["table"]}},
+        "candidate_selection": {"candidate_id": population["candidate_id"]},
+    }
+    bundle = _bundle(
+        rcm_rows=(cycle["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+    )
+    invalid = json.dumps({"tests": [misplaced]})
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(bundle), _Gateway([invalid, invalid, invalid]))
+
+    message = str(caught.value)
+    assert "tests[0].candidate_id must copy exactly" in message
+    assert population["candidate_id"] in message
+    assert "model-authored 'definition'" in message
 
 
 def test_generate_worker_rejects_a_literal_expected_value_in_a_vouch_check():
@@ -794,6 +1020,81 @@ def test_generate_worker_rejects_an_unknown_column():
 
     with pytest.raises(WorkerRunError, match="unknown column 'ghost_column'"):
         WORKERS.execute(_request(), gateway)
+
+
+def test_generate_worker_rejects_ambiguous_df_with_named_table_guidance():
+    bundle = _bundle(
+        tables=("financial_approval_matrix", "invoice_data"),
+        table_columns={
+            "financial_approval_matrix": ("JOB_TITLE", "MAX_APPROVAL_AMOUNT"),
+            "invoice_data": ("INVOICE_ID", "VENDOR_INVOICE_NUMBER"),
+        },
+    )
+    invalid = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            code=(
+                                "result = df.filter("
+                                "pl.col('VENDOR_INVOICE_NUMBER').is_duplicated())"
+                            )
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(bundle), _Gateway([invalid, invalid, invalid]))
+
+    message = str(caught.value)
+    assert "uses ambiguous `df`" in message
+    assert "invoice_data" in message
+
+
+def test_generate_worker_rejects_cross_step_state_with_standalone_guidance():
+    invalid = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            code="result = joined_matrix.filter(pl.col('invoice') == '')"
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(WorkerRunError, match="every step runs independently"):
+        WORKERS.execute(_request(), _Gateway([invalid, invalid, invalid]))
+
+
+def test_generate_worker_gives_polars_duration_repair_guidance():
+    invalid = json.dumps(
+        {
+            "tests": [
+                _data_test(
+                    steps=[
+                        _data_step(
+                            code=(
+                                "result = transactions.filter("
+                                "(pl.datetime(2025, 1, 2) - "
+                                "pl.datetime(2025, 1, 1)).dt.days() > 0)"
+                            )
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(WorkerRunError, match=r"dt\.total_days"):
+        WORKERS.execute(_request(), _Gateway([invalid, invalid, invalid]))
 
 
 def test_generate_worker_accepts_columns_introduced_by_a_join():

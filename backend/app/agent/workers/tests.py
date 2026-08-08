@@ -20,6 +20,7 @@ auditor-authored Document Tests. They are simply not what generation emits.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import json
@@ -71,6 +72,163 @@ def _source_items(request: WorkerRequest, source_id: str) -> list[object]:
     return [item.content for item in request.context.items if item.source_id == source_id]
 
 
+def _model_transaction_manifest(value: object) -> object:
+    """Project only decision-relevant manifest facts into the model prompt.
+
+    The full manifest remains in the bounded worker context and is used by the
+    deterministic semantic gate.  Record IDs, document IDs, registry copies,
+    hashes, and diagnostic ranking internals do not help the model choose a
+    candidate or author valid field assertions.
+    """
+    if not isinstance(value, Mapping):
+        return value
+    groups = []
+    candidate_fields = (
+        "candidate_id",
+        "table",
+        "source_kind",
+        "join_justification",
+        "row_key",
+        "cycle_keys",
+        "column_types",
+        "population_rows",
+        "linked_rows",
+        "local_coverage",
+        "collision_count",
+        "complete_cycle_count",
+        "reachable_record_kinds",
+        "reachable_roles",
+        "required_role_coverage",
+        "required_role_count",
+        "missing_role_counts",
+        "relationship_facts",
+    )
+    for raw_group in value.get("groups") or []:
+        if not isinstance(raw_group, Mapping):
+            continue
+        candidates = [
+            {
+                key: _plain_json(candidate[key])
+                for key in candidate_fields
+                if key in candidate
+            }
+            for candidate in raw_group.get("candidates") or []
+            if isinstance(candidate, Mapping)
+        ]
+        records = [
+            {
+                "record_kind": str(record.get("record_kind") or ""),
+                "available_fields": _plain_json(record.get("available_fields") or []),
+            }
+            for record in raw_group.get("records") or []
+            if isinstance(record, Mapping)
+        ]
+        groups.append(
+            {
+                key: _plain_json(raw_group[key])
+                for key in (
+                    "registry",
+                    "requirement_refs",
+                    "required_record_kinds",
+                    "roles",
+                )
+                if key in raw_group
+            }
+            | {"candidates": candidates, "records": records}
+        )
+    return {
+        "groups": groups,
+        "manifest_sha256": str(value.get("manifest_sha256") or ""),
+    }
+
+
+def _schema_relevance_tokens(value: object) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(value or "").casefold())
+        if len(token) > 2
+    }
+
+
+def _relevant_table_schemas(
+    raw_tables: list[object], rcm_row: object, transaction_manifest: object
+) -> list[object]:
+    """Keep a bounded, deterministic set of schemas relevant to one RCM row."""
+    if not isinstance(rcm_row, Mapping):
+        return [_plain_json(value) for value in raw_tables[:6]]
+    attributes = [
+        item
+        for item in rcm_row.get("control_attributes") or []
+        if isinstance(item, Mapping)
+    ]
+    evidence_kinds = {str(item.get("evidence_kind") or "") for item in attributes}
+    if attributes and "tabular_population" not in evidence_kinds:
+        return []
+    query_parts = [
+        rcm_row.get(key) for key in ("process", "risk", "control", "criteria")
+    ]
+    for attribute in attributes:
+        query_parts.extend((attribute.get("key"), attribute.get("requirement")))
+    query_tokens = set().union(*(_schema_relevance_tokens(item) for item in query_parts))
+    candidate_tables = {
+        str(candidate.get("table") or "")
+        for group in (
+            transaction_manifest.get("groups") or []
+            if isinstance(transaction_manifest, Mapping)
+            else []
+        )
+        if isinstance(group, Mapping)
+        for candidate in group.get("candidates") or []
+        if isinstance(candidate, Mapping)
+    }
+    ranked = []
+    for index, raw in enumerate(raw_tables):
+        if not isinstance(raw, Mapping):
+            ranked.append((0, 0, -index, raw))
+            continue
+        table = str(raw.get("table") or "")
+        table_tokens = _schema_relevance_tokens(table)
+        column_tokens = set().union(
+            *(
+                _schema_relevance_tokens(column.get("name"))
+                for column in raw.get("columns") or []
+                if isinstance(column, Mapping)
+            ),
+            set(),
+        )
+        score = 4 * len(query_tokens & table_tokens) + len(query_tokens & column_tokens)
+        ranked.append((1 if table in candidate_tables else 0, score, -index, raw))
+    ranked.sort(key=lambda item: (-item[0], -item[1], -item[2]))
+    return [_plain_json(item[3]) for item in ranked[:6]]
+
+
+def _relevant_documents(raw_documents: list[object], rcm_row: object) -> list[object]:
+    """Keep the six documents with the strongest lexical fit to one RCM row."""
+    if not isinstance(rcm_row, Mapping):
+        return [_plain_json(value) for value in raw_documents[:6]]
+    query_parts = [
+        rcm_row.get(key) for key in ("process", "risk", "control", "criteria")
+    ]
+    for attribute in rcm_row.get("control_attributes") or []:
+        if isinstance(attribute, Mapping):
+            query_parts.extend((attribute.get("key"), attribute.get("requirement")))
+    query_tokens = set().union(*(_schema_relevance_tokens(item) for item in query_parts))
+    ranked = []
+    for index, raw in enumerate(raw_documents):
+        if not isinstance(raw, Mapping):
+            ranked.append((0, -index, raw))
+            continue
+        document_tokens = set().union(
+            *(
+                _schema_relevance_tokens(raw.get(key))
+                for key in ("title", "source", "category", "summary")
+            )
+        )
+        ranked.append((len(query_tokens & document_tokens), -index, raw))
+    ranked.sort(key=lambda item: (-item[0], -item[1]))
+    return [_plain_json(item[2]) for item in ranked[:6]]
+
+
 def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
     """Project the durable bundle into the small model-facing generation input.
 
@@ -82,31 +240,66 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
     planning = _resolved_item(request, "planning_context")
     if isinstance(planning, Mapping):
         planning = planning.get("context") or {}
-    raw_tables = _source_items(request, GENERATE_TABLE_SOURCE_ID)
-    table_schemas = []
-    for raw in raw_tables:
-        if not isinstance(raw, Mapping):
-            table_schemas.append(raw)
-            continue
-        table_schemas.append(_plain_json(raw))
-    raw_documents = _source_items(request, GENERATE_DOCUMENT_SOURCE_ID)
-    documents = []
-    for raw in raw_documents:
-        if not isinstance(raw, Mapping):
-            documents.append(raw)
-            continue
-        documents.append(_plain_json(raw))
+    rcm_row = _resolved_item(request, GENERATE_ROW_SOURCE_ID)
     transaction_evidence = _resolved_item(
         request, GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID
     )
+    raw_tables = _source_items(request, GENERATE_TABLE_SOURCE_ID)
+    table_schemas = _relevant_table_schemas(
+        raw_tables, rcm_row, transaction_evidence
+    )
+    raw_documents = _source_items(request, GENERATE_DOCUMENT_SOURCE_ID)
+    attributes = (
+        [
+            item
+            for item in rcm_row.get("control_attributes") or []
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(rcm_row, Mapping)
+        else []
+    )
+    evidence_kinds = {str(item.get("evidence_kind") or "") for item in attributes}
+    candidate_ids = _manifest_candidate_ids(transaction_evidence)
+    needs_documents = not attributes or bool(
+        evidence_kinds & {"document_content", "manual_inspection", "inquiry", "mixed"}
+    ) or not candidate_ids
+    documents = (
+        _relevant_documents(raw_documents, rcm_row)
+        if needs_documents
+        else []
+    )
+    allowed_variants = []
+    if table_schemas:
+        allowed_variants.append("data")
+    if documents:
+        allowed_variants.append("document_question")
+    if candidate_ids:
+        allowed_variants.append("cycle_vouch")
+    if "cycle_vouch" in allowed_variants:
+        variant_instruction = (
+            "Cycle Vouch may be used only with an exact candidate_id from "
+            "transaction_evidence."
+        )
+    else:
+        variant_instruction = (
+            "Cycle Vouch is forbidden because transaction_evidence supplies no "
+            "prevalidated candidates. For a document_question omit kind and use "
+            "steps shaped as {label, instruction, mode:'question', document_ids, "
+            "question}; question may repeat instruction. Never return an empty "
+            "tests array."
+        )
     return {
-        "target_rcm_row": _resolved_item(request, GENERATE_ROW_SOURCE_ID),
+        "target_rcm_row": rcm_row,
         "planning_context": planning,
         "table_schemas": table_schemas,
         "documents": documents,
-        "transaction_evidence": transaction_evidence,
+        "transaction_evidence": _model_transaction_manifest(transaction_evidence),
         "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
-        "instructions": "Generate complete executable tests for target_rcm_row only.",
+        "allowed_test_variants": allowed_variants,
+        "instructions": (
+            "Generate complete executable tests for target_rcm_row only. Use "
+            f"only allowed_test_variants. {variant_instruction}"
+        ),
     }
 
 
@@ -200,14 +393,23 @@ GENERATE_RESPONSE_CONTRACT = {
                 "kind",
                 "title",
                 "objective",
-                "registry",
                 "requirement_refs",
                 "procedure_key",
-                "definition",
+                "candidate_id",
+                "selection_reason",
+                "selection",
+                "assertions",
             ],
             "source": "document",
             "kind": "cycle_vouch",
-            "forbidden": ["steps", "checks", "document_types"],
+            "forbidden": [
+                "registry",
+                "definition",
+                "roles",
+                "steps",
+                "checks",
+                "document_types",
+            ],
         },
     },
 }
@@ -216,16 +418,24 @@ Generate the complete executable tests for exactly one supplied RCM row.
 Return JSON with a non-empty `tests` array. A test is one of:
 
 1. Data Test: source `data`, title, objective, and non-empty `steps`; each step
-   has label, instruction, and Polars code assigning exception rows to `result`.
+   has label, instruction, and self-contained Polars code assigning exception
+   rows to `result`. Every step runs separately: it cannot use a variable made
+   by another step. When more than one table is supplied, never use `df`; name
+   the exact in-memory table variable or use `tables["exact_table_name"]`. Do
+   not read files. For duration days use `.dt.total_days()`, not `.dt.days()` or
+   `.dt.day()`.
 2. Document question: source `document`, title, objective, and non-empty
    question-mode steps using only supplied document ids. A missing-evidence step
    has an empty document_ids array and a specific missing_evidence string.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
-   registry, requirement_refs, procedure_key, and definition. It has no steps.
+   requirement_refs, procedure_key, candidate_id, selection_reason, selection,
+   and assertions. It has no registry, definition, roles, or steps; those exact
+   registry-backed fields are hydrated locally from the chosen manifest candidate.
 
 For Cycle Vouch, the supplied `transaction_evidence` manifest is authoritative.
-Choose an exact registry group and candidate_id, copy that candidate's table,
-row_key, and cycle_keys exactly, and explain the selection. requirement_refs use
+Choose an exact candidate_id copied from one supplied registry group and explain
+the choice in selection_reason. Do not repeat the candidate's table, row_key,
+cycle_keys, registry, or roles; local code copies them exactly. requirement_refs use
 `<RCM id>:<control attribute key>` and cover the transaction-cycle attributes
 the procedure tests. Group compatible assertions sharing one population and
 lifecycle scope into one test. Roles name exact reachable record kinds and state
@@ -238,6 +448,19 @@ values. Do not emit dotted paths, checks, document_types, or a vouch mode step.
 Evidence-linked selection is targeted evidence only. Sampling uses random,
 interval, or stratified with size 1..{cycle_vouching.MAX_ITEMS} and an integer
 seed. assurance_scope is derived locally and may be omitted.
+
+The exact Cycle Vouch response shape is:
+{{"source":"document","kind":"cycle_vouch","title":"...","objective":"...",
+"requirement_refs":["RCM-ID:attribute_key"],"procedure_key":"stable-key",
+"candidate_id":"CYCLE-CAND-EXACTLY-AS-SUPPLIED","selection_reason":"...",
+"selection":{{"mode":"evidence_linked"}},"assertions":[{{"key":"stable-key",
+"label":"...","left":{{"source":"role","role":"exact supplied role",
+"field":{{"group":"...","kind":"...","attribute":"..."}}}},
+"right":{{"source":"role","role":"exact supplied role","field":
+{{"group":"...","kind":"...","attribute":"..."}}}},"operator":"equal_exact"}}]}}
+Use `left` and `right`, never operand1/operand2. Each assertion needs key, label,
+left, and operator; omit right only for the unary `present` operator. A row
+operand is {{"source":"row","column":"exact supplied candidate column"}}.
 
 Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
 normally produces a Data Test; document-content, inspection, inquiry, and mixed
@@ -260,6 +483,9 @@ _GENERATE_DOCUMENT_STEP_FIELDS = (
 _GENERATE_MODES = {"question"}
 _UNKNOWN_COLUMN_ERROR_RE = re.compile(
     r"ColumnNotFoundError: unable to find column [\"']([^\"']+)[\"']"
+)
+_UNDEFINED_NAME_ERROR_RE = re.compile(
+    r"NameError: name [\"']([^\"']+)[\"'] is not defined"
 )
 
 
@@ -374,6 +600,39 @@ def _generate_transaction_manifest(request: WorkerRequest) -> dict:
     return _plain_json(value)
 
 
+def _manifest_candidate_matches(
+    manifest: Mapping[str, object], candidate_id: object
+) -> list[tuple[dict, dict]]:
+    """Return exact group/candidate matches from the supplied local manifest."""
+    matches: list[tuple[dict, dict]] = []
+    for raw_group in manifest.get("groups") or []:
+        if not isinstance(raw_group, Mapping):
+            continue
+        group = _plain_json(raw_group)
+        assert isinstance(group, dict)
+        for raw_candidate in group.get("candidates") or []:
+            if not isinstance(raw_candidate, Mapping):
+                continue
+            candidate = _plain_json(raw_candidate)
+            assert isinstance(candidate, dict)
+            if candidate.get("candidate_id") == candidate_id:
+                matches.append((group, candidate))
+    return matches
+
+
+def _manifest_candidate_ids(manifest: Mapping[str, object]) -> list[str]:
+    """List exact eligible IDs in stable order for actionable repair guidance."""
+    return sorted(
+        {
+            str(candidate.get("candidate_id") or "")
+            for group in manifest.get("groups") or []
+            if isinstance(group, Mapping)
+            for candidate in group.get("candidates") or []
+            if isinstance(candidate, Mapping) and candidate.get("candidate_id")
+        }
+    )
+
+
 def _generate_rcm_row(request: WorkerRequest) -> dict:
     value = _resolved_item(request, GENERATE_ROW_SOURCE_ID)
     if not isinstance(value, Mapping):
@@ -389,29 +648,84 @@ def _validate_generate_cycle_test(
     rcm_id: str,
     errors: list[str],
 ) -> dict | None:
+    manifest = _generate_transaction_manifest(request)
+    eligible_ids = _manifest_candidate_ids(manifest)
+    eligible_text = ", ".join(eligible_ids) if eligible_ids else "none"
+    if not eligible_ids:
+        errors.append(
+            f"{path} cycle_vouch is unavailable because transaction_evidence "
+            "supplies no prevalidated candidates; return an ordinary document "
+            "question test with source 'document', no kind, and steps containing "
+            "label, instruction, mode 'question', document_ids, and question. "
+            "Never return an empty tests array"
+        )
+        return None
+    candidate_id = value.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        errors.append(
+            f"{path}.candidate_id must copy exactly one supplied candidate ID; "
+            f"eligible IDs: {eligible_text}"
+        )
+        return None
+    matches = _manifest_candidate_matches(manifest, candidate_id)
+    if len(matches) != 1:
+        errors.append(
+            f"{path}.candidate_id '{candidate_id}' is not an exact prevalidated "
+            f"candidate; eligible IDs: {eligible_text}"
+        )
+        return None
+    group, selected = matches[0]
+    selection_reason = value.get("selection_reason")
+    if not isinstance(selection_reason, str) or not selection_reason.strip():
+        errors.append(f"{path}.selection_reason must be a non-empty string")
+        return None
+    selection = value.get("selection")
+    if not isinstance(selection, Mapping):
+        errors.append(
+            f"{path}.selection must be an object such as "
+            "{'mode':'evidence_linked'}"
+        )
+        return None
+    assertions = value.get("assertions")
+    if not isinstance(assertions, (list, tuple)) or not assertions:
+        errors.append(f"{path}.assertions must be a non-empty array")
+        return None
     candidate = {
-        **_plain_json(value),
         "source": "document",
         "kind": "cycle_vouch",
         "schema_version": cycle_vouching.SCHEMA_VERSION,
         "rcm_id": rcm_id,
+        "registry": group.get("registry"),
+        "requirement_refs": _plain_json(value.get("requirement_refs")),
+        "procedure_key": value.get("procedure_key"),
+        "definition": {
+            "population": {
+                "candidate_id": candidate_id,
+                "selection_reason": selection_reason.strip(),
+                "table": selected.get("table"),
+                "row_key": _plain_json(selected.get("row_key")),
+                "cycle_keys": _plain_json(selected.get("cycle_keys")),
+                "selection": _plain_json(selection),
+            },
+            "roles": _plain_json(group.get("roles")),
+            "assertions": _plain_json(assertions),
+        },
         "steps": [],
     }
     rcm_row = _generate_rcm_row(request)
-    manifest = _generate_transaction_manifest(request)
     try:
         validated = cycle_vouching.validate_cycle_test_semantics(
             candidate, rcm_row=rcm_row, manifest=manifest
         )
         group = cycle_vouching.manifest_group_for_test(validated, manifest)
         population = validated["definition"]["population"]
-        selected = next(
+        hydrated_candidate = next(
             item
             for item in group["candidates"]
             if item["candidate_id"] == population["candidate_id"]
         )
         confirmation = (
-            cycle_vouching.selection_confirmation(selected)
+            cycle_vouching.selection_confirmation(hydrated_candidate)
             if population["selection"].get("mode") == "evidence_linked"
             else None
         )
@@ -456,6 +770,59 @@ def _generate_response_schema(response: str) -> Mapping[str, Any]:
     return {"tests": values}
 
 
+def _code_loaded_names(code: str) -> set[str]:
+    """Return names loaded by a syntactically valid generated snippet."""
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return set()
+    return {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+
+
+def _code_polars_columns(code: str) -> set[str]:
+    """Return literal column names used by ``pl.col`` for repair guidance."""
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return set()
+    columns: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = node.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and function.attr == "col"
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "pl"
+        ):
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            columns.add(first.value)
+    return columns
+
+
+def _tables_covering_columns(
+    columns: set[str], known_tables: Mapping[str, Mapping[str, str]]
+) -> list[str]:
+    """Rank named frames that contain the referenced literal columns."""
+    if not columns:
+        return []
+    return sorted(
+        (
+            table
+            for table, schema in known_tables.items()
+            if columns <= set(schema)
+        ),
+        key=lambda table: (len(known_tables[table]), table),
+    )
+
+
 def _validate_generate_data_step(
     path: str, raw_step: object, known_tables: Mapping[str, Mapping[str, str]], errors: list[str]
 ) -> dict | None:
@@ -477,10 +844,29 @@ def _validate_generate_data_step(
         try:
             sandbox.validate(code)
         except ValueError as error:
-            errors.append(f"{path}.code is not allowed in the sandbox: {error}")
+            if "without assigning `result`" in str(error):
+                errors.append(
+                    f"{path}.code must assign the exception rows to `result`; "
+                    "every step runs independently"
+                )
+            else:
+                errors.append(f"{path}.code is not allowed in the sandbox: {error}")
             safe_code = False
-        if "result" not in code:
-            errors.append(f"{path}.code must assign the exception rows to `result`")
+        loaded_names = _code_loaded_names(code)
+        if safe_code and len(known_tables) > 1 and "df" in loaded_names:
+            columns = _code_polars_columns(code)
+            suggested_tables = _tables_covering_columns(columns, known_tables)
+            suggestion = (
+                f" Likely named table(s): {', '.join(suggested_tables[:5])}."
+                if suggested_tables
+                else ""
+            )
+            errors.append(
+                f"{path}.code uses ambiguous `df`, which means only the first "
+                "supplied table. Use an exact named table variable or "
+                f"tables['exact_name']; every step runs independently.{suggestion}"
+            )
+            safe_code = False
         if safe_code and known_tables:
             try:
                 # Use Polars itself to resolve schemas created by the snippet.
@@ -493,13 +879,37 @@ def _validate_generate_data_step(
             except sandbox.SandboxError as error:
                 unknown_column = _UNKNOWN_COLUMN_ERROR_RE.search(str(error))
                 if unknown_column:
+                    column = unknown_column.group(1)
+                    containing = sorted(
+                        table for table, schema in known_tables.items() if column in schema
+                    )
+                    location = (
+                        f"; it exists in named table(s): {', '.join(containing)}"
+                        if containing
+                        else ""
+                    )
                     errors.append(
-                        f"{path}.code references unknown column '{unknown_column.group(1)}'"
+                        f"{path}.code references unknown column '{column}'{location}"
                     )
                 else:
-                    errors.append(
-                        f"{path}.code cannot run against the supplied table schemas: {error}"
-                    )
+                    undefined_name = _UNDEFINED_NAME_ERROR_RE.search(str(error))
+                    if undefined_name:
+                        errors.append(
+                            f"{path}.code depends on undefined name "
+                            f"'{undefined_name.group(1)}'; every step runs "
+                            "independently and must build its full calculation "
+                            "before assigning exception rows to `result`"
+                        )
+                    elif ".days" in code and "ExprDateTimeNameSpace" in str(error):
+                        errors.append(
+                            f"{path}.code uses unsupported `.dt.days()`; use "
+                            "`.dt.total_days()` for a Polars duration"
+                        )
+                    else:
+                        errors.append(
+                            f"{path}.code cannot run against the supplied table "
+                            f"schemas: {error}"
+                        )
     return {
         "label": str(step.get("label") or "").strip(),
         "instruction": str(step.get("instruction") or "").strip(),
@@ -534,7 +944,12 @@ def _validate_generate_document_step(
             "instruction": str(step.get("instruction") or "").strip(),
             "mode": "",
         }, None
-    if mode not in _GENERATE_MODES:
+    if mode in (None, ""):
+        # Ordinary generated Document Tests have exactly one accepted mode.
+        # Treat omitted discriminator boilerplate as that closed default rather
+        # than spending a repair turn asking the model to repeat it.
+        mode = "question"
+    elif mode not in _GENERATE_MODES:
         errors.append(f"{path}.mode must be 'question'")
         mode = None
     document_ids = step.get("document_ids")
@@ -549,7 +964,7 @@ def _validate_generate_document_step(
     unknown = [value for value in document_ids if value not in known_document_ids]
     if unknown:
         errors.append(f"{path} references unknown document '{unknown[0]}'")
-    question = str(step.get("question") or "").strip()
+    question = str(step.get("question") or step.get("instruction") or "").strip()
     missing_evidence = str(step.get("missing_evidence") or "").strip()
     scope_limitation = str(step.get("scope_limitation") or "").strip()
     normalized = {
@@ -633,8 +1048,24 @@ def validate_generate_proposal(
             if not isinstance(value.get(key), str) or not value[key].strip():
                 errors.append(f"{path}.{key} must be a non-empty string")
         if source == "document" and value.get("kind") == "cycle_vouch":
-            if value.get("steps") not in (None, []):
-                errors.append(f"{path} cycle_vouch must not carry steps")
+            forbidden = [
+                key
+                for key in (
+                    "registry",
+                    "definition",
+                    "roles",
+                    "steps",
+                    "checks",
+                    "document_types",
+                )
+                if value.get(key) not in (None, [], {})
+            ]
+            if forbidden:
+                errors.append(
+                    f"{path} cycle_vouch must not carry model-authored "
+                    f"'{forbidden[0]}'; local code hydrates registry, population, "
+                    "and roles from candidate_id"
+                )
             cycle_test = _validate_generate_cycle_test(
                 path, value, request=request, rcm_id=rcm_id, errors=errors
             )
@@ -718,11 +1149,31 @@ def run_generate_worker(
     attempt: WorkerAttempt,
 ) -> str:
     """Transform only the supplied bundle into one budgeted model request."""
+    payload = _generation_prompt_payload(request)
     user = json.dumps(
-        _generation_prompt_payload(request),
+        payload,
         separators=(",", ":"),
         ensure_ascii=False,
     )
+    allowed_variants = [str(value) for value in payload["allowed_test_variants"]]
+    variant_gate = (
+        "\n\n[agent:test_generate_variant_gate]\n"
+        f"This unit allows only these variants: {', '.join(allowed_variants)}. "
+        "Do not return any other variant. "
+    )
+    if "cycle_vouch" not in allowed_variants:
+        variant_gate += (
+            "The Cycle Vouch section above does not apply to this unit. Do not "
+            "emit kind, candidate_id, selection, assertions, registry, or "
+            "definition. Return an ordinary data or document-question test as "
+            "allowed, and never return an empty tests array."
+        )
+    elif allowed_variants == ["cycle_vouch"]:
+        variant_gate += (
+            "This is a Cycle Vouch-only unit. Use the exact narrowed Cycle Vouch "
+            "response shape and an exact supplied candidate_id."
+        )
+    system = GENERATE_SYSTEM + variant_gate
     conversation = None
     if attempt.is_repair:
         if attempt.previous_response is None:
@@ -735,7 +1186,7 @@ def run_generate_worker(
             {"role": "user", "content": _repair_instruction(attempt)},
         ]
     return gateway.complete(
-        GENERATE_SYSTEM,
+        system,
         user,
         _context_metrics(request, "test_generation"),
         attempt=attempt.number,
@@ -756,7 +1207,15 @@ GENERATE_RESPONSE_SCHEMA = WorkerResponseSchema(
 )
 GENERATE_WORKER = WorkerDefinition(
     worker_id=GENERATE_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_generate_worker)),
+    implementation_hash=_sha256_text(
+        inspect.getsource(run_generate_worker)
+        + inspect.getsource(_generation_prompt_payload)
+        + inspect.getsource(_model_transaction_manifest)
+        + inspect.getsource(_relevant_table_schemas)
+        + inspect.getsource(_relevant_documents)
+        + inspect.getsource(_schema_relevance_tokens)
+        + inspect.getsource(_manifest_candidate_ids)
+    ),
     prompt_hash=_sha256_text(GENERATE_SYSTEM),
     response_schema=GENERATE_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
@@ -769,6 +1228,13 @@ GENERATE_WORKER = WorkerDefinition(
     semantic_validation_hash=_sha256_text(
         inspect.getsource(validate_generate_proposal)
         + inspect.getsource(_validate_generate_cycle_test)
+        + inspect.getsource(_validate_generate_data_step)
+        + inspect.getsource(_validate_generate_document_step)
+        + inspect.getsource(_manifest_candidate_matches)
+        + inspect.getsource(_manifest_candidate_ids)
+        + inspect.getsource(_code_loaded_names)
+        + inspect.getsource(_code_polars_columns)
+        + inspect.getsource(_tables_covering_columns)
         + inspect.getsource(cycle_vouching.validate_cycle_test_semantics)
     ),
     semantic_validator=validate_generate_proposal,
