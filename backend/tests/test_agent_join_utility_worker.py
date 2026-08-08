@@ -134,20 +134,15 @@ def _reject(ref, rationale="No concrete audit test spans these tables.", superse
     return payload
 
 
-def test_a_rejection_may_cite_a_same_pair_alternate_as_superseding_it():
-    """The gate's own reason for having ``superseded_by`` at all: two keys
-    connecting the identical pair of tables, one retained and the other
-    rejected because of it."""
+def test_a_same_pair_rejection_is_linked_to_the_retained_route_deterministically():
+    """The model chooses the route; the validator owns the mechanical link."""
 
     catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_STAFF_REQUESTER])
     accepted = analysis_worker.validate_join_utility_proposal(
         {
             "decisions": (
                 _retain(),
-                _reject(
-                    _ORDERS_TO_STAFF_REQUESTER["ref"],
-                    superseded_by=_ORDERS_TO_STAFF["ref"],
-                ),
+                _reject(_ORDERS_TO_STAFF_REQUESTER["ref"]),
             )
         },
         _request(catalog),
@@ -161,72 +156,63 @@ def test_a_rejection_may_cite_a_same_pair_alternate_as_superseding_it():
     assert rejected["superseded_by"] == _ORDERS_TO_STAFF["ref"]
 
 
-def test_a_rejection_cannot_cite_a_different_pair_as_superseding_it():
-    """This is the exact shape of the regression: rejecting orders-to-vendor
-    because orders-to-staff was retained. They connect different tables — one
-    being joined does not make the other redundant, and accepting the claim
-    is how a table silently drops out of the join graph entirely."""
+def test_a_model_cross_pair_reference_is_ignored():
+    """A model cannot create an invalid graph through a cross-reference."""
 
     catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
 
-    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
-        analysis_worker.validate_join_utility_proposal(
-            {
-                "decisions": (
-                    _retain(),
-                    _reject(
-                        _ORDERS_TO_VENDOR["ref"],
-                        superseded_by=_ORDERS_TO_STAFF["ref"],
-                    ),
-                )
-            },
-            _request(catalog),
-        )
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {
+            "decisions": (
+                _retain(),
+                _reject(
+                    _ORDERS_TO_VENDOR["ref"],
+                    superseded_by=_ORDERS_TO_STAFF["ref"],
+                ),
+            )
+        },
+        _request(catalog),
+    )
 
-    message = "; ".join(caught.value.errors)
-    assert _ORDERS_TO_VENDOR["ref"] in message
-    assert _ORDERS_TO_STAFF["ref"] in message
-    assert "different table pairs" in message
+    rejected = next(item for item in accepted["decisions"] if item["decision"] == "reject")
+    assert rejected["superseded_by"] == ""
 
 
-def test_a_rejection_cannot_cite_a_ref_that_was_itself_rejected():
-    """The circular case: A claims to be superseded by B, but B was rejected
-    too. Whatever B's own status, it cannot be the reason A is redundant."""
+def test_a_model_reference_to_a_rejected_route_is_ignored():
+    """The deterministic result has no retained route to link to."""
 
     catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
 
-    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
-        analysis_worker.validate_join_utility_proposal(
-            {
-                "decisions": (
-                    _reject(_ORDERS_TO_STAFF["ref"]),
-                    _reject(
-                        _ORDERS_TO_VENDOR["ref"],
-                        superseded_by=_ORDERS_TO_STAFF["ref"],
-                    ),
-                )
-            },
-            _request(catalog),
-        )
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {
+            "decisions": (
+                _reject(_ORDERS_TO_STAFF["ref"]),
+                _reject(
+                    _ORDERS_TO_VENDOR["ref"],
+                    superseded_by=_ORDERS_TO_STAFF["ref"],
+                ),
+            )
+        },
+        _request(catalog),
+    )
 
-    assert "was not retained" in "; ".join(caught.value.errors)
+    assert all(item["superseded_by"] == "" for item in accepted["decisions"])
 
 
-def test_a_rejection_cannot_cite_itself():
+def test_a_model_self_reference_is_ignored():
     catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
 
-    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
-        analysis_worker.validate_join_utility_proposal(
-            {
-                "decisions": (
-                    _retain(),
-                    _reject(_ORDERS_TO_VENDOR["ref"], superseded_by=_ORDERS_TO_VENDOR["ref"]),
-                )
-            },
-            _request(catalog),
-        )
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {
+            "decisions": (
+                _retain(),
+                _reject(_ORDERS_TO_VENDOR["ref"], superseded_by=_ORDERS_TO_VENDOR["ref"]),
+            )
+        },
+        _request(catalog),
+    )
 
-    assert "cannot cite itself" in "; ".join(caught.value.errors)
+    assert accepted["decisions"][1]["superseded_by"] == ""
 
 
 def test_a_rejection_with_no_superseded_by_needs_no_alternate():
@@ -245,40 +231,32 @@ def test_a_rejection_with_no_superseded_by_needs_no_alternate():
     assert rejected["superseded_by"] == ""
 
 
-def test_free_text_redundancy_language_without_the_structured_field_is_caught():
-    """The exact shape the real regression took: the model wrote "superseded by
-    the retained relationship..." in prose while the structured field — which
-    the mechanical cross-pair check actually reads — was never populated. A
-    validator that only checked the structured field when present would have
-    let this exact response straight through."""
+def test_free_text_redundancy_language_cannot_corrupt_the_linkage():
+    """The model's prose no longer participates in graph construction."""
 
     catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
 
-    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
-        analysis_worker.validate_join_utility_proposal(
-            {
-                "decisions": (
-                    _retain(),
-                    _reject(
-                        _ORDERS_TO_VENDOR["ref"],
-                        rationale=(
-                            "Superseded by the retained relationship between "
-                            "orders and staff for approval authority."
-                        ),
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {
+            "decisions": (
+                _retain(),
+                _reject(
+                    _ORDERS_TO_VENDOR["ref"],
+                    rationale=(
+                        "Superseded by the retained relationship between "
+                        "orders and staff for approval authority."
                     ),
-                )
-            },
-            _request(catalog),
-        )
+                ),
+            )
+        },
+        _request(catalog),
+    )
 
-    assert "rationale claims another relationship" in "; ".join(caught.value.errors)
+    assert accepted["decisions"][1]["superseded_by"] == ""
 
 
-def test_superseded_by_is_required_on_every_rejection():
-    """Optional would let a model skip the field while still arguing redundancy
-    in prose, which is exactly the gap the free-text check exists to close —
-    but only because the field is required does a model have to decide, every
-    time, whether it is making that claim at all."""
+def test_superseded_by_is_not_model_authored():
+    """The tool asks only for the decision; linkage is deterministic."""
 
     tool = analysis_worker._join_utility_submission_tool(
         _request(_catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR]))
@@ -288,7 +266,8 @@ def test_superseded_by_is_required_on_every_rejection():
         for branch in tool["function"]["parameters"]["properties"]["decisions"]["items"]["oneOf"]
         if branch["properties"]["decision"]["enum"] == ["reject"]
     )
-    assert "superseded_by" in reject_branch["required"]
+    assert "superseded_by" not in reject_branch["properties"]
+    assert "superseded_by" not in reject_branch["required"]
 
 
 def test_a_valid_decision_survives_the_freeze_between_schema_and_validator():

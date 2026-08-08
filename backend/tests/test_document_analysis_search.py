@@ -233,11 +233,14 @@ def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
     def fake_chat(messages, **_kwargs):
         tag = messages[0]["content"].split("]", 1)[0].lstrip("[")
         assert tag == "agent:document_analysis_map"
-        return {"content": json.dumps({
+        payload = {
             "summary_markdown": "Invoices require approval. [1]",
             "audit_notes_markdown": "The policy states a requirement; operation is not demonstrated.",
             "citations": [{"id": "1", "page": 1, "excerpt": source}],
-        })}
+        }
+        return {"content": "", "tool_calls": [{"type": "function", "function": {
+            "name": "submit_document_chunk_analysis", "arguments": json.dumps(payload),
+        }}]}
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "local", "model": "test"})
@@ -275,7 +278,9 @@ def test_document_analysis_retries_blank_notes_and_persists_complete_output(monk
                 "audit_notes_markdown": "Obtain evidence that the approval operated. [C1]",
                 "citations": [{"id": "C1", "page": 1, "excerpt": source}],
             }
-        return {"content": json.dumps(payload)}
+        return {"content": "", "tool_calls": [{"type": "function", "function": {
+            "name": "submit_document_chunk_analysis", "arguments": json.dumps(payload),
+        }}]}
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(

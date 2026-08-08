@@ -282,6 +282,29 @@ class FakeAgentLLM:
             or set(response).issubset({"content", "tool_calls", "usage"})
         ):
             return _streamed(response, on_delta)
+        if tools and isinstance(tool_choice, dict):
+            name = (
+                tool_choice.get("function", {}).get("name")
+                if isinstance(tool_choice.get("function"), dict)
+                else None
+            )
+            if name:
+                return _streamed(
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "fake_tool_call",
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": json.dumps(response),
+                                },
+                            }
+                        ],
+                    },
+                    on_delta,
+                )
         return _streamed({"content": json.dumps(response)}, on_delta)
 
 

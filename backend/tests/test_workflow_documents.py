@@ -499,6 +499,50 @@ def test_multi_chunk_fan_out_is_bounded_and_stably_ordered(monkeypatch):
         assert unit["receipt_sidecar"] is None
 
 
+def test_text_chunk_worker_submits_a_schema_bound_citation_tool_call(monkeypatch):
+    ws, document = _policy_workspace("Schema-bound chunk citations")
+    documents.extract_document(ws, document["id"])
+    fake = _fake_model(monkeypatch)
+    run = _document_run(ws, [document["id"]])
+
+    _drive(ws, run, "documents.analysis_chunks_ready")
+
+    call = next(item for item in fake.calls if item["tag"] == MAP_TAG)
+    assert call["tool_choice"]["function"]["name"] == (
+        document_workers.CHUNK_SUBMISSION_TOOL
+    )
+    citation = call["tools"][0]["function"]["parameters"]["properties"]["citations"]
+    assert citation["items"]["required"] == ["id", "page", "excerpt"]
+    assert citation["items"]["additionalProperties"] is False
+
+
+def test_text_chunk_accepts_the_legacy_exact_excerpt_alias_after_exact_validation(monkeypatch):
+    ws, document = _policy_workspace("Exact excerpt compatibility")
+    documents.extract_document(ws, document["id"])
+
+    def legacy_response(user: str) -> dict:
+        response = _chunk_response(user)
+        response["citations"][0]["exact_excerpt"] = response["citations"][0].pop("excerpt")
+        return response
+
+    _fake_model(monkeypatch, {MAP_TAG: legacy_response})
+    run = _document_run(ws, [document["id"]])
+
+    _drive(ws, run, "documents.analysis_chunks_ready")
+
+    unit = _stage(run, "documents.analysis_chunks_ready")["units"][0]
+    assert unit["status"] == "succeeded"
+    proposal = json.loads(
+        (
+            Path(ws.root)
+            / "AgentRuns"
+            / run["id"]
+            / unit["proposal_sidecar"]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    assert proposal["proposal"]["citations"][0]["excerpt"]
+
+
 def test_one_failed_chunk_keeps_its_siblings_proposals(monkeypatch):
     ws, document = _policy_workspace("Chunk failure isolation", text=LONG_PAGE)
     documents.extract_document(ws, document["id"])

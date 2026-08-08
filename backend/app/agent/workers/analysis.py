@@ -54,12 +54,6 @@ ANALYSIS_DEFINITION_WORKER_ID = "analysis.definitions"
 JOIN_UTILITY_WORKER_ID = "analysis.join_utility"
 JOIN_UTILITY_CANDIDATES_SOURCE_ID = "join_candidates"
 JOIN_UTILITY_SUBMISSION_TOOL = "submit_join_utility_decisions"
-# A rejection may argue redundancy only through the structural superseded_by
-# field, which the cross-pair check reads; this catches the same claim made in
-# free-text rationale instead, where that check cannot see it.
-JOIN_UTILITY_REDUNDANCY_LANGUAGE = (
-    "supersede", "superseded", "redundant", "already retained", "already covered",
-)
 JOIN_UTILITY_SYSTEM = """[agent:join_utility]
 You are selecting which technically safe table relationships are worth
 materializing for audit analysis. You receive only schemas and aggregate join
@@ -78,20 +72,12 @@ reach the same dimension as requester, verifier, or approver. Only one of them
 can be materialized, and for role keys that choice decides what every later
 test measures, so retain the single route whose audit test matters most.
 
-When you reject one of those alternates, set ``superseded_by`` to the ref of
-the retained candidate for the *same pair of tables* and say so in the
-rationale. Never set ``superseded_by`` to a candidate that connects a
-*different* pair: two tables already being joined through some other pair does
-not make a relationship between them redundant, because it is a different
-relationship. "financial_approval_matrix and staff_details are joined" does
-not supersede "requisitions and staff_details" — they connect different
-tables, and the second may be exactly what a later test needs to reach a
-specific transaction's approver at all. Retaining fewer relationships is not
-itself a goal; retain every relationship whose own pair supports a test, and
-reject only what that pair itself does not support or what a same-pair
-alternate has already covered. Leave ``superseded_by`` empty for every other
-kind of rejection — the keys match but no control spans the two tables, or the
-join is merely technically safe.
+Do not manage cross-references between decisions. The application records a
+same-pair alternate deterministically after you choose the one retained route.
+Retaining fewer relationships is not itself a goal: retain every relationship
+whose own pair supports a test, and reject only what that pair itself does not
+support or when you retained a better alternate for that same pair. A
+relationship between a different pair never makes this pair redundant.
 
 For every retained candidate also list, in ``requires``, every table your
 stated test reads. A pair of tables is what the relationship connects, not
@@ -299,23 +285,6 @@ def _join_utility_submission_tool(request: WorkerRequest) -> dict[str, Any]:
                 },
             })
             required.extend(("hypothesis", "columns", "requires"))
-        else:
-            properties["superseded_by"] = {
-                "type": "string",
-                "enum": [""] + refs,
-                "description": (
-                    "The ref of the retained candidate for the SAME pair of "
-                    "tables that makes this one redundant. Set to the empty "
-                    "string unless this rejection is only because a better "
-                    "route to that same pair was retained instead."
-                ),
-            }
-            # Required, not merely offered: an optional field a model can skip
-            # while still writing "superseded by X" in free-text rationale
-            # would let the exact cross-pair claim this exists to catch slip
-            # past uncaught. Forcing an explicit "" or a ref every time is what
-            # makes the mechanical check below able to see it at all.
-            required.append("superseded_by")
         return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
     return {"type": "function", "function": {
         "name": JOIN_UTILITY_SUBMISSION_TOOL,
@@ -427,11 +396,10 @@ def validate_join_utility_proposal(
             "hypothesis": hypothesis,
             "columns": columns,
             "requires": sorted(set(requires)) if decision == "retain" else [],
-            "superseded_by": (
-                str(item.get("superseded_by") or "").strip()
-                if decision == "reject"
-                else ""
-            ),
+            # This is computed below from the selected routes. It is deliberately
+            # not model-authored: cross-referencing a decision set is mechanical
+            # work that caused repeated generation failures with stricter models.
+            "superseded_by": "",
         })
     # One pair of tables materializes at most one join, so a response retaining
     # two routes between them has not made the choice it was asked for. Every
@@ -451,60 +419,24 @@ def validate_join_utility_proposal(
                 f"keep the single most useful of {', '.join(sorted(refs))} and "
                 "reject the others"
             )
-    # A rejection may only cite a same-pair alternate as its reason: two
-    # different tables already being reachable through some other pair does
-    # not make a relationship between them redundant, and citing one anyway is
-    # exactly the mistake that silently disconnects a table from every join —
-    # the rejected relationship may be the only route to it.
-    retained_refs = {item["ref"] for item in accepted if item["decision"] == "retain"}
-    for item in accepted:
-        cited = item["superseded_by"]
-        if item["decision"] != "reject" or not cited:
-            continue
-        if cited == item["ref"]:
-            errors.append(f"'{item['ref']}' cannot cite itself as superseded_by")
-            continue
-        if cited not in retained_refs:
-            errors.append(
-                f"'{item['ref']}' claims to be superseded by '{cited}', which "
-                "was not retained; superseded_by must name a retained candidate"
-            )
-            continue
-        own_pair = frozenset(
-            (str(candidates[item["ref"]].get("left") or ""),
-             str(candidates[item["ref"]].get("right") or ""))
-        )
-        other_pair = frozenset(
-            (str(candidates[cited].get("left") or ""),
-             str(candidates[cited].get("right") or ""))
-        )
-        if own_pair != other_pair:
-            errors.append(
-                f"'{item['ref']}' cites '{cited}' as superseding it, but they "
-                f"connect different table pairs ({sorted(own_pair)} vs "
-                f"{sorted(other_pair)}); only a retained alternate for the "
-                "SAME pair may supersede a rejection"
-            )
-    # The structural field is required precisely so this check has something
-    # to read, but a rationale can still argue redundancy in prose while
-    # leaving the field empty — the two are supposed to agree, and only the
-    # structural one is checked above.
-    for item in accepted:
-        if item["decision"] != "reject" or item["superseded_by"]:
-            continue
-        lowered = item["rationale"].lower()
-        if any(phrase in lowered for phrase in JOIN_UTILITY_REDUNDANCY_LANGUAGE):
-            errors.append(
-                f"'{item['ref']}' rationale claims another relationship makes "
-                "it redundant but superseded_by is empty; name the retained, "
-                "same-pair candidate in superseded_by or rephrase the "
-                "rejection reason"
-            )
     missing = sorted(set(candidates) - seen)
     if missing:
         errors.append("A decision is required for every candidate: " + ", ".join(missing))
     if errors:
         raise WorkerResponseValidationError(errors)
+    retained_by_pair = {
+        pair: refs[0]
+        for pair, refs in retained_pairs.items()
+        if len(refs) == 1
+    }
+    for item in accepted:
+        if item["decision"] != "reject":
+            continue
+        candidate = candidates[item["ref"]]
+        pair = frozenset(
+            (str(candidate.get("left") or ""), str(candidate.get("right") or ""))
+        )
+        item["superseded_by"] = retained_by_pair.get(pair, "")
     return {"decisions": accepted}
 
 

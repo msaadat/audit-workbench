@@ -52,6 +52,13 @@ VISUAL_WORKER_ID = "documents.analysis_visual_page"
 VOUCHER_WORKER_ID = "documents.analysis_voucher"
 REDUCTION_WORKER_ID = "documents.analysis_reduction"
 
+# Text document workers use a function call instead of asking the model to
+# serialize an unconstrained JSON object in its message text.  In particular,
+# ``excerpt`` is part of the durable citation contract; it must not be left to
+# a provider-specific preference such as ``exact_excerpt``.
+CHUNK_SUBMISSION_TOOL = "submit_document_chunk_analysis"
+VOUCHER_SUBMISSION_TOOL = "submit_document_voucher_analysis"
+
 DOCUMENT_METADATA_SOURCE_ID = "document_metadata"
 DOCUMENT_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_CHUNK_SOURCE_ID = "document_chunk"
@@ -88,7 +95,8 @@ in the supplied document` or `Not stated in the supplied extract`; never infer
 status or currency from a filename or category. Continuation chunks should
 omit claims that front-matter metadata is missing.
 
-Return exactly summary_markdown, audit_notes_markdown, and citations.
+Submit summary_markdown, audit_notes_markdown, and citations through the
+required function tool exactly once.
 The summary must be a neutral, concise representation of the document.
 Audit notes must identify supported review observations such as missing or
 unclear governance metadata, unresolved template placeholders, ambiguous
@@ -105,10 +113,10 @@ or control-design observations were identified from the supplied text.
 Operating effectiveness was not assessed.`
 
 Every substantive point must use citation markers such as [C1]. Citations is
-an array of objects with id, page, and a short exact excerpt copied verbatim
-from this chunk. Metadata and generated orientation are context only and cannot
-support citations. Distinguish documented requirements from evidence that a
-control operated, and omit unsupported claims. {JSON_RULES}"""
+an array of objects with id, page, and an ``excerpt`` copied verbatim from this
+chunk. Metadata and generated orientation are context only and cannot support
+citations. Distinguish documented requirements from evidence that a control
+operated, and omit unsupported claims."""
 
 
 REDUCTION_SYSTEM = f"""[agent:document_analysis_reduce]
@@ -207,11 +215,90 @@ def _json_object(response: str) -> dict[str, Any]:
     return payload
 
 
+def _citation_submission_tool(
+    name: str,
+    *,
+    description: str,
+    voucher: bool = False,
+) -> dict[str, Any]:
+    """Return the provider-enforced shape shared by text document workers."""
+
+    properties: dict[str, Any] = {
+        "summary_markdown": {"type": "string", "minLength": 1},
+        "audit_notes_markdown": {"type": "string", "minLength": 1},
+        "citations": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "page": {"type": "integer", "minimum": 1},
+                    "excerpt": {"type": "string", "minLength": 1},
+                },
+                "required": ["id", "page", "excerpt"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    required = ["summary_markdown", "audit_notes_markdown", "citations"]
+    if voucher:
+        # Registry and fragments retain their deeper, registry-aware validation
+        # below.  They are nevertheless declared here so a model cannot omit
+        # either from an otherwise syntactically valid tool call.
+        properties.update(
+            {
+                "registry": {"type": "object"},
+                "record_fragments": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+            }
+        )
+        required.extend(("registry", "record_fragments"))
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _submission_response(message: object, expected_tool: str) -> str:
+    """Extract the one required document-worker submission from a response."""
+
+    if not isinstance(message, Mapping):
+        return ""
+    matches = [
+        item
+        for item in message.get("tool_calls") or []
+        if isinstance(item, Mapping)
+        and isinstance(item.get("function"), Mapping)
+        and item["function"].get("name") == expected_tool
+    ]
+    if len(matches) == 1:
+        arguments = matches[0]["function"].get("arguments")
+        return arguments if isinstance(arguments, str) else json.dumps(arguments)
+    # Do not silently accept JSON prose when this worker explicitly required a
+    # tool call.  Returning this sentinel routes the issue through the normal
+    # bounded schema-repair loop rather than committing an unchecked response.
+    return json.dumps({"_submission_error": f"Call {expected_tool} exactly once."})
+
+
 # --------------------------------------------------------------------------- #
 # documents.analysis_chunk (P9.4)
 # --------------------------------------------------------------------------- #
 def _chunk_response_schema(response: str) -> Mapping[str, Any]:
     payload = _json_object(response)
+    if payload.get("_submission_error"):
+        raise WorkerResponseValidationError(str(payload["_submission_error"]))
     citations = payload.get("citations")
     if citations is None:
         citations = []
@@ -296,8 +383,16 @@ def run_chunk_worker(
         user += (
             "\n\nYour previous response could not be used: "
             + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
+            + ". Call the required function with a complete corrected response."
         )
+        if attempt.previous_response:
+            user += (
+                "\n\nYOUR PREVIOUS RESPONSE:\n"
+                + attempt.previous_response
+                + "\n\nPreserve every valid field. In particular, citation text must use "
+                "the field name `excerpt` and must remain character-for-character "
+                "in the supplied source chunk."
+            )
     activity = dict(request.activity)
     activity.setdefault(
         "context_metrics",
@@ -308,7 +403,27 @@ def run_chunk_worker(
             "selected_items": request.context.supplied_size.items,
         },
     )
-    return gateway.complete(CHUNK_SYSTEM, user, activity, attempt=attempt.number)
+    message = gateway.complete(
+        CHUNK_SYSTEM,
+        user,
+        activity,
+        attempt=attempt.number,
+        tools=[
+            _citation_submission_tool(
+                CHUNK_SUBMISSION_TOOL,
+                description=(
+                    "Submit the grounded document-chunk analysis. Every citation "
+                    "must carry id, page, and the exact source `excerpt`."
+                ),
+            )
+        ],
+        tool_choice={
+            "type": "function",
+            "function": {"name": CHUNK_SUBMISSION_TOOL},
+        },
+        return_message=True,
+    )
+    return _submission_response(message, CHUNK_SUBMISSION_TOOL)
 
 
 # --------------------------------------------------------------------------- #
@@ -431,8 +546,8 @@ purchase order, goods-received note, receipt, approval record, or similar.
 Report only what this chunk states. Do not infer a value from a filename, from
 metadata, or from what a document of this type usually contains.
 
-Return exactly summary_markdown, audit_notes_markdown, citations, registry, and
-record_fragments.
+Submit summary_markdown, audit_notes_markdown, citations, registry, and
+record_fragments through the required function tool exactly once.
 
 summary_markdown is a short neutral description of what this record is and what
 it evidences. audit_notes_markdown records observations visible on the face of
@@ -448,7 +563,7 @@ with a citation marker such as [c1]. A fact the registered fields below cannot
 carry still belongs in the narrative, and there it needs the same anchor as
 anything else.
 
-citations is an array of objects with id, page, and a short exact excerpt copied
+citations is an array of objects with id, page, and a short exact `excerpt` copied
 verbatim from this chunk. Every excerpt must appear character for character in
 the chunk text — do not join separate lines into one excerpt, tidy spacing, or
 paraphrase. An excerpt that is not found is a rejected response, not a dropped
@@ -559,6 +674,8 @@ Fields read `group.kind.attribute|attribute`. Copy a `group`, `kind`, and one
 
 def _voucher_response_schema(response: str) -> Mapping[str, Any]:
     payload = _json_object(response)
+    if payload.get("_submission_error"):
+        raise WorkerResponseValidationError(str(payload["_submission_error"]))
     citations = payload.get("citations")
     if citations is None:
         citations = []
@@ -1155,7 +1272,29 @@ def run_voucher_worker(
             "selected_items": request.context.supplied_size.items,
         },
     )
-    return gateway.complete(VOUCHER_SYSTEM, user, activity, attempt=attempt.number)
+    message = gateway.complete(
+        VOUCHER_SYSTEM,
+        user,
+        activity,
+        attempt=attempt.number,
+        tools=[
+            _citation_submission_tool(
+                VOUCHER_SUBMISSION_TOOL,
+                description=(
+                    "Submit the grounded voucher analysis. Citations must use the "
+                    "exact `excerpt` field; registry and record fragments are "
+                    "validated against the selected pack after submission."
+                ),
+                voucher=True,
+            )
+        ],
+        tool_choice={
+            "type": "function",
+            "function": {"name": VOUCHER_SUBMISSION_TOOL},
+        },
+        return_message=True,
+    )
+    return _submission_response(message, VOUCHER_SUBMISSION_TOOL)
 
 
 # --------------------------------------------------------------------------- #

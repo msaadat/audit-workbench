@@ -427,7 +427,14 @@ def validate_citations(citations: list[dict], chunks: list[dict], source_sha1: s
             page = int(value.get("page"))
         except (TypeError, ValueError):
             continue
-        excerpt = str(value.get("excerpt") or "").strip()
+        # Older saved responses and some OpenAI-compatible providers use the
+        # unambiguous synonym ``exact_excerpt``.  Normalize only when the
+        # canonical field is absent, then subject it to the same page-scoped
+        # exact-containment gate below.  This is compatibility, not a weaker
+        # evidence rule: paraphrases and out-of-chunk text are still dropped.
+        excerpt = str(
+            value.get("excerpt") or value.get("exact_excerpt") or ""
+        ).strip()
         if not excerpt or not any(excerpt in text for text in allowed.get(page, [])):
             continue
         key = (page, excerpt)
