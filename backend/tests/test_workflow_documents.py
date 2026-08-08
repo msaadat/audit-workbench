@@ -1144,6 +1144,133 @@ def _source_of(user: str) -> str:
     )[0].strip()
 
 
+def test_the_submission_schema_states_the_vocabulary_the_registry_declares():
+    """A vocabulary only the validator knows costs a repair budget per document.
+
+    The registry already knows every legal record kind and selector; until the
+    schema said so, a response abbreviating ``procure_to_pay.goods_receipt`` to
+    ``goods_receipt`` was rejected three times instead of being unrepresentable
+    once.
+    """
+
+    tool = document_workers._citation_submission_tool(
+        document_workers.VOUCHER_SUBMISSION_TOOL,
+        description="submit",
+        voucher=True,
+        pack_ids=["procure_to_pay"],
+    )
+    properties = tool["function"]["parameters"]["properties"]
+    fragment = properties["record_fragments"]["items"]["properties"]
+
+    assert "procure_to_pay.goods_receipt" in fragment["record_kind"]["enum"]
+    assert "goods_receipt" not in fragment["record_kind"]["enum"]
+    assert properties["registry"]["properties"]["pack_id"]["enum"] == ["procure_to_pay"]
+    assert "payroll.payslip_number" not in fragment["identifiers"]["items"][
+        "properties"
+    ]["kind"]["enum"]
+
+    # The envelope is closed, which is what leaves a hoisted citation nowhere to
+    # go: the key is only representable inside `value`, where it is required.
+    field = fragment["fields"]["items"]
+    assert field["additionalProperties"] is False
+    assert "citation" not in field["properties"]
+    assert field["properties"]["value"]["required"] == [
+        "raw_value",
+        "normalization_status",
+        "citation",
+    ]
+    assert field["properties"]["value"]["additionalProperties"] is False
+
+
+def test_a_near_miss_shape_is_repaired_locally_rather_than_sent_back(monkeypatch):
+    """Two shape slips that survived every repair turn a document could afford.
+
+    A response naming ``goods_receipt`` for the record kind and hanging each
+    ``citation`` beside its ``value`` instead of inside it was rejected three
+    times identically — the pack is already fixed by the selected registry
+    reference, and the citation was present and unambiguous both times. Neither
+    says anything about the record, so neither is worth a provider call.
+
+    Grounding is untouched: the citation still has to resolve to a surviving id
+    and its excerpt still has to contain the value.
+    """
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        fragment = _grn_fragment(
+            source,
+            [
+                {
+                    "group": "quantities",
+                    "kind": "total",
+                    "attribute": "value",
+                    # The citation belongs in the envelope, not beside it.
+                    "citation": _cited(source, "Quantity received"),
+                    "value": {
+                        "raw_value": "25",
+                        "normalization_status": "normalized",
+                    },
+                }
+            ],
+        )
+        fragment["record_kind"] = "goods_receipt"
+        return _grn_response(source, [], record_fragments=[fragment])
+
+    ws, voucher = _voucher_workspace("Near-miss voucher shape")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+
+    # One call, not three: no repair turn was spent on either slip.
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+    record = analysis["records"][0]
+    assert record["record_kind"] == "procure_to_pay.goods_receipt"
+    quantity = next(item for item in record["fields"] if item["kind"] == "total")
+    assert quantity["value"]["value"] == 25
+    assert quantity["value"]["citation"] == [
+        _cited(GRN_SOURCE.decode(), "Quantity received")
+    ]
+
+
+def test_an_abbreviation_that_names_no_single_record_kind_is_still_rejected():
+    """Resolution is by unique suffix, so ambiguity fails closed as before."""
+
+    assert (
+        document_workers._resolved_record_kind("procure_to_pay", "goods_receipt")
+        == "procure_to_pay.goods_receipt"
+    )
+    assert document_workers._resolved_record_kind("procure_to_pay", "other") == (
+        "common.other"
+    )
+    # Not a record kind of this pack under any prefix: passed through unchanged
+    # so the strict registry lookup reports it.
+    assert (
+        document_workers._resolved_record_kind("procure_to_pay", "payslip")
+        == "payslip"
+    )
+    assert document_workers._resolved_record_kind("procure_to_pay", "") == ""
+
+
+def test_a_citation_that_is_already_in_its_envelope_is_left_alone():
+    """The repair fills an absent citation; it never overwrites a stated one."""
+
+    fact = document_workers._repaired_evidence_envelope(
+        {
+            "group": "quantities",
+            "citation": "C9",
+            "value": {"raw_value": "25", "citation": "C4"},
+        }
+    )
+    assert fact["value"]["citation"] == "C4"
+    # The stray key is dropped either way: no reader of a durable fragment
+    # looks for a citation there.
+    assert "citation" not in fact
+
+
 def test_voucher_repairs_every_bad_selector_in_one_turn(monkeypatch):
     """One repair turn must be told about every field it has to change.
 
@@ -1212,10 +1339,27 @@ def test_voucher_repairs_every_bad_selector_in_one_turn(monkeypatch):
     assert "quantities.total.value|raw_value" in repair
     assert "do not substitute an unrelated field" not in repair
     assert "substituting an unrelated field" in repair
-    # The previous response goes back so a repair does not have to reconstruct
-    # the evidence it already had right.
-    assert "YOUR PREVIOUS RESPONSE:" in repair
     assert "Keep every identifier, field, and citation" in repair
+
+    # The previous response goes back so a repair does not have to reconstruct
+    # the evidence it already had right — as the tool call it was, not as text
+    # quoted into the user turn. Restating a rejected answer as prose left the
+    # model free to re-derive it verbatim; a tool result is a verdict on a call
+    # it made, which is the shape a tool-trained model corrects.
+    turn = fake.calls[1]["messages"]
+    assert [message["role"] for message in turn] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    submitted = json.loads(turn[2]["tool_calls"][0]["function"]["arguments"])
+    assert submitted["record_fragments"][0]["fields"][0]["kind"] == "quantity_received"
+    verdict = json.loads(turn[3]["content"])
+    assert verdict["accepted"] is False
+    assert any("quantities.quantity_received" in item for item in verdict["errors"])
+    assert turn[3]["tool_call_id"] == turn[2]["tool_calls"][0]["id"]
 
 
 def test_voucher_keeps_a_party_name_that_the_record_states(monkeypatch):

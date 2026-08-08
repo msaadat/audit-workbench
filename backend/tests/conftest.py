@@ -231,10 +231,35 @@ def _streamed(message: dict, on_delta) -> dict:
     return message
 
 
+def _scripted_user_view(messages: list[dict]) -> str:
+    """What the model was asked, as the one string a script reads.
+
+    A worker repair is no longer a single restated user message: it replays the
+    rejected submission as an assistant tool call answered by a ``tool``
+    message, then closes with the prose note. A script keying off "the user
+    message" needs both user turns — the first carries the source text it parses
+    out, the last carries the faults to repair. The rejected arguments are
+    deliberately not spliced in; the tool result states the same faults, and a
+    copy of the previous answer sitting between the two would break every script
+    that splits this view on a marker.
+
+    A tool-calling loop ends its turn on a ``tool`` message instead, and there
+    the latest result is the whole point, so that case is left exactly as it was.
+    """
+
+    if not messages or messages[-1].get("role") != "user":
+        return messages[-1]["content"] if messages else ""
+    return "\n\n".join(
+        message["content"]
+        for message in messages[1:]
+        if message.get("role") == "user" and isinstance(message.get("content"), str)
+    )
+
+
 class FakeAgentLLM:
     """Scripted model for agent-run tests: dispatches on the stable
     ``[agent:<stage>]`` tag each prompt starts with. Override any stage's
-    response (a dict, or a callable receiving the user message) per test."""
+    response (a dict, or a callable receiving the joined user turns) per test."""
 
     DEFAULTS = {
         # The stages the surviving engines actually call. The deleted v1
@@ -274,7 +299,7 @@ class FakeAgentLLM:
         )
         response = self.overrides.get(tag, self.DEFAULTS.get(tag))
         if callable(response):
-            response = response(messages[-1]["content"])
+            response = response(_scripted_user_view(messages))
         if response is None:
             raise llm.LLMError(f"FakeAgentLLM has no script for '{tag}'.")
         if isinstance(response, dict) and response and (

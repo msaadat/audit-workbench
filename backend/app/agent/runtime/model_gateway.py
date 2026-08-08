@@ -102,6 +102,22 @@ STREAM_MIN_SECONDS = 0.4
 # knows it is slow, and a second reminder would only be noise.
 HEARTBEAT_SECONDS = 45.0
 
+# A first attempt samples nothing: the same context has to produce the same
+# proposal, or a run cannot be reproduced from its provenance. A repair is the
+# opposite case. Re-sending a near-identical request at temperature 0 re-derives
+# the tokens that were just rejected — two voucher repairs in the procurement run
+# returned arguments byte-identical to the response they were correcting, which
+# spends the repair budget without ever producing a second answer. Enough
+# sampling to leave the rejected path, not enough to invent one.
+FIRST_ATTEMPT_TEMPERATURE = 0.0
+REPAIR_TEMPERATURE = 0.3
+
+
+def repair_temperature(attempt: int) -> float:
+    """Return the sampling temperature for one bounded worker attempt."""
+
+    return FIRST_ATTEMPT_TEMPERATURE if attempt <= 1 else REPAIR_TEMPERATURE
+
 
 class _StreamCoalescer:
     """Batch provider text fragments into periodic, readable updates.
@@ -442,6 +458,7 @@ class DefaultModelGateway:
                                 if snapshot_key == "vision"
                                 else "agent"
                             ),
+                            "temperature": repair_temperature(attempt),
                         }
                         if tools:
                             chat_kwargs["tools"] = tools
@@ -696,8 +713,11 @@ class DefaultModelGateway:
 __all__ = [
     "DefaultModelGateway",
     "FALLBACK_IMAGE_TOKENS",
+    "FIRST_ATTEMPT_TEMPERATURE",
     "ModelCapabilityError",
     "ModelGateway",
     "PreparedMediaError",
+    "REPAIR_TEMPERATURE",
     "VisionRequestRejected",
+    "repair_temperature",
 ]

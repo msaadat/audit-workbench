@@ -1706,6 +1706,16 @@ def test_the_budget_is_a_ceiling_and_a_frame_may_propose_nothing(workspace_with_
         analysis_worker.validate_analysis_proposal({"analyses": []}, request)
     assert analysis_worker.NOTHING_NEW_TO_ANALYSE in str(raised.value)
 
+    # The response schema has to let the empty array reach that judgement. It
+    # used to reject one as malformed, so the prompt asked for an answer the
+    # first validator called invalid: a model that complied spent both attempts
+    # being corrected and the run failed over a permitted answer.
+    assert analysis_worker._analysis_response_schema('{"analyses": []}') == {
+        "analyses": []
+    }
+    with pytest.raises(WorkerResponseValidationError):
+        analysis_worker._analysis_response_schema('{"analyses": "none"}')
+
 
 def test_a_broken_definition_is_rejected_before_it_is_saved(
     workspace_with_data, monkeypatch

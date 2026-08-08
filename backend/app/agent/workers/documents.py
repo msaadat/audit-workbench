@@ -215,11 +215,127 @@ def _json_object(response: str) -> dict[str, Any]:
     return payload
 
 
+def _evidence_envelope_schema() -> dict[str, Any]:
+    """The one shape every extracted value travels in.
+
+    ``additionalProperties: False`` is the working part. Left open, a response
+    could carry ``citation`` beside ``value`` instead of inside it and still be
+    a syntactically valid tool call — which is exactly what the procurement run
+    produced fifteen times in one fragment, three attempts running. Declared
+    closed, the key has nowhere else to go.
+    """
+
+    return {
+        "type": "object",
+        "properties": {
+            "raw_value": {"type": "string", "minLength": 1},
+            "normalization_status": {"enum": ["normalized", "invalid"]},
+            "citation": {"type": "string", "minLength": 1},
+        },
+        "required": ["raw_value", "normalization_status", "citation"],
+        "additionalProperties": False,
+    }
+
+
+def _voucher_fragment_schema(pack_ids: Iterable[str]) -> dict[str, Any]:
+    """Declare record, identifier, and selector vocabularies as provider enums.
+
+    The registry already knows every legal ID; until now it only said so in
+    prose, and the strict validation ran after generation. A response that
+    abbreviated ``procure_to_pay.goods_receipt`` to ``goods_receipt`` was
+    therefore rejected three times rather than being unrepresentable once.
+
+    Enumerating ``group``, ``kind``, and ``attribute`` separately cannot express
+    which combinations a record kind actually offers — that stays with
+    ``_canonicalize_voucher_fragment``, which reads the record kind's own
+    available fields. What it does remove is the invented or abbreviated token,
+    which is the failure that survived repair.
+    """
+
+    packs = [DEFAULT_REGISTRY.pack(pack_id) for pack_id in pack_ids]
+    record_kinds = sorted(
+        {record_id for pack in packs for record_id in pack.record_kind_ids}
+    )
+    identifier_kinds = sorted(
+        {identifier_id for pack in packs for identifier_id in pack.identifier_kind_ids}
+    )
+    definitions = [
+        DEFAULT_REGISTRY.field_kinds[field_id]
+        for pack in packs
+        for field_id in pack.field_kind_ids
+    ]
+    envelope = _evidence_envelope_schema()
+    return {
+        "type": "object",
+        "properties": {
+            "record_kind": {"type": "string", "enum": record_kinds},
+            "classification_evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+            },
+            "candidate_record_kinds": {
+                "type": "array",
+                "items": {"type": "string", "enum": record_kinds},
+            },
+            "review_reason": {"type": "string"},
+            "identifiers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "enum": identifier_kinds},
+                        "value": envelope,
+                    },
+                    "required": ["kind", "value"],
+                    "additionalProperties": False,
+                },
+            },
+            "fields": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "group": {
+                            "type": "string",
+                            "enum": sorted({item.group for item in definitions}),
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": sorted({item.kind for item in definitions}),
+                        },
+                        "attribute": {
+                            "type": "string",
+                            "enum": sorted(
+                                {
+                                    attribute.id
+                                    for item in definitions
+                                    for attribute in item.attributes
+                                }
+                            ),
+                        },
+                        "entry": {"type": "integer", "minimum": 0},
+                        "value": envelope,
+                    },
+                    "required": ["group", "kind", "attribute", "value"],
+                    # Local code attaches registry, chunk_id, and page_span, and
+                    # the prompt says not to derive them. Closing the object is
+                    # what makes that instruction enforceable rather than hopeful.
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["record_kind", "classification_evidence", "identifiers", "fields"],
+        "additionalProperties": False,
+    }
+
+
 def _citation_submission_tool(
     name: str,
     *,
     description: str,
     voucher: bool = False,
+    pack_ids: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Return the provider-enforced shape shared by text document workers."""
 
@@ -244,14 +360,27 @@ def _citation_submission_tool(
     required = ["summary_markdown", "audit_notes_markdown", "citations"]
     if voucher:
         # Registry and fragments retain their deeper, registry-aware validation
-        # below.  They are nevertheless declared here so a model cannot omit
-        # either from an otherwise syntactically valid tool call.
+        # below — which combination of group, kind, and attribute a record kind
+        # offers is not something JSON Schema can state. Everything that *is*
+        # expressible is stated here, because a vocabulary the provider enforces
+        # costs nothing at generation time and a vocabulary only the validator
+        # knows costs a whole repair budget per document.
+        selectable = sorted(pack_ids) or sorted(DEFAULT_REGISTRY.packs)
         properties.update(
             {
-                "registry": {"type": "object"},
+                "registry": {
+                    "type": "object",
+                    "properties": {
+                        "pack_id": {"type": "string", "enum": selectable},
+                        "pack_version": {"type": "integer"},
+                        "definition_hash": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["pack_id", "pack_version", "definition_hash"],
+                    "additionalProperties": False,
+                },
                 "record_fragments": {
                     "type": "array",
-                    "items": {"type": "object"},
+                    "items": _voucher_fragment_schema(selectable),
                 },
             }
         )
@@ -290,6 +419,85 @@ def _submission_response(message: object, expected_tool: str) -> str:
     # tool call.  Returning this sentinel routes the issue through the normal
     # bounded schema-repair loop rather than committing an unchecked response.
     return json.dumps({"_submission_error": f"Call {expected_tool} exactly once."})
+
+
+def _repair_note(attempt: WorkerAttempt, instruction: str) -> str:
+    """The prose half of a repair: what was wrong, then what to do about it."""
+
+    return (
+        "Your previous response could not be used:\n- "
+        + "\n- ".join(attempt.validation_errors)
+        + "\n\n"
+        + instruction
+    )
+
+
+def _repair_conversation(
+    user: str,
+    *,
+    tool: str,
+    attempt: WorkerAttempt,
+    instruction: str,
+) -> list[dict[str, Any]] | None:
+    """Replay a rejected submission as the tool result it actually was.
+
+    A repair used to be a fresh single-turn request with the rejected arguments
+    pasted into the user message as quoted text. Every provider call runs at
+    temperature 0 on a first attempt, so that request re-derived the tokens it
+    was meant to correct: two voucher repairs in the procurement run returned
+    arguments byte-identical to the response being repaired, and the document
+    failed having spent three calls on one answer.
+
+    Handing the model back its own tool call, and the validator's verdict as a
+    ``tool`` message, puts the rejection where a tool-trained model already
+    looks for it. The trailing user turn restates the same faults in prose
+    rather than relying on the tool message alone — the duplication costs a few
+    tokens and buys the same guidance on providers that weight the last user
+    turn far more heavily than a tool result.
+
+    Returns ``None`` when there is no prior submission to replay — a worker
+    attempt may legitimately carry guidance without one — and the caller falls
+    back to the single-turn text form.
+    """
+
+    if not attempt.is_repair or not attempt.previous_response:
+        return None
+    try:
+        arguments = json.loads(attempt.previous_response)
+    except json.JSONDecodeError:
+        return None
+    # The sentinel means the model never called the tool. There is no submission
+    # to hand back, and inventing one would teach it the wrong shape.
+    if not isinstance(arguments, dict) or arguments.get("_submission_error"):
+        return None
+    call_id = f"repair_{attempt.number - 1}_{tool}"
+    return [
+        {"role": "user", "content": user},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool,
+                        "arguments": attempt.previous_response,
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": tool,
+            "content": json.dumps(
+                {"accepted": False, "errors": list(attempt.validation_errors)},
+                ensure_ascii=False,
+            ),
+        },
+        {"role": "user", "content": _repair_note(attempt, instruction)},
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -379,20 +587,20 @@ def run_chunk_worker(
         f"{'yes' if int(chunk['start_character']) == 0 else 'no'}\n\n"
         f"RAW SOURCE CHUNK:\n{chunk['text']}"
     )
-    if attempt.is_repair:
-        user += (
-            "\n\nYour previous response could not be used: "
-            + "; ".join(attempt.validation_errors)
-            + ". Call the required function with a complete corrected response."
-        )
-        if attempt.previous_response:
-            user += (
-                "\n\nYOUR PREVIOUS RESPONSE:\n"
-                + attempt.previous_response
-                + "\n\nPreserve every valid field. In particular, citation text must use "
-                "the field name `excerpt` and must remain character-for-character "
-                "in the supplied source chunk."
-            )
+    instruction = (
+        "That submission was rejected. Call the required function again with a "
+        "complete corrected submission. Preserve every valid field. In "
+        "particular, citation text must use the field name `excerpt` and must "
+        "remain character-for-character in the supplied source chunk."
+    )
+    conversation = _repair_conversation(
+        user,
+        tool=CHUNK_SUBMISSION_TOOL,
+        attempt=attempt,
+        instruction=instruction,
+    )
+    if attempt.is_repair and conversation is None:
+        user += "\n\n" + _repair_note(attempt, instruction)
     activity = dict(request.activity)
     activity.setdefault(
         "context_metrics",
@@ -421,6 +629,7 @@ def run_chunk_worker(
             "type": "function",
             "function": {"name": CHUNK_SUBMISSION_TOOL},
         },
+        conversation=conversation,
         return_message=True,
     )
     return _submission_response(message, CHUNK_SUBMISSION_TOOL)
@@ -704,6 +913,53 @@ def _voucher_response_schema(response: str) -> Mapping[str, Any]:
     }
 
 
+def _resolved_record_kind(pack_id: str, supplied: str) -> str:
+    """Resolve an abbreviated record kind against the pack that must declare it.
+
+    Record kinds are namespaced (``procure_to_pay.goods_receipt``) while field
+    selectors use the short kind, and a response that used the short form for
+    both was rejected three times over a prefix it was never free to choose:
+    the pack is already fixed by the selected registry reference. Resolution is
+    by unique suffix within that one pack, so an ambiguous or unknown name still
+    falls through to the strict registry lookup and is reported as before.
+    """
+
+    record_ids = DEFAULT_REGISTRY.pack(pack_id).record_kind_ids
+    if supplied in record_ids:
+        return supplied
+    matches = [
+        record_id
+        for record_id in record_ids
+        if record_id.rsplit(".", 1)[-1] == supplied
+    ]
+    return matches[0] if len(matches) == 1 else supplied
+
+
+def _repaired_evidence_envelope(fact: dict[str, Any]) -> dict[str, Any]:
+    """Move a citation the response hung beside its value back inside it.
+
+    ``{group, kind, attribute, citation, value: {raw_value, ...}}`` is a near
+    miss for the declared envelope, and one the strict validator can only report
+    as every field in the fragment citing ``''`` — fifteen such errors in one
+    procurement fragment, repeated identically through both repair turns. The
+    citation is present and unambiguous; which key it arrived under says nothing
+    about the record. Nothing here weakens grounding: the id still has to
+    resolve to a surviving citation, and its excerpt still has to contain the
+    value. A stray top-level citation is dropped either way, because no reader
+    of a durable fragment looks for one there.
+    """
+
+    envelope = fact.get("value")
+    hoisted = str(fact.pop("citation", "") or "").strip()
+    if (
+        isinstance(envelope, dict)
+        and hoisted
+        and not str(envelope.get("citation") or "").strip()
+    ):
+        envelope["citation"] = hoisted
+    return fact
+
+
 def _canonicalize_voucher_fragment(
     raw: object,
     *,
@@ -722,16 +978,25 @@ def _canonicalize_voucher_fragment(
 
     fragment = dict(_plain_json(raw))
     pack_id = str(reference.pack_id)
-    record_kind = str(fragment.get("record_kind") or "")
+    record_kind = _resolved_record_kind(pack_id, str(fragment.get("record_kind") or ""))
+    fragment["record_kind"] = record_kind
     record = DEFAULT_REGISTRY.record_kind(pack_id, record_kind)
     pack = DEFAULT_REGISTRY.pack(pack_id)
+    # A non-object identifier is passed through untouched so the strict fragment
+    # validator still reports it; repairing a shape is not licence to drop one.
+    fragment["identifiers"] = [
+        _repaired_evidence_envelope(dict(identifier))
+        if isinstance(identifier, Mapping)
+        else identifier
+        for identifier in fragment.get("identifiers") or []
+    ]
     allowed_fields = set(record.available_field_kinds)
     allowed_description = (
         ", ".join(_field_selectors(record.available_field_kinds)) or "none"
     )
     fields = []
     for field_index, raw_fact in enumerate(fragment.get("fields") or []):
-        fact = dict(_plain_json(raw_fact))
+        fact = _repaired_evidence_envelope(dict(_plain_json(raw_fact)))
         label = f"record_fragments[{index}].fields[{field_index}]"
         supplied_group = str(fact.get("group") or "")
         supplied_kind = str(fact.get("kind") or "")
@@ -1249,19 +1514,25 @@ def run_voucher_worker(
         f"{constraint}\n"
         f"RAW SOURCE CHUNK:\n{chunk['text']}"
     )
-    if attempt.is_repair:
-        user += (
-            "\n\nYour previous response could not be used:\n- "
-            + "\n- ".join(attempt.validation_errors)
-            + "\n\nReturn a complete corrected JSON object that fixes every point "
-            "above. Keep every identifier, field, and citation from your previous "
-            "response that no point above names — a repair that also drops correct "
-            "evidence is a worse answer, not a safer one. Where a fact has no "
-            "allowed field on the record kind you selected, move it into the cited "
-            "narrative rather than substituting an unrelated field."
-        )
-        if attempt.previous_response:
-            user += f"\n\nYOUR PREVIOUS RESPONSE:\n{attempt.previous_response}"
+    instruction = (
+        "That submission was rejected. Call the required function again with a "
+        "complete corrected submission that fixes every point above. Keep every "
+        "identifier, field, and citation from your previous submission that no "
+        "point names — a repair that also drops correct evidence is a worse "
+        "answer, not a safer one. Where a fact has no allowed field on the "
+        "record kind you selected, move it into the cited narrative rather than "
+        "substituting an unrelated field. `record_kind` is the full namespaced "
+        "ID from the descriptors, and every value's `citation` belongs inside "
+        "its `value` envelope, never beside it."
+    )
+    conversation = _repair_conversation(
+        user,
+        tool=VOUCHER_SUBMISSION_TOOL,
+        attempt=attempt,
+        instruction=instruction,
+    )
+    if attempt.is_repair and conversation is None:
+        user += "\n\n" + _repair_note(attempt, instruction)
     activity = dict(request.activity)
     activity.setdefault(
         "context_metrics",
@@ -1286,12 +1557,14 @@ def run_voucher_worker(
                     "validated against the selected pack after submission."
                 ),
                 voucher=True,
+                pack_ids=candidate_packs,
             )
         ],
         tool_choice={
             "type": "function",
             "function": {"name": VOUCHER_SUBMISSION_TOOL},
         },
+        conversation=conversation,
         return_message=True,
     )
     return _submission_response(message, VOUCHER_SUBMISSION_TOOL)

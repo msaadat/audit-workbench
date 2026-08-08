@@ -904,9 +904,16 @@ def _analysis_response_schema(response: str) -> Mapping[str, Any]:
         # A single-object answer is a common shape slip; normalize rather than
         # spending a repair turn on it.
         proposed = [payload["analysis"]]
-    if not isinstance(proposed, list) or not proposed:
+    # An empty array is a permitted answer, not a malformed response: the prompt
+    # asks for one where the frame supports nothing, the submission schema sets
+    # `minItems: 0` to allow it, and `validate_analysis_proposal` turns it into
+    # NOTHING_NEW_TO_ANALYSE so the binder settles the unit as skipped. Rejecting
+    # it here short-circuited that path — a model that complied with the prompt
+    # spent both attempts being told its compliant answer was invalid, and the
+    # run failed over an answer the workflow already knows how to accept.
+    if not isinstance(proposed, list):
         raise WorkerResponseValidationError(
-            "the response must be a JSON object with a non-empty `analyses` array"
+            "the response must be a JSON object with an `analyses` array"
         )
     if any(not isinstance(item, dict) for item in proposed):
         raise WorkerResponseValidationError("every analyses entry must be an object")
@@ -1286,7 +1293,9 @@ def run_analysis_definition_worker(
 
 ANALYSIS_DEFINITION_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="analysis.definitions.response",
-    schema_hash=_sha256_text("analysis-definitions-response:json-object-with-analyses"),
+    schema_hash=_sha256_text(
+        "analysis-definitions-response:v2:json-object-with-analyses-empty-permitted"
+    ),
     validator=_analysis_response_schema,
 )
 ANALYSIS_DEFINITION_WORKER = WorkerDefinition(

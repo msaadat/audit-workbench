@@ -64,6 +64,21 @@ def _resolved_item(request: WorkerRequest, source_id: str) -> object:
     return matches[0]
 
 
+def _context_without_sources(
+    request: WorkerRequest,
+    *source_ids: str,
+) -> dict[str, Any]:
+    """Serialize context without items already promoted in the model prompt."""
+    context = request.context.to_dict()
+    excluded = set(source_ids)
+    context["items"] = [
+        item
+        for item in context["items"]
+        if item.get("source_id") not in excluded
+    ]
+    return context
+
+
 def _fill_unavailable_placeholders(markdown: str) -> str:
     def replace(match: re.Match[str]) -> str:
         label = match.group(1).replace("_", " ").strip()
@@ -159,7 +174,11 @@ def run_apm_worker(
         {
             "ACTIVE APM TEMPLATE (verbatim)": template,
             "CURRENT APM TO REVISE": current_apm,
-            "RESOLVED CONTEXT": request.context.to_dict(),
+            "RESOLVED CONTEXT": _context_without_sources(
+                request,
+                "apm_template",
+                "current_apm",
+            ),
         },
         indent=1,
         ensure_ascii=False,
@@ -477,7 +496,12 @@ def run_rcm_worker(
             "ACTIVE RCM TEMPLATE (verbatim)": template,
             "REVISED APM": current_apm,
             "CURRENT RCM TO REVISE": _current_rcm_rows(request),
-            "RESOLVED CONTEXT": request.context.to_dict(),
+            "RESOLVED CONTEXT": _context_without_sources(
+                request,
+                "rcm_template",
+                "current_apm",
+                RCM_CURRENT_ROWS_SOURCE_ID,
+            ),
             "INSTRUCTIONS": (
                 "Return the full set of proposed revisions. Work in two passes: "
                 "first enumerate the standard risks of every in-scope process from "

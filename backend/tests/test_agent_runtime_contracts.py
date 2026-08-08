@@ -21,6 +21,9 @@ from app.agent import (
 from app.agent.runtime import (
     Cancelled,
     DefaultModelGateway,
+    FIRST_ATTEMPT_TEMPERATURE,
+    REPAIR_TEMPERATURE,
+    repair_temperature,
     DefaultRunRuntime,
     LimitExceeded,
     ModelGateway,
@@ -702,10 +705,14 @@ def test_model_gateway_contract_wraps_active_budget_and_provenance_behavior(
         {"role": "user", "content": user},
     ]
     # A text turn requests streaming so the run can report progress; the profile
-    # is still the only other thing the gateway sends.
+    # and the attempt's temperature are the only other things the gateway sends.
     assert sent_kwargs["profile"] == "agent"
     assert callable(sent_kwargs["on_delta"])
-    assert set(sent_kwargs) == {"profile", "on_delta"}
+    assert set(sent_kwargs) == {"profile", "on_delta", "temperature"}
+    # This is attempt 2. A repair re-sending a near-identical request at
+    # temperature 0 re-derives the answer it was sent to correct, which spends
+    # the repair budget without producing a second one.
+    assert sent_kwargs["temperature"] == REPAIR_TEMPERATURE
 
     usage = store.load_run(workspace_with_data, active.run["id"])["usage"]
     assert usage["llm_turns"] == 1
@@ -795,6 +802,22 @@ def test_base_runner_no_longer_owns_durable_run_projection_behavior():
     assert 'self.run["activity"]' not in source
     assert 'self.run["activity_revision"]' not in source
     assert 'self.run["status"] = status' not in source
+
+
+def test_only_a_repair_attempt_samples():
+    """A repair has to be able to reach an answer the first attempt could not.
+
+    Every attempt used to run at temperature 0, so a repair re-sending a
+    near-identical request re-derived the response it was sent to correct — two
+    voucher repairs in the procurement run returned arguments byte-identical to
+    the rejected ones, and the document failed having paid for three calls and
+    received one answer. A first attempt still samples nothing: reproducing a
+    run from its provenance depends on it.
+    """
+
+    assert repair_temperature(1) == FIRST_ATTEMPT_TEMPERATURE == 0.0
+    assert repair_temperature(2) == REPAIR_TEMPERATURE > 0.0
+    assert repair_temperature(3) == REPAIR_TEMPERATURE
 
 
 def test_model_gateway_delegates_activity_projection_to_runtime():
