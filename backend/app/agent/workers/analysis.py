@@ -72,8 +72,17 @@ reach the same dimension as requester, verifier, or approver. Only one of them
 can be materialized, and for role keys that choice decides what every later
 test measures, so retain the single route whose audit test matters most and
 reject the rest, saying in each rejection rationale which retained candidate
-supersedes it. Submit the required function tool exactly once; do not return
-Markdown or plain text.
+supersedes it.
+
+For every retained candidate also list, in ``requires``, every table your
+stated test reads. A pair of tables is what the relationship connects, not
+necessarily what the test needs: comparing a transaction against the approval
+limit for its approver's job title reads the transaction table, the staff
+table, and the approval matrix, so all three belong in ``requires``. Name the
+tables the test actually reads and no others — a table listed here that the
+test does not use narrows where the test can run for no reason, and one left
+out means the test is prepared against data that cannot answer it. Submit the
+required function tool exactly once; do not return Markdown or plain text.
 """
 ANALYSIS_DEFINITION_SYSTEM = f"""[agent:analysis_definitions]
 Propose rerunnable data analyses for exactly one supplied target frame. Submit
@@ -97,6 +106,13 @@ so a check on columns that all come from one table is already covered wherever
 it is saved: on a joined frame, propose analyses that use columns from more than
 one of the joined tables, since that is what the join makes possible. You are
 never shown table rows and must not invent values, counts, or relationships.
+
+Where the request carries TESTS THIS FRAME WAS MATERIALIZED TO SUPPORT, those
+are the reasons this frame exists. Each names a hypothesis that was found worth
+testing, and the columns that state it, before the frame was built. Write those
+tests first, as analyses; they are the frame's purpose, and a response that
+omits them has answered a question nobody asked. Propose further analyses only
+where the frame supports something the listed hypotheses do not already cover.
 
 The array's maximum is a ceiling, not a quota. Propose only the analyses this
 frame genuinely supports, and return an empty array where it supports none. A
@@ -125,6 +141,7 @@ the analysis should not be proposed.
 {JSON_RULES}"""
 
 TARGET_SCHEMA_SOURCE_ID = "target_schema"
+JOIN_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
 ANALYTICS_REGISTRY_SOURCE_ID = "analytics_registry"
 CURRENT_ANALYSES_SOURCE_ID = "current_analyses"
 ANALYSIS_SUBMISSION_TOOL = "submit_analysis_definitions"
@@ -228,6 +245,7 @@ def _join_utility_submission_tool(request: WorkerRequest) -> dict[str, Any]:
         if isinstance(values, list)
         for column in values
     )
+    tables = sorted(str(name) for name in (catalog.get("table_columns") or {}))
     def branch(decision: str) -> dict[str, Any]:
         properties: dict[str, Any] = {
             "ref": {"type": "string", "enum": refs},
@@ -239,8 +257,18 @@ def _join_utility_submission_tool(request: WorkerRequest) -> dict[str, Any]:
             properties.update({
                 "hypothesis": {"type": "string", "minLength": 1},
                 "columns": {"type": "array", "items": {"type": "string", "enum": columns}, "minItems": 2},
+                "requires": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": tables},
+                    "minItems": 2,
+                    "description": (
+                        "Every table the stated test reads, including both sides "
+                        "of this relationship and any further table the test "
+                        "compares against."
+                    ),
+                },
             })
-            required.extend(("hypothesis", "columns"))
+            required.extend(("hypothesis", "columns", "requires"))
         return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
     return {"type": "function", "function": {
         "name": JOIN_UTILITY_SUBMISSION_TOOL,
@@ -319,6 +347,7 @@ def validate_join_utility_proposal(
             errors.append(f"decisions[{index}].rationale is required")
         if decision == "retain" and not hypothesis:
             errors.append(f"decisions[{index}].hypothesis is required for retain")
+        requires = [str(value) for value in item.get("requires") or []]
         if decision == "retain":
             candidate = candidates[ref]
             expected = {str(candidate.get("left") or ""), str(candidate.get("right") or "")}
@@ -331,12 +360,26 @@ def validate_join_utility_proposal(
                     f"decisions[{index}].columns must name visible columns from both "
                     f"{candidate.get('left')} and {candidate.get('right')}"
                 )
+            # A test that does not read both sides of the relationship it was
+            # asked about is a test for some other relationship.
+            unknown = sorted(set(requires) - set(table_columns))
+            if unknown:
+                errors.append(
+                    f"decisions[{index}].requires names unknown table(s): "
+                    + ", ".join(unknown)
+                )
+            elif not expected <= set(requires):
+                errors.append(
+                    f"decisions[{index}].requires must include both "
+                    f"{candidate.get('left')} and {candidate.get('right')}"
+                )
         accepted.append({
             "ref": ref,
             "decision": decision,
             "rationale": rationale,
             "hypothesis": hypothesis,
             "columns": columns,
+            "requires": sorted(set(requires)) if decision == "retain" else [],
         })
     # One pair of tables materializes at most one join, so a response retaining
     # two routes between them has not made the choice it was asked for. Every
@@ -1142,10 +1185,30 @@ def run_analysis_definition_worker(
         if analytics_branch is not None
         else []
     )
+    # The target schema is named once, above, in the shape the submission
+    # tool's enums were built from. Repeating it inside the serialized bundle
+    # bills the same 4 KB twice on every frame.
+    context = request.context.to_dict()
+    context["items"] = [
+        item
+        for item in context["items"]
+        if item.get("source_id") != TARGET_SCHEMA_SOURCE_ID
+    ]
+    hypotheses = [
+        _plain_json(item) for item in _source_items(request, JOIN_HYPOTHESIS_SOURCE_ID)
+    ]
     user = json.dumps(
         {
             "TARGET FRAME": schema,
-            "RESOLVED CONTEXT": request.context.to_dict(),
+            # What this frame was admitted for. Present only on a frame the
+            # utility gate retained a relationship for, and authoritative about
+            # its purpose in a way no amount of schema reading recovers.
+            **(
+                {"TESTS THIS FRAME WAS MATERIALIZED TO SUPPORT": hypotheses}
+                if hypotheses
+                else {}
+            ),
+            "RESOLVED CONTEXT": context,
             "ALLOWED ANALYTICS IDS FOR THIS FRAME": eligible_ids,
             "REQUIRED OUTPUT": (
                 f"Call {ANALYSIS_SUBMISSION_TOOL} exactly once. Its JSON Schema "

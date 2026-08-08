@@ -1419,6 +1419,7 @@ ANALYSIS_TARGET_SCHEMA_SOURCE_ID = "target_schema"
 ANALYSIS_TARGET_PROFILE_SOURCE_ID = "target_profile"
 ANALYSIS_TARGET_AGGREGATE_SOURCE_ID = "target_aggregates"
 ANALYSIS_RELATED_FRAMES_SOURCE_ID = "related_frames"
+ANALYSIS_HYPOTHESIS_SOURCE_ID = "join_hypotheses"
 ANALYSIS_RELATIONSHIP_SOURCE_ID = "relationship_evidence"
 ANALYSIS_REGISTRY_SOURCE_ID = "analytics_registry"
 ANALYSIS_CURRENT_SOURCE_ID = "current_analyses"
@@ -1623,6 +1624,7 @@ def analysis_definition_scope(
     *,
     related: Iterable[str] = (),
     relationships: Iterable[Mapping[str, object]] | None = None,
+    hypotheses: Iterable[Mapping[str, object]] = (),
     analytics_registry: object = None,
 ) -> ContextScope:
     """Build the local candidate scope for one analysis-definition unit.
@@ -1651,10 +1653,17 @@ def analysis_definition_scope(
         for candidate in apm_table_profile_candidates(workspace)
         if candidate.metadata.get("table") == target
     )
+    # A frame whose lineage the target already contains has no column the
+    # target does not: sending its schema costs a description of the same data
+    # under another name, and invites a proposal that reads one side of the
+    # target through a frame that is only part of it.
+    lineage = join_diagnostics.frame_lineage(workspace, target)
     related_names = [
         name
         for name in dict.fromkeys(str(value) for value in related)
-        if name != target and name in workspace.table_names()
+        if name != target
+        and name in workspace.table_names()
+        and not join_diagnostics.frame_lineage(workspace, name) <= lineage
     ]
     related_candidates = tuple(
         candidate
@@ -1681,11 +1690,10 @@ def analysis_definition_scope(
     # target; showing only the target's own analyses is what let one invoice
     # date-lag check be proposed three times, once per frame that could see the
     # invoice columns. A proposal can only avoid repeating what it was shown.
-    target_lineage = join_diagnostics.frame_lineage(workspace, target)
     family = {
         name
         for name in workspace.table_names()
-        if join_diagnostics.frame_lineage(workspace, name) & target_lineage
+        if join_diagnostics.frame_lineage(workspace, name) & lineage
     }
     current = [
         {
@@ -1719,6 +1727,21 @@ def analysis_definition_scope(
                 workspace, target
             ),
             ANALYSIS_RELATED_FRAMES_SOURCE_ID: related_candidates,
+            # Why this frame was materialized at all. The utility gate admitted
+            # each retained relationship against a stated, falsifiable test; a
+            # frame asked to invent one from schemas alone reinvents a worse
+            # question than the one already asked of it.
+            ANALYSIS_HYPOTHESIS_SOURCE_ID: tuple(
+                ContextCandidate(
+                    source_ref=f"hypothesis:{item.get('ref')}",
+                    source=dict(item),
+                    representations={"current_artifact": dict(item)},
+                    metadata={"ref": str(item.get("ref") or "")},
+                    lexical_text=str(item.get("hypothesis") or ""),
+                )
+                for item in hypotheses
+                if set(str(name) for name in item.get("requires") or ()) <= lineage
+            ),
             ANALYSIS_RELATIONSHIP_SOURCE_ID: analysis_relationship_candidates(
                 workspace, target, relationships
             ),

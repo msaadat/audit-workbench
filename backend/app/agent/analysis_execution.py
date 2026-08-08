@@ -283,6 +283,63 @@ class AnalysisWorkflowExecution(BaseRunner):
             if str(item.get("ref") or "")
         }
 
+    def retained_hypotheses(self) -> list[dict]:
+        """The gate's retained tests, each naming the tables it reads."""
+
+        return [
+            item
+            for item in self.join_utility_decisions().values()
+            if item.get("decision") == "retain" and item.get("requires")
+        ]
+
+    def frame_hypotheses(self, frame: str) -> list[dict]:
+        """The retained tests this frame is the narrowest home for.
+
+        A test belongs to exactly one frame: the smallest materialized frame
+        whose lineage holds every table it reads. Preparing it anywhere wider
+        would compute it over a population the evidence was never diagnosed
+        against, and preparing it on several frames spends a turn per frame to
+        save the same analysis once.
+
+        The gate speaks about pairs of tables while a test often spans three,
+        which is why ``requires`` exists: the relationship between an approver
+        and the approval matrix is admitted on that pair, but the test needs
+        the transaction whose amount is being checked, and so lands on the
+        chained frame rather than on the two-table one that can only restate
+        the limits.
+        """
+
+        lineages = {
+            name: join_diagnostics.frame_lineage(self.ws, name)
+            for name in self.ws.table_names()
+        }
+        if frame not in lineages:
+            return []
+        owned = []
+        for item in self.retained_hypotheses():
+            required = {str(name) for name in item.get("requires") or ()}
+            covering = [name for name, lin in lineages.items() if required <= lin]
+            if covering and min(covering, key=lambda n: (len(lineages[n]), n)) == frame:
+                owned.append(item)
+        return owned
+
+    def _warn_untestable_hypotheses(self) -> None:
+        """Report retained tests no materialized frame can carry."""
+
+        lineages = [
+            join_diagnostics.frame_lineage(self.ws, name)
+            for name in self.ws.table_names()
+        ]
+        for item in self.retained_hypotheses():
+            required = {str(name) for name in item.get("requires") or ()}
+            if any(required <= lineage for lineage in lineages):
+                continue
+            self.warn(
+                "No materialized frame brings together "
+                f"{', '.join(sorted(required))}, so this test was prepared "
+                f"nowhere: {item.get('hypothesis')}"
+            )
+
     def _record_relationships(self, record: dict) -> None:
         """Persist one pair's diagnosis on the durable run record.
 
@@ -764,6 +821,28 @@ class AnalysisWorkflowExecution(BaseRunner):
                 "succeeded",
                 tuple(analysis_ref(str(item["id"])) for item in existing),
             )
+        hypotheses = self.frame_hypotheses(target_frame)
+        # No gate decision to narrow by — an interrupted run, or one that
+        # reused an earlier run's joins. Every frame keeps its turn rather than
+        # losing one silently to a rule with no input.
+        if (
+            self.retained_hypotheses()
+            and target_frame not in table_scope.tables
+            and not hypotheses
+        ):
+            # A joined frame nothing was admitted to test. Every hypothesis its
+            # lineage carries is already prepared on the narrowest frame that
+            # can test it, so a turn here would re-derive that work against a
+            # wider population and then be dropped as a repeat.
+            self.task_detail(
+                self.add_task(
+                    "analysis_definitions",
+                    "workflow:analysis_definitions",
+                    "Analysis definitions",
+                ),
+                f"'{target_frame}' carries no test another frame does not already hold.",
+            )
+            return DeterministicUnitResult("skipped")
         expected = parent_hashes(self.ws, [parent_ref])
         target = AnalysisDefinitionExecutorTarget(
             self.ws,
@@ -788,6 +867,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                         name for name in table_scope.targets if name != target_frame
                     ],
                     relationships=self.relationship_records(),
+                    hypotheses=hypotheses,
                 ),
             )
 
@@ -1320,6 +1400,11 @@ def build_analysis_workflow_runner(
         checkpoint = STAGE_CHECKPOINTS.get(capability.id)
         if checkpoint is not None:
             checkpoint_handlers[checkpoint]()
+        if capability.id == "analysis.definitions_ready":
+            # Said once for the stage, before any frame is bound: a test the
+            # gate admitted and no frame can carry is a coverage gap, and the
+            # frames that were skipped are not where a reader would look for it.
+            adapter._warn_untestable_hypotheses()
 
     def dependency_policy(
         capability_id: str,

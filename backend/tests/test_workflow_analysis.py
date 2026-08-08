@@ -154,7 +154,15 @@ def _drive(workspace, run: dict, capability_id: str):
         workspace, run, runner.RunHandle(workspace.id, run["id"])
     )
     scheduler._refresh()
-    scheduler._run_stage(_stage(run, capability_id))
+    stage = _stage(run, capability_id)
+    if scheduler.before_stage is not None:
+        # The execute loop crosses this boundary before every stage, and some
+        # of what a stage owes the reader is said there rather than per unit.
+        scheduler.before_stage(
+            scheduler.subject, scheduler.registry.get(capability_id), stage
+        )
+        scheduler._refresh()
+    scheduler._run_stage(stage)
     return scheduler
 
 
@@ -609,6 +617,7 @@ def _gate_script(retain: str | None):
                         f"{candidate['left']}.{candidate['left_on'][0]}",
                         f"{candidate['right']}.{candidate['right_on'][0]}",
                     ],
+                    "requires": [candidate["left"], candidate["right"]],
                 }
                 for candidate in catalog["candidates"]
             ]
@@ -694,6 +703,165 @@ def test_the_gate_is_not_asked_about_a_pair_local_evidence_already_rejected(
 
     assert _stage(run, "data.join_utility_ready")["units"][0]["status"] == "skipped"
     assert [call["tag"] for call in fake.calls] == []
+
+
+def _requires_script(requires_by_pair):
+    """Answer the gate, declaring what each retained test actually reads."""
+
+    def respond(user: str) -> dict:
+        catalog = json.loads(user.split("\nRepair the prior response")[0])[
+            "JOIN CANDIDATES"
+        ]
+        decisions, seen = [], set()
+        for candidate in catalog["candidates"]:
+            pair = frozenset((candidate["left"], candidate["right"]))
+            requires = requires_by_pair.get(pair)
+            if requires is None or pair in seen:
+                decisions.append(
+                    {
+                        "ref": candidate["ref"],
+                        "decision": "reject",
+                        "rationale": "No control spans these two tables.",
+                    }
+                )
+                continue
+            seen.add(pair)
+            decisions.append(
+                {
+                    "ref": candidate["ref"],
+                    "decision": "retain",
+                    "rationale": "The relationship carries a testable control.",
+                    "hypothesis": f"A test over {', '.join(sorted(requires))} must hold.",
+                    "columns": [
+                        f"{candidate['left']}.{candidate['left_on'][0]}",
+                        f"{candidate['right']}.{candidate['right_on'][0]}",
+                    ],
+                    "requires": sorted(requires),
+                }
+            )
+        return {"decisions": decisions}
+
+    return respond
+
+
+def test_a_test_spanning_three_tables_is_prepared_on_the_frame_that_can_run_it(
+    monkeypatch,
+):
+    """The approval-limit shape. The limit is a relationship between the plan
+    and the customer, but the test compares an *order* against it, so the pair's
+    own frame holds no amount to check. Preparing the test there spends a turn
+    on a frame that cannot answer it — which is what ``requires`` exists to
+    prevent."""
+
+    ws = _three_hop_workspace()
+    fake = _fake_model(monkeypatch)
+    fake.overrides["agent:join_utility"] = _requires_script(
+        {
+            frozenset(("orders", "customers")): {"orders", "customers"},
+            frozenset(("customers", "plans")): {"orders", "customers", "plans"},
+        }
+    )
+    run = _analysis_run(ws, text="join these tables and analyse them")
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
+    _drive(ws, run, "data.joins_ready")
+    _drive(ws, run, "analysis.definitions_ready")
+
+    units = {
+        unit["id"].split(":", 1)[1]: unit["status"]
+        for unit in _stage(run, "analysis.definitions_ready")["units"]
+    }
+    chained = next(name for name in units if name.count("joined") > 1)
+    pair_frame = next(
+        name for name in units if "customers" in name and "plans" in name and name != chained
+    )
+
+    # The three-table test lands on the only frame that holds all three.
+    assert units[chained] == "succeeded"
+    # Its pair's own frame carries nothing else, so it is not asked at all.
+    assert units[pair_frame] == "skipped"
+    # Base tables are never narrowed away: single-table work needs no join.
+    assert all(units[name] == "succeeded" for name in ("orders", "customers", "plans"))
+    assert "agent:analysis_definitions" not in [
+        call["tag"]
+        for call in fake.calls
+        if json.loads(
+            call["messages"][-1]["content"].split("\n\nYour previous")[0]
+        ).get("TARGET FRAME", {}).get("table") == pair_frame
+    ]
+
+
+def test_a_frame_is_told_which_test_it_was_materialized_to_support(monkeypatch):
+    """The gate stated a falsifiable test before the join existed. A frame left
+    to re-derive its purpose from schemas writes a worse question than the one
+    already asked of it — a completeness check on a dimension frame rather than
+    the control the join was admitted for."""
+
+    ws = _mixed_strength_workspace()
+    fake = _fake_model(monkeypatch)
+    fake.overrides["agent:join_utility"] = _requires_script(
+        {frozenset(("orders", "regions")): {"orders", "regions"}}
+    )
+    run = _analysis_run(ws)
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
+    _drive(ws, run, "data.joins_ready")
+    _drive(ws, run, "analysis.definitions_ready")
+
+    joined = next(
+        call
+        for call in fake.calls
+        if call["tag"] == "agent:analysis_definitions"
+        and json.loads(
+            call["messages"][-1]["content"].split("\n\nYour previous")[0]
+        )["TARGET FRAME"]["table"].endswith("_joined")
+    )
+    payload = json.loads(
+        joined["messages"][-1]["content"].split("\n\nYour previous")[0]
+    )
+    carried = payload["TESTS THIS FRAME WAS MATERIALIZED TO SUPPORT"]
+    assert [item["hypothesis"] for item in carried] == [
+        "A test over orders, regions must hold."
+    ]
+    # The target schema is named once. It used to be sent again inside the
+    # serialized bundle, billing the same block twice on every frame.
+    supplied = payload["RESOLVED CONTEXT"]["items"]
+    assert not [item for item in supplied if item["source_id"] == "target_schema"]
+    # A frame's own sides describe no column it does not already hold.
+    assert not [
+        item
+        for item in supplied
+        if item["source_id"] == "related_frames"
+        and item["content"]["table"] in {"orders", "regions"}
+    ]
+
+
+def test_a_retained_test_no_frame_can_carry_is_reported_rather_than_lost(monkeypatch):
+    """A gap in what the run prepared is a finding about the run. The frames it
+    skipped are not where a reader would go looking for it, so it is said once,
+    plainly, before any frame is bound."""
+
+    ws = _three_hop_workspace()
+    fake = _fake_model(monkeypatch)
+    # The limit test needs all three tables, but only the first hop is
+    # retained, so nothing ever brings ``plans`` alongside ``orders``.
+    fake.overrides["agent:join_utility"] = _requires_script(
+        {frozenset(("orders", "customers")): {"orders", "customers", "plans"}}
+    )
+    run = _analysis_run(ws, text="join these tables and analyse them")
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
+    _drive(ws, run, "data.joins_ready")
+    _drive(ws, run, "analysis.definitions_ready")
+
+    assert any(
+        "No materialized frame brings together" in warning
+        and "plans" in warning
+        for warning in run["warnings"]
+    ), "a test the run prepared nowhere has to be said out loud"
 
 
 def test_join_commit_is_parent_guarded_and_reconciles_an_interrupted_attempt(

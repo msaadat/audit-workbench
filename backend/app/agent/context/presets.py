@@ -1052,6 +1052,18 @@ PRESETS.register(
                     budget=ContextBudget(max_items=8, max_characters=8_000),
                 ),
                 ContextSource(
+                    id="join_hypotheses",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    # The utility gate's retained decisions whose test this
+                    # frame can carry: a stated hypothesis and the columns
+                    # naming it. Text the model wrote about local metadata —
+                    # no value, no row.
+                    representations=(ContextRepresentation("current_artifact"),),
+                    budget=ContextBudget(max_items=8, max_characters=8_000),
+                ),
+                ContextSource(
                     id="relationship_evidence",
                     source_type="tables",
                     required=False,
@@ -1085,7 +1097,7 @@ PRESETS.register(
                     budget=ContextBudget(max_items=40, max_characters=16_000),
                 ),
             ),
-            budget=ContextBudget(max_items=67, max_characters=68_000),
+            budget=ContextBudget(max_items=75, max_characters=76_000),
             # Row-level table data is structurally impossible here: the
             # permission is denied and ``table_rows`` is rejected by the
             # resolver boundary before a candidate can become a bundle item.

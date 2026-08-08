@@ -130,6 +130,9 @@ def _join_utility_response(user: str) -> dict:
                     f"{table}.{(table_columns.get(table) or ['id'])[0]}"
                     for table in (candidate["left"], candidate["right"])
                 ],
+                # The narrowest requirement there is: the two sides and nothing
+                # else, so the test lands on the direct join of the pair.
+                "requires": [candidate["left"], candidate["right"]],
             }
         )
     return {"decisions": decisions}

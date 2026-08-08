@@ -298,6 +298,20 @@ function reports existence and structural usability only — never currency:
 | `analysis.definitions_ready` | `workspace.analyses` (kinds `analytics` and `python`), keyed by a semantic id derived from the canonical spec | Every scoped frame has at least one workflow-authored analysis |
 | `analysis.executed` | A bounded `last_result` record on the analysis, following the `data_tests` `last_run` precedent | Every scoped workflow-authored analysis carries a result |
 
+**What the gate decides, and what it therefore schedules.** Each retained
+decision carries a stated hypothesis, the columns naming it, and `requires` —
+every table that test reads. A pair of tables is what a relationship connects,
+not necessarily what its test needs: checking a transaction against the approval
+limit for its approver's job title is admitted on the approver-to-staff pair but
+reads three tables. `requires` is what lets the definitions stage prepare each
+test exactly once, on the narrowest materialized frame whose lineage holds every
+table it names. A joined frame that owns no test under that rule is skipped
+without a model turn — every hypothesis its lineage carries is already prepared
+on a narrower frame, and a wider frame would compute the same thing over a
+population the evidence was never diagnosed against. A test no materialized
+frame can carry is a coverage gap and is warned about at the stage boundary
+rather than silently dropped.
+
 Relationship evidence is deliberately *not* a workspace artifact: it is a
 recomputable diagnostic about tables rather than an engagement record, and a
 collection for it would be an unapproved domain-schema change. A capability that

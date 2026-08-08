@@ -105,13 +105,14 @@ def _request(catalog=None):
     )
 
 
-def _retain(ref=_ORDERS_TO_STAFF["ref"], columns=None):
+def _retain(ref=_ORDERS_TO_STAFF["ref"], columns=None, requires=None):
     return {
         "ref": ref,
         "decision": "retain",
         "rationale": "Approval authority is only testable across both tables.",
         "hypothesis": "Every approver holds a job title authorized for the amount.",
         "columns": columns or ["orders.approved_by", "staff.staff_id"],
+        "requires": requires or ["orders", "staff"],
     }
 
 
@@ -176,6 +177,45 @@ def test_two_routes_to_one_pair_are_named_together_for_the_single_repair_turn():
     assert "orders and staff" in message
     assert _ORDERS_TO_STAFF["ref"] in message
     assert _ORDERS_TO_STAFF_REQUESTER["ref"] in message
+
+
+def test_a_retained_test_declares_every_table_it_reads():
+    """``requires`` is how a pairwise gate states a test that spans three
+    tables. It decides which frame the test is later prepared on, so a name
+    outside the catalog, or one of the two sides left out, is not usable."""
+
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {"decisions": (_retain(requires=["orders", "staff", "staff"]),)}, _request()
+    )
+    assert accepted["decisions"][0]["requires"] == ["orders", "staff"]
+
+    with pytest.raises(analysis_worker.WorkerResponseValidationError) as missing:
+        analysis_worker.validate_join_utility_proposal(
+            {"decisions": (_retain(requires=["orders", "orders"]),)}, _request()
+        )
+    assert "staff" in "; ".join(missing.value.errors)
+
+    with pytest.raises(analysis_worker.WorkerResponseValidationError) as unknown:
+        analysis_worker.validate_join_utility_proposal(
+            {"decisions": (_retain(requires=["orders", "staff", "ledger"]),)},
+            _request(),
+        )
+    assert "ledger" in "; ".join(unknown.value.errors)
+
+
+def test_a_test_may_require_a_table_outside_the_pair_it_was_judged_on():
+    """The approval-limit shape: the relationship is approver-to-staff, but the
+    test needs the transaction whose amount is checked. Nothing rejects that —
+    it is the reason the field exists."""
+
+    catalog = _catalog()
+    catalog["table_columns"]["ledger"] = ["ledger_id", "amount"]
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {"decisions": (_retain(requires=["orders", "staff", "ledger"]),)},
+        _request(catalog),
+    )
+
+    assert accepted["decisions"][0]["requires"] == ["ledger", "orders", "staff"]
 
 
 def test_a_retained_relationship_must_name_columns_from_both_sides():
