@@ -1,15 +1,15 @@
 {
   "registry": {
     "pack_id": "procure_to_pay",
-    "pack_version": 5,
-    "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+    "pack_version": 6,
+    "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
   },
   "record_fragments": [
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 5,
-        "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+        "pack_version": 6,
+        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
       },
       "chunk_id": "DOC-PR:pages:1-1",
       "page_span": [
@@ -70,8 +70,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 5,
-        "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+        "pack_version": 6,
+        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
       },
       "chunk_id": "DOC-PO:pages:1-1",
       "page_span": [
@@ -109,8 +109,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 5,
-        "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+        "pack_version": 6,
+        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
       },
       "chunk_id": "DOC-GRN:pages:1-1",
       "page_span": [
@@ -161,8 +161,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 5,
-        "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+        "pack_version": 6,
+        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
       },
       "chunk_id": "DOC-INV:pages:1-1",
       "page_span": [
@@ -233,8 +233,8 @@
     {
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 5,
-        "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+        "pack_version": 6,
+        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
       },
       "chunk_id": "DOC-PAY:pages:1-1",
       "page_span": [
@@ -308,15 +308,15 @@
   "reduction": {
     "registry": {
       "pack_id": "procure_to_pay",
-      "pack_version": 5,
-      "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+      "pack_version": 6,
+      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
     },
     "records": [
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 5,
-          "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+          "pack_version": 6,
+          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
         },
         "record_id": "REC-PR",
         "document_id": "DOC-PR",
@@ -365,8 +365,8 @@
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 5,
-          "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+          "pack_version": 6,
+          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
         },
         "record_id": "REC-PO",
         "document_id": "DOC-PO",
@@ -396,13 +396,27 @@
             }
           }
         ],
-        "fields": []
+        "fields": [
+          {
+            "group": "amounts",
+            "kind": "total",
+            "attribute": "value",
+            "entry": 0,
+            "value": {
+              "raw_value": "PKR 2,000,000.00",
+              "value": 2000000,
+              "normalization_status": "normalized",
+              "normalization_error": null,
+              "citation": "PO-C1"
+            }
+          }
+        ]
       },
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 5,
-          "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+          "pack_version": 6,
+          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
         },
         "record_id": "REC-GRN",
         "document_id": "DOC-GRN",
@@ -451,8 +465,8 @@
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 5,
-          "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+          "pack_version": 6,
+          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
         },
         "record_id": "REC-INV",
         "document_id": "DOC-INV",
@@ -521,8 +535,8 @@
       {
         "registry": {
           "pack_id": "procure_to_pay",
-          "pack_version": 5,
-          "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+          "pack_version": 6,
+          "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
         },
         "record_id": "REC-PAY",
         "document_id": "DOC-PAY",
@@ -593,8 +607,8 @@
       "evidence_kind": "transaction_cycle",
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 5,
-        "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+        "pack_version": 6,
+        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
       },
       "required_record_kinds": [
         "procure_to_pay.purchase_requisition",
@@ -611,8 +625,8 @@
       "evidence_kind": "transaction_cycle",
       "registry": {
         "pack_id": "procure_to_pay",
-        "pack_version": 5,
-        "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+        "pack_version": 6,
+        "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
       },
       "required_record_kinds": [
         "procure_to_pay.goods_receipt",
@@ -625,8 +639,8 @@
     "kind": "cycle_vouch",
     "registry": {
       "pack_id": "procure_to_pay",
-      "pack_version": 5,
-      "definition_hash": "sha256:7581d1c20266c90aea60c6ed2c36d70dce059fd1db3578114c34af89b6828d26"
+      "pack_version": 6,
+      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
     },
     "rcm_id": "RCM-P2P-01",
     "requirement_refs": [
@@ -716,6 +730,33 @@
           "right": {
             "source": "role",
             "role": "payment_voucher",
+            "field": {
+              "group": "amounts",
+              "kind": "total",
+              "attribute": "value"
+            }
+          },
+          "operator": "numeric_within",
+          "tolerance": {
+            "absolute": 0.01,
+            "percent": 0
+          }
+        },
+        {
+          "key": "invoice_amount_to_purchase_order",
+          "label": "Invoice amount agrees to the purchase order",
+          "left": {
+            "source": "role",
+            "role": "vendor_invoice",
+            "field": {
+              "group": "amounts",
+              "kind": "total",
+              "attribute": "value"
+            }
+          },
+          "right": {
+            "source": "role",
+            "role": "purchase_order",
             "field": {
               "group": "amounts",
               "kind": "total",

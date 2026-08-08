@@ -154,6 +154,41 @@ class CycleRegistry:
                     raise RegistryError(
                         f"Cycle pack '{pack.id}' omits normalizer '{normalizer_id}'."
                     )
+            staged: set[tuple[str, str, str]] = set()
+            for stage in pack.date_lifecycle:
+                selector = (stage.record_kind_id, stage.group, stage.kind)
+                if selector in staged:
+                    raise RegistryError(
+                        f"Cycle pack '{pack.id}' declares {stage.group}.{stage.kind} "
+                        f"twice for '{stage.record_kind_id}'."
+                    )
+                staged.add(selector)
+                if stage.record_kind_id not in pack.record_kind_ids:
+                    raise RegistryError(
+                        f"Cycle pack '{pack.id}' stages unknown record kind "
+                        f"'{stage.record_kind_id}'."
+                    )
+                field = selectors.get((stage.group, stage.kind))
+                if field is None or field.id not in self.record_kinds[
+                    stage.record_kind_id
+                ].available_field_kinds:
+                    raise RegistryError(
+                        f"Cycle pack '{pack.id}' stages {stage.group}.{stage.kind}, "
+                        f"which '{stage.record_kind_id}' does not offer."
+                    )
+                if not any(
+                    attribute.semantic_type == "date"
+                    for attribute in field.attributes
+                ):
+                    raise RegistryError(
+                        f"Cycle pack '{pack.id}' stages {stage.group}.{stage.kind}, "
+                        "which has no date attribute."
+                    )
+                if isinstance(stage.order, bool) or not isinstance(stage.order, int):
+                    raise RegistryError(
+                        f"Cycle pack '{pack.id}' stages {stage.group}.{stage.kind} "
+                        "with a non-integer order."
+                    )
             for record_id in pack.record_kind_ids:
                 record = self.record_kinds[record_id]
                 if any(
@@ -248,6 +283,38 @@ class CycleRegistry:
                 f"Field kind '{group}.{kind}' is not registered for '{pack_id}'."
             )
         return definition
+
+    def date_lifecycle_order(
+        self, pack_id: str, record_kind_id: str, group: str, kind: str
+    ) -> int | None:
+        """Return the cycle rank of one record kind's date field, if declared.
+
+        A record kind from another pack raises rather than reporting no stage:
+        an unordered field is a deliberate abstention, and a cross-pack
+        reference silently reading as one would let a stale definition escape
+        the direction rule instead of failing closed.
+        """
+
+        self.record_kind(pack_id, record_kind_id)
+        for stage in self.pack(pack_id).date_lifecycle:
+            if (stage.record_kind_id, stage.group, stage.kind) == (
+                record_kind_id,
+                group,
+                kind,
+            ):
+                return stage.order
+        return None
+
+    def control_evidence_attribute(
+        self, pack_id: str, group: str, kind: str, attribute: str
+    ) -> bool:
+        """Whether finding this attribute is itself evidence a control operated."""
+
+        definition = self.field_kind(pack_id, group, kind)
+        return any(
+            item.id == attribute and item.control_evidence
+            for item in definition.attributes
+        )
 
     def normalize_identifier(self, pack_id: str, identifier_id: str, value: object) -> str:
         definition = self.identifier_kind(pack_id, identifier_id)

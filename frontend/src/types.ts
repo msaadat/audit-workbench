@@ -161,11 +161,14 @@ export interface EvidenceFieldKindDescriptor {
   group: string
   kind: string
   /** `verbatim: false` marks an attribute that carries a reading of the record
-   * (a party's role, an approval's decision) rather than a quote from it. */
+   * (a party's role, an approval's decision) rather than a quote from it.
+   * `control_evidence` marks one whose mere presence shows a control operated,
+   * which is the only kind a `present` assertion may name on a required role. */
   attributes: Array<{
     id: string
     semantic_type: EvidenceSemanticType
     verbatim?: boolean
+    control_evidence?: boolean
   }>
 }
 
@@ -186,6 +189,15 @@ export interface CyclePackDescriptor {
   identifier_kind_ids: EvidenceIdentifierKindId[]
   field_kind_ids: EvidenceFieldKindId[]
   record_kind_ids: EvidenceRecordKindId[]
+  /** The pack's own chronology, used to reject a date comparison stated
+   * backwards. Records that state the same event share one `order`, and a date
+   * field the pack leaves out is never direction-checked. */
+  date_lifecycle?: Array<{
+    record_kind_id: EvidenceRecordKindId
+    group: string
+    kind: string
+    order: number
+  }>
   identifier_kinds: EvidenceIdentifierKindDescriptor[]
   field_kinds: EvidenceFieldKindDescriptor[]
   record_kinds: EvidenceRecordKindDescriptor[]
@@ -399,6 +411,10 @@ export interface CycleVouchDefinition {
 
 export interface CycleCandidate {
   candidate_id: string
+  /** 1-based position in the deterministic ranking. Among candidates over one
+   * `table` only the best-ranked is accepted: they are the same rows keyed
+   * differently, so a lower-ranked one is a grain error, not a choice. */
+  rank?: number
   registry: CycleRegistryReference
   table: string
   source_kind: 'authoritative' | 'derived_join'
@@ -431,9 +447,16 @@ export interface CycleEvidenceManifestGroup {
     available_fields: Array<{
       group: string
       kind: string
+      label?: string
       attributes: string[]
+      attribute_types?: Record<string, EvidenceSemanticType>
+      control_evidence_attributes?: string[]
       normalization_status?: string | null
+      /** What extraction claimed about multiplicity. */
       entry_count?: number
+      /** What the record actually holds, per attribute, and what evaluation
+       * will see: above 1, a scalar operand can only report ambiguity. */
+      distinct_value_counts?: Record<string, number>
     }>
   }>
   candidates: CycleCandidate[]

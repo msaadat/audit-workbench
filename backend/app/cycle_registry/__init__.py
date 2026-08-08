@@ -32,6 +32,7 @@ __all__ = [
     "CyclePackDefinition",
     "CycleRegistry",
     "DEFAULT_REGISTRY",
+    "DateLifecycleStage",
     "EvidenceKindDefinition",
     "FieldAttributeDefinition",
     "FieldKindDefinition",

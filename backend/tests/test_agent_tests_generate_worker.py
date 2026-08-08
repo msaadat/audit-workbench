@@ -478,6 +478,41 @@ def test_generate_worker_hydrates_the_canonical_cycle_definition_locally():
     assert model_payload["allowed_test_variants"] == ["cycle_vouch"]
 
 
+def test_generate_worker_refuses_to_leave_a_cycle_attribute_untested():
+    """A transaction-cycle requirement has exactly one executable form.
+
+    The live engagement answered its three-way-match attribute with a Polars
+    join of the ledgers against themselves. That satisfied every structural
+    rule, referenced the row, and examined no voucher, so the row's flagship
+    requirement was silently never vouched.
+    """
+
+    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cycle = _test_payload(contract)
+    bundle = _bundle(
+        rcm_rows=(cycle["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+    )
+    only_data = json.dumps({"tests": [_data_test()]})
+    gateway = _Gateway([only_data, only_data, only_data])
+
+    with pytest.raises(WorkerRunError) as caught:
+        WORKERS.execute(_request(bundle), gateway)
+
+    message = str(caught.value)
+    assert "declares transaction_cycle evidence" in message
+    assert "five_record_cycle" in message
+    guidance = gateway.calls[1]["conversation"][-1]["content"]
+    assert "five_record_cycle" in guidance
+
+
 def test_generate_worker_produces_a_ready_document_vouch_test():
     """The retired narrative cycle branch fails closed."""
 

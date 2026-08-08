@@ -1,12 +1,12 @@
 {
   "registry": {
     "pack_id": "payroll",
-    "pack_version": 3,
-    "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"
+    "pack_version": 4,
+    "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"
   },
   "record_fragments": [
     {
-      "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"},
+      "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"},
       "chunk_id": "DOC-CONTRACT:pages:1-1",
       "page_span": [1, 1],
       "record_kind": "payroll.employment_contract",
@@ -18,7 +18,7 @@
       "fields": []
     },
     {
-      "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"},
+      "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"},
       "chunk_id": "DOC-TIME:pages:1-1",
       "page_span": [1, 1],
       "record_kind": "payroll.time_record",
@@ -33,7 +33,7 @@
       ]
     },
     {
-      "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"},
+      "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"},
       "chunk_id": "DOC-REGISTER:pages:1-1",
       "page_span": [1, 1],
       "record_kind": "payroll.payroll_register",
@@ -48,7 +48,7 @@
       ]
     },
     {
-      "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"},
+      "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"},
       "chunk_id": "DOC-PAYSLIP:pages:1-1",
       "page_span": [1, 1],
       "record_kind": "payroll.payslip",
@@ -62,7 +62,7 @@
       ]
     },
     {
-      "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"},
+      "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"},
       "chunk_id": "DOC-BANK:pages:1-1",
       "page_span": [1, 1],
       "record_kind": "payroll.bank_payment",
@@ -76,24 +76,24 @@
     }
   ],
   "reduction": {
-    "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"},
+    "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"},
     "records": [
-      {"registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"}, "record_id": "REC-CONTRACT", "document_id": "DOC-CONTRACT", "record_kind": "payroll.employment_contract", "classification_evidence": ["CONTRACT-C1"], "identifiers": [{"kind": "payroll.employment_contract_number", "value": {"raw_value": "EC-1042", "value": "EC-1042", "normalization_status": "normalized", "normalization_error": null, "citation": "CONTRACT-C1"}}], "fields": []},
-      {"registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"}, "record_id": "REC-TIME", "document_id": "DOC-TIME", "record_kind": "payroll.time_record", "classification_evidence": ["TIME-C1"], "identifiers": [{"kind": "payroll.time_record_number", "value": {"raw_value": "TR-2407-42", "value": "TR-2407-42", "normalization_status": "normalized", "normalization_error": null, "citation": "TIME-C1"}}], "fields": []},
-      {"registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"}, "record_id": "REC-REGISTER", "document_id": "DOC-REGISTER", "record_kind": "payroll.payroll_register", "classification_evidence": ["REGISTER-C1"], "identifiers": [{"kind": "payroll.payroll_run_number", "value": {"raw_value": "RUN-2024-07", "value": "RUN-2024-07", "normalization_status": "normalized", "normalization_error": null, "citation": "REGISTER-C1"}}], "fields": []},
-      {"registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"}, "record_id": "REC-PAYSLIP", "document_id": "DOC-PAYSLIP", "record_kind": "payroll.payslip", "classification_evidence": ["PAYSLIP-C1"], "identifiers": [{"kind": "payroll.payslip_number", "value": {"raw_value": "PS-2407-42", "value": "PS-2407-42", "normalization_status": "normalized", "normalization_error": null, "citation": "PAYSLIP-C1"}}], "fields": []},
-      {"registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"}, "record_id": "REC-BANK", "document_id": "DOC-BANK", "record_kind": "payroll.bank_payment", "classification_evidence": ["BANK-C1"], "identifiers": [{"kind": "payroll.bank_payment_number", "value": {"raw_value": "BP-2408-0042", "value": "BP-2408-0042", "normalization_status": "normalized", "normalization_error": null, "citation": "BANK-C1"}}], "fields": []}
+      {"registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"}, "record_id": "REC-CONTRACT", "document_id": "DOC-CONTRACT", "record_kind": "payroll.employment_contract", "classification_evidence": ["CONTRACT-C1"], "identifiers": [{"kind": "payroll.employment_contract_number", "value": {"raw_value": "EC-1042", "value": "EC-1042", "normalization_status": "normalized", "normalization_error": null, "citation": "CONTRACT-C1"}}], "fields": []},
+      {"registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"}, "record_id": "REC-TIME", "document_id": "DOC-TIME", "record_kind": "payroll.time_record", "classification_evidence": ["TIME-C1"], "identifiers": [{"kind": "payroll.time_record_number", "value": {"raw_value": "TR-2407-42", "value": "TR-2407-42", "normalization_status": "normalized", "normalization_error": null, "citation": "TIME-C1"}}], "fields": []},
+      {"registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"}, "record_id": "REC-REGISTER", "document_id": "DOC-REGISTER", "record_kind": "payroll.payroll_register", "classification_evidence": ["REGISTER-C1"], "identifiers": [{"kind": "payroll.payroll_run_number", "value": {"raw_value": "RUN-2024-07", "value": "RUN-2024-07", "normalization_status": "normalized", "normalization_error": null, "citation": "REGISTER-C1"}}], "fields": []},
+      {"registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"}, "record_id": "REC-PAYSLIP", "document_id": "DOC-PAYSLIP", "record_kind": "payroll.payslip", "classification_evidence": ["PAYSLIP-C1"], "identifiers": [{"kind": "payroll.payslip_number", "value": {"raw_value": "PS-2407-42", "value": "PS-2407-42", "normalization_status": "normalized", "normalization_error": null, "citation": "PAYSLIP-C1"}}], "fields": []},
+      {"registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"}, "record_id": "REC-BANK", "document_id": "DOC-BANK", "record_kind": "payroll.bank_payment", "classification_evidence": ["BANK-C1"], "identifiers": [{"kind": "payroll.bank_payment_number", "value": {"raw_value": "BP-2408-0042", "value": "BP-2408-0042", "normalization_status": "normalized", "normalization_error": null, "citation": "BANK-C1"}}], "fields": []}
     ],
     "unresolved_fragments": [],
     "conflicts": []
   },
   "control_attributes": [
-    {"key": "complete_payroll_cycle", "assertion": "Existence", "requirement": "Each payroll payment is supported by employment, time, register, and payslip evidence.", "evidence_kind": "transaction_cycle", "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"}, "required_record_kinds": ["payroll.employment_contract", "payroll.time_record", "payroll.payroll_register", "payroll.payslip", "payroll.bank_payment"]}
+    {"key": "complete_payroll_cycle", "assertion": "Existence", "requirement": "Each payroll payment is supported by employment, time, register, and payslip evidence.", "evidence_kind": "transaction_cycle", "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"}, "required_record_kinds": ["payroll.employment_contract", "payroll.time_record", "payroll.payroll_register", "payroll.payslip", "payroll.bank_payment"]}
   ],
   "cycle_test": {
     "schema_version": 2,
     "kind": "cycle_vouch",
-    "registry": {"pack_id": "payroll", "pack_version": 3, "definition_hash": "sha256:3d39e31223d63bf537d891a1177f2c8fcd80ff1012a743375403c53d91983651"},
+    "registry": {"pack_id": "payroll", "pack_version": 4, "definition_hash": "sha256:18bb39cf4e879684927761670bc7fe5a44c71bf6d23c9e3e9d763fa7bef8d45a"},
     "rcm_id": "RCM-PAY-01",
     "requirement_refs": ["RCM-PAY-01:complete_payroll_cycle"],
     "procedure_key": "payroll-payment-cycle",

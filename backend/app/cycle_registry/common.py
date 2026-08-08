@@ -200,10 +200,14 @@ FIELD_KINDS = (
         "approvals",
         "approval",
         (
-            FieldAttributeDefinition("approver", "text"),
-            FieldAttributeDefinition("role", "text", verbatim=False),
-            FieldAttributeDefinition("decision", "text", verbatim=False),
-            FieldAttributeDefinition("date", "date"),
+            FieldAttributeDefinition("approver", "text", control_evidence=True),
+            FieldAttributeDefinition(
+                "role", "text", verbatim=False, control_evidence=True
+            ),
+            FieldAttributeDefinition(
+                "decision", "text", verbatim=False, control_evidence=True
+            ),
+            FieldAttributeDefinition("date", "date", control_evidence=True),
         ),
     ),
     FieldKindDefinition(
@@ -212,9 +216,13 @@ FIELD_KINDS = (
         "attachments",
         "attachment",
         (
-            FieldAttributeDefinition("kind", "text", verbatim=False),
-            FieldAttributeDefinition("reference", "text"),
-            FieldAttributeDefinition("present", "boolean", verbatim=False),
+            FieldAttributeDefinition(
+                "kind", "text", verbatim=False, control_evidence=True
+            ),
+            FieldAttributeDefinition("reference", "text", control_evidence=True),
+            FieldAttributeDefinition(
+                "present", "boolean", verbatim=False, control_evidence=True
+            ),
         ),
     ),
 )

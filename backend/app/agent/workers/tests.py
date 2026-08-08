@@ -85,6 +85,7 @@ def _model_transaction_manifest(value: object) -> object:
     groups = []
     candidate_fields = (
         "candidate_id",
+        "rank",
         "table",
         "source_kind",
         "join_justification",
@@ -434,13 +435,19 @@ Return JSON with a non-empty `tests` array. A test is one of:
 
 For Cycle Vouch, the supplied `transaction_evidence` manifest is authoritative.
 Choose an exact candidate_id copied from one supplied registry group and explain
-the choice in selection_reason. Do not repeat the candidate's table, row_key,
-cycle_keys, registry, or roles; local code copies them exactly. requirement_refs use
-`<RCM id>:<control attribute key>` and cover the transaction-cycle attributes
-the procedure tests. Group compatible assertions sharing one population and
-lifecycle scope into one test. Roles name exact reachable record kinds and state
-required, cardinality (one|many), and reuse_across_items (exclusive|allowed)
-independently. Assertions use explicit row/role/roles operands and one of
+the choice in selection_reason. Candidates carry `rank`; among candidates over
+the same `table` only the best-ranked one is accepted, because they are the same
+rows keyed differently and a table keyed on another record's identifier is a
+grain error. Choosing a different `table` is a real decision — make it on which
+grain the requirement is about — and say so in selection_reason. Do not repeat
+the candidate's table, row_key, cycle_keys, registry, or roles; local code copies
+them exactly. requirement_refs use `<RCM id>:<control attribute key>`. Every
+control attribute whose evidence_kind is `transaction_cycle` must be referenced
+by some returned cycle test. Group compatible assertions sharing one population
+and lifecycle scope into one test. Roles name exact reachable record kinds and
+state required, cardinality (one|many), and reuse_across_items
+(exclusive|allowed) independently. Every declared role must be read by at least
+one assertion. Assertions use explicit row/role/roles operands and one of
 {", ".join(sorted(cycle_vouching.OPERATORS))}; field selectors always name
 group, kind, and attribute. Use numeric tolerance objects and integer day
 tolerances. Do not invent identifiers, fields, mappings, roles, or literal row
@@ -448,6 +455,40 @@ values. Do not emit dotted paths, checks, document_types, or a vouch mode step.
 Evidence-linked selection is targeted evidence only. Sampling uses random,
 interval, or stratified with size 1..{cycle_vouching.MAX_ITEMS} and an integer
 seed. assurance_scope is derived locally and may be omitted.
+
+An assertion earns its place by being able to fail for an audit reason. Prefer,
+in this order: agreement of a value across two records (`numeric_within` on an
+amount or quantity, `equal_exact` on an identifier); ordering of two dates along
+the cycle (`date_on_or_before`, operands in the direction the cycle actually
+runs — a receipt follows its order, a payment follows its invoice); agreement
+between a population column and the records (`source: row` against
+`source: role`); and only then `present`, which is accepted solely on an
+approval or attachment attribute, never on a `source: row` column and never as a
+stand-in for a role existing — a required role is already bound before any
+assertion runs. Each record's `available_fields` gives `label`,
+`attribute_types`, `control_evidence_attributes`, and `distinct_value_counts`;
+a selector whose distinct_value_counts exceeds 1 cannot be read by a `role`
+operand, so use a `roles` operand with an entry_quantifier or pick another
+selector.
+
+A three-way match over an invoice-grain population is one test, not four:
+{{"source":"document","kind":"cycle_vouch","title":"Three-way match of paid invoices",
+"objective":"...","requirement_refs":["RCM-1:three_way_match"],
+"procedure_key":"invoice-three-way-match","candidate_id":"...","selection_reason":"...",
+"selection":{{"mode":"evidence_linked"}},"assertions":[
+{{"key":"invoice_total_to_po","label":"Invoice total agrees to purchase order",
+"left":{{"source":"role","role":"vendor_invoice","field":{{"group":"amounts","kind":"total","attribute":"value"}}}},
+"right":{{"source":"role","role":"purchase_order","field":{{"group":"amounts","kind":"total","attribute":"value"}}}},
+"operator":"numeric_within","tolerance":{{"absolute":0.01,"percent":0}}}},
+{{"key":"receipt_before_payment","label":"Goods are received before payment",
+"left":{{"source":"role","role":"goods_receipt","field":{{"group":"dates","kind":"receipt_date","attribute":"value"}}}},
+"right":{{"source":"role","role":"payment_voucher","field":{{"group":"dates","kind":"payment_date","attribute":"value"}}}},
+"operator":"date_on_or_before"}},
+{{"key":"row_amount_across_records","label":"Recorded amount agrees to every record",
+"left":{{"source":"row","column":"INVOICE_AMOUNT"}},
+"right":{{"source":"roles","roles":["purchase_order","vendor_invoice","payment_voucher"],
+"field":{{"group":"amounts","kind":"total","attribute":"value"}},"entry_quantifier":"one"}},
+"operator":"numeric_within","tolerance":{{"absolute":0.01,"percent":0}},"role_quantifier":"all"}}]}}
 
 The exact Cycle Vouch response shape is:
 {{"source":"document","kind":"cycle_vouch","title":"...","objective":"...",
@@ -1138,9 +1179,51 @@ def validate_generate_proposal(
                 "methodology_refs": methodology_refs,
             }
         )
+    errors.extend(_missing_cycle_coverage(request, rcm_id, normalized))
     if errors:
         raise WorkerResponseValidationError(errors)
     return {"tests": normalized}
+
+
+def _missing_cycle_coverage(
+    request: WorkerRequest, rcm_id: str, tests: list[dict]
+) -> list[str]:
+    """Name every transaction-cycle attribute the response left untested.
+
+    A row states which of its requirements are answered by linking records
+    rather than by querying a table, and the cycle test is the only executable
+    form of that answer. Without this the flagship three-way-match attribute
+    could be satisfied by a Polars join of the ledgers against themselves — a
+    complete response by every structural rule, and no voucher examined.
+    """
+
+    try:
+        manifest = _generate_transaction_manifest(request)
+        row = _generate_rcm_row(request)
+    except WorkerContractError:
+        return []
+    if not _manifest_candidate_ids(manifest):
+        return []
+    covered = {
+        str(reference).split(":", 1)[-1]
+        for test in tests
+        if test.get("kind") == "cycle_vouch"
+        for reference in test.get("requirement_refs") or []
+    }
+    missing = [
+        str(attribute.get("key") or "")
+        for attribute in row.get("control_attributes") or []
+        if isinstance(attribute, Mapping)
+        and attribute.get("evidence_kind") == "transaction_cycle"
+        and str(attribute.get("key") or "") not in covered
+    ]
+    return [
+        f"{rcm_id} control attribute '{key}' declares transaction_cycle evidence "
+        "and no returned cycle_vouch test references it; add a cycle test whose "
+        f"requirement_refs contain '{rcm_id}:{key}', or group it into an existing "
+        "one over the same population"
+        for key in missing
+    ]
 
 
 def run_generate_worker(

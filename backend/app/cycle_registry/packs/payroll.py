@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..common import BASE_FIELD_KIND_IDS
 from ..models import (
     CyclePackDefinition,
+    DateLifecycleStage,
     FieldAttributeDefinition,
     FieldKindDefinition,
     IdentifierKindDefinition,
@@ -131,10 +132,27 @@ RECORD_KINDS = (
     ),
 )
 
+# The payroll chronology. Every record that states the pay period shares one
+# rank: the period end is the same date wherever it is printed, so a comparison
+# between two of them is an agreement test, not an ordering test.
+DATE_LIFECYCLE = (
+    DateLifecycleStage("payroll.employment_contract", "dates", "document_date", 10),
+    DateLifecycleStage("payroll.time_record", "dates", "pay_period_end", 20),
+    DateLifecycleStage("payroll.payroll_register", "dates", "pay_period_end", 20),
+    DateLifecycleStage("payroll.payslip", "dates", "pay_period_end", 20),
+    DateLifecycleStage("payroll.time_record", "dates", "document_date", 25),
+    DateLifecycleStage("payroll.time_record", "approvals", "approval", 25),
+    DateLifecycleStage("payroll.payroll_register", "dates", "document_date", 30),
+    DateLifecycleStage("payroll.payroll_register", "approvals", "approval", 30),
+    DateLifecycleStage("payroll.payslip", "dates", "document_date", 40),
+    DateLifecycleStage("payroll.bank_payment", "dates", "document_date", 50),
+    DateLifecycleStage("payroll.bank_payment", "approvals", "approval", 50),
+)
+
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Payroll",
-    version=3,
+    version=4,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),
@@ -150,5 +168,6 @@ PACK = CyclePackDefinition(
         *(definition.id for definition in RECORD_KINDS),
         "common.other",
     ),
+    date_lifecycle=DATE_LIFECYCLE,
 )
 

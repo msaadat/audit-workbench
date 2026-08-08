@@ -55,12 +55,23 @@ class FieldAttributeDefinition:
     #: routinely uses a word the record never prints. Demanding a quote for
     #: those is unsatisfiable, and a response cannot be repaired into one.
     verbatim: bool = True
+    #: Whether merely *finding* this attribute evidences that a control
+    #: operated. An approver, a decision, a signature date, an enclosed
+    #: attachment: each exists on the record because someone performed the
+    #: control step, so asserting its presence is a real test. A status, a
+    #: description, a party name, or an amount is printed by the form whatever
+    #: anyone did, so a presence assertion on one proves nothing and — where the
+    #: role is already required and therefore already bound — fails only when
+    #: extraction missed a field. Presence assertions are restricted to
+    #: attributes marked here.
+    control_evidence: bool = False
 
     def identity(self) -> dict:
         return {
             "id": self.id,
             "semantic_type": self.semantic_type,
             "verbatim": self.verbatim,
+            "control_evidence": self.control_evidence,
         }
 
 
@@ -115,6 +126,33 @@ class EvidenceKindDefinition:
 
 
 @dataclass(frozen=True)
+class DateLifecycleStage:
+    """Where one record kind's date field sits in the cycle's chronology.
+
+    ``order`` is a rank, not a position: two records that state the *same*
+    event — a goods receipt's own receipt date and the purchase order's copy of
+    it — share one order and are therefore unordered relative to each other.
+    Only a strictly decreasing pair is a direction error, so a date field left
+    out of this declaration is simply never direction-checked. That keeps a
+    genuinely ambiguous field, such as the receipt date printed on a vendor
+    invoice, out of the rule instead of guessing at it.
+    """
+
+    record_kind_id: str
+    group: str
+    kind: str
+    order: int
+
+    def identity(self) -> dict:
+        return {
+            "record_kind_id": self.record_kind_id,
+            "group": self.group,
+            "kind": self.kind,
+            "order": self.order,
+        }
+
+
+@dataclass(frozen=True)
 class CyclePackDefinition:
     id: str
     label: str
@@ -123,6 +161,7 @@ class CyclePackDefinition:
     identifier_kind_ids: tuple[str, ...]
     field_kind_ids: tuple[str, ...]
     record_kind_ids: tuple[str, ...]
+    date_lifecycle: tuple[DateLifecycleStage, ...] = ()
 
     def identity(self) -> dict:
         return {
@@ -133,6 +172,7 @@ class CyclePackDefinition:
             "identifier_kind_ids": list(self.identifier_kind_ids),
             "field_kind_ids": list(self.field_kind_ids),
             "record_kind_ids": list(self.record_kind_ids),
+            "date_lifecycle": [stage.identity() for stage in self.date_lifecycle],
         }
 
 

@@ -688,8 +688,58 @@ def _dedupe_evidence(values: Iterable[object]) -> list[object]:
     return output
 
 
+def _separate_entry_ordinals(facts: list[dict]) -> list[dict]:
+    """Give each occurrence of a repeated field kind its own ``entry`` ordinal.
+
+    The contract asks the map worker to number occurrences so that an approver
+    stays paired with the date and role printed beside it, but a worker that
+    reports three party names as three facts on ordinal 0 has stated three
+    occurrences under one. The manifest then advertises the selector as
+    single-valued while evaluation finds three values and reports ambiguity, so
+    the authoring turn cannot avoid an assertion that can only ever be
+    ambiguous.
+
+    Repair only the unambiguous case: within one ordinal of one field kind,
+    exactly one attribute holds several values. Those values are separate
+    occurrences and are renumbered in canonical order. Where two attributes are
+    both overloaded the pairing between them is genuinely unrecoverable, so the
+    facts are left alone and evaluation continues to report ambiguity rather
+    than inventing an approver/date pair the record never printed.
+    """
+
+    by_selector: dict[tuple[str, str, int], dict[str, list[dict]]] = {}
+    for fact in facts:
+        selector = (
+            str(fact.get("group") or ""),
+            str(fact.get("kind") or ""),
+            int(fact.get("entry") or 0),
+        )
+        by_selector.setdefault(selector, {}).setdefault(
+            str(fact.get("attribute") or ""), []
+        ).append(fact)
+    for (group, kind, _ordinal), by_attribute in by_selector.items():
+        overloaded = [values for values in by_attribute.values() if len(values) > 1]
+        if len(overloaded) != 1:
+            continue
+        taken = {
+            int(fact.get("entry") or 0)
+            for fact in facts
+            if (str(fact.get("group") or ""), str(fact.get("kind") or "")) == (group, kind)
+        }
+        for offset, fact in enumerate(overloaded[0]):
+            if offset == 0:
+                continue
+            ordinal = max(taken) + 1
+            taken.add(ordinal)
+            fact["entry"] = ordinal
+    return facts
+
+
 def _merge_fact_entries(
-    fragments: Iterable[Mapping[str, object]], collection: str
+    fragments: Iterable[Mapping[str, object]],
+    collection: str,
+    *,
+    separate_entries: bool = False,
 ) -> list[dict]:
     grouped: dict[str, dict] = {}
     for fragment in fragments:
@@ -721,7 +771,8 @@ def _merge_fact_entries(
                 default=str,
             )
         )
-    return [grouped[key] for key in sorted(grouped)]
+    merged = [grouped[key] for key in sorted(grouped)]
+    return _separate_entry_ordinals(merged) if separate_entries else merged
 
 
 def stable_record_id(
@@ -943,7 +994,9 @@ def reduce_record_fragments(
                 for evidence in fragment.get("classification_evidence") or []
             ),
             "identifiers": _merge_fact_entries(component["fragments"], "identifiers"),
-            "fields": _merge_fact_entries(component["fragments"], "fields"),
+            "fields": _merge_fact_entries(
+                component["fragments"], "fields", separate_entries=True
+            ),
             "primary_identifier": {
                 "kind": primary_kind,
                 "normalized_value": normalized_primary,
@@ -1442,6 +1495,13 @@ def generate_cycle_candidates(
         }
         candidates.append(candidate)
     candidates.sort(key=lambda item: tuple(item["rank_tuple"]))
+    # The ranking exists to make the choice deterministic, so authoring has to be
+    # able to see it. Without a visible rank every candidate over one evidenced
+    # cycle looks identical — same linked rows, same complete cycles, same role
+    # coverage — and the selection becomes a guess between a table's own key and
+    # whichever foreign key it also carries.
+    for position, candidate in enumerate(candidates, 1):
+        candidate["rank"] = position
     # One rejection reason per (table, reason, row key): several mappings over
     # the same table otherwise repeat an identical rejection, which reads as
     # several distinct problems.
@@ -1676,26 +1736,54 @@ def _record_manifest(record: Mapping[str, object], registry: CycleRegistry) -> d
     attributes: dict[tuple[str, str], set[str]] = {}
     statuses: dict[tuple[str, str], set[str]] = {}
     entries: dict[tuple[str, str], set[int]] = {}
+    # Distinct normalized values per exact selector. ``entry_count`` reports what
+    # extraction *claimed* about multiplicity; this reports what the record
+    # actually holds, and it is the count evaluation will see. Where a worker
+    # numbered three party names as one occurrence the two disagree, and only
+    # this one lets authoring avoid a scalar assertion that must be ambiguous.
+    values: dict[tuple[str, str, str], set[str]] = {}
     for fact in record.get("fields") or []:
         selector = (str(fact.get("group") or ""), str(fact.get("kind") or ""))
+        attribute = str(fact.get("attribute") or "")
         envelope = fact.get("value") or {}
-        attributes.setdefault(selector, set()).add(str(fact.get("attribute") or ""))
+        attributes.setdefault(selector, set()).add(attribute)
         statuses.setdefault(selector, set()).add(
             str(envelope.get("normalization_status") or "")
         )
         entries.setdefault(selector, set()).add(int(fact.get("entry") or 0))
-    available_fields = [
-        {
-            "group": group,
-            "kind": kind,
-            "attributes": sorted(selected),
-            "normalization_status": (
-                "invalid" if "invalid" in statuses[(group, kind)] else "normalized"
-            ),
-            "entry_count": len(entries[(group, kind)]),
-        }
-        for (group, kind), selected in attributes.items()
-    ]
+        if envelope.get("normalization_status") == "normalized":
+            values.setdefault((*selector, attribute), set()).add(
+                json.dumps(envelope.get("value"), sort_keys=True, default=str)
+            )
+    available_fields = []
+    for (group, kind), selected in attributes.items():
+        definition = registry.field_kind(reference.pack_id, group, kind)
+        available_fields.append(
+            {
+                "group": group,
+                "kind": kind,
+                "label": definition.label,
+                "attributes": sorted(selected),
+                "attribute_types": {
+                    attribute.id: attribute.semantic_type
+                    for attribute in definition.attributes
+                    if attribute.id in selected
+                },
+                "control_evidence_attributes": sorted(
+                    attribute.id
+                    for attribute in definition.attributes
+                    if attribute.id in selected and attribute.control_evidence
+                ),
+                "normalization_status": (
+                    "invalid" if "invalid" in statuses[(group, kind)] else "normalized"
+                ),
+                "entry_count": len(entries[(group, kind)]),
+                "distinct_value_counts": {
+                    attribute: len(values.get((group, kind, attribute), ()))
+                    for attribute in sorted(selected)
+                },
+            }
+        )
     return {
         "document_id": str(record.get("document_id") or ""),
         "record_id": str(record.get("record_id") or ""),
@@ -2483,10 +2571,15 @@ def validate_cycle_test_semantics(
             )
 
     fields_by_kind: dict[str, set[tuple[str, str, str]]] = {}
+    # Worst observed multiplicity per exact selector, across every record of one
+    # kind. A scalar operand resolves only when one value answers it, so a
+    # selector that already holds two can produce nothing but ``ambiguous``.
+    multiplicity_by_kind: dict[str, dict[tuple[str, str, str], int]] = {}
     for record in group.get("records") or []:
         if not isinstance(record, dict):
             continue
-        fields_by_kind.setdefault(str(record.get("record_kind") or ""), set()).update(
+        record_kind = str(record.get("record_kind") or "")
+        fields_by_kind.setdefault(record_kind, set()).update(
             (
                 str(field.get("group") or ""),
                 str(field.get("kind") or ""),
@@ -2496,12 +2589,33 @@ def validate_cycle_test_semantics(
             if isinstance(field, dict)
             for attribute in field.get("attributes") or []
         )
+        observed = multiplicity_by_kind.setdefault(record_kind, {})
+        for field in record.get("available_fields") or []:
+            if not isinstance(field, dict):
+                continue
+            counts = field.get("distinct_value_counts")
+            for attribute, count in (counts or {}).items():
+                selector = (
+                    str(field.get("group") or ""),
+                    str(field.get("kind") or ""),
+                    str(attribute),
+                )
+                observed[selector] = max(observed.get(selector, 0), int(count or 0))
     role_kinds = {str(role["role"]): str(role["record_kind"]) for role in roles}
+    required_roles = {
+        str(role["role"]) for role in roles if role.get("required") is True
+    }
     relationship_by_role = {
         str(role["role"]): facts_by_kind.get(str(role["record_kind"])) or {}
         for role in roles
     }
+    asserted_roles: set[str] = set()
     for assertion in validated["definition"]["assertions"]:
+        for operand in (assertion.get("left"), assertion.get("right")):
+            if isinstance(operand, Mapping) and operand.get("source") == "role":
+                asserted_roles.add(str(operand.get("role") or ""))
+            elif isinstance(operand, Mapping) and operand.get("source") == "roles":
+                asserted_roles.update(str(role) for role in operand.get("roles") or [])
         for operand in (assertion.get("left"), assertion.get("right")):
             if not isinstance(operand, dict) or operand.get("source") not in {"role", "roles"}:
                 continue
@@ -2522,6 +2636,17 @@ def validate_cycle_test_semantics(
                         f"Assertion field {selector[0]}.{selector[1]}.{selector[2]} is not present "
                         f"in supplied evidence for role '{role_name}'."
                     )
+        # Meaning is judged only after the assertion is known to name a field the
+        # evidence actually supplies: "that selector is absent" is the more
+        # specific and more actionable repair than "that selector proves nothing".
+        _validate_assertion_meaning(
+            assertion,
+            role_kinds=role_kinds,
+            required_roles=required_roles,
+            multiplicity_by_kind=multiplicity_by_kind,
+            pack_id=_registry_reference(validated["registry"], registry).pack_id,
+            registry=registry,
+        )
         operands = (assertion.get("left"), assertion.get("right"))
         has_row_operand = any(
             isinstance(operand, dict) and operand.get("source") == "row"
@@ -2573,7 +2698,143 @@ def validate_cycle_test_semantics(
             raise CycleSchemaError(
                 "An equivalent authoritative source population must be used instead of a derived join."
             )
+
+    unasserted = sorted(set(role_kinds) - asserted_roles)
+    if unasserted:
+        raise CycleSchemaError(
+            f"Role '{unasserted[0]}' is declared but no assertion reads it; a role "
+            "the procedure never tests is coverage, not evidence."
+        )
+
+    # Two candidates over the same table are the same rows keyed differently, so
+    # there is no lifecycle argument for the lower-ranked one — a purchase-order
+    # export keyed on its goods-receipt column is a grain error, not a choice.
+    # Candidates over *different* tables are genuinely different populations and
+    # the ranking stays advisory there.
+    selected_rank = int(candidate.get("rank") or 0)
+    better_same_table = next(
+        (
+            item
+            for item in group.get("candidates") or []
+            if selected_rank > 0
+            and item.get("table") == candidate.get("table")
+            and 0 < int(item.get("rank") or 0) < selected_rank
+            and int(item.get("required_role_coverage") or 0)
+            >= int(candidate.get("required_role_coverage") or 0)
+        ),
+        None,
+    )
+    if better_same_table is not None:
+        raise CycleSchemaError(
+            f"Candidate '{better_same_table['candidate_id']}' keys the same "
+            f"'{candidate.get('table')}' population on "
+            f"'{better_same_table.get('row_key', {}).get('column')}' and ranks "
+            f"above the selected '{candidate.get('row_key', {}).get('column')}'; "
+            "select the higher-ranked candidate or a different table."
+        )
     return validated
+
+
+def _validate_assertion_meaning(
+    assertion: Mapping[str, object],
+    *,
+    role_kinds: Mapping[str, str],
+    required_roles: set[str],
+    multiplicity_by_kind: Mapping[str, Mapping[tuple[str, str, str], int]],
+    pack_id: str,
+    registry: CycleRegistry,
+) -> None:
+    """Reject assertions that are typed correctly and prove nothing.
+
+    Structural validation establishes that an assertion *can* run. These rules
+    establish that running it can produce audit evidence: a presence check on a
+    field the form prints regardless, a scalar comparison against a selector the
+    evidence already holds twice, and a date ordering stated against the
+    cycle's own chronology all execute cleanly and answer nothing.
+    """
+
+    key = str(assertion.get("key") or "")
+    operator = str(assertion.get("operator") or "")
+    left = assertion.get("left")
+    right = assertion.get("right")
+
+    if operator == "present":
+        if isinstance(left, Mapping) and left.get("source") == "row":
+            raise CycleSchemaError(
+                f"Assertion '{key}' checks that population column "
+                f"'{left.get('column')}' is populated. That is a data test over the "
+                "table, not evidence from a voucher; assert a role field, or compare "
+                "the column to one."
+            )
+        if isinstance(left, Mapping) and left.get("source") == "role":
+            role_name = str(left.get("role") or "")
+            field = left.get("field") or {}
+            selector = (
+                str(field.get("group") or ""),
+                str(field.get("kind") or ""),
+                str(field.get("attribute") or ""),
+            )
+            if role_name in required_roles and not registry.control_evidence_attribute(
+                pack_id, selector[0], selector[1], selector[2]
+            ):
+                raise CycleSchemaError(
+                    f"Assertion '{key}' checks that required role '{role_name}' "
+                    f"states {selector[0]}.{selector[1]}.{selector[2]}. The role is "
+                    "already bound before any assertion runs, and the record prints "
+                    "that field whether or not the control operated, so the check "
+                    "can only fail on an extraction gap. Assert an approval or "
+                    "attachment attribute, or compare the field to another record."
+                )
+
+    for operand in (left, right):
+        if not isinstance(operand, Mapping) or operand.get("source") != "role":
+            continue
+        field = operand.get("field") or {}
+        selector = (
+            str(field.get("group") or ""),
+            str(field.get("kind") or ""),
+            str(field.get("attribute") or ""),
+        )
+        observed = int(
+            multiplicity_by_kind.get(role_kinds[str(operand.get("role") or "")], {}).get(
+                selector, 0
+            )
+        )
+        if observed > 1:
+            raise CycleSchemaError(
+                f"Assertion '{key}' reads {selector[0]}.{selector[1]}.{selector[2]} "
+                f"from role '{operand.get('role')}' as one value, but the evidence "
+                f"holds {observed}. A scalar operand can only report that as "
+                "ambiguous; use a roles operand with an explicit entry_quantifier, "
+                "or select a selector the record states once."
+            )
+
+    if operator != "date_on_or_before":
+        return
+    orders = []
+    for operand in (left, right):
+        if not isinstance(operand, Mapping) or operand.get("source") != "role":
+            return
+        field = operand.get("field") or {}
+        orders.append(
+            registry.date_lifecycle_order(
+                pack_id,
+                role_kinds[str(operand.get("role") or "")],
+                str(field.get("group") or ""),
+                str(field.get("kind") or ""),
+            )
+        )
+    if orders[0] is None or orders[1] is None or orders[0] <= orders[1]:
+        return
+    raise CycleSchemaError(
+        f"Assertion '{key}' requires role '{left.get('role')}' "
+        f"{left.get('field', {}).get('group')}."
+        f"{left.get('field', {}).get('kind')} to fall on or before role "
+        f"'{right.get('role')}' {right.get('field', {}).get('group')}."
+        f"{right.get('field', {}).get('kind')}, but the registered cycle order "
+        "puts it later. Swap the operands, or use date_within if the test is "
+        "proximity rather than sequence."
+    )
 
 
 # Fields a durable Document Test owns independently of its cycle definition.
@@ -3254,6 +3515,16 @@ def _comparison(operator: str, left: object, right: object, tolerance: object) -
             return "missing_evidence"
         return "match"
     if operator == "equal_exact":
+        # Two extractions of one quantity may normalize to 25 and 25.0. Those
+        # are the same number and comparing their text is a false mismatch, so
+        # already-typed numbers compare numerically. Strings stay textual: an
+        # identifier is exact by definition and must not acquire numeric
+        # equality on the way past.
+        if all(
+            isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+            for value in (left, right)
+        ):
+            return "match" if Decimal(str(left)) == Decimal(str(right)) else "mismatch"
         return "match" if str(left) == str(right) else "mismatch"
     if operator == "equal_normalized":
         normalize = lambda value: " ".join(
@@ -3562,22 +3833,15 @@ def evaluate_cycle_item(
                 for entry in resolved.get("entries") or []
                 for anchor in entry.get("evidence_refs") or []
             ]
-            if resolved["state"] in {
-                "missing_evidence",
-                "invalid_extraction",
-                "ambiguous",
-            }:
-                verdict = str(resolved["state"])
-            else:
-                verdict = (
-                    "match"
-                    if any(
-                        entry.get("normalization_status") == "normalized"
-                        and entry.get("value") not in (None, "")
-                        for entry in resolved.get("entries") or []
-                    )
-                    else "missing_evidence"
-                )
+            # ``_scalar_operand`` already decides this: it resolves only when
+            # exactly one usable value exists, and otherwise names why. Re-deriving
+            # the verdict by scanning entries for a normalization status reported a
+            # resolved population-row value as missing evidence, because a row
+            # entry carries a column and a value and never had a normalization
+            # envelope to scan.
+            verdict = (
+                "match" if resolved["state"] == "resolved" else str(resolved["state"])
+            )
             comparisons = [{"side": "left", **resolved}]
         else:
             left_value = _scalar_operand(item, left, records_by_id, catalog)

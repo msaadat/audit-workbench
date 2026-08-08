@@ -50,6 +50,7 @@ def _manifest(contract: dict, *, linked_rows: int = 1) -> dict:
             ), f"{field} missing from the manifest for role '{operand['role']}'"
     candidate = {
         "candidate_id": population["candidate_id"],
+        "rank": 1,
         "registry": test["registry"],
         "table": population["table"],
         "source_kind": "authoritative",

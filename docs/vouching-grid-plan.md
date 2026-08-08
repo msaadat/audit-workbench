@@ -1222,6 +1222,73 @@ one broader RCM completion expectation is separately reported; neither was
 hidden or treated as a Phase 3 sign-off. The procurement tests remain
 unexecuted and unsigned pending Checkpoint C above.
 
+### Phase 3.1 - assertion quality gates (implemented; Checkpoints A-C re-triggered)
+
+Checkpoint C's first execution produced three evaluated items over seven
+assertions. One assertion — a GRN/PO quantity agreement — was a correct and
+meaningful audit result. Three returned wrong verdicts, two were vacuous, and
+one could only ever be ambiguous. The linker, hashes, evidence anchors, and the
+evaluation/disposition separation all behaved as sections 3.6 and 3.7 require;
+what failed was that nothing judged whether a definition could produce evidence.
+
+Fixed in the executor:
+
+- a unary `present` re-derived its verdict by scanning entries for a
+  normalization status, so a resolved population-row value — which carries a
+  column and a value and never had an envelope — reported `missing_evidence`
+  beside a comparison state that said `resolved`. The verdict now comes from
+  the operand state that already decided it;
+- `equal_exact` compared the text of its operands, so two extractions of one
+  quantity normalizing to 25 and 25.0 were a mismatch. Typed numbers now compare
+  numerically while strings stay exact, keeping the `P0`/`PO` typo a mismatch;
+- reduction now gives each occurrence of a repeated field kind its own `entry`
+  ordinal where exactly one attribute is overloaded, and leaves a genuinely
+  unrecoverable approver/date pairing alone rather than inventing one; and
+- the record manifest reports `distinct_value_counts` — what the record holds
+  and what evaluation will see — beside the `entry_count` extraction claimed.
+
+New registry-owned definitions, so neither rule is a domain switch:
+
+- `FieldAttributeDefinition.control_evidence` marks an attribute whose mere
+  presence shows a control operated. Approvals and attachments carry it; a
+  status, description, party name, or amount does not; and
+- each pack declares a `date_lifecycle`: a rank per record kind and date field.
+  Records that state one event share a rank, and a field left out is never
+  direction-checked, so a vendor invoice's ambiguous receipt date stays
+  unordered instead of guessed at.
+
+New gates in the semantic validator, all of which reject a definition the
+previous gate accepted:
+
+- `present` on a `source: row` operand is a data test over the table;
+- `present` on a required role's non-control-evidence attribute can only fail on
+  an extraction gap, because the role is bound before any assertion runs;
+- a scalar operand on a selector the evidence already holds more than once can
+  only resolve as ambiguous, and names the `roles`/`entry_quantifier` form;
+- a `date_on_or_before` whose operands run against the declared chronology;
+- a declared role no assertion reads; and
+- a lower-ranked candidate over the same table as a better one, since those are
+  the same rows keyed differently. A different table stays the model's choice.
+
+The generation worker additionally refuses a response that leaves any
+`transaction_cycle` control attribute unreferenced by a cycle test, candidates
+carry a visible `rank`, `available_fields` carries the registry's own `label`,
+`attribute_types`, and `control_evidence_attributes`, and the prompt states an
+explicit assertion preference order with a worked three-way-match example. The
+manual Cycle vouch dialog narrows its field options the same way, so an auditor
+is not offered a selector the validator will refuse on save.
+
+Automated record (2026-08-08): 1393 backend tests pass and the Vue/TypeScript
+production build passes. `test_rcm_execution.py::test_completion_uses_execution_and_outcome_gates`
+fails identically before and after this work and remains the separately reported
+Phase 3 item. Both packs re-version (`procure_to_pay` v6, `payroll` v4), which
+invalidates every existing analysis, RCM attribute, and cycle definition in
+`Workspaces/procurement`; the engagement still loads with its five
+transaction-cycle rows flagged `attributes_status: invalid`, as section 3.1
+requires. Checkpoints A, B, and C must therefore be re-run in order, by the
+user, through the existing UX. The implementation performed no reanalysis,
+regeneration, execution, or sign-off.
+
 ### Phase 4 - grid and summary APIs
 
 - add the paged read-only grid projection;

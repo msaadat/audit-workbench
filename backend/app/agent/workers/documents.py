@@ -532,7 +532,9 @@ currency is two facts on the same field kind: `amounts.total.value` and
 `entry` numbers the occurrence, from 0, when a record carries a field kind more
 than once — three approvals, or a vendor and a buyer. Every attribute of one
 occurrence must share its `entry`, which is what keeps an approver with the date
-and role printed beside it. Omit `entry` when a field kind occurs once.
+and role printed beside it. Omit `entry` when a field kind occurs once. Two
+different values of one attribute are always two occurrences: three party names
+are entries 0, 1, and 2, never three facts on entry 0.
 
 Local code attaches the exact selected registry reference, supplied chunk_id,
 and inclusive two-integer page_span to every fragment. Do not derive those

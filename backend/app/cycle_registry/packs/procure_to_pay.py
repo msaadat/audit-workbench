@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..common import BASE_FIELD_KIND_IDS
 from ..models import (
     CyclePackDefinition,
+    DateLifecycleStage,
     FieldAttributeDefinition,
     FieldKindDefinition,
     IdentifierKindDefinition,
@@ -128,10 +129,34 @@ RECORD_KINDS = (
     ),
 )
 
+# The procure-to-pay chronology, used only to reject a date comparison stated
+# backwards. Ranks are sparse so a later stage can be inserted between two of
+# them without renumbering, and shared where two records state one event: a
+# purchase order's receipt date is its copy of the delivery the goods receipt
+# records, so neither precedes the other. A vendor invoice's receipt date is
+# deliberately absent — on that record it may mean the goods or the invoice —
+# and an omitted field is simply never direction-checked.
+DATE_LIFECYCLE = (
+    DateLifecycleStage("procure_to_pay.purchase_requisition", "dates", "document_date", 10),
+    DateLifecycleStage("procure_to_pay.purchase_requisition", "approvals", "approval", 20),
+    DateLifecycleStage("procure_to_pay.purchase_order", "dates", "document_date", 30),
+    DateLifecycleStage("procure_to_pay.purchase_order", "approvals", "approval", 30),
+    DateLifecycleStage("procure_to_pay.goods_receipt", "dates", "document_date", 40),
+    DateLifecycleStage("procure_to_pay.goods_receipt", "dates", "receipt_date", 40),
+    DateLifecycleStage("procure_to_pay.goods_receipt", "approvals", "approval", 40),
+    DateLifecycleStage("procure_to_pay.purchase_order", "dates", "receipt_date", 40),
+    DateLifecycleStage("procure_to_pay.vendor_invoice", "dates", "document_date", 50),
+    DateLifecycleStage("procure_to_pay.vendor_invoice", "approvals", "approval", 55),
+    DateLifecycleStage("procure_to_pay.payment_voucher", "dates", "document_date", 60),
+    DateLifecycleStage("procure_to_pay.payment_voucher", "dates", "payment_date", 60),
+    DateLifecycleStage("procure_to_pay.payment_voucher", "approvals", "approval", 60),
+    DateLifecycleStage("procure_to_pay.vendor_invoice", "dates", "due_date", 70),
+)
+
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Procure to pay",
-    version=5,
+    version=6,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),
@@ -149,4 +174,5 @@ PACK = CyclePackDefinition(
         *(definition.id for definition in RECORD_KINDS),
         "common.other",
     ),
+    date_lifecycle=DATE_LIFECYCLE,
 )

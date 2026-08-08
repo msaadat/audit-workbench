@@ -134,7 +134,15 @@ const assertionToleranceLabel = computed(() => assertionOperator.value === 'nume
   ? 'Absolute tolerance'
   : assertionOperator.value === 'date_within' ? 'Tolerance (days)' : '')
 
-/** Field kinds a role's supplied evidence actually carries, per operator type. */
+/** Field kinds a role's supplied evidence actually carries, per operator type.
+ *
+ * Two further narrowings keep authoring inside what the semantic gate accepts.
+ * A `present` assertion on a required role is offered only the attributes whose
+ * existence shows a control operated, because the role is already bound before
+ * any assertion runs and every other field is printed by the form regardless. A
+ * selector the evidence already holds more than once is withheld from every
+ * scalar operand, because it can only ever resolve as ambiguous.
+ */
 function fieldsForRole(roleName: string) {
   const role = roleOptions.value.find(item => item.role === roleName)
   const pack = selectedPack.value
@@ -145,15 +153,18 @@ function fieldsForRole(roleName: string) {
     .filter(item => item.record_kind === role.record_kind)
     .flatMap(item => item.available_fields)
   const wanted = requiredOperandType.value
+  const controlEvidenceOnly = !isBinaryAssertion.value && role.required
   return pack.field_kinds
     .filter(item => record?.available_field_kinds.includes(item.id))
     .map(item => ({
       ...item,
       attributes: item.attributes.filter(attribute => (!wanted || attribute.semantic_type === wanted)
+        && (!controlEvidenceOnly || attribute.control_evidence === true)
         && available.some(field =>
           field.group === item.group
           && field.kind === item.kind
-          && field.attributes.includes(attribute.id),
+          && field.attributes.includes(attribute.id)
+          && (field.distinct_value_counts?.[attribute.id] ?? 1) <= 1,
         )),
     }))
     .filter(item => item.attributes.length)
