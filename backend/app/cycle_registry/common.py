@@ -94,6 +94,26 @@ FIELD_KINDS = (
         "name",
         (FieldAttributeDefinition("name", "text"),),
     ),
+    FieldKindDefinition(
+        "common.quantity.total",
+        "Total quantity",
+        "quantities",
+        "total",
+        (
+            FieldAttributeDefinition("value", "number"),
+            FieldAttributeDefinition("raw_value", "text"),
+        ),
+    ),
+    FieldKindDefinition(
+        "common.status",
+        "Record status",
+        "statuses",
+        "status",
+        (
+            FieldAttributeDefinition("value", "text"),
+            FieldAttributeDefinition("raw_value", "text"),
+        ),
+    ),
 )
 
 RECORD_KINDS = (

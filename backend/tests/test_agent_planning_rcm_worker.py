@@ -30,9 +30,17 @@ class _Gateway:
         self.responses = list(responses)
         self.calls = []
 
-    def complete(self, system, user, activity=None, *, attempt=1):
+    def complete(
+        self, system, user, activity=None, *, attempt=1, conversation=None
+    ):
         self.calls.append(
-            {"system": system, "user": user, "activity": activity, "attempt": attempt}
+            {
+                "system": system,
+                "user": user,
+                "activity": activity,
+                "attempt": attempt,
+                "conversation": conversation,
+            }
         )
         return self.responses.pop(0)
 
@@ -102,7 +110,15 @@ def _row(**overrides):
         "process": "Accounts payable",
         "risk": "Duplicate payments are processed",
         "risk_rating": "high",
-        "assertion": "Occurrence",
+        "business_cycle": "",
+        "control_attributes": [
+            {
+                "key": "duplicate_payment_prevention",
+                "assertion": "Operational",
+                "requirement": "Duplicate invoice validation operates before payment.",
+                "evidence_kind": "manual_inspection",
+            }
+        ],
         "control": "Duplicate invoice validation",
         "control_type": "Automated preventive",
         "test_procedure": "Test invoice and amount duplicates.",
@@ -137,18 +153,156 @@ def test_rcm_worker_accepts_json_fenced_response():
 
 
 def test_rcm_worker_repairs_a_quality_failure_with_specific_guidance():
+    first_response = json.dumps({"rows": [_row(risk_rating="urgent")]})
+    gateway = _Gateway([first_response, json.dumps({"rows": [_row()]})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is True
+    assert [call["attempt"] for call in gateway.calls] == [1, 2]
+    assert gateway.calls[1]["conversation"] == [
+        {"role": "user", "content": gateway.calls[1]["user"]},
+        {"role": "assistant", "content": first_response},
+        {
+            "role": "user",
+            "content": (
+                "Correct every listed quality-gate error in the prior RCM draft "
+                "while preserving all otherwise-valid rows and fields: RCM row 1 "
+                "has an unsupported risk rating. Return the complete corrected "
+                "JSON object."
+            ),
+        },
+    ]
+
+
+def test_rcm_worker_derives_business_cycle_and_drops_non_durable_reason():
+    registry = planning.cycle_vouching.DEFAULT_REGISTRY.reference(
+        "procure_to_pay"
+    ).to_dict()
+    row = _row(
+        business_cycle="wrong_model_value",
+        new_risk_reason=None,
+        control_attributes=[
+            {
+                "key": "three_way_match",
+                "assertion": "Accuracy",
+                "requirement": "Invoices agree to purchase and receipt records.",
+                "evidence_kind": "transaction_cycle",
+                "registry": registry,
+                "required_record_kinds": [
+                    "procure_to_pay.purchase_order",
+                    "procure_to_pay.goods_receipt",
+                    "procure_to_pay.vendor_invoice",
+                ],
+            }
+        ],
+    )
+
+    result = WORKERS.execute(
+        _request(), _Gateway([json.dumps({"rows": [row]})])
+    )
+
+    normalized = result.proposal["rows"][0]
+    assert normalized["business_cycle"] == "procure_to_pay"
+    assert "new_risk_reason" not in normalized
+
+
+def test_rcm_worker_aggregates_quality_errors_across_rows():
+    with pytest.raises(planning.WorkerResponseValidationError) as raised:
+        planning.validate_rcm_proposal(
+            {
+                "rows": [
+                    _row(risk_rating="urgent"),
+                    _row(operation="replace"),
+                ]
+            },
+            _request(),
+        )
+
+    assert raised.value.errors == (
+        "RCM row 1 has an unsupported risk rating",
+        "RCM row 2 has an unsupported operation",
+    )
+
+
+@pytest.mark.parametrize(
+    ("malformed_registry", "sibling_record_kinds", "expected_error"),
+    [
+        ("procure_to_pay", True, "registry must be an object"),
+        (
+            {
+                "pack_id": "procure_to_pay",
+                "required_record_kinds": [
+                    "procure_to_pay.purchase_order",
+                    "procure_to_pay.goods_receipt",
+                    "procure_to_pay.vendor_invoice",
+                ],
+            },
+            False,
+            "invalid pack version",
+        ),
+    ],
+)
+def test_rcm_worker_repairs_transaction_cycle_registry_to_canonical_reference(
+    malformed_registry, sibling_record_kinds, expected_error
+):
+    registry = planning.cycle_vouching.DEFAULT_REGISTRY.reference(
+        "procure_to_pay"
+    ).to_dict()
+    malformed_attribute = {
+        "key": "three_way_match",
+        "assertion": "Accuracy",
+        "requirement": "Invoices agree to the purchase order and goods receipt.",
+        "evidence_kind": "transaction_cycle",
+        "registry": malformed_registry,
+    }
+    record_kinds = [
+        "procure_to_pay.purchase_order",
+        "procure_to_pay.goods_receipt",
+        "procure_to_pay.vendor_invoice",
+    ]
+    if sibling_record_kinds:
+        malformed_attribute["required_record_kinds"] = record_kinds
+    corrected_attribute = {
+        **malformed_attribute,
+        "registry": registry,
+        "required_record_kinds": record_kinds,
+    }
     gateway = _Gateway(
         [
-            json.dumps({"rows": [_row(risk_rating="urgent")]}),
-            json.dumps({"rows": [_row()]}),
+            json.dumps(
+                {
+                    "rows": [
+                        _row(
+                            business_cycle="procure_to_pay",
+                            control_attributes=[malformed_attribute],
+                        )
+                    ]
+                }
+            ),
+            json.dumps(
+                {
+                    "rows": [
+                        _row(
+                            business_cycle="procure_to_pay",
+                            control_attributes=[corrected_attribute],
+                        )
+                    ]
+                }
+            ),
         ]
     )
 
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    assert [call["attempt"] for call in gateway.calls] == [1, 2]
-    assert "unsupported risk rating" in gateway.calls[1]["user"]
+    assert result.proposal["rows"][0]["control_attributes"][0]["registry"] == registry
+    assert expected_error in gateway.calls[1]["conversation"][2]["content"]
+    assert "pack_id, pack_version, and" in planning.RCM_SYSTEM
+    assert "required_record_kinds is a\n  sibling of registry" in planning.RCM_SYSTEM
+    assert json.dumps(registry, sort_keys=True, separators=(",", ":")) in (
+        planning.RCM_SYSTEM
+    )
 
 
 def test_rcm_worker_rejects_update_to_unknown_existing_row():

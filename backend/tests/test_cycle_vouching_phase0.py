@@ -128,6 +128,24 @@ def test_registry_metadata_is_dynamic_and_hash_identified():
     )
 
 
+def test_shared_quantity_and_status_are_pack_opt_in_fields():
+    """Common vocabulary is reusable without opening every pack implicitly."""
+
+    quantity = DEFAULT_REGISTRY.field_kind(
+        "procure_to_pay", "quantities", "total"
+    )
+    status = DEFAULT_REGISTRY.field_kind("procure_to_pay", "statuses", "status")
+    receipt = DEFAULT_REGISTRY.record_kind(
+        "procure_to_pay", "procure_to_pay.goods_receipt"
+    )
+
+    assert quantity.id == "common.quantity.total"
+    assert status.id == "common.status"
+    assert {quantity.id, status.id} <= set(receipt.available_field_kinds)
+    with pytest.raises(ValueError, match="not registered for 'payroll'"):
+        DEFAULT_REGISTRY.field_kind("payroll", "statuses", "status")
+
+
 def test_expanded_pack_definition_changes_its_hash():
     payroll = replace(DEFAULT_REGISTRY.pack("payroll"), label="Payroll revised")
     changed = CycleRegistry(

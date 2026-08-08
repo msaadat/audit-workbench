@@ -254,7 +254,8 @@ REVIEW_STATUSES = {"draft", "prepared", "review_required", "reviewed"}
 # execution_rollup, finding_refs, evidence_refs) are deliberately excluded —
 # those are maintained by linking, not by editing free text in a cell.
 RCM_IMPORT_FIELDS = (
-    "process", "risk", "risk_rating", "assertion", "control", "control_type",
+    "process", "risk", "risk_rating", "business_cycle", "control", "control_type",
+    "control_attributes",
     "control_owner", "criteria", "prepared_by", "reviewed_by", "review_status",
 )
 WORKSPACES_DIR = Path(
@@ -505,8 +506,64 @@ def reset_request_revision(token: Token) -> None:
     _request_revision.reset(token)
 
 
-def _normalize_rcm_row(row: dict, *, now: str) -> dict:
+def _normalize_rcm_row(row: dict, *, now: str, strict: bool = True) -> dict:
+    """Normalize one RCM row's control attributes and derived business cycle.
+
+    ``strict`` is the write contract: an invalid attribute set is refused.
+    Loading uses ``strict=False`` so one row whose registry pack has since
+    changed is flagged for review instead of making the whole engagement —
+    its documents, findings and the editor needed to repair the row —
+    impossible to open.
+    """
     item = dict(row)
+    from . import cycle_vouching
+
+    attributes = item.get("control_attributes")
+    if not attributes:
+        # A manually-created row starts with one explicit, editable attribute.
+        # This is a new-schema authoring default, not an interpretation of the
+        # removed top-level assertion field.
+        attributes = [
+            {
+                "key": "manual_inspection",
+                "assertion": "Operational",
+                "requirement": str(item.get("control") or item.get("risk") or "Manual control assessment."),
+                "evidence_kind": "manual_inspection",
+            }
+        ]
+    try:
+        item["control_attributes"] = cycle_vouching.validate_control_attributes(
+            attributes
+        )
+        transaction_packs = {
+            str(attribute["registry"]["pack_id"])
+            for attribute in item["control_attributes"]
+            if attribute.get("evidence_kind") == "transaction_cycle"
+        }
+        if len(transaction_packs) > 1:
+            raise cycle_vouching.CycleSchemaError(
+                "One RCM row cannot mix transaction-cycle packs."
+            )
+    except cycle_vouching.CycleSchemaError as error:
+        if strict:
+            raise WorkspaceError(str(error)) from error
+        item["control_attributes"] = [dict(value) for value in attributes]
+        item["attributes_status"] = "invalid"
+        item["attributes_error"] = str(error)
+        item["business_cycle"] = str(item.get("business_cycle") or "")
+        item.pop("assertion", None)
+        return _rcm_row_defaults(item, now=now)
+    # The row's business cycle is a projection of its validated attributes, not
+    # a separate editable field: a caller that omits it, or sends a stale one
+    # alongside changed attributes, gets the derived value rather than an error.
+    item["business_cycle"] = next(iter(transaction_packs), "")
+    item["attributes_status"] = "valid"
+    item["attributes_error"] = ""
+    item.pop("assertion", None)
+    return _rcm_row_defaults(item, now=now)
+
+
+def _rcm_row_defaults(item: dict, *, now: str) -> dict:
     item.setdefault("criteria", "")
     item.setdefault("criteria_refs", [])
     item.setdefault("control_owner", "")
@@ -722,7 +779,7 @@ class Workspace:
         }
         hydrated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.rcm: list[dict] = [
-            _normalize_rcm_row(dict(row), now=hydrated_at)
+            _normalize_rcm_row(dict(row), now=hydrated_at, strict=False)
             for row in _load_artifact_collection(self.root, "rcm")
         ]
         self.work_program: list[dict] = _load_artifact_collection(self.root, "work_program")
@@ -1623,7 +1680,8 @@ class Workspace:
             "process": process,
             "risk": risk,
             "risk_rating": str(payload.get("risk_rating") or "medium").lower(),
-            "assertion": str(payload.get("assertion") or ""),
+            "business_cycle": str(payload.get("business_cycle") or ""),
+            "control_attributes": list(payload.get("control_attributes") or []),
             "control": str(payload.get("control") or ""),
             "control_type": str(payload.get("control_type") or ""),
             "control_owner": str(payload.get("control_owner") or ""),
@@ -1649,7 +1707,9 @@ class Workspace:
     def update_rcm(self, item_id: str, changes: dict, *, agent: bool = False) -> dict:
         item = self._planning_record(self.rcm, item_id, "RCM row")
         allowed = {
-            "process", "risk", "risk_rating", "assertion", "control", "control_type",
+            "process", "risk", "risk_rating", "business_cycle", "control_attributes",
+            "attributes_status", "attributes_error",
+            "control", "control_type",
             "control_owner", "criteria", "criteria_refs", "test_refs",
             "evidence_refs", "prepared_by", "reviewed_by", "review_status",
             "workflow_parent_sha1",
@@ -1662,10 +1722,23 @@ class Workspace:
             changes = {**changes, "test_refs": _validate_test_refs(self, changes["test_refs"])}
         if "review_status" in changes and changes["review_status"] not in REVIEW_STATUSES:
             raise WorkspaceError("Unknown RCM review status.")
+        if "control_attributes" in changes or "business_cycle" in changes:
+            candidate = _normalize_rcm_row(
+                {**item, **changes}, now=self._updated_now()
+            )
+            changes = {
+                **changes,
+                "control_attributes": candidate["control_attributes"],
+                "business_cycle": candidate["business_cycle"],
+                "attributes_status": candidate["attributes_status"],
+                "attributes_error": candidate["attributes_error"],
+            }
         from .evidence import normalize_many
         for key, value in changes.items():
             if key in ("test_refs", "criteria_refs"):
                 item[key] = [str(ref) for ref in (value or [])]
+            elif key == "control_attributes":
+                item[key] = [dict(attribute) for attribute in value]
             elif key == "evidence_refs":
                 item[key] = normalize_many(value or [], require_hash=True)
             elif key in ("prepared_by", "reviewed_by"):
@@ -1681,7 +1754,17 @@ class Workspace:
     def export_rcm_rows(self) -> list[dict]:
         """Flatten RCM rows to the plain content columns a reimport accepts."""
         return [
-            {"id": row["id"], **{field: row.get(field, "") for field in RCM_IMPORT_FIELDS}}
+            {
+                "id": row["id"],
+                **{
+                    field: (
+                        json.dumps(row.get(field) or [], sort_keys=True)
+                        if field == "control_attributes"
+                        else row.get(field, "")
+                    )
+                    for field in RCM_IMPORT_FIELDS
+                },
+            }
             for row in self.rcm
         ]
 
@@ -1721,9 +1804,32 @@ class Workspace:
                         raise WorkspaceError(f"Row {row_id}: unknown review status '{value}'.")
                 elif field in ("prepared_by", "reviewed_by"):
                     value = str(value).strip() if value not in (None, "") else None
+                elif field == "control_attributes":
+                    try:
+                        parsed = json.loads(str(value or "[]"))
+                    except json.JSONDecodeError as error:
+                        raise WorkspaceError(
+                            f"Row {row_id}: control_attributes must be valid JSON."
+                        ) from error
+                    from . import cycle_vouching
+                    try:
+                        value = cycle_vouching.validate_control_attributes(parsed)
+                    except cycle_vouching.CycleSchemaError as error:
+                        raise WorkspaceError(f"Row {row_id}: {error}") from error
                 else:
                     value = str(value) if value is not None else ""
                 changes[field] = value
+            if "control_attributes" in changes or "business_cycle" in changes:
+                try:
+                    normalized = _normalize_rcm_row(
+                        {**item, **changes}, now=self._updated_now()
+                    )
+                except WorkspaceError as error:
+                    raise WorkspaceError(f"Row {row_id}: {error}") from error
+                changes["control_attributes"] = normalized["control_attributes"]
+                changes["business_cycle"] = normalized["business_cycle"]
+                changes["attributes_status"] = normalized["attributes_status"]
+                changes["attributes_error"] = normalized["attributes_error"]
             planned.append((item, changes))
 
         now = self._updated_now()

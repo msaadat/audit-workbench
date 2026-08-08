@@ -231,7 +231,15 @@ def _rcm_row(**overrides):
         "process": "Accounts payable",
         "risk": "Duplicate payments are processed",
         "risk_rating": "high",
-        "assertion": "Occurrence",
+        "business_cycle": "",
+        "control_attributes": [
+            {
+                "key": "duplicate_payment_prevention",
+                "assertion": "Operational",
+                "requirement": "Duplicate invoice validation operates before payment.",
+                "evidence_kind": "manual_inspection",
+            }
+        ],
         "control": "Duplicate invoice validation",
         "control_type": "Automated preventive",
         "test_procedure": "Test invoice and amount duplicates.",

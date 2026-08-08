@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from ...workspace_transactions import ParentConflict, mutate, parent_hashes
+from ... import cycle_vouching
 from ...workspaces import Workspace, WorkspaceError, slugify
 from ..capabilities import _shared as audit_hashes
 from ..artifact_index import canonical_id
@@ -372,7 +374,8 @@ RCM_ROW_FIELDS = (
     "process",
     "risk",
     "risk_rating",
-    "assertion",
+    "business_cycle",
+    "control_attributes",
     "control",
     "control_type",
 )
@@ -484,6 +487,24 @@ def _validated_rcm(
         if not str(spec.get("risk") or "").strip():
             raise WorkspaceError("An accepted RCM row is missing its risk.")
         spec["risk_rating"] = str(spec.get("risk_rating") or "").lower()
+        try:
+            spec["control_attributes"] = cycle_vouching.validate_control_attributes(
+                spec.get("control_attributes")
+            )
+        except cycle_vouching.CycleSchemaError as error:
+            raise WorkspaceError(str(error)) from error
+        transaction_packs = {
+            str(attribute["registry"]["pack_id"])
+            for attribute in spec["control_attributes"]
+            if attribute.get("evidence_kind") == "transaction_cycle"
+        }
+        if len(transaction_packs) > 1:
+            raise WorkspaceError("An accepted RCM row mixes transaction-cycle packs.")
+        expected_cycle = next(iter(transaction_packs), "")
+        if str(spec.get("business_cycle") or "").strip() != expected_cycle:
+            raise WorkspaceError(
+                "An accepted RCM row business_cycle does not match its control attributes."
+            )
         spec["semantic_id"] = rcm_semantic_id(spec)
         rows.append(spec)
     return target, rows
@@ -653,7 +674,7 @@ def reconcile_rcm(
         applied = (
             existing is not None
             and all(
-                str(existing.get(key) or "") == str(spec.get(key) or "")
+                _plain_json(existing.get(key)) == _plain_json(spec.get(key))
                 for key in RCM_ROW_FIELDS
             )
             and existing.get("workflow_parent_sha1") == parent_sha1
@@ -693,7 +714,11 @@ def reconcile_rcm(
 
 RCM_EXECUTOR = ExecutorDefinition(
     executor_id=RCM_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_rcm)),
+    implementation_hash=_sha256_text(
+        inspect.getsource(execute_rcm)
+        + inspect.getsource(_validated_rcm)
+        + json.dumps(RCM_ROW_FIELDS, separators=(",", ":"))
+    ),
     reconciliation_hash=_sha256_text(inspect.getsource(reconcile_rcm)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_rcm,

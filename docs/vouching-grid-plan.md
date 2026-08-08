@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: Phase 0, the domain-neutral Phase 0.1 refactor, and Phase 1 are implemented as of 2026-08-06. Checkpoint A has passed automated and live procurement validation, including auditor review of the five regenerated voucher analyses. Phases 2 onward remain implementation-ready. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, and Phase 2 are implemented as of 2026-08-08. Checkpoint A has passed automated and live procurement validation, including auditor review of the five regenerated voucher analyses. Phase 2 has passed its automated contract and production-build gates; Checkpoint B is now waiting on the required user-driven clean procurement rebuild. Phases 3 onward remain implementation-ready but must not begin until that confirmation. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -147,7 +147,12 @@ The definition hash covers the expanded pack: the pack declaration and every
 referenced normalizer, identifier, field, and record definition. Missing,
 unknown, cross-pack, version-mismatched, or stale references fail closed. A
 definition change requires a version/hash change and explicitly invalidates
-dependent evidence and results. Extension to another audit area means adding a
+dependent evidence and results. Failing closed is scoped to the artifact that
+holds the stale reference: loading an engagement flags such a row as
+`attributes_status: invalid` with its error, and never refuses to open the
+workspace. The write paths stay strict, so the flag can only be cleared by
+repairing the row through the ordinary editor — which must remain reachable for
+that repair to be possible at all. Extension to another audit area means adding a
 validated registered pack and runtime descriptors; it does not mean widening
 TypeScript literal unions or adding a new branch to cycle-validation code.
 
@@ -241,10 +246,14 @@ control_attributes:
 
 The RCM worker and validator must require unique attribute keys, the existing
 assertion vocabulary, and a registered evidence strategy. Evidence strategy is
-a discriminator: `transaction_cycle` requires an exact registry reference and
-unique bindable record kinds from that pack; `tabular_population`,
+a discriminator: `transaction_cycle` requires an exact registry reference and at
+least two unique bindable record kinds from that pack; `tabular_population`,
 `document_content`, `manual_inspection`, `inquiry`, and `mixed` forbid record
-kinds. This keeps non-cycle audit work independent of business-cycle
+kinds. A cycle is a link between records, so a requirement satisfied by a single
+record kind is `document_content` or `tabular_population`, never a cycle whose
+graph can only reach its own seed. The row's `business_cycle` is a projection of
+the validated attributes: it is derived on every write, never required from the
+caller, and never a separately editable field. This keeps non-cycle audit work independent of business-cycle
 vocabulary. Required roles must still be logically supported by the control
 wording or criteria. RCM generation must not create extra RCM rows merely to
 represent attributes of the same risk/control.
@@ -320,7 +329,9 @@ Supported selection modes and their structural assurance scope are explicit:
 
 `assurance_scope` is computed by the domain service and cannot be supplied or upgraded by the model, route caller, or frontend. An evidence-linked test may prove and support an exception in a specific item, but cannot represent a population pass rate or control conclusion.
 
-The materializer still caps a test at 500 items, but a large evidence-linked population is not a dead-end error. When more than 500 rows qualify, the builder returns a `selection_confirmation` proposal containing the eligible-row count and a ready-to-use deterministic sample suggestion (`random`, size 25, seed 42). The manual dialog lets the auditor confirm or adjust method/size/seed/stratum; an agent-generated test carries the same proposal through its normal approval. No test is persisted and no rows are silently truncated until the user confirms a sampled definition.
+The materializer still caps a test at 500 items, but a large evidence-linked population is not a dead-end error. When more than 500 rows qualify, the builder raises a `selection_confirmation` proposal containing the eligible-row count and a ready-to-use deterministic sample suggestion (`random`, size 25, seed 42). It is raised rather than returned so no caller can mistake the proposal for a persisted test. The manual dialog lets the auditor confirm or adjust method/size/seed/stratum; an agent-generated test carries the same proposal through its normal approval and retains it on the durable record, so a cap-derived sample stays distinguishable from a freely chosen one. No test is persisted and no rows are silently truncated until the user confirms a sampled definition.
+
+A cycle definition is generated against one transaction-evidence manifest and is only grounded in the evidence that manifest described. The proposal therefore carries its `context_manifest_sha256`, and the persistence service refuses a commit whose re-derived manifest no longer matches: the selection is regenerated rather than applied to facts that have since changed.
 
 The first delivery admits transaction-level populations only: `row_key` must be non-null and unique. A line-level table with repeated transaction keys is rejected instead of silently taking one row. Grouped/aggregated populations require a later operand reducer contract.
 
@@ -546,13 +557,32 @@ Replace the current aggregate overlap list with a local manifest that describes:
 - uniqueness, collision, matched-row, reachable-record, reachable-document, and reachable-role counts; and
 - the complete cycle packs reached by each candidate, computed locally.
 
+Column-to-identifier mapping is inferred locally from value overlap alone. Two
+identifier kinds can legitimately hold the same literal value — a payment
+voucher whose voucher number *is* the invoice's internal id — so a row-count tie
+is broken first by how many evidence records carry each kind, then by token
+overlap between the column name and the registered identifier id and label. That
+last term reads the registry's own vocabulary and therefore holds for any pack;
+it is not a domain switch. A column still tied on all three is omitted rather
+than guessed. Dropping an ambiguous column silently is not acceptable when it is
+a table's only non-null unique key: doing so removes that grain's population
+entirely. Derived joins are never inferred, because §4.1 requires an
+authoritative population wherever one exists.
+
 Each candidate has a stable `candidate_id` derived from the selected pack's
 definition hash, table signature, row key, and cycle-key mappings. Safety
 validation runs before ranking. Eligible candidates are sorted by this tuple:
 required-role coverage descending, authoritative source table before derived
 join, complete-cycle count descending, linked-row count descending, collision
-count ascending, then table and row-key names ascending. The complete tuple is
-included in the manifest.
+count ascending, row-key column position ascending, then table and row-key names
+ascending. Column position precedes the lexical fallback because an exported
+ledger leads with the key of its own grain; without it a purchase-order
+population is labelled by whichever identifier column happens to sort first.
+The complete tuple is included in the manifest.
+
+Coverage counts describe the rows a test would select. A row that linked no
+evidence is reported once as an unlinked row and never again under each role,
+so `missing_role_counts` never restates population reach as a role failure.
 
 The model chooses only among manifest candidates that already pass deterministic safety checks and returns the exact `candidate_id` plus `selection_reason`. It may choose a lower-ranked eligible candidate only when its lifecycle/population scope better matches the RCM requirement. The semantic validator verifies both fields; it never permits the model to invent a table/column-to-identifier-kind mapping.
 
@@ -840,6 +870,49 @@ Expected result: test generation produces clean-schema tests for the new RCM IDs
 
 This full rebuild is the reset cascade. There is no in-place product migration requirement for the old synthetic RCM or its dependent artifacts.
 
+Phase 2 handoff (2026-08-08; awaiting user confirmation): use these exact
+current UI actions, and do not copy any generated artifact from the existing
+workspace.
+
+1. On Home, select **New engagement**, enter a fresh name such as
+   `procurement-phase2`, then select **Create and add files**. Alternatively,
+   for the disposable workspace only, use its menu action **Delete workspace**,
+   confirm **Delete**, then recreate it with **New engagement**.
+2. In **Import files and folders**, add the four original source data files and
+   every original source document. Select **Import N files**, review the local
+   classifications and names, select **Import N files** again to apply them,
+   then select **Done**. Do not import an RCM export, test files, findings,
+   reports, working papers, or anything from the old workspace.
+3. Open **Documents** and select **Analyze all**. This starts the
+   `analyze_documents` assistant/agent command. Wait for it to finish, open the
+   analyses, and use **Save and mark reviewed** for the reviewed results,
+   including the purchase requisition, purchase order, goods receipt, vendor
+   invoice, and payment voucher records.
+4. Open **Planning > APM** and select **Generate planning drafts**. This starts
+   the `plan` assistant/agent command; the current command generates or
+   reconciles planning context, the APM, the RCM, and its complete linked Data
+   and Document Tests in dependency order. Review/approve its proposal items in
+   the assistant Console, then review the APM in **APM**.
+5. Open **Planning > RCM**. Review every generated row, open **RCM detail**, and
+   verify the **Control attributes** entries have the intended assertion and
+   evidence strategy. Transaction-cycle attributes must show the exact cycle
+   pack and required record kinds. Use **Save RCM row** for auditor edits.
+6. Still in **Planning > RCM**, select **Generate planned tests (N)** if that
+   button appears. This starts the `tests.specified` assistant/agent command for
+   every RCM row still lacking tests. In **Document Tests**, use **Prepare with
+   assistant** only if a draft remains; that starts the
+   `prepare_document_tests` assistant/agent command. Review the complete linked
+   Data and Document Test set, and verify each **Cycle vouch** test shows a
+   prevalidated population, reachable exact record-kind roles, grouped typed
+   assertions, and either **Targeted evidence** or **Sampled population** scope.
+   Stop before running any cycle test; execution belongs to Checkpoint C.
+
+Expected inspection before confirmation: all tests use the new RCM IDs, no
+cycle definition contains narrative `steps[].checks`, compatible assertions
+are grouped by procedure/population, and no role or field is unreachable. Phase
+3 remains blocked on the user's confirmation that this clean rebuild and review
+are complete.
+
 ### Checkpoint C - cycle execution after Phase 3
 
 Trigger: the new item builder and evaluator are available against the clean Phase 2 definitions.
@@ -942,7 +1015,7 @@ vendor/buyer edges, and leave the PO typo visible without breaking the whole
 cycle. Checkpoint A's user-driven regeneration and auditor review are recorded
 in section 9.
 
-### Phase 2 - RCM and test generation
+### Phase 2 - RCM and test generation (implemented; Checkpoint B pending)
 
 - update the RCM worker, response schema, executor fields, hashes, and UI for
   discriminated `control_attributes`; only transaction-cycle attributes select
@@ -956,6 +1029,54 @@ in section 9.
 - stop at Checkpoint B with the full manual workspace-regeneration instructions.
 
 Exit condition: generated and manually authored cycle tests use the same clean definition service, group compatible assertions per RCM procedure, use valid typed operands, and contain no unreachable roles or fields. Simple manual vouching remains usable, and populations above 500 produce a confirmable sample proposal. The implementer does not claim live procurement success until the user completes Checkpoint B.
+
+Review remediation (2026-08-08). A code review of the Phase 2 implementation,
+run against the regenerated procurement workspace, found and fixed:
+
+- mapping inference discarded `invoice_data.INVOICE_ID` as ambiguous, because
+  the payment voucher's own number is literally the invoice's internal id. That
+  left the table with no viable row key and no invoice-grain population at all —
+  the exact population section 3.3 uses as its worked example. Ties now resolve
+  by evidence reach and then by registered naming;
+- candidate ranking keyed `po_data` on `GRN_ID` by lexical fallback; row-key
+  column position now precedes it;
+- regeneration cleared a cycle test's structural fields, so `status` fell back
+  to `draft` and the test silently left `definitions_ready`;
+- `build_cycle_vouch_test` returned either a test or a sample proposal, which
+  the generation executor consumed as a test; the proposal is now raised;
+- a stale pack reference in one RCM row made the whole workspace unopenable;
+- `business_cycle` had to be echoed by every caller, so an attribute-only edit
+  through the API or the `edit_rcm_row` action failed;
+- `missing_role_counts` counted unlinked rows against every role;
+- the RCM prompt embedded the full registry (14 KB), biasing generation toward
+  `transaction_cycle`; it now carries only the pack references a row may
+  reference, plus explicit guidance to prefer `tabular_population` wherever the
+  imported tables hold the fields;
+- transaction-cycle attributes accepted a single record kind;
+- the manual dialog authored presence assertions only; it now authors every
+  registered operator with type-constrained operands and tolerances.
+
+The regenerated RCM's own quality is a separate matter for Checkpoint B review:
+all 28 rows carry exactly one attribute, and 13 use `transaction_cycle` against
+zero `tabular_population`, several for requirements the imported tables can
+answer across the whole population. The prompt and validator changes above
+address the cause; the rows themselves need regenerating before that RCM is
+accepted.
+
+Automated exit record (2026-08-08): RCM persistence, imports/exports, planning
+workers/executors, material hashes, and the Planning editor now use
+discriminated `control_attributes`; the top-level assertion is not persisted.
+Test-generation context carries one content-free, hash-identified transaction
+evidence manifest. Generated and manual Cycle vouch definitions pass through
+the same semantic validator and persistence service, while the retired
+`mode: vouch`/`POST /doc-tests/build/cycle` path fails closed and simple manual
+`vouching` remains available. Assurance scope is derived from selection mode,
+stable test identity excludes editable title text, and evidence-linked reaches
+above 500 return the confirmable random-25/seed-42 proposal without persisting
+or truncating a test. Focused Phase 0-2, planning, context, generation, and
+executor gates pass, and the Vue/TypeScript production build passes. The live
+procurement exit condition remains deliberately unclaimed until the user
+completes Checkpoint B above.
 
 ### Phase 3 - item builder and evaluator
 
@@ -1023,7 +1144,16 @@ Exit condition: no production path reads the old cycle schema; automated fixture
 - vendor, buyer, employee, department, and account identifiers never form edges;
 - graph hop/record/edge limits fail visibly without truncation;
 - an authoritative source table outranks an equivalent derived join;
-- candidate ranking and lexical tie-breaking are deterministic;
+- candidate ranking and lexical tie-breaking are deterministic, and a table is
+  keyed on the identifier of its own grain rather than on whichever identifier
+  column sorts first;
+- a column whose values collide across two identifier kinds resolves by evidence
+  reach and then by registered naming, is never dropped where it is a table's
+  only viable row key, and is omitted only when tied on every signal;
+- a transaction-cycle control attribute requires at least two record kinds;
+- a stale pack reference flags its own RCM row and still loads the engagement;
+- regeneration replaces a cycle definition without resetting the durable test's
+  status or auditor links, and refuses a commit whose evidence manifest moved;
 - multiple voucher records for a cardinality-one role produce ambiguity, not arbitrary selection;
 - multiple voucher records in one combined document retain distinct roles and citations;
 - a PO or consolidated payment reused across invoice-grain items is a normal shared binding when allowed, while an exclusive-role reuse is a collision;

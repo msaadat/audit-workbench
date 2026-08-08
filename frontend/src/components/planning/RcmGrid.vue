@@ -31,6 +31,7 @@ function openFinding(id: string) { void nav.replace('findings', { finding: id })
 function testCount(row: RcmRow) { return row.execution_rollup.tests ?? row.test_refs.length }
 function testTitles(row: RcmRow) { return (row.execution_rollup.test_rollups ?? []).map(item => item.title).join('; ') || 'Add a test' }
 function exceptionsLabel(row: RcmRow) { return (row.execution_rollup.completed ?? 0) ? String(row.execution_rollup.exceptions ?? 0) : 'Not assessed' }
+function attributeSummary(row: RcmRow) { return row.control_attributes.map(item => `${item.assertion} · ${item.requirement}`).join('; ') }
 function statusSeverity(status?: string) { return status?.includes('exception') || status === 'blocked' ? 'danger' : status === 'completed_no_exception' ? 'success' : status === 'review_required' ? 'warn' : 'secondary' }
 </script>
 
@@ -51,6 +52,7 @@ function statusSeverity(status?: string) { return status?.includes('exception') 
         </Select>
       </template></Column>
       <Column header="Control" style="min-width: 20rem"><template #body="{ data }"><Textarea v-model="data.control" rows="2" autoResize @change="emit('update', data.id, { control: data.control })" /></template></Column>
+      <Column header="Control attributes" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ data.control_attributes.length }} attribute(s)</strong><span>{{ attributeSummary(data) }}</span></button></template></Column>
       <Column header="Test summary" style="min-width: 18rem"><template #body="{ data }"><button class="summary-link" @click="emit('open', data)"><strong>{{ testCount(data) }} test(s)</strong><span>{{ testTitles(data) }}</span></button></template></Column>
       <Column header="Execution status" style="min-width: 12rem"><template #body="{ data }"><div class="rollup"><Tag :value="testCount(data) ? `${data.execution_rollup.completed ?? 0}/${testCount(data)} complete` : 'not ready'" :severity="data.execution_rollup.blocked ? 'danger' : data.execution_rollup.review_required ? 'warn' : data.execution_rollup.completed === testCount(data) && testCount(data) ? 'success' : 'secondary'"/><small>{{ data.execution_rollup.passed ?? 0 }} passed · {{ data.execution_rollup.failed ?? 0 }} failed · {{ data.execution_rollup.blocked ?? 0 }} blocked</small></div></template></Column>
       <Column header="Exceptions" style="min-width: 8rem"><template #body="{ data }"><Tag :value="exceptionsLabel(data)" :severity="(data.execution_rollup.completed ?? 0) && (data.execution_rollup.exceptions ?? 0) ? 'danger' : 'secondary'"/></template></Column>

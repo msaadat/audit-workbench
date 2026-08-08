@@ -96,19 +96,27 @@ RECORD_KINDS = (
         "procure_to_pay.purchase_requisition",
         "Purchase requisition",
         ("procure_to_pay.requisition_number",),
-        ("procure_to_pay.approval.request",),
+        (
+            "procure_to_pay.approval.request",
+            "common.quantity.total",
+            "common.status",
+        ),
     ),
     RecordKindDefinition(
         "procure_to_pay.purchase_order",
         "Purchase order",
         ("procure_to_pay.purchase_order_number",),
-        ("common.amount.total",),
+        ("common.amount.total", "common.quantity.total", "common.status"),
     ),
     RecordKindDefinition(
         "procure_to_pay.goods_receipt",
         "Goods receipt",
         ("procure_to_pay.goods_receipt_number",),
-        ("procure_to_pay.date.receipt",),
+        (
+            "procure_to_pay.date.receipt",
+            "common.quantity.total",
+            "common.status",
+        ),
     ),
     RecordKindDefinition(
         "procure_to_pay.vendor_invoice",
@@ -117,7 +125,7 @@ RECORD_KINDS = (
             "procure_to_pay.vendor_invoice_number",
             "procure_to_pay.internal_invoice_id",
         ),
-        ("common.amount.total",),
+        ("common.amount.total", "common.quantity.total", "common.status"),
     ),
     RecordKindDefinition(
         "procure_to_pay.payment_voucher",
@@ -127,14 +135,14 @@ RECORD_KINDS = (
             "procure_to_pay.vendor_invoice_number",
             "procure_to_pay.internal_invoice_id",
         ),
-        ("common.amount.total", "procure_to_pay.date.payment"),
+        ("common.amount.total", "procure_to_pay.date.payment", "common.status"),
     ),
 )
 
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Procure to pay",
-    version=2,
+    version=3,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),
@@ -147,6 +155,8 @@ PACK = CyclePackDefinition(
     field_kind_ids=(
         "common.amount.total",
         "common.party.name",
+        "common.quantity.total",
+        "common.status",
         *(definition.id for definition in FIELD_KINDS),
     ),
     record_kind_ids=(

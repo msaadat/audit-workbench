@@ -27,7 +27,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ... import doc_tests, document_analysis, sandbox
+from ... import cycle_vouching, doc_tests, sandbox
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -84,78 +84,27 @@ def _generation_prompt_payload(request: WorkerRequest) -> dict[str, object]:
         planning = planning.get("context") or {}
     raw_tables = _source_items(request, GENERATE_TABLE_SOURCE_ID)
     table_schemas = []
-    anchor_candidates = []
     for raw in raw_tables:
         if not isinstance(raw, Mapping):
             table_schemas.append(raw)
             continue
-        anchor_candidates.extend(
-            dict(item)
-            for item in raw.get("vouch_anchor_candidates") or []
-            if isinstance(item, Mapping)
-        )
-        table_schemas.append(
-            {
-                str(key): _plain_json(value)
-                for key, value in raw.items()
-                if key != "vouch_anchor_candidates"
-            }
-        )
+        table_schemas.append(_plain_json(raw))
     raw_documents = _source_items(request, GENERATE_DOCUMENT_SOURCE_ID)
     documents = []
-    vouch_documents = []
     for raw in raw_documents:
         if not isinstance(raw, Mapping):
             documents.append(raw)
             continue
-        profile = raw.get("vouch_profile")
-        if isinstance(profile, Mapping) and profile.get("document_type"):
-            vouch_documents.append(_plain_json(profile))
-        documents.append(
-            {
-                str(key): _plain_json(value)
-                for key, value in raw.items()
-                if key != "vouch_profile"
-            }
-        )
-    # Which supplied documents are transaction evidence is the single fact that
-    # decides whether a cycle test is possible, and it is otherwise buried in a
-    # per-document category field. Surfacing it is context the model lacks, not a
-    # thumb on the scale: the model still chooses the mode.
-    evidence = [
-        str(item.get("id") or "")
-        for item in raw_documents
-        if isinstance(item, Mapping)
-        and (
-            str(item.get("category") or "") == _TRANSACTION_EVIDENCE_CATEGORY
-            or bool(item.get("vouch_profile"))
-        )
-    ]
-    available_document_types = sorted(
-        {
-            str(item.get("document_type") or "")
-            for item in vouch_documents
-            if str(item.get("document_type") or "")
-        }
+        documents.append(_plain_json(raw))
+    transaction_evidence = _resolved_item(
+        request, GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID
     )
     return {
         "target_rcm_row": _resolved_item(request, GENERATE_ROW_SOURCE_ID),
         "planning_context": planning,
         "table_schemas": table_schemas,
         "documents": documents,
-        "transaction_evidence": {
-            "document_ids": evidence,
-            "documents": vouch_documents,
-            "available_document_types": available_document_types,
-            "anchor_candidates": anchor_candidates,
-            "note": (
-                "These documents carry an extracted structured record — "
-                "identifiers, parties, dates, amounts, line items, approvals, and "
-                "attachments — that a vouch check resolves its paths against."
-            )
-            if evidence
-            else "No transaction evidence is available; a vouch test is not possible.",
-        },
+        "transaction_evidence": transaction_evidence,
         "methodology": _source_items(request, GENERATE_METHODOLOGY_SOURCE_ID),
         "instructions": "Generate complete executable tests for target_rcm_row only.",
     }
@@ -229,258 +178,77 @@ _METHODOLOGY_REF_FIELDS = (
 # --------------------------------------------------------------------------- #
 GENERATE_WORKER_ID = "tests.generate"
 
-# Machine-readable authored contract. The prose below explains audit method;
-# this descriptor owns the response variants and is also the response-schema
-# identity. Keeping discriminator shapes in data makes the unary/binary and
-# question/evidence distinctions inspectable and testable without growing a
-# second hand-written pseudo-schema.
+# Phase 2 clean contract. The former broad-document-type ``vouch`` step is not
+# an accepted response variant; transaction-cycle work is one canonical
+# registry-backed test definition and ordinary document questions retain their
+# existing shape.
 GENERATE_RESPONSE_CONTRACT = {
     "envelope": {"required": ["tests"], "additional_fields": False},
-    "test": {
-        "discriminator": ["source", "steps[].mode"],
-        "required": ["source", "title", "objective", "steps"],
-        "additional_fields": False,
-        "variants": {
-            "data": {
-                "when": {"source": "data"},
-                "step": {
-                    "required": ["label", "instruction", "code"],
-                    "additional_fields": False,
-                }
-            },
-            "document_question": {
-                "when": {"source": "document", "mode": "question"},
-                "step": {
-                    "required": [
-                        "label",
-                        "instruction",
-                        "mode",
-                        "document_ids",
-                        "question",
-                    ],
-                    "mode": "question",
-                    "variants": {
-                        "with_sources": {
-                            "document_ids": "non_empty",
-                            "optional": ["scope_limitation"],
-                            "forbidden": ["missing_evidence"],
-                        },
-                        "missing_evidence": {
-                            "document_ids": "empty",
-                            "required": ["missing_evidence"],
-                            "forbidden": ["scope_limitation"],
-                        },
-                    },
-                    "additional_fields": False,
-                }
-            },
-            "document_vouch": {
-                "when": {"source": "document", "mode": "vouch"},
-                "step": {
-                    "required": [
-                        "label",
-                        "instruction",
-                        "mode",
-                        "anchor_table",
-                        "anchor_key",
-                        "document_roles",
-                        "checks",
-                    ],
-                    "mode": "vouch",
-                    "count": 1,
-                    "check_variants": {
-                        "present": {
-                            "required": ["field", "left", "method"],
-                            "method": "present",
-                            "forbidden": ["right", "tolerance"],
-                        },
-                        "binary": {
-                            "required": ["field", "left", "right", "method"],
-                            "methods": sorted(
-                                set(doc_tests.METHODS) - set(doc_tests.UNARY_METHODS)
-                            ),
-                            "optional": ["tolerance"],
-                        },
-                    },
-                    "document_types": list(
-                        document_analysis.VOUCHER_DOCUMENT_TYPES
-                    ),
-                    "additional_fields": False,
-                }
-            },
+    "variants": {
+        "data": {
+            "required": ["source", "title", "objective", "steps"],
+            "source": "data",
+        },
+        "document_question": {
+            "required": ["source", "title", "objective", "steps"],
+            "source": "document",
+            "step_mode": "question",
+        },
+        "cycle_vouch": {
+            "required": [
+                "source",
+                "kind",
+                "title",
+                "objective",
+                "registry",
+                "requirement_refs",
+                "procedure_key",
+                "definition",
+            ],
+            "source": "document",
+            "kind": "cycle_vouch",
+            "forbidden": ["steps", "checks", "document_types"],
         },
     },
 }
-
 GENERATE_SYSTEM = f"""[agent:test_generate]
-Generate the complete, executable tests that cover exactly one supplied RCM
-row. Return an object with `tests`, a discriminated union. Each test has
-exactly these fields, all required:
-  source      "data" if the test is answered by analysing an imported table,
-              "document" if it is answered by reading documents
-  title       short name for the test
-  objective   what the test establishes about the control
-  steps       array of step objects, the complete executable procedure
+Generate the complete executable tests for exactly one supplied RCM row.
+Return JSON with a non-empty `tests` array. A test is one of:
 
-One durable test has one source. If a row needs both data analysis and
-document inspection, return two tests — one "data" and one "document". A
-Document Test has one execution mode; if a row needs both a question and a
-comparison, return two Document Tests.
+1. Data Test: source `data`, title, objective, and non-empty `steps`; each step
+   has label, instruction, and Polars code assigning exception rows to `result`.
+2. Document question: source `document`, title, objective, and non-empty
+   question-mode steps using only supplied document ids. A missing-evidence step
+   has an empty document_ids array and a specific missing_evidence string.
+3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
+   registry, requirement_refs, procedure_key, and definition. It has no steps.
 
-A test obtains evidence about whether the control in the row operated. It is
-not a restatement of the risk, and not a re-confirmation of something the
-supplied material already concludes: where the planning basis already reports
-that a policy is silent on a point, establishing that again yields no evidence
-about a control. Where the row records that no control was identified, do not
-invent one to test — test whether the exposure the risk describes is present in
-the records themselves.
+For Cycle Vouch, the supplied `transaction_evidence` manifest is authoritative.
+Choose an exact registry group and candidate_id, copy that candidate's table,
+row_key, and cycle_keys exactly, and explain the selection. requirement_refs use
+`<RCM id>:<control attribute key>` and cover the transaction-cycle attributes
+the procedure tests. Group compatible assertions sharing one population and
+lifecycle scope into one test. Roles name exact reachable record kinds and state
+required, cardinality (one|many), and reuse_across_items (exclusive|allowed)
+independently. Assertions use explicit row/role/roles operands and one of
+{", ".join(sorted(cycle_vouching.OPERATORS))}; field selectors always name
+group, kind, and attribute. Use numeric tolerance objects and integer day
+tolerances. Do not invent identifiers, fields, mappings, roles, or literal row
+values. Do not emit dotted paths, checks, document_types, or a vouch mode step.
+Evidence-linked selection is targeted evidence only. Sampling uses random,
+interval, or stratified with size 1..{cycle_vouching.MAX_ITEMS} and an integer
+seed. assurance_scope is derived locally and may be omitted.
 
-Say what the test runs over. The objective names the population — which
-records, in what state, over what period — and the steps operate on all of it.
-A data test runs across the whole population rather than a sample, so narrow it
-only where the control genuinely applies to a subset, and say which subset in
-the step's instruction when it does.
-
-An exception is a record that contradicts the control having operated. It is
-not merely a record that is large, unusual, or incomplete. Before treating an
-absent value as an exception, decide whether it is a legitimate state of the
-process rather than a failure of it: a record that is still in progress, or was
-cancelled or rejected, is routinely missing a downstream field by design, and
-excluding those states is part of defining the population.
-
-Where the supplied material cannot answer the row's question, say so in the
-objective instead of substituting a proxy. A test resting on a stand-in that
-the data does not actually carry returns a confident and wrong conclusion,
-where naming the missing evidence leaves the auditor something true. Treat
-a threshold, limit, or approval rule read from a document the same way: it is
-only as complete as that document, so do not encode one in a step as though it
-were the entire rule unless the document states that it is.
-
-A "data" test's steps are Polars only. Each step is an object:
-  label         short name for the step
-  instruction   what the step determines
-  code          Polars code assigning the exception rows to `result`
-All workspace tables and joins are available as DataFrame variables under
-their exact names, and in the `tables` mapping; `pl` is the Polars module.
-`result` must be a DataFrame holding the rows that fail the step — an empty
-result means no exception. Use exact column and table names from the supplied
-schemas. No imports, no file or network access, and no printing.
-
-A step is a predicate, so the values a column holds decide whether it can match
-anything. Where a column carries `values`, that is the complete set of values
-present in that column — filter only on those, and never on a value outside it.
-Where a column carries `distinct` without `values`, its contents are unknown to
-you: do not guess a code, status, or category literal for it. Write the step so
-it derives what it needs from the column itself instead of from an assumed
-value, and prefer a comparison between two columns, a null check, or an
-aggregate over a guessed string. Guessing wrong does not fail — it silently
-matches every row or no row, and both are reported as a control conclusion.
-Check the two sides of a comparison hold the same kind of identifier: comparing
-columns from different id schemes returns no rows and looks like a clean result.
-
-A "document" test's steps use only "question" or "vouch" mode, the same mode
-on every step in one test. Choose the mode from what the row's risk is about:
-  "question"  the answer is a statement a document makes about the process —
-              a policy requirement, a described control, a governance fact
-  "vouch"     the answer is whether recorded transactions are actually
-              supported by their evidence — amounts, dates, approvals, and
-              attachments agreeing between the records and the documents
-A row about whether a control *operated* — whether claims were supported,
-approved within limits, or paid after approval — is a "vouch" test whenever
-transaction evidence is available, because reading a policy cannot establish
-that. Prefer "vouch" over a question that merely asks whether evidence exists.
-
-A "question" step has exactly one of two shapes:
-  with sources      document_ids is non-empty; missing_evidence is omitted;
-                    scope_limitation may name evidence the supplied documents
-                    do not themselves provide
-  missing evidence  document_ids is empty; missing_evidence is a non-empty
-                    description of the evidence required
-
-Both question shapes also carry:
-  label             short name for the step
-  instruction       what the step determines
-  mode              "question"
-  document_ids      array of exact document ids the step reads
-  question          the question to answer from those documents
-Use only document ids from the supplied context. If the required evidence is
-missing, still return a concrete step with an empty document_ids array and a
-specific missing_evidence string — never invent a document id.
-
-A "vouch" step is one transaction-cycle plan, and a vouch test has exactly one
-step. It names no document ids and no expected values: each population row is
-linked to the documents that carry its identifier, and the row supplies what the
-document is compared against. Fields:
-  label           short name for the step
-  instruction     what the comparison establishes
-  mode            "vouch"
-  anchor_table    the imported table whose rows are the population
-  anchor_key      the column holding the identifier the documents carry
-  document_roles  array of {{role, required, document_types}}; role is the name
-                  a check refers to, document_types lists the extracted
-                  document types that fill it. document_types must come from
-                  this closed vocabulary, which is what the extraction records —
-                  not the document's import category:
-                  {", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)}
-  checks          array of discriminated check objects
-
-The supplied `transaction_evidence` manifest is authoritative. Choose
-`anchor_table` and `anchor_key` only from `anchor_candidates`, document types
-only from `available_document_types`, and document field paths only from each
-type's `available_path_suffixes`. Do not infer a path merely because it appears
-in an example or in the global field vocabulary below.
-
-A check has exactly one of these two shapes:
-  unary presence  {{field, left, method: "present"}}
-  binary          {{field, left, right, method, optional tolerance}}, where
-                  method is not "present"
-
-A check names both of its sides by path, never by value:
-  row.<column>                   a value from the population row
-  <role>.<group>.<key>           a value extracted from the document attached
-  <role>.<group>.<key>.<attr>    in that role
-<key> is the kind or role that names the entry, such as `claim_id`,
-`payment_date`, `total`, or `receipt`; `*` matches every entry in the group.
-<group> and its permitted <attr> are exactly:
-{chr(10).join(
-    f"  {group:<12} {', '.join(sorted(doc_tests.FIELD_GROUP_ATTRIBUTES[group]))}"
-    for group in sorted(doc_tests.FIELD_GROUPS)
-)}
-Omitting <attr> reads the group's default: {", ".join(
-    f"{group}->{doc_tests.FIELD_GROUPS[group][2]}" for group in sorted(doc_tests.FIELD_GROUPS)
-)}.
-
-<method> is one of: {", ".join(sorted(doc_tests.METHODS))}. Use `date_order` when
-the left date must not fall after the right one, such as approval before
-payment. Use `present` when a single addressed value must be affirmatively true,
-such as a receipt being attached; it has no `right` field. If two values must
-both be present, return two unary checks.
-
-Both sides of a check may be documents, which is how one row tests a whole
-cycle: compare `purchase_order.amount.total` to `invoice.amount.total`, and
-`goods_receipt.date.delivery_date` to `invoice.date.invoice_date`. Propose a
-vouch test only when the supplied documents include transaction evidence.
-
-A vouch test reaches only those population rows whose identifier appears in the
-supplied evidence, which is usually a small part of the population and may be a
-single transaction. Mark a role `required` only where the test is meaningless
-without it — a required role no document fills leaves every check on that role
-unresolved. Say in the objective which cycle the test covers and that its reach
-is limited to the transactions holding evidence, so a clean result is not read
-as assurance over the whole population.
-
-Choose each test's source from what is actually available in the supplied
-tables and documents. Add no other fields.
-
-Authoritative response contract:
-{json.dumps(GENERATE_RESPONSE_CONTRACT, sort_keys=True, separators=(",", ":"))}
-
-{JSON_RULES}"""
+Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
+normally produces a Data Test; document-content, inspection, inquiry, and mixed
+attributes use the evidence that is actually supplied. One durable test has one
+source. Use only supplied table/column/document ids. {JSON_RULES}"""
 
 GENERATE_ROW_SOURCE_ID = "rcm_row"
 GENERATE_METHODOLOGY_SOURCE_ID = "methodology"
 GENERATE_TABLE_SOURCE_ID = "table_metadata"
 GENERATE_DOCUMENT_SOURCE_ID = "documents"
+GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID = "transaction_evidence"
 _GENERATE_SOURCES = {"data", "document"}
 _GENERATE_COMMON_FIELDS = ("source", "title", "objective", "steps")
 _GENERATE_DATA_STEP_FIELDS = ("label", "instruction", "code")
@@ -489,11 +257,7 @@ _GENERATE_DOCUMENT_STEP_FIELDS = (
     "missing_evidence", "scope_limitation", "anchor_table", "anchor_key",
     "document_roles",
 )
-_GENERATE_MODES = {"question", "vouch"}
-# The document category that carries a structured field record a vouch check can
-# resolve. A cycle plan against documents that were never analyzed under the
-# voucher profile would resolve every path to nothing.
-_TRANSACTION_EVIDENCE_CATEGORY = "voucher"
+_GENERATE_MODES = {"question"}
 _UNKNOWN_COLUMN_ERROR_RE = re.compile(
     r"ColumnNotFoundError: unable to find column [\"']([^\"']+)[\"']"
 )
@@ -601,62 +365,83 @@ def _generate_supplied_document_ids(request: WorkerRequest) -> set[str]:
     return ids
 
 
-def _generate_has_transaction_evidence(request: WorkerRequest) -> bool:
-    """Whether any supplied document is transaction evidence.
-
-    A cycle plan resolves its paths against the structured fields the voucher
-    profile extracts, so proposing one where no such document was supplied would
-    produce a test whose every comparison is missing.
-    """
-    for item in request.context.items:
-        if item.source_id != GENERATE_DOCUMENT_SOURCE_ID:
-            continue
-        content = item.content
-        if (
-            isinstance(content, Mapping)
-            and (
-                str(content.get("category") or "")
-                == _TRANSACTION_EVIDENCE_CATEGORY
-                or bool(content.get("vouch_profile"))
-            )
-        ):
-            return True
-    return False
+def _generate_transaction_manifest(request: WorkerRequest) -> dict:
+    value = _resolved_item(request, GENERATE_TRANSACTION_EVIDENCE_SOURCE_ID)
+    if not isinstance(value, Mapping):
+        raise WorkerContractError(
+            "Transaction-evidence context must supply one manifest object."
+        )
+    return _plain_json(value)
 
 
-def _generate_vouch_grounding(
+def _generate_rcm_row(request: WorkerRequest) -> dict:
+    value = _resolved_item(request, GENERATE_ROW_SOURCE_ID)
+    if not isinstance(value, Mapping):
+        raise WorkerContractError("RCM-row context must supply one object.")
+    return _plain_json(value)
+
+
+def _validate_generate_cycle_test(
+    path: str,
+    value: Mapping[str, object],
+    *,
     request: WorkerRequest,
-) -> tuple[bool, set[tuple[str, str]], dict[str, set[str]]]:
-    """Return verified anchor candidates and field paths by extracted type."""
-
-    declared = False
-    anchors: set[tuple[str, str]] = set()
-    paths_by_document_type: dict[str, set[str]] = {}
-    for item in request.context.items:
-        content = item.content
-        if not isinstance(content, Mapping):
-            continue
-        if item.source_id == GENERATE_TABLE_SOURCE_ID:
-            if "vouch_anchor_candidates" in content:
-                declared = True
-            for candidate in content.get("vouch_anchor_candidates") or []:
-                if not isinstance(candidate, Mapping):
-                    continue
-                table = str(candidate.get("table") or "").strip()
-                key = str(candidate.get("anchor_key") or "").strip()
-                if table and key:
-                    anchors.add((table, key))
-        elif item.source_id == GENERATE_DOCUMENT_SOURCE_ID:
-            profile = content.get("vouch_profile")
-            if isinstance(profile, Mapping):
-                document_type = str(profile.get("document_type") or "").strip()
-                if document_type:
-                    paths_by_document_type.setdefault(document_type, set()).update(
-                        str(value).strip()
-                        for value in profile.get("available_path_suffixes") or []
-                        if str(value).strip()
-                    )
-    return declared, anchors, paths_by_document_type
+    rcm_id: str,
+    errors: list[str],
+) -> dict | None:
+    candidate = {
+        **_plain_json(value),
+        "source": "document",
+        "kind": "cycle_vouch",
+        "schema_version": cycle_vouching.SCHEMA_VERSION,
+        "rcm_id": rcm_id,
+        "steps": [],
+    }
+    rcm_row = _generate_rcm_row(request)
+    manifest = _generate_transaction_manifest(request)
+    try:
+        validated = cycle_vouching.validate_cycle_test_semantics(
+            candidate, rcm_row=rcm_row, manifest=manifest
+        )
+        group = cycle_vouching.manifest_group_for_test(validated, manifest)
+        population = validated["definition"]["population"]
+        selected = next(
+            item
+            for item in group["candidates"]
+            if item["candidate_id"] == population["candidate_id"]
+        )
+        confirmation = (
+            cycle_vouching.selection_confirmation(selected)
+            if population["selection"].get("mode") == "evidence_linked"
+            else None
+        )
+        if confirmation is not None:
+            # The eligible reach exceeds the item cap, so the proposal carries
+            # the deterministic sample the auditor confirms or adjusts at
+            # approval. The confirmation travels with the test so the durable
+            # record stays distinguishable from a freely chosen sample.
+            population["selection"] = dict(confirmation["suggested_selection"])
+            validated = cycle_vouching.validate_cycle_test_semantics(
+                validated, rcm_row=rcm_row, manifest=manifest
+            )
+            validated["selection_confirmation"] = confirmation
+    except (cycle_vouching.CycleSchemaError, StopIteration) as error:
+        errors.append(f"{path} {error}")
+        return None
+    if not validated["definition"]["assertions"]:
+        errors.append(f"{path}.definition.assertions must not be empty")
+    return {
+        "source": "document",
+        "kind": "cycle_vouch",
+        "title": str(value.get("title") or "").strip(),
+        "objective": str(value.get("objective") or "").strip(),
+        "registry": validated["registry"],
+        "requirement_refs": validated["requirement_refs"],
+        "procedure_key": validated["procedure_key"],
+        "definition": validated["definition"],
+        "context_manifest_sha256": str(manifest.get("manifest_sha256") or ""),
+        "selection_confirmation": validated.get("selection_confirmation"),
+    }
 
 
 def _generate_response_schema(response: str) -> Mapping[str, Any]:
@@ -722,217 +507,11 @@ def _validate_generate_data_step(
     }
 
 
-def _validate_generate_cycle_step(
-    path: str,
-    step: dict,
-    known_tables: Mapping[str, Mapping[str, str]],
-    has_evidence: bool,
-    declared_anchors: bool,
-    grounded_anchors: set[tuple[str, str]],
-    paths_by_document_type: Mapping[str, set[str]],
-    errors: list[str],
-) -> dict:
-    """Validate one transaction-cycle plan against the supplied schemas.
-
-    The plan is checked for resolvability, not for judgement: the anchor must be
-    a real column of a real table, every declared role must be referenced by a
-    path that parses, and every ``row.<column>`` must name a column the anchor
-    table actually has. A literal ``expected`` is rejected outright — the whole
-    point of the shape is that the population supplies the expected value, and a
-    model has no row data to write one from.
-    """
-    anchor_table = str(step.get("anchor_table") or "").strip()
-    anchor_key = str(step.get("anchor_key") or "").strip()
-    columns = known_tables.get(anchor_table) or {}
-    if not anchor_table:
-        errors.append(f"{path} needs an anchor_table")
-    elif anchor_table not in known_tables:
-        errors.append(f"{path} references unknown table '{anchor_table}'")
-    if not anchor_key:
-        errors.append(f"{path} needs an anchor_key")
-    elif columns and anchor_key not in columns:
-        errors.append(
-            f"{path}.anchor_key '{anchor_key}' is not a column of '{anchor_table}'"
-        )
-    elif (
-        declared_anchors
-        and anchor_table
-        and anchor_key
-        and (anchor_table, anchor_key) not in grounded_anchors
-    ):
-        choices = ", ".join(
-            f"{table}.{key}" for table, key in sorted(grounded_anchors)
-        ) or "none"
-        errors.append(
-            f"{path} anchor '{anchor_table}.{anchor_key}' has no locally verified "
-            f"identifier overlap; supplied anchor candidates: {choices}"
-        )
-    if not has_evidence:
-        errors.append(
-            f"{path} is a vouch step but no transaction-evidence document is "
-            "available; use a question step or return no test for this row"
-        )
-
-    roles = []
-    for index, raw_role in enumerate(step.get("document_roles") or []):
-        role_path = f"{path}.document_roles[{index}]"
-        if not isinstance(raw_role, Mapping):
-            errors.append(f"{role_path} must be an object")
-            continue
-        name = str(raw_role.get("role") or "").strip()
-        if not name:
-            errors.append(f"{role_path} needs a role name")
-            continue
-        types = [
-            str(value).strip()
-            for value in (raw_role.get("document_types") or [name])
-            if str(value).strip()
-        ]
-        # A role whose declared types are not what the extraction records can
-        # never be filled, so every item would report a missing role and the
-        # whole cycle would land in manual review. Caught here rather than
-        # discovered as an empty result.
-        unknown_types = [
-            value
-            for value in types
-            if value not in document_analysis.VOUCHER_DOCUMENT_TYPES
-        ]
-        if unknown_types:
-            errors.append(
-                f"{role_path}.document_types has '{unknown_types[0]}', which is not "
-                "an extracted document type; expected one of: "
-                + ", ".join(document_analysis.VOUCHER_DOCUMENT_TYPES)
-            )
-        available_document_types = set(paths_by_document_type)
-        unavailable_types = [
-            value
-            for value in types
-            if value in document_analysis.VOUCHER_DOCUMENT_TYPES
-            and available_document_types
-            and value not in available_document_types
-        ]
-        if unavailable_types:
-            errors.append(
-                f"{role_path}.document_types has '{unavailable_types[0]}', but "
-                "the supplied evidence contains only: "
-                + ", ".join(sorted(available_document_types))
-            )
-        roles.append(
-            {
-                "role": name,
-                "required": bool(raw_role.get("required", True)),
-                "document_types": types or [name],
-            }
-        )
-    if not roles:
-        errors.append(f"{path} needs at least one document role")
-    declared_roles = {entry["role"] for entry in roles}
-    paths_by_role = {
-        entry["role"]: set().union(
-            *(
-                paths_by_document_type.get(document_type, set())
-                for document_type in entry["document_types"]
-            )
-        )
-        for entry in roles
-    }
-
-    def validate_side(label: str, value: str) -> None:
-        """Check one side of one comparison for resolvability."""
-        try:
-            doc_tests.validate_path(value)
-        except doc_tests.WorkspaceError as error:
-            errors.append(f"{label} {error}")
-            return
-        head = value.split(".", 1)[0]
-        if head == doc_tests.ROW_PREFIX:
-            column = value.split(".", 1)[1]
-            if columns and column not in columns:
-                errors.append(
-                    f"{label} references unknown column '{column}' of "
-                    f"'{anchor_table}'"
-                )
-        elif declared_roles and head not in declared_roles:
-            errors.append(f"{label} references undeclared role '{head}'")
-        elif head in paths_by_role and paths_by_document_type:
-            suffix = value.split(".", 1)[1]
-            if suffix not in paths_by_role[head]:
-                choices = ", ".join(sorted(paths_by_role[head])) or "none"
-                errors.append(
-                    f"{label} references unavailable extracted path '{suffix}' "
-                    f"for role '{head}'; supplied paths: {choices}"
-                )
-
-    checks = []
-    raw_checks = step.get("checks")
-    if not isinstance(raw_checks, (list, tuple)) or not raw_checks:
-        errors.append(f"{path} needs comparison checks")
-        raw_checks = []
-    for index, raw_check in enumerate(raw_checks):
-        check_path_label = f"{path}.checks[{index}]"
-        if not isinstance(raw_check, Mapping):
-            errors.append(f"{check_path_label} must be an object")
-            continue
-        if raw_check.get("expected") not in (None, ""):
-            errors.append(
-                f"{check_path_label} carries a literal expected value; a vouch "
-                "check names both sides by path"
-            )
-        field = str(raw_check.get("field") or "").strip()
-        if not field:
-            errors.append(f"{check_path_label} needs a field")
-        method = str(raw_check.get("method") or "normalized").strip()
-        if method not in doc_tests.METHODS:
-            errors.append(
-                f"{check_path_label}.method must be one of: "
-                + ", ".join(sorted(doc_tests.METHODS))
-            )
-            method = "normalized"
-        left = str(raw_check.get("left") or "").strip()
-        right = str(raw_check.get("right") or "").strip()
-        if not left:
-            errors.append(f"{check_path_label} needs a left path")
-        else:
-            validate_side(f"{check_path_label}.left", left)
-        if method in doc_tests.UNARY_METHODS:
-            if right:
-                errors.append(
-                    f"{check_path_label} has a right path but method '{method}' "
-                    "reads only the left side"
-                )
-                right = ""
-        elif not right:
-            errors.append(f"{check_path_label} needs a right path")
-        elif right:
-            validate_side(f"{check_path_label}.right", right)
-        checks.append(
-            {
-                "field": field,
-                "left": left,
-                "right": right,
-                "method": method,
-                "tolerance": raw_check.get("tolerance"),
-            }
-        )
-    return {
-        "anchor_table": anchor_table,
-        "anchor_key": anchor_key,
-        "document_roles": roles,
-        "checks": checks,
-    }
-
-
 def _validate_generate_document_step(
     path: str,
     raw_step: object,
     known_document_ids: set[str],
     errors: list[str],
-    *,
-    known_tables: Mapping[str, Mapping[str, str]] | None = None,
-    has_evidence: bool = False,
-    declared_anchors: bool = False,
-    grounded_anchors: set[tuple[str, str]] | None = None,
-    paths_by_document_type: Mapping[str, set[str]] | None = None,
 ) -> tuple[dict | None, str | None]:
     if not isinstance(raw_step, Mapping):
         errors.append(f"{path} must be an object")
@@ -945,8 +524,18 @@ def _validate_generate_document_step(
         if not isinstance(step.get(key), str) or not step[key].strip():
             errors.append(f"{path}.{key} must be a non-empty string")
     mode = step.get("mode")
+    if mode == "vouch":
+        errors.append(
+            f"{path} uses the removed vouch-step schema; return a canonical "
+            "cycle_vouch test definition"
+        )
+        return {
+            "label": str(step.get("label") or "").strip(),
+            "instruction": str(step.get("instruction") or "").strip(),
+            "mode": "",
+        }, None
     if mode not in _GENERATE_MODES:
-        errors.append(f"{path}.mode must be 'question' or 'vouch'")
+        errors.append(f"{path}.mode must be 'question'")
         mode = None
     document_ids = step.get("document_ids")
     if document_ids is None:
@@ -968,41 +557,6 @@ def _validate_generate_document_step(
         "instruction": str(step.get("instruction") or "").strip(),
         "mode": mode or "",
     }
-    if mode == "vouch":
-        # A cycle plan names no documents: linking is by the identifiers already
-        # extracted from them, so a model-chosen document id would either
-        # duplicate that work or contradict it.
-        if question:
-            errors.append(f"{path} has a question but mode is 'vouch'")
-        if document_ids:
-            errors.append(
-                f"{path} names document ids, but a vouch step links documents to "
-                "population rows by their extracted identifiers"
-            )
-        if missing_evidence:
-            errors.append(
-                f"{path} claims missing_evidence; a vouch step reports uncovered "
-                "population rows from its own coverage instead"
-            )
-        if scope_limitation:
-            errors.append(
-                f"{path} has scope_limitation but mode is 'vouch'; state limited "
-                "transaction reach in the test objective"
-            )
-        normalized.update(
-            _validate_generate_cycle_step(
-                path,
-                step,
-                known_tables or {},
-                has_evidence,
-                declared_anchors,
-                grounded_anchors or set(),
-                paths_by_document_type or {},
-                errors,
-            )
-        )
-        return normalized, mode
-
     if mode == "question":
         if not question:
             errors.append(f"{path} needs a question")
@@ -1050,12 +604,6 @@ def validate_generate_proposal(
     methodology_refs = _generate_methodology_refs(request)
     known_tables = _generate_supplied_tables(request)
     known_document_ids = _generate_supplied_document_ids(request)
-    has_transaction_evidence = _generate_has_transaction_evidence(request)
-    (
-        declared_anchors,
-        grounded_anchors,
-        paths_by_document_type,
-    ) = _generate_vouch_grounding(request)
     available = {
         "data": bool(known_tables),
         "document": any(
@@ -1064,6 +612,7 @@ def validate_generate_proposal(
     }
     errors: list[str] = []
     normalized: list[dict] = []
+    cycle_identities: set[tuple[str, str, str, str]] = set()
     for index, raw in enumerate(values, 1):
         path = f"tests[{index - 1}]"
         if not isinstance(raw, Mapping):
@@ -1083,6 +632,36 @@ def validate_generate_proposal(
         for key in ("title", "objective"):
             if not isinstance(value.get(key), str) or not value[key].strip():
                 errors.append(f"{path}.{key} must be a non-empty string")
+        if source == "document" and value.get("kind") == "cycle_vouch":
+            if value.get("steps") not in (None, []):
+                errors.append(f"{path} cycle_vouch must not carry steps")
+            cycle_test = _validate_generate_cycle_test(
+                path, value, request=request, rcm_id=rcm_id, errors=errors
+            )
+            if cycle_test is not None:
+                population = cycle_test["definition"]["population"]
+                identity = (
+                    cycle_test["procedure_key"],
+                    population["table"],
+                    population["row_key"]["column"],
+                    population["row_key"]["identifier_kind"],
+                )
+                if identity in cycle_identities:
+                    errors.append(
+                        f"{path} duplicates a cycle procedure/population; group "
+                        "its compatible assertions into one test"
+                    )
+                cycle_identities.add(identity)
+                normalized.append(
+                    {
+                        **cycle_test,
+                        "rcm_id": rcm_id,
+                        "methodology_refs": methodology_refs,
+                    }
+                )
+            continue
+        if value.get("kind") is not None:
+            errors.append(f"{path}.kind is valid only for cycle_vouch")
         raw_steps = value.get("steps")
         if not isinstance(raw_steps, (list, tuple)) or not raw_steps:
             errors.append(f"{path}.steps must be a non-empty array")
@@ -1103,11 +682,6 @@ def validate_generate_proposal(
                     raw_step,
                     known_document_ids,
                     errors,
-                    known_tables=known_tables,
-                    has_evidence=has_transaction_evidence,
-                    declared_anchors=declared_anchors,
-                    grounded_anchors=grounded_anchors,
-                    paths_by_document_type=paths_by_document_type,
                 )
                 if normalized_step is not None:
                     steps.append(normalized_step)
@@ -1192,7 +766,11 @@ GENERATE_WORKER = WorkerDefinition(
         ),
     ),
     implementation=run_generate_worker,
-    semantic_validation_hash=_sha256_text(inspect.getsource(validate_generate_proposal)),
+    semantic_validation_hash=_sha256_text(
+        inspect.getsource(validate_generate_proposal)
+        + inspect.getsource(_validate_generate_cycle_test)
+        + inspect.getsource(cycle_vouching.validate_cycle_test_semantics)
+    ),
     semantic_validator=validate_generate_proposal,
 )
 

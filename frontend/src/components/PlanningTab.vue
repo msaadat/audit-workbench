@@ -15,11 +15,12 @@ import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
 import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
-import type { AuditObservation, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
+import type { AuditObservation, CycleVouchMetadata, MarkdownTemplate, PlanningPayload, PlanningRecord, RcmRow, TestRollup, WorkspaceSummary, WorkingPaper } from '../types'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProvenanceRail from './agent/ProvenanceRail.vue'
 import CoverageBoard from './planning/CoverageBoard.vue'
 import RcmGrid from './planning/RcmGrid.vue'
+import RcmControlAttributesEditor from './planning/RcmControlAttributesEditor.vue'
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiTestStatus from './ui/UiTestStatus.vue'
@@ -35,6 +36,7 @@ const assistantChat = useAssistantChat(props.workspace.id)
 const { isActive, launchMode } = agent
 
 const data = ref<PlanningPayload | null>(null)
+const cycleMeta = ref<CycleVouchMetadata | null>(null)
 const saving = ref(false)
 const templateOpen = ref(false)
 const template = ref<MarkdownTemplate | null>(null)
@@ -84,6 +86,11 @@ function fail(summary: string, error: unknown) {
 }
 async function reload() {
   data.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
+  if (!cycleMeta.value) {
+    cycleMeta.value = (await api.get<{ cycle_vouch: CycleVouchMetadata }>(
+      `/api/workspaces/${props.workspace.id}/doc-tests/meta`,
+    )).cycle_vouch
+  }
   const requestedRcm = String(route.query.rcm || '')
   const requestedObservation = String(route.query.observation || '')
   const observationParent = requestedObservation
@@ -155,7 +162,10 @@ async function saveTemplate(reset = false) {
 }
 async function addRcm() {
   try {
-    const row = await api.post<RcmRow>(`/api/workspaces/${props.workspace.id}/rcm`, { process: 'New process', risk: 'Describe the audit risk', risk_rating: 'medium' })
+    const row = await api.post<RcmRow>(`/api/workspaces/${props.workspace.id}/rcm`, {
+      process: 'New process', risk: 'Describe the audit risk', risk_rating: 'medium',
+      control_attributes: [{ key: 'manual_inspection', assertion: 'Operational', requirement: 'Describe the control requirement', evidence_kind: 'manual_inspection' }],
+    })
     await reload(); openRcm(row); emit('changed')
   } catch (error) { fail('Could not add the risk', error) }
 }
@@ -198,7 +208,9 @@ async function saveRcmDetail() {
   try {
     await updateRcm(selectedRcm.value.id, {
       process: selectedRcm.value.process, risk: selectedRcm.value.risk,
-      risk_rating: selectedRcm.value.risk_rating, assertion: selectedRcm.value.assertion,
+      risk_rating: selectedRcm.value.risk_rating,
+      // business_cycle is a projection of the attributes; the backend derives it.
+      control_attributes: selectedRcm.value.control_attributes,
       control: selectedRcm.value.control, control_type: selectedRcm.value.control_type,
       control_owner: selectedRcm.value.control_owner, criteria: selectedRcm.value.criteria,
       review_status: selectedRcm.value.review_status,
@@ -457,7 +469,8 @@ const rcmActions = computed(() => [
 
     <Dialog v-model:visible="detailOpen" modal :header="selectedRcm ? `${selectedRcm.id} · RCM detail` : 'RCM detail'" :style="{ width: 'min(1120px, 97vw)' }" :contentStyle="{ maxHeight: '82vh', overflow: 'auto' }">
       <div v-if="selectedRcm" class="rcm-detail">
-        <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Assertion<InputText v-model="selectedRcm.assertion"/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/></label></div>
+        <div class="rcm-fields"><label>Process<InputText v-model="selectedRcm.process"/></label><label>Risk rating<Select v-model="selectedRcm.risk_rating" :options="['low','medium','high','critical']"/></label><label class="wide">Risk<Textarea v-model="selectedRcm.risk" rows="2" autoResize/></label><label class="wide">Control<Textarea v-model="selectedRcm.control" rows="2" autoResize/></label><label>Control type<InputText v-model="selectedRcm.control_type"/></label><label>Control owner<InputText v-model="selectedRcm.control_owner"/></label><label>Review status<Select v-model="selectedRcm.review_status" :options="reviewStatuses"/></label><label class="wide">Criteria<Textarea v-model="selectedRcm.criteria" rows="2" autoResize/></label></div>
+        <RcmControlAttributesEditor v-model="selectedRcm.control_attributes" :metadata="cycleMeta" />
         <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
         <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
           <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>

@@ -120,15 +120,28 @@ control; leave the exceptions to the tests.
   or fraud with no compensating control; `high` where the exposure is material
   but partly mitigated; `medium` and `low` below that. Two rows describing the
   same underlying failure must not carry different ratings.
-- **assertion** — the assertion the risk threatens. **Exactly one of this closed
-  list, spelled exactly as shown:** `Existence`, `Completeness`, `Accuracy`,
-  `Authorization`, `Valuation`, `Cut-off`, `Compliance`, `Operational`. Use
-  `Operational` where the risk is operational and threatens no
-  financial-statement assertion, rather than forcing a fit. The risk themes in
-  the checklist above are not assertions: never write `Validity`, `Master Data`,
-  `Segregation of Duties`, `Matching and Reconciliation`, `Monitoring and
-  Override`, `Cut-off and Sequence`, `Completeness and Accuracy`, or any other
-  value into this field. Do not combine two assertions with "and".
+- **control_attributes** — the distinct requirements of the asserted control.
+  Each attribute has a unique stable `key`, one assertion from `Existence`,
+  `Completeness`, `Accuracy`, `Authorization`, `Valuation`, `Cut-off`,
+  `Compliance`, or `Operational`, a plain-language `requirement`, and one
+  evidence strategy. Enumerate the requirements the control actually makes
+  rather than collapsing every control to a single attribute; a three-way match
+  before payment asserts the match, the receipt-before-payment order, and the
+  amount agreement separately. Keep all attributes of one risk/control on the
+  same RCM row.
+- **evidence_kind** — where the evidence for that requirement lives, judged from
+  the supplied material rather than the requirement's wording. Use
+  `tabular_population` whenever the imported tables carry the fields named —
+  uniqueness, missing values, thresholds, date ordering, status combinations, or
+  one column compared with another — because that reaches the whole population.
+  Reserve `transaction_cycle` for requirements that genuinely need several
+  linked *documents* of different registered record kinds; it selects an exact
+  installed pack and at least two of its bindable record kinds, and reaches only
+  the transactions that have uploaded documents, so it can never support a
+  population-level conclusion. `document_content` is for a fact one document
+  states. `manual_inspection`, `inquiry`, and `mixed` are for requirements no
+  imported evidence answers — never for something a supplied table can measure.
+  Only `transaction_cycle` carries cycle vocabulary.
 - **control_type** — `preventive` where the control stops the error before it
   occurs, `detective` where it identifies the error afterwards. Validation,
   mandatory-field, and blocking rules are preventive *where the planning basis

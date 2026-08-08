@@ -212,6 +212,7 @@ export interface CycleVouchMetadata {
     max_roles: number
     max_assertions: number
     max_items: number
+    min_cycle_record_kinds: number
   }
 }
 
@@ -388,6 +389,60 @@ export interface CycleVouchDefinition {
     reuse_across_items: 'exclusive' | 'allowed'
   }>
   assertions: CycleAssertion[]
+}
+
+export interface CycleCandidate {
+  candidate_id: string
+  registry: CycleRegistryReference
+  table: string
+  source_kind: 'authoritative' | 'derived_join'
+  row_key: { column: string; identifier_kind: EvidenceIdentifierKindId }
+  cycle_keys: Array<{ column: string; identifier_kind: EvidenceIdentifierKindId }>
+  column_types: Record<string, EvidenceSemanticType>
+  population_rows: number
+  linked_rows: number
+  complete_cycle_count: number
+  reachable_record_kinds: EvidenceRecordKindId[]
+  reachable_roles: string[]
+  missing_role_counts: Record<string, number>
+  relationship_facts: Record<string, {
+    max_records_per_item: number
+    max_items_per_record: number
+  }>
+}
+
+export interface CycleEvidenceManifestGroup {
+  registry: CycleRegistryReference
+  requirement_refs: string[]
+  required_record_kinds: EvidenceRecordKindId[]
+  roles: CycleVouchDefinition['roles']
+  records: Array<{
+    document_id: string
+    record_id: string
+    record_kind: EvidenceRecordKindId
+    available_fields: Array<{
+      group: string
+      kind: string
+      attributes: string[]
+      normalization_status?: string | null
+    }>
+  }>
+  candidates: CycleCandidate[]
+  rejected_candidates: Array<Record<string, unknown>>
+}
+
+export interface CycleEvidenceManifest {
+  groups: CycleEvidenceManifestGroup[]
+  manifest_sha256: string
+}
+
+export interface CycleSelectionConfirmation {
+  kind: 'selection_confirmation'
+  candidate_id: string
+  eligible_row_count: number
+  maximum_items: number
+  suggested_selection: { mode: 'sample'; method: 'random'; size: number; seed: number; stratify_by?: string }
+  reason: string
 }
 
 export interface DocComparison {
@@ -590,6 +645,9 @@ export interface DocTestSummaryTest {
   next_action: string
   exception_count: number
   open_exception_count: number
+  requirement_refs?: string[]
+  coverage?: Record<string, unknown>
+  assurance_scope?: CycleAssuranceScope | null
   updated: string
 }
 
@@ -661,8 +719,11 @@ export interface RcmRow {
   process: string
   risk: string
   risk_rating: 'low' | 'medium' | 'high' | 'critical'
-  assertion: string
-  control_attributes?: RcmControlAttribute[]
+  business_cycle: string
+  control_attributes: RcmControlAttribute[]
+  /** Set by the load path when a row's pack reference no longer resolves. */
+  attributes_status?: 'valid' | 'invalid'
+  attributes_error?: string
   control: string
   control_type: string
   control_owner: string

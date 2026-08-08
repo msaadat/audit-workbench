@@ -245,7 +245,8 @@ def material_projection(value: object) -> object:
 
 
 _RCM_MATERIAL_FIELDS = (
-    "id", "process", "risk", "risk_rating", "assertion", "control",
+    "id", "process", "risk", "risk_rating", "business_cycle",
+    "control_attributes", "control",
     "control_type", "control_owner", "criteria", "criteria_refs",
     "evidence_refs", "review_status",
 )

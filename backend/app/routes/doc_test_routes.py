@@ -6,7 +6,7 @@ import asyncio
 
 from fastapi import APIRouter, Body, HTTPException
 
-from .. import doc_tests, working_papers, workspaces
+from .. import cycle_vouching, doc_tests, working_papers, workspaces
 from ..workspaces import WorkspaceError
 from ..agent import runner
 from ..agent.workflows import doc_tests as doc_tests_workflow
@@ -41,11 +41,35 @@ async def build_vouching_test(workspace_id: str, payload: dict = Body(...)):
     return await asyncio.to_thread(doc_tests.build_vouching, _ws(workspace_id), payload)
 
 
-@router.post("/doc-tests/build/cycle")
-async def build_cycle_vouching_test(workspace_id: str, payload: dict = Body(...)):
+@router.post("/doc-tests/cycle-vouch/candidates")
+async def cycle_vouch_candidates(workspace_id: str, payload: dict = Body(...)):
+    ws = _ws(workspace_id)
+    rcm_id = str(payload.get("rcm_id") or "")
+    row = next((item for item in ws.rcm if item.get("id") == rcm_id), None)
+    if row is None:
+        raise WorkspaceError(f"RCM row '{rcm_id}' not found.")
     return await asyncio.to_thread(
-        doc_tests.build_cycle_vouching, _ws(workspace_id), payload
+        cycle_vouching.transaction_evidence_manifest,
+        ws,
+        row.get("control_attributes") or [],
     )
+
+
+@router.post("/doc-tests/build/cycle-vouch")
+async def build_cycle_vouch_test(workspace_id: str, payload: dict = Body(...)):
+    try:
+        return await asyncio.to_thread(
+            cycle_vouching.build_cycle_vouch_test, _ws(workspace_id), payload
+        )
+    except cycle_vouching.SelectionConfirmationRequired as required:
+        # Not an error: the eligible reach exceeds the item cap, so the caller
+        # confirms or adjusts a deterministic sample. Nothing was persisted.
+        return {
+            "status": "selection_confirmation",
+            "selection_confirmation": required.proposal,
+        }
+    except cycle_vouching.CycleSchemaError as error:
+        raise WorkspaceError(str(error)) from error
 
 
 @router.post("/doc-tests/prepare-evidence-aware")

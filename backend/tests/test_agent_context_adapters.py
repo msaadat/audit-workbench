@@ -434,13 +434,14 @@ def test_tests_generate_preset_declares_the_row_scoped_sources():
         "planning_context",
         "rcm_row",
         "table_metadata",
+        "transaction_evidence",
         "documents",
         "methodology",
     ]
     # The one target row is required; every material source is not, since the
     # model chooses source per test.
     assert [source.required for source in spec.sources] == [
-        True, True, False, False, False,
+        True, True, False, True, False, False,
     ]
     # Generation reads schema metadata and document text — never a table row —
     # since it decides both Data and Document Test sources itself.
@@ -521,10 +522,11 @@ def test_test_generate_scope_supplies_table_and_document_sources_together():
 
     assert {key for key, value in scope.candidates.items() if value} == {
         "planning_context",
-        "rcm_row",
-        "table_metadata",
-        "documents",
-    }
+            "rcm_row",
+            "table_metadata",
+            "transaction_evidence",
+            "documents",
+        }
     table_names = {
         candidate.metadata.get("table") for candidate in scope.candidates["table_metadata"]
     }
@@ -642,23 +644,12 @@ def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
     )
 
     table = scope.candidates["table_metadata"][0].source
-    assert table["vouch_anchor_candidates"] == [
-        {
-            "table": "po_header",
-            "anchor_key": "po_number",
-            "matched_rows": 1,
-            "matched_document_count": 1,
-            "document_types": ["purchase_order"],
-        }
-    ]
-    profile = scope.candidates["documents"][0].source["vouch_profile"]
-    assert profile["document_type"] == "purchase_order"
-    assert profile["available_path_suffixes"] == [
-        "amount.total",
-        "identifier.po_number",
-    ]
-    assert "PO-1001" not in str(profile)
-    assert "50000" not in str(profile)
+    assert "vouch_anchor_candidates" not in table
+    document_context = scope.candidates["documents"][0].source
+    assert "vouch_profile" not in document_context
+    manifest = scope.candidates["transaction_evidence"][0].source
+    assert manifest["groups"] == []
+    assert manifest["manifest_sha256"].startswith("sha256:")
 
 
 def test_test_generate_scope_supplies_the_process_description_without_the_audit_notes():

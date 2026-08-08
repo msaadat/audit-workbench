@@ -25,6 +25,18 @@ class CycleSchemaError(ValueError):
     """A cycle-evidence payload violates the closed schema."""
 
 
+class SelectionConfirmationRequired(CycleSchemaError):
+    """An evidence-linked reach exceeds the item cap and needs a sample decision.
+
+    Carried as an exception rather than an alternate return value so no caller
+    can mistake the deterministic sample proposal for a persisted test.
+    """
+
+    def __init__(self, proposal: dict) -> None:
+        super().__init__(str(proposal.get("reason") or "Confirm a deterministic sample."))
+        self.proposal = proposal
+
+
 SCHEMA_VERSION = 2
 CARDINALITIES = frozenset({"one", "many"})
 REUSE_RULES = frozenset({"exclusive", "allowed"})
@@ -80,6 +92,7 @@ MAX_TRAVERSED_EDGES = 100
 MAX_ROLES = 20
 MAX_ASSERTIONS = 50
 MAX_ITEMS = 500
+MIN_CYCLE_RECORD_KINDS = 2
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -1154,6 +1167,10 @@ def generate_cycle_candidates(
         roles.append(value)
     candidates: list[dict] = []
     rejected: list[dict] = []
+    record_kind_by_id = {
+        str(record.get("record_id") or ""): str(record.get("record_kind") or "")
+        for record in record_values
+    }
     base_names = {str(item.get("name") or "") for item in workspace.tables}
     join_names = {str(item.get("name") or "") for item in workspace.joins}
     for index, raw in enumerate(mappings):
@@ -1209,12 +1226,24 @@ def generate_cycle_candidates(
         if invalid_mapping:
             rejected.append({"table": table, "reason": invalid_mapping})
             continue
+        row_key_position = mapping.get("row_key_position")
+        row_key_position = (
+            int(row_key_position)
+            if isinstance(row_key_position, int) and not isinstance(row_key_position, bool)
+            else frame.columns.index(row_column)
+        )
         linked_rows = 0
         complete_cycles = 0
         reachable_records: set[str] = set()
         reachable_documents: set[str] = set()
         reachable_kinds: set[str] = set()
         record_rows: dict[str, set[int]] = {}
+        records_per_role_per_row: dict[str, list[int]] = {
+            str(role.get("role") or ""): [] for role in roles
+        }
+        missing_role_counts: dict[str, int] = {
+            str(role.get("role") or ""): 0 for role in roles
+        }
         limit_reviews = 0
         required_kinds = {str(role.get("record_kind") or "") for role in roles}
         for row_index, row in enumerate(frame.iter_rows(named=True)):
@@ -1245,6 +1274,22 @@ def generate_cycle_candidates(
                 reachable_documents.add(str(value.get("document_id") or ""))
                 reachable_kinds.add(str(value.get("record_kind") or ""))
                 record_rows.setdefault(record_id, set()).add(row_index)
+            # Role coverage describes the rows a test would actually select. A
+            # row that linked no evidence at all is reported once as an
+            # unlinked row; counting it again under every role would read as a
+            # per-role coverage failure it is not.
+            if not reached:
+                continue
+            for role in roles:
+                role_name = str(role.get("role") or "")
+                record_kind = str(role.get("record_kind") or "")
+                count = sum(
+                    str(value.get("record_kind") or "") == record_kind
+                    for value in reached
+                )
+                records_per_role_per_row[role_name].append(count)
+                if bool(role.get("required", True)) and not count:
+                    missing_role_counts[role_name] += 1
         collisions = sum(len(rows) - 1 for rows in record_rows.values() if len(rows) > 1)
         table_signature = _frame_signature(frame)
         identity_material = {
@@ -1287,24 +1332,369 @@ def generate_cycle_candidates(
             "required_role_coverage": required_coverage,
             "required_role_count": len(required_kinds),
             "complete_cycle_count": complete_cycles,
+            "missing_role_counts": missing_role_counts,
+            "relationship_facts": {
+                str(role.get("role") or ""): {
+                    "max_records_per_item": max(
+                        records_per_role_per_row[str(role.get("role") or "")],
+                        default=0,
+                    ),
+                    "max_items_per_record": max(
+                        (
+                            len(rows)
+                            for record_id, rows in record_rows.items()
+                            if record_kind_by_id.get(record_id)
+                            == str(role.get("record_kind") or "")
+                        ),
+                        default=0,
+                    ),
+                }
+                for role in roles
+            },
             "graph_limit_review_rows": limit_reviews,
+            # Section 4.1's ranking terms in order, with the arbitrary lexical
+            # fallback preceded by column position: an exported ledger leads
+            # with the key of its own grain, so a PO table ranks PO_NUMBER above
+            # the GRN and requisition identifiers it also carries.
             "rank_tuple": [
                 -required_coverage,
                 source_priority,
                 -complete_cycles,
                 -linked_rows,
                 collisions,
+                row_key_position,
                 table,
                 row_column,
             ],
         }
         candidates.append(candidate)
     candidates.sort(key=lambda item: tuple(item["rank_tuple"]))
+    # One rejection reason per (table, reason, row key): several mappings over
+    # the same table otherwise repeat an identical rejection, which reads as
+    # several distinct problems.
+    deduplicated = {
+        json.dumps(item, sort_keys=True): item for item in rejected
+    }
     return {
         "registry": reference.to_dict(),
         "candidates": candidates,
-        "rejected_candidates": sorted(rejected, key=lambda item: json.dumps(item, sort_keys=True)),
+        "rejected_candidates": [
+            deduplicated[key] for key in sorted(deduplicated)
+        ],
     }
+
+
+def _column_semantic_type(dtype: object) -> str:
+    normalized = str(dtype).casefold().replace(" ", "")
+    if normalized.startswith(("int", "uint", "float", "decimal")):
+        return "number"
+    if normalized in {"date", "datetime", "time"} or normalized.startswith("datetime"):
+        return "date"
+    if normalized in {"bool", "boolean"}:
+        return "boolean"
+    return "text"
+
+
+def _name_tokens(value: str) -> frozenset[str]:
+    """Lower-cased alphanumeric word tokens of a column or registry name."""
+
+    return frozenset(part for part in re.split(r"[^A-Za-z0-9]+", value.casefold()) if part)
+
+
+def infer_cycle_mappings(
+    workspace,
+    *,
+    registry_ref: object,
+    records: Iterable[object],
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> list[dict]:
+    """Infer exact column-to-identifier mappings without exposing row values.
+
+    A column is mapped to the registered transaction identifier kind its locally
+    normalized values overlap most strongly, breaking ties on how much evidence
+    the kind reaches and then on the registry's own naming. Entity identifiers
+    are never considered, and a column that stays tied on every signal is
+    omitted rather than guessed.
+    """
+
+    reference = _registry_reference(registry_ref, registry)
+    record_values = [validate_evidence_record(value, registry=registry) for value in records]
+    identifiers: dict[str, set[str]] = {}
+    # How many distinct evidence records carry each kind. Two kinds can hold the
+    # same literal value — a payment voucher whose voucher number *is* the
+    # invoice's internal id — so a row-count tie says nothing about which kind a
+    # column really is. Record reach does: the kind that reaches more evidence
+    # is the one that will actually connect the cycle.
+    record_reach: dict[str, int] = {}
+    for record in record_values:
+        seen_kinds: set[str] = set()
+        for fact in record.get("identifiers") or []:
+            kind = str(fact.get("kind") or "")
+            definition = registry.identifier_kind(reference.pack_id, kind)
+            if definition.edge_policy != "transaction":
+                continue
+            envelope = fact.get("value") or {}
+            if envelope.get("normalization_status") != "normalized":
+                continue
+            try:
+                normalized = registry.normalize_identifier(
+                    reference.pack_id, kind, envelope.get("value")
+                )
+            except RegistryError:
+                continue
+            identifiers.setdefault(kind, set()).add(normalized)
+            seen_kinds.add(kind)
+        for kind in seen_kinds:
+            record_reach[kind] = record_reach.get(kind, 0) + 1
+
+    # Identifier kinds sharing a normalizer normalize a value identically, so a
+    # column's distinct values are normalized once per normalizer rather than
+    # once per value per kind.
+    normalizers = {
+        kind: registry.identifier_kind(reference.pack_id, kind).normalizer_id
+        for kind in identifiers
+    }
+    # Where reach also ties, the registry's own words for the kind are the last
+    # non-arbitrary signal. `INVOICE_ID` shares two tokens with
+    # `internal_invoice_id` and none with `payment_voucher_number`, and the same
+    # comparison holds for payroll or any future pack: it reads the registered
+    # id and label, never a hard-coded domain name.
+    kind_tokens = {
+        kind: _name_tokens(
+            kind.rsplit(".", 1)[-1]
+            + " "
+            + registry.identifier_kind(reference.pack_id, kind).label
+        )
+        for kind in identifiers
+    }
+    # A derived join restates rows that a source table already owns, and §4.1
+    # requires an authoritative population wherever one exists. Joins are
+    # therefore never inferred; `generate_cycle_candidates` still accepts an
+    # explicitly justified join mapping from any other producer.
+    join_names = {str(item.get("name") or "") for item in workspace.joins}
+    mappings: list[dict] = []
+    for table in sorted(set(workspace.table_names()) - join_names):
+        frame = workspace.get_frame(table)
+        mapped_columns: list[dict] = []
+        for position, column in enumerate(frame.columns):
+            counts: dict[object, int] = {}
+            for value in frame.get_column(column).drop_nulls().to_list():
+                counts[value] = counts.get(value, 0) + 1
+            normalized_values: dict[str, dict[object, str]] = {}
+            for normalizer_id in set(normalizers.values()):
+                cache = normalized_values.setdefault(normalizer_id, {})
+                implementation = registry.normalizers[normalizer_id].implementation
+                for value in counts:
+                    try:
+                        cache[value] = implementation(value)
+                    except Exception:  # noqa: BLE001 - a normalizer rejects a value
+                        continue
+            column_tokens = _name_tokens(column)
+            scores: list[tuple[int, int, int, str]] = []
+            for kind, known in identifiers.items():
+                cache = normalized_values.get(normalizers[kind], {})
+                matched = sum(
+                    counts[value]
+                    for value, normalized in cache.items()
+                    if normalized in known
+                )
+                if matched:
+                    scores.append(
+                        (
+                            matched,
+                            record_reach.get(kind, 0),
+                            len(column_tokens & kind_tokens[kind]),
+                            kind,
+                        )
+                    )
+            scores.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
+            if not scores:
+                continue
+            # A kind matching the same rows, reaching the same evidence, and
+            # named no more like this column than its rival is genuinely
+            # ambiguous; that column is omitted rather than guessed.
+            if len(scores) > 1 and scores[0][:3] == scores[1][:3]:
+                continue
+            mapped_columns.append(
+                {
+                    "column": column,
+                    "position": position,
+                    "identifier_kind": scores[0][3],
+                    "matched_rows": scores[0][0],
+                    "record_reach": scores[0][1],
+                    "name_affinity": scores[0][2],
+                    "semantic_type": "identifier",
+                }
+            )
+        column_types = {
+            name: _column_semantic_type(dtype) for name, dtype in frame.schema.items()
+        }
+        for row_key in mapped_columns:
+            null_count = int(frame.select(pl.col(row_key["column"]).null_count()).item())
+            unique_count = int(frame.select(pl.col(row_key["column"]).n_unique()).item())
+            if null_count or unique_count != frame.height:
+                continue
+            cycle_keys = [
+                {"column": item["column"], "identifier_kind": item["identifier_kind"]}
+                for item in mapped_columns
+                if item["column"] != row_key["column"]
+            ]
+            if not cycle_keys:
+                continue
+            mappings.append(
+                {
+                    "table": table,
+                    "row_key": {
+                        "column": row_key["column"],
+                        "identifier_kind": row_key["identifier_kind"],
+                    },
+                    "row_key_position": row_key["position"],
+                    "cycle_keys": cycle_keys,
+                    "column_types": column_types,
+                }
+            )
+    return mappings
+
+
+def _record_manifest(record: Mapping[str, object], registry: CycleRegistry) -> dict:
+    reference = _registry_reference(record.get("registry"), registry)
+    available_fields = []
+    for fact in record.get("fields") or []:
+        envelope = fact.get("value") or {}
+        available_fields.append(
+            {
+                "group": str(fact.get("group") or ""),
+                "kind": str(fact.get("kind") or ""),
+                "attributes": sorted(
+                    key
+                    for key in envelope
+                    if key in {"value", "raw_value"}
+                ),
+                "normalization_status": envelope.get("normalization_status"),
+            }
+        )
+    return {
+        "document_id": str(record.get("document_id") or ""),
+        "record_id": str(record.get("record_id") or ""),
+        "registry": reference.to_dict(),
+        "record_kind": str(record.get("record_kind") or ""),
+        "allowed_transaction_identifier_kinds": sorted(
+            {
+                str(fact.get("kind") or "")
+                for fact in record.get("identifiers") or []
+                if registry.identifier_kind(
+                    reference.pack_id, str(fact.get("kind") or "")
+                ).edge_policy
+                == "transaction"
+            }
+        ),
+        "available_fields": sorted(
+            available_fields,
+            key=lambda item: (item["group"], item["kind"]),
+        ),
+    }
+
+
+def default_roles(required_record_kinds: Iterable[object]) -> list[dict]:
+    """Derive procedure-local role aliases without domain switches."""
+
+    roles = []
+    seen: set[str] = set()
+    for raw_kind in required_record_kinds:
+        record_kind = str(raw_kind or "")
+        base = record_kind.rsplit(".", 1)[-1]
+        role = base
+        suffix = 2
+        while role in seen:
+            role = f"{base}_{suffix}"
+            suffix += 1
+        seen.add(role)
+        roles.append(
+            {
+                "role": role,
+                "record_kind": record_kind,
+                "required": True,
+                "cardinality": "one",
+                "reuse_across_items": "allowed",
+            }
+        )
+    return roles
+
+
+def transaction_evidence_manifest(
+    workspace,
+    control_attributes: Iterable[object],
+    *,
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict:
+    """Build the complete bounded, value-free manifest used by authoring."""
+
+    attributes = validate_control_attributes(list(control_attributes), registry=registry)
+    cycle_attributes = [
+        attribute
+        for attribute in attributes
+        if attribute.get("evidence_kind") == "transaction_cycle"
+    ]
+    groups: list[dict] = []
+    from . import document_analysis
+
+    by_reference: dict[str, list[dict]] = {}
+    for attribute in cycle_attributes:
+        key = json.dumps(attribute["registry"], sort_keys=True, separators=(",", ":"))
+        by_reference.setdefault(key, []).append(attribute)
+    for key in sorted(by_reference):
+        grouped_attributes = by_reference[key]
+        reference = _registry_reference(grouped_attributes[0]["registry"], registry)
+        records = document_analysis.registry_evidence_records(
+            workspace, reference.to_dict()
+        )
+        required_kinds = list(
+            dict.fromkeys(
+                str(kind)
+                for attribute in grouped_attributes
+                for kind in attribute.get("required_record_kinds") or []
+            )
+        )
+        roles = default_roles(required_kinds)
+        mappings = infer_cycle_mappings(
+            workspace,
+            registry_ref=reference.to_dict(),
+            records=records,
+            registry=registry,
+        )
+        candidate_manifest = generate_cycle_candidates(
+            workspace,
+            registry_ref=reference.to_dict(),
+            mappings=mappings,
+            records=records,
+            required_roles=roles,
+            registry=registry,
+        )
+        candidates = candidate_manifest["candidates"]
+        for candidate in candidates:
+            mapping = next(
+                value
+                for value in mappings
+                if value["table"] == candidate["table"]
+                and value["row_key"] == candidate["row_key"]
+                and value["cycle_keys"] == candidate["cycle_keys"]
+            )
+            candidate["column_types"] = mapping["column_types"]
+        groups.append(
+            {
+                "registry": reference.to_dict(),
+                "requirement_refs": [
+                    str(attribute["key"]) for attribute in grouped_attributes
+                ],
+                "required_record_kinds": required_kinds,
+                "roles": roles,
+                "records": [_record_manifest(record, registry) for record in records],
+                **candidate_manifest,
+            }
+        )
+    manifest = {"groups": groups}
+    manifest["manifest_sha256"] = _canonical_hash(manifest)
+    return manifest
 
 
 def select_prevalidated_candidate(
@@ -1386,6 +1776,18 @@ def validate_control_attributes(
                 raise CycleSchemaError(
                     "Control attributes require unique, bindable record kinds."
                 )
+            # A cycle is a relationship between records. One record kind has no
+            # transaction linkage to test, so the requirement belongs to a
+            # document-content or tabular strategy instead of producing a cycle
+            # test whose graph can only ever reach its own seed.
+            if len(kinds) < MIN_CYCLE_RECORD_KINDS:
+                raise CycleSchemaError(
+                    f"control_attributes[{index}] uses evidence kind "
+                    f"'{evidence_kind_id}' with one record kind; a transaction "
+                    f"cycle links at least {MIN_CYCLE_RECORD_KINDS} record kinds. "
+                    "Use document_content or tabular_population for a "
+                    "single-record requirement."
+                )
             for kind in kinds:
                 try:
                     definition = registry.record_kind(
@@ -1421,7 +1823,7 @@ def _operand(
     roles: Mapping[str, str],
     pack_id: str,
     registry: CycleRegistry,
-    table_columns: set[str] | None,
+    table_columns: set[str] | Mapping[str, str] | None,
 ) -> tuple[dict, str, bool]:
     operand = _object(value, label)
     source = str(operand.get("source") or "")
@@ -1429,7 +1831,17 @@ def _operand(
         column = _text(operand.get("column"), f"{label}.column")
         if table_columns is not None and column not in table_columns:
             raise CycleSchemaError(f"{label}.column '{column}' does not exist.")
-        semantic_type = str(operand.get("value_type") or "unknown")
+        derived_type = (
+            str(table_columns.get(column) or "unknown")
+            if isinstance(table_columns, Mapping)
+            else "unknown"
+        )
+        supplied_type = str(operand.get("value_type") or "")
+        if supplied_type and derived_type != "unknown" and supplied_type != derived_type:
+            raise CycleSchemaError(
+                f"{label}.value_type does not match the local table schema."
+            )
+        semantic_type = derived_type if derived_type != "unknown" else supplied_type or "unknown"
         return operand, semantic_type, False
     if source == "role":
         role = _text(operand.get("role"), f"{label}.role")
@@ -1475,7 +1887,7 @@ def validate_assertions(
     roles: Mapping[str, str],
     pack_id: str,
     registry: CycleRegistry = DEFAULT_REGISTRY,
-    table_columns: set[str] | None = None,
+    table_columns: set[str] | Mapping[str, str] | None = None,
 ) -> list[dict]:
     assertions = _list(value, "definition.assertions")
     if len(assertions) > MAX_ASSERTIONS:
@@ -1584,7 +1996,7 @@ def validate_cycle_definition(
     *,
     registry_ref: object,
     registry: CycleRegistry = DEFAULT_REGISTRY,
-    table_columns: set[str] | None = None,
+    table_columns: set[str] | Mapping[str, str] | None = None,
 ) -> dict:
     reference = _registry_reference(registry_ref, registry)
     definition = _object(value, "definition")
@@ -1720,7 +2132,7 @@ def validate_cycle_test(
     value: object,
     *,
     registry: CycleRegistry = DEFAULT_REGISTRY,
-    table_columns: set[str] | None = None,
+    table_columns: set[str] | Mapping[str, str] | None = None,
 ) -> dict:
     test = _object(value, "cycle test")
     reference = _registry_reference(test.get("registry"), registry)
@@ -1759,6 +2171,395 @@ def validate_cycle_test(
             "cycle_vouch tests cannot store executable checks in steps."
         )
     return test
+
+
+def selection_confirmation(candidate: Mapping[str, object]) -> dict | None:
+    """Return the required deterministic sample proposal for an oversized reach."""
+
+    eligible = int(candidate.get("linked_rows") or 0)
+    if eligible <= MAX_ITEMS:
+        return None
+    return {
+        "kind": "selection_confirmation",
+        "candidate_id": str(candidate.get("candidate_id") or ""),
+        "eligible_row_count": eligible,
+        "maximum_items": MAX_ITEMS,
+        "suggested_selection": {
+            "mode": "sample",
+            "method": "random",
+            "size": 25,
+            "seed": 42,
+        },
+        "reason": (
+            f"{eligible} evidence-linked rows qualify; confirm a deterministic "
+            f"sample of at most {MAX_ITEMS} before the test is persisted."
+        ),
+    }
+
+
+def stable_test_semantic_id(test: Mapping[str, object]) -> str:
+    """Identity derived only from the durable procedure/population tuple."""
+
+    definition = _object(test.get("definition"), "definition")
+    population = _object(definition.get("population"), "definition.population")
+    row_key = _object(population.get("row_key"), "definition.population.row_key")
+    material = {
+        "rcm_id": str(test.get("rcm_id") or ""),
+        "kind": "cycle_vouch",
+        "procedure_key": str(test.get("procedure_key") or ""),
+        "table": str(population.get("table") or ""),
+        "row_key": {
+            "column": str(row_key.get("column") or ""),
+            "identifier_kind": str(row_key.get("identifier_kind") or ""),
+        },
+    }
+    digest = hashlib.sha1(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"cycle_vouch:{digest}"
+
+
+def stable_cycle_test_id(test: Mapping[str, object]) -> str:
+    """Return the shared durable Document Test ID for one semantic cycle test."""
+
+    semantic = stable_test_semantic_id(test)
+    digest = hashlib.sha1(semantic.encode("utf-8")).hexdigest()
+    return f"DT-{digest[:8].upper()}"
+
+
+def manifest_group_for_test(test: Mapping[str, object], manifest: Mapping[str, object]) -> dict:
+    reference = _registry_reference(test.get("registry"), DEFAULT_REGISTRY)
+    matches = [
+        group
+        for group in manifest.get("groups") or []
+        if isinstance(group, dict)
+        and _registry_reference(group.get("registry"), DEFAULT_REGISTRY) == reference
+    ]
+    if len(matches) != 1:
+        raise CycleSchemaError("The cycle test registry has no exact manifest group.")
+    return matches[0]
+
+
+def validate_cycle_test_semantics(
+    value: object,
+    *,
+    rcm_row: Mapping[str, object],
+    manifest: Mapping[str, object],
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> dict:
+    """Apply the local semantic quality gate after structural validation."""
+
+    test = _object(value, "cycle test")
+    if str(test.get("rcm_id") or "") != str(rcm_row.get("id") or ""):
+        raise CycleSchemaError("The cycle test does not name its target RCM row.")
+    group = manifest_group_for_test(test, manifest)
+    definition = _object(test.get("definition"), "definition")
+    population = _object(definition.get("population"), "definition.population")
+    candidate = next(
+        (
+            item
+            for item in group.get("candidates") or []
+            if isinstance(item, dict)
+            and item.get("candidate_id") == population.get("candidate_id")
+        ),
+        None,
+    )
+    if candidate is None:
+        raise CycleSchemaError("The selected candidate ID is not prevalidated.")
+    table_columns = dict(candidate.get("column_types") or {})
+    validated = validate_cycle_test(
+        test,
+        registry=registry,
+        table_columns=table_columns,
+    )
+    normalized_population = validated["definition"]["population"]
+    for key in ("table", "row_key", "cycle_keys"):
+        if normalized_population.get(key) != candidate.get(key):
+            raise CycleSchemaError(
+                f"definition.population.{key} does not match the selected candidate."
+            )
+
+    attributes = validate_control_attributes(
+        list(rcm_row.get("control_attributes") or []), registry=registry
+    )
+    attributes_by_key = {str(attribute["key"]): attribute for attribute in attributes}
+    referenced_attributes = []
+    for requirement_ref in validated["requirement_refs"]:
+        key = str(requirement_ref).split(":", 1)[1]
+        attribute = attributes_by_key.get(key)
+        if attribute is None:
+            raise CycleSchemaError(f"Unknown RCM control attribute '{key}'.")
+        if attribute.get("evidence_kind") != "transaction_cycle":
+            raise CycleSchemaError(
+                f"RCM control attribute '{key}' is not transaction-cycle evidence."
+            )
+        if _registry_reference(attribute.get("registry"), registry) != _registry_reference(
+            validated.get("registry"), registry
+        ):
+            raise CycleSchemaError(
+                f"RCM control attribute '{key}' uses a different registry pack."
+            )
+        referenced_attributes.append(attribute)
+
+    required_kinds = {
+        str(kind)
+        for attribute in referenced_attributes
+        for kind in attribute.get("required_record_kinds") or []
+    }
+    roles = validated["definition"]["roles"]
+    if len({str(role["record_kind"]) for role in roles}) != len(roles):
+        raise CycleSchemaError("A cycle procedure cannot declare duplicate record-kind roles.")
+    declared_required = {
+        str(role["record_kind"]) for role in roles if role.get("required") is True
+    }
+    missing_required = sorted(required_kinds - declared_required)
+    if missing_required:
+        raise CycleSchemaError(
+            f"Required record kind '{missing_required[0]}' has no required role."
+        )
+    reachable = set(candidate.get("reachable_record_kinds") or [])
+    unreachable = sorted(str(role["record_kind"]) for role in roles if role["record_kind"] not in reachable)
+    if unreachable:
+        raise CycleSchemaError(f"Role record kind '{unreachable[0]}' is unreachable.")
+
+    facts_by_kind = {}
+    default_by_role = {
+        role["role"]: role["record_kind"] for role in group.get("roles") or []
+    }
+    for role_name, facts in (candidate.get("relationship_facts") or {}).items():
+        record_kind = default_by_role.get(role_name)
+        if record_kind:
+            facts_by_kind[record_kind] = facts
+    for role in roles:
+        facts = facts_by_kind.get(role["record_kind"]) or {}
+        if role["cardinality"] == "one" and int(facts.get("max_records_per_item") or 0) > 1:
+            raise CycleSchemaError(
+                f"Role '{role['role']}' is observed many times within one item."
+            )
+        if role["reuse_across_items"] == "exclusive" and int(facts.get("max_items_per_record") or 0) > 1:
+            raise CycleSchemaError(
+                f"Role '{role['role']}' is observed across several population items."
+            )
+
+    fields_by_kind: dict[str, set[tuple[str, str, str]]] = {}
+    for record in group.get("records") or []:
+        if not isinstance(record, dict):
+            continue
+        fields_by_kind.setdefault(str(record.get("record_kind") or ""), set()).update(
+            (
+                str(field.get("group") or ""),
+                str(field.get("kind") or ""),
+                str(attribute),
+            )
+            for field in record.get("available_fields") or []
+            if isinstance(field, dict)
+            for attribute in field.get("attributes") or []
+        )
+    role_kinds = {str(role["role"]): str(role["record_kind"]) for role in roles}
+    relationship_by_role = {
+        str(role["role"]): facts_by_kind.get(str(role["record_kind"])) or {}
+        for role in roles
+    }
+    for assertion in validated["definition"]["assertions"]:
+        for operand in (assertion.get("left"), assertion.get("right")):
+            if not isinstance(operand, dict) or operand.get("source") not in {"role", "roles"}:
+                continue
+            selected_roles = (
+                [str(operand.get("role") or "")]
+                if operand.get("source") == "role"
+                else [str(role) for role in operand.get("roles") or []]
+            )
+            field = operand.get("field") or {}
+            selector = (
+                str(field.get("group") or ""),
+                str(field.get("kind") or ""),
+                str(field.get("attribute") or ""),
+            )
+            for role_name in selected_roles:
+                if selector not in fields_by_kind.get(role_kinds[role_name], set()):
+                    raise CycleSchemaError(
+                        f"Assertion field {selector[0]}.{selector[1]}.{selector[2]} is not present "
+                        f"in supplied evidence for role '{role_name}'."
+                    )
+        operands = (assertion.get("left"), assertion.get("right"))
+        has_row_operand = any(
+            isinstance(operand, dict) and operand.get("source") == "row"
+            for operand in operands
+        )
+        if has_row_operand:
+            for operand in operands:
+                if not isinstance(operand, dict) or operand.get("source") != "role":
+                    continue
+                role_name = str(operand.get("role") or "")
+                field = operand.get("field") or {}
+                if (
+                    str(field.get("group") or "") == "amounts"
+                    and int(
+                        relationship_by_role.get(role_name, {}).get(
+                            "max_items_per_record"
+                        )
+                        or 0
+                    )
+                    > 1
+                ):
+                    raise CycleSchemaError(
+                        f"Assertion '{assertion['key']}' compares a population item "
+                        f"to shared aggregate role '{role_name}' without an "
+                        "allocation or aggregation rule; grouped population reducers "
+                        "are not supported by this definition version."
+                    )
+
+    selected_is_join = candidate.get("source_kind") == "derived_join"
+    if selected_is_join:
+        selected_cycle_kinds = {
+            item["identifier_kind"] for item in candidate.get("cycle_keys") or []
+        }
+        equivalent_source = next(
+            (
+                item
+                for item in group.get("candidates") or []
+                if item.get("source_kind") == "authoritative"
+                and item.get("row_key", {}).get("identifier_kind")
+                == candidate.get("row_key", {}).get("identifier_kind")
+                and {entry["identifier_kind"] for entry in item.get("cycle_keys") or []}
+                == selected_cycle_kinds
+                and int(item.get("required_role_coverage") or 0)
+                >= int(candidate.get("required_role_coverage") or 0)
+            ),
+            None,
+        )
+        if equivalent_source is not None:
+            raise CycleSchemaError(
+                "An equivalent authoritative source population must be used instead of a derived join."
+            )
+    return validated
+
+
+# Fields a durable Document Test owns independently of its cycle definition.
+# Regeneration replaces the definition and its derived coverage; it must not
+# silently reset the record's workflow status or the auditor's own links.
+_PRESERVED_ON_REGENERATION = (
+    "id",
+    "created",
+    "created_by",
+    "status",
+    "procedure_refs",
+    "criteria",
+    "evidence_refs",
+    "finding_refs",
+)
+
+
+def build_cycle_vouch_test(workspace, payload: Mapping[str, object]) -> dict:
+    """Validate and persist one canonical cycle definition.
+
+    Raises :class:`SelectionConfirmationRequired` when an evidence-linked reach
+    exceeds the item cap: no test is persisted and no rows are truncated until
+    the caller confirms a deterministic sample.
+    """
+
+    rcm_id = str(payload.get("rcm_id") or "").strip()
+    rcm_row = next(
+        (row for row in workspace.rcm if str(row.get("id") or "") == rcm_id), None
+    )
+    if rcm_row is None:
+        raise CycleSchemaError(f"RCM row '{rcm_id}' not found.")
+    manifest = transaction_evidence_manifest(
+        workspace, rcm_row.get("control_attributes") or [], registry=DEFAULT_REGISTRY
+    )
+    # A definition generated against one manifest is only grounded in the
+    # evidence that manifest described. If documents or tables moved between
+    # proposal and commit, the selection was made against facts that no longer
+    # hold, so the caller regenerates rather than committing a stale choice.
+    expected_manifest = str(payload.get("context_manifest_sha256") or "").strip()
+    if expected_manifest and expected_manifest != manifest["manifest_sha256"]:
+        raise CycleSchemaError(
+            "The transaction-evidence manifest changed after this cycle "
+            "definition was generated; regenerate the test against current "
+            "evidence."
+        )
+    test = {
+        **dict(payload),
+        "schema_version": SCHEMA_VERSION,
+        "kind": "cycle_vouch",
+        "steps": [],
+        "rcm_refs": [rcm_id],
+    }
+    validated = validate_cycle_test_semantics(
+        test, rcm_row=rcm_row, manifest=manifest
+    )
+    group = manifest_group_for_test(validated, manifest)
+    candidate = next(
+        item
+        for item in group["candidates"]
+        if item["candidate_id"]
+        == validated["definition"]["population"]["candidate_id"]
+    )
+    selection = validated["definition"]["population"]["selection"]
+    if selection.get("mode") == "evidence_linked":
+        confirmation = selection_confirmation(candidate)
+        if confirmation is not None:
+            raise SelectionConfirmationRequired(
+                {
+                    **confirmation,
+                    "definition": validated["definition"],
+                    "manifest_sha256": manifest["manifest_sha256"],
+                }
+            )
+
+    assurance_scope = assurance_scope_for(selection)
+    selected_rows = (
+        int(candidate.get("linked_rows") or 0)
+        if selection.get("mode") == "evidence_linked"
+        else min(int(selection.get("size") or 0), int(candidate.get("population_rows") or 0))
+    )
+    coverage = {
+        "population_rows": int(candidate.get("population_rows") or 0),
+        "selected_rows": selected_rows,
+        "rows_with_evidence": (
+            int(candidate.get("linked_rows") or 0)
+            if selection.get("mode") == "evidence_linked"
+            else None
+        ),
+        "complete_cycles": int(candidate.get("complete_cycle_count") or 0),
+        "missing_role_counts": dict(candidate.get("missing_role_counts") or {}),
+        "selection_basis": selection.get("mode"),
+        "assurance_scope": assurance_scope,
+    }
+    semantic_id = stable_test_semantic_id(validated)
+    test_id = str(payload.get("id") or "").strip() or stable_cycle_test_id(validated)
+    validated.update(
+        id=test_id,
+        title=_text(payload.get("title"), "cycle test.title"),
+        objective=_text(payload.get("objective"), "cycle test.objective"),
+        semantic_id=semantic_id,
+        methodology_refs=list(payload.get("methodology_refs") or []),
+        agent_run_id=payload.get("agent_run_id"),
+        workflow_parent_sha1=payload.get("workflow_parent_sha1"),
+        context_manifest_sha256=manifest["manifest_sha256"],
+        selection_confirmation=dict(payload.get("selection_confirmation") or {}) or None,
+        coverage=coverage,
+        spec={
+            "selection_basis": selection.get("mode"),
+            "assurance_scope": assurance_scope,
+            "coverage": coverage,
+        },
+        items=[],
+    )
+    from . import doc_tests
+
+    existing_id = test_id
+    if existing_id and doc_tests.exists(workspace, existing_id):
+        existing = doc_tests.load_test(workspace, existing_id)
+        preserved = {
+            key: existing[key]
+            for key in _PRESERVED_ON_REGENERATION
+            if key in existing
+        }
+        existing.clear()
+        existing.update({**validated, **preserved})
+        return doc_tests.save_test(workspace, existing)
+    return doc_tests.create_test(workspace, validated)
 
 
 def normalize_cycle_item(
@@ -1931,6 +2732,7 @@ def metadata() -> dict:
             "max_roles": MAX_ROLES,
             "max_assertions": MAX_ASSERTIONS,
             "max_items": MAX_ITEMS,
+            "min_cycle_record_kinds": MIN_CYCLE_RECORD_KINDS,
         },
     }
 

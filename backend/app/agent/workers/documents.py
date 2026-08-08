@@ -392,6 +392,11 @@ identifier kind, emit separate fragments; never blend them. A continuation
 without a primary identifier may still emit a fragment so local reduction can
 attach it only when the exact evidence is unambiguous.
 
+If the source contains a fact for which the selected record kind has no declared
+field, keep that fact in the cited narrative and omit it from fields. Never
+relabel an unsupported fact as a different registered field merely to satisfy
+the schema.
+
 REGISTERED PACK DESCRIPTORS:
 {_VOUCHER_REGISTRY_DESCRIPTORS}
 
@@ -437,9 +442,25 @@ def _canonicalize_voucher_fragment(
     record = DEFAULT_REGISTRY.record_kind(pack_id, record_kind)
     pack = DEFAULT_REGISTRY.pack(pack_id)
     allowed_fields = set(record.available_field_kinds)
+    allowed_selectors = sorted(
+        (
+            definition.group,
+            definition.kind,
+            tuple(attribute.id for attribute in definition.attributes),
+        )
+        for definition in (
+            DEFAULT_REGISTRY.field_kinds[field_id]
+            for field_id in record.available_field_kinds
+        )
+    )
+    allowed_description = ", ".join(
+        f"{group}.{kind}.{'|'.join(attributes)}"
+        for group, kind, attributes in allowed_selectors
+    ) or "none"
     fields = []
-    for raw_fact in fragment.get("fields") or []:
+    for field_index, raw_fact in enumerate(fragment.get("fields") or []):
         fact = dict(_plain_json(raw_fact))
+        supplied_group = str(fact.get("group") or "")
         supplied_kind = str(fact.get("kind") or "")
         definition = DEFAULT_REGISTRY.field_kinds.get(supplied_kind)
         if definition is not None and definition.id in pack.field_kind_ids:
@@ -451,13 +472,24 @@ def _canonicalize_voucher_fragment(
             try:
                 definition = DEFAULT_REGISTRY.field_kind(
                     pack_id,
-                    str(fact.get("group") or ""),
+                    supplied_group,
                     supplied_kind,
                 )
             except ValueError:
                 definition = None
-        if definition is not None and definition.id not in allowed_fields:
-            continue
+        if definition is None:
+            raise WorkerResponseValidationError(
+                f"record_fragments field {field_index} uses unregistered selector "
+                f"'{supplied_group}.{supplied_kind}' for pack '{pack_id}'; "
+                f"record kind '{record_kind}' allows: {allowed_description}"
+            )
+        if definition.id not in allowed_fields:
+            raise WorkerResponseValidationError(
+                f"record_fragments field {field_index} selects "
+                f"'{definition.group}.{definition.kind}', which is not available "
+                f"on record kind '{record_kind}'; allowed fields: "
+                f"{allowed_description}"
+            )
         if definition is not None and fact.get("attribute") == "raw_value":
             if any(attribute.id == "value" for attribute in definition.attributes):
                 fact["attribute"] = "value"
@@ -479,7 +511,7 @@ def validate_voucher_proposal(
     The narrative half goes through exactly the same ``validate_analysis_map``
     gate the standard profile uses. The structured half is then normalized
     against the citations that survived it, so a field anchored to an excerpt the
-    chunk does not contain is dropped rather than committed.
+    chunk does not contain is rejected rather than committed.
     """
     chunk = _supplied_chunk(request)
     document = _resolved_item(request, DOCUMENT_IDENTITY_SOURCE_ID)
@@ -519,9 +551,29 @@ def validate_voucher_proposal(
                 f"record_fragments[{index}] contains evidence not grounded in this chunk"
             )
         try:
-            fragments.append(
-                cycle_vouching.normalize_record_fragment(fragment)
-            )
+            normalized_fragment = cycle_vouching.normalize_record_fragment(fragment)
+            for field_index, (supplied, normalized) in enumerate(
+                zip(
+                    fragment.get("fields") or [],
+                    normalized_fragment.get("fields") or [],
+                )
+            ):
+                supplied_status = str(
+                    ((supplied.get("value") or {}).get("normalization_status") or "")
+                ).casefold()
+                normalized_value = normalized.get("value") or {}
+                if (
+                    supplied_status in {"normalized", "success"}
+                    and normalized_value.get("normalization_status") == "invalid"
+                ):
+                    raise WorkerResponseValidationError(
+                        f"record_fragments[{index}].fields[{field_index}] claims a "
+                        f"normalized {normalized.get('group')}.{normalized.get('kind')} "
+                        f"value, but '{normalized_value.get('raw_value')}' cannot be "
+                        "normalized for that field; use the correct registered field "
+                        "or explicitly report the source value as invalid"
+                    )
+            fragments.append(normalized_fragment)
         except (cycle_vouching.CycleSchemaError, ValueError) as error:
             raise WorkerResponseValidationError(str(error)) from error
     return {
@@ -563,7 +615,9 @@ def run_voucher_worker(
         user += (
             "\n\nYour previous response could not be used: "
             + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
+            + ". Return a complete corrected JSON object. Use only the allowed "
+            "fields listed for the selected record kind, and do not substitute "
+            "an unrelated field for an unsupported fact."
         )
     activity = dict(request.activity)
     activity.setdefault(

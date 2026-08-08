@@ -13,6 +13,7 @@ import random
 import re
 import unicodedata
 import uuid
+from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -304,6 +305,8 @@ def list_tests(workspace: Workspace) -> list[dict]:
                 "updated", "sha1", "created_by", "agent_run_id",
                 "workflow_parent_sha1", "objective", "criteria", "steps",
                 "schema_version", "registry", "requirement_refs", "procedure_key",
+                "definition", "coverage", "context_manifest_sha256",
+                "selection_confirmation",
                 "conclusion", "conclusion_source", "control_conclusion", "control_conclusion_source", "result_summary", "next_action",
                 "exception_count", "open_exception_count", "scope_limitations",
             )},
@@ -515,6 +518,17 @@ def _apply_kind_spec(test: dict, payload: dict) -> None:
         test["requirement_refs"] = list(payload.get("requirement_refs") or [])
         test["procedure_key"] = str(payload.get("procedure_key") or "")
         test["definition"] = dict(payload.get("definition") or {})
+        test["coverage"] = dict(payload.get("coverage") or {})
+        test["context_manifest_sha256"] = str(
+            payload.get("context_manifest_sha256") or ""
+        )
+        # Retained so a sampled definition stays distinguishable from an
+        # auditor's free choice of sample: this one exists because the
+        # evidence-linked reach exceeded the item cap.
+        confirmation = payload.get("selection_confirmation")
+        test["selection_confirmation"] = (
+            dict(confirmation) if isinstance(confirmation, Mapping) else None
+        )
         try:
             cycle_vouching.validate_cycle_test(test)
         except cycle_vouching.CycleSchemaError as error:
@@ -912,97 +926,6 @@ def voucher_field_index(workspace: Workspace) -> list[dict]:
     return index
 
 
-def voucher_anchor_candidates(
-    workspace: Workspace,
-    table: str,
-    columns: list[dict],
-    *,
-    document_ids: set[str] | None = None,
-) -> list[dict[str, object]]:
-    """Return aggregate table columns that overlap extracted identifiers.
-
-    Identifier values are compared only on the user's machine.  The projection
-    contains names, counts, and document types but no table row or extracted
-    identifier value, so context adapters can ground a generated cycle plan
-    without crossing the row-data privacy boundary.
-    """
-
-    index = [
-        item
-        for item in voucher_field_index(workspace)
-        if document_ids is None or str(item.get("document_id") or "") in document_ids
-    ]
-    if not index:
-        return []
-    frame = workspace.get_frame(table)
-    candidates = []
-    for column in columns:
-        name = str(column.get("name") or "").strip()
-        if not name or name not in frame.columns:
-            continue
-        matched_rows = 0
-        matched_documents: set[str] = set()
-        document_types: set[str] = set()
-        for value in frame.get_column(name).to_list():
-            normalized = normalize_value(value)
-            if not normalized:
-                continue
-            matches = [
-                item
-                for item in index
-                if normalized in item.get("identifiers", set())
-            ]
-            if not matches:
-                continue
-            matched_rows += 1
-            matched_documents.update(str(item["document_id"]) for item in matches)
-            document_types.update(str(item["role"]) for item in matches)
-        if matched_rows:
-            candidates.append(
-                {
-                    "table": table,
-                    "anchor_key": name,
-                    "matched_rows": matched_rows,
-                    "matched_document_count": len(matched_documents),
-                    "document_types": sorted(document_types),
-                }
-            )
-    return candidates
-
-
-def voucher_document_profile(
-    workspace: Workspace,
-    document_id: str,
-) -> dict[str, object] | None:
-    """Project one voucher's usable comparison paths without field values."""
-
-    record = document_analysis.generated_record(workspace, document_id) or {}
-    fields = record.get("fields") or {}
-    document_type = str(fields.get("document_type") or "").strip()
-    if not document_type:
-        return None
-    suffixes: set[str] = set()
-    for group, (collection, discriminator, default_attribute) in FIELD_GROUPS.items():
-        for entry in fields.get(collection) or []:
-            if not isinstance(entry, dict):
-                continue
-            key = str(entry.get(discriminator) or "").strip()
-            if not key:
-                continue
-            base = f"{group}.{key}"
-            suffixes.add(base)
-            for attribute in sorted(FIELD_GROUP_ATTRIBUTES[group]):
-                if attribute in {default_attribute, discriminator}:
-                    continue
-                if attribute in entry:
-                    suffixes.add(f"{base}.{attribute}")
-    return {
-        "document_id": document_id,
-        "document_type": document_type,
-        "available_path_suffixes": sorted(suffixes),
-    }
-
-
 def _role_fields(workspace: Workspace, item: dict) -> dict[str, list[tuple]]:
     """Group one item's attached documents by role, with their extracted fields."""
 
@@ -1019,151 +942,6 @@ def _role_fields(workspace: Workspace, item: dict) -> dict[str, list[tuple]]:
             (document_id, fields, citations)
         )
     return grouped
-
-
-def build_cycle_vouching(workspace: Workspace, payload: dict) -> dict:
-    """Build a vouching worklist from documents already linked to a population.
-
-    The sample is not selected here — it is *recognized*. Every row whose anchor
-    identifier appears in an analyzed document's extracted identifiers becomes an
-    item covering that row's whole cycle: one anchor row, every document that
-    names it, and the declared comparisons across them. Rows with no document are
-    counted and reported as uncovered rather than silently dropped, so the
-    coverage the test actually achieved stays visible against the population.
-    """
-    table = str(payload.get("table") or "")
-    if table not in workspace.table_names():
-        raise WorkspaceError(f"No table named '{table}'.")
-    frame = workspace.get_frame(table).with_row_index("source_row", offset=2)
-    anchor_key = str(payload.get("anchor_key") or "")
-    if anchor_key not in frame.columns:
-        raise WorkspaceError(f"Anchor key '{anchor_key}' does not exist in '{table}'.")
-    frozen_fields = [
-        str(value) for value in (payload.get("frozen_fields") or frame.columns)
-        if str(value) != "source_row"
-    ]
-    missing = [name for name in frozen_fields if name not in frame.columns]
-    if missing:
-        raise WorkspaceError(f"Frozen field '{missing[0]}' does not exist in '{table}'.")
-    # Which extracted document types fill a role is the test's declaration, not
-    # one model field's verdict. A profile classifies each record independently,
-    # so an identically formatted pack can come back ``expense_claim`` rather
-    # than ``payment_voucher``; without a declared mapping that single word would
-    # silently drop a whole cycle out of scope. Defaults to the role's own name.
-    declared_roles = [
-        {
-            "role": str(value.get("role") or "").strip(),
-            "required": bool(value.get("required", True)),
-            "document_types": [
-                str(entry).strip()
-                for entry in (
-                    value.get("document_types")
-                    or [str(value.get("role") or "").strip()]
-                )
-                if str(entry).strip()
-            ],
-        }
-        for value in (payload.get("document_roles") or [])
-        if str(value.get("role") or "").strip()
-    ]
-    role_by_type = {
-        document_type: entry["role"]
-        for entry in declared_roles
-        for document_type in entry["document_types"]
-    }
-    check_templates = [_normalize_check(check) for check in (payload.get("checks") or [])]
-    if not check_templates:
-        raise WorkspaceError("A cycle vouching test needs at least one comparison.")
-
-    index = voucher_field_index(workspace)
-    source_hash = _sha1(workspace._table_signature(table))
-    test = _base_test(workspace, payload, "vouching")
-    required_roles = [entry["role"] for entry in declared_roles if entry["required"]]
-
-    linked = 0
-    incomplete = 0
-    for row in frame.iter_rows(named=True):
-        anchor = normalize_value(row.get(anchor_key))
-        if not anchor:
-            continue
-        matched = [entry for entry in index if anchor in entry["identifiers"]]
-        if not matched:
-            continue
-        linked += 1
-        # A document whose extracted type fills no declared role still attaches
-        # under its own type, so a path naming that type resolves and an
-        # unexpected document in the pack stays visible rather than vanishing.
-        roles = {
-            entry["document_id"]: role_by_type.get(entry["role"], entry["role"])
-            for entry in matched
-        }
-        available_roles = set(roles.values())
-        missing_roles = [role for role in required_roles if role not in available_roles]
-        incomplete += bool(missing_roles)
-        item = _new_item(
-            {
-                "label": str(row.get(anchor_key)),
-                "instruction": str(payload.get("objective") or ""),
-                "document_ids": [entry["document_id"] for entry in matched],
-            }
-        )
-        item.update(
-            source={
-                "table": table,
-                "source_row": row["source_row"],
-                "source_sha1": source_hash,
-            },
-            transaction_identifiers=[str(row.get(anchor_key))],
-            frozen={field: _json_value(row.get(field)) for field in frozen_fields},
-            documents=[
-                {
-                    "document_id": entry["document_id"],
-                    "role": roles[entry["document_id"]],
-                    "document_type": entry["role"],
-                    "matched_by": "extracted_identifier",
-                }
-                for entry in matched
-            ],
-            missing_roles=missing_roles,
-            checks=[dict(check) for check in check_templates],
-        )
-        test["items"].append(item)
-
-    population = frame.height
-    test["spec"].update(
-        {
-            "direction": "vouching",
-            "shape": "cycle",
-            "table": table,
-            "table_sha1": source_hash,
-            "anchor_key": anchor_key,
-            "frozen_fields": frozen_fields,
-            "document_roles": declared_roles,
-            "population_rows": population,
-            "require_all_documents": bool(payload.get("require_all_documents", True)),
-            "coverage": {
-                "population": population,
-                "linked": linked,
-                "unlinked": population - linked,
-                "incomplete_roles": incomplete,
-            },
-        }
-    )
-    uncovered = population - linked
-    limitations = []
-    if uncovered:
-        limitations.append(
-            f"{uncovered} of {population} population row(s) have no linked document "
-            "and were not tested."
-        )
-    if incomplete:
-        limitations.append(
-            f"{incomplete} linked row(s) are missing a required document role."
-        )
-    test["scope_limitations"] = " ".join(limitations)
-    test["status"] = "blocked" if not test["items"] else "in_progress"
-    save_test(workspace, test)
-    return test
 
 
 _DOCUMENT_TYPE_ALIASES = {
@@ -2255,8 +2033,6 @@ def execution_issues(test: dict) -> list[str]:
     """
     kind = str(test.get("kind") or "")
     items = list(test.get("items") or [])
-    if not items:
-        return ["the test has no items"]
     if kind == "cycle_vouch":
         try:
             cycle_vouching.validate_cycle_test(test)
@@ -2267,6 +2043,8 @@ def execution_issues(test: dict) -> list[str]:
         except cycle_vouching.CycleSchemaError as error:
             return [str(error)]
         return []
+    if not items:
+        return ["the test has no items"]
     issues = []
     for index, item in enumerate(items, start=1):
         prefix = f"item {index}"
@@ -2458,6 +2236,14 @@ def summary_payload(workspace: Workspace) -> dict:
             "next_action": test.get("next_action") or "",
             "exception_count": test.get("exception_count") or 0,
             "open_exception_count": test.get("open_exception_count") or 0,
+            "requirement_refs": list(test.get("requirement_refs") or []),
+            "coverage": dict(test.get("coverage") or {}),
+            "assurance_scope": (
+                (test.get("definition") or {})
+                .get("population", {})
+                .get("selection", {})
+                .get("assurance_scope")
+            ),
             "updated": test.get("updated"),
         })
     # Stable sorts: newest engagement work first, then severity on top.

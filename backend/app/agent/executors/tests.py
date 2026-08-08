@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ... import data_tests, doc_tests
+from ... import cycle_vouching, data_tests, doc_tests
 from ...workspace_transactions import (
     ParentConflict,
     canonical_sha1,
@@ -214,13 +214,34 @@ def _validated_generation(
             raise WorkspaceError("An accepted test is missing its title.")
         if not str(spec.get("objective") or "").strip():
             raise WorkspaceError("An accepted test is missing its objective.")
+        cycle = source == "document" and spec.get("kind") == "cycle_vouch"
         steps = spec.get("steps")
-        if not isinstance(steps, (list, tuple)) or not steps:
+        if cycle:
+            if steps not in (None, []):
+                raise WorkspaceError("A cycle_vouch test cannot carry steps.")
+            spec["steps"] = []
+        elif not isinstance(steps, (list, tuple)) or not steps:
             raise WorkspaceError("An accepted test has no steps.")
+        elif source == "document" and any(
+            str(step.get("mode") or "") == "vouch"
+            for step in steps
+            if isinstance(step, Mapping)
+        ):
+            raise WorkspaceError(
+                "The removed vouch-step cycle schema cannot be committed; use a "
+                "canonical cycle_vouch definition."
+            )
         kind = "datatest" if source == "data" else "doctest"
         spec["kind"] = kind
         spec["rcm_id"] = target.rcm_id
-        spec["semantic_id"] = semantic_test_id(kind, target.rcm_id, str(spec["title"]))
+        spec["semantic_id"] = (
+            cycle_vouching.stable_test_semantic_id(
+                {**spec, "kind": "cycle_vouch"}
+            )
+            if cycle
+            else semantic_test_id(kind, target.rcm_id, str(spec["title"]))
+        )
+        spec["document_kind"] = "cycle_vouch" if cycle else None
         specs.append(spec)
     return target, specs
 
@@ -243,34 +264,6 @@ def _document_items_from_steps(steps: list[Mapping[str, object]]) -> list[dict]:
             item["question"] = str(step.get("question") or "")
         items.append(item)
     return items
-
-
-def _cycle_payload(common: dict, step: Mapping[str, object], semantic: str) -> dict:
-    """Project one accepted vouch step into a cycle-vouching build payload."""
-
-    return {
-        **{
-            key: common[key]
-            for key in (
-                "title",
-                "objective",
-                "steps",
-                "methodology_refs",
-                "rcm_id",
-                "agent_run_id",
-                "workflow_parent_sha1",
-            )
-        },
-        "semantic_id": semantic,
-        "table": str(step.get("anchor_table") or ""),
-        "anchor_key": str(step.get("anchor_key") or ""),
-        "document_roles": [
-            dict(role) for role in step.get("document_roles") or [] if isinstance(role, Mapping)
-        ],
-        "checks": [
-            dict(check) for check in step.get("checks") or [] if isinstance(check, Mapping)
-        ],
-    }
 
 
 def _commit_data_test(fresh: Workspace, existing: dict | None, common: dict, semantic: str) -> dict:
@@ -307,23 +300,33 @@ def _commit_document_test(
     target: TestGenerateExecutorTarget,
 ) -> dict:
     steps = common["steps"]
-    kind = doc_tests.kind_from_steps(steps)
-    if kind == "vouching":
-        # The population builds the items, not the proposal. ``build_cycle_vouching``
-        # links each row to the documents carrying its identifier and freezes the
-        # row values the checks compare against, which is the whole reason the
-        # model writes paths instead of expected values: it has no row data.
-        return doc_tests.build_cycle_vouching(
+    if common.get("document_kind") == "cycle_vouch":
+        return cycle_vouching.build_cycle_vouch_test(
             fresh,
             {
-                **_cycle_payload(common, steps[0], semantic),
                 "id": (
                     existing["id"]
                     if existing is not None
                     else stable_test_id("doctest", semantic)
                 ),
+                "title": common["title"],
+                "objective": common["objective"],
+                "rcm_id": common["rcm_id"],
+                "registry": common["registry"],
+                "requirement_refs": common["requirement_refs"],
+                "procedure_key": common["procedure_key"],
+                "definition": common["definition"],
+                # The manifest the proposal was validated against. The service
+                # refuses the commit if evidence moved since, rather than
+                # persisting a selection made on facts that no longer hold.
+                "context_manifest_sha256": common["context_manifest_sha256"],
+                "selection_confirmation": common["selection_confirmation"],
+                "methodology_refs": common["methodology_refs"],
+                "agent_run_id": common["agent_run_id"],
+                "workflow_parent_sha1": common["workflow_parent_sha1"],
             },
         )
+    kind = doc_tests.kind_from_steps(steps)
     items = _document_items_from_steps(steps)
     payload = {
         "title": common["title"],
@@ -450,6 +453,13 @@ def execute_test_generation(request: ExecutorRequest, raw_target: object) -> Exe
                 "rcm_id": target.rcm_id,
                 "agent_run_id": target.run_id,
                 "workflow_parent_sha1": parent_sha1,
+                "document_kind": spec.get("document_kind"),
+                "registry": spec.get("registry"),
+                "requirement_refs": spec.get("requirement_refs") or [],
+                "procedure_key": spec.get("procedure_key"),
+                "definition": spec.get("definition"),
+                "context_manifest_sha256": spec.get("context_manifest_sha256"),
+                "selection_confirmation": spec.get("selection_confirmation"),
             }
             if kind == "datatest":
                 item = _commit_data_test(fresh, existing, common, semantic)
@@ -584,7 +594,12 @@ def reconcile_test_generation(
 
 GENERATE_EXECUTOR = ExecutorDefinition(
     executor_id=GENERATE_EXECUTOR_ID,
-    implementation_hash=_sha256_text(inspect.getsource(execute_test_generation)),
+    implementation_hash=_sha256_text(
+        inspect.getsource(execute_test_generation)
+        + inspect.getsource(_validated_generation)
+        + inspect.getsource(_commit_document_test)
+        + inspect.getsource(cycle_vouching.build_cycle_vouch_test)
+    ),
     reconciliation_hash=_sha256_text(inspect.getsource(reconcile_test_generation)),
     concurrency=ExecutorConcurrency("parent_hashes"),
     implementation=execute_test_generation,

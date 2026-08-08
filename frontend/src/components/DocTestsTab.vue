@@ -24,6 +24,9 @@ import type {
   EvidenceRef,
   PlanningPayload,
   WorkspaceSummary,
+  CycleEvidenceManifestGroup,
+  CycleVouchDefinition,
+  CycleVouchMetadata,
 } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import DocTestCreateDialog from './doc-tests/DocTestCreateDialog.vue'
@@ -49,6 +52,7 @@ const summary = ref<DocTestSummaryPayload | null>(null)
 const documents = ref<AuditDocument[]>([])
 const planning = ref<PlanningPayload | null>(null)
 const documentTypes = ref<string[]>([])
+const cycleMetadata = ref<CycleVouchMetadata | null>(null)
 const currentTest = ref<DocTest | null>(null)
 const selectedItemId = ref<string | null>(String(route.query.item || '') || null)
 const requestedTestId = ref<string | null>(String(route.query.test || '') || null)
@@ -131,9 +135,11 @@ async function loadPlanning() {
   planning.value = await api.get<PlanningPayload>(`/api/workspaces/${props.workspace.id}/planning`)
 }
 async function loadMeta() {
-  documentTypes.value = (await api.get<{ document_types: string[] }>(
+  const meta = await api.get<{ document_types: string[]; cycle_vouch: CycleVouchMetadata }>(
     `/api/workspaces/${props.workspace.id}/doc-tests/meta`,
-  )).document_types
+  )
+  documentTypes.value = meta.document_types
+  cycleMetadata.value = meta.cycle_vouch
 }
 async function loadTest(testId: string) {
   currentTest.value = await api.get<DocTest>(`/api/workspaces/${props.workspace.id}/doc-tests/${testId}`)
@@ -173,6 +179,8 @@ async function createTest({ kind, direction, draft }: {
     title: string; rcmId: string; table: string; size: number; seed: number
     frozenFields: string[]; identifierFields: string[]; requiredDocumentTypes: string[]
     evidenceAware: boolean; attributes: string[]; documentId: string; pages: string; questions: string
+    procedureKey: string; cycleDefinition?: CycleVouchDefinition
+    cycleRegistry?: CycleEvidenceManifestGroup['registry']; requirementRefs?: string[]
   }
 }) {
   creating.value = true
@@ -183,7 +191,26 @@ async function createTest({ kind, direction, draft }: {
       rcm_refs: draft.rcmId ? [draft.rcmId] : [],
     }
     let created: DocTest
-    if (kind === 'vouching') {
+    if (kind === 'cycle_vouch') {
+      if (!draft.cycleDefinition || !draft.cycleRegistry || !draft.requirementRefs?.length) {
+        throw new Error('The Cycle vouch definition is incomplete.')
+      }
+      const result = await api.post<DocTest | { status: 'selection_confirmation'; selection_confirmation: { reason: string } }>(
+        `/api/workspaces/${props.workspace.id}/doc-tests/build/cycle-vouch`,
+        {
+          ...common,
+          objective: `Vouch ${draft.cycleDefinition.population.table} transactions against the selected cycle evidence.`,
+          registry: draft.cycleRegistry,
+          requirement_refs: draft.requirementRefs,
+          procedure_key: draft.procedureKey,
+          definition: draft.cycleDefinition,
+        },
+      )
+      if ('selection_confirmation' in result) {
+        throw new Error(result.selection_confirmation.reason)
+      }
+      created = result as DocTest
+    } else if (kind === 'vouching') {
       const path = draft.evidenceAware ? 'prepare-evidence-aware' : 'build/vouching'
       created = await api.post(`/api/workspaces/${props.workspace.id}/doc-tests/${path}`, {
         ...common,
@@ -485,6 +512,7 @@ onUnmounted(unsubscribe)
       :documents="documents"
       :planning="planning"
       :documentTypes="documentTypes"
+      :cycleMetadata="cycleMetadata"
       :initialRcmId="requestedRcmId"
       :creating="creating"
       @create="createTest"

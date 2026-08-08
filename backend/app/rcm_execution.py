@@ -157,6 +157,14 @@ def test_manifest(workspace: Workspace) -> list[dict]:
                 "objective": str(item.get("objective") or ""),
                 "criteria": str(item.get("criteria") or ""),
                 "steps": list(item.get("steps") or []),
+                "test_kind": str(item.get("kind") or ""),
+                "requirement_refs": list(item.get("requirement_refs") or []),
+                "procedure_key": str(item.get("procedure_key") or ""),
+                "definition": dict(item.get("definition") or {}),
+                "coverage": dict(item.get("coverage") or {}),
+                "assurance_scope": str(
+                    (item.get("coverage") or {}).get("assurance_scope") or ""
+                ),
                 "status": str(item.get("status") or ""),
                 "created_by": str(item.get("created_by") or ""),
                 "specified": _specified(test),

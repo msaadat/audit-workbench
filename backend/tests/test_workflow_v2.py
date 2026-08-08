@@ -1684,11 +1684,17 @@ _RCM_RESPONSE = {
             "process": "Accounts payable",
             "risk": "Duplicate payments are processed",
             "risk_rating": "high",
-            "assertion": "Occurrence",
+            "control_attributes": [
+                {
+                    "key": "duplicate_payment_prevention",
+                    "assertion": "Operational",
+                    "requirement": "Duplicate invoice validation operates before payment.",
+                    "evidence_kind": "manual_inspection",
+                }
+            ],
             "control": "Duplicate invoice validation",
             "control_type": "Automated preventive",
             "test_procedure": "Test invoice and amount duplicates.",
-            "new_risk_reason": "No existing RCM row covers duplicate payments.",
         }
     ]
 }
@@ -2501,14 +2507,23 @@ def test_full_workflow_runs_capability_closure_and_records_exception_observation
                 "rows": [
                     {
                         "operation": "create",
-                        "process": "Accounts payable",
-                        "risk": "Duplicate invoices may be paid",
-                        "risk_rating": "high",
-                        "assertion": "Occurrence",
-                        "control": "Duplicate invoice validation",
-                        "control_type": "Automated preventive",
-                        "new_risk_reason": "No current RCM row covers duplicate invoices.",
-                    }
+                            "process": "Accounts payable",
+                            "risk": "Duplicate invoices may be paid",
+                            "risk_rating": "high",
+                            "control_attributes": [
+                                {
+                                    "key": "duplicate_invoice_prevention",
+                                    "assertion": "Operational",
+                                    "requirement": (
+                                        "Duplicate invoice validation operates before "
+                                        "payment."
+                                    ),
+                                    "evidence_kind": "manual_inspection",
+                                }
+                            ],
+                            "control": "Duplicate invoice validation",
+                            "control_type": "Automated preventive",
+                        }
                 ]
             },
             "agent:test_generate": {

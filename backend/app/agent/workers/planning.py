@@ -9,6 +9,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from ... import cycle_vouching
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -218,12 +219,14 @@ RCM_WORKER_ID = "planning.rcm"
 RCM_SYSTEM = f"""[agent:rcm]
 Revise the current risk and control matrix using durable RCM ids. Return an object with `rows`, each
 row containing operation (update|create), rcm_id for updates, process, risk,
-risk_rating (low|medium|high|critical), assertion, control, and control_type,
+risk_rating (low|medium|high|critical), control, control_type, and
+control_attributes,
 plus criteria and control_owner where the planning basis supports them.
-All ids and narrative fields are strings. New rows also include new_risk_reason
-as a string. Describe the risk and the control only — how the control is tested
-is decided later, one test at a time. Do not invent control operation as fact
-when evidence is absent.
+All ids and narrative fields are strings. business_cycle is derived locally
+from validated transaction-cycle attributes; do not infer or return it.
+Describe the risk and the control only — how the control is tested is decided
+later, one test at a time. Do not invent control operation as fact when evidence
+is absent.
 
 Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
 - Cover the standard risks a competent auditor would consider for every in-scope
@@ -240,21 +243,85 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   table shows a value is recorded, never that it is controlled.
 - The risk wording rules apply to the control field too. No percentages, null
   rates, counts, or column names, and no appended deficiency clause.
-- assertion is exactly one of Existence, Completeness, Accuracy, Authorization,
-  Valuation, Cut-off, Compliance, Operational. Nothing else, and never two
-  joined by "and".
+- control_attributes is a non-empty array. Each entry describes one distinct
+  requirement of this same asserted control with key, assertion, requirement,
+  and evidence_kind. Assertions use exactly Existence, Completeness, Accuracy,
+  Authorization, Valuation, Cut-off, Compliance, or Operational. Attribute keys
+  are unique within the row. Do not split one risk/control into extra rows merely
+  because it has several attributes.
+- Enumerate the control's requirements; do not collapse a control to one
+  attribute out of habit. A control described as matching an invoice to its PO
+  and receipt before payment carries separate requirements for the match, for
+  receipt preceding payment, and for the amount agreeing. Where the control
+  genuinely asserts one thing, one attribute is correct.
+- evidence_kind names where the evidence for that requirement actually lives.
+  Choose it from the supplied material, not from the requirement's wording:
+    tabular_population  the imported tables can answer it across the whole
+                        population — uniqueness, null or missing values,
+                        thresholds, date ordering, status combinations,
+                        counts, or a value compared against another column.
+                        This is the default whenever a table carries the fields
+                        the requirement names.
+    transaction_cycle   the answer needs several *documents* of different
+                        registered record kinds linked by transaction
+                        identifiers, and the tables alone cannot establish it.
+    document_content    one document states the requirement or the fact.
+    manual_inspection, inquiry, mixed  no imported evidence answers it.
+  Prefer tabular_population over transaction_cycle wherever the tables hold the
+  fields: a cycle attribute reaches only those transactions that have uploaded
+  documents, which is usually a tiny part of the population and can never
+  support a population-level conclusion. Do not use inquiry for something the
+  supplied tables can measure.
+- Only transaction_cycle entries carry registry and required_record_kinds. For
+  those entries, registry is an object with exactly pack_id, pack_version, and
+  definition_hash copied from one installed pack. required_record_kinds is a
+  sibling of registry on the control-attribute object, never a key inside
+  registry, and contains at least two unique bindable record-kind ids from that
+  same pack — a cycle is a link between records, so a requirement needing one
+  record kind is document_content or tabular_population instead. Every other
+  evidence kind forbids both fields. The application derives the row's
+  business_cycle from these validated attributes.
 - criteria and control_owner are optional: cite or name only what the planning
   basis supplies, and leave the field empty otherwise rather than guessing.
 - Supplied table profiles are value-free shape statistics, not evidence. A null
   percentage is not an exception rate; a maximum is not a policy limit.
 - One risk and one control per row. {JSON_RULES}"""
 
+# An RCM row selects a pack and its record kinds; it never names an identifier,
+# field, or normalizer. Supplying only what the row can legitimately reference
+# keeps the prompt small and stops the cycle vocabulary reading as the preferred
+# evidence strategy simply because it is described at greater length.
+_RCM_CANONICAL_PACK_REFERENCES = [
+    {
+        "registry": {
+            "pack_id": pack["id"],
+            "pack_version": pack["version"],
+            "definition_hash": pack["definition_hash"],
+        },
+        "bindable_record_kinds": [
+            record_kind["id"]
+            for record_kind in pack["record_kinds"]
+            if record_kind["bindable"]
+        ],
+    }
+    for pack in cycle_vouching.metadata()["registry"]["packs"]
+]
+RCM_SYSTEM += (
+    "\nInstalled transaction-evidence packs. Copy one `registry` object exactly "
+    "and choose two or more of its bindable_record_kinds, only where the "
+    "requirement genuinely needs linked documents:\n"
+) + json.dumps(
+    _RCM_CANONICAL_PACK_REFERENCES,
+    sort_keys=True,
+    separators=(",", ":"),
+)
+
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
 _RCM_REQUIRED_FIELDS = (
     "process",
     "risk",
     "risk_rating",
-    "assertion",
+    "control_attributes",
     "control",
     "control_type",
 )
@@ -325,52 +392,75 @@ def validate_rcm_proposal(
         if isinstance(row, Mapping) and row.get("id")
     }
     normalized: list[dict] = []
+    errors: list[str] = []
     for index, row in enumerate(rows, start=1):
-        if not isinstance(row, Mapping):
-            raise WorkerResponseValidationError(f"RCM row {index} is not an object")
-        missing = [
-            key for key in _RCM_REQUIRED_FIELDS if not str(row.get(key) or "").strip()
-        ]
-        if missing:
-            raise WorkerResponseValidationError(
-                f"RCM row {index} is missing {missing[0]}"
-            )
-        non_string = [
-            key for key in _RCM_REQUIRED_FIELDS if not isinstance(row.get(key), str)
-        ]
-        if non_string:
-            raise WorkerResponseValidationError(
-                f"RCM row {index} field {non_string[0]} must be a string"
-            )
-        if str(row.get("risk_rating")).casefold() not in _RCM_RISK_RATINGS:
-            raise WorkerResponseValidationError(
-                f"RCM row {index} has an unsupported risk rating"
-            )
-        operation = str(row.get("operation") or "").strip().lower()
-        if operation not in {"update", "create"}:
-            raise WorkerResponseValidationError(
-                f"RCM row {index} has an unsupported operation"
-            )
-        if operation == "update":
+        try:
+            if not isinstance(row, Mapping):
+                raise WorkerResponseValidationError(
+                    f"RCM row {index} is not an object"
+                )
+            missing = [key for key in _RCM_REQUIRED_FIELDS if not row.get(key)]
+            if missing:
+                raise WorkerResponseValidationError(
+                    f"RCM row {index} is missing {missing[0]}"
+                )
+            non_string = [
+                key for key in _RCM_REQUIRED_FIELDS
+                if key != "control_attributes" and not isinstance(row.get(key), str)
+            ]
+            if non_string:
+                raise WorkerResponseValidationError(
+                    f"RCM row {index} field {non_string[0]} must be a string"
+                )
+            if str(row.get("risk_rating")).casefold() not in _RCM_RISK_RATINGS:
+                raise WorkerResponseValidationError(
+                    f"RCM row {index} has an unsupported risk rating"
+                )
             try:
-                row_id = _canonical_rcm_id(row.get("rcm_id"))
-            except ValueError:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} has an invalid rcm_id"
+                attributes = cycle_vouching.validate_control_attributes(
+                    _plain_json(row.get("control_attributes"))
                 )
-            if not row_id or row_id not in existing_ids:
+            except cycle_vouching.CycleSchemaError as error:
                 raise WorkerResponseValidationError(
-                    f"RCM row {index} does not identify an existing RCM row"
+                    f"RCM row {index}: {error}"
+                ) from error
+            packs = {
+                str(attribute["registry"]["pack_id"])
+                for attribute in attributes
+                if attribute.get("evidence_kind") == "transaction_cycle"
+            }
+            if len(packs) > 1:
+                raise WorkerResponseValidationError(
+                    f"RCM row {index} mixes transaction-cycle packs"
                 )
-        if operation == "create" and not isinstance(row.get("new_risk_reason"), str):
-            raise WorkerResponseValidationError(
-                f"RCM row {index} new_risk_reason must be a string"
-            )
-        if operation == "create" and not str(row.get("new_risk_reason") or "").strip():
-            raise WorkerResponseValidationError(
-                f"RCM row {index} does not explain why the risk is new"
-            )
-        normalized.append(_plain_json(row))
+            expected_cycle = next(iter(packs), "")
+            operation = str(row.get("operation") or "").strip().lower()
+            if operation not in {"update", "create"}:
+                raise WorkerResponseValidationError(
+                    f"RCM row {index} has an unsupported operation"
+                )
+            if operation == "update":
+                try:
+                    row_id = _canonical_rcm_id(row.get("rcm_id"))
+                except ValueError:
+                    raise WorkerResponseValidationError(
+                        f"RCM row {index} has an invalid rcm_id"
+                    )
+                if not row_id or row_id not in existing_ids:
+                    raise WorkerResponseValidationError(
+                        f"RCM row {index} does not identify an existing RCM row"
+                    )
+            normalized_row = {
+                **_plain_json(row),
+                "business_cycle": expected_cycle,
+                "control_attributes": attributes,
+            }
+            normalized_row.pop("new_risk_reason", None)
+            normalized.append(normalized_row)
+        except WorkerResponseValidationError as error:
+            errors.extend(error.errors)
+    if errors:
+        raise WorkerResponseValidationError(errors)
     return {"rows": normalized}
 
 
@@ -395,19 +485,30 @@ def run_rcm_worker(
                 "control to this engagement using the supplied basis. Do not stop at "
                 "the risks the supplied material happens to comment on. For an "
                 "existing risk, include operation='update' and its exact rcm_id. Use "
-                "operation='create' only for a genuinely uncovered risk and include "
-                "new_risk_reason. Omission never deletes an existing row."
+                "operation='create' only for a genuinely uncovered risk. Omission "
+                "never deletes an existing row."
             ),
         },
         indent=1,
         ensure_ascii=False,
     )
+    conversation = None
     if attempt.is_repair:
-        user += (
-            "\n\nThe previous RCM draft failed the engagement quality gate: "
-            + "; ".join(attempt.validation_errors)
-            + ". Return a complete corrected JSON object."
-        )
+        if attempt.previous_response is None:
+            raise WorkerContractError("An RCM repair requires the previous response.")
+        conversation = [
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": attempt.previous_response},
+            {
+                "role": "user",
+                "content": (
+                    "Correct every listed quality-gate error in the prior RCM draft "
+                    "while preserving all otherwise-valid rows and fields: "
+                    + "; ".join(attempt.validation_errors)
+                    + ". Return the complete corrected JSON object."
+                ),
+            },
+        ]
     activity = dict(request.activity)
     activity.setdefault(
         "context_metrics",
@@ -423,12 +524,15 @@ def run_rcm_worker(
         user,
         activity,
         attempt=attempt.number,
+        conversation=conversation,
     )
 
 
 RCM_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="planning.rcm.response",
-    schema_hash=_sha256_text("rcm-response:json-object-with-rows-array"),
+    schema_hash=_sha256_text(
+        "rcm-response:v2:json-object-with-rows-array-and-control-attributes"
+    ),
     validator=_rcm_response_schema,
 )
 RCM_WORKER = WorkerDefinition(
@@ -439,11 +543,14 @@ RCM_WORKER = WorkerDefinition(
     repair_policy=WorkerRepairPolicy(
         max_repair_attempts=1,
         guidance_hash=_sha256_text(
-            "Repair RCM row contract violations against the current durable row ids."
+            "Repair the prior RCM response against all bounded row errors and current ids."
         ),
     ),
     implementation=run_rcm_worker,
-    semantic_validation_hash=_sha256_text(inspect.getsource(validate_rcm_proposal)),
+    semantic_validation_hash=_sha256_text(
+        inspect.getsource(validate_rcm_proposal)
+        + inspect.getsource(cycle_vouching.validate_control_attributes)
+    ),
     semantic_validator=validate_rcm_proposal,
 )
 

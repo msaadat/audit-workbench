@@ -226,35 +226,10 @@ def test_generate_executor_vouch_step_builds_items_from_the_population():
     request = _request(workspace, rcm_id, [vouch])
     target = TestGenerateExecutorTarget(workspace, "run-vouch", rcm_id)
 
-    EXECUTORS.execute(request, target)
-
-    committed = doc_tests.load_test(
-        target.workspace, doc_tests.list_tests(target.workspace)[0]["id"]
-    )
-    assert committed["kind"] == "vouching"
-    assert committed["spec"]["shape"] == "cycle"
-    assert committed["spec"]["anchor_key"] == "invoice"
-    # Two of the three population rows carry INV-1, so both link; INV-2 does not.
-    assert committed["spec"]["coverage"] == {
-        "population": 3,
-        "linked": 2,
-        "unlinked": 1,
-        "incomplete_roles": 0,
-    }
-    assert [item["label"] for item in committed["items"]] == ["INV-1", "INV-1"]
-    item = committed["items"][0]
-    assert item["documents"][0]["role"] == "invoice"
-    # The expected value came from the row, never from the proposal.
-    assert item["frozen"]["amount"] == 100
-    assert item["checks"][0]["left"] == "row.amount"
-    assert item["checks"][0]["expected"] is None
-
-    # And it executes deterministically off the extracted fields.
-    ws = workspaces.load_workspace(target.workspace.id)
-    ran = doc_tests.run_item(ws, committed["id"], item["id"], run_id="test")
-    assert ran["state"] == "confirmed"
-    assert ran["checks"][0]["verdict"] == "match"
-
+    with pytest.raises(
+        workspaces.WorkspaceError, match="removed vouch-step cycle schema"
+    ):
+        EXECUTORS.execute(request, target)
 
 def test_generate_executor_missing_evidence_blocks_the_test_and_creates_a_request():
     workspace, rcm_id, doc_id = _workspace()

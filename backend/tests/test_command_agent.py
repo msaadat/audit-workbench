@@ -1444,9 +1444,14 @@ def test_full_audit_command_uses_documents_and_planning_templates(monkeypatch, w
         "agent:rcm": {"rows": [{
             "operation": "create",
             "process": "Procurement", "risk": risk, "risk_rating": "high",
-            "assertion": "Authorization", "control": "Approval before commitment",
+            "control_attributes": [{
+                "key": "approval_before_commitment",
+                "assertion": "Authorization",
+                "requirement": "Purchases are approved before commitment.",
+                "evidence_kind": "document_content",
+            }],
+            "control": "Approval before commitment",
             "control_type": "Manual preventive",
-            "new_risk_reason": "No existing RCM row covers procurement approvals.",
         }]},
         "agent:test_generate": {"tests": [{
             "source": "document",

@@ -237,7 +237,9 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
             {
                 "id": item.get("id"), "process": item.get("process"),
                 "risk": item.get("risk"), "risk_rating": item.get("risk_rating"),
-                "assertion": item.get("assertion"), "control": item.get("control"),
+                "business_cycle": item.get("business_cycle"),
+                "control_attributes": list(item.get("control_attributes") or []),
+                "control": item.get("control"),
                 "control_conclusion": (item.get("execution_rollup") or {}).get("control_conclusion"),
                 "review_status": item.get("review_status"),
                 "test_refs": list(item.get("test_refs") or []),

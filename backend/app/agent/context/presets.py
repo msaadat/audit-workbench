@@ -851,6 +851,14 @@ PRESETS.register(
                     budget=ContextBudget(max_items=12, max_characters=12_000),
                 ),
                 ContextSource(
+                    id="transaction_evidence",
+                    source_type="tables",
+                    required=True,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=1, max_characters=40_000),
+                ),
+                ContextSource(
                     id="documents",
                     source_type="documents",
                     required=False,
@@ -886,7 +894,7 @@ PRESETS.register(
             # Data Test code is validated against schema-only empty frames, so
             # profiles are not needed to generate a valid executable procedure.
             # Keep the overall ceiling aligned with the remaining source limits.
-            budget=ContextBudget(max_items=181, max_characters=88_000),
+            budget=ContextBudget(max_items=182, max_characters=128_000),
             privacy=ContextPrivacy(
                 allow_planning_context=True,
                 allow_document_text=True,

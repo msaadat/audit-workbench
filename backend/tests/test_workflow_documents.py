@@ -948,18 +948,6 @@ def test_voucher_workflow_persists_registry_backed_reduced_records(monkeypatch):
                     ],
                     "fields": [
                         {
-                            # Registered for the pack but unavailable on a PO.
-                            "group": "parties",
-                            "kind": "common.party.name",
-                            "attribute": "name",
-                            "value": {
-                                "raw_value": "Vendor Ltd",
-                                "value": "Vendor Ltd",
-                                "normalization_status": "success",
-                                "citation": "C1",
-                            },
-                        },
-                        {
                             "group": "amounts",
                             # Model-facing aliases are canonicalized locally.
                             "kind": "common.amount.total",
@@ -1023,6 +1011,250 @@ def test_voucher_workflow_persists_registry_backed_reduced_records(monkeypatch):
     assert document_analysis.registry_evidence_records(
         workspaces.load_workspace(ws.id), reference
     )[0]["record_id"] == analysis["records"][0]["record_id"]
+
+
+def test_voucher_repairs_unknown_fields_into_shared_quantity_and_status(monkeypatch):
+    """A pack gap must not cost a stated fact or encourage a false substitute."""
+
+    reference = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict()
+
+    def voucher_response(user: str) -> dict:
+        source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].split(
+            "\n\nYour previous response", 1
+        )[0].strip()
+        repairing = "Your previous response could not be used" in user
+        if repairing:
+            assert "quantities.quantity_received" in user
+            assert "quantities.total.value|raw_value" in user
+            assert "do not substitute an unrelated field" in user
+            fields = [
+                {
+                    "group": "dates",
+                    "kind": "receipt_date",
+                    "attribute": "value",
+                    "value": {
+                        "raw_value": "29-Apr -2024",
+                        "value": "2024-04-29",
+                        "normalization_status": "success",
+                        "citation": "C1",
+                    },
+                },
+                {
+                    "group": "quantities",
+                    "kind": "total",
+                    "attribute": "value",
+                    "value": {
+                        "raw_value": "25",
+                        "value": 25,
+                        "normalization_status": "success",
+                        "citation": "C1",
+                    },
+                },
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": {
+                        "raw_value": "Received",
+                        "value": "Received",
+                        "normalization_status": "success",
+                        "citation": "C1",
+                    },
+                },
+            ]
+        else:
+            # Reproduce the real failure: the model names a sensible field that
+            # is not part of the closed registry contract.
+            fields = [
+                {
+                    "group": "quantities",
+                    "kind": "quantity_received",
+                    "attribute": "value",
+                    "value": {
+                        "raw_value": "25",
+                        "value": 25,
+                        "normalization_status": "success",
+                        "citation": "C1",
+                    },
+                }
+            ]
+        return {
+            "summary_markdown": "The GRN records receipt of 25 kits. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record."
+            ),
+            "citations": [{"id": "C1", "page": 1, "excerpt": source}],
+            "registry": reference,
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.goods_receipt",
+                    "classification_evidence": ["C1"],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.goods_receipt_number",
+                            "value": {
+                                "raw_value": "GRN2024004",
+                                "value": "GRN2024004",
+                                "normalization_status": "success",
+                                "citation": "C1",
+                            },
+                        },
+                        {
+                            "kind": "procure_to_pay.purchase_order_number",
+                            "value": {
+                                "raw_value": "P02024004",
+                                "value": "P02024004",
+                                "normalization_status": "success",
+                                "citation": "C1",
+                            },
+                        },
+                    ],
+                    "fields": fields,
+                }
+            ],
+        }
+
+    source = (
+        b"GOODS RECEIPT NOTE\nGRN2024004\nPurchase order P02024004\n"
+        b"Receipt date 29-Apr -2024\nQuantity received 25\nReceipt status Received"
+    )
+    ws = workspaces.create_workspace("Generic voucher field repair")
+    voucher = documents.add_document(
+        ws, "GRN2024004.txt", source, category="voucher"
+    )
+    documents.extract_document(ws, voucher["id"])
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    finished = wait_run(
+        ws,
+        runner.start_command_run(
+            ws,
+            "auto",
+            {
+                "source": "tab_button",
+                "text": "Analyze the selected goods receipt.",
+                "goal_template": "document_analysis",
+                "requested_outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
+                "target_refs": [f"document:{voucher['id']}"],
+            },
+            context={"document_ids": [voucher["id"]], "action": "analyze"},
+        )["id"],
+    )
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+    fields = {
+        (field["group"], field["kind"]): field["value"]
+        for field in analysis["records"][0]["fields"]
+    }
+    assert fields[("quantities", "total")]["value"] == 25
+    assert fields[("quantities", "total")]["raw_value"] == "25"
+    assert fields[("statuses", "status")]["value"] == "Received"
+    assert fields[("dates", "receipt_date")]["value"] == "2024-04-29"
+
+
+def test_voucher_repairs_claimed_normalized_value_that_has_wrong_type(monkeypatch):
+    reference = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict()
+
+    def voucher_response(user: str) -> dict:
+        source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].split(
+            "\n\nYour previous response", 1
+        )[0].strip()
+        repairing = "Your previous response could not be used" in user
+        if repairing:
+            assert "cannot be normalized" in user
+            fields = [
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": {
+                        "raw_value": "Received",
+                        "value": "Received",
+                        "normalization_status": "success",
+                        "citation": "C1",
+                    },
+                }
+            ]
+        else:
+            fields = [
+                {
+                    "group": "dates",
+                    "kind": "receipt_date",
+                    "attribute": "value",
+                    "value": {
+                        "raw_value": "Received",
+                        "value": "Received",
+                        "normalization_status": "success",
+                        "citation": "C1",
+                    },
+                }
+            ]
+        return {
+            "summary_markdown": "The receipt status is Received. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record."
+            ),
+            "citations": [{"id": "C1", "page": 1, "excerpt": source}],
+            "registry": reference,
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.goods_receipt",
+                    "classification_evidence": ["C1"],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.goods_receipt_number",
+                            "value": {
+                                "raw_value": "GRN-1",
+                                "value": "GRN-1",
+                                "normalization_status": "success",
+                                "citation": "C1",
+                            },
+                        }
+                    ],
+                    "fields": fields,
+                }
+            ],
+        }
+
+    ws = workspaces.create_workspace("Typed voucher repair")
+    voucher = documents.add_document(
+        ws,
+        "GRN-1.txt",
+        b"Goods receipt GRN-1. Receipt status Received.",
+        category="voucher",
+    )
+    documents.extract_document(ws, voucher["id"])
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    finished = wait_run(
+        ws,
+        runner.start_command_run(
+            ws,
+            "auto",
+            {
+                "source": "tab_button",
+                "text": "Analyze the selected receipt.",
+                "goal_template": "document_analysis",
+                "requested_outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
+                "target_refs": [f"document:{voucher['id']}"],
+            },
+            context={"document_ids": [voucher["id"]], "action": "analyze"},
+        )["id"],
+    )
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+    assert [field["kind"] for field in analysis["records"][0]["fields"]] == [
+        "status"
+    ]
+    assert analysis["records"][0]["fields"][0]["value"]["value"] == "Received"
 
 
 def test_voucher_prompt_exposes_exact_registry_reference_objects():

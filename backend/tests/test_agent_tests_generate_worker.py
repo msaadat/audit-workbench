@@ -10,6 +10,7 @@ resolver, or scheduler.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +72,8 @@ def _bundle(
     document_categories=None,
     document_vouch_profiles=None,
     table_anchor_candidates=None,
+    transaction_manifest=None,
+    rcm_payload=None,
 ):
     values = [
         (
@@ -79,6 +82,17 @@ def _bundle(
             ContextRepresentation("planning_context"),
             {"context": {"objective": "Assess procurement approvals"}},
         ),
+        (
+            "transaction_evidence",
+            "workspace:transaction-evidence",
+            ContextRepresentation("table_metadata"),
+            transaction_manifest or {
+                "schema_version": 1,
+                "rcm_id": rcm_rows[0] if len(rcm_rows) == 1 else "",
+                "groups": [],
+                "manifest_sha256": "sha256:" + "0" * 64,
+            },
+        ),
     ]
     for rcm_id in rcm_rows:
         values.append(
@@ -86,7 +100,7 @@ def _bundle(
                 "rcm_row",
                 f"rcm:{rcm_id}",
                 ContextRepresentation("current_artifact"),
-                {
+                rcm_payload or {
                     "id": rcm_id,
                     "risk": "Duplicate payments are processed",
                     "control": "Duplicate invoice validation",
@@ -315,10 +329,8 @@ def test_generate_worker_sends_a_compact_context_projection():
         "methodology",
         "instructions",
     }
-    # The default bundle carries a policy document only, so the projection says
-    # so rather than leaving the model to infer it from a category field.
-    assert payload["transaction_evidence"]["document_ids"] == []
-    assert "not possible" in payload["transaction_evidence"]["note"]
+    assert payload["transaction_evidence"]["groups"] == []
+    assert payload["transaction_evidence"]["manifest_sha256"].startswith("sha256:")
     assert payload["target_rcm_row"]["id"] == "RCM-1"
     assert payload["planning_context"] == {"objective": "Assess procurement approvals"}
     assert payload["table_schemas"][0]["table"] == "transactions"
@@ -340,33 +352,53 @@ def test_generate_worker_produces_a_ready_document_question_test():
     assert "checks" not in step
 
 
+def test_generate_worker_accepts_the_canonical_cycle_definition():
+    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cycle = _test_payload(contract)
+    response = {
+        "source": "document",
+        "kind": "cycle_vouch",
+        **{
+            key: cycle[key]
+            for key in (
+                "title",
+                "objective",
+                "registry",
+                "requirement_refs",
+                "procedure_key",
+                "definition",
+            )
+        },
+    }
+    bundle = _bundle(
+        rcm_rows=(cycle["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+    )
+    gateway = _Gateway([json.dumps({"tests": [response]})])
+
+    result = WORKERS.execute(_request(bundle), gateway)
+
+    proposed = result.proposal["tests"][0]
+    assert proposed["kind"] == "cycle_vouch"
+    assert list(proposed["requirement_refs"]) == cycle["requirement_refs"]
+    assert "steps" not in proposed
+
+
 def test_generate_worker_produces_a_ready_document_vouch_test():
-    """A vouch step is a cycle plan: paths on both sides, no expected values."""
+    """The retired narrative cycle branch fails closed."""
 
-    gateway = _Gateway([json.dumps({"tests": [_document_test(steps=[_vouch_step()])]})])
+    invalid = json.dumps({"tests": [_document_test(steps=[_vouch_step()])]})
+    gateway = _Gateway([invalid, invalid, invalid])
 
-    result = WORKERS.execute(_request(_voucher_bundle()), gateway)
-
-    step = result.proposal["tests"][0]["steps"][0]
-    assert step["mode"] == "vouch"
-    assert step["anchor_table"] == "transactions"
-    assert step["anchor_key"] == "invoice"
-    assert [dict(role) for role in step["document_roles"]] == [
-        {"role": "invoice", "required": True, "document_types": ("invoice",)}
-    ]
-    assert [dict(check) for check in step["checks"]] == [
-        {
-            "field": "amount agrees",
-            "left": "row.amount",
-            "right": "invoice.amount.total",
-            "method": "numeric_tolerance",
-            "tolerance": 0,
-        }
-    ]
-    assert "question" not in step
-    # The model never names documents for a cycle: linking is by extracted
-    # identifier, which is what makes the sample reproducible.
-    assert "document_ids" not in step
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
+        WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
 def test_generate_worker_names_the_transaction_evidence_it_was_supplied():
@@ -377,8 +409,7 @@ def test_generate_worker_names_the_transaction_evidence_it_was_supplied():
     WORKERS.execute(_request(_voucher_bundle()), gateway)
 
     evidence = json.loads(gateway.calls[0]["user"])["transaction_evidence"]
-    assert evidence["document_ids"] == ["DOC-1"]
-    assert "extracted structured record" in evidence["note"]
+    assert evidence["groups"] == []
 
 
 def test_generate_worker_supplies_only_grounded_vouch_candidates_and_paths():
@@ -387,49 +418,16 @@ def test_generate_worker_supplies_only_grounded_vouch_candidates_and_paths():
     WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
 
     payload = json.loads(gateway.calls[0]["user"])
-    evidence = payload["transaction_evidence"]
-    assert evidence["available_document_types"] == ["invoice"]
-    assert evidence["documents"] == [
-        {
-            "document_id": "DOC-1",
-            "document_type": "invoice",
-            "available_path_suffixes": [
-                "identifier.invoice_number",
-                "amount.total",
-            ],
-        }
-    ]
-    assert evidence["anchor_candidates"] == [
-        {
-            "table": "transactions",
-            "anchor_key": "invoice",
-            "matched_rows": 1,
-            "matched_document_count": 1,
-            "document_types": ["invoice"],
-        }
-    ]
-    # Transport-only grounding metadata appears once in the dedicated manifest,
-    # not duplicated through the ordinary schemas and document summaries.
-    assert "vouch_anchor_candidates" not in payload["table_schemas"][0]
-    assert "vouch_profile" not in payload["documents"][0]
+    assert payload["transaction_evidence"]["groups"] == []
 
 
 def test_generate_response_contract_discriminates_the_failure_prone_shapes():
-    contract = tests_workers.GENERATE_RESPONSE_CONTRACT["test"]
-    assert contract["discriminator"] == ["source", "steps[].mode"]
-    variants = contract["variants"]
-
-    question = variants["document_question"]["step"]["variants"]
-    assert question["with_sources"]["document_ids"] == "non_empty"
-    assert question["missing_evidence"]["document_ids"] == "empty"
-    checks = variants["document_vouch"]["step"]["check_variants"]
-    assert checks["present"] == {
-        "required": ["field", "left", "method"],
-        "method": "present",
-        "forbidden": ["right", "tolerance"],
-    }
-    assert "present" not in checks["binary"]["methods"]
-    assert "Authoritative response contract:" in tests_workers.GENERATE_SYSTEM
+    variants = tests_workers.GENERATE_RESPONSE_CONTRACT["variants"]
+    assert set(variants) == {"data", "document_question", "cycle_vouch"}
+    assert variants["cycle_vouch"]["kind"] == "cycle_vouch"
+    assert "steps" in variants["cycle_vouch"]["forbidden"]
+    assert "Cycle Vouch" in tests_workers.GENERATE_SYSTEM
+    assert "Do not emit dotted paths" in tests_workers.GENERATE_SYSTEM
 
 
 def test_generate_worker_rejects_a_literal_expected_value_in_a_vouch_check():
@@ -457,7 +455,7 @@ def test_generate_worker_rejects_a_literal_expected_value_in_a_vouch_check():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="literal expected value"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
@@ -488,7 +486,7 @@ def test_generate_worker_rejects_a_vouch_plan_the_schemas_cannot_resolve():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="unknown table 'nope'"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
@@ -504,7 +502,7 @@ def test_generate_worker_rejects_an_ungrounded_anchor_when_candidates_exist():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="no locally verified identifier overlap"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
 
 
@@ -531,7 +529,7 @@ def test_generate_worker_rejects_a_check_naming_an_undeclared_role():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="undeclared role 'goods_receipt'"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
@@ -542,16 +540,14 @@ def test_generate_worker_refuses_a_vouch_test_without_transaction_evidence():
     gateway = _Gateway([invalid, invalid, invalid])
 
     # The default bundle supplies a policy document only.
-    with pytest.raises(WorkerRunError, match="no transaction-evidence document"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(), gateway)
 
 
 def test_generate_worker_allows_document_to_document_cycle_checks():
-    """Chaining: neither side of a check has to be the population row."""
+    """Even a well-shaped old dotted-path cycle is rejected."""
 
-    gateway = _Gateway(
-        [
-            json.dumps(
+    invalid = json.dumps(
                 {
                     "tests": [
                         _document_test(
@@ -594,23 +590,10 @@ def test_generate_worker_allows_document_to_document_cycle_checks():
                     ]
                 }
             )
-        ]
-    )
+    gateway = _Gateway([invalid, invalid, invalid])
 
-    result = WORKERS.execute(_request(_voucher_bundle()), gateway)
-
-    step = result.proposal["tests"][0]["steps"][0]
-    assert [check["method"] for check in step["checks"]] == [
-        "numeric_tolerance",
-        "date_order",
-        "present",
-    ]
-    # A unary method carries no right-hand side.
-    assert step["checks"][2]["right"] == ""
-    assert list(step["document_roles"][2]["document_types"]) == [
-        "goods_receipt",
-        "receipt",
-    ]
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
+        WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
 def test_generate_worker_rejects_an_import_category_as_a_document_type():
@@ -649,7 +632,7 @@ def test_generate_worker_rejects_an_import_category_as_a_document_type():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="not an extracted document type"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
@@ -683,7 +666,7 @@ def test_generate_worker_rejects_a_type_absent_from_the_supplied_evidence():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="supplied evidence contains only: invoice"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
 
 
@@ -710,7 +693,7 @@ def test_generate_worker_rejects_a_path_absent_from_the_supplied_evidence():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="unavailable extracted path 'date.invoice_date'"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_grounded_voucher_bundle()), gateway)
 
 
@@ -722,7 +705,7 @@ def test_generate_worker_rejects_two_vouch_steps_in_one_test():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="a vouch test is one cycle plan"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(_voucher_bundle()), gateway)
 
 
@@ -781,7 +764,7 @@ def test_generate_worker_rejects_mixed_document_modes_within_one_test():
     )
     gateway = _Gateway([invalid, invalid, invalid])
 
-    with pytest.raises(WorkerRunError, match="mixes document modes"):
+    with pytest.raises(WorkerRunError, match="removed vouch-step schema"):
         WORKERS.execute(_request(), gateway)
 
 
@@ -951,7 +934,7 @@ def test_generate_worker_reports_every_contract_error_in_one_repair():
     guidance = conversation[2]["content"]
     assert "tests[0].objective" in guidance
     assert "unknown column 'ghost'" in guidance
-    assert "mixes document modes" in guidance
+    assert "removed vouch-step schema" in guidance
     assert "preserving every unaffected test and field" in guidance
 
 

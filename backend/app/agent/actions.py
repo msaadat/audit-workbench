@@ -911,7 +911,8 @@ _register(
     properties={
         "process": STR, "risk": STR,
         "risk_rating": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
-        "assertion": STR, "control": STR, "control_type": STR, "test_procedure": STR,
+        "business_cycle": STR, "control_attributes": ARR,
+        "control": STR, "control_type": STR, "test_procedure": STR,
     },
 )
 _register("edit_rcm_row", "Edit one RCM row", "reversible_mutation", ("rcm",), ("changes",), {"changes": OBJ})

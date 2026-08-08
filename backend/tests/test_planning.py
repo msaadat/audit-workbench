@@ -40,10 +40,18 @@ PLANNING_RESPONSES = {
                 "process": "Accounts payable",
                 "risk": "Duplicate payments are processed",
                 "risk_rating": "high",
-                "assertion": "Occurrence",
+                "control_attributes": [
+                    {
+                        "key": "duplicate_payment_prevention",
+                        "assertion": "Operational",
+                        "requirement": (
+                            "Duplicate invoice validation operates before payment."
+                        ),
+                        "evidence_kind": "manual_inspection",
+                    }
+                ],
                 "control": "Duplicate invoice validation",
                 "control_type": "Automated preventive",
-                "new_risk_reason": "No existing RCM row covers duplicate payments.",
                 "test_refs": [],
             }
         ]
@@ -202,7 +210,17 @@ def test_planning_rerun_receives_and_updates_current_drafts(monkeypatch):
             "rows": [{
                 "operation": "update", "rcm_id": row_id,
                 "process": "Accounts payable", "risk": "Duplicate payments are processed",
-                "risk_rating": "critical", "assertion": "Occurrence",
+                "risk_rating": "critical",
+                "control_attributes": [
+                    {
+                        "key": "duplicate_payment_prevention",
+                        "assertion": "Operational",
+                        "requirement": (
+                            "Duplicate invoice validation operates before payment."
+                        ),
+                        "evidence_kind": "manual_inspection",
+                    }
+                ],
                 "control": "Duplicate invoice validation", "control_type": "Automated preventive",
             }]
         }
@@ -861,5 +879,4 @@ def test_rcm_import_rejects_invalid_enum_values():
 
     unchanged = client.get(f"{base}/rcm").json()["items"][0]
     assert unchanged["risk_rating"] == "medium"
-
 
