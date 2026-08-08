@@ -904,6 +904,13 @@ class AnalysisWorkflowExecution(BaseRunner):
                     f"Analysis '{covered}' already computes this from the same "
                     "columns on a related frame; not duplicated here."
                 )
+            for reason in output.get("dropped") or []:
+                # A proposal that failed local execution or established
+                # nothing is not evidence against its siblings, so it is
+                # dropped rather than failing the whole frame — but a dropped
+                # proposal is still a gap, and the auditor cannot see a
+                # proposal that was never saved unless it is said here.
+                self.warn(f"'{target_frame}': dropped a proposed analysis — {reason}")
             self.task_status(task, "completed")
 
         def conflict_handler(_stage, _unit, error) -> tuple[str, str] | None:

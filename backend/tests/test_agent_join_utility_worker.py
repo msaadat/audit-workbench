@@ -67,6 +67,16 @@ _ORDERS_TO_STAFF_REQUESTER = {
     "ref": "relationship:orders:staff:requested_by:staff_id",
     "left_on": ["requested_by"],
 }
+_ORDERS_TO_VENDOR = {
+    "ref": "relationship:orders:vendor:vendor_id:vendor_id",
+    "left": "orders",
+    "right": "vendor",
+    "left_on": ["vendor_id"],
+    "right_on": ["vendor_id"],
+    "role_key": False,
+    "strength": "strong",
+    "diagnostics": {"match_rate": 1.0, "row_multiplication": 1.0},
+}
 
 
 def _catalog(candidates=None):
@@ -75,8 +85,9 @@ def _catalog(candidates=None):
             candidates if candidates is not None else [_ORDERS_TO_STAFF]
         ),
         "table_columns": {
-            "orders": ["order_id", "approved_by", "requested_by", "amount"],
+            "orders": ["order_id", "approved_by", "requested_by", "amount", "vendor_id"],
             "staff": ["staff_id", "job_title"],
+            "vendor": ["vendor_id", "status"],
         },
     }
 
@@ -114,6 +125,170 @@ def _retain(ref=_ORDERS_TO_STAFF["ref"], columns=None, requires=None):
         "columns": columns or ["orders.approved_by", "staff.staff_id"],
         "requires": requires or ["orders", "staff"],
     }
+
+
+def _reject(ref, rationale="No concrete audit test spans these tables.", superseded_by=None):
+    payload = {"ref": ref, "decision": "reject", "rationale": rationale}
+    if superseded_by is not None:
+        payload["superseded_by"] = superseded_by
+    return payload
+
+
+def test_a_rejection_may_cite_a_same_pair_alternate_as_superseding_it():
+    """The gate's own reason for having ``superseded_by`` at all: two keys
+    connecting the identical pair of tables, one retained and the other
+    rejected because of it."""
+
+    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_STAFF_REQUESTER])
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {
+            "decisions": (
+                _retain(),
+                _reject(
+                    _ORDERS_TO_STAFF_REQUESTER["ref"],
+                    superseded_by=_ORDERS_TO_STAFF["ref"],
+                ),
+            )
+        },
+        _request(catalog),
+    )
+
+    rejected = next(
+        item
+        for item in accepted["decisions"]
+        if item["ref"] == _ORDERS_TO_STAFF_REQUESTER["ref"]
+    )
+    assert rejected["superseded_by"] == _ORDERS_TO_STAFF["ref"]
+
+
+def test_a_rejection_cannot_cite_a_different_pair_as_superseding_it():
+    """This is the exact shape of the regression: rejecting orders-to-vendor
+    because orders-to-staff was retained. They connect different tables — one
+    being joined does not make the other redundant, and accepting the claim
+    is how a table silently drops out of the join graph entirely."""
+
+    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
+
+    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
+        analysis_worker.validate_join_utility_proposal(
+            {
+                "decisions": (
+                    _retain(),
+                    _reject(
+                        _ORDERS_TO_VENDOR["ref"],
+                        superseded_by=_ORDERS_TO_STAFF["ref"],
+                    ),
+                )
+            },
+            _request(catalog),
+        )
+
+    message = "; ".join(caught.value.errors)
+    assert _ORDERS_TO_VENDOR["ref"] in message
+    assert _ORDERS_TO_STAFF["ref"] in message
+    assert "different table pairs" in message
+
+
+def test_a_rejection_cannot_cite_a_ref_that_was_itself_rejected():
+    """The circular case: A claims to be superseded by B, but B was rejected
+    too. Whatever B's own status, it cannot be the reason A is redundant."""
+
+    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
+
+    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
+        analysis_worker.validate_join_utility_proposal(
+            {
+                "decisions": (
+                    _reject(_ORDERS_TO_STAFF["ref"]),
+                    _reject(
+                        _ORDERS_TO_VENDOR["ref"],
+                        superseded_by=_ORDERS_TO_STAFF["ref"],
+                    ),
+                )
+            },
+            _request(catalog),
+        )
+
+    assert "was not retained" in "; ".join(caught.value.errors)
+
+
+def test_a_rejection_cannot_cite_itself():
+    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
+
+    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
+        analysis_worker.validate_join_utility_proposal(
+            {
+                "decisions": (
+                    _retain(),
+                    _reject(_ORDERS_TO_VENDOR["ref"], superseded_by=_ORDERS_TO_VENDOR["ref"]),
+                )
+            },
+            _request(catalog),
+        )
+
+    assert "cannot cite itself" in "; ".join(caught.value.errors)
+
+
+def test_a_rejection_with_no_superseded_by_needs_no_alternate():
+    """Most rejections are not about redundancy at all — the pair itself
+    supports no control. Nothing here should demand a citation for those."""
+
+    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
+    accepted = analysis_worker.validate_join_utility_proposal(
+        {"decisions": (_retain(), _reject(_ORDERS_TO_VENDOR["ref"]))},
+        _request(catalog),
+    )
+
+    rejected = next(
+        item for item in accepted["decisions"] if item["ref"] == _ORDERS_TO_VENDOR["ref"]
+    )
+    assert rejected["superseded_by"] == ""
+
+
+def test_free_text_redundancy_language_without_the_structured_field_is_caught():
+    """The exact shape the real regression took: the model wrote "superseded by
+    the retained relationship..." in prose while the structured field — which
+    the mechanical cross-pair check actually reads — was never populated. A
+    validator that only checked the structured field when present would have
+    let this exact response straight through."""
+
+    catalog = _catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR])
+
+    with pytest.raises(analysis_worker.WorkerResponseValidationError) as caught:
+        analysis_worker.validate_join_utility_proposal(
+            {
+                "decisions": (
+                    _retain(),
+                    _reject(
+                        _ORDERS_TO_VENDOR["ref"],
+                        rationale=(
+                            "Superseded by the retained relationship between "
+                            "orders and staff for approval authority."
+                        ),
+                    ),
+                )
+            },
+            _request(catalog),
+        )
+
+    assert "rationale claims another relationship" in "; ".join(caught.value.errors)
+
+
+def test_superseded_by_is_required_on_every_rejection():
+    """Optional would let a model skip the field while still arguing redundancy
+    in prose, which is exactly the gap the free-text check exists to close —
+    but only because the field is required does a model have to decide, every
+    time, whether it is making that claim at all."""
+
+    tool = analysis_worker._join_utility_submission_tool(
+        _request(_catalog([_ORDERS_TO_STAFF, _ORDERS_TO_VENDOR]))
+    )
+    reject_branch = next(
+        branch
+        for branch in tool["function"]["parameters"]["properties"]["decisions"]["items"]["oneOf"]
+        if branch["properties"]["decision"]["enum"] == ["reject"]
+    )
+    assert "superseded_by" in reject_branch["required"]
 
 
 def test_a_valid_decision_survives_the_freeze_between_schema_and_validator():

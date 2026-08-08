@@ -838,6 +838,41 @@ def test_a_frame_is_told_which_test_it_was_materialized_to_support(monkeypatch):
     ]
 
 
+def test_a_frame_carrying_a_hypothesis_is_told_the_join_already_happened(monkeypatch):
+    """The regression this guards: a hypothesis like "invoice X has a matching
+    GRN in po_data" describes the join condition that already built the frame.
+    A model told only that text, with no framing, wrote a self-join to
+    re-establish a match that was already true of every row — and the bad spec
+    then cost its working sibling too (see
+    test_one_broken_python_spec_does_not_cost_its_working_siblings). The system
+    prompt sent alongside a carried hypothesis has to say the match already
+    holds, not leave the model to infer it."""
+
+    ws = _mixed_strength_workspace()
+    fake = _fake_model(monkeypatch)
+    fake.overrides["agent:join_utility"] = _requires_script(
+        {frozenset(("orders", "regions")): {"orders", "regions"}}
+    )
+    run = _analysis_run(ws)
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
+    _drive(ws, run, "data.joins_ready")
+    _drive(ws, run, "analysis.definitions_ready")
+
+    joined = next(
+        call
+        for call in fake.calls
+        if call["tag"] == "agent:analysis_definitions"
+        and json.loads(
+            call["messages"][-1]["content"].split("\n\nYour previous")[0]
+        )["TARGET FRAME"]["table"].endswith("_joined")
+    )
+    system = joined["messages"][0]["content"]
+    assert "already reflect" in system
+    assert "no join, self-join" in system
+
+
 def test_a_retained_test_no_frame_can_carry_is_reported_rather_than_lost(monkeypatch):
     """A gap in what the run prepared is a finding about the run. The frames it
     skipped are not where a reader would go looking for it, so it is said once,
@@ -1706,6 +1741,53 @@ def test_a_broken_definition_is_rejected_before_it_is_saved(
     assert "failed local validation" in definition_unit["error"]
     assert _stage(run, "analysis.executed")["units"] == []
     assert not workspaces.load_workspace(ws.id).analyses
+
+
+def test_one_broken_python_spec_does_not_cost_its_working_siblings(
+    workspace_with_data, monkeypatch
+):
+    """A bug in one generated snippet is not evidence against the rest of the
+    same response. This is the regression a self-join bug actually caused: an
+    unrelated, valid analytics check on the same frame was lost alongside it,
+    because the whole unit failed rather than only the broken proposal."""
+
+    def script(user: str) -> dict:
+        return {
+            "analyses": [
+                {
+                    "title": "Duplicate invoice numbers",
+                    "kind": "analytics",
+                    "spec": {"test": "duplicates", "params": {"columns": ["invoice_no"]}},
+                    "note": "Reused invoice numbers signal double postings.",
+                },
+                {
+                    "title": "Broken preview",
+                    "kind": "python",
+                    "spec": {"code": "result = tables['transactions'].group_by('nope').len()"},
+                    "note": "Expected to hold across these columns.",
+                },
+            ]
+        }
+
+    _fake_model(monkeypatch, script)
+    run = _analysis_run(
+        ws := workspace_with_data,
+        command={
+            "source": "chat",
+            "text": "Analyse the tables",
+            "target_refs": ["table:transactions"],
+        },
+    )
+    _drive(ws, run, "analysis.definitions_ready")
+
+    definition_unit = _stage(run, "analysis.definitions_ready")["units"][0]
+    assert definition_unit["status"] == "succeeded"
+    saved = workspaces.load_workspace(ws.id).analyses
+    assert [item["title"] for item in saved] == ["Duplicate invoice numbers"]
+    assert any(
+        "dropped a proposed analysis" in warning and "Broken preview" in warning
+        for warning in run["warnings"]
+    ), "a proposal that never got saved has to be said out loud, not silently lost"
 
 
 # --------------------------------------------------------------------------- #

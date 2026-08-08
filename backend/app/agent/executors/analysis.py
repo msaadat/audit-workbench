@@ -426,7 +426,7 @@ def _validated_definitions(
 
 def _validate_generated_python_definitions(
     workspace: Workspace, definitions: list[dict]
-) -> None:
+) -> tuple[list[dict], list[str]]:
     """Run generated Polars snippets locally before making them durable.
 
     Static sandbox validation prevents unsafe code, but it cannot detect a
@@ -434,6 +434,13 @@ def _validate_generated_python_definitions(
     Execute each accepted generated snippet against the local workspace frames
     before it becomes an analysis record.  This is local-only and uses exactly
     the same guarded sandbox that later renders and runs saved analyses.
+
+    Dropped rather than raised, like a repeat or a single-sided spec: a bug in
+    one generated snippet is not evidence against the others in the same
+    response, and the worker had no execution feedback to have caught it
+    itself. Raising here would cost the whole frame's harvest — including
+    every analytics-kind proposal, which cannot fail this check at all — over
+    one broken python spec.
     """
     frames = {}
     for name in workspace.table_names():
@@ -441,17 +448,21 @@ def _validate_generated_python_definitions(
             frames[name] = workspace.get_frame(name)
         except Exception:
             continue
+    kept: list[dict] = []
+    dropped: list[str] = []
     for definition in definitions:
         if definition.get("kind") != "python":
+            kept.append(definition)
             continue
         code = str((definition.get("spec") or {}).get("code") or "")
         try:
             sandbox.run(code, frames)
         except sandbox.SandboxError as error:
             title = str(definition.get("title") or "generated Python analysis")
-            raise WorkspaceError(
-                f"Generated Python analysis '{title}' failed local validation: {error}"
-            ) from error
+            dropped.append(f"'{title}' failed local validation: {error}")
+            continue
+        kept.append(definition)
+    return kept, dropped
 
 
 def _screen_uninformative_definitions(
@@ -513,6 +524,7 @@ def _definitions_result(
     written: list[dict],
     preserved: list[str],
     covered: list[str] | None = None,
+    dropped: list[str] | None = None,
 ) -> ExecutorResult:
     refs = [analysis_ref(str(item["id"])) for item in written]
     return ExecutorResult(
@@ -537,6 +549,7 @@ def _definitions_result(
             ],
             "preserved": list(preserved),
             "covered": list(covered or []),
+            "dropped": list(dropped or []),
         },
     )
 
@@ -553,15 +566,27 @@ def execute_analysis_definitions(
     preserved unless the run explicitly permits replacement.
     """
     target, accepted = _validated_definitions(request, raw_target)
-    _validate_generated_python_definitions(target.workspace, accepted)
+    accepted, broken = _validate_generated_python_definitions(
+        target.workspace, accepted
+    )
+    if not accepted:
+        # Distinct from NO_INFORMATIVE_ANALYSIS below: every candidate here
+        # failed to run at all, which is a bug in the generated code, not a
+        # legitimate answer that this frame supports nothing. It stays a hard
+        # failure so it is surfaced rather than read as a quiet "nothing here".
+        raise WorkspaceError(
+            "Generated Python analysis failed local validation: "
+            + "; ".join(broken)
+        )
     accepted, uninformative = _screen_uninformative_definitions(
         target.workspace, accepted
     )
     if not accepted:
         raise WorkspaceError(
             f"{NO_INFORMATIVE_ANALYSIS}: every proposed analysis was run and "
-            "established nothing — " + "; ".join(uninformative)
+            "established nothing — " + "; ".join(broken + uninformative)
         )
+    dropped = broken + uninformative
     state: dict[str, object] = {}
 
     def commit(fresh: Workspace) -> dict:
@@ -649,6 +674,7 @@ def execute_analysis_definitions(
         written=list(committed.value),
         preserved=list(state.get("preserved") or []),
         covered=list(state.get("covered") or []),
+        dropped=dropped,
     )
 
 
