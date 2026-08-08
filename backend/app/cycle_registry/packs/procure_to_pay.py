@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..common import BASE_FIELD_KIND_IDS
 from ..models import (
     CyclePackDefinition,
     FieldAttributeDefinition,
@@ -78,45 +79,33 @@ FIELD_KINDS = (
             FieldAttributeDefinition("raw_value", "text"),
         ),
     ),
-    FieldKindDefinition(
-        "procure_to_pay.approval.request",
-        "Purchase request approval",
-        "approvals",
-        "request_approval",
-        (
-            FieldAttributeDefinition("approver", "text"),
-            FieldAttributeDefinition("decision", "text"),
-            FieldAttributeDefinition("date", "date"),
-        ),
-    ),
 )
+
+# Procurement records routinely print the dates of *other* records in the cycle:
+# a purchase order carries the receipt date of the goods it covers, an invoice
+# carries the date it was received. Those are cross-references the record
+# genuinely states, and an audit reads them, so they are available wherever the
+# record kind can print them rather than only on the record they describe.
+_CYCLE_DATES = ("procure_to_pay.date.receipt", "procure_to_pay.date.payment")
 
 RECORD_KINDS = (
     RecordKindDefinition(
         "procure_to_pay.purchase_requisition",
         "Purchase requisition",
         ("procure_to_pay.requisition_number",),
-        (
-            "procure_to_pay.approval.request",
-            "common.quantity.total",
-            "common.status",
-        ),
+        BASE_FIELD_KIND_IDS,
     ),
     RecordKindDefinition(
         "procure_to_pay.purchase_order",
         "Purchase order",
         ("procure_to_pay.purchase_order_number",),
-        ("common.amount.total", "common.quantity.total", "common.status"),
+        (*BASE_FIELD_KIND_IDS, "procure_to_pay.date.receipt"),
     ),
     RecordKindDefinition(
         "procure_to_pay.goods_receipt",
         "Goods receipt",
         ("procure_to_pay.goods_receipt_number",),
-        (
-            "procure_to_pay.date.receipt",
-            "common.quantity.total",
-            "common.status",
-        ),
+        (*BASE_FIELD_KIND_IDS, "procure_to_pay.date.receipt"),
     ),
     RecordKindDefinition(
         "procure_to_pay.vendor_invoice",
@@ -125,7 +114,7 @@ RECORD_KINDS = (
             "procure_to_pay.vendor_invoice_number",
             "procure_to_pay.internal_invoice_id",
         ),
-        ("common.amount.total", "common.quantity.total", "common.status"),
+        (*BASE_FIELD_KIND_IDS, *_CYCLE_DATES),
     ),
     RecordKindDefinition(
         "procure_to_pay.payment_voucher",
@@ -135,14 +124,14 @@ RECORD_KINDS = (
             "procure_to_pay.vendor_invoice_number",
             "procure_to_pay.internal_invoice_id",
         ),
-        ("common.amount.total", "procure_to_pay.date.payment", "common.status"),
+        (*BASE_FIELD_KIND_IDS, "procure_to_pay.date.payment"),
     ),
 )
 
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Procure to pay",
-    version=3,
+    version=5,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),
@@ -153,10 +142,7 @@ PACK = CyclePackDefinition(
         "common.account_number",
     ),
     field_kind_ids=(
-        "common.amount.total",
-        "common.party.name",
-        "common.quantity.total",
-        "common.status",
+        *BASE_FIELD_KIND_IDS,
         *(definition.id for definition in FIELD_KINDS),
     ),
     record_kind_ids=(

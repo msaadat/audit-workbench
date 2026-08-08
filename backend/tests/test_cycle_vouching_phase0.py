@@ -14,6 +14,7 @@ from app.agent import runner
 from app.agent.capabilities import doc_tests as doc_test_capabilities
 from app.agent.workflows import doc_tests as doc_tests_workflow
 from app.cycle_registry import CycleRegistry, DEFAULT_REGISTRY
+from app.cycle_registry.common import BASE_FIELD_KIND_IDS
 from conftest import wait_run
 
 
@@ -128,22 +129,46 @@ def test_registry_metadata_is_dynamic_and_hash_identified():
     )
 
 
-def test_shared_quantity_and_status_are_pack_opt_in_fields():
-    """Common vocabulary is reusable without opening every pack implicitly."""
+def test_shared_base_fields_reach_every_record_kind_of_every_pack():
+    """A record can state a party, date, approval, or amount in any pack.
 
-    quantity = DEFAULT_REGISTRY.field_kind(
-        "procure_to_pay", "quantities", "total"
-    )
+    A field kind a pack declares but no record kind offers is unusable: the
+    extraction worker reads the fact, cites it, and then has to drop it or
+    relabel it as an unrelated registered field. The shared base is therefore
+    available on every bindable record kind rather than opted into per kind.
+    """
+
+    quantity = DEFAULT_REGISTRY.field_kind("procure_to_pay", "quantities", "total")
     status = DEFAULT_REGISTRY.field_kind("procure_to_pay", "statuses", "status")
-    receipt = DEFAULT_REGISTRY.record_kind(
-        "procure_to_pay", "procure_to_pay.goods_receipt"
-    )
+    party = DEFAULT_REGISTRY.field_kind("procure_to_pay", "parties", "name")
 
     assert quantity.id == "common.quantity.total"
     assert status.id == "common.status"
-    assert {quantity.id, status.id} <= set(receipt.available_field_kinds)
+    assert party.id == "common.party.name"
+
+    for pack_id in ("procure_to_pay", "payroll"):
+        pack = DEFAULT_REGISTRY.pack(pack_id)
+        # Nothing may be declared by a pack and reachable from no record kind.
+        offered = {
+            field_id
+            for record_id in pack.record_kind_ids
+            for field_id in DEFAULT_REGISTRY.record_kinds[record_id].available_field_kinds
+        }
+        assert set(pack.field_kind_ids) == offered
+        for record_id in pack.record_kind_ids:
+            record = DEFAULT_REGISTRY.record_kinds[record_id]
+            if not record.bindable:
+                continue
+            assert set(BASE_FIELD_KIND_IDS) <= set(record.available_field_kinds)
+
+
+def test_pack_specific_fields_still_fail_closed_across_packs():
+    """Sharing the base does not merge the packs' own vocabularies."""
+
     with pytest.raises(ValueError, match="not registered for 'payroll'"):
-        DEFAULT_REGISTRY.field_kind("payroll", "statuses", "status")
+        DEFAULT_REGISTRY.field_kind("payroll", "dates", "receipt_date")
+    with pytest.raises(ValueError, match="not registered for 'procure_to_pay'"):
+        DEFAULT_REGISTRY.field_kind("procure_to_pay", "amounts", "net_pay")
 
 
 def test_expanded_pack_definition_changes_its_hash():

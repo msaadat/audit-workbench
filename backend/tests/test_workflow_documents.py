@@ -1013,119 +1013,15 @@ def test_voucher_workflow_persists_registry_backed_reduced_records(monkeypatch):
     )[0]["record_id"] == analysis["records"][0]["record_id"]
 
 
-def test_voucher_repairs_unknown_fields_into_shared_quantity_and_status(monkeypatch):
-    """A pack gap must not cost a stated fact or encourage a false substitute."""
+GRN_SOURCE = (
+    b"GOODS RECEIPT NOTE\nGRN2024004\nPurchase order P02024004\n"
+    b"Vendor OfficeSupply Co. (V1022)\nReceipt date 29-Apr -2024\n"
+    b"Quantity received 25\nReceipt status Received"
+)
 
-    reference = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict()
 
-    def voucher_response(user: str) -> dict:
-        source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].split(
-            "\n\nYour previous response", 1
-        )[0].strip()
-        repairing = "Your previous response could not be used" in user
-        if repairing:
-            assert "quantities.quantity_received" in user
-            assert "quantities.total.value|raw_value" in user
-            assert "do not substitute an unrelated field" in user
-            fields = [
-                {
-                    "group": "dates",
-                    "kind": "receipt_date",
-                    "attribute": "value",
-                    "value": {
-                        "raw_value": "29-Apr -2024",
-                        "value": "2024-04-29",
-                        "normalization_status": "success",
-                        "citation": "C1",
-                    },
-                },
-                {
-                    "group": "quantities",
-                    "kind": "total",
-                    "attribute": "value",
-                    "value": {
-                        "raw_value": "25",
-                        "value": 25,
-                        "normalization_status": "success",
-                        "citation": "C1",
-                    },
-                },
-                {
-                    "group": "statuses",
-                    "kind": "status",
-                    "attribute": "value",
-                    "value": {
-                        "raw_value": "Received",
-                        "value": "Received",
-                        "normalization_status": "success",
-                        "citation": "C1",
-                    },
-                },
-            ]
-        else:
-            # Reproduce the real failure: the model names a sensible field that
-            # is not part of the closed registry contract.
-            fields = [
-                {
-                    "group": "quantities",
-                    "kind": "quantity_received",
-                    "attribute": "value",
-                    "value": {
-                        "raw_value": "25",
-                        "value": 25,
-                        "normalization_status": "success",
-                        "citation": "C1",
-                    },
-                }
-            ]
-        return {
-            "summary_markdown": "The GRN records receipt of 25 kits. [C1]",
-            "audit_notes_markdown": (
-                "No observations were identified on the face of this record."
-            ),
-            "citations": [{"id": "C1", "page": 1, "excerpt": source}],
-            "registry": reference,
-            "record_fragments": [
-                {
-                    "record_kind": "procure_to_pay.goods_receipt",
-                    "classification_evidence": ["C1"],
-                    "identifiers": [
-                        {
-                            "kind": "procure_to_pay.goods_receipt_number",
-                            "value": {
-                                "raw_value": "GRN2024004",
-                                "value": "GRN2024004",
-                                "normalization_status": "success",
-                                "citation": "C1",
-                            },
-                        },
-                        {
-                            "kind": "procure_to_pay.purchase_order_number",
-                            "value": {
-                                "raw_value": "P02024004",
-                                "value": "P02024004",
-                                "normalization_status": "success",
-                                "citation": "C1",
-                            },
-                        },
-                    ],
-                    "fields": fields,
-                }
-            ],
-        }
-
-    source = (
-        b"GOODS RECEIPT NOTE\nGRN2024004\nPurchase order P02024004\n"
-        b"Receipt date 29-Apr -2024\nQuantity received 25\nReceipt status Received"
-    )
-    ws = workspaces.create_workspace("Generic voucher field repair")
-    voucher = documents.add_document(
-        ws, "GRN2024004.txt", source, category="voucher"
-    )
-    documents.extract_document(ws, voucher["id"])
-    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
-
-    finished = wait_run(
+def _voucher_run(ws, voucher):
+    return wait_run(
         ws,
         runner.start_command_run(
             ws,
@@ -1140,43 +1036,374 @@ def test_voucher_repairs_unknown_fields_into_shared_quantity_and_status(monkeypa
             context={"document_ids": [voucher["id"]], "action": "analyze"},
         )["id"],
     )
+
+
+def _voucher_workspace(name: str, source: bytes = GRN_SOURCE, filename="GRN2024004.txt"):
+    ws = workspaces.create_workspace(name)
+    voucher = documents.add_document(ws, filename, source, category="voucher")
+    documents.extract_document(ws, voucher["id"])
+    return ws, voucher
+
+
+def _excerpt_citations(source: str) -> list[dict]:
+    """One citation per source line, so a fact can cite the line it appears on."""
+
+    return [
+        {"id": f"C{index}", "page": 1, "excerpt": line}
+        for index, line in enumerate(source.splitlines(), start=1)
+        if line.strip()
+    ]
+
+
+def _cited(source: str, needle: str) -> str:
+    return next(
+        citation["id"]
+        for citation in _excerpt_citations(source)
+        if needle in citation["excerpt"]
+    )
+
+
+def _value(raw: str, citation: str, status: str = "normalized") -> dict:
+    return {"raw_value": raw, "normalization_status": status, "citation": citation}
+
+
+def _grn_fragment(source: str, fields: list[dict]) -> dict:
+    return {
+        "record_kind": "procure_to_pay.goods_receipt",
+        "classification_evidence": [_cited(source, "GOODS RECEIPT NOTE")],
+        "identifiers": [
+            {
+                "kind": "procure_to_pay.goods_receipt_number",
+                "value": _value("GRN2024004", _cited(source, "GRN2024004")),
+            }
+        ],
+        "fields": fields,
+    }
+
+
+def _grn_response(source: str, fields: list[dict], **extra) -> dict:
+    return {
+        "summary_markdown": "The GRN records receipt of 25 kits. [C1]",
+        "audit_notes_markdown": (
+            "No observations were identified on the face of this record. [C1]"
+        ),
+        "citations": _excerpt_citations(source),
+        "registry": cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict(),
+        "record_fragments": [_grn_fragment(source, fields)],
+        **extra,
+    }
+
+
+def _source_of(user: str) -> str:
+    return user.split("RAW SOURCE CHUNK:\n", 1)[-1].split(
+        "\n\nYour previous response", 1
+    )[0].strip()
+
+
+def test_voucher_repairs_every_bad_selector_in_one_turn(monkeypatch):
+    """One repair turn must be told about every field it has to change.
+
+    Reporting only the first offending field made a response with two bad
+    selectors unrepairable inside the single permitted repair attempt: the model
+    fixed what it was told about and failed again on the next one.
+    """
+
+    seen: list[str] = []
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        if "Your previous response could not be used" in user:
+            seen.append(user)
+            fields = [
+                {
+                    "group": "dates",
+                    "kind": "receipt_date",
+                    "attribute": "value",
+                    "value": _value("29-Apr -2024", _cited(source, "Receipt date")),
+                },
+                {
+                    "group": "quantities",
+                    "kind": "total",
+                    "attribute": "value",
+                    "value": _value("25", _cited(source, "Quantity received")),
+                },
+            ]
+        else:
+            # Two unregistered selectors at once, plus one that is registered but
+            # unavailable on this record kind.
+            fields = [
+                {
+                    "group": "quantities",
+                    "kind": "quantity_received",
+                    "attribute": "value",
+                    "value": _value("25", _cited(source, "Quantity received")),
+                },
+                {
+                    "group": "dates",
+                    "kind": "inspection_date",
+                    "attribute": "value",
+                    "value": _value("29-Apr -2024", _cited(source, "Receipt date")),
+                },
+                {
+                    "group": "amounts",
+                    "kind": "net_pay",
+                    "attribute": "value",
+                    "value": _value("25", _cited(source, "Quantity received")),
+                },
+            ]
+        return _grn_response(source, fields)
+
+    ws, voucher = _voucher_workspace("Multi-error voucher repair")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+
+    # Every bad selector is named once, not just the first.
+    repair = seen[0]
+    assert "quantities.quantity_received" in repair
+    assert "dates.inspection_date" in repair
+    assert "amounts.net_pay" in repair
+    assert "quantities.total.value|raw_value" in repair
+    assert "do not substitute an unrelated field" not in repair
+    assert "substituting an unrelated field" in repair
+    # The previous response goes back so a repair does not have to reconstruct
+    # the evidence it already had right.
+    assert "YOUR PREVIOUS RESPONSE:" in repair
+    assert "Keep every identifier, field, and citation" in repair
+
+
+def test_voucher_keeps_a_party_name_that_the_record_states(monkeypatch):
+    """The pack gap that cost the most in practice: a party name had no home.
+
+    ``common.party.name`` was declared by both packs and offered by no record
+    kind, so every voucher naming a vendor spent a repair turn and then dropped
+    the name entirely.
+    """
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        vendor = _cited(source, "Vendor OfficeSupply Co.")
+        response = _grn_response(
+            source,
+            [
+                {
+                    "group": "parties",
+                    "kind": "name",
+                    "attribute": "name",
+                    "entry": 0,
+                    "value": _value("OfficeSupply Co.", vendor),
+                },
+                {
+                    # Interpretive: the record prints "Vendor" as a label here,
+                    # but the role is a reading, not a quote.
+                    "group": "parties",
+                    "kind": "name",
+                    "attribute": "role",
+                    "entry": 0,
+                    "value": _value("supplier", vendor),
+                },
+            ],
+        )
+        # The name and the code beside it are two facts, not a choice.
+        response["record_fragments"][0]["identifiers"].append(
+            {"kind": "common.vendor_id", "value": _value("V1022", vendor)}
+        )
+        return response
+
+    ws, voucher = _voucher_workspace("Voucher party name")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
     analysis = document_analysis.load_analysis(
         workspaces.load_workspace(ws.id), voucher["id"]
     )["effective"]
 
     assert finished["status"] == "completed"
-    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+    # No repair: the fact the record states is representable on the first turn.
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
     fields = {
-        (field["group"], field["kind"]): field["value"]
+        (field["group"], field["kind"], field["attribute"]): field["value"]
         for field in analysis["records"][0]["fields"]
     }
-    assert fields[("quantities", "total")]["value"] == 25
-    assert fields[("quantities", "total")]["raw_value"] == "25"
-    assert fields[("statuses", "status")]["value"] == "Received"
-    assert fields[("dates", "receipt_date")]["value"] == "2024-04-29"
+    assert fields[("parties", "name", "name")]["value"] == "OfficeSupply Co."
+    # An interpretive attribute may use a word the record never prints.
+    assert fields[("parties", "name", "role")]["value"] == "supplier"
+    assert {
+        identifier["kind"] for identifier in analysis["records"][0]["identifiers"]
+    } == {"procure_to_pay.goods_receipt_number", "common.vendor_id"}
+
+
+def test_voucher_keeps_repeated_approvals_paired_by_entry(monkeypatch):
+    """Reduction groups facts by content, so occurrences need an ordinal.
+
+    Without one, three approvals reduce to three unrelated approvers beside
+    three unrelated dates and the pairing the record printed is unrecoverable.
+    """
+
+    source_text = (
+        b"PURCHASE REQUISITION\nREQ2024009\n"
+        b"Verified by Olivia Smith on 02-Apr-2024\n"
+        b"Financial approval John Doe on 06-Apr-2024"
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        first = _cited(source, "Verified by")
+        second = _cited(source, "Financial approval")
+        approvals = [
+            ("approver", "Olivia Smith", first, 0),
+            ("role", "Verified by", first, 0),
+            ("date", "02-Apr-2024", first, 0),
+            ("approver", "John Doe", second, 1),
+            ("role", "Financial approval", second, 1),
+            ("date", "06-Apr-2024", second, 1),
+        ]
+        return {
+            "summary_markdown": "Requisition REQ2024009 carries two approvals. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.purchase_requisition",
+                    "classification_evidence": [_cited(source, "PURCHASE REQUISITION")],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.requisition_number",
+                            "value": _value("REQ2024009", _cited(source, "REQ2024009")),
+                        }
+                    ],
+                    "fields": [
+                        {
+                            "group": "approvals",
+                            "kind": "approval",
+                            "attribute": attribute,
+                            "entry": entry,
+                            "value": _value(raw, citation),
+                        }
+                        for attribute, raw, citation, entry in approvals
+                    ],
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Voucher approval pairing", source_text, "REQ2024009.txt"
+    )
+    _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    approvals: dict[int, dict] = {}
+    for field in analysis["records"][0]["fields"]:
+        if (field["group"], field["kind"]) != ("approvals", "approval"):
+            continue
+        approvals.setdefault(field["entry"], {})[field["attribute"]] = field["value"][
+            "value"
+        ]
+    assert approvals == {
+        0: {
+            "approver": "Olivia Smith",
+            "role": "Verified by",
+            "date": "2024-04-02",
+        },
+        1: {"approver": "John Doe", "role": "Financial approval", "date": "2024-04-06"},
+    }
+
+
+def test_voucher_keeps_the_currency_of_an_amount(monkeypatch):
+    """``currency`` is a registered attribute, so it is its own fact.
+
+    Supplied inside the value envelope it was silently discarded when local code
+    rebuilt the envelope from ``raw_value``, leaving a bare number.
+    """
+
+    source_text = b"TAX INVOICE\nVINV001\nInvoice amount (PKR) PKR 2,000,000.00"
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        amount = _cited(source, "Invoice amount")
+        return {
+            "summary_markdown": "Invoice VINV001 for PKR 2,000,000.00. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.vendor_invoice",
+                    "classification_evidence": [_cited(source, "TAX INVOICE")],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.vendor_invoice_number",
+                            "value": _value("VINV001", _cited(source, "VINV001")),
+                        }
+                    ],
+                    "fields": [
+                        {
+                            "group": "amounts",
+                            "kind": "total",
+                            "attribute": "value",
+                            "value": _value("PKR 2,000,000.00", amount),
+                        },
+                        {
+                            "group": "amounts",
+                            "kind": "total",
+                            "attribute": "currency",
+                            "value": _value("PKR", amount),
+                        },
+                    ],
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Voucher amount currency", source_text, "VINV001.txt"
+    )
+    _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    amounts = {
+        field["attribute"]: field["value"]["value"]
+        for field in analysis["records"][0]["fields"]
+        if (field["group"], field["kind"]) == ("amounts", "total")
+    }
+    assert amounts == {"value": 2000000, "currency": "PKR"}
 
 
 def test_voucher_repairs_claimed_normalized_value_that_has_wrong_type(monkeypatch):
-    reference = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict()
+    """A ``normalized`` claim the field's type cannot read is a selector mistake.
+
+    A value the record itself prints malformed still commits as ``invalid``
+    evidence; what is refused is claiming a well-formed value that is not one.
+    """
 
     def voucher_response(user: str) -> dict:
-        source = user.split("RAW SOURCE CHUNK:\n", 1)[-1].split(
-            "\n\nYour previous response", 1
-        )[0].strip()
-        repairing = "Your previous response could not be used" in user
-        if repairing:
-            assert "cannot be normalized" in user
+        source = _source_of(user)
+        status = _cited(source, "Receipt status")
+        if "Your previous response could not be used" in user:
+            assert "cannot be normalized for it" in user
             fields = [
                 {
                     "group": "statuses",
                     "kind": "status",
                     "attribute": "value",
-                    "value": {
-                        "raw_value": "Received",
-                        "value": "Received",
-                        "normalization_status": "success",
-                        "citation": "C1",
-                    },
+                    "value": _value("Received", status),
                 }
             ]
         else:
@@ -1185,98 +1412,999 @@ def test_voucher_repairs_claimed_normalized_value_that_has_wrong_type(monkeypatc
                     "group": "dates",
                     "kind": "receipt_date",
                     "attribute": "value",
-                    "value": {
-                        "raw_value": "Received",
-                        "value": "Received",
-                        "normalization_status": "success",
-                        "citation": "C1",
-                    },
+                    "value": _value("Received", status),
                 }
             ]
-        return {
-            "summary_markdown": "The receipt status is Received. [C1]",
-            "audit_notes_markdown": (
-                "No observations were identified on the face of this record."
-            ),
-            "citations": [{"id": "C1", "page": 1, "excerpt": source}],
-            "registry": reference,
-            "record_fragments": [
-                {
-                    "record_kind": "procure_to_pay.goods_receipt",
-                    "classification_evidence": ["C1"],
-                    "identifiers": [
-                        {
-                            "kind": "procure_to_pay.goods_receipt_number",
-                            "value": {
-                                "raw_value": "GRN-1",
-                                "value": "GRN-1",
-                                "normalization_status": "success",
-                                "citation": "C1",
-                            },
-                        }
-                    ],
-                    "fields": fields,
-                }
-            ],
-        }
+        return _grn_response(source, fields)
 
-    ws = workspaces.create_workspace("Typed voucher repair")
-    voucher = documents.add_document(
-        ws,
-        "GRN-1.txt",
-        b"Goods receipt GRN-1. Receipt status Received.",
-        category="voucher",
-    )
-    documents.extract_document(ws, voucher["id"])
+    ws, voucher = _voucher_workspace("Typed voucher repair")
     fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
-
-    finished = wait_run(
-        ws,
-        runner.start_command_run(
-            ws,
-            "auto",
-            {
-                "source": "tab_button",
-                "text": "Analyze the selected receipt.",
-                "goal_template": "document_analysis",
-                "requested_outcomes": list(documents_workflow.FULL_DOCUMENT_OUTCOMES),
-                "target_refs": [f"document:{voucher['id']}"],
-            },
-            context={"document_ids": [voucher["id"]], "action": "analyze"},
-        )["id"],
-    )
+    finished = _voucher_run(ws, voucher)
     analysis = document_analysis.load_analysis(
         workspaces.load_workspace(ws.id), voucher["id"]
     )["effective"]
 
     assert finished["status"] == "completed"
     assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
-    assert [field["kind"] for field in analysis["records"][0]["fields"]] == [
-        "status"
-    ]
+    assert [field["kind"] for field in analysis["records"][0]["fields"]] == ["status"]
     assert analysis["records"][0]["fields"][0]["value"]["value"] == "Received"
 
 
-def test_voucher_prompt_exposes_exact_registry_reference_objects():
-    descriptors = json.loads(document_workers._VOUCHER_REGISTRY_DESCRIPTORS)
+def test_voucher_commits_a_malformed_source_value_as_invalid_evidence(monkeypatch):
+    """A defect the record itself carries is evidence, not a repair trigger."""
 
-    assert descriptors
+    source_text = b"GOODS RECEIPT NOTE\nGRN2024004\nReceipt date 31-Feb-2024"
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "dates",
+                    "kind": "receipt_date",
+                    "attribute": "value",
+                    "value": _value(
+                        "31-Feb-2024", _cited(source, "Receipt date"), status="invalid"
+                    ),
+                }
+            ],
+        )
+
+    ws, voucher = _voucher_workspace("Invalid voucher date", source_text)
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+    field = analysis["records"][0]["fields"][0]
+    assert field["value"]["normalization_status"] == "invalid"
+    assert field["value"]["raw_value"] == "31-Feb-2024"
+    assert field["value"]["value"] is None
+    assert field["value"]["normalization_error"]
+
+
+def test_voucher_rejects_a_value_that_is_not_in_the_excerpt_it_cites(monkeypatch):
+    """Citing a surviving excerpt is not the same as being grounded in one."""
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        if "Your previous response could not be used" in user:
+            assert "cite the line the value sits on" in user
+            citation = _cited(source, "Receipt status")
+        else:
+            # The value is real, but anchored to an unrelated line.
+            citation = _cited(source, "GOODS RECEIPT NOTE")
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": _value("Received", citation),
+                }
+            ],
+        )
+
+    ws, voucher = _voucher_workspace("Voucher excerpt grounding")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+
+
+def test_voucher_rejects_a_citation_excerpt_absent_from_the_chunk(monkeypatch):
+    """A dropped citation is reported, not silently removed.
+
+    ``validate_analysis_map`` discards an excerpt it cannot find. For the
+    narrative that is tolerable; for a structured fact it removes the anchor the
+    fact depends on and the fragment is then rejected for ungrounded evidence
+    without ever saying which excerpt was wrong.
+    """
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        citations = _excerpt_citations(source)
+        if "Your previous response could not be used" in user:
+            assert "does not appear\nverbatim" in user or "does not appear" in user
+        else:
+            # Two source lines joined into one excerpt: the exact defect seen in
+            # the procurement run.
+            citations = citations + [
+                {"id": "CX", "page": 1, "excerpt": "GOODS RECEIPT NOTE GRN2024004"}
+            ]
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": _value("Received", _cited(source, "Receipt status")),
+                }
+            ],
+            citations=citations,
+        )
+
+    ws, voucher = _voucher_workspace("Voucher citation exactness")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+
+
+def test_voucher_document_with_no_transaction_record_commits_empty_evidence(monkeypatch):
+    """An empty ``record_fragments`` array is a truthful answer.
+
+    Demanding at least one fragment demanded a fabricated one from any document
+    the voucher category routed here by mistake.
+    """
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        return {
+            "summary_markdown": "This page carries no transaction record. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Voucher without a record", b"COVER SHEET\nAttachments follow.", "cover.txt"
+    )
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+    assert analysis["records"] == []
+    assert analysis["record_fragments"] == []
+    assert analysis["unresolved_fragments"] == []
+    assert analysis["conflicts"] == []
+    assert analysis["registry"]["pack_id"] == "procure_to_pay"
+
+
+def test_an_interpretive_role_never_has_to_be_quoted_from_the_record(monkeypatch):
+    """A goods receipt naming its buyer never prints the word "buyer".
+
+    Requiring every value to appear in its excerpt made this unsatisfiable: the
+    live run's best extraction — precise per-line citations, both cycle
+    identifiers, the OCR typo preserved — was rejected three times over two facts
+    no response could have supplied, and one repair attempt could only move the
+    citation to another line that also does not contain the word.
+    """
+
+    source_text = (
+        b"GLOBAL BANK\nGOODS RECEIPT NOTE\nGRN2024004\nPurchase order P02024004\n"
+        b"OfficeSupply Co. (V1022)\nReceipt status Received"
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        bank = _cited(source, "GLOBAL BANK")
+        supplier = _cited(source, "OfficeSupply Co.")
+        return {
+            "summary_markdown": "Goods receipt GRN2024004. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.goods_receipt",
+                    "classification_evidence": [_cited(source, "GOODS RECEIPT NOTE")],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.goods_receipt_number",
+                            "value": _value("GRN2024004", _cited(source, "GRN2024004")),
+                        },
+                        {
+                            "kind": "procure_to_pay.purchase_order_number",
+                            "value": _value(
+                                "P02024004", _cited(source, "Purchase order")
+                            ),
+                        },
+                        {
+                            "kind": "common.vendor_id",
+                            "value": _value("V1022", supplier),
+                        },
+                    ],
+                    "fields": [
+                        {
+                            "group": "parties",
+                            "kind": "name",
+                            "attribute": "name",
+                            "entry": 0,
+                            "value": _value("GLOBAL BANK", bank),
+                        },
+                        {
+                            "group": "parties",
+                            "kind": "name",
+                            "attribute": "role",
+                            "entry": 0,
+                            "value": _value("buyer", bank),
+                        },
+                        {
+                            "group": "parties",
+                            "kind": "name",
+                            "attribute": "name",
+                            "entry": 1,
+                            "value": _value("OfficeSupply Co.", supplier),
+                        },
+                        {
+                            "group": "parties",
+                            "kind": "name",
+                            "attribute": "role",
+                            "entry": 1,
+                            "value": _value("vendor", supplier),
+                        },
+                        {
+                            "group": "statuses",
+                            "kind": "status",
+                            "attribute": "value",
+                            "value": _value(
+                                "Received", _cited(source, "Receipt status")
+                            ),
+                        },
+                    ],
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace("Interpretive role", source_text)
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+    roles = {
+        field["entry"]: field["value"]["value"]
+        for field in analysis["records"][0]["fields"]
+        if field["attribute"] == "role"
+    }
+    assert roles == {0: "buyer", 1: "vendor"}
+    # The typo stays visible and both cycle references survive.
     assert {
-        descriptor["registry"]["pack_id"] for descriptor in descriptors
-    } == {"procure_to_pay", "payroll"}
-    for descriptor in descriptors:
-        reference = descriptor["registry"]
-        assert reference == cycle_vouching.DEFAULT_REGISTRY.reference(
-            reference["pack_id"]
-        ).to_dict()
+        identifier["kind"]: identifier["value"]["raw_value"]
+        for identifier in analysis["records"][0]["identifiers"]
+    } == {
+        "procure_to_pay.goods_receipt_number": "GRN2024004",
+        "procure_to_pay.purchase_order_number": "P02024004",
+        "common.vendor_id": "V1022",
+    }
+
+
+def test_a_verbatim_attribute_still_has_to_appear_in_its_excerpt(monkeypatch):
+    """Exempting interpretation does not exempt quotation."""
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        if "Your previous response could not be used" in user:
+            assert "cite the line the value sits on" in user
+            citation = _cited(source, "Receipt status")
+        else:
+            citation = _cited(source, "GOODS RECEIPT NOTE")
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": _value("Received", citation),
+                }
+            ],
+        )
+
+    ws, voucher = _voucher_workspace("Verbatim still enforced")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    assert _voucher_run(ws, voucher)["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+
+
+def test_one_whole_chunk_excerpt_cited_everywhere_is_rejected(monkeypatch):
+    """A citation is an anchor, and quoting the chunk anchors nothing.
+
+    Every committed document in the live run collapsed to a single citation whose
+    excerpt was the entire chunk, because that satisfies "the value appears in
+    its excerpt" for free. The rule rewarded useless citations and rejected the
+    one document that cited precisely.
+    """
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        if "Your previous response could not be used" in user:
+            assert "an excerpt must be at most" in user
+            assert "points at the part" in user
+            citations = _excerpt_citations(source)
+            citation = _cited(source, "Receipt status")
+        else:
+            citations = [{"id": "C1", "page": 1, "excerpt": source}]
+            citation = "C1"
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": _value("Received", citation),
+                }
+            ],
+            citations=citations,
+        )
+
+    ws, voucher = _voucher_workspace("Whole chunk citation")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+    assert len(analysis["citations"]) > 1
+    assert all(
+        len(citation["excerpt"]) <= document_workers.CITATION_EXCERPT_CHARACTERS
+        for citation in analysis["citations"]
+    )
+
+
+def test_a_wrapped_source_line_can_still_be_quoted(monkeypatch):
+    """The bound is two lines, so a phrase the source wrapped stays citable."""
+
+    source_text = (
+        b"GOODS RECEIPT NOTE\nGRN2024004\n"
+        b"Business requirement Procurement of New Hire Onboarding Kits to support\n"
+        b"approved operational requirements."
+    )
+    wrapped = (
+        "Business requirement Procurement of New Hire Onboarding Kits to support\n"
+        "approved operational requirements."
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        citations = [
+            {"id": "C1", "page": 1, "excerpt": "GOODS RECEIPT NOTE"},
+            {"id": "C2", "page": 1, "excerpt": "GRN2024004"},
+            {"id": "C3", "page": 1, "excerpt": wrapped},
+        ]
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "descriptions",
+                    "kind": "description",
+                    "attribute": "value",
+                    "value": _value(
+                        "Procurement of New Hire Onboarding Kits to support approved "
+                        "operational requirements.",
+                        "C3",
+                    ),
+                }
+            ],
+            citations=citations,
+        )
+
+    ws, voucher = _voucher_workspace("Wrapped line citation", source_text)
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    assert _voucher_run(ws, voucher)["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+
+
+def test_a_cycle_reference_parked_in_a_prose_field_is_rejected(monkeypatch):
+    """References are what link records; a description does not link anything.
+
+    The live run filed an invoice's purchase-order and goods-receipt references
+    as attachment references and a voucher's purchase reference as a description.
+    Every affected document still looked complete, and the cycle graph split into
+    two disconnected components.
+    """
+
+    source_text = (
+        b"PAYMENT VOUCHER\nVoucher reference: INV2024004\n"
+        b"Purchase reference P02024004\nGRN reference GRN2024004"
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        purchase = _cited(source, "Purchase reference")
+        receipt = _cited(source, "GRN reference")
+        identifiers = [
+            {
+                "kind": "procure_to_pay.payment_voucher_number",
+                "value": _value("INV2024004", _cited(source, "Voucher reference")),
+            }
+        ]
+        repairing = "Your previous response could not be used" in user
+        if repairing:
+            assert "leaves the reference" in user
+            assert '"P02024004"' in user and '"GRN2024004"' in user
+            assert "belongs in identifiers" in user
+            identifiers += [
+                {
+                    "kind": "procure_to_pay.purchase_order_number",
+                    "value": _value("P02024004", purchase),
+                },
+                {
+                    "kind": "procure_to_pay.goods_receipt_number",
+                    "value": _value("GRN2024004", receipt),
+                },
+            ]
+            fields = []
+        else:
+            fields = [
+                {
+                    "group": "descriptions",
+                    "kind": "description",
+                    "attribute": "value",
+                    "value": _value("Purchase reference P02024004", purchase),
+                },
+                {
+                    "group": "attachments",
+                    "kind": "attachment",
+                    "attribute": "reference",
+                    "value": _value("GRN2024004", receipt),
+                },
+            ]
+        return {
+            "summary_markdown": "Payment voucher INV2024004. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.payment_voucher",
+                    "classification_evidence": [_cited(source, "PAYMENT VOUCHER")],
+                    "identifiers": identifiers,
+                    "fields": fields,
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Reference in prose", source_text, "INV2024004.txt"
+    )
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+    assert {
+        identifier["kind"] for identifier in analysis["records"][0]["identifiers"]
+    } == {
+        "procure_to_pay.payment_voucher_number",
+        "procure_to_pay.purchase_order_number",
+        "procure_to_pay.goods_receipt_number",
+    }
+
+
+def test_a_party_code_printed_beside_its_name_is_not_dropped(monkeypatch):
+    """``Ethan Smith (1041)`` is a name and a code, not a choice between them.
+
+    Told that a display name is never an identifier value, the live run reported
+    the requisition's department, requester, and vendor as party names and
+    dropped all three codes, leaving the record with one identifier.
+    """
+
+    source_text = (
+        b"PURCHASE REQUISITION\nREQ2024009\n"
+        b"Requested by Ethan Smith (1041)\nProposed vendor OfficeSupply Co. (V1022)"
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        requester = _cited(source, "Requested by")
+        vendor = _cited(source, "Proposed vendor")
+        identifiers = [
+            {
+                "kind": "procure_to_pay.requisition_number",
+                "value": _value("REQ2024009", _cited(source, "REQ2024009")),
+            }
+        ]
+        if "Your previous response could not be used" in user:
+            assert "leaves the reference" in user
+            assert '"1041"' in user and '"V1022"' in user
+            identifiers += [
+                {"kind": "common.employee_id", "value": _value("1041", requester)},
+                {"kind": "common.vendor_id", "value": _value("V1022", vendor)},
+            ]
+        return {
+            "summary_markdown": "Requisition REQ2024009. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.purchase_requisition",
+                    "classification_evidence": [
+                        _cited(source, "PURCHASE REQUISITION")
+                    ],
+                    "identifiers": identifiers,
+                    "fields": [
+                        {
+                            "group": "parties",
+                            "kind": "name",
+                            "attribute": "name",
+                            "entry": 0,
+                            "value": _value("Ethan Smith", requester),
+                        },
+                        {
+                            "group": "parties",
+                            "kind": "name",
+                            "attribute": "name",
+                            "entry": 1,
+                            "value": _value("OfficeSupply Co.", vendor),
+                        },
+                    ],
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Party code beside name", source_text, "REQ2024009.txt"
+    )
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+    assert {
+        identifier["kind"] for identifier in analysis["records"][0]["identifiers"]
+    } == {
+        "procure_to_pay.requisition_number",
+        "common.employee_id",
+        "common.vendor_id",
+    }
+
+
+def test_prose_that_carries_no_reference_code_is_left_alone(monkeypatch):
+    """A date or a plain phrase in a description is not a misplaced reference."""
+
+    source_text = (
+        b"GOODS RECEIPT NOTE\nGRN2024004\n"
+        b"Description New Hire Onboarding Kits\nInspected 29-Apr-2024. All delivered."
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "descriptions",
+                    "kind": "description",
+                    "attribute": "value",
+                    "value": _value(
+                        "New Hire Onboarding Kits", _cited(source, "Description")
+                    ),
+                },
+                {
+                    "group": "notes",
+                    "kind": "note",
+                    "attribute": "value",
+                    "value": _value(
+                        "Inspected 29-Apr-2024. All delivered.",
+                        _cited(source, "Inspected"),
+                    ),
+                },
+            ],
+        )
+
+    ws, voucher = _voucher_workspace("Prose without references", source_text)
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    assert _voucher_run(ws, voucher)["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+
+
+def test_a_value_wrapped_across_two_source_lines_may_cite_either(monkeypatch):
+    """Grounding is about the same text, not about which side is longer.
+
+    A requisition's business requirement wraps mid-phrase. The worker reported
+    the whole value and quoted the line it read it from, and requiring the value
+    to sit *inside* its excerpt rejected a correct extraction over the choice of
+    granularity.
+    """
+
+    source_text = (
+        b"GOODS RECEIPT NOTE\nGRN2024004\n"
+        b"Business requirement Procurement of New Hire Onboarding Kits to support\n"
+        b"approved operational requirements."
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        return _grn_response(
+            source,
+            [
+                {
+                    "group": "descriptions",
+                    "kind": "description",
+                    "attribute": "value",
+                    "value": _value(
+                        "Procurement of New Hire Onboarding Kits to support approved "
+                        "operational requirements.",
+                        _cited(source, "Business requirement"),
+                    ),
+                }
+            ],
+        )
+
+    ws, voucher = _voucher_workspace("Wrapped value one line cited", source_text)
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    assert _voucher_run(ws, voucher)["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+
+
+def test_a_value_cited_to_an_unrelated_line_is_still_rejected(monkeypatch):
+    """Accepting either direction must not accept a heading above the value."""
+
+    source_text = (
+        b"TAX INVOICE\nVINV001\nSupplier\n"
+        b"Address Plot 18, Block A, Gulshan-e-Iqbal, Karachi, Pakistan"
+    )
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        repairing = "Your previous response could not be used" in user
+        citation = _cited(source, "Address" if repairing else "Supplier")
+        return {
+            "summary_markdown": "Invoice VINV001. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.vendor_invoice",
+                    "classification_evidence": [_cited(source, "TAX INVOICE")],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.vendor_invoice_number",
+                            "value": _value("VINV001", _cited(source, "VINV001")),
+                        }
+                    ],
+                    "fields": [
+                        {
+                            "group": "parties",
+                            "kind": "address",
+                            "attribute": "value",
+                            "value": _value(
+                                "Plot 18, Block A, Gulshan-e-Iqbal, Karachi, Pakistan",
+                                citation,
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Address cited to its heading", source_text, "VINV001.txt"
+    )
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+
+    assert _voucher_run(ws, voucher)["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+
+
+def test_a_repeated_citation_excerpt_is_remapped_not_reported_as_wrong(monkeypatch):
+    """Two ids quoting the same line is a duplicate, not a bad quote.
+
+    ``validate_citations`` keeps one citation per (page, excerpt), so the second
+    id vanished and the fact citing it was reported as text the page does not
+    contain — guidance no response could act on, because the excerpt was right.
+    """
+
+    source_text = b"PAYMENT VOUCHER\nINV2024004\nAuthorisations\nSigned Signed\nPAID"
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        citations = _excerpt_citations(source) + [
+            # A second id for a line already cited above.
+            {"id": "CDUP", "page": 1, "excerpt": "Signed Signed"}
+        ]
+        return {
+            "summary_markdown": "Payment voucher INV2024004. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": citations,
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.payment_voucher",
+                    "classification_evidence": [_cited(source, "PAYMENT VOUCHER")],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.payment_voucher_number",
+                            "value": _value("INV2024004", _cited(source, "INV2024004")),
+                        }
+                    ],
+                    "fields": [
+                        {
+                            "group": "approvals",
+                            "kind": "approval",
+                            "attribute": "decision",
+                            "value": _value("Signed", "CDUP"),
+                        }
+                    ],
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Duplicate citation excerpt", source_text, "INV2024004.txt"
+    )
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG]
+    # The fact survives, anchored to the citation that was kept.
+    surviving = [
+        citation["id"]
+        for citation in analysis["citations"]
+        if citation["excerpt"] == "Signed Signed"
+    ]
+    assert len(surviving) == 1
+    decision = next(
+        field
+        for field in analysis["records"][0]["fields"]
+        if field["attribute"] == "decision"
+    )
+    assert decision["value"]["citation"] == surviving
+
+
+def test_a_second_repair_is_available_when_faults_are_independent(monkeypatch):
+    """One repair turned recoverable responses into failed documents.
+
+    The profile checks several independent things, and a response that gets one
+    wrong commonly gets another wrong elsewhere — or introduces one while fixing
+    the first.
+    """
+
+    attempts = {"n": 0}
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        attempt = attempts["n"]
+        attempts["n"] += 1
+        status = _cited(source, "Receipt status")
+        if attempt == 0:
+            # Fault one: an unregistered selector.
+            fields = [
+                {
+                    "group": "quantities",
+                    "kind": "quantity_received",
+                    "attribute": "value",
+                    "value": _value("25", _cited(source, "Quantity received")),
+                }
+            ]
+        elif attempt == 1:
+            # Fixed, but fault two appears: the value is cited to the wrong line.
+            fields = [
+                {
+                    "group": "quantities",
+                    "kind": "total",
+                    "attribute": "value",
+                    "value": _value("25", _cited(source, "Quantity received")),
+                },
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": _value("Received", _cited(source, "GRN2024004")),
+                },
+            ]
+        else:
+            fields = [
+                {
+                    "group": "quantities",
+                    "kind": "total",
+                    "attribute": "value",
+                    "value": _value("25", _cited(source, "Quantity received")),
+                },
+                {
+                    "group": "statuses",
+                    "kind": "status",
+                    "attribute": "value",
+                    "value": _value("Received", status),
+                },
+            ]
+        return _grn_response(source, fields)
+
+    ws, voucher = _voucher_workspace("Two independent faults")
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG] * 3
+    assert {field["kind"] for field in analysis["records"][0]["fields"]} == {
+        "total",
+        "status",
+    }
+
+
+def test_voucher_pack_is_constrained_to_the_packs_the_engagement_uses(monkeypatch):
+    """Which cycle an engagement audits is not a per-chunk judgement."""
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        if "Your previous response could not be used" in user:
+            assert "is not one this engagement uses" in user
+            reference = cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict()
+            fragment = _grn_fragment(source, [])
+        else:
+            reference = cycle_vouching.DEFAULT_REGISTRY.reference("payroll").to_dict()
+            fragment = {
+                "record_kind": "payroll.payslip",
+                "classification_evidence": [_cited(source, "GOODS RECEIPT NOTE")],
+                "identifiers": [
+                    {
+                        "kind": "payroll.payslip_number",
+                        "value": _value("GRN2024004", _cited(source, "GRN2024004")),
+                    }
+                ],
+                "fields": [],
+            }
+        return {
+            "summary_markdown": "A goods receipt note. [C1]",
+            "audit_notes_markdown": (
+                "No observations were identified on the face of this record. [C1]"
+            ),
+            "citations": _excerpt_citations(source),
+            "registry": reference,
+            "record_fragments": [fragment],
+        }
+
+    ws, voucher = _voucher_workspace("Voucher pack constraint")
+    ws.add_rcm(
+        {
+            "process": "Purchasing",
+            "risk": "Receipts may be unsupported",
+            "control": "Goods are receipted against an order",
+            "control_attributes": [
+                {
+                    "key": "three_way_match",
+                    "assertion": "Existence",
+                    "requirement": "A receipt is supported by an order.",
+                    "evidence_kind": "transaction_cycle",
+                    "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                        "procure_to_pay"
+                    ).to_dict(),
+                    "required_record_kinds": [
+                        "procure_to_pay.purchase_order",
+                        "procure_to_pay.goods_receipt",
+                    ],
+                }
+            ],
+        }
+    )
+    ws.save()
+    ws = workspaces.load_workspace(ws.id)
+
+    assert cycle_vouching.committed_pack_ids(ws) == ["procure_to_pay"]
+    assert (
+        document_context_identity(ws, voucher["id"])
+        .representations["current_artifact"]["cycle_pack_ids"]
+        == ["procure_to_pay"]
+    )
+
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert [call["tag"] for call in fake.calls] == [VOUCHER_TAG, VOUCHER_TAG]
+    assert analysis["registry"]["pack_id"] == "procure_to_pay"
+
+
+def test_voucher_prompt_exposes_exact_registry_reference_objects():
+    descriptors = document_workers._VOUCHER_REGISTRY_DESCRIPTORS
+
+    for pack_id in ("procure_to_pay", "payroll"):
+        reference = cycle_vouching.DEFAULT_REGISTRY.reference(pack_id).to_dict()
         assert set(reference) == {"pack_id", "pack_version", "definition_hash"}
-        assert "id" not in descriptor
-        assert "version" not in descriptor
-        assert "definition_hash" not in descriptor
+        # Rendered as the exact object the response must copy back, so a stale
+        # hash cannot survive a pack change unnoticed.
+        assert json.dumps(reference, sort_keys=True, separators=(",", ":")) in descriptors
 
     assert "copy its\n`registry` object exactly" in document_workers.VOUCHER_SYSTEM
     assert "`pack_id`, `pack_version`, and" in document_workers.VOUCHER_SYSTEM
     assert "pack_id, version, and definition_hash" not in document_workers.VOUCHER_SYSTEM
+
+
+def test_voucher_prompt_states_the_allowed_selectors_for_each_record_kind():
+    """The vocabulary that fixes a bad selector must be in the prompt, not only
+    in the repair message.
+
+    Every first-attempt failure observed in the procurement run was a field the
+    record genuinely stated, named through a selector the record kind does not
+    offer — because the prompt supplied namespaced field ids under record kinds
+    and group/short-kind under field kinds, as two lists to join by hand.
+    """
+
+    descriptors = document_workers._VOUCHER_REGISTRY_DESCRIPTORS
+    registry = cycle_vouching.DEFAULT_REGISTRY
+
+    # The selector form a response actually needs, copyable verbatim. Marking
+    # interpretive attributes inline as `role~` put a syntax character inside the
+    # string a response has to copy, and responses copied it — so the exemption
+    # is stated on its own line instead.
+    assert "parties.name.name|role" in descriptors
+    assert "approvals.approval.approver|role|decision|date" in descriptors
+    assert "dates.receipt_date.value|raw_value" in descriptors
+    assert "~" not in descriptors
+    assert "interpretive attributes, which may use your own wording" in descriptors
+    for selector in ("parties.name.role", "approvals.approval.decision"):
+        assert selector in descriptors
+
+    for record_id in registry.pack("procure_to_pay").record_kind_ids:
+        record = registry.record_kinds[record_id]
+        assert record_id in descriptors
+        for identifier_id in record.primary_identifier_kinds:
+            assert identifier_id in descriptors
+        for selector in document_workers._field_selectors(record.available_field_kinds):
+            assert selector in descriptors
+
+    # Every allowed selector, and nothing that is merely declared by the pack.
+    assert "common.party.name" not in descriptors
+    assert "available_field_kinds" not in descriptors
 
 
 def test_vouchers_stay_out_of_the_unscoped_planning_default():
@@ -1324,7 +2452,15 @@ def test_voucher_profile_withholds_identifier_bearing_metadata():
 
     candidate = document_context_identity(ws, voucher["id"])
     payload = candidate.representations["current_artifact"]
-    assert set(payload) == {"document_id", "source_sha1", "category"}
+    assert set(payload) == {
+        "document_id",
+        "source_sha1",
+        "category",
+        # A closed vocabulary of pack ids, not descriptive metadata: which cycle
+        # the engagement audits cannot be lifted into a field value.
+        "cycle_pack_ids",
+    }
+    assert payload["cycle_pack_ids"] == []
     serialized = json.dumps(payload)
     assert "EXP-2025-003" not in serialized
     assert "PV-2025-003" not in serialized
@@ -1334,60 +2470,6 @@ def test_voucher_profile_withholds_identifier_bearing_metadata():
     chunk_spec = PRESETS.compile("documents.analysis_chunk")
     voucher_spec = PRESETS.compile("documents.analysis_voucher")
     assert chunk_spec.to_json() != voucher_spec.to_json()
-
-
-def test_voucher_fields_require_an_exact_citation():
-    """A structured field survives only when anchored to a validated citation."""
-
-    citations = [{"id": "C1", "page": 1, "excerpt": "Amount paid PKR 4,800"}]
-    fields = document_analysis.validate_voucher_fields(
-        {
-            "document_type": "payment_voucher",
-            "amounts": [
-                {"kind": "total", "value": "4,800", "currency": "PKR", "citation": "C1"},
-                # Ungrounded: names a citation that did not survive validation.
-                {"kind": "tax", "value": "100", "currency": "PKR", "citation": "C9"},
-            ],
-            "dates": [
-                {"kind": "payment_date", "value": "2025-04-21", "citation": "C1"},
-                # Incomplete: no value, so nothing could be compared against it.
-                {"kind": "approval_date", "citation": "C1"},
-            ],
-            "attachments": [
-                {"kind": "receipt", "reference": "RCP-1", "present": "No", "citation": "C1"}
-            ],
-        },
-        citations,
-    )
-    assert [item["kind"] for item in fields["amounts"]] == ["total"]
-    # Typed for comparison, with the verbatim form preserved beside it.
-    assert fields["amounts"][0]["value"] == 4800.0
-    assert fields["amounts"][0]["raw_value"] == "4,800"
-    assert [item["kind"] for item in fields["dates"]] == ["payment_date"]
-    assert fields["dates"][0]["value"] == "2025-04-21"
-    assert fields["attachments"][0]["present"] is False
-
-
-def test_voucher_field_merge_is_deterministic_and_deduplicated():
-    """Reduction of the structured half is a union, not a model turn."""
-
-    first = {
-        "document_type": "invoice",
-        "identifiers": [{"kind": "invoice_number", "value": "INV-1", "citation": "C1"}],
-        "amounts": [{"kind": "total", "value": 100.0, "citation": "C1"}],
-    }
-    second = {
-        "document_type": "invoice",
-        # Same fact seen again in a later chunk under a different citation.
-        "identifiers": [{"kind": "invoice_number", "value": "INV-1", "citation": "C7"}],
-        "amounts": [{"kind": "tax", "value": 18.0, "citation": "C8"}],
-    }
-    merged = document_analysis.merge_voucher_fields([first, second])
-    assert merged["document_type"] == "invoice"
-    assert len(merged["identifiers"]) == 1
-    assert merged["identifiers"][0]["citation"] == "C1"
-    assert sorted(item["kind"] for item in merged["amounts"]) == ["tax", "total"]
-    assert merged == document_analysis.merge_voucher_fields([first, second])
 
 
 def test_no_document_analysis_runner_or_engine_remains():

@@ -221,6 +221,16 @@ def _analysis_result(
             "coverage_state": str(coverage.get("state") or ""),
             "omitted_pages": [int(page) for page in coverage.get("omitted_pages") or []],
             "citations": len(list(artifact.get("citations") or [])),
+            # The structured half needs its own counts. A receipt that reported
+            # only citations could not distinguish a committed analysis that
+            # produced five records from one that produced none, so a repair that
+            # quietly dropped evidence left no trace in the audit trail.
+            "record_fragments": len(list(artifact.get("record_fragments") or [])),
+            "records": len(list(artifact.get("records") or [])),
+            "unresolved_fragments": len(
+                list(artifact.get("unresolved_fragments") or [])
+            ),
+            "conflicts": len(list(artifact.get("conflicts") or [])),
             "vision_used": bool(artifact.get("vision_used")),
             "derived_text_sha256": str(
                 artifact.get("derived_text_sha256") or ""

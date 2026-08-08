@@ -1285,7 +1285,10 @@ PRESETS.register(
                     required=True,
                     selector=ContextSelector(selector_id="documents.all"),
                     representations=(ContextRepresentation("current_artifact"),),
-                    budget=ContextBudget(max_items=1, max_characters=500),
+                    # Identity plus the engagement's committed pack ids. Still far
+                    # too small to hold a descriptive projection, which is the
+                    # point of the narrowing.
+                    budget=ContextBudget(max_items=1, max_characters=1_500),
                 ),
                 ContextSource(
                     id="document_chunk",

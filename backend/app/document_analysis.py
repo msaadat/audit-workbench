@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import threading
 import uuid
 from pathlib import Path
@@ -12,8 +11,8 @@ from pathlib import Path
 from . import cycle_vouching, embedding
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
-ANALYSIS_SCHEMA_VERSION = "4"
-ANALYSIS_PROMPT_VERSION = "document-analysis-v5-cycle-record-fragments"
+ANALYSIS_SCHEMA_VERSION = "5"
+ANALYSIS_PROMPT_VERSION = "document-analysis-v6-cycle-record-fragments"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
 
@@ -229,12 +228,19 @@ def generated_projection(workspace: Workspace, document_id: str) -> dict | None:
 def registry_evidence_records(
     workspace: Workspace,
     registry_ref: object,
+    *,
+    excluded: list[dict] | None = None,
 ) -> list[dict]:
-    """Load current reduced records for one exact pack or fail closed.
+    """Load current reduced records for one exact pack, excluding everything else.
 
-    This is the local choke point candidate/linking callers use. Legacy voucher
-    fields, stale pack hashes, and records whose child reference differs from
-    the reduction are never reinterpreted as current cycle evidence.
+    This is the local choke point candidate/linking callers use. An analysis that
+    predates the registry, names a stale pack hash, or has stale reviewed fragment
+    assignments is never reinterpreted as current cycle evidence — but it is also
+    not grounds to refuse the whole workspace. Raising for one document made a
+    single unrefreshed analysis fail every caller in the engagement, including the
+    authoring UX an auditor would use to repair it. Each exclusion is appended to
+    ``excluded`` with its reason so callers can surface the gap instead of
+    silently under-reporting evidence.
     """
 
     try:
@@ -243,36 +249,43 @@ def registry_evidence_records(
         raise WorkspaceError(str(error)) from error
     records: list[dict] = []
     for document in workspace.documents:
-        detail = load_analysis(workspace, str(document.get("id") or ""), document=document)
+        document_id = str(document.get("id") or "")
+        detail = load_analysis(workspace, document_id, document=document)
         artifact = detail.get("effective")
         if not artifact or artifact.get("analysis_profile") != "voucher":
             continue
+
+        def exclude(reason: str) -> None:
+            if excluded is not None:
+                excluded.append({"document_id": document_id, "reason": reason})
+
         if (detail.get("review") or {}).get("fragment_override_state") == "stale":
-            raise WorkspaceError(
-                f"Voucher analysis for document '{document.get('id')}' has stale reviewed fragment assignments."
-            )
+            exclude("stale_fragment_overrides")
+            continue
         if not artifact.get("registry"):
-            raise WorkspaceError(
-                f"Voucher analysis for document '{document.get('id')}' is not registry-backed."
-            )
+            exclude("not_registry_backed")
+            continue
         try:
             actual = cycle_vouching.DEFAULT_REGISTRY.validate_reference(
                 artifact.get("registry")
             )
-        except ValueError as error:
-            raise WorkspaceError(
-                f"Voucher analysis for document '{document.get('id')}' has a stale registry reference."
-            ) from error
+        except ValueError:
+            exclude("stale_registry_reference")
+            continue
         if actual != expected:
             continue
-        reduction = cycle_vouching.validate_evidence_reduction(
-            {
-                "registry": artifact.get("registry"),
-                "records": artifact.get("records") or [],
-                "unresolved_fragments": artifact.get("unresolved_fragments") or [],
-                "conflicts": artifact.get("conflicts") or [],
-            }
-        )
+        try:
+            reduction = cycle_vouching.validate_evidence_reduction(
+                {
+                    "registry": artifact.get("registry"),
+                    "records": artifact.get("records") or [],
+                    "unresolved_fragments": artifact.get("unresolved_fragments") or [],
+                    "conflicts": artifact.get("conflicts") or [],
+                }
+            )
+        except cycle_vouching.CycleSchemaError:
+            exclude("invalid_reduction")
+            continue
         records.extend(dict(record) for record in reduction["records"])
     return records
 
@@ -425,211 +438,6 @@ def validate_citations(citations: list[dict], chunks: list[dict], source_sha1: s
                        "excerpt": excerpt, "excerpt_hash": hashlib.sha1(excerpt.encode()).hexdigest(),
                        "source_sha1": source_sha1})
     return output
-
-
-# --------------------------------------------------------------------------- #
-# Voucher profile: structured, citation-anchored fields
-#
-# The profile is document-centric on purpose. It records what the voucher *is* —
-# its identifiers, parties, dates, amounts, lines, approvals, and attachments —
-# not what any one test wants to compare, so one extraction serves every test
-# that touches the document. A vouching comparison reads these groups through
-# its own ``<role>.<field>`` path resolver.
-# --------------------------------------------------------------------------- #
-
-# Each group maps to the keys an entry must carry to be usable at all. An entry
-# missing one of them is dropped rather than stored half-formed, because a
-# comparison that reads it would otherwise silently compare against nothing.
-# The closed vocabulary the profile classifies a record into. Shared rather than
-# restated: the voucher worker's prompt emits it and a vouching test's role
-# mapping consumes it, so a drifting second copy would silently produce cycle
-# tests whose declared roles no document can ever fill.
-VOUCHER_DOCUMENT_TYPES: tuple[str, ...] = (
-    "payment_voucher",
-    "invoice",
-    "purchase_order",
-    "goods_receipt",
-    "receipt",
-    "approval_record",
-    "expense_claim",
-    "credit_note",
-    "contract",
-    "other",
-)
-
-VOUCHER_FIELD_GROUPS: dict[str, tuple[str, ...]] = {
-    "identifiers": ("kind", "value"),
-    "parties": ("role", "name"),
-    "dates": ("kind", "value"),
-    "amounts": ("kind", "value"),
-    "line_items": ("description",),
-    "approvals": ("approver",),
-    "attachments": ("kind",),
-}
-
-# Value normalization per group. Everything keeps its verbatim ``raw`` alongside
-# the typed value, so an unparseable amount or date stays visible as evidence
-# instead of disappearing, and a comparison can route it to manual review.
-_VOUCHER_NUMERIC_FIELDS = {"amounts": ("value",), "line_items": ("amount",)}
-_VOUCHER_DATE_FIELDS = {
-    "dates": ("value",),
-    "approvals": ("date",),
-    "line_items": ("date",),
-}
-_VOUCHER_BOOLEAN_FIELDS = {"attachments": ("present",)}
-
-_DATE_FORMATS = (
-    "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d",
-    "%d %B %Y", "%d %b %Y", "%B %d, %Y", "%b %d, %Y",
-)
-_AMOUNT_RE = re.compile(r"-?\d[\d,\s]*(?:\.\d+)?")
-_TRUE_TOKENS = {"true", "yes", "y", "present", "attached", "1"}
-_FALSE_TOKENS = {"false", "no", "n", "absent", "missing", "not attached", "0"}
-
-
-def _iso_date(value: object) -> str | None:
-    """Normalize a model-reported date to ISO, or ``None`` if unparseable."""
-    from datetime import datetime
-
-    text = str(value or "").strip()
-    if not text:
-        return None
-    for fmt in _DATE_FORMATS:
-        try:
-            return datetime.strptime(text, fmt).date().isoformat()
-        except ValueError:
-            continue
-    return None
-
-
-def _numeric(value: object) -> float | None:
-    """Normalize a model-reported amount, tolerating separators and symbols."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    match = _AMOUNT_RE.search(str(value or ""))
-    if match is None:
-        return None
-    try:
-        return float(re.sub(r"[,\s]", "", match.group(0)))
-    except ValueError:
-        return None
-
-
-def _boolean(value: object) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    text = str(value or "").strip().casefold()
-    if text in _TRUE_TOKENS:
-        return True
-    if text in _FALSE_TOKENS:
-        return False
-    return None
-
-
-def _voucher_entry(group: str, raw: dict, allowed_citations: set[str]) -> dict | None:
-    """Normalize one entry, or drop it when it is ungrounded or incomplete.
-
-    Grounding is the hard rule: an entry whose ``citation`` does not name a
-    citation that survived :func:`validate_citations` is discarded. That keeps
-    every structured field anchored to an excerpt proven verbatim in the supplied
-    source, exactly as the narrative half already is.
-    """
-    if not isinstance(raw, dict):
-        return None
-    citation = str(raw.get("citation") or "").strip()
-    if citation not in allowed_citations:
-        return None
-    entry: dict = {"citation": citation}
-    for key, value in raw.items():
-        if key == "citation":
-            continue
-        entry[str(key)] = value
-    for key in VOUCHER_FIELD_GROUPS[group]:
-        if str(entry.get(key) or "").strip() == "" and entry.get(key) is not True:
-            return None
-    for key in _VOUCHER_NUMERIC_FIELDS.get(group, ()):
-        if key in entry:
-            entry["raw_" + key] = str(entry[key])
-            entry[key] = _numeric(entry[key])
-    for key in _VOUCHER_DATE_FIELDS.get(group, ()):
-        if key in entry:
-            entry["raw_" + key] = str(entry[key])
-            entry[key] = _iso_date(entry[key])
-    for key in _VOUCHER_BOOLEAN_FIELDS.get(group, ()):
-        if key in entry:
-            entry["raw_" + key] = str(entry[key])
-            entry[key] = _boolean(entry[key])
-    for key, value in list(entry.items()):
-        if isinstance(value, str):
-            entry[key] = value.strip()
-    return entry
-
-
-def validate_voucher_fields(payload: dict, citations: list[dict]) -> dict:
-    """Normalize one voucher profile's structured fields against its citations.
-
-    Returns the ``fields`` record. Unknown groups are dropped, every entry is
-    type-normalized, and any entry that is not anchored to a validated citation
-    is discarded — so a model cannot introduce a comparable value that no excerpt
-    supports.
-    """
-    allowed = {str(item.get("id") or "") for item in citations or []}
-    allowed.discard("")
-    source = payload if isinstance(payload, dict) else {}
-    fields: dict = {
-        "document_type": str(source.get("document_type") or "").strip(),
-    }
-    for group in VOUCHER_FIELD_GROUPS:
-        entries = []
-        for raw in source.get(group) or []:
-            entry = _voucher_entry(group, raw, allowed)
-            if entry is not None:
-                entries.append(entry)
-        fields[group] = entries
-    return fields
-
-
-def _voucher_entry_identity(group: str, entry: dict) -> str:
-    """Dedupe identity for a merged entry: its content, ignoring which chunk saw it."""
-    material = {
-        key: value
-        for key, value in entry.items()
-        if key != "citation" and not key.startswith("raw_")
-    }
-    return json.dumps(
-        [group, material], sort_keys=True, separators=(",", ":"), default=str
-    )
-
-
-def merge_voucher_fields(values: list[dict]) -> dict:
-    """Consolidate per-chunk voucher fields deterministically.
-
-    Reduction of the structured half is a union with de-duplication, never a
-    model turn: merging typed records through a model would be lossy and would
-    cost a provider call per document for no gain. The narrative half is still
-    reduced by the existing reduction worker.
-    """
-    merged: dict = {"document_type": ""}
-    for group in VOUCHER_FIELD_GROUPS:
-        merged[group] = []
-    seen: set[str] = set()
-    for value in values or []:
-        if not isinstance(value, dict):
-            continue
-        if not merged["document_type"]:
-            merged["document_type"] = str(value.get("document_type") or "").strip()
-        for group in VOUCHER_FIELD_GROUPS:
-            for entry in value.get(group) or []:
-                if not isinstance(entry, dict):
-                    continue
-                identity = _voucher_entry_identity(group, entry)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                merged[group].append(entry)
-    return merged
 
 
 def validate_analysis_text(payload: dict) -> dict:

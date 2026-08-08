@@ -5,6 +5,7 @@ import polars as pl
 from app import (
     analysis_memo,
     assistant,
+    cycle_vouching,
     data_tests,
     doc_tests,
     document_analysis,
@@ -27,9 +28,17 @@ def _analyzed_document(
     category="policy",
     summary,
     notes,
-    fields=None,
+    evidence=None,
     citations=(),
 ):
+    """Persist one analysis. ``evidence`` makes it a registry-backed voucher.
+
+    The voucher profile persists a reduction — ``registry``, ``records``,
+    ``record_fragments``, ``unresolved_fragments``, ``conflicts`` — so a fixture
+    that supplied the removed ``fields`` map described a shape nothing produces
+    and nothing reads.
+    """
+
     document = documents.add_document(
         workspace,
         filename,
@@ -45,8 +54,8 @@ def _analyzed_document(
             "summary_markdown": summary,
             "audit_notes_markdown": notes,
             "citations": list(citations),
-            "fields": dict(fields or {}),
-            "analysis_profile": "voucher" if fields else "generic",
+            "analysis_profile": "voucher" if evidence else "generic",
+            **(dict(evidence or {})),
         },
         provider="local",
         model="test",
@@ -619,14 +628,14 @@ def test_test_generate_scope_supplies_grounded_vouch_metadata_without_values():
                 "excerpt": "Purchase order PO-1001 total PKR 50,000.",
             },
         ),
-        fields={
-            "document_type": "purchase_order",
-            "identifiers": [
-                {"kind": "po_number", "value": "PO-1001", "citation": "C1"}
-            ],
-            "amounts": [
-                {"kind": "total", "value": 50000.0, "citation": "C1"}
-            ],
+        evidence={
+            "registry": cycle_vouching.DEFAULT_REGISTRY.reference(
+                "procure_to_pay"
+            ).to_dict(),
+            "record_fragments": [],
+            "records": [],
+            "unresolved_fragments": [],
+            "conflicts": [],
         },
     )
     row = workspace.add_rcm(

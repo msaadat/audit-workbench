@@ -831,7 +831,14 @@ class DocumentWorkflowExecution(BaseRunner):
             for item in voucher
             for fragment in item.get("record_fragments") or []
         ]
-        reduction = cycle_vouching.reduce_record_fragments(document_id, fragments)
+        # The pack comes from the chunk proposals even when they found no record,
+        # so a voucher-profile document that carries no transaction evidence still
+        # commits a registry-backed, empty reduction rather than failing the unit.
+        reduction = cycle_vouching.reduce_record_fragments(
+            document_id,
+            fragments,
+            registry_ref=voucher[0].get("registry"),
+        )
         return {
             "analysis_profile": "voucher",
             "registry": reduction["registry"],

@@ -115,7 +115,17 @@ engagement that has already run fieldwork.
   and tested: linking by extracted identifier, path resolution, comparison,
   citation-anchored evidence, and coverage reporting against the population.
 - Every vocabulary the model previously had to guess is now shared and validated
-  at authoring time: `doc_tests.FIELD_GROUPS`, `doc_tests.FIELD_GROUP_ATTRIBUTES`,
-  `doc_tests.METHODS`, and `document_analysis.VOUCHER_DOCUMENT_TYPES`. Each of
-  those three was found by inspecting real model output, and each would
-  otherwise have surfaced as an empty result rather than an error.
+  at authoring time. Each was found by inspecting real model output, and each
+  would otherwise have surfaced as an empty result rather than an error.
+
+> **Stale from here down.** The open-vocabulary voucher shape this document was
+> written against — `document_analysis.VOUCHER_DOCUMENT_TYPES`, the `fields` map
+> of `identifiers`/`parties`/`dates`/`amounts`/`line_items`/`approvals`/
+> `attachments`, and `doc_tests.voucher_field_index` — was replaced by the
+> registry-backed `record_fragments`/`records` reduction in
+> `docs/vouching-grid-plan.md` §3.1, and the `fields` half was deleted. The
+> *selection* problem this document records is still open and still accurate;
+> only the symbol names in the sketch above are not. The deterministic
+> possibility test in step 1 would now read
+> `cycle_vouching.transaction_evidence_manifest`, which already computes anchor
+> candidates from registered identifiers.

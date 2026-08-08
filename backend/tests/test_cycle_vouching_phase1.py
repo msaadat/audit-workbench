@@ -301,6 +301,135 @@ def test_readable_dates_normalize_and_unreadable_dates_remain_explicitly_invalid
     }
 
 
+def test_a_numeric_date_with_two_readings_is_invalid_rather_than_resolved():
+    """``04-01-2024`` is 4 January or 1 April; the record does not say which.
+
+    Resolving it by the order the accepted formats happen to be listed decides a
+    cut-off comparison silently, so the ambiguity is reported instead.
+    """
+
+    ambiguous = cycle_vouching.normalize_evidence_value(
+        "04-01-2024", semantic_type="date", citation="C1"
+    )
+    assert ambiguous["value"] is None
+    assert ambiguous["normalization_status"] == "invalid"
+    assert ambiguous["normalization_error"] == "ambiguous day and month order"
+
+    # A day past 12 has only one reading, and month names are never ambiguous.
+    for raw, expected in (("19-04-2024", "2024-04-19"), ("01-Apr-2024", "2024-04-01")):
+        resolved = cycle_vouching.normalize_evidence_value(
+            raw, semantic_type="date", citation="C1"
+        )
+        assert resolved["value"] == expected
+        assert resolved["normalization_status"] == "normalized"
+
+
+def test_a_date_supplied_for_a_number_does_not_normalize_to_its_first_digits():
+    """``19 Apr 2024`` scanned as a number yields 19, which reads as evidence.
+
+    The map validator's type check can only send a misplaced value back for
+    repair when local normalization actually fails, so this has to fail.
+    """
+
+    misplaced = cycle_vouching.normalize_evidence_value(
+        "19 Apr 2024", semantic_type="number", citation="C1"
+    )
+    assert misplaced["value"] is None
+    assert misplaced["normalization_status"] == "invalid"
+    assert misplaced["normalization_error"] == "value is a date, not a number"
+
+
+def test_two_numbers_in_one_raw_value_do_not_concatenate():
+    """OCR that emits a label column and a value column separately produces
+    ``25 25``; whitespace inside the digit scan made that 2525."""
+
+    assert (
+        cycle_vouching.normalize_evidence_value(
+            "25 25", semantic_type="number", citation="C1"
+        )["value"]
+        == 25
+    )
+    assert (
+        cycle_vouching.normalize_evidence_value(
+            "Quantity received 25\n25", semantic_type="number", citation="C1"
+        )["value"]
+        == 25
+    )
+    # Ordinary presentation of one figure is unaffected.
+    for raw, expected in (
+        ("PKR 2,000,000.00", 2000000),
+        ("25 Kits", 25),
+        ("(1,200.50)", -1200.5),
+    ):
+        assert (
+            cycle_vouching.normalize_evidence_value(
+                raw, semantic_type="number", citation="C1"
+            )["value"]
+            == expected
+        )
+
+
+def test_record_manifest_reports_registered_attributes_not_envelope_keys():
+    """Both the assertion validator and the authoring dialog read this list.
+
+    Every envelope carries ``raw_value`` and ``value`` whatever the field kind
+    declares, so deriving the list from the envelope advertised an approval as
+    answering ``value`` — not one of its attributes — while hiding ``approver``,
+    ``decision``, ``role``, and ``date``, which are. An approval could then be
+    neither asserted nor offered.
+    """
+
+    record = {
+        "registry": DEFAULT_REGISTRY.reference("procure_to_pay").to_dict(),
+        "record_id": "REC-1",
+        "document_id": "DOC-1",
+        "record_kind": "procure_to_pay.purchase_requisition",
+        "classification_evidence": ["C1"],
+        "identifiers": [
+            {
+                "kind": "procure_to_pay.requisition_number",
+                "value": {
+                    "raw_value": "REQ-1",
+                    "value": "req-1",
+                    "normalization_status": "normalized",
+                    "normalization_error": None,
+                    "citation": "C1",
+                },
+            }
+        ],
+        "fields": [
+            {
+                "group": "approvals",
+                "kind": "approval",
+                "attribute": attribute,
+                "entry": entry,
+                "value": {
+                    "raw_value": raw,
+                    "value": raw,
+                    "normalization_status": "normalized",
+                    "normalization_error": None,
+                    "citation": "C1",
+                },
+            }
+            for attribute, raw, entry in (
+                ("approver", "A. Khan", 0),
+                ("role", "Finance", 0),
+                ("approver", "B. Iqbal", 1),
+            )
+        ],
+    }
+
+    manifest = cycle_vouching._record_manifest(record, DEFAULT_REGISTRY)
+    approvals = next(
+        item
+        for item in manifest["available_fields"]
+        if (item["group"], item["kind"]) == ("approvals", "approval")
+    )
+    assert approvals["attributes"] == ["approver", "role"]
+    assert "value" not in approvals["attributes"]
+    assert approvals["entry_count"] == 2
+
+
 def test_record_kind_conflict_is_non_bindable():
     base = DEFAULT_REGISTRY
     alternate_kind = replace(

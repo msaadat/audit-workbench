@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..common import BASE_FIELD_KIND_IDS
 from ..models import (
     CyclePackDefinition,
     FieldAttributeDefinition,
@@ -95,47 +96,45 @@ FIELD_KINDS = (
     ),
 )
 
+_PAY_AMOUNTS = ("payroll.amount.gross_pay", "payroll.amount.net_pay")
+
 RECORD_KINDS = (
     RecordKindDefinition(
         "payroll.employment_contract",
         "Employment contract",
         ("payroll.employment_contract_number",),
-        (),
+        BASE_FIELD_KIND_IDS,
     ),
     RecordKindDefinition(
         "payroll.time_record",
         "Time record",
         ("payroll.time_record_number",),
-        ("payroll.hours.regular", "payroll.date.period_end"),
+        (*BASE_FIELD_KIND_IDS, "payroll.hours.regular", "payroll.date.period_end"),
     ),
     RecordKindDefinition(
         "payroll.payroll_register",
         "Payroll register",
         ("payroll.payroll_run_number",),
-        (
-            "payroll.amount.gross_pay",
-            "payroll.amount.net_pay",
-            "payroll.date.period_end",
-        ),
+        (*BASE_FIELD_KIND_IDS, *_PAY_AMOUNTS, "payroll.date.period_end"),
     ),
     RecordKindDefinition(
         "payroll.payslip",
         "Payslip",
         ("payroll.payslip_number",),
-        ("payroll.amount.gross_pay", "payroll.amount.net_pay"),
+        (*BASE_FIELD_KIND_IDS, *_PAY_AMOUNTS, "payroll.date.period_end"),
     ),
     RecordKindDefinition(
         "payroll.bank_payment",
         "Payroll bank payment",
         ("payroll.bank_payment_number",),
-        ("common.amount.total",),
+        BASE_FIELD_KIND_IDS,
     ),
 )
 
 PACK = CyclePackDefinition(
     id=PACK_ID,
     label="Payroll",
-    version=1,
+    version=3,
     normalizer_ids=("common.conservative_identifier",),
     identifier_kind_ids=(
         *(definition.id for definition in IDENTIFIER_KINDS),
@@ -144,8 +143,7 @@ PACK = CyclePackDefinition(
         "common.account_number",
     ),
     field_kind_ids=(
-        "common.amount.total",
-        "common.party.name",
+        *BASE_FIELD_KIND_IDS,
         *(definition.id for definition in FIELD_KINDS),
     ),
     record_kind_ids=(

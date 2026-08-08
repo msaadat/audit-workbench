@@ -139,7 +139,7 @@ Every persisted registry-backed artifact carries an exact reference:
 ```yaml
 registry:
   pack_id: procure_to_pay
-  pack_version: 1
+  pack_version: <n>
   definition_hash: sha256:...
 ```
 
@@ -224,7 +224,7 @@ control_attributes:
     evidence_kind: transaction_cycle
     registry:
       pack_id: procure_to_pay
-      pack_version: 1
+      pack_version: <n>
       definition_hash: sha256:...
     required_record_kinds:
       - procure_to_pay.vendor_invoice
@@ -237,7 +237,7 @@ control_attributes:
     evidence_kind: transaction_cycle
     registry:
       pack_id: procure_to_pay
-      pack_version: 1
+      pack_version: <n>
       definition_hash: sha256:...
     required_record_kinds:
       - procure_to_pay.goods_receipt
@@ -269,7 +269,7 @@ schema_version: 2
 kind: cycle_vouch
 registry:
   pack_id: procure_to_pay
-  pack_version: 1
+  pack_version: <n>
   definition_hash: sha256:...
 rcm_id: RCM-...
 requirement_refs:
@@ -850,6 +850,82 @@ and reviewed that analysis. The implementation did not regenerate or accept any
 workspace analysis on the user's behalf.
 
 The implementation does not perform this reanalysis. Phase 2 may be coded against automated fixtures, but live-workspace UX validation waits for the user's checkpoint confirmation.
+
+Re-triggered (2026-08-08): the extraction-quality work below changed the voucher
+worker identity, both packs, and the normalizers, so the completion record above
+is superseded and Checkpoint A must be re-run. An analysis of the five
+procurement vouchers under pack version 3 captured roughly half of what the
+records state — every value the registry had a field for, and nothing else —
+because `common.party.name` was declared by both packs and offered by no record
+kind, and because no field kind existed for a document date, a unit price, a
+line description, a party address, an approval outside a requisition, or an
+amount on a requisition. Four of the five documents spent a repair turn naming a
+field the record genuinely states and the record kind did not offer.
+
+Changed since, all of which invalidate the prior evidence:
+
+- both packs now offer a shared base of party, address, amount, unit price,
+  quantity, status, document date, due date, description, note, approval, and
+  attachment field kinds on every record kind, and nothing may be declared by a
+  pack and reachable from no record kind (`procure_to_pay` v4, `payroll` v2);
+- `procure_to_pay.approval.request` is replaced by the domain-neutral
+  `common.approval`, which carries `role` so the stage a record printed survives;
+- a field fact carries an `entry` ordinal, so repeated field kinds keep their
+  attributes paired through reduction;
+- `currency` is a registered attribute and therefore its own fact, rather than a
+  key inside the value envelope that local normalization discarded;
+- the value envelope is `raw_value`, `normalization_status`, `citation`; a
+  `normalized` claim the field's type cannot read is a repair, and an `invalid`
+  claim still commits as evidence;
+- a numeric date with two day/month readings, and a date supplied for a number,
+  are reported invalid rather than silently resolved;
+- `record_fragments` may be empty, and reduction then commits an empty
+  registry-backed result rather than requiring a fabricated record;
+- the map validator reports every selector problem in one repair turn, returns
+  the previous response, and asks for correct evidence to be preserved;
+- the prompt states each record kind's allowed `group.kind.attribute` selectors
+  directly, and the pack is constrained to those the engagement already uses.
+
+A first reanalysis under `procure_to_pay` v4 confirmed the field-coverage gain —
+four of five documents captured almost everything they state, three needed no
+repair, and approvals kept their pairing — but exposed three faults in the
+grounding rules introduced alongside it, since fixed (`procure_to_pay` v5,
+`payroll` v3):
+
+- requiring every value to appear in its cited excerpt is unsatisfiable for an
+  attribute that characterizes the record rather than quoting it, so a goods
+  receipt naming its buyer failed three runs over the word "buyer". Attributes
+  now declare `verbatim`, and interpretive ones are exempt;
+- the same rule was satisfied for free by quoting the whole chunk once and
+  citing it everywhere, which is what all four committed documents did. An
+  excerpt is now bounded to two lines and 240 characters;
+- the widened field vocabulary gave cross-references attractive wrong homes —
+  an invoice's PO and GRN references became attachment references, a voucher's
+  became a description, and a requisition's party codes were dropped in favour of
+  party names — splitting the cycle into two disconnected components. A printed
+  reference code left in a prose field, or in the excerpt behind a party name,
+  without being reported under an identifier kind is now a repairable error.
+
+A second reanalysis then failed three of five documents, on four faults in the
+grounding work itself rather than in the extraction:
+
+- the descriptors marked interpretive attributes inline as `role~`, putting a
+  syntax character inside the string a response has to copy — and responses
+  copied it, `role~` arriving as the attribute in two documents and surviving a
+  repair. The exemption is now stated on its own descriptor line and selectors
+  are copyable verbatim;
+- requiring a value to sit *inside* its cited excerpt rejected a value the source
+  wrapped mid-phrase, because neither the value nor the line quoted beside it
+  encloses the other. Grounding now locates both in the chunk and requires their
+  spans to overlap, which still rejects a heading quoted from the line above;
+- `validate_citations` keeps one citation per (page, excerpt), so a response that
+  cited the same line under two ids had the second reported as text the page does
+  not contain — guidance no response could act on. A duplicate id is remapped
+  onto the surviving citation instead;
+- one repair attempt is too few for a profile that checks selector, attribute,
+  citation shape, citation exactness, value grounding, typed normalization, and
+  reference placement independently. A response commonly gets a second thing
+  wrong, or introduces one while fixing another, so the budget is two.
 
 ### Checkpoint B - full clean regeneration after Phase 2
 

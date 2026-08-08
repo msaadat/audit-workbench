@@ -48,9 +48,20 @@ class IdentifierKindDefinition:
 class FieldAttributeDefinition:
     id: str
     semantic_type: SemanticType
+    #: Whether the value is copied from the record or characterizes it. A
+    #: verbatim attribute must appear in the excerpt that supports it; an
+    #: interpretive one — the *role* a named party plays, the *decision* a
+    #: signature block represents — is the worker's reading of the record and
+    #: routinely uses a word the record never prints. Demanding a quote for
+    #: those is unsatisfiable, and a response cannot be repaired into one.
+    verbatim: bool = True
 
     def identity(self) -> dict:
-        return {"id": self.id, "semantic_type": self.semantic_type}
+        return {
+            "id": self.id,
+            "semantic_type": self.semantic_type,
+            "verbatim": self.verbatim,
+        }
 
 
 @dataclass(frozen=True)

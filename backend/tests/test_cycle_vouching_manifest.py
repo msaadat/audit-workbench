@@ -303,3 +303,53 @@ def test_the_manifest_is_hash_identified_and_content_free(
     serialized = json.dumps(manifest)
     assert "2000000" not in serialized
     assert "INV2024005" not in serialized
+
+
+def test_an_unrefreshed_voucher_analysis_is_excluded_and_named(populated, contract):
+    """One stale analysis must not close the manifest for the whole engagement.
+
+    Refusing the call made a single document that predates the current pack fail
+    every caller in the workspace — including the authoring UX an auditor would
+    use to repair it. It is excluded instead, and named, because evidence that
+    exists and is not counted reads very differently from a document that was
+    never voucher-analyzed.
+    """
+
+    from app import documents
+
+    document = documents.add_document(
+        populated, "legacy-voucher.txt", b"Payment voucher PV-9.", category="voucher"
+    )
+    documents.extract_document(populated, document["id"])
+    document_analysis.persist_analysis(
+        populated,
+        document,
+        {"pages": [{"page": 1, "text": "Payment voucher PV-9."}]},
+        {
+            "summary_markdown": "A voucher analyzed before the current pack.",
+            "audit_notes_markdown": "None.",
+            "citations": [],
+            "analysis_profile": "voucher",
+            # No registry reference: exactly what a pre-registry analysis holds.
+        },
+        provider="local",
+        model="test",
+    )
+    populated = workspaces.load_workspace(populated.id)
+
+    excluded: list[dict] = []
+    records = document_analysis.registry_evidence_records(
+        populated,
+        cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict(),
+        excluded=excluded,
+    )
+
+    assert records == []
+    assert excluded == [
+        {"document_id": document["id"], "reason": "not_registry_backed"}
+    ]
+
+    manifest = cycle_vouching.transaction_evidence_manifest(
+        populated, contract["control_attributes"]
+    )
+    assert manifest["groups"][0]["excluded_documents"] == excluded

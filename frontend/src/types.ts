@@ -160,7 +160,13 @@ export interface EvidenceFieldKindDescriptor {
   label: string
   group: string
   kind: string
-  attributes: Array<{ id: string; semantic_type: EvidenceSemanticType }>
+  /** `verbatim: false` marks an attribute that carries a reading of the record
+   * (a party's role, an approval's decision) rather than a quote from it. */
+  attributes: Array<{
+    id: string
+    semantic_type: EvidenceSemanticType
+    verbatim?: boolean
+  }>
 }
 
 export interface EvidenceRecordKindDescriptor {
@@ -233,7 +239,7 @@ export interface EvidenceRecordFragment {
   review_reason?: string
   classification_evidence: Array<string | DocumentAnalysisCitation>
   identifiers: Array<{ kind: EvidenceIdentifierKindId; value: NormalizedEvidenceValue<string> }>
-  fields: Array<{ group: string; kind: string; attribute: string; value: NormalizedEvidenceValue }>
+  fields: Array<{ group: string; kind: string; attribute: string; entry?: number; value: NormalizedEvidenceValue }>
 }
 
 export interface ReducedEvidenceRecord {
@@ -243,7 +249,7 @@ export interface ReducedEvidenceRecord {
   record_kind: EvidenceRecordKindId
   classification_evidence: Array<string | DocumentAnalysisCitation>
   identifiers: Array<{ kind: EvidenceIdentifierKindId; value: NormalizedEvidenceValue<string> }>
-  fields: Array<{ group: string; kind: string; attribute: string; value: NormalizedEvidenceValue }>
+  fields: Array<{ group: string; kind: string; attribute: string; entry?: number; value: NormalizedEvidenceValue }>
 }
 
 export interface DocumentAnalysisDetail {
@@ -420,15 +426,20 @@ export interface CycleEvidenceManifestGroup {
     document_id: string
     record_id: string
     record_kind: EvidenceRecordKindId
+    /** One entry per registered field kind the record answers. `attributes` are
+     * the field kind's own registered attribute ids, not envelope keys. */
     available_fields: Array<{
       group: string
       kind: string
       attributes: string[]
       normalization_status?: string | null
+      entry_count?: number
     }>
   }>
   candidates: CycleCandidate[]
   rejected_candidates: Array<Record<string, unknown>>
+  /** Voucher analyses that exist but are not counted as current evidence. */
+  excluded_documents?: Array<{ document_id: string; reason: string }>
 }
 
 export interface CycleEvidenceManifest {

@@ -75,6 +75,12 @@ IDENTIFIER_KINDS = (
     ),
 )
 
+# Every pack shares these. A transaction record states far more than its own
+# primary identity — who it names, what it is for, when it was raised, what was
+# approved, what it encloses — and a field kind a pack declares but no record
+# kind makes available is a fact the extraction worker can see, cite, and then
+# has nowhere to put. So each of these is registered here *and* offered on every
+# record kind through ``BASE_FIELD_KIND_IDS`` below.
 FIELD_KINDS = (
     FieldKindDefinition(
         "common.amount.total",
@@ -88,11 +94,39 @@ FIELD_KINDS = (
         ),
     ),
     FieldKindDefinition(
+        "common.amount.unit_price",
+        "Unit price",
+        "amounts",
+        "unit_price",
+        (
+            FieldAttributeDefinition("value", "number"),
+            FieldAttributeDefinition("raw_value", "text"),
+            FieldAttributeDefinition("currency", "text"),
+        ),
+    ),
+    FieldKindDefinition(
+        # ``role`` is what makes one field kind enough for every party a record
+        # names: vendor, buyer, employee, preparer, bank. One entry per party,
+        # distinguished by the fact's ``entry`` ordinal.
         "common.party.name",
         "Party name",
         "parties",
         "name",
-        (FieldAttributeDefinition("name", "text"),),
+        (
+            FieldAttributeDefinition("name", "text"),
+            FieldAttributeDefinition("role", "text", verbatim=False),
+        ),
+    ),
+    FieldKindDefinition(
+        "common.party.address",
+        "Party address",
+        "parties",
+        "address",
+        (
+            FieldAttributeDefinition("value", "text"),
+            FieldAttributeDefinition("raw_value", "text"),
+            FieldAttributeDefinition("role", "text", verbatim=False),
+        ),
     ),
     FieldKindDefinition(
         "common.quantity.total",
@@ -114,6 +148,83 @@ FIELD_KINDS = (
             FieldAttributeDefinition("raw_value", "text"),
         ),
     ),
+    FieldKindDefinition(
+        # The date the record itself bears. Cycle-specific dates that describe a
+        # *different* event — goods received, payment made — stay in their pack.
+        "common.date.document",
+        "Document date",
+        "dates",
+        "document_date",
+        (
+            FieldAttributeDefinition("value", "date"),
+            FieldAttributeDefinition("raw_value", "text"),
+        ),
+    ),
+    FieldKindDefinition(
+        "common.date.due",
+        "Due date",
+        "dates",
+        "due_date",
+        (
+            FieldAttributeDefinition("value", "date"),
+            FieldAttributeDefinition("raw_value", "text"),
+        ),
+    ),
+    FieldKindDefinition(
+        "common.description",
+        "Description",
+        "descriptions",
+        "description",
+        (
+            FieldAttributeDefinition("value", "text"),
+            FieldAttributeDefinition("raw_value", "text"),
+        ),
+    ),
+    FieldKindDefinition(
+        "common.note",
+        "Note or comment",
+        "notes",
+        "note",
+        (
+            FieldAttributeDefinition("value", "text"),
+            FieldAttributeDefinition("raw_value", "text"),
+        ),
+    ),
+    FieldKindDefinition(
+        # One approval, signature, verification, or authorization the record
+        # carries. ``role`` keeps the stage the record printed ("Financial
+        # approval", "Verified by") instead of flattening it away, and the
+        # fact's ``entry`` ordinal keeps approver and date paired.
+        "common.approval",
+        "Approval",
+        "approvals",
+        "approval",
+        (
+            FieldAttributeDefinition("approver", "text"),
+            FieldAttributeDefinition("role", "text", verbatim=False),
+            FieldAttributeDefinition("decision", "text", verbatim=False),
+            FieldAttributeDefinition("date", "date"),
+        ),
+    ),
+    FieldKindDefinition(
+        "common.attachment",
+        "Attachment",
+        "attachments",
+        "attachment",
+        (
+            FieldAttributeDefinition("kind", "text", verbatim=False),
+            FieldAttributeDefinition("reference", "text"),
+            FieldAttributeDefinition("present", "boolean", verbatim=False),
+        ),
+    ),
+)
+
+# Offered on every registered record kind of every pack. A record cannot state a
+# party, a date, an amount, an approval, or an attachment that the contract has
+# no room for, which is what forced the worker to either drop the fact or
+# relabel it as an unrelated registered field.
+BASE_FIELD_KIND_IDS: tuple[str, ...] = tuple(
+    definition.id for definition in FIELD_KINDS
 )
 
 RECORD_KINDS = (

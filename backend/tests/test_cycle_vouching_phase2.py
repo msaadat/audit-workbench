@@ -32,20 +32,22 @@ def _manifest(contract: dict, *, linked_rows: int = 1) -> dict:
     ]
     role_kinds = {role["role"]: role["record_kind"] for role in roles}
     by_kind = {record["record_kind"]: record for record in record_manifests}
+    # The manifest reports each fact's own registered attribute, so an assertion
+    # over a supplied field is present in it as written. This used to patch the
+    # missing profile in, because attributes were derived from envelope keys and
+    # an approval's `approver` never appeared.
     for assertion in test["definition"]["assertions"]:
         for operand in (assertion.get("left"), assertion.get("right")):
             if not isinstance(operand, dict) or operand.get("source") != "role":
                 continue
             field = operand["field"]
-            profile = {
-                "group": field["group"],
-                "kind": field["kind"],
-                "attributes": [field["attribute"]],
-                "normalization_status": "normalized",
-            }
             available = by_kind[role_kinds[operand["role"]]]["available_fields"]
-            if profile not in available:
-                available.append(profile)
+            assert any(
+                entry["group"] == field["group"]
+                and entry["kind"] == field["kind"]
+                and field["attribute"] in entry["attributes"]
+                for entry in available
+            ), f"{field} missing from the manifest for role '{operand['role']}'"
     candidate = {
         "candidate_id": population["candidate_id"],
         "registry": test["registry"],

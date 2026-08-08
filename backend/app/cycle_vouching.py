@@ -108,7 +108,14 @@ _DATE_FORMATS = (
     "%b %d, %Y",
     "%B %d, %Y",
 )
-_NUMBER_RE = re.compile(r"[-+]?\d[\d,\s]*(?:\.\d+)?")
+# Day/month order the accepted formats above cannot see. Never used to *accept* a
+# value — only to detect that a purely numeric date has two readings, so it is
+# reported invalid rather than silently resolved to one of them.
+_AMBIGUOUS_DATE_FORMATS = ("%m-%d-%Y", "%m/%d/%Y")
+# Whitespace is deliberately *not* in the digit class: including it let a raw
+# value that spans two numbers ("25 25", common when OCR emits a label column
+# and a value column separately) concatenate into 2525.
+_NUMBER_RE = re.compile(r"[-+]?\d(?:[\d,]*\d)?(?:\.\d+)?")
 
 
 def _object(value: object, label: str) -> dict:
@@ -206,6 +213,22 @@ def validate_normalized_value(value: object, *, label: str = "value") -> dict:
     return envelope
 
 
+def _date_candidate(raw: str) -> str:
+    """Strip only presentation whitespace around date separators."""
+
+    return re.sub(r"\s*-\s*", "-", raw)
+
+
+def _parsed_dates(candidate: str, formats: Iterable[str]) -> set[str]:
+    parsed: set[str] = set()
+    for date_format in formats:
+        try:
+            parsed.add(datetime.strptime(candidate, date_format).date().isoformat())
+        except ValueError:
+            continue
+    return parsed
+
+
 def normalize_evidence_value(
     raw_value: object,
     *,
@@ -243,22 +266,30 @@ def normalize_evidence_value(
             # separators (for example ``29-Apr -2024``).  Removing only that
             # presentation whitespace is deterministic and does not guess a
             # missing digit or swap day/month order.
-            candidate = re.sub(r"\s*-\s*", "-", raw)
-            for date_format in _DATE_FORMATS:
-                try:
-                    normalized = datetime.strptime(candidate, date_format).date().isoformat()
-                    break
-                except ValueError:
-                    continue
-            if normalized is None:
+            candidate = _date_candidate(raw)
+            accepted = _parsed_dates(candidate, _DATE_FORMATS)
+            if not accepted:
                 error = "unrecognized date format"
+            elif len(accepted | _parsed_dates(candidate, _AMBIGUOUS_DATE_FORMATS)) > 1:
+                # ``04-01-2024`` is 4 January or 1 April depending on the
+                # record's convention, which this value does not state. Choosing
+                # by format order would decide a cut-off comparison silently.
+                error = "ambiguous day and month order"
+            else:
+                normalized = next(iter(accepted))
         elif semantic_type == "number":
             negative = raw.startswith("(") and raw.endswith(")")
             match = _NUMBER_RE.search(raw)
             if match is None:
                 error = "unrecognized numeric format"
+            elif _parsed_dates(_date_candidate(raw), _DATE_FORMATS):
+                # ``19 Apr 2024`` yields 19 from a bare numeric scan. Reporting
+                # it invalid is what lets the map validator send a date supplied
+                # for an amount back for repair instead of committing a wrong
+                # number that normalized cleanly.
+                error = "value is a date, not a number"
             else:
-                value = Decimal(re.sub(r"[,\s]", "", match.group(0)))
+                value = Decimal(match.group(0).replace(",", ""))
                 if negative:
                     value = -value
                 normalized = int(value) if value == value.to_integral() else float(value)
@@ -335,6 +366,7 @@ def normalize_record_fragment(
                 "group": definition.group,
                 "kind": definition.kind,
                 "attribute": _text(fact.get("attribute"), f"record fragment.fields[{index}].attribute"),
+                "entry": _entry_ordinal(fact, f"record fragment.fields[{index}]"),
                 "value": normalize_evidence_value(
                     supplied.get("raw_value", supplied.get("value")),
                     semantic_type=semantic_type,
@@ -345,6 +377,25 @@ def normalize_record_fragment(
         )
     normalized = {**fragment, "registry": reference.to_dict(), "identifiers": identifiers, "fields": fields}
     return validate_evidence_record_fragment(normalized, registry=registry)
+
+
+def _entry_ordinal(value: Mapping[str, object], label: str) -> int:
+    """Which occurrence of a repeated field kind one attribute belongs to.
+
+    A record that carries three approvals states nine facts, and the reduction
+    groups facts by content — so without an ordinal, ``approver`` and ``date``
+    lose the pairing the record printed and the merged record reads as three
+    unrelated approvers beside three unrelated dates. The ordinal is the
+    fragment-local occurrence number; it is part of a fact's merge identity, so
+    attributes of one occurrence stay together and repeat facts still collapse.
+    """
+
+    supplied = value.get("entry", 0)
+    if supplied is None:
+        return 0
+    if isinstance(supplied, bool) or not isinstance(supplied, int) or supplied < 0:
+        raise CycleSchemaError(f"{label}.entry must be a non-negative integer.")
+    return supplied
 
 
 def _field_definition(
@@ -390,6 +441,7 @@ def _validate_typed_fact(
         raise CycleSchemaError(
             f"{label} is not available on record kind '{record_kind}'."
         )
+    _entry_ordinal(fact, label)
     validate_normalized_value(fact.get("value"), label=f"{label}.value")
     return fact
 
@@ -694,6 +746,7 @@ def reduce_record_fragments(
     document_id: str,
     fragments: Iterable[object],
     *,
+    registry_ref: object | None = None,
     overrides: Iterable[object] = (),
     registry: CycleRegistry = DEFAULT_REGISTRY,
 ) -> dict:
@@ -702,6 +755,12 @@ def reduce_record_fragments(
     Grouping is exact and independent of chunk order.  Secondary identifiers
     may attach a primary-less fragment only when they identify one compatible
     component; they can never bridge conflicting primary identities.
+
+    ``registry_ref`` names the pack when there are no fragments at all: a
+    document routed to this profile that turns out to carry no transaction record
+    reduces to an empty result under its selected pack, which is a truthful
+    answer. Requiring a fragment instead is what made the worker's response
+    schema demand one, and a demanded record is a fabricated record.
     """
 
     normalized_fragments = [
@@ -714,7 +773,17 @@ def reduce_record_fragments(
         }.values()
     )
     if not prepared:
-        raise CycleSchemaError("Evidence reduction requires at least one fragment.")
+        if registry_ref is None:
+            raise CycleSchemaError(
+                "Evidence reduction without fragments requires a registry reference."
+            )
+        empty = {
+            "registry": _registry_reference(registry_ref, registry).to_dict(),
+            "records": [],
+            "unresolved_fragments": [],
+            "conflicts": [],
+        }
+        return validate_evidence_reduction(empty, registry=registry)
     references = {
         tuple(_registry_reference(value.get("registry"), registry).to_dict().items())
         for value in prepared
@@ -1556,23 +1625,73 @@ def infer_cycle_mappings(
     return mappings
 
 
-def _record_manifest(record: Mapping[str, object], registry: CycleRegistry) -> dict:
-    reference = _registry_reference(record.get("registry"), registry)
-    available_fields = []
-    for fact in record.get("fields") or []:
-        envelope = fact.get("value") or {}
-        available_fields.append(
-            {
-                "group": str(fact.get("group") or ""),
-                "kind": str(fact.get("kind") or ""),
-                "attributes": sorted(
-                    key
-                    for key in envelope
-                    if key in {"value", "raw_value"}
-                ),
-                "normalization_status": envelope.get("normalization_status"),
-            }
+def committed_pack_ids(workspace) -> list[str]:
+    """Registered packs this engagement already uses, or none when undecided.
+
+    Two things commit a workspace to a pack: an RCM row whose control attributes
+    declare transaction-cycle evidence, and a voucher analysis already reduced
+    under a registered pack. Which business cycle an engagement audits is a
+    property of the engagement, so the extraction worker is told it rather than
+    left to infer it from one chunk of one voucher. An empty list means nothing
+    has committed yet, and every registered pack stays available.
+    """
+
+    from . import document_analysis
+
+    packs = {
+        str((attribute.get("registry") or {}).get("pack_id") or "")
+        for row in workspace.rcm
+        for attribute in row.get("control_attributes") or []
+        if attribute.get("evidence_kind") == "transaction_cycle"
+    }
+    for document in workspace.documents:
+        artifact = (
+            document_analysis.load_analysis(
+                workspace, str(document.get("id") or ""), document=document
+            ).get("effective")
+            or {}
         )
+        if artifact.get("analysis_profile") == "voucher":
+            packs.add(str((artifact.get("registry") or {}).get("pack_id") or ""))
+    return sorted(value for value in packs if value)
+
+
+def _record_manifest(record: Mapping[str, object], registry: CycleRegistry) -> dict:
+    """One record's authoring surface: which registered selectors it can answer.
+
+    ``attributes`` is each fact's own registered ``attribute`` selector, not the
+    keys of its normalization envelope. Every envelope carries ``raw_value`` and
+    ``value`` whatever the field kind declares, so deriving the list from the
+    envelope advertised ``approvals.approval`` as answering ``value`` — which is
+    not one of its attributes — while hiding ``approver``, ``decision``, and
+    ``date``, which are. Both the assertion validator and the authoring dialog
+    read this list, so an approval could neither be asserted nor offered.
+    """
+
+    reference = _registry_reference(record.get("registry"), registry)
+    attributes: dict[tuple[str, str], set[str]] = {}
+    statuses: dict[tuple[str, str], set[str]] = {}
+    entries: dict[tuple[str, str], set[int]] = {}
+    for fact in record.get("fields") or []:
+        selector = (str(fact.get("group") or ""), str(fact.get("kind") or ""))
+        envelope = fact.get("value") or {}
+        attributes.setdefault(selector, set()).add(str(fact.get("attribute") or ""))
+        statuses.setdefault(selector, set()).add(
+            str(envelope.get("normalization_status") or "")
+        )
+        entries.setdefault(selector, set()).add(int(fact.get("entry") or 0))
+    available_fields = [
+        {
+            "group": group,
+            "kind": kind,
+            "attributes": sorted(selected),
+            "normalization_status": (
+                "invalid" if "invalid" in statuses[(group, kind)] else "normalized"
+            ),
+            "entry_count": len(entries[(group, kind)]),
+        }
+        for (group, kind), selected in attributes.items()
+    ]
     return {
         "document_id": str(record.get("document_id") or ""),
         "record_id": str(record.get("record_id") or ""),
@@ -1645,8 +1764,9 @@ def transaction_evidence_manifest(
     for key in sorted(by_reference):
         grouped_attributes = by_reference[key]
         reference = _registry_reference(grouped_attributes[0]["registry"], registry)
+        excluded: list[dict] = []
         records = document_analysis.registry_evidence_records(
-            workspace, reference.to_dict()
+            workspace, reference.to_dict(), excluded=excluded
         )
         required_kinds = list(
             dict.fromkeys(
@@ -1689,6 +1809,13 @@ def transaction_evidence_manifest(
                 "required_record_kinds": required_kinds,
                 "roles": roles,
                 "records": [_record_manifest(record, registry) for record in records],
+                # Named, not merely absent: an analysis excluded for a stale pack
+                # or stale reviewed assignments is evidence that exists and is not
+                # being counted, which reads very differently from a document that
+                # was never voucher-analyzed.
+                "excluded_documents": sorted(
+                    excluded, key=lambda item: item["document_id"]
+                ),
                 **candidate_manifest,
             }
         )

@@ -371,9 +371,11 @@ improved this round; shape *resolution* is limited elsewhere.
    this: the test simply reports missing evidence.
 
 3. **A vocabulary gap.** `800a611b76` is the purchase *requisition* but
-   extraction typed it `purchase_order`, and `VOUCHER_DOCUMENT_TYPES` has no
-   requisition type. Tests wanting a requisition improvised `approval_record` or
-   `other`; nothing is typed that way, so those roles never fill.
+   extraction typed it `purchase_order`, and the then-current
+   `VOUCHER_DOCUMENT_TYPES` had no requisition type. Tests wanting a requisition
+   improvised `approval_record` or `other`; nothing is typed that way, so those
+   roles never fill. *(That vocabulary is gone; the registry's record kinds
+   include `procure_to_pay.purchase_requisition`.)*
 
 ## Lessons, again
 
@@ -467,8 +469,11 @@ second hop — letting a linked document's own cross-references reach further
 documents — is a design change, but without it a three-way match anchored on an
 invoice cannot ever assemble, which is the shape auditors most want.
 
-Also worth deciding whether `VOUCHER_DOCUMENT_TYPES` should carry a requisition
-type, since extraction currently types a requisition as a `purchase_order`.
+Also worth deciding whether the classification vocabulary should carry a
+requisition type, since extraction currently types a requisition as a
+`purchase_order`. *(Resolved: the closed `VOUCHER_DOCUMENT_TYPES` vocabulary was
+replaced by the registry's record kinds, which include
+`procure_to_pay.purchase_requisition`.)*
 
 ### 4. Restore segregation-of-duties coverage
 

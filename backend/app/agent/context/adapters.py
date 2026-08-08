@@ -2179,12 +2179,19 @@ def document_identity_candidate(
     report a value it read off the filename and attach a loosely related excerpt.
     This candidate carries the document id, its source hash, and its category and
     nothing else, which is the minimum citation validation needs.
+
+    It also carries the transaction-evidence packs this engagement has already
+    committed to, which is not descriptive metadata about the document and cannot
+    leak a field value: a pack id names a closed vocabulary, and which business
+    cycle an engagement audits is a property of the engagement rather than
+    something to be judged from one chunk of one voucher.
     """
     document = _document_entry(workspace, document_id)
     projection = {
         "document_id": str(document_id),
         "source_sha1": str(document.get("sha1") or ""),
         "category": str(document.get("category") or ""),
+        "cycle_pack_ids": cycle_vouching.committed_pack_ids(workspace),
     }
     return ContextCandidate(
         source_ref=f"document:{document_id}",
