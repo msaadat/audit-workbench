@@ -243,6 +243,17 @@ def _engagement_state(workspace: Workspace) -> dict:
     }
     broken_analyses = []
 
+    analysis_memo = workspace.analysis_summary or {}
+    eda_markdown = str(analysis_memo.get("markdown") or "").strip()
+    eda_started = bool(workspace.analyses) or bool(eda_markdown)
+    eda_issues = []
+    if not workspace.analyses:
+        eda_issues.append("No analyses have been run yet.")
+    elif not eda_markdown:
+        eda_issues.append("The analysis summary has not been written yet.")
+    elif str(analysis_memo.get("basis_sha1") or "") != analysis_results.summary_basis_digest(workspace):
+        eda_issues.append("The analysis summary is stale.")
+
     context = workspace.planning.get("context") or {}
     apm_started = bool(
         workspace.planning.get("apm_markdown")
@@ -361,6 +372,7 @@ def _engagement_state(workspace: Workspace) -> dict:
         _phase("planning", planning_state, planning_complete, planning_summary,
                {"rcm_rows": len(workspace.rcm), "tests": len(linked_tests)}, planning_issues,
                sub=[
+                   _subphase("eda", "EDA", eda_started, eda_issues, _target("analysis")),
                    _subphase("apm", "APM", apm_started, apm_issues, _target("planning")),
                    _subphase("rcm", "RCM", rcm_started, rcm_issues, _target("planning", view="rcm")),
                ]),
