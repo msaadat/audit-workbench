@@ -391,7 +391,8 @@ def test_audit_workflow_declares_the_complete_lifecycle_graph():
         "documents.analysis_chunks_ready": ("documents.text_ready",),
         "documents.analysis_generated": ("documents.analysis_chunks_ready",),
         "data.relationships_inferred": (),
-        "data.joins_ready": ("data.relationships_inferred",),
+        "data.join_utility_ready": ("data.relationships_inferred",),
+        "data.joins_ready": ("data.join_utility_ready",),
         "analysis.definitions_ready": ("data.joins_ready",),
         "analysis.executed": ("analysis.definitions_ready",),
         "analysis.summarized": ("analysis.executed",),
@@ -429,6 +430,7 @@ def test_full_audit_closure_is_topological_and_preserves_parallel_branches():
 
     assert resolved == [
         "data.relationships_inferred",
+        "data.join_utility_ready",
         "data.joins_ready",
         "analysis.definitions_ready",
         "analysis.executed",

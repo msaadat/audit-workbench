@@ -11,8 +11,9 @@ joins and data analysis" as a durable outcome workflow rather than as an ad-hoc
 action DAG:
 
 ``data.relationships_inferred`` diagnoses table relationships from deterministic
-local Polars evidence, ``data.joins_ready`` materializes only the joins that
-evidence supports, ``analysis.definitions_ready`` proposes rerunnable analysis
+local Polars evidence, ``data.join_utility_ready`` selects the relationships
+that support a concrete audit hypothesis, ``data.joins_ready`` materializes
+only those selected joins, ``analysis.definitions_ready`` proposes rerunnable analysis
 specs from declared metadata context, and ``analysis.executed`` runs them
 locally and records a bounded result contract.
 
@@ -42,7 +43,8 @@ EXCLUDED_ANALYTICS_TEST_IDS = frozenset(
 # durable, and there is no parallel branch to express.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "data.relationships_inferred": (),
-    "data.joins_ready": ("data.relationships_inferred",),
+    "data.join_utility_ready": ("data.relationships_inferred",),
+    "data.joins_ready": ("data.join_utility_ready",),
     "analysis.definitions_ready": ("data.joins_ready",),
     "analysis.executed": ("analysis.definitions_ready",),
     "analysis.summarized": ("analysis.executed",),

@@ -987,6 +987,32 @@ PRESETS.register(
 
 PRESETS.register(
     ContextPreset(
+        preset_id="analysis.join_utility",
+        spec=ContextSpec(
+            sources=(
+                ContextSource(
+                    id="join_candidates", source_type="tables", required=True,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_aggregate"),),
+                    budget=ContextBudget(max_items=1, max_characters=20_000),
+                ),
+                ContextSource(
+                    id="join_tables", source_type="tables", required=False,
+                    selector=ContextSelector(selector_id="tables.all"),
+                    representations=(ContextRepresentation("table_metadata"),),
+                    budget=ContextBudget(max_items=12, max_characters=24_000),
+                ),
+            ),
+            budget=ContextBudget(max_items=13, max_characters=44_000),
+            privacy=ContextPrivacy(
+                allow_document_text=True, allow_table_metadata=True,
+                allow_table_aggregates=True,
+            ),
+        ),
+    )
+)
+PRESETS.register(
+    ContextPreset(
         preset_id="analysis.definitions",
         spec=ContextSpec(
             sources=(

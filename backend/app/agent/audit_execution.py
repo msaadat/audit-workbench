@@ -1246,10 +1246,16 @@ class AuditWorkflowExecution(ActionRunner):
 
 
 _PARTIAL_DEPENDENCIES = {
+    # Relationship diagnosis is local and independent by pair, so one failed
+    # diagnostic need not prevent the utility stage from evaluating the rest.
+    "data.join_utility_ready": {"data.relationships_inferred"},
     # A safe auto-selected join, a skipped unrelatable pair, or an
     # auditor-held join choice must not withhold analysis of the frames that
     # remain usable. Later analysis capabilities re-expand from the joins that
-    # actually committed, matching the standalone analysis workflow.
+    # actually committed, matching the standalone analysis workflow. What is
+    # deliberately *not* partial is ``data.joins_ready`` in
+    # ``data.join_utility_ready``: a pair whose gate never answered has nothing
+    # admitting it, and materializing it anyway would bypass the gate outright.
     "analysis.definitions_ready": {"data.joins_ready"},
     "analysis.executed": {"analysis.definitions_ready"},
     # One procedure that would not execute must not withhold the memo. A
@@ -1376,6 +1382,10 @@ def build_audit_workflow_runner(
     # adapter methods, so a capability behaves identically whether an audit run
     # or a standalone analysis request scheduled it.
     _ANALYSIS_PIPELINE_BINDERS = {
+        "data.join_utility_ready": (
+            analysis_adapter._bind_join_utility,
+            {"worker": "analysis.join_utility", "executor": None},
+        ),
         "analysis.definitions_ready": (
             analysis_adapter._bind_definitions,
             {"worker": "analysis.definitions", "executor": "analysis.definitions"},

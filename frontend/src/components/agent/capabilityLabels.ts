@@ -15,6 +15,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   'documents.analysis_chunks_ready': 'Document chunk analysis',
   'documents.analysis_generated': 'Document analysis',
   'data.relationships_inferred': 'Table relationships',
+  'data.join_utility_ready': 'Join utility selection',
   'data.joins_ready': 'Materialized joins',
   'analysis.definitions_ready': 'Analysis definitions',
   'analysis.executed': 'Analysis results',

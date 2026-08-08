@@ -29,6 +29,7 @@ from ..workflows import analysis as analysis_workflow
 
 CAPABILITY_IDS: tuple[str, ...] = (
     "data.relationships_inferred",
+    "data.join_utility_ready",
     "data.joins_ready",
     "analysis.definitions_ready",
     "analysis.executed",
@@ -366,6 +367,45 @@ def _data_relationships_inferred() -> Capability:
 
 
 # --------------------------------------------------------------------------- #
+# data.join_utility_ready
+# --------------------------------------------------------------------------- #
+def _join_utility_ready(workspace: Workspace, scope: dict) -> Readiness:
+    table_scope = resolve_table_scope(workspace, scope)
+    if len(table_scope.tables) < 2:
+        return Readiness("satisfied", details={"candidates": 0})
+    # This is run-local intermediate work. It deliberately remains missing
+    # while any direct table pair is unjoined so every fresh run gets an
+    # identity-persisted utility decision before it can mutate the workspace.
+    pending = uncovered_pairs(workspace, table_scope)
+    return (
+        Readiness("satisfied", details={"candidates": 0})
+        if not pending
+        else Readiness("missing", (f"{len(pending)} table pair(s) need join-utility selection",), details={"pairs": len(pending)})
+    )
+
+
+def _join_utility_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
+    table_scope = resolve_table_scope(workspace, scope)
+    pending = uncovered_pairs(workspace, table_scope)
+    if not pending:
+        return []
+    return [UnitSpec(
+        semantic_unit_id("join_utility", *table_scope.tables), "join_utility",
+        "Select audit-useful joins", tuple(f"table:{name}" for name in table_scope.tables),
+        {"pairs": [list(pair) for pair in pending]},
+    )]
+
+
+def _data_join_utility_ready() -> Capability:
+    return Capability(
+        "data.join_utility_ready", "join_utility", "Join utility selection",
+        "join_utility", analysis_workflow.dependencies("data.join_utility_ready"),
+        _join_utility_ready, _join_utility_units, context="analysis.join_utility",
+        invalidate_on=("tables",),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # data.joins_ready (P8.5)
 # --------------------------------------------------------------------------- #
 def _joins_ready(workspace: Workspace, scope: dict) -> Readiness:
@@ -626,6 +666,7 @@ STAGE_CHECKPOINTS: dict[str, str] = {
 
 _BUILDERS = {
     "data.relationships_inferred": _data_relationships_inferred,
+    "data.join_utility_ready": _data_join_utility_ready,
     "data.joins_ready": _data_joins_ready,
     "analysis.definitions_ready": _analysis_definitions_ready,
     "analysis.executed": _analysis_executed,

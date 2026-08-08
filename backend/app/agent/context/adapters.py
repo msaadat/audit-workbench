@@ -1556,6 +1556,67 @@ def analysis_relationship_candidates(
     return tuple(candidates)
 
 
+def join_utility_scope(
+    workspace: Workspace,
+    relationships: Iterable[Mapping[str, object]],
+) -> ContextScope:
+    """Bounded, row-free catalog for the pre-materialization join gate."""
+    candidates: list[dict[str, object]] = []
+    tables: set[str] = set()
+    for record in relationships:
+        for item in record.get("candidates") or []:
+            if not isinstance(item, Mapping) or item.get("strength") not in {"strong", "moderate"}:
+                continue
+            ref = str(item.get("ref") or "").strip()
+            if not ref:
+                continue
+            left, right = str(item.get("left") or ""), str(item.get("right") or "")
+            tables.update((left, right))
+            candidates.append({
+                "ref": ref,
+                "left": left,
+                "right": right,
+                "left_on": list(item.get("left_on") or []),
+                "right_on": list(item.get("right_on") or []),
+                "role_key": bool(item.get("role_key")),
+                "strength": item.get("strength"),
+                "diagnostics": dict(item.get("diagnostics") or {}),
+            })
+    candidates.sort(key=lambda item: str(item["ref"]))
+    schemas = [
+        item for item in assistant.schema_brief(workspace)
+        if str(item.get("table") or "") in tables and not item.get("error")
+    ]
+    table_columns = {
+        str(item["table"]): [
+            str(column.get("name"))
+            for column in item.get("columns") or []
+            if str(column.get("name") or "").strip()
+        ]
+        for item in schemas
+    }
+    # The model must nominate concrete schema-visible columns from both sides
+    # of a retained relationship.  This supports deterministic validation of
+    # the stated hypothesis without ever disclosing a row or category value.
+    catalog = {"candidates": candidates, "table_columns": table_columns}
+    schema_candidates = tuple(
+        ContextCandidate(
+            source_ref=f"table:{item['table']}", source=item,
+            representations={"table_metadata": item}, metadata={"table": item["table"]},
+            lexical_text=str(item["table"]),
+        )
+        for item in schemas
+    )
+    return ContextScope(candidates={
+        "join_candidates": (ContextCandidate(
+            source_ref="analysis:join_candidates", source=catalog,
+            representations={"table_aggregate": catalog}, metadata={"scope": "join_utility"},
+            lexical_text="join utility candidates",
+        ),),
+        "join_tables": schema_candidates,
+    })
+
+
 def analysis_definition_scope(
     workspace: Workspace,
     target: str,

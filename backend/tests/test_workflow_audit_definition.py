@@ -27,7 +27,8 @@ EXPECTED_DEPENDENCIES = {
     "documents.analysis_chunks_ready": ("documents.text_ready",),
     "documents.analysis_generated": ("documents.analysis_chunks_ready",),
     "data.relationships_inferred": (),
-    "data.joins_ready": ("data.relationships_inferred",),
+    "data.join_utility_ready": ("data.relationships_inferred",),
+    "data.joins_ready": ("data.join_utility_ready",),
     "analysis.definitions_ready": ("data.joins_ready",),
     "analysis.executed": ("analysis.definitions_ready",),
     "analysis.summarized": ("analysis.executed",),
@@ -70,6 +71,7 @@ def test_full_audit_closure_is_topological():
 
     assert resolved == [
         "data.relationships_inferred",
+        "data.join_utility_ready",
         "data.joins_ready",
         "analysis.definitions_ready",
         "analysis.executed",

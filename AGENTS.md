@@ -434,7 +434,8 @@ WorkflowRunner             domain-neutral capability graph scheduler; composed
   Phase 9's `documents.analysis_generated` capability restores on-demand
   generation as a declared dependency.
 - Phase 8 added the exploratory data-analysis workflow on the same scheduler:
-  `data.relationships_inferred` → `data.joins_ready` →
+  `data.relationships_inferred` → `data.join_utility_ready` →
+  `data.joins_ready` →
   `analysis.definitions_ready` → `analysis.executed` → `analysis.summarized`
   (the last added later; see the analysis-summary note below). It introduces no workspace
   collection — relationship evidence is run-durable, joins land in

@@ -190,7 +190,8 @@ def _moderate_pair_workspace() -> workspaces.Workspace:
 def test_analysis_graph_declares_a_linear_closure_with_a_stable_hash():
     assert analysis_workflow.DEPENDENCIES == {
         "data.relationships_inferred": (),
-        "data.joins_ready": ("data.relationships_inferred",),
+        "data.join_utility_ready": ("data.relationships_inferred",),
+        "data.joins_ready": ("data.join_utility_ready",),
         "analysis.definitions_ready": ("data.joins_ready",),
         "analysis.executed": ("analysis.definitions_ready",),
         "analysis.summarized": ("analysis.executed",),
@@ -208,6 +209,7 @@ def test_analysis_graph_declares_a_linear_closure_with_a_stable_hash():
     registry = capability_registries.build_analysis_registry()
     assert registry.closure(["analysis.summarized"]) == [
         "data.relationships_inferred",
+        "data.join_utility_ready",
         "data.joins_ready",
         "analysis.definitions_ready",
         "analysis.executed",
@@ -475,6 +477,7 @@ def test_strong_evidence_materializes_exactly_one_guarded_join(
     fake = _fake_model(monkeypatch)
     run = _analysis_run(ws)
     _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
     _drive(ws, run, "data.joins_ready")
 
     stage = _stage(run, "data.joins_ready")
@@ -490,10 +493,12 @@ def test_strong_evidence_materializes_exactly_one_guarded_join(
     assert created["agent_run_id"] == run["id"]
     # The join is a real derived table.
     assert fresh.get_frame("transactions_customers_joined").height == 6
-    # A receipt proves the guarded commit, and no model was involved.
+    # A receipt proves the guarded commit, and no model chose the join: the one
+    # turn the run spent went to the utility gate, which admits a relationship
+    # without naming keys, and the key itself came from local evidence.
     assert unit["receipt_sidecar"]["unit_id"] == unit["id"]
     assert unit["proposal_sidecar"]["unit_id"] == unit["id"]
-    assert fake.calls == []
+    assert [call["tag"] for call in fake.calls] == ["agent:join_utility"]
 
 
 def test_auto_mode_materializes_the_top_ranked_moderate_join(monkeypatch):
@@ -506,6 +511,7 @@ def test_auto_mode_materializes_the_top_ranked_moderate_join(monkeypatch):
     assert record["strong"] == []
     assert record["moderate"], "the 90% match should be a moderate candidate"
 
+    _drive(ws, run, "data.join_utility_ready")
     _drive(ws, run, "data.joins_ready")
     unit = _stage(run, "data.joins_ready")["units"][0]
     assert unit["status"] == "succeeded"
@@ -542,6 +548,7 @@ def test_unrelatable_tables_are_skipped_rather_than_joined(monkeypatch):
     run = _analysis_run(ws)
 
     _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
     _drive(ws, run, "data.joins_ready")
 
     relationship = _stage(run, "data.relationships_inferred")["units"][0]
@@ -553,6 +560,140 @@ def test_unrelatable_tables_are_skipped_rather_than_joined(monkeypatch):
     assert run["warnings"] == []
     assert narration.skipped(run) == []
     assert workspaces.load_workspace(ws.id).joins == []
+
+
+def _mixed_strength_workspace() -> workspaces.Workspace:
+    """Two tables related both strongly and moderately, by different keys.
+
+    ``region_code`` is unique in ``regions`` and fully matched from ``orders``,
+    so it diagnoses strong. ``order_ref`` matches 9 of 10 and repeats on the
+    left, so it diagnoses moderate. Which of the two an auditor wants is a
+    question about the engagement, not about the evidence.
+    """
+
+    ws = workspaces.create_workspace("Mixed evidence")
+    orders = pl.DataFrame(
+        {
+            "order_ref": [f"R{index}" for index in range(1, 10)] + ["R1"],
+            "region_code": [f"G{index}" for index in range(1, 10)] + ["G1"],
+            "amount": [float(index) for index in range(1, 11)],
+        }
+    )
+    regions = pl.DataFrame(
+        {
+            "order_ref": [f"R{index}" for index in range(1, 9)] + ["R11"],
+            "region_code": [f"G{index}" for index in range(1, 10)],
+            "region": list("abcdefghi"),
+        }
+    )
+    ws.add_table("orders.csv", orders.write_csv().encode())
+    ws.add_table("regions.csv", regions.write_csv().encode())
+    return ws
+
+
+def _gate_script(retain: str | None):
+    """Answer the gate by retaining one named ref and rejecting the rest."""
+
+    def respond(user: str) -> dict:
+        catalog = json.loads(user.split("\nRepair the prior response")[0])[
+            "JOIN CANDIDATES"
+        ]
+        return {
+            "decisions": [
+                {
+                    "ref": candidate["ref"],
+                    "decision": "retain" if candidate["ref"] == retain else "reject",
+                    "rationale": "The keys match but no control spans the two tables.",
+                    "hypothesis": "Every key resolves on the other side.",
+                    "columns": [
+                        f"{candidate['left']}.{candidate['left_on'][0]}",
+                        f"{candidate['right']}.{candidate['right_on'][0]}",
+                    ],
+                }
+                for candidate in catalog["candidates"]
+            ]
+        }
+
+    return respond
+
+
+def test_the_gate_may_keep_a_moderate_key_over_the_strong_one_it_rejected(monkeypatch):
+    """Evidence ranks the keys; the gate decides which relationship is a test.
+
+    A pair whose best-evidenced key answers no audit question is not thereby a
+    pair with nothing to join — reading a rejected strong candidate as a
+    rejected pair would discard the weaker key the gate kept on purpose.
+    """
+
+    ws = _mixed_strength_workspace()
+    moderate_ref = "relationship:orders:regions:order_ref:order_ref"
+    fake = _fake_model(monkeypatch)
+    fake.overrides["agent:join_utility"] = _gate_script(moderate_ref)
+    run = _analysis_run(ws)
+
+    _drive(ws, run, "data.relationships_inferred")
+    record = run["analysis"]["relationships"][0]
+    assert [item["left_on"] for item in record["strong"]] == [["region_code"]]
+    assert [item["left_on"] for item in record["moderate"]] == [["order_ref"]]
+
+    _drive(ws, run, "data.join_utility_ready")
+    _drive(ws, run, "data.joins_ready")
+
+    assert _stage(run, "data.joins_ready")["units"][0]["status"] == "succeeded"
+    fresh = workspaces.load_workspace(ws.id)
+    assert [item["left_on"] for item in fresh.joins] == [["order_ref"]]
+    # The strong key was diagnosed, judged, and passed over. A reader comparing
+    # this frame against the evidence has to be able to see that happen.
+    assert any(
+        "region_code" in warning and "order_ref" in warning
+        for warning in run["warnings"]
+    )
+
+
+def test_a_pair_the_gate_rejects_outright_is_skipped_and_says_why(monkeypatch):
+    """An absent frame explains nothing by itself. The gate wrote a reason for
+    every rejection, and that reason is the only account of why an analysis a
+    reader expected does not exist."""
+
+    ws = _mixed_strength_workspace()
+    fake = _fake_model(monkeypatch)
+    fake.overrides["agent:join_utility"] = _gate_script(None)
+    run = _analysis_run(ws)
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
+    _drive(ws, run, "data.joins_ready")
+
+    unit = _stage(run, "data.joins_ready")["units"][0]
+    assert unit["status"] == "skipped"
+    assert workspaces.load_workspace(ws.id).joins == []
+    assert any(
+        "No join was materialized for 'orders' and 'regions'" in warning
+        and "no control spans the two tables" in warning
+        for warning in run["warnings"]
+    ), "the gate's own words are the explanation"
+
+
+def test_the_gate_is_not_asked_about_a_pair_local_evidence_already_rejected(
+    monkeypatch,
+):
+    """Two unrelatable tables produce no safe candidate, so there is nothing to
+    judge. Spending a provider turn to hear that back is the one cost a purely
+    local diagnosis exists to avoid."""
+
+    ws = workspaces.create_workspace("No relationship")
+    left = pl.DataFrame({"alpha_code": ["A", "B", "C"], "value": [1, 2, 3]})
+    right = pl.DataFrame({"zulu_name": ["x", "y", "z"], "other": [9, 8, 7]})
+    ws.add_table("alphas.csv", left.write_csv().encode())
+    ws.add_table("zulus.csv", right.write_csv().encode())
+    fake = _fake_model(monkeypatch)
+    run = _analysis_run(ws)
+
+    _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
+
+    assert _stage(run, "data.join_utility_ready")["units"][0]["status"] == "skipped"
+    assert [call["tag"] for call in fake.calls] == []
 
 
 def test_join_commit_is_parent_guarded_and_reconciles_an_interrupted_attempt(
@@ -1475,7 +1616,7 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     assert completed["status"] == "completed"
     assert [stage["status"] for stage in completed["workflow"]["stages"]] == [
         "succeeded"
-    ] * 5
+    ] * 6
     fresh = workspaces.load_workspace(ws.id)
     # The run's answer is the memo, written over the results it just recorded
     # and current against them.
@@ -1516,9 +1657,18 @@ def test_full_analysis_run_completes_then_repeats_without_duplicating_work(
     ) == 5
     assert "rows" not in milestone and "table_rows" not in milestone
     first_turns = len(fake.calls)
-    # One definition turn per scoped frame (both tables and the join), plus the
-    # single workspace-wide summary turn.
-    assert first_turns == 4
+    # One utility-gate turn for the whole scope, one definition turn per scoped
+    # frame (both tables and the join), and the single workspace-wide summary
+    # turn. The gate is charged once no matter how many pairs it judges, which
+    # is why it sits on its own stage rather than inside the join units.
+    assert [call["tag"] for call in fake.calls] == [
+        "agent:join_utility",
+        "agent:analysis_definitions",
+        "agent:analysis_definitions",
+        "agent:analysis_definitions",
+        "agent:analysis_summary",
+    ]
+    assert first_turns == 5
 
     repeat = runner.start_command_run(
         # Materialization reads the caller's workspace, which is how a route
@@ -1827,6 +1977,7 @@ def test_the_join_stage_builds_a_chain_its_first_wave_could_not_name(monkeypatch
     run = _analysis_run(ws, text="join these tables and analyse them")
 
     _drive(ws, run, "data.relationships_inferred")
+    _drive(ws, run, "data.join_utility_ready")
     _drive(ws, run, "data.joins_ready")
 
     fresh = workspaces.load_workspace(ws.id)
@@ -1873,7 +2024,13 @@ def _role_tie_workspace() -> workspaces.Workspace:
 def test_auto_mode_applies_a_tied_role_join_and_names_what_it_passed_over(monkeypatch):
     """Auto mode is unattended: leaving the pair unjoined would delete the frame
     every downstream analysis needs, so it proceeds — and says what it chose
-    between, because the two roles do not mean the same thing."""
+    between, because the two roles do not mean the same thing.
+
+    The choice is the utility gate's to make now, and only one route to a pair
+    survives it. What the run owes the reader is unchanged: the role it did not
+    join has to be named, or an analysis of approvals reads like an analysis of
+    requests.
+    """
     ws = _role_tie_workspace()
     _fake_model(monkeypatch)
     run = _analysis_run(ws, text="join these tables and analyse them")
@@ -1883,6 +2040,7 @@ def test_auto_mode_applies_a_tied_role_join_and_names_what_it_passed_over(monkey
     assert len(record["strong"]) == 2, "both roles should diagnose identically"
     assert not join_diagnostics.decisive(record["strong"])
 
+    _drive(ws, run, "data.join_utility_ready")
     _drive(ws, run, "data.joins_ready")
     unit = _stage(run, "data.joins_ready")["units"][0]
     assert unit["status"] == "succeeded"
@@ -1897,7 +2055,8 @@ def test_auto_mode_applies_a_tied_role_join_and_names_what_it_passed_over(monkey
         "requested_by_id" if applied == "approved_by_id" else "approved_by_id"
     )
     assert any(
-        "related by more than one key with identical evidence" in warning
+        "related by more than one key" in warning
+        and applied in warning
         and passed_over in warning
         for warning in run["warnings"]
     ), "the road not taken has to be visible in the run"

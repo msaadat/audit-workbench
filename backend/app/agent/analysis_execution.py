@@ -39,6 +39,7 @@ from .capabilities import ANALYSIS_REGISTRY
 from .context import (
     ContextResolver,
     analysis_definition_scope,
+    join_utility_scope,
     analysis_summary_scope,
 )
 from .executors import EXECUTORS, ExecutorReceipt
@@ -92,6 +93,7 @@ class AnalysisWorkflowExecution(BaseRunner):
 
     stage_titles = {
         "relationships": "Table relationships",
+        "join_utility": "Join utility selection",
         "joins": "Materialized joins",
         "analysis_definitions": "Analysis definitions",
         "analysis_execution": "Analysis results",
@@ -124,7 +126,10 @@ class AnalysisWorkflowExecution(BaseRunner):
         """
         table_scope = self.scope()
         targets = max(1, len(table_scope.targets))
-        calculated = 12 + 2 * targets
+        # Two additional bounded turns select useful relationships before the
+        # per-frame definition turns begin: the gate runs once for the whole
+        # scope, and a repair turn is charged like any other model call.
+        calculated = 14 + 2 * targets
         self.update_limits(
             {
                 "max_model_turns": calculated,
@@ -270,6 +275,13 @@ class AnalysisWorkflowExecution(BaseRunner):
         """The relationship evidence this run diagnosed, in pair order."""
 
         return list(self._analysis_record().get("relationships") or [])
+
+    def join_utility_decisions(self) -> dict[str, dict]:
+        return {
+            str(item.get("ref")): dict(item)
+            for item in self._analysis_record().get("join_utility") or []
+            if str(item.get("ref") or "")
+        }
 
     def _record_relationships(self, record: dict) -> None:
         """Persist one pair's diagnosis on the durable run record.
@@ -419,6 +431,60 @@ class AnalysisWorkflowExecution(BaseRunner):
         return DeterministicUnitResult("succeeded", refs)
 
     # ------------------------------------------------------ data.joins_ready
+    def _bind_join_utility(
+        self, subject: Workspace, run: dict, capability: workflow.Capability,
+        stage: dict, unit: dict,
+    ) -> BoundUnitPipeline | DeterministicUnitResult:
+        """Persist one row-free LLM utility decision catalog before any join."""
+        self.ws = subject
+        scope = join_utility_scope(self.ws, self.relationship_records())
+        catalog = next(
+            (item.source for item in scope.candidates.get("join_candidates") or ()),
+            {},
+        )
+        if not catalog.get("candidates"):
+            # Local diagnosis found nothing safe enough to be worth judging.
+            # There is no decision to make, and a provider turn spent asking
+            # about an empty catalog would answer a question nobody asked.
+            return DeterministicUnitResult("skipped")
+        task = self.add_task("join_utility", "workflow:join_utility", "Join utility selection")
+        self.task_status(task, "running")
+
+        def context_provider():
+            return self.context_resolver.resolve(self.ws, capability, unit, scope)
+
+        def on_committed(_stage, _unit, outcome):
+            proposal_record = self.sidecars.load_proposal(unit["id"], outcome.proposal_reference) or {}
+            proposal = dict(proposal_record.get("proposal") or {})
+            self._analysis_record()["join_utility"] = list(proposal.get("decisions") or [])
+            self.save()
+            retained = sum(item.get("decision") == "retain" for item in proposal.get("decisions") or [])
+            self.task_detail(task, f"Retained {retained} audit-useful relationship(s).")
+            self.task_status(task, "completed")
+            return DeterministicUnitResult("succeeded")
+
+        def failure_handler(_stage, _unit, error) -> tuple[str, str] | None:
+            # The unit's own status carries the outcome; this only closes the
+            # task, which would otherwise sit running for the rest of the run
+            # while every join stage below it reports being blocked by it.
+            self.task_status(task, "failed", str(error))
+            return None
+
+        return BoundUnitPipeline(
+            request=UnitPipelineRequest(
+                capability_id=capability.id, unit_id=unit["id"],
+                worker_id="analysis.join_utility", executor_id=None,
+                unit_input={"parent_refs": list(unit.get("parent_refs") or [])},
+                activity={"artifact_refs": list(unit.get("parent_refs") or []), "task_id": task["id"]},
+                expected_revision=self.ws.revision, expected_parents={},
+                capability_definition_hash=workflow.capability_definition_hash(capability),
+                proposal_reference=unit.get("proposal_sidecar"), receipt_reference=None,
+            ),
+            context_provider=context_provider,
+            context_identity_provider=lambda manifest: self.context_resolver.execution_identity(capability, manifest),
+            target=None, on_committed=on_committed, failure_handler=failure_handler,
+        )
+
     def _bind_join(
         self,
         subject: Workspace,
@@ -453,7 +519,38 @@ class AnalysisWorkflowExecution(BaseRunner):
             return DeterministicUnitResult("skipped")
 
         candidate = None
+        decisions = self.join_utility_decisions()
+        # A technical relationship is not an audit procedure. Only the
+        # proposal-only utility gate may admit one to durable materialization,
+        # and it judges the strong and the moderate candidates together: a gate
+        # that rejects the best-evidenced key has not thereby rejected a weaker
+        # key it retained for a reason it wrote down.
+        diagnosed = strong + moderate
+        retained = [
+            item
+            for item in diagnosed
+            if decisions.get(str(item.get("ref")), {}).get("decision") == "retain"
+        ]
+        if not retained and self._chain_hop_admitted(left, right, decisions):
+            # A chain pair does not exist when the gate runs: the frame on one
+            # side of it is materialized by the wave the gate authorized. What
+            # the gate did judge is the relationship between the base tables
+            # this hop brings together, so a hop that realizes an admitted
+            # relationship on a wider frame inherits its admission.
+            retained = diagnosed
+        strong = [item for item in retained if item.get("strength") == "strong"]
+        moderate = [item for item in retained if item.get("strength") == "moderate"]
         joinable = strong or moderate
+        if not joinable:
+            # An unjoined pair is a finding about the data, so it is reported
+            # rather than left for a reader to infer from a frame that is not
+            # there. The gate's own words are the explanation.
+            self._warn_gate_rejection(left, right, record, decisions)
+            self.task_detail(
+                task, f"'{left}' and '{right}': no relationship worth materializing."
+            )
+            self.task_status(task, "completed")
+            return DeterministicUnitResult("skipped")
         ranked = sorted(joinable, key=join_diagnostics.evidence_rank)
         if len(strong) == 1:
             candidate = strong[0]
@@ -473,24 +570,6 @@ class AnalysisWorkflowExecution(BaseRunner):
                 f"{diagnostics['match_rate']:.0%} match rate, "
                 f"row multiplication {diagnostics['row_multiplication']})."
             )
-            if not join_diagnostics.decisive(joinable):
-                # Several keys diagnose identically — a table reaching the same
-                # person dimension as requester and as approver. Rank order
-                # picks one, but the choice decides what every analysis on this
-                # frame measures, so the alternatives are named rather than
-                # silently discarded.
-                alternatives = ", ".join(
-                    f"{item['left_on'][0]} → {item['right_on'][0]}"
-                    for item in ranked[1:]
-                    if join_diagnostics.evidence_rank(item)
-                    == join_diagnostics.evidence_rank(candidate)
-                )
-                self.warn(
-                    f"'{left}' and '{right}' are related by more than one key with "
-                    f"identical evidence; {alternatives} would each give a "
-                    "different frame and were not materialized. Review the applied "
-                    "relationship before relying on analyses built on it."
-                )
         if candidate is None:
             reported = ranked
             self.warn(
@@ -528,8 +607,85 @@ class AnalysisWorkflowExecution(BaseRunner):
         self.record_artifact(
             "join", name, relationship_ref(candidate), "created", task
         )
+        # One pair materializes one join, so every other route to the same two
+        # tables — the approver key where the requester key was applied — is
+        # now unreachable. Naming them is what lets a reader tell an analysis
+        # built on the intended relationship from one that merely joined.
+        self._warn_gate_rejection(left, right, record, decisions, applied=candidate)
         self.task_status(task, "completed")
         return DeterministicUnitResult("succeeded", tuple(receipt.artifact_refs))
+
+    def _chain_hop_admitted(
+        self, left: str, right: str, decisions: dict[str, dict]
+    ) -> bool:
+        """Whether a chained pair extends a relationship the gate retained.
+
+        Only chained pairs consult this. A pair of base tables was in the gate's
+        catalog under its own refs, so silence about it is a rejection, not a
+        gap — reading it as an admission would let a chain of one hop bypass the
+        gate entirely.
+        """
+
+        left_lineage = join_diagnostics.frame_lineage(self.ws, left)
+        right_lineage = join_diagnostics.frame_lineage(self.ws, right)
+        if len(left_lineage) < 2 and len(right_lineage) < 2:
+            return False
+        admitted = {
+            frozenset((str(item.get("left")), str(item.get("right"))))
+            for record in self.relationship_records()
+            for item in record.get("candidates") or []
+            if decisions.get(str(item.get("ref")), {}).get("decision") == "retain"
+        }
+        return any(
+            frozenset((base, other)) in admitted
+            for base in left_lineage
+            for other in right_lineage
+        )
+
+    def _warn_gate_rejection(
+        self,
+        left: str,
+        right: str,
+        record: dict,
+        decisions: dict[str, dict],
+        *,
+        applied: dict | None = None,
+    ) -> None:
+        """Report the diagnosed relationships the utility gate did not admit."""
+
+        rejected = [
+            item
+            for item in list(record["strong"]) + list(record["moderate"])
+            if item is not applied
+            and decisions.get(str(item.get("ref")), {}).get("decision") != "retain"
+        ]
+        if not rejected:
+            return
+        described = "; ".join(
+            f"{item['left_on'][0]} → {item['right_on'][0]}"
+            + (
+                f" ({reason})"
+                if (reason := str(
+                    decisions.get(str(item.get("ref")), {}).get("rationale") or ""
+                ).strip())
+                else ""
+            )
+            for item in rejected
+        )
+        if applied is not None:
+            self.warn(
+                f"'{left}' and '{right}' are related by more than one key; only "
+                f"{applied['left_on'][0]} → {applied['right_on'][0]} was "
+                f"materialized. Not applied: {described}. Each would give a "
+                "different frame, so review the applied relationship before "
+                "relying on analyses built on it."
+            )
+            return
+        self.warn(
+            f"No join was materialized for '{left}' and '{right}': "
+            f"{len(rejected)} diagnosed relationship(s) were judged to support "
+            f"no audit test. {described}"
+        )
 
     def _approve_join(
         self,
@@ -1054,7 +1210,15 @@ class AnalysisWorkflowExecution(BaseRunner):
 
 
 _PARTIAL_DEPENDENCIES = {
-    "data.joins_ready": {"data.relationships_inferred"},
+    # Relationship diagnosis is local and independent by pair, so one failed
+    # diagnostic need not stop the gate from judging the rest.
+    "data.join_utility_ready": {"data.relationships_inferred"},
+    # A safe auto-selected join, a skipped unrelatable pair, or an
+    # auditor-held join choice must not withhold analysis of the frames that
+    # remain usable. Later analysis capabilities re-expand from the joins that
+    # actually committed. Note what is deliberately absent: ``data.joins_ready``
+    # is not partial in ``data.join_utility_ready``, because a join
+    # materialized after the gate failed is a join nothing admitted.
     "analysis.definitions_ready": {"data.joins_ready"},
     "analysis.executed": {"analysis.definitions_ready"},
     # One procedure that would not execute must not withhold the memo. A
@@ -1090,6 +1254,10 @@ def build_analysis_workflow_runner(
     )
     adapter.unit_pipeline = unit_pipeline
     _PIPELINE_BINDERS = {
+        "data.join_utility_ready": (
+            adapter._bind_join_utility,
+            {"worker": "analysis.join_utility", "executor": None},
+        ),
         "analysis.definitions_ready": (
             adapter._bind_definitions,
             {"worker": "analysis.definitions", "executor": "analysis.definitions"},

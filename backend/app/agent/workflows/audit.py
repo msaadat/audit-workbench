@@ -56,6 +56,9 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "data.relationships_inferred": analysis_workflow.dependencies(
         "data.relationships_inferred"
     ),
+    "data.join_utility_ready": analysis_workflow.dependencies(
+        "data.join_utility_ready"
+    ),
     "data.joins_ready": analysis_workflow.dependencies("data.joins_ready"),
     "analysis.definitions_ready": analysis_workflow.dependencies(
         "analysis.definitions_ready"

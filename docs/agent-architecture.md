@@ -266,6 +266,7 @@ still needs only `planning.context_ready`.
 
 ```text
 data.relationships_inferred
+-> data.join_utility_ready
 -> data.joins_ready
 -> analysis.definitions_ready
 -> analysis.executed
@@ -292,6 +293,7 @@ function reports existence and structural usability only — never currency:
 | Outcome | Persisted artifact | Readiness satisfied when |
 |---|---|---|
 | `data.relationships_inferred` | Run-durable evidence on `run["analysis"]["relationships"]`; unit result refs are `relationship:<left>:<right>:<left_on>:<right_on>` | Fewer than two scoped tables, or every scoped pair is already connected by a join |
+| `data.join_utility_ready` | Run-durable decisions on `run["analysis"]["join_utility"]`; proposal-only, no workspace mutation | Same predicate — the gate is intermediate work, so it stays missing while any scoped pair is unjoined |
 | `data.joins_ready` | `workspace.joins` via `Workspace.add_join`, agent-provenanced | Same predicate — a materialized join is what "resolved" means for a pair |
 | `analysis.definitions_ready` | `workspace.analyses` (kinds `analytics` and `python`), keyed by a semantic id derived from the canonical spec | Every scoped frame has at least one workflow-authored analysis |
 | `analysis.executed` | A bounded `last_result` record on the analysis, following the `data_tests` `last_run` precedent | Every scoped workflow-authored analysis carries a result |

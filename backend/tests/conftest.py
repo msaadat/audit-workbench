@@ -95,6 +95,46 @@ def _analysis_definitions_response(user: str) -> dict:
     }
 
 
+def _join_utility_response(user: str) -> dict:
+    """Retain the first route to each table pair and reject its competitors.
+
+    The worker admits at most one candidate per pair, so a script that retained
+    every technically safe relationship would exercise the repair turn rather
+    than the workflow. Retaining in catalog order keeps the choice deterministic
+    without pretending to judge audit utility.
+    """
+    payload = json.loads(user.split("\nRepair the prior response")[0])
+    catalog = payload["JOIN CANDIDATES"]
+    table_columns = catalog.get("table_columns") or {}
+    decisions: list[dict] = []
+    retained: set[frozenset[str]] = set()
+    for candidate in catalog["candidates"]:
+        pair = frozenset((candidate["left"], candidate["right"]))
+        if pair in retained:
+            decisions.append(
+                {
+                    "ref": candidate["ref"],
+                    "decision": "reject",
+                    "rationale": "Another route between these tables was retained.",
+                }
+            )
+            continue
+        retained.add(pair)
+        decisions.append(
+            {
+                "ref": candidate["ref"],
+                "decision": "retain",
+                "rationale": "The pair supports a test neither side supports alone.",
+                "hypothesis": "Every key on the left side resolves on the right.",
+                "columns": [
+                    f"{table}.{(table_columns.get(table) or ['id'])[0]}"
+                    for table in (candidate["left"], candidate["right"])
+                ],
+            }
+        )
+    return {"decisions": decisions}
+
+
 def _analysis_summary_response(_user: str) -> dict:
     """A structurally valid EDA memo for any workspace.
 
@@ -197,6 +237,7 @@ class FakeAgentLLM:
         # The stages the surviving engines actually call. The deleted v1
         # pipeline's planning/rules/analyses/dashboard/summary scripts went
         # with it in Phase 12.
+        "agent:join_utility": _join_utility_response,
         "agent:analysis_definitions": _analysis_definitions_response,
         "agent:analysis_summary": _analysis_summary_response,
         "agent:fix_code": {"code": "result = transactions.head(0)"},

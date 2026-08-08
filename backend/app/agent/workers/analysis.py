@@ -51,6 +51,30 @@ from .model import (
 
 
 ANALYSIS_DEFINITION_WORKER_ID = "analysis.definitions"
+JOIN_UTILITY_WORKER_ID = "analysis.join_utility"
+JOIN_UTILITY_CANDIDATES_SOURCE_ID = "join_candidates"
+JOIN_UTILITY_SUBMISSION_TOOL = "submit_join_utility_decisions"
+JOIN_UTILITY_SYSTEM = """[agent:join_utility]
+You are selecting which technically safe table relationships are worth
+materializing for audit analysis. You receive only schemas and aggregate join
+diagnostics, never table rows. For every supplied candidate, return exactly one
+decision: retain only when you can state a concrete, falsifiable audit test that
+needs columns from both sides; otherwise reject. Do not retain a relationship
+merely because keys match, a date can be compared, or a join is technically
+safe. Do not invent controls, values, or facts not present in the supplied
+context. For every retained decision, name schema-visible columns from both
+sides of the relationship.
+
+Exactly one candidate may be retained for any pair of tables, in either
+direction. Several candidates often connect the same two tables — alternate
+keys that express one relationship by different routes, and role keys that
+reach the same dimension as requester, verifier, or approver. Only one of them
+can be materialized, and for role keys that choice decides what every later
+test measures, so retain the single route whose audit test matters most and
+reject the rest, saying in each rejection rationale which retained candidate
+supersedes it. Submit the required function tool exactly once; do not return
+Markdown or plain text.
+"""
 ANALYSIS_DEFINITION_SYSTEM = f"""[agent:analysis_definitions]
 Propose rerunnable data analyses for exactly one supplied target frame. Submit
 them through the required function tool; its JSON Schema is the authoritative
@@ -170,6 +194,230 @@ def _plain_json(value: object) -> object:
     return value
 
 
+def _json_object(response: str) -> dict[str, Any]:
+    try:
+        value = json.loads(response)
+    except json.JSONDecodeError as error:
+        raise WorkerResponseValidationError("Response must be a JSON object.") from error
+    if not isinstance(value, dict):
+        raise WorkerResponseValidationError("Response must be a JSON object.")
+    return value
+
+
+def _join_utility_catalog(request: WorkerRequest) -> dict[str, Any]:
+    catalog = _plain_json(_resolved_item(request, JOIN_UTILITY_CANDIDATES_SOURCE_ID))
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("candidates"), list):
+        raise WorkerContractError("Join-utility context must contain a candidate catalog.")
+    return catalog
+
+
+def _join_utility_response_schema(response: str) -> Mapping[str, Any]:
+    payload = _json_object(response)
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list):
+        raise WorkerResponseValidationError("decisions must be an array.")
+    return {"decisions": decisions}
+
+
+def _join_utility_submission_tool(request: WorkerRequest) -> dict[str, Any]:
+    catalog = _join_utility_catalog(request)
+    refs = sorted(str(item["ref"]) for item in catalog["candidates"])
+    columns = sorted(
+        f"{table}.{column}"
+        for table, values in (catalog.get("table_columns") or {}).items()
+        if isinstance(values, list)
+        for column in values
+    )
+    def branch(decision: str) -> dict[str, Any]:
+        properties: dict[str, Any] = {
+            "ref": {"type": "string", "enum": refs},
+            "decision": {"type": "string", "enum": [decision]},
+            "rationale": {"type": "string", "minLength": 1},
+        }
+        required = ["ref", "decision", "rationale"]
+        if decision == "retain":
+            properties.update({
+                "hypothesis": {"type": "string", "minLength": 1},
+                "columns": {"type": "array", "items": {"type": "string", "enum": columns}, "minItems": 2},
+            })
+            required.extend(("hypothesis", "columns"))
+        return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
+    return {"type": "function", "function": {
+        "name": JOIN_UTILITY_SUBMISSION_TOOL,
+        "description": (
+            "Submit a retain or reject decision for every join candidate. "
+            "At most one candidate may be retained for any pair of tables, in "
+            "either direction: several candidates commonly connect the same "
+            "two tables by alternate keys or by different roles, and only one "
+            "of them can be materialized."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "decisions": {"type": "array", "items": {"oneOf": [branch("retain"), branch("reject")]}, "minItems": len(refs), "maxItems": len(refs)},
+        }, "required": ["decisions"], "additionalProperties": False},
+    }}
+
+
+def _join_utility_submission_response(message: object) -> str:
+    if not isinstance(message, Mapping):
+        return str(message or "")
+    matches = [
+        item for item in message.get("tool_calls") or []
+        if isinstance(item, Mapping) and isinstance(item.get("function"), Mapping)
+        and item["function"].get("name") == JOIN_UTILITY_SUBMISSION_TOOL
+    ]
+    if len(matches) == 1:
+        arguments = matches[0]["function"].get("arguments")
+        return arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+    return str(message.get("content") or "")
+
+
+def validate_join_utility_proposal(
+    proposal: Mapping[str, Any], request: WorkerRequest
+) -> Mapping[str, Any]:
+    catalog = _join_utility_catalog(request)
+    candidates = {
+        str(item.get("ref")): item
+        for item in catalog["candidates"]
+        if isinstance(item, Mapping) and str(item.get("ref") or "").strip()
+    }
+    table_columns = {
+        str(table): {str(column) for column in columns}
+        for table, columns in (catalog.get("table_columns") or {}).items()
+        if isinstance(columns, list)
+    }
+    # The registered response schema freezes its proposal before this runs, so
+    # every array arrives as a tuple. Normalize rather than type-check: an
+    # `isinstance(..., list)` here can never hold, and would fail every
+    # response the model could possibly send.
+    raw = proposal.get("decisions")
+    if not isinstance(raw, (list, tuple)):
+        raise WorkerResponseValidationError("decisions must be an array.")
+    raw = list(raw)
+    accepted: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    errors: list[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            errors.append(f"decisions[{index}] must be an object")
+            continue
+        ref = str(item.get("ref") or "").strip()
+        decision = str(item.get("decision") or "").strip().lower()
+        rationale = str(item.get("rationale") or "").strip()
+        hypothesis = str(item.get("hypothesis") or "").strip()
+        columns = [str(value) for value in item.get("columns") or []]
+        if ref not in candidates:
+            errors.append(f"decisions[{index}] names an unknown candidate '{ref}'")
+            continue
+        if ref in seen:
+            errors.append(f"decisions[{index}] repeats '{ref}'")
+            continue
+        seen.add(ref)
+        if decision not in {"retain", "reject"}:
+            errors.append(f"decisions[{index}].decision must be retain or reject")
+            continue
+        if not rationale:
+            errors.append(f"decisions[{index}].rationale is required")
+        if decision == "retain" and not hypothesis:
+            errors.append(f"decisions[{index}].hypothesis is required for retain")
+        if decision == "retain":
+            candidate = candidates[ref]
+            expected = {str(candidate.get("left") or ""), str(candidate.get("right") or "")}
+            used = {
+                table for table, separator, column in (value.partition(".") for value in columns)
+                if separator and column in table_columns.get(table, set())
+            }
+            if not expected <= used:
+                errors.append(
+                    f"decisions[{index}].columns must name visible columns from both "
+                    f"{candidate.get('left')} and {candidate.get('right')}"
+                )
+        accepted.append({
+            "ref": ref,
+            "decision": decision,
+            "rationale": rationale,
+            "hypothesis": hypothesis,
+            "columns": columns,
+        })
+    # One pair of tables materializes at most one join, so a response retaining
+    # two routes between them has not made the choice it was asked for. Every
+    # competing ref is named together: the one repair turn has to be able to
+    # settle each contested pair, not discover them one at a time.
+    retained_pairs: dict[frozenset[str], list[str]] = {}
+    for item in accepted:
+        if item["decision"] != "retain":
+            continue
+        candidate = candidates[item["ref"]]
+        pair = frozenset((str(candidate.get("left") or ""), str(candidate.get("right") or "")))
+        retained_pairs.setdefault(pair, []).append(item["ref"])
+    for pair, refs in retained_pairs.items():
+        if len(refs) > 1:
+            errors.append(
+                f"Only one candidate may be retained for {' and '.join(sorted(pair))}; "
+                f"keep the single most useful of {', '.join(sorted(refs))} and "
+                "reject the others"
+            )
+    missing = sorted(set(candidates) - seen)
+    if missing:
+        errors.append("A decision is required for every candidate: " + ", ".join(missing))
+    if errors:
+        raise WorkerResponseValidationError(errors)
+    return {"decisions": accepted}
+
+
+def run_join_utility_worker(
+    request: WorkerRequest, gateway: ModelGateway, attempt: WorkerAttempt
+) -> str:
+    catalog = _join_utility_catalog(request)
+    tool = _join_utility_submission_tool(request)
+    # The catalog is one of the resolved bundle items, so serializing the whole
+    # bundle alongside it would send the same 10 KB twice. The catalog is named
+    # once, in the shape the submission tool's enums were built from, and the
+    # remaining items — the table schemas — follow it.
+    schemas = [
+        item.content
+        for item in request.context.items
+        if item.source_id != JOIN_UTILITY_CANDIDATES_SOURCE_ID
+    ]
+    prompt = json.dumps({
+        "JOIN CANDIDATES": catalog,
+        "TABLE SCHEMAS": schemas,
+        "REQUIRED OUTPUT": f"Call {JOIN_UTILITY_SUBMISSION_TOOL} exactly once.",
+    }, indent=1, ensure_ascii=False)
+    if attempt.is_repair:
+        prompt += "\nRepair the prior response: " + "; ".join(attempt.validation_errors)
+    activity = dict(request.activity)
+    activity.setdefault("context_metrics", {
+        "worker_kind": "join_utility",
+        "total_characters": request.context.supplied_size.characters,
+        "estimated_tokens": request.context.supplied_size.estimated_tokens,
+        "selected_items": request.context.supplied_size.items,
+    })
+    message = gateway.complete(
+        JOIN_UTILITY_SYSTEM, prompt, activity, attempt=attempt.number,
+        tools=[tool],
+        tool_choice={"type": "function", "function": {"name": JOIN_UTILITY_SUBMISSION_TOOL}},
+        return_message=True,
+    )
+    return _join_utility_submission_response(message)
+
+
+JOIN_UTILITY_WORKER = WorkerDefinition(
+    worker_id=JOIN_UTILITY_WORKER_ID,
+    implementation_hash=_sha256_text(inspect.getsource(run_join_utility_worker)),
+    prompt_hash=_sha256_text(JOIN_UTILITY_SYSTEM),
+    response_schema=WorkerResponseSchema(
+        schema_id="analysis.join_utility.response",
+        schema_hash=_sha256_text("join-utility-response"),
+        validator=_join_utility_response_schema,
+    ),
+    repair_policy=WorkerRepairPolicy(max_repair_attempts=1, guidance_hash=_sha256_text("Repair join utility decisions.")),
+    implementation=run_join_utility_worker,
+    semantic_validation_hash=_sha256_text(inspect.getsource(validate_join_utility_proposal)),
+    semantic_validator=validate_join_utility_proposal,
+)
+WORKERS.register(JOIN_UTILITY_WORKER)
+
+
 def _source_items(request: WorkerRequest, source_id: str) -> list[object]:
     return [item.content for item in request.context.items if item.source_id == source_id]
 
@@ -223,6 +471,26 @@ def spec_scope(spec: Mapping[str, Any], origins: Mapping[str, str]) -> set[str]:
     """The base tables a spec's columns actually come from."""
     _, tables = _resolve_provenance(_plain_json(spec), origins)
     return tables
+
+
+def python_spec_scope(spec: Mapping[str, Any], origins: Mapping[str, str]) -> set[str]:
+    """Return the origins of schema columns referenced by safe Polars code.
+
+    Python definitions are deliberately constrained to a small static sandbox.
+    We do not need to execute a procedure (and therefore touch rows) merely to
+    establish whether a materialized join contributes to it: any quoted value
+    that is also an exact schema column name is a column reference.  This is
+    conservative by design; an ambiguous literal only makes the procedure use
+    *more* origins, never permits a single-sided joined-frame procedure.
+
+    Code that quotes no column name at all returns an empty set, which says
+    nothing either way — a frame-wide preview and a procedure that builds its
+    column names by concatenation look identical here.  Callers read an empty
+    result as unknown rather than as one-sided.
+    """
+    code = str(spec.get("code") or "")
+    literals = re.findall(r"['\"]([^'\"]+)['\"]", code)
+    return {origins[value] for value in literals if value in origins}
 
 
 def analysis_semantic_id(
@@ -767,9 +1035,21 @@ def validate_analysis_proposal(
         errors.extend(spec_errors)
         if spec_errors or not title or not note:
             continue
-        if joined_frame and kind == "analytics":
-            scope = spec_scope(spec, origins)
-            if len(scope) < 2:
+        if joined_frame:
+            if kind == "analytics":
+                # An analytics spec names its columns in declared parameters,
+                # so an empty scope is a real answer: it reads nothing.
+                single = len(spec_scope(spec, origins)) < 2
+            else:
+                # Code is read for the column names it quotes, which no
+                # procedure is obliged to quote — a frame-wide preview names
+                # none and is exactly the work only the joined frame can do.
+                # Naming none is therefore absence of evidence, not evidence of
+                # one-sidedness; only code that does name columns, all from one
+                # side, has shown itself to belong on that side.
+                scope = python_spec_scope(spec, origins)
+                single = bool(scope) and len(scope) < 2
+            if single:
                 # Dropped, not rejected, for the same reason a repeat is: the
                 # rest of the response is still good work.
                 single_sided.append(label)
@@ -1440,6 +1720,8 @@ __all__ = [
     "ANALYSIS_DEFINITION_WORKER",
     "ANALYSIS_DEFINITION_WORKER_ID",
     "ANALYSIS_KINDS",
+    "JOIN_UTILITY_WORKER",
+    "JOIN_UTILITY_WORKER_ID",
     "ANALYSIS_SUMMARY_RESPONSE_SCHEMA",
     "ANALYSIS_SUMMARY_SYSTEM",
     "ANALYSIS_SUMMARY_WORKER",
@@ -1450,7 +1732,9 @@ __all__ = [
     "analysis_semantic_id",
     "parse_embeds",
     "run_analysis_definition_worker",
+    "run_join_utility_worker",
     "run_analysis_summary_worker",
     "validate_analysis_proposal",
+    "validate_join_utility_proposal",
     "validate_analysis_summary",
 ]
