@@ -24,6 +24,16 @@ const meta: Record<string, { icon: string; tone: string; label: string }> = {
   needs_manual_check: { icon: 'pi-eye', tone: 'warn', label: 'Needs manual check' },
   awaiting_evidence: { icon: 'pi-inbox', tone: 'warn', label: 'Awaiting evidence' },
   not_run: { icon: 'pi-clock', tone: 'secondary', label: 'Not run' },
+  passed: { icon: 'pi-check-circle', tone: 'success', label: 'Passed' },
+  failed: { icon: 'pi-times-circle', tone: 'danger', label: 'Failed' },
+  incomplete: { icon: 'pi-inbox', tone: 'warn', label: 'Incomplete' },
+  needs_review: { icon: 'pi-eye', tone: 'warn', label: 'Needs review' },
+  stale: { icon: 'pi-history', tone: 'warn', label: 'Stale' },
+  match: { icon: 'pi-check', tone: 'success', label: 'Match' },
+  mismatch: { icon: 'pi-times', tone: 'danger', label: 'Mismatch' },
+  missing_evidence: { icon: 'pi-inbox', tone: 'warn', label: 'Missing evidence' },
+  invalid_extraction: { icon: 'pi-exclamation-circle', tone: 'warn', label: 'Invalid extraction' },
+  ambiguous: { icon: 'pi-question-circle', tone: 'warn', label: 'Ambiguous' },
 }
 
 const info = computed(() => meta[props.status] ?? {

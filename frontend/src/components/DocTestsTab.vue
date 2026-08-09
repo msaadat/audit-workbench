@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
@@ -20,6 +20,7 @@ import type {
   DocTestItem,
   DocTestKind,
   DocTestSummaryEntry,
+  DocTestSummaryCycleTest,
   DocTestSummaryPayload,
   EvidenceRef,
   PlanningPayload,
@@ -30,6 +31,7 @@ import type {
 } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
 import DocTestCreateDialog from './doc-tests/DocTestCreateDialog.vue'
+import CycleVouchGrid from './doc-tests/CycleVouchGrid.vue'
 import DocTestItemDetail from './doc-tests/DocTestItemDetail.vue'
 import DocTestItemList from './doc-tests/DocTestItemList.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
@@ -55,6 +57,12 @@ const documentTypes = ref<string[]>([])
 const cycleMetadata = ref<CycleVouchMetadata | null>(null)
 const currentTest = ref<DocTest | null>(null)
 const selectedItemId = ref<string | null>(String(route.query.item || '') || null)
+const selectedCycleTestId = ref<string | null>(null)
+const focusedAssertionKey = ref<string | null>(null)
+const cycleGrid = ref<{
+  focusSelectedCell: () => void
+  loadGrid: () => Promise<void>
+} | null>(null)
 const requestedTestId = ref<string | null>(String(route.query.test || '') || null)
 // Read the deep link before any selection rewrites the query, otherwise the
 // RCM grid's "Add Document Test" link loses its own parameters.
@@ -99,12 +107,18 @@ const activeFilterLabel = computed(() =>
   triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items')
 const currentItem = computed<DocTestItem | null>(() =>
   currentTest.value?.items.find(item => item.id === selectedItemId.value) ?? null)
+const selectedCycleEntry = computed<DocTestSummaryCycleTest | null>(() => {
+  const entry = summary.value?.entries.find(item =>
+    item.entry_type === 'cycle_test' && item.test_id === selectedCycleTestId.value,
+  )
+  return entry?.entry_type === 'cycle_test' ? entry : null
+})
 const selectedEntryId = computed(() =>
-  currentTest.value?.kind === 'cycle_vouch'
-    ? currentTest.value.id
+  selectedCycleTestId.value
+    ? selectedCycleTestId.value
     : selectedItemId.value)
 const linkedFindings = computed<AuditFinding[]>(() => {
-  const testId = currentTest.value?.id
+  const testId = currentTest.value?.id ?? selectedCycleTestId.value
   return testId ? (planning.value?.findings ?? []).filter(finding => finding.test_refs.includes(testId)) : []
 })
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
@@ -119,6 +133,10 @@ function fail(summary_: string, error: unknown) {
 }
 
 async function loadSummary() {
+  const previousEntryId = selectedEntryId.value
+  const preserveCycleDetail = Boolean(
+    selectedCycleTestId.value && currentTest.value?.kind === 'cycle_vouch' && selectedItemId.value,
+  )
   summary.value = await api.get<DocTestSummaryPayload>(`/api/workspaces/${props.workspace.id}/doc-tests/summary`)
   const items = summary.value.entries
   // A dashboard/deep link can point to a test the current filter hides. Keep
@@ -134,10 +152,15 @@ async function loadSummary() {
   // to the most severe item so the tab opens on work that needs doing.
   const target = items.find(item => item.entry_type === 'item' && item.item_id === selectedItemId.value)
     ?? (requestedTestId.value ? items.find(item => item.test_id === requestedTestId.value) : undefined)
+    ?? (previousEntryId ? items.find(item => entryId(item) === previousEntryId) : undefined)
     ?? items[0]
   requestedTestId.value = null
-  if (target) await select(target)
-  else { selectedItemId.value = null; currentTest.value = null }
+  if (target) await select(target, preserveCycleDetail)
+  else {
+    selectedItemId.value = null
+    selectedCycleTestId.value = null
+    currentTest.value = null
+  }
 }
 async function loadDocuments() {
   documents.value = (await api.get<{ items: AuditDocument[] }>(`/api/workspaces/${props.workspace.id}/documents`)).items
@@ -152,34 +175,83 @@ async function loadMeta() {
   documentTypes.value = meta.document_types
   cycleMetadata.value = meta.cycle_vouch
 }
-async function loadTest(testId: string) {
+async function loadTest(testId: string, itemId?: string | null) {
   currentTest.value = await api.get<DocTest>(`/api/workspaces/${props.workspace.id}/doc-tests/${testId}`)
-  // Item-level deep links can outlive a regenerated worklist. Recover to the
-  // first current item instead of leaving the detail pane stuck on loading.
-  if (!currentTest.value.items.some(item => item.id === selectedItemId.value)) {
-    selectedItemId.value = currentTest.value.items[0]?.id ?? null
-    await syncUrl()
+  const requestedItem = itemId ?? selectedItemId.value
+  // Cycle detail is opened from an exact grid row. It must never fall through
+  // to a different item's evidence when the requested identity is stale.
+  if (currentTest.value.kind === 'cycle_vouch') {
+    selectedItemId.value = currentTest.value.items.some(item => item.id === requestedItem)
+      ? requestedItem
+      : null
+    return
   }
+  // Non-cycle work remains item-first and recovers to its first current item.
+  selectedItemId.value = currentTest.value.items.some(item => item.id === requestedItem)
+    ? requestedItem
+    : currentTest.value.items[0]?.id ?? null
 }
-async function select(item: DocTestSummaryEntry) {
-  selectedItemId.value = item.entry_type === 'item' ? item.item_id : null
-  if (currentTest.value?.id !== item.test_id) await loadTest(item.test_id)
-  else if (item.entry_type === 'cycle_test') {
-    selectedItemId.value = currentTest.value.items[0]?.id ?? null
+async function select(item: DocTestSummaryEntry, preserveCycleDetail = false) {
+  if (item.entry_type === 'cycle_test') {
+    const sameOpenDetail = preserveCycleDetail
+      && selectedCycleTestId.value === item.test_id
+      && currentTest.value?.kind === 'cycle_vouch'
+      && selectedItemId.value
+    selectedCycleTestId.value = item.test_id
+    if (!sameOpenDetail) {
+      selectedItemId.value = null
+      currentTest.value = null
+      focusedAssertionKey.value = null
+    }
+  } else {
+    selectedCycleTestId.value = null
+    focusedAssertionKey.value = null
+    selectedItemId.value = item.item_id
+    if (currentTest.value?.id !== item.test_id) await loadTest(item.test_id, item.item_id)
   }
   await syncUrl()
 }
 async function syncUrl() {
   await nav.replace('doc-tests', {
-    test: currentTest.value?.id,
+    test: currentTest.value?.id ?? selectedCycleTestId.value,
     item: selectedItemId.value || undefined,
   })
 }
 async function refresh() {
   const testId = currentTest.value?.id
+  const itemId = selectedItemId.value
   await loadSummary()
-  if (testId && currentTest.value?.id === testId) await loadTest(testId)
+  if (testId && currentTest.value?.id === testId) await loadTest(testId, itemId)
+  if (selectedCycleTestId.value) await cycleGrid.value?.loadGrid()
   emit('changed')
+}
+
+async function openCycleDetail(itemId: string, assertionKey: string | null) {
+  const testId = selectedCycleTestId.value
+  if (!testId) return
+  try {
+    focusedAssertionKey.value = assertionKey
+    await loadTest(testId, itemId)
+    if (!currentItem.value) throw new Error('The selected cycle item is no longer current.')
+    await syncUrl()
+  } catch (error) { fail('Could not load the cycle item detail', error) }
+}
+
+async function closeCycleDetail() {
+  selectedItemId.value = null
+  currentTest.value = null
+  focusedAssertionKey.value = null
+  await syncUrl()
+  await nextTick()
+  cycleGrid.value?.focusSelectedCell()
+}
+
+async function closeCycleGrid() {
+  selectedCycleTestId.value = null
+  selectedItemId.value = null
+  currentTest.value = null
+  focusedAssertionKey.value = null
+  await syncUrl()
 }
 
 function pickFilter(key: string) {
@@ -337,15 +409,15 @@ async function updateEvidenceRequest(requestId: string, status: 'received' | 'ca
   } catch (error) { fail('Could not update the evidence request', error) }
 }
 async function runTest() {
-  const test = currentTest.value
-  if (!test) return
+  const testId = currentTest.value?.id ?? selectedCycleEntry.value?.test_id
+  if (!testId) return
   running.value = true
   try {
     await assistantChat.createChat()
     await assistantChat.send(
-      `Run document test ${test.id} and preserve its results.`,
+      `Run document test ${testId} and preserve its results.`,
       'act', launchMode.value,
-      { command: 'run_document_tests', source: 'tab_button', runContext: { test_id: test.id } },
+      { command: 'run_document_tests', source: 'tab_button', runContext: { test_id: testId } },
     )
     if (!agent.state.drawerOpen) agent.toggleDrawer()
     toast.add({ severity: 'info', summary: 'Document test started', detail: 'Progress is visible in the assistant.', life: 3000 })
@@ -371,18 +443,23 @@ function openFinding(findingId: string) {
 }
 function deleteTest() {
   const test = currentTest.value
-  if (!test) return
-  const itemText = test.item_count === 1 ? '1 worklist item' : `${test.item_count ?? test.items.length} worklist items`
+  const cycle = selectedCycleEntry.value
+  const testId = test?.id ?? cycle?.test_id
+  const testTitle = test?.title ?? cycle?.title
+  const itemCount = test?.item_count ?? test?.items.length ?? cycle?.item_count ?? 0
+  if (!testId) return
+  const itemText = itemCount === 1 ? '1 worklist item' : `${itemCount} worklist items`
   confirm.require({
     header: 'Delete document test',
-    message: `Delete "${test.title}" and its ${itemText}? This cannot be undone.`,
+    message: `Delete "${testTitle}" and its ${itemText}? This cannot be undone.`,
     icon: 'pi pi-trash',
     acceptProps: { label: 'Delete', severity: 'danger' },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
     accept: async () => {
       try {
-        await api.del(`/api/workspaces/${props.workspace.id}/doc-tests/${test.id}`)
+        await api.del(`/api/workspaces/${props.workspace.id}/doc-tests/${testId}`)
         selectedItemId.value = null
+        selectedCycleTestId.value = null
         currentTest.value = null
         await loadSummary()
         emit('changed')
@@ -449,7 +526,7 @@ onUnmounted(unsubscribe)
       />
       <Button label="New test" icon="pi pi-plus" size="small" outlined @click="createOpen = true" />
       <Button
-        v-if="currentTest"
+        v-if="currentTest || selectedCycleEntry"
         icon="pi pi-trash"
         severity="danger"
         outlined
@@ -461,9 +538,9 @@ onUnmounted(unsubscribe)
     </UiPageHeader>
 
     <template v-if="hasTests">
-      <UiTriageCounts :counts="triage" :active="filter" @select="pickFilter" />
+      <UiTriageCounts v-if="!selectedCycleTestId" :counts="triage" :active="filter" @select="pickFilter" />
 
-      <div class="toolbar">
+      <div v-if="!selectedCycleTestId" class="toolbar">
         <IconField>
           <InputIcon class="pi pi-search" />
           <InputText v-model="search" size="small" placeholder="Search items, tests, and answers" />
@@ -473,9 +550,52 @@ onUnmounted(unsubscribe)
         </span>
       </div>
 
+      <div v-if="selectedCycleTestId" class="cycle-review">
+        <CycleVouchGrid
+          v-show="!currentItem"
+          :key="selectedCycleTestId"
+          ref="cycleGrid"
+          :workspaceId="workspace.id"
+          :testId="selectedCycleTestId"
+          :running="running"
+          :busy="agent.isActive.value"
+          @close="closeCycleGrid"
+          @error="fail"
+          @openDetail="openCycleDetail"
+          @run="runTest"
+        />
+        <template v-if="currentTest && currentItem">
+          <div class="detail-return">
+            <Button label="Back to Cycle vouch grid" icon="pi pi-arrow-left" text @click="closeCycleDetail" />
+            <span v-if="focusedAssertionKey">Opened at assertion <code>{{ focusedAssertionKey }}</code></span>
+          </div>
+          <DocTestItemDetail
+            :key="currentItem.id"
+            :test="currentTest"
+            :item="currentItem"
+            :documents="documents"
+            :findings="linkedFindings"
+            :running="running"
+            :busy="agent.isActive.value"
+            :focusAssertionKey="focusedAssertionKey"
+            @anchor="showAnchor"
+            @attach="attachDocument"
+            @saveChecks="saveChecks"
+            @saveAttributes="saveAttributes"
+            @setState="setItemState"
+            @saveConclusion="saveConclusion"
+            @generateFinding="generateFinding"
+            @openFinding="openFinding"
+            @updateEvidenceRequest="updateEvidenceRequest"
+            @run="runTest"
+            @openRcm="openRcm"
+          />
+        </template>
+      </div>
+
       <!-- 16rem, not 20: the worklist row is a title and two short lines, and
            the width it gives back is what makes room for the action rail. -->
-      <UiMasterDetail railWidth="16rem" class="layout">
+      <UiMasterDetail v-else railWidth="16rem" class="layout">
         <template #rail>
           <DocTestItemList :items="visibleItems" :selectedId="selectedEntryId" @select="select" />
         </template>
@@ -543,6 +663,9 @@ onUnmounted(unsubscribe)
 .toolbar :deep(.p-inputtext) { width: 100%; }
 .muted { color: var(--aw-muted); font-size: var(--aw-text-sm); white-space: nowrap; }
 .layout { min-height: 32rem; }
+.cycle-review { min-width: 0; }
+.detail-return { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin-bottom: .55rem; color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.detail-return code { font-family: var(--aw-font-mono); }
 
 /* Sized against the tab's own box, so the assistant drawer taking width
    collapses the two panes at the right moment. */

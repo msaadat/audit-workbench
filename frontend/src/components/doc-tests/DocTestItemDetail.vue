@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
@@ -25,6 +25,7 @@ const props = defineProps<{
   findings: AuditFinding[]
   running: boolean
   busy: boolean
+  focusAssertionKey?: string | null
 }>()
 const emit = defineEmits<{
   anchor: [EvidenceRef]
@@ -41,6 +42,7 @@ const emit = defineEmits<{
 }>()
 
 const attachId = ref<string | null>(null)
+const detailRoot = ref<HTMLElement | null>(null)
 const methods = [
   'exact',
   'normalized',
@@ -199,10 +201,24 @@ function attach() {
   emit('attach', attachId.value)
   attachId.value = null
 }
+
+async function focusAssertion() {
+  if (!props.focusAssertionKey) return
+  await nextTick()
+  const target = Array.from(
+    detailRoot.value?.querySelectorAll<HTMLElement>('[data-assertion-key]') ?? [],
+  ).find(node => node.dataset.assertionKey === props.focusAssertionKey)
+  if (!target) return
+  target.focus({ preventScroll: true })
+  target.scrollIntoView?.({ block: 'center' })
+}
+
+watch(() => props.focusAssertionKey, () => { void focusAssertion() })
+onMounted(() => { void focusAssertion() })
 </script>
 
 <template>
-  <div class="detail">
+  <div ref="detailRoot" class="detail">
     <!-- Identity only. The status, the run action, and everything the auditor
          records all live together in the rail. -->
     <header class="detail-head">
@@ -311,7 +327,14 @@ function attach() {
 
     <section v-if="cycleResults.length" class="block">
       <h4>Assertion results</h4>
-      <article v-for="[key, result] in cycleResults" :key="key" class="check">
+      <article
+        v-for="[key, result] in cycleResults"
+        :key="key"
+        class="check"
+        :class="{ 'focused-assertion': focusAssertionKey === key }"
+        :data-assertion-key="key"
+        tabindex="-1"
+      >
         <div class="check-head">
           <strong>{{ test.definition?.assertions?.find(assertion => assertion.key === key)?.label ?? key }}</strong>
           <UiTestStatus :status="result.stale ? 'stale' : result.verdict" showLabel />
@@ -701,6 +724,7 @@ blockquote { margin: 0; padding: 0.7rem 0.8rem; border-left: 3px solid var(--aw-
 .runner-note { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0 0 0.15rem; padding: 0.55rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-info-soft); font-size: var(--aw-text-sm); }
 
 .check { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.65rem 0.7rem; border-radius: var(--aw-radius-control); background: var(--aw-raised); }
+.check.focused-assertion { outline: 2px solid var(--aw-teal); outline-offset: 2px; }
 .check-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: 0.5rem; align-items: center; padding: 0.4rem 0; border-top: 1px solid var(--aw-border); font-size: var(--aw-text-sm); }
 .comparison-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

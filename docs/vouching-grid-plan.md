@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, Phase 2, Phase 3, and Phase 4 are implemented. Checkpoint A passed automated and live procurement validation. The first Checkpoint B rebuild passed structural inspection, but the 2026-08-09 Checkpoint C run exposed a semantic authoring gap: the model could reference a bank-account requirement while generating unrelated amount/date/name assertions, and the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary Cycle vouch test was absent. The Phase 2/3 robustness remediation now requires typed registry-backed `required_comparisons`, exact generated-assertion coverage, and fail-closed handling of admitted substitutes. Because this is a clean contract change, the current procurement RCM/test chain is invalid for acceptance and Checkpoints B and C must be repeated through the normal UX. **Checkpoint C repeat pending.** Phase 4 is complete against domain-neutral fixtures; Phase 5 has not begun, and Checkpoint D is not ready. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 are implemented. Checkpoint A passed automated and live procurement validation. The first Checkpoint B rebuild passed structural inspection, but the 2026-08-09 Checkpoint C run exposed a semantic authoring gap: the model could reference a bank-account requirement while generating unrelated amount/date/name assertions, and the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary Cycle vouch test was absent. The Phase 2/3 robustness remediation now requires typed registry-backed `required_comparisons`, exact generated-assertion coverage, and fail-closed handling of admitted substitutes. Because this is a clean contract change, the current procurement RCM/test chain is invalid for acceptance and Checkpoints B and C must be repeated through the normal UX. **Checkpoint C repeat pending.** Phase 4 and Phase 5 are complete against domain-neutral fixtures and frontend mocks. Checkpoint D has not been performed, and no Phase 5 procurement validation was performed. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -1399,8 +1399,9 @@ route-handler, summary, and rollup gates pass, as does the Vue/TypeScript
 production build. The repository's broader TestClient endpoint hang and
 pre-existing workflow/provider and RCM-completion failures remain separately
 reported; they are not treated as passing gates. No procurement artifact was
-read or changed. **Checkpoint C repeat pending.** Phase 5 and Checkpoint D remain
-blocked on that live user validation.
+read or changed. **Checkpoint C repeat pending.** Phase 5 was subsequently
+implemented under explicit authorization to proceed without waiting for the
+live repeat. Checkpoint D remains pending.
 
 ### Phase 5 - grid frontend
 
@@ -1410,6 +1411,49 @@ blocked on that live user validation.
 - add frontend unit and browser coverage; then give the user Checkpoint D grid-review instructions.
 
 Exit condition: an auditor can scan the selected items, see whether they are targeted or sampled, identify the failed assertion, and reach the exact voucher citation without navigating nested rails.
+
+Automated implementation record (2026-08-09): selecting a discriminated
+`cycle_test` summary entry now mounts a full-width Cycle vouch review surface
+and requests only the Phase 4 paged grid projection. It does not fetch the full
+test or choose the first item. Question, review, attribute, Q&A, and simple
+manual-vouching summary entries retain the existing item-first master/detail
+path.
+
+The grid keeps transaction, deterministic evaluation, and auditor disposition
+columns sticky while assertion columns scroll horizontally. It shows the
+structurally derived **Targeted evidence - not a sample** or **Sampled
+population** label persistently; full-test verdict counts in every assertion
+header; separate evaluation, disposition, missing-role, and assertion-verdict
+filters; page-size/pagination controls; and search over only the bounded row,
+cell, comparison, role, record, and document display fields supplied by the
+Phase 4 API. It does not request or reconstruct row data, excerpts, raw
+extraction envelopes, citations, or document text.
+
+A cell popover renders every projected per-document comparison. Opening a row
+or cell then fetches the canonical full Document Test on demand, selects the
+exact item, focuses the relevant assertion in `DocTestItemDetail`, and leaves
+the existing citation controls and complete role `matched_by` chain as the
+detail authority. Returning to the grid preserves filters, selected cell,
+horizontal and vertical scroll, pagination, and keyboard focus.
+
+Vitest, Vue Test Utils, and jsdom are now part of the frontend development
+toolchain. Focused projection/state and component integration coverage verifies
+grid-only initial loading, all-comparison popovers, bounded search and filters,
+cycle grid-to-detail navigation, exact assertion context, state restoration,
+and retained item-first Q&A behavior. The repository has no automated
+Playwright/Cypress browser harness; its Chrome DevTools screenshot script
+requires a separately running browser and representative workspace, so no live
+browser test was claimed. The jsdom navigation integration is the available
+automated browser-like gate.
+
+The focused frontend suite and production build pass. Phase 4 grid, summary,
+rollup, generalized-result, and simple-vouching service regressions pass against
+temporary/domain-neutral fixtures. Provider-dependent workflow regressions were
+unavailable without an agent provider/API key, and the separately known
+TestClient endpoint test exceeded its bounded timeout; neither is treated as a
+passing gate. No procurement workspace was inspected, regenerated, migrated,
+executed, signed off, or modified. **Checkpoint C repeat pending.** Checkpoint D
+and all procurement validation were not performed.
 
 ### Phase 6 - incremental assertion authoring
 
