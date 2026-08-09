@@ -1489,10 +1489,11 @@ caption: <one short line saying what the reader should see in it>
 Use the exact analysis_id of a supplied procedure; an id that was not supplied
 is rejected. An embed is not a footnote — it renders the result itself, as a
 table the reader can read and open, so it is where the detail behind a finding
-belongs. Embed every result whose exceptions you state a count for, as
-`exception_table`; use `chart` for a distribution or a trend you are drawing a
-conclusion from, and `stats` where the numbers are the point. Do not embed a
-procedure you only mention in passing, and do not embed one twice.
+belongs. In "What the analysis found", every cited procedure whose supplied
+`exception_count` is greater than zero must be embedded as `exception_table`.
+Use `chart` for a distribution or a trend that has no flagged-row set, and
+`stats` where the numbers are the point. Do not embed a procedure you only
+mention in passing, and do not embed one twice.
 Return Markdown only, with no JSON wrapper and no outer code fence.
 """
 
@@ -1507,28 +1508,10 @@ def _resolved_items(request: WorkerRequest, source_id: str) -> list[object]:
 FINDINGS_SECTION = "What the analysis found"
 RELIANCE_SECTION = "How far these results can be relied on"
 
-# How many instance identifiers one line may name. A finding names the two or
-# three instances that carry it; past that the writer has stopped choosing and
-# started copying the flagged-row table into a sentence, which hands the reader
-# a truncated sample where an embed would have given them the whole result as
-# something they can open.
-MAX_NAMED_INSTANCES_PER_LINE = 4
-
-_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9_-]{2,23}\b")
 # A conversational hand-off, not a lead paragraph: one short line ending in a
 # colon, before anything else. Bounded in length so a genuine opening sentence
 # that happens to introduce a list is not mistaken for chat.
 _PREAMBLE = re.compile(r"\A[^\n]{0,120}:[ \t]*\n+")
-
-
-def _is_instance_identifier(token: str) -> bool:
-    """Whether a token looks like an identifier for one record.
-
-    Letters and digits together is what separates ``INV2024017``, ``V1008``, or
-    ``REQ2024063`` from a column name, a table name, or an ordinary word. A
-    bare year or an amount carries no letters and never reaches here.
-    """
-    return any(c.isalpha() for c in token) and any(c.isdigit() for c in token)
 
 
 def _citation_pattern(supplied: set[str]) -> re.Pattern[str] | None:
@@ -1608,6 +1591,12 @@ def validate_analysis_summary(
     if not markdown:
         raise WorkerResponseValidationError("the summary is empty")
 
+    errors: list[str] = []
+
+    def reject(message: str) -> None:
+        if message not in errors:
+            errors.append(message)
+
     sections = _memo_sections(markdown)
     present = [name for name, _ in sections]
     folded = {name.casefold() for name in present}
@@ -1615,7 +1604,8 @@ def validate_analysis_summary(
         section for section in SUMMARY_SECTIONS if section.casefold() not in folded
     ]
     if missing:
-        raise WorkerResponseValidationError(f"missing section '{missing[0]}'")
+        for section in missing:
+            reject(f"missing section '{section}'")
     # Order carries meaning here: the populations frame the findings, and the
     # findings are what the reliance limits qualify. Read out of order they
     # argue for nothing.
@@ -1628,12 +1618,10 @@ def validate_analysis_summary(
         if section.casefold() in {name.casefold() for name in ordered}
     ]
     if [name.casefold() for name in ordered] != [name.casefold() for name in expected]:
-        raise WorkerResponseValidationError(
-            "sections are out of order: expected " + ", ".join(expected)
-        )
+        reject("sections are out of order: expected " + ", ".join(expected))
 
     if not _lead_paragraph(markdown):
-        raise WorkerResponseValidationError(
+        reject(
             "the summary opens with no paragraph saying what the analysis concluded"
         )
 
@@ -1645,6 +1633,11 @@ def validate_analysis_summary(
     supplied = {str((item or {}).get("analysis_id") or "") for item in results}
     if not supplied:
         raise WorkerContractError("The analysis summary context supplied no procedures.")
+    results_by_id = {
+        str(item.get("analysis_id") or ""): item
+        for item in results
+        if str(item.get("analysis_id") or "")
+    }
     # Procedures the workspace already determined establish nothing. Whether a
     # result separated any of its rows from the rest is arithmetic, so it is
     # decided before the memo is written rather than left to be spotted in a
@@ -1659,46 +1652,30 @@ def validate_analysis_summary(
 
     embeds = parse_embeds(markdown)
     embedded: list[str] = []
+    embedded_kinds: dict[str, str] = {}
     for embed in embeds:
         analysis_id = embed.get("analysis")
         if not analysis_id:
-            raise WorkerResponseValidationError("an embed names no analysis")
+            reject("an embed names no analysis")
+            continue
         # A citation the reader cannot open is worse than no citation at all: it
         # looks like evidence and resolves to nothing.
         if analysis_id not in supplied:
-            raise WorkerResponseValidationError(
-                f"embed cites '{analysis_id}', which is not a supplied procedure"
-            )
+            reject(f"embed cites '{analysis_id}', which is not a supplied procedure")
         kind = embed.get("as") or ""
         if kind not in EMBED_KINDS:
-            raise WorkerResponseValidationError(
-                f"embed for '{analysis_id}' uses unknown kind '{kind}'"
-            )
+            reject(f"embed for '{analysis_id}' uses unknown kind '{kind}'")
         if analysis_id in embedded:
-            raise WorkerResponseValidationError(
-                f"'{analysis_id}' is embedded more than once"
-            )
-        embedded.append(analysis_id)
+            reject(f"'{analysis_id}' is embedded more than once")
+        else:
+            embedded.append(analysis_id)
+            if analysis_id in supplied and kind in EMBED_KINDS:
+                embedded_kinds[analysis_id] = kind
 
     citation = _citation_pattern(supplied)
     cited: dict[str, set[str]] = {}
     for name, body in sections:
         for line in body:
-            # A citation is not an instance. Strip the ids the memo was shown
-            # before counting what is left, or a paragraph citing three
-            # auditor-saved procedures would read as three named invoices.
-            stripped = citation.sub(" ", line) if citation else line
-            named = {
-                token
-                for token in _TOKEN.findall(stripped)
-                if _is_instance_identifier(token)
-            }
-            if len(named) > MAX_NAMED_INSTANCES_PER_LINE:
-                raise WorkerResponseValidationError(
-                    f"'{name}' names {len(named)} instance identifiers in one line "
-                    f"({', '.join(sorted(named)[:4])}, …); name the two or three "
-                    "that carry the finding and embed the result for the rest"
-                )
             on_line = citation.findall(line) if citation else []
             for analysis_id in on_line:
                 cited.setdefault(analysis_id, set()).add(name)
@@ -1706,30 +1683,34 @@ def validate_analysis_summary(
                 continue
             for analysis_id in on_line:
                 if analysis_id in uninformative:
-                    raise WorkerResponseValidationError(
+                    reject(
                         f"'{analysis_id}' cannot be a finding: it "
                         f"{uninformative[analysis_id]}. Report it under "
                         f"'{RELIANCE_SECTION}' as a limit on the work, if at all"
                     )
-            # A count stated for a procedure is a claim about rows the reader
-            # should be able to see, and the embed is how they see them.
-            if any(c.isdigit() for c in stripped):
-                for analysis_id in on_line:
-                    if analysis_id not in embedded:
-                        raise WorkerResponseValidationError(
-                            f"'{analysis_id}' is discussed with a count but its "
-                            "result is not embedded; embed it as exception_table"
-                        )
+                result = results_by_id.get(analysis_id) or {}
+                try:
+                    has_exceptions = int(result.get("exception_count") or 0) > 0
+                except (TypeError, ValueError):
+                    has_exceptions = False
+                if has_exceptions and embedded_kinds.get(analysis_id) != "exception_table":
+                    reject(
+                        f"'{analysis_id}' supports a finding with flagged rows but "
+                        "is not embedded as exception_table"
+                    )
 
     # The two sections the memo must keep apart. Findings belong above,
     # reliance limits below, and a procedure argued in both is the restatement
     # the older skeleton produced by construction.
     for analysis_id, names in cited.items():
         if {FINDINGS_SECTION, RELIANCE_SECTION} <= names:
-            raise WorkerResponseValidationError(
+            reject(
                 f"'{analysis_id}' is argued in both '{FINDINGS_SECTION}' and "
                 f"'{RELIANCE_SECTION}'; say it once, in whichever it belongs to"
             )
+
+    if errors:
+        raise WorkerResponseValidationError(errors)
 
     return {
         "markdown": markdown,
@@ -1771,12 +1752,26 @@ def run_analysis_summary_worker(
         ensure_ascii=False,
         default=str,
     )
+    conversation = None
     if attempt.is_repair:
-        user += (
-            "\n\nThe previous summary failed validation: "
-            + "; ".join(attempt.validation_errors)
-            + ". Return the complete corrected summary."
-        )
+        if attempt.previous_response is None:
+            raise WorkerContractError(
+                "An analysis-summary repair requires the previous response."
+            )
+        conversation = [
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": attempt.previous_response},
+            {
+                "role": "user",
+                "content": (
+                    "Correct every listed quality-gate error in the prior summary "
+                    "while preserving all otherwise-valid wording, evidence links, "
+                    "and embeds: "
+                    + "; ".join(attempt.validation_errors)
+                    + ". Return the complete corrected summary as Markdown only."
+                ),
+            },
+        ]
     activity = dict(request.activity)
     activity.setdefault(
         "context_metrics",
@@ -1788,7 +1783,11 @@ def run_analysis_summary_worker(
         },
     )
     return gateway.complete(
-        ANALYSIS_SUMMARY_SYSTEM, user, activity, attempt=attempt.number
+        ANALYSIS_SUMMARY_SYSTEM,
+        user,
+        activity,
+        attempt=attempt.number,
+        conversation=conversation,
     )
 
 
@@ -1806,9 +1805,9 @@ ANALYSIS_SUMMARY_WORKER = WorkerDefinition(
         max_repair_attempts=1,
         guidance_hash=_sha256_text(
             "Repair missing or misordered summary sections, a missing lead "
-            "paragraph, citations to unsupplied procedures, runs of named "
-            "instance identifiers, counts stated without an embedded result, "
-            "and findings restated under the reliance section."
+            "paragraph, citations to unsupplied procedures, exception-bearing "
+            "findings without an exception-table embed, and findings restated "
+            "under the reliance section."
         ),
     ),
     implementation=run_analysis_summary_worker,

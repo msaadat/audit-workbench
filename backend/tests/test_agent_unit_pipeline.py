@@ -35,6 +35,8 @@ from app.agent.workers import (
     WorkerRegistry,
     WorkerRepairPolicy,
     WorkerResponseSchema,
+    WorkerResponseValidationError,
+    WorkerRunError,
 )
 
 
@@ -459,6 +461,127 @@ def test_exact_proposal_identity_reuses_sidecar_without_worker_rebilling():
     assert second_events == ["executor"]
     assert outcome.proposal_reused is True
     assert outcome.proposal_reuse_rejection_reasons == ()
+
+
+def test_failed_response_is_persisted_and_exact_linked_retry_repairs_it():
+    workspace = workspaces.create_workspace("Rejected response repair")
+
+    def build(run, responses, seen):
+        runtime = DefaultRunRuntime(
+            workspace=workspace,
+            run=run,
+            state_lock=threading.RLock(),
+        )
+        workers = WorkerRegistry()
+
+        def validate(response):
+            if response.startswith("bad"):
+                raise WorkerResponseValidationError("fix the rejected draft")
+            return {"apm_markdown": response}
+
+        def implement(_request, _gateway, attempt):
+            seen.append(attempt)
+            return responses.pop(0)
+
+        workers.register(
+            WorkerDefinition(
+                worker_id="planning.apm",
+                implementation_hash=HASH_A,
+                prompt_hash=HASH_B,
+                response_schema=WorkerResponseSchema(
+                    "planning.apm.response", HASH_A, validate
+                ),
+                repair_policy=WorkerRepairPolicy(1, HASH_A),
+                implementation=implement,
+            )
+        )
+        executors = ExecutorRegistry()
+        executors.register(
+            ExecutorDefinition(
+                executor_id="planning.apm",
+                implementation_hash=HASH_A,
+                reconciliation_hash=HASH_B,
+                concurrency=ExecutorConcurrency("parent_hashes"),
+                implementation=lambda request, _target: _committed_result(request),
+                reconciler=lambda _request, _target: ExecutorReconciliation(
+                    "not_applied"
+                ),
+            )
+        )
+        return UnitPipeline(
+            runtime=runtime,
+            gateway=_Gateway(),
+            workers=workers,
+            executors=executors,
+            sidecars=UnitSidecarStore(workspace, run["id"]),
+        )
+
+    parent = store.new_command_run(
+        workspace,
+        "auto",
+        {"source": "chat", "text": "Draft the APM"},
+    )
+    parent_seen = []
+    parent_pipeline = build(parent, ["bad first", "bad final"], parent_seen)
+    rejection_refs = []
+    with pytest.raises(WorkerRunError):
+        parent_pipeline.run(
+            _request(workspace),
+            context_provider=_context,
+            context_identity_provider=_context_identity,
+            target=workspace,
+            on_rejection_persisted=rejection_refs.append,
+        )
+
+    assert [attempt.number for attempt in parent_seen] == [1, 2]
+    assert rejection_refs[0]["path"] == "rejections/planning.apm.json"
+    rejected = UnitSidecarStore(workspace, parent["id"]).load_rejection(
+        "planning.apm", rejection_refs[0]
+    )
+    assert rejected["response"] == "bad final"
+    assert rejected["validation_errors"] == ["fix the rejected draft"]
+
+    child = store.new_command_run(
+        workspace,
+        "auto",
+        {"source": "follow_up", "text": "Retry the APM"},
+        parent_run_id=parent["id"],
+    )
+    child_seen = []
+    outcome = build(child, ["# Corrected APM"], child_seen).run(
+        _request(workspace),
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=workspace,
+    )
+
+    assert outcome.status == "succeeded"
+    assert len(child_seen) == 1
+    assert child_seen[0].number == 2
+    assert child_seen[0].previous_response == "bad final"
+    assert child_seen[0].validation_errors == ("fix the rejected draft",)
+
+    changed_child = store.new_command_run(
+        workspace,
+        "auto",
+        {"source": "follow_up", "text": "Retry changed APM"},
+        parent_run_id=parent["id"],
+    )
+    changed_seen = []
+    changed_request = UnitPipelineRequest(
+        **{
+            **_request(workspace).__dict__,
+            "unit_input": {"input_sha1": "changed"},
+        }
+    )
+    build(changed_child, ["# Fresh APM"], changed_seen).run(
+        changed_request,
+        context_provider=_context,
+        context_identity_provider=_context_identity,
+        target=workspace,
+    )
+    assert changed_seen[0].number == 1
+    assert changed_seen[0].previous_response is None
 
 
 @pytest.mark.parametrize(

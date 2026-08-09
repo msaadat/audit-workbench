@@ -103,10 +103,22 @@ class WorkerResponseValidationError(ValueError):
 class WorkerRunError(RuntimeError):
     """A worker exhausted its bounded response-repair allowance."""
 
-    def __init__(self, worker_id: str, attempts: int, errors: tuple[str, ...]):
+    def __init__(
+        self,
+        worker_id: str,
+        attempts: int,
+        errors: tuple[str, ...],
+        *,
+        last_response: str,
+    ):
         self.worker_id = worker_id
         self.attempts = attempts
         self.errors = errors
+        # The rejected response is local run state, not part of the exception
+        # message.  The unit pipeline persists it to an identity-bound sidecar
+        # so a linked retry can correct this exact draft instead of regenerating
+        # the artifact from scratch.
+        self.last_response = str(last_response)
         super().__init__(
             f"Worker '{worker_id}' returned an invalid response after "
             f"{attempts} attempt(s): {'; '.join(errors)}"
@@ -215,6 +227,26 @@ class WorkerAttempt:
     @property
     def is_repair(self) -> bool:
         return self.number > 1
+
+
+@dataclass(frozen=True)
+class WorkerRepairSeed:
+    """A rejected response that an exact-identity retry may continue editing."""
+
+    previous_response: str = field(repr=False)
+    validation_errors: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        previous = str(self.previous_response or "")
+        errors = tuple(str(item).strip() for item in self.validation_errors)
+        if not previous:
+            raise ValueError("worker_repair_seed.previous_response must be non-empty.")
+        if not errors or any(not item for item in errors):
+            raise ValueError(
+                "worker_repair_seed.validation_errors must contain non-empty strings."
+            )
+        object.__setattr__(self, "previous_response", previous)
+        object.__setattr__(self, "validation_errors", errors)
 
 
 @dataclass(frozen=True)
@@ -504,16 +536,36 @@ class WorkerRegistry:
         gateway: ModelGateway,
         *,
         on_repair: Callable[[int, tuple[str, ...]], None] | None = None,
+        repair_seed: WorkerRepairSeed | None = None,
     ) -> WorkerResult:
         if not isinstance(request, WorkerRequest):
             raise WorkerContractError("Worker execution requires a WorkerRequest.")
         if not isinstance(gateway, ModelGateway):
             raise WorkerContractError("Worker execution requires a ModelGateway.")
         definition = self.get(request.worker_id)
-        errors: tuple[str, ...] = ()
-        previous_response: str | None = None
-        total_attempts = 1 + definition.repair_policy.max_repair_attempts
-        for attempt_number in range(1, total_attempts + 1):
+        if repair_seed is not None and not isinstance(repair_seed, WorkerRepairSeed):
+            raise WorkerContractError("Worker repair seed is invalid.")
+        if repair_seed is not None and not definition.repair_policy.max_repair_attempts:
+            raise WorkerContractError(
+                f"Worker '{definition.worker_id}' does not allow response repair."
+            )
+        errors = repair_seed.validation_errors if repair_seed is not None else ()
+        previous_response = (
+            repair_seed.previous_response if repair_seed is not None else None
+        )
+        # A linked retry starts at attempt two: the persisted draft is attempt
+        # one, even though it was authored by the parent run.  It gets the same
+        # bounded number of correction turns as an in-run repair, never a new
+        # unconditioned generation.
+        first_attempt = 2 if repair_seed is not None else 1
+        call_count = (
+            definition.repair_policy.max_repair_attempts
+            if repair_seed is not None
+            else 1 + definition.repair_policy.max_repair_attempts
+        )
+        attempt_numbers = range(first_attempt, first_attempt + call_count)
+        final_attempt = first_attempt + call_count - 1
+        for attempt_number in attempt_numbers:
             attempt = WorkerAttempt(attempt_number, errors, previous_response)
             gateway_context = getattr(gateway, "context", None)
             previous_capabilities = (
@@ -558,11 +610,12 @@ class WorkerRegistry:
                 # the registered worker.
                 previous_response = response
                 errors = definition.repair_policy.bounded_errors(error.errors)
-                if attempt_number == total_attempts:
+                if attempt_number == final_attempt:
                     raise WorkerRunError(
                         definition.worker_id,
                         attempt_number,
                         errors,
+                        last_response=response,
                     ) from error
                 if on_repair is not None:
                     try:

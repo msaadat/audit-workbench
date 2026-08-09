@@ -724,6 +724,9 @@ class WorkflowRunner:
                 on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
                 on_worker_repaired=self._narrate_repair(),
                 on_worker_completed=self._narrate_completion(capability),
+                on_rejection_persisted=self._reference_recorder(
+                    unit, "rejected_response_sidecar"
+                ),
             )
 
         def fold_settled(
@@ -784,6 +787,9 @@ class WorkflowRunner:
                 on_receipt_persisted=self._reference_recorder(unit, "receipt_sidecar"),
                 on_worker_repaired=self._narrate_repair(),
                 on_worker_completed=self._narrate_completion(capability),
+                on_rejection_persisted=self._reference_recorder(
+                    unit, "rejected_response_sidecar"
+                ),
             )
             self._fold_pipeline_outcome(stage, unit, outcome, bound)
         except (Cancelled, LimitExceeded):

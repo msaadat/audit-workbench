@@ -2855,8 +2855,10 @@ def test_a_lead_paragraph_survives_the_response_unwrapper():
     assert preambled.startswith("The population reconciles")
 
 
-def test_a_run_of_named_identifiers_is_rejected(workspace_with_data):
-    """Twelve identifiers in a sentence is a truncated copy of a table."""
+def test_identifier_density_is_editorial_not_a_line_based_contract(
+    workspace_with_data,
+):
+    """Physical Markdown lines do not decide whether a memo is valid."""
     ws = workspace_with_data
     _saved(ws, "Duplicates", DUPLICATES)
     request = _summary_request(workspaces.load_workspace(ws.id))
@@ -2867,8 +2869,7 @@ def test_a_run_of_named_identifiers_is_rejected(workspace_with_data):
             "INV2024032, INV2024024, INV2024021, INV2024068, INV2024029."
         )
     )
-    with pytest.raises(WorkerResponseValidationError, match="instance identifiers"):
-        analysis_worker.validate_analysis_summary({"markdown": dumped}, request)
+    assert analysis_worker.validate_analysis_summary({"markdown": dumped}, request)
 
     # Naming the two or three that carry the finding is exactly what is wanted.
     named = _memo(
@@ -2878,6 +2879,74 @@ def test_a_run_of_named_identifiers_is_rejected(workspace_with_data):
         )
     )
     assert analysis_worker.validate_analysis_summary({"markdown": named}, request)
+
+
+def test_summary_validation_reports_independent_errors_together(workspace_with_data):
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    malformed = (
+        "## What the analysis found\nText.\n"
+        "```embed\nanalysis: A-NOTREAL\nas: mystery\ncaption: x\n```\n"
+    )
+
+    with pytest.raises(WorkerResponseValidationError) as raised:
+        analysis_worker.validate_analysis_summary({"markdown": malformed}, request)
+
+    errors = raised.value.errors
+    assert any("missing section 'Data received" in item for item in errors)
+    assert any("no paragraph" in item for item in errors)
+    assert any("not a supplied procedure" in item for item in errors)
+    assert any("unknown kind" in item for item in errors)
+
+
+def test_summary_repair_replays_the_rejected_draft(workspace_with_data):
+    ws = workspace_with_data
+    _saved(ws, "Duplicates", DUPLICATES)
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    rejected = _memo(sections=analysis_worker.SUMMARY_SECTIONS[:-1])
+    corrected = _memo()
+
+    class Gateway:
+        def __init__(self):
+            self.responses = [rejected, corrected]
+            self.calls = []
+
+        def complete(
+            self,
+            system,
+            user,
+            activity=None,
+            *,
+            attempt=1,
+            conversation=None,
+        ):
+            self.calls.append(
+                {
+                    "system": system,
+                    "user": user,
+                    "activity": activity,
+                    "attempt": attempt,
+                    "conversation": conversation,
+                }
+            )
+            return self.responses.pop(0)
+
+    gateway = Gateway()
+    result = analysis_worker.WORKERS.execute(request, gateway)
+
+    assert result.repaired is True
+    assert gateway.calls[0]["conversation"] is None
+    repair = gateway.calls[1]
+    assert repair["attempt"] == 2
+    assert repair["conversation"][1] == {
+        "role": "assistant",
+        "content": rejected,
+    }
+    assert "preserving all otherwise-valid wording" in repair["conversation"][2][
+        "content"
+    ]
+    assert "Further work required" in repair["conversation"][2]["content"]
 
 
 def test_citing_several_procedures_is_not_a_run_of_identifiers(workspace_with_data):
@@ -2892,21 +2961,40 @@ def test_citing_several_procedures_is_not_a_run_of_identifiers(workspace_with_da
     assert analysis_worker.validate_analysis_summary({"markdown": cited}, request)
 
 
-def test_a_count_stated_without_its_result_embedded_is_rejected(workspace_with_data):
-    """The embed is how the reader sees the rows a count is a count of."""
+def test_an_exception_result_supporting_a_finding_must_be_embedded(
+    workspace_with_data,
+):
+    """The requirement comes from result metadata, not digits in the prose."""
     ws = workspace_with_data
     analysis = _saved(ws, "Duplicates", DUPLICATES)
     request = _summary_request(workspaces.load_workspace(ws.id))
 
-    unlinked = _memo(findings=f"2 invoices are duplicated ({analysis['id']}).")
+    unlinked = _memo(findings=f"Invoices are duplicated ({analysis['id']}).")
     with pytest.raises(WorkerResponseValidationError, match="not embedded"):
         analysis_worker.validate_analysis_summary({"markdown": unlinked}, request)
 
     linked = _memo(
-        findings=f"2 invoices are duplicated ({analysis['id']}).",
+        findings=f"Invoices are duplicated ({analysis['id']}).",
         embeds=_embed(analysis["id"], "exception_table"),
     )
     assert analysis_worker.validate_analysis_summary({"markdown": linked}, request)
+
+
+def test_digits_do_not_turn_a_zero_exception_result_into_an_embed_requirement(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    analysis = _saved(ws, "Completeness", COMPLETENESS)
+    assert analysis["last_result"]["exception_count"] == 0
+    request = _summary_request(workspaces.load_workspace(ws.id))
+    memo = _memo(
+        findings=(
+            f"The 2026 completeness procedure found no missing amount values "
+            f"({analysis['id']})."
+        )
+    )
+
+    assert analysis_worker.validate_analysis_summary({"markdown": memo}, request)
 
 
 def test_a_procedure_argued_in_both_findings_and_reliance_is_rejected(

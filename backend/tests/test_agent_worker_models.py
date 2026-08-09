@@ -19,6 +19,7 @@ from app.agent.workers import (
     WorkerDefinition,
     WorkerRegistry,
     WorkerRepairPolicy,
+    WorkerRepairSeed,
     WorkerRequest,
     WorkerResponseSchema,
     WorkerResponseValidationError,
@@ -288,6 +289,29 @@ def test_invalid_response_stops_exactly_at_the_registered_repair_bound():
     assert calls == [1, 2]
     assert captured.value.attempts == 2
     assert captured.value.errors == ("missing apm_markdown", "empty draft")
+    assert captured.value.last_response == "invalid"
+
+
+def test_identity_bound_seed_starts_with_a_targeted_repair_attempt():
+    seen = []
+
+    def implementation(request, gateway, attempt):
+        seen.append(attempt)
+        return "repaired draft"
+
+    registry = WorkerRegistry()
+    registry.register(_definition(implementation))
+    result = registry.execute(
+        _request(),
+        _Gateway(),
+        repair_seed=WorkerRepairSeed("rejected draft", ("fix the embed",)),
+    )
+
+    assert result.repaired is True
+    assert result.attempts == 2
+    assert seen == [
+        WorkerAttempt(2, ("fix the embed",), "rejected draft")
+    ]
 
 
 def test_zero_repair_policy_makes_one_attempt_only():

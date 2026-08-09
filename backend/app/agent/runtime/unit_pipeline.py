@@ -19,7 +19,12 @@ from ..executors import (
     ExecutorRegistry,
     ExecutorRequest,
 )
-from ..workers import WorkerRegistry, WorkerRequest
+from ..workers import (
+    WorkerRegistry,
+    WorkerRepairSeed,
+    WorkerRequest,
+    WorkerRunError,
+)
 from .model_gateway import ModelGateway
 from .run_runtime import RunRuntime
 
@@ -92,6 +97,10 @@ def _sha256(value: object) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _sha256_text(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
 def _unit_filename(unit_id: str) -> str:
     value = str(unit_id or "").strip()
     if not value:
@@ -143,6 +152,15 @@ class UnitSidecarStore:
     ) -> dict[str, str]:
         return self._persist("proposals", unit_id, payload)
 
+    def persist_rejection(
+        self,
+        unit_id: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, str]:
+        """Persist the final invalid worker response for an exact linked retry."""
+
+        return self._persist("rejections", unit_id, payload)
+
     def _load(
         self,
         kind: str,
@@ -180,6 +198,13 @@ class UnitSidecarStore:
         reference: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any] | None:
         return self._load("proposals", unit_id, reference)
+
+    def load_rejection(
+        self,
+        unit_id: str,
+        reference: Mapping[str, str] | None = None,
+    ) -> Mapping[str, Any] | None:
+        return self._load("rejections", unit_id, reference)
 
     def read_receipt_record(
         self,
@@ -454,6 +479,67 @@ class UnitPipeline:
         self.executors = executors
         self.sidecars = sidecars
 
+    def _linked_repair_seed(
+        self,
+        *,
+        request: UnitPipelineRequest,
+        execution_identity: ProposalExecutionIdentity,
+    ) -> WorkerRepairSeed | None:
+        """Load an exact-identity rejected response from the direct parent run."""
+
+        run = getattr(self.runtime, "run", None)
+        parent_run_id = (
+            str(run.get("parent_run_id") or "").strip()
+            if isinstance(run, Mapping)
+            else ""
+        )
+        if not parent_run_id:
+            return None
+        try:
+            payload = UnitSidecarStore(
+                self.sidecars.workspace, parent_run_id
+            ).load_rejection(request.unit_id)
+        except (WorkspaceError, UnitSidecarValidationError):
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        try:
+            persisted_identity = ProposalExecutionIdentity.from_dict(
+                payload.get("execution_identity")
+            )
+        except (TypeError, ValueError):
+            return None
+        if execution_identity.rejection_reasons(persisted_identity):
+            return None
+        if payload.get("execution_identity_hash") != persisted_identity.identity_hash:
+            return None
+        if payload.get("status") != "rejected":
+            return None
+        if payload.get("capability_id") != request.capability_id:
+            return None
+        if payload.get("unit_id") != request.unit_id:
+            return None
+        if payload.get("worker_id") != request.worker_id:
+            return None
+        response = payload.get("response")
+        raw_errors = payload.get("validation_errors")
+        if not isinstance(response, str) or not isinstance(raw_errors, list):
+            return None
+        if payload.get("response_hash") != _sha256_text(response):
+            return None
+        definition = self.workers.get(request.worker_id)
+        if not definition.repair_policy.max_repair_attempts:
+            return None
+        if payload.get("response_schema_hash") != definition.response_schema.schema_hash:
+            return None
+        try:
+            return WorkerRepairSeed(
+                previous_response=response,
+                validation_errors=definition.repair_policy.bounded_errors(raw_errors),
+            )
+        except ValueError:
+            return None
+
     def commit_local(
         self,
         request: UnitPipelineRequest,
@@ -540,6 +626,7 @@ class UnitPipeline:
         on_receipt_persisted: PersistenceObserver | None = None,
         on_worker_repaired: Callable[[int, tuple[str, ...]], None] | None = None,
         on_worker_completed: Callable[[Mapping[str, Any]], None] | None = None,
+        on_rejection_persisted: PersistenceObserver | None = None,
     ) -> UnitPipelineOutcome:
         if not isinstance(request, UnitPipelineRequest):
             raise UnitPipelineError("Unit pipeline requires a UnitPipelineRequest.")
@@ -727,18 +814,43 @@ class UnitPipeline:
             # told the agent is "reading" sources it already drew from.
             if on_manifest_resolved is not None:
                 on_manifest_resolved(manifest)
-            worker_result = self.workers.execute(
-                WorkerRequest(
-                    worker_id=request.worker_id,
-                    capability_id=request.capability_id,
-                    unit_id=request.unit_id,
-                    context=bundle,
-                    unit_input=request.unit_input,
-                    activity=request.activity,
-                ),
-                self.gateway,
-                on_repair=on_worker_repaired,
+            repair_seed = self._linked_repair_seed(
+                request=request,
+                execution_identity=execution_identity,
             )
+            try:
+                worker_result = self.workers.execute(
+                    WorkerRequest(
+                        worker_id=request.worker_id,
+                        capability_id=request.capability_id,
+                        unit_id=request.unit_id,
+                        context=bundle,
+                        unit_input=request.unit_input,
+                        activity=request.activity,
+                    ),
+                    self.gateway,
+                    on_repair=on_worker_repaired,
+                    repair_seed=repair_seed,
+                )
+            except WorkerRunError as error:
+                rejection_payload = {
+                    "capability_id": request.capability_id,
+                    "unit_id": request.unit_id,
+                    "worker_id": request.worker_id,
+                    "response_schema_hash": worker_definition.response_schema.schema_hash,
+                    "execution_identity": execution_identity.to_dict(),
+                    "execution_identity_hash": execution_identity.identity_hash,
+                    "response_hash": _sha256_text(error.last_response),
+                    "status": "rejected",
+                    "validation_errors": list(error.errors),
+                    "response": error.last_response,
+                }
+                rejection_reference = self.sidecars.persist_rejection(
+                    request.unit_id, rejection_payload
+                )
+                if on_rejection_persisted is not None:
+                    on_rejection_persisted(rejection_reference)
+                raise
             proposal = dict(worker_result.proposal)
             # Fired with the freshly generated proposal, before approval can
             # revise it: this reflects what the model actually produced, the
