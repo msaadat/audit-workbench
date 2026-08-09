@@ -83,17 +83,17 @@ const visualPageLimit = 20
 const visionAvailable = computed(() => agent.state.status?.vision_configured === true)
 const structuredFieldsJson = computed(() => {
   const effective = analysis.value?.effective
-  if (effective?.registry) {
-    return JSON.stringify({
-      registry: effective.registry,
-      records: effective.records || [],
-      unresolved_fragments: effective.unresolved_fragments || [],
-      conflicts: effective.conflicts || [],
-    }, null, 2)
-  }
-  const fields = effective?.fields
-  return fields && Object.keys(fields).length ? JSON.stringify(fields, null, 2) : ''
+  if (!effective?.registry) return ''
+  return JSON.stringify({
+    registry: effective.registry,
+    records: effective.records || [],
+    unresolved_fragments: effective.unresolved_fragments || [],
+    conflicts: effective.conflicts || [],
+  }, null, 2)
 })
+const hasStructuredSummary = computed(() =>
+  analysis.value?.effective?.summary_origin === 'structured_evidence',
+)
 const providerOptions = computed(() => settingsStatus.value?.providers || [])
 const selectedVisionProvider = computed<AssistantProvider | undefined>(() =>
   providerOptions.value.find(provider => provider.id === visionProvider.value),
@@ -335,12 +335,13 @@ async function saveAnalysis(reviewed = false) {
   if (!selected.value || !analysis.value) return
   analysisBusy.value = true
   try {
-    analysis.value = await api.patch<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis/review`, {
+    const payload: Record<string, unknown> = {
       review_revision: analysis.value.review_revision,
-      summary_markdown: summaryDraft.value,
       audit_notes_markdown: notesDraft.value,
       review_state: reviewed ? 'reviewed' : 'needs_review',
-    })
+    }
+    if (!hasStructuredSummary.value) payload.summary_markdown = summaryDraft.value
+    analysis.value = await api.patch<DocumentAnalysisDetail>(`/api/workspaces/${props.workspace.id}/documents/${selected.value.id}/analysis/review`, payload)
     await loadDocuments()
     toast.add({ severity: 'success', summary: reviewed ? 'Analysis reviewed' : 'Analysis edits saved', life: 2200 })
   } catch (error) { toast.add({ severity: 'error', summary: 'Analysis not saved', detail: String(error), life: 5000 }) }
@@ -726,26 +727,34 @@ onUnmounted(() => {
           </div>
           <div v-if="analysis?.status.analysis_validity_state === 'stale'" class="coverage-warning"><i class="pi pi-history" /><span>This analysis belongs to an earlier source identity. It remains available to agent context; refresh it before relying on it as current.</span></div>
 
-          <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyze this document once" description="Create a reusable summary and freeform audit notes. Source indexing remains local and independent." compact />
+          <UiEmptyState v-if="!analysis?.effective" icon="pi pi-sparkles" title="Analyze this document once" description="Create reusable document analysis and audit notes. Source indexing remains local and independent." compact />
           <template v-else>
             <section class="analysis-editor">
-              <header><div><h4>Summary</h4><small>Auditor edits are stored separately from the generated basis.</small></div><div><Button v-if="analysis.review.summary_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('summary')" /></div></header>
-              <MarkdownEditor v-model="summaryDraft" />
+              <header>
+                <div>
+                  <h4>{{ hasStructuredSummary ? 'Derived summary' : 'Summary' }}</h4>
+                  <small v-if="hasStructuredSummary">Generated locally from the validated structured evidence below.</small>
+                  <small v-else>Auditor edits are stored separately from the generated basis.</small>
+                </div>
+                <div><Button v-if="!hasStructuredSummary && analysis.review.summary_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('summary')" /></div>
+              </header>
+              <MarkdownView v-if="hasStructuredSummary" :markdown="summaryDraft" />
+              <MarkdownEditor v-else v-model="summaryDraft" />
             </section>
-            <section v-if="structuredFieldsJson" class="analysis-fields">
-              <header><div><h4>Structured Evidence</h4><small>Registry-backed records, normalization states, and reduction review items. Read-only.</small></div></header>
+            <details v-if="structuredFieldsJson" class="analysis-fields">
+              <summary><span><strong>Structured Evidence</strong><small>Registry-backed records, normalization states, and reduction review items. Read-only.</small></span><i class="pi pi-chevron-down" /></summary>
               <pre>{{ structuredFieldsJson }}</pre>
-            </section>
+            </details>
             <section class="analysis-editor">
               <header><div><h4>Audit Notes</h4><small>Freeform observations are not evidence that a control operated.</small></div><div><Button v-if="analysis.review.audit_notes_override !== null" label="Revert" text size="small" severity="secondary" @click="revertAnalysisField('notes')" /></div></header>
               <MarkdownEditor v-model="notesDraft" />
             </section>
-            <div class="save-analysis"><Button label="Save edits" icon="pi pi-save" severity="secondary" :loading="analysisBusy" @click="saveAnalysis(false)" /><Button label="Save and mark reviewed" icon="pi pi-check" :loading="analysisBusy" @click="saveAnalysis(true)" /></div>
+            <div class="save-analysis"><Button :label="hasStructuredSummary ? 'Save notes' : 'Save edits'" icon="pi pi-save" severity="secondary" :loading="analysisBusy" @click="saveAnalysis(false)" /><Button label="Save and mark reviewed" icon="pi pi-check" :loading="analysisBusy" @click="saveAnalysis(true)" /></div>
 
             <section v-if="compareCandidate && analysis.candidate" class="candidate-compare">
               <h4>Refresh candidate</h4>
               <div><article><strong>Current effective summary</strong><MarkdownView :markdown="summaryDraft" /></article><article><strong>Candidate summary</strong><MarkdownView :markdown="analysis.candidate.summary_markdown" /></article></div>
-              <div class="candidate-actions"><Button label="Copy candidate summary into edits" severity="secondary" @click="summaryDraft = analysis.candidate.summary_markdown" /><Button label="Copy candidate notes into edits" severity="secondary" @click="notesDraft = analysis.candidate.audit_notes_markdown" /><Button label="Accept candidate as generated basis" icon="pi pi-check" @click="acceptCandidate" /></div>
+              <div class="candidate-actions"><Button v-if="!hasStructuredSummary" label="Copy candidate summary into edits" severity="secondary" @click="summaryDraft = analysis.candidate.summary_markdown" /><Button label="Copy candidate notes into edits" severity="secondary" @click="notesDraft = analysis.candidate.audit_notes_markdown" /><Button label="Accept candidate as generated basis" icon="pi pi-check" @click="acceptCandidate" /></div>
             </section>
 
             <section class="analysis-sources">
@@ -831,6 +840,6 @@ onUnmounted(() => {
 .preview-view .source-search-bar,.preview-view .inline-search-results { margin-bottom:.75rem; }.preview-view .source-search-bar .p-inputtext { max-width:24rem; }
 .technical-details,.timeline details,.pack-grid details { margin-top:.8rem; padding:.65rem .75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-muted); font-size:var(--aw-text-xs); }.technical-details summary,.timeline summary,.pack-grid summary { cursor:pointer; font-weight:600; }.technical-details dl { display:grid; gap:.45rem; margin:.7rem 0 0; }.technical-details dl div { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:.6rem; }.technical-details dt { font-weight:600; }.technical-details dd { display:flex; align-items:center; gap:.3rem; margin:0; overflow-wrap:anywhere; }.technical-details dd code { flex:1; min-width:0; overflow-wrap:anywhere; }
 .timeline { display: grid; gap: .75rem; }.timeline article { display: grid; grid-template-columns: auto 1fr; gap: .75rem; padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }.timeline p { margin: .25rem 0; color: var(--aw-muted); }.timeline code { overflow-wrap: anywhere; font-size: var(--aw-text-xs); }.pack-toolbar { display: flex; gap: .5rem; margin-bottom: 1rem; }.pack-toolbar .p-inputtext { flex: 1; }.pack-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(14rem,1fr)); gap: .65rem; }.pack-grid article,.search-results article { padding: .8rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-control); }.pack-grid .p-tag { float: right; }.pack-grid p,.search-results p { margin: .4rem 0 0; color: var(--aw-muted); }.search-results { margin-top: 1.2rem; display: grid; gap: .55rem; }
-.analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid var(--aw-warn-line); border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }.coverage-warning p { margin:.25rem 0 0; }.coverage-warning ul { margin:.35rem 0 0; padding-left:1.1rem; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor,.analysis-fields { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.analysis-editor header,.analysis-fields header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-fields h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small,.analysis-fields small { color:var(--aw-muted); }.analysis-editor :deep(.markdown-editor) { min-height:18rem; }.analysis-fields pre { max-height:32rem; margin:0; overflow:auto; padding:1rem; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); font:500 .78rem/1.55 var(--aw-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); white-space:pre; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.analysis-sources button strong { display:flex; align-items:center; gap:.45rem; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-control); background:var(--aw-info-soft); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results button > div > span { display:flex; gap:.35rem; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }.vision-settings { display:grid; gap:1rem; }.vision-settings > p { margin:0; color:var(--aw-muted); line-height:1.5; }.vision-settings label { display:grid; gap:.35rem; font-weight:600; }.vision-settings label :deep(.p-select),.vision-settings label .p-inputtext { width:100%; }.vision-settings .settings-warning { padding:.65rem; border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }
+.analysis-view { display:grid; gap:1rem; }.analysis-toolbar,.analysis-actions,.analysis-states,.save-analysis,.source-search-bar,.global-search-bar,.candidate-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }.analysis-toolbar { justify-content:space-between; }.coverage-warning { display:flex; align-items:flex-start; gap:.6rem; padding:.75rem; border:1px solid var(--aw-warn-line); border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }.coverage-warning p { margin:.25rem 0 0; }.coverage-warning ul { margin:.35rem 0 0; padding-left:1.1rem; }.source-search-bar .p-inputtext,.global-search-bar .p-inputtext { flex:1; min-width:14rem; }.analysis-editor,.analysis-fields { padding:1rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.analysis-editor header { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.8rem; }.analysis-editor h4,.analysis-sources h4,.candidate-compare h4 { margin:0; }.analysis-editor small,.analysis-fields small { color:var(--aw-muted); }.analysis-editor :deep(.markdown-editor) { min-height:18rem; }.analysis-fields>summary { display:flex; align-items:center; justify-content:space-between; gap:1rem; cursor:pointer; list-style:none; }.analysis-fields>summary::-webkit-details-marker { display:none; }.analysis-fields>summary span { display:grid; gap:.2rem; }.analysis-fields>summary i { transition:transform .15s ease; }.analysis-fields[open]>summary i { transform:rotate(180deg); }.analysis-fields pre { max-height:32rem; margin:.8rem 0 0; overflow:auto; padding:1rem; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); font:500 .78rem/1.55 var(--aw-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); white-space:pre; }.inline-search-results,.analysis-sources,.global-search-results { display:grid; gap:.5rem; }.inline-search-results button,.analysis-sources button,.global-search-results button { display:grid; gap:.35rem; width:100%; padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); color:inherit; text-align:left; cursor:pointer; }.inline-search-results button:hover,.analysis-sources button:hover,.global-search-results button:hover { border-color:var(--aw-teal); }.inline-search-results span,.analysis-sources span,.global-search-results p { color:var(--aw-muted); line-height:1.45; }.analysis-sources button strong { display:flex; align-items:center; gap:.45rem; }.candidate-compare { display:grid; gap:.75rem; padding:1rem; border:1px solid var(--aw-info-line); border-radius:var(--aw-radius-control); background:var(--aw-info-soft); }.candidate-compare > div:not(.candidate-actions) { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }.candidate-compare article { padding:.75rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control); background:var(--aw-panel); }.global-search-results { margin-top:1rem; }.global-search-results button > div { display:flex; justify-content:space-between; align-items:center; }.global-search-results button > div > span { display:flex; gap:.35rem; }.global-search-results p { margin:.2rem 0; }.global-search-results small { color:var(--aw-muted); }.vision-settings { display:grid; gap:1rem; }.vision-settings > p { margin:0; color:var(--aw-muted); line-height:1.5; }.vision-settings label { display:grid; gap:.35rem; font-weight:600; }.vision-settings label :deep(.p-select),.vision-settings label .p-inputtext { width:100%; }.vision-settings .settings-warning { padding:.65rem; border-radius:var(--aw-radius-control); background:var(--aw-warn-soft); color:var(--aw-warn-ink); }
 @media (max-width: 900px) { .document-layout { grid-template-columns: 1fr; }.document-rail { max-height: 20rem; border-right: 0; border-bottom: 1px solid var(--aw-border); }.detail-head { align-items:flex-start; flex-direction:column; }.detail-actions { justify-content:flex-start; } }
 </style>

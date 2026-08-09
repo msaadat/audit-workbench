@@ -66,10 +66,11 @@ DOCUMENT_VISUAL_SOURCE_ID = "document_page_images"
 CHUNK_ANALYSES_SOURCE_ID = "chunk_analyses"
 
 # Some OpenAI-compatible tool-call implementations cap an individual string
-# argument at 1,024 characters and flatten embedded newlines. Voucher narratives
+# argument at 1,024 characters and flatten embedded newlines. Voucher audit notes
 # therefore travel as small structured fragments alongside their structured
-# records. The application, not the provider, assembles those fragments into
-# Markdown. Standard document narratives do not use a tool call at all.
+# records. Voucher summaries are not model output: the application renders them
+# deterministically from the validated, reduced records. Standard document
+# narratives do not use a tool call at all.
 NARRATIVE_FRAGMENT_MAX_CHARACTERS = 768
 NARRATIVE_HEADING_MAX_CHARACTERS = 160
 NARRATIVE_MAX_SECTIONS = 16
@@ -97,6 +98,16 @@ provider preserving newlines inside one long string:
 - Each paragraph, bullet, observation, rationale, and follow-up is limited to
   {NARRATIVE_FRAGMENT_MAX_CHARACTERS} characters. Use another section, paragraph,
   bullet, or note instead of truncating a thought.
+"""
+
+VOUCHER_AUDIT_NOTE_RULES = f"""
+audit_notes is an array of concrete observations. Each item has a short
+plain-text title plus observation, why_it_matters, and follow_up. Return an
+empty array only when there is genuinely no specific observation; local code
+then renders the standard no-observations statement. Every observation,
+rationale, and follow-up must cite the supplied source with a marker such as
+[C1]. Each generated string is limited to
+{NARRATIVE_FRAGMENT_MAX_CHARACTERS} characters.
 """
 
 
@@ -479,6 +490,14 @@ def _citation_marker_ids(text: str) -> set[str]:
     return set(re.findall(r"\[([A-Za-z][A-Za-z0-9_-]{0,63})\]", text))
 
 
+def _replace_citation_markers(text: str, aliases: Mapping[str, str]) -> str:
+    return re.sub(
+        r"\[([A-Za-z][A-Za-z0-9_-]{0,63})\]",
+        lambda match: f"[{aliases.get(match.group(1), match.group(1))}]",
+        text,
+    )
+
+
 def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
     """Assemble provider-safe fragments into stable application Markdown.
 
@@ -591,12 +610,137 @@ def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
     return summary, audit_notes, "structured_blocks_v1"
 
 
+def render_voucher_audit_notes(notes: Iterable[Mapping[str, Any]]) -> str:
+    """Render validated voucher observations without another model turn."""
+
+    note_parts = ["## Audit notes"]
+    for index, raw in enumerate(notes):
+        note_parts.append(
+            f"### {index + 1}. {str(raw.get('title') or '').strip()}\n\n"
+            f"{str(raw.get('observation') or '').strip()}\n\n"
+            f"**Why it matters:** {str(raw.get('why_it_matters') or '').strip()}\n\n"
+            f"**Follow-up:** {str(raw.get('follow_up') or '').strip()}"
+        )
+    if len(note_parts) == 1:
+        note_parts.append(
+            "No specific drafting or control-design observations were identified "
+            "from the supplied text. Operating effectiveness was not assessed."
+        )
+    return "\n\n".join(note_parts)
+
+
+def merge_voucher_audit_notes(analyses: Iterable[Mapping[str, Any]]) -> str:
+    """Consolidate voucher notes locally, preserving legacy proposal sidecars."""
+
+    items = list(analyses)
+    if all(isinstance(item.get("audit_notes"), list) for item in items):
+        unique: dict[str, dict] = {}
+        for analysis in items:
+            for note in analysis.get("audit_notes") or []:
+                if not isinstance(note, Mapping):
+                    continue
+                normalized = {key: str(note.get(key) or "").strip() for key in (
+                    "title",
+                    "observation",
+                    "why_it_matters",
+                    "follow_up",
+                )}
+                identity = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+                unique.setdefault(identity, normalized)
+        return render_voucher_audit_notes(unique[key] for key in sorted(unique))
+
+    # A restart may reuse pre-redesign sidecars containing only Markdown. Keep
+    # their notes without asking the provider to recreate them.
+    blocks: list[str] = []
+    for analysis in items:
+        block = str(analysis.get("audit_notes_markdown") or "").strip()
+        if block.startswith("## Audit notes"):
+            block = block[len("## Audit notes") :].strip()
+        if block and block not in blocks:
+            blocks.append(block)
+    return "## Audit notes\n\n" + (
+        "\n\n---\n\n".join(blocks)
+        if blocks
+        else "No specific drafting or control-design observations were identified "
+        "from the supplied text. Operating effectiveness was not assessed."
+    )
+
+
+def _voucher_audit_notes(
+    payload: Mapping[str, Any],
+) -> tuple[str, list[dict] | None, str]:
+    """Validate the voucher-only narrative contract and assemble its Markdown.
+
+    Older compatible callers and provider responses may still carry
+    ``audit_notes_markdown``. The live tool schema exposes only the structured
+    ``audit_notes`` collection.
+    """
+
+    if "audit_notes" not in payload:
+        return str(payload.get("audit_notes_markdown") or ""), None, "legacy_markdown"
+    notes = payload.get("audit_notes")
+    if not isinstance(notes, list):
+        raise WorkerResponseValidationError("`audit_notes` must be an array")
+    if len(notes) > NARRATIVE_MAX_AUDIT_NOTES:
+        raise WorkerResponseValidationError(
+            f"`audit_notes` has more than {NARRATIVE_MAX_AUDIT_NOTES} items"
+        )
+    validated: list[dict] = []
+    cited_text: list[str] = []
+    for index, raw in enumerate(notes):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(
+                f"`audit_notes[{index}]` must be an object"
+            )
+        item = {
+            "title": _narrative_fragment(
+                raw.get("title"), f"audit_notes[{index}].title", heading=True
+            ),
+            "observation": _narrative_fragment(
+                raw.get("observation"), f"audit_notes[{index}].observation"
+            ),
+            "why_it_matters": _narrative_fragment(
+                raw.get("why_it_matters"),
+                f"audit_notes[{index}].why_it_matters",
+            ),
+            "follow_up": _narrative_fragment(
+                raw.get("follow_up"), f"audit_notes[{index}].follow_up"
+            ),
+        }
+        for key in ("observation", "why_it_matters", "follow_up"):
+            if not _citation_marker_ids(item[key]):
+                raise WorkerResponseValidationError(
+                    f"`audit_notes[{index}].{key}` must cite a supplied citation marker"
+                )
+            cited_text.append(item[key])
+        validated.append(item)
+    supplied_ids = {
+        str(item.get("id") or "")
+        for item in payload.get("citations") or []
+        if isinstance(item, Mapping)
+    }
+    unknown = sorted(_citation_marker_ids("\n".join(cited_text)) - supplied_ids)
+    if unknown:
+        raise WorkerResponseValidationError(
+            "audit-note citation marker(s) have no supplied citation: "
+            + ", ".join(f"[{value}]" for value in unknown)
+        )
+    return (
+        render_voucher_audit_notes(validated),
+        validated,
+        "structured_voucher_notes_v1",
+    )
+
+
 def _validate_surviving_narrative_citations(
     proposal: Mapping[str, Any], validated: Mapping[str, Any]
 ) -> None:
     """Reject markers whose source excerpts were removed by exact validation."""
 
-    if proposal.get("_narrative_contract") != "structured_blocks_v1":
+    if proposal.get("_narrative_contract") not in {
+        "structured_blocks_v1",
+        "structured_voucher_notes_v1",
+    }:
         return
     text = "\n".join(
         (
@@ -627,8 +771,14 @@ def _citation_submission_tool(
 ) -> dict[str, Any]:
     """Return the provider-enforced shape shared by text document workers."""
 
+    narrative = _narrative_submission_properties()
+    if voucher:
+        # A voucher summary is a deterministic projection of the validated
+        # reduction. Asking the provider for the same facts a second time adds
+        # tokens and repair modes without adding evidence.
+        narrative.pop("summary_sections", None)
     properties: dict[str, Any] = {
-        **_narrative_submission_properties(),
+        **narrative,
         "citations": {
             "type": "array",
             "minItems": 1,
@@ -644,7 +794,11 @@ def _citation_submission_tool(
             },
         },
     }
-    required = ["summary_sections", "audit_notes", "citations"]
+    required = ["audit_notes", "citations"] if voucher else [
+        "summary_sections",
+        "audit_notes",
+        "citations",
+    ]
     if voucher:
         # Registry and fragments retain their deeper, registry-aware validation
         # below — which combination of group, kind, and attribute a record kind
@@ -909,9 +1063,10 @@ def run_chunk_worker(
 # documents.analysis_voucher
 #
 # The transaction-evidence profile. It reads the same bounded chunk the standard
-# map worker reads and returns the same narrative pair, plus a structured
-# registry-backed `record_fragments`. Every extracted fact carries a citation id;
-# durable record identities are deliberately deferred to deterministic reduction.
+# map worker reads and returns cited audit notes plus registry-backed
+# `record_fragments`; the summary is derived after deterministic reduction. Every
+# extracted fact carries a citation id, and durable record identities are
+# deliberately deferred to that reduction.
 # --------------------------------------------------------------------------- #
 def _field_selectors(field_ids: Iterable[str]) -> list[str]:
     """Render registered field kinds as the exact selectors a response must use.
@@ -1017,21 +1172,20 @@ purchase order, goods-received note, receipt, approval record, or similar.
 Report only what this chunk states. Do not infer a value from a filename, from
 metadata, or from what a document of this type usually contains.
 
-Submit summary_sections, audit_notes, citations, registry, and record_fragments
-through the required function tool exactly once.
+Submit audit_notes, citations, registry, and record_fragments through the
+required function tool exactly once. Do not write a summary: local code derives
+it from the validated structured evidence after all chunks settle.
 
-summary_sections form a short neutral description of what this record is and
-what it evidences. audit_notes records observations visible on the face of the
-document — a missing signature or date, an unreferenced attachment, an internal
-inconsistency, an alteration, an incomplete field. State the observation and
-why it matters. Do not conclude that a control operated or failed; that
-determination is made elsewhere by comparing this record against the accounting
-population. If there is no such observation, return an empty audit_notes array.
+audit_notes records observations visible on the face of the document — a
+missing signature or date, an unreferenced attachment, an internal
+inconsistency, an alteration, an incomplete field. State the observation and why
+it matters. Do not conclude that a control operated or failed; that determination
+is made elsewhere by comparing this record against the accounting population.
+If there is no such observation, return an empty audit_notes array.
 
-Support every substantive statement in summary_sections and audit_notes with a
-citation marker such as [c1]. A fact the registered fields below cannot
-carry still belongs in the narrative, and there it needs the same anchor as
-anything else.
+Support every substantive audit-note statement with a citation marker such as
+[c1]. The registered evidence schema is authoritative for the neutral facts the
+voucher summary will display; do not duplicate those facts as audit notes.
 
 citations is an array of objects with id, page, and a short exact `excerpt` copied
 verbatim from this chunk. Every excerpt must appear character for character in
@@ -1129,17 +1283,18 @@ primary identifier kind, emit separate fragments; never blend them. A
 continuation without a primary identifier may still emit a fragment so local
 reduction can attach it only when the exact evidence is unambiguous.
 
-If the source still contains a fact for which the selected record kind has no
-declared field, keep that fact in the cited narrative and omit it from fields.
-Never relabel an unsupported fact as a different registered field merely to
-satisfy the schema: a description is not a status, and a date is not an amount.
+If the source still contains a neutral fact for which the selected record kind
+has no declared field, omit it. Never relabel an unsupported fact as a different
+registered field merely to satisfy the schema: a description is not a status,
+and a date is not an amount. Audit notes are for review observations, not a
+second unstructured evidence channel.
 
 REGISTERED PACK DESCRIPTORS
 Fields read `group.kind.attribute|attribute`. Copy a `group`, `kind`, and one
 `attribute` exactly as written below.
 {_VOUCHER_REGISTRY_DESCRIPTORS}
 
-{STRUCTURED_NARRATIVE_RULES}
+{VOUCHER_AUDIT_NOTE_RULES}
 {JSON_RULES}"""
 
 
@@ -1166,10 +1321,13 @@ def _voucher_response_schema(response: str) -> Mapping[str, Any]:
         raise WorkerResponseValidationError(
             "`record_fragments` must be an array of objects"
         )
-    summary, audit_notes, narrative_contract = _structured_narrative(payload)
+    audit_notes, structured_notes, narrative_contract = _voucher_audit_notes(payload)
     return {
-        "summary_markdown": summary,
+        # Filled deterministically from the reduced evidence at the document
+        # boundary. Retaining the key keeps old sidecar/read models compatible.
+        "summary_markdown": "",
         "audit_notes_markdown": audit_notes,
+        "audit_notes": structured_notes,
         "citations": citations,
         "registry": payload.get("registry"),
         "record_fragments": fragments,
@@ -1616,24 +1774,34 @@ def validate_voucher_proposal(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
 ) -> Mapping[str, Any]:
-    """Apply the standard map contract, then ground every structured field.
+    """Ground voucher audit notes and every structured field in the source.
 
-    The narrative half goes through exactly the same ``validate_analysis_map``
-    gate the standard profile uses. The structured half is then normalized
-    against the citations that survived it, so a field anchored to an excerpt the
-    chunk does not contain is rejected rather than committed.
+    Voucher summaries are absent here and rendered only after deterministic
+    record reduction. Notes and facts still share the exact-excerpt citation
+    gate, so an ungrounded value is rejected rather than committed.
     """
     chunk = _supplied_chunk(request)
     document = _resolved_item(request, DOCUMENT_IDENTITY_SOURCE_ID)
     source_sha1 = str(document.get("source_sha1") or "")
     if not source_sha1:
         raise WorkerContractError("The supplied document identity has no source hash.")
-    try:
-        validated = document_analysis.validate_analysis_map(
-            dict(proposal), [dict(chunk)], source_sha1
+    notes = str(proposal.get("audit_notes_markdown") or "").strip()
+    if not notes:
+        raise WorkerResponseValidationError(
+            "Required analysis field was blank: audit_notes_markdown"
         )
-    except ValueError as error:
-        raise WorkerResponseValidationError(str(error)) from error
+    citations = document_analysis.validate_citations(
+        proposal.get("citations") or [], [dict(chunk)], source_sha1
+    )
+    if not citations:
+        raise WorkerResponseValidationError(
+            "citations contained no exact excerpt from the supplied source chunk"
+        )
+    validated = {
+        "summary_markdown": "",
+        "audit_notes_markdown": notes,
+        "citations": citations,
+    }
     _validate_surviving_narrative_citations(proposal, validated)
     excerpts = {
         str(value.get("id") or ""): str(value.get("excerpt") or "")
@@ -1646,10 +1814,9 @@ def validate_voucher_proposal(
         for value in validated["citations"]
     }
     errors: list[str] = []
-    # ``validate_analysis_map`` drops a citation whose excerpt is not in the chunk.
-    # For the narrative that is tolerable; here it silently removes the anchor a
-    # structured fact depends on, and the whole fragment is then rejected for
-    # ungrounded evidence without ever saying which excerpt was wrong.
+    # Exact citation validation drops an excerpt that is not in the chunk. Here
+    # that would silently remove the anchor a structured fact depends on, so the
+    # whole fragment is rejected with the bad excerpt named.
     #
     # It also drops a citation that merely repeats an earlier one's excerpt. That
     # is a duplicate, not a bad quote, so the second id is remapped onto the
@@ -1732,16 +1899,50 @@ def validate_voucher_proposal(
         fragments.append(normalized_fragment)
     if errors:
         raise WorkerResponseValidationError("; ".join(errors))
+    # Citation ids supplied independently by parallel chunks routinely repeat
+    # (every chunk starts at C1). Namespace them only after exact grounding so
+    # the durable document-level citation catalog and reduced record evidence
+    # remain unambiguous without making the provider coordinate across chunks.
+    chunk_id = str(chunk.get("id") or "")
+    citation_aliases = {
+        str(item.get("id") or ""): f"{chunk_id}-{str(item.get('id') or '')}"
+        for item in validated["citations"]
+        if str(item.get("id") or "")
+    }
+    for fragment in fragments:
+        _apply_citation_aliases(fragment, citation_aliases)
+    citations = [
+        {**dict(item), "id": citation_aliases.get(str(item.get("id") or ""), str(item.get("id") or ""))}
+        for item in validated["citations"]
+    ]
+    structured_notes = (
+        [
+            {
+                **dict(note),
+                **{
+                    key: _replace_citation_markers(str(note.get(key) or ""), citation_aliases)
+                    for key in ("observation", "why_it_matters", "follow_up")
+                },
+            }
+            for note in proposal.get("audit_notes") or []
+            if isinstance(note, Mapping)
+        ]
+        if isinstance(proposal.get("audit_notes"), list)
+        else None
+    )
     return {
-        "chunk_id": str(chunk.get("id") or ""),
+        "chunk_id": chunk_id,
         "document_id": str(document.get("document_id") or ""),
         "pages": [int(page) for page in chunk.get("pages") or []],
         "modality": "text",
         "analysis_profile": "voucher",
         "derived_text_markdown": "",
-        "summary_markdown": validated["summary_markdown"],
-        "audit_notes_markdown": validated["audit_notes_markdown"],
-        "citations": validated["citations"],
+        "summary_markdown": "",
+        "audit_notes_markdown": _replace_citation_markers(
+            validated["audit_notes_markdown"], citation_aliases
+        ),
+        "audit_notes": structured_notes,
+        "citations": citations,
         "registry": reference.to_dict(),
         "record_fragments": fragments,
     }
@@ -1785,8 +1986,8 @@ def run_voucher_worker(
         "identifier, field, and citation from your previous submission that no "
         "point names — a repair that also drops correct evidence is a worse "
         "answer, not a safer one. Where a fact has no allowed field on the "
-        "record kind you selected, move it into the cited narrative rather than "
-        "substituting an unrelated field. `record_kind` is the full namespaced "
+        "record kind you selected, omit it rather than substituting an unrelated "
+        "field. `record_kind` is the full namespaced "
         "ID from the descriptors, and every value's `citation` belongs inside "
         "its `value` envelope, never beside it."
     )
@@ -2191,7 +2392,7 @@ VISUAL_WORKER = WorkerDefinition(
 VOUCHER_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="documents.analysis_voucher.response",
     schema_hash=_sha256_text(
-        "document-voucher-response:v3:structured-narrative-registry-record-fragments"
+        "document-voucher-response:v4:structured-notes-registry-record-fragments"
     ),
     validator=_voucher_response_schema,
 )
@@ -2280,6 +2481,8 @@ __all__ = [
     "run_reduction_worker",
     "run_visual_worker",
     "run_voucher_worker",
+    "merge_voucher_audit_notes",
+    "render_voucher_audit_notes",
     "validate_chunk_proposal",
     "validate_reduction_proposal",
     "validate_visual_proposal",

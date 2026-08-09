@@ -139,6 +139,9 @@ def _validated_analysis(
             or ""
         ).strip(),
         "summary_markdown": summary,
+        "summary_origin": str(
+            request.proposal.get("summary_origin") or "model"
+        ),
         "audit_notes_markdown": notes,
         "citations": [
             _plain_json(citation)
@@ -173,6 +176,10 @@ def _validated_analysis(
         ),
     }
     if payload["analysis_profile"] == "voucher":
+        if payload["summary_origin"] != "structured_evidence":
+            raise WorkspaceError(
+                "Voucher summaries must be derived from structured evidence."
+            )
         try:
             reduction = cycle_vouching.validate_evidence_reduction(
                 {

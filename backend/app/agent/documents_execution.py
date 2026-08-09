@@ -81,6 +81,7 @@ from .workers.documents import (
     REDUCTION_WORKER_ID,
     VISUAL_WORKER_ID,
     VOUCHER_WORKER_ID,
+    merge_voucher_audit_notes,
 )
 
 # Text-modality map profiles, by unit kind. A voucher chunk reads exactly what a
@@ -665,7 +666,7 @@ class DocumentWorkflowExecution(BaseRunner):
             re-persisted before the executor sees it, so a resume commits exactly
             what was accepted.
             """
-            return {
+            completed = {
                 **dict(proposal),
                 "coverage": coverage,
                 "generation_profiles": self._generation_profiles(analyses),
@@ -675,11 +676,21 @@ class DocumentWorkflowExecution(BaseRunner):
                 "vision_used": any(
                     item.get("modality") == "image" for item in analyses
                 ),
-                # The structured half of a voucher analysis is reduced here,
-                # deterministically and only after every chunk proposal settles.
-                # The narrative half is still reduced by the worker above.
-                **self._cycle_evidence(document_id, analyses),
+                # Voucher evidence is reduced here deterministically and only
+                # after every chunk proposal settles. Its notes and summary are
+                # also consolidated locally below.
             }
+            cycle_evidence = self._cycle_evidence(document_id, analyses)
+            if cycle_evidence:
+                completed.update(cycle_evidence)
+                completed.update(
+                    summary_markdown=document_analysis.render_voucher_summary(
+                        cycle_evidence
+                    ),
+                    summary_origin="structured_evidence",
+                    audit_notes_markdown=merge_voucher_audit_notes(analyses),
+                )
+            return completed
 
         def on_committed(_stage, _unit, outcome) -> DeterministicUnitResult:
             self.ws = target.workspace
@@ -724,6 +735,37 @@ class DocumentWorkflowExecution(BaseRunner):
                 unit, request, target, accept(analyses[0]), on_committed
             )
 
+        if all(item.get("analysis_profile") == "voucher" for item in analyses):
+            # Voucher facts are already structured and the registry reducer is
+            # deterministic. Consolidate their notes and render their summary
+            # locally instead of paying for a second model call that would only
+            # paraphrase the same evidence.
+            proposal = {
+                "analysis_profile": "voucher",
+                "derived_text_markdown": "\n\n".join(
+                    str(item.get("derived_text_markdown") or "").strip()
+                    for item in analyses
+                    if str(item.get("derived_text_markdown") or "").strip()
+                ),
+                "summary_markdown": "",
+                "audit_notes_markdown": "",
+                "citations": [
+                    dict(citation)
+                    for item in analyses
+                    for citation in item.get("citations") or []
+                    if isinstance(citation, dict)
+                ],
+                "chunk_ids": [str(item.get("chunk_id") or "") for item in analyses],
+            }
+            return self._commit_reduction(
+                unit,
+                request,
+                target,
+                accept(proposal),
+                on_committed,
+                origin="voucher_structured_reduction",
+            )
+
         return BoundUnitPipeline(
             request=request,
             context_provider=context_provider,
@@ -743,6 +785,8 @@ class DocumentWorkflowExecution(BaseRunner):
         target: DocumentAnalysisExecutorTarget,
         proposal: dict,
         on_committed,
+        *,
+        origin: str = "single_chunk_reduction",
     ) -> DeterministicUnitResult:
         """Commit a locally derived reduction through the shared pipeline."""
 
@@ -762,7 +806,7 @@ class DocumentWorkflowExecution(BaseRunner):
             request,
             proposal=proposal,
             target=target,
-            origin="single_chunk_reduction",
+            origin=origin,
             on_proposal_persisted=record("proposal_sidecar"),
             on_receipt_persisted=record("receipt_sidecar"),
         )
@@ -787,7 +831,16 @@ class DocumentWorkflowExecution(BaseRunner):
             except WorkspaceError:
                 payload = None
             proposal = (payload or {}).get("proposal")
-            if not isinstance(proposal, dict) or not proposal.get("summary_markdown"):
+            voucher_ready = (
+                isinstance(proposal, dict)
+                and proposal.get("analysis_profile") == "voucher"
+                and bool(proposal.get("audit_notes_markdown"))
+                and bool(proposal.get("registry"))
+                and "record_fragments" in proposal
+            )
+            if not isinstance(proposal, dict) or not (
+                proposal.get("summary_markdown") or voucher_ready
+            ):
                 missing.append(chunk)
                 continue
             analyses.append(dict(proposal))

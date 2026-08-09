@@ -283,7 +283,8 @@ def analysis_unit_specs(
     text_chunks = chunk_specs(workspace, document_id, scope)
     # Which profile a text chunk is mapped under is a property of the document,
     # not of the chunk: transaction evidence goes to the voucher worker, which
-    # returns structured fields alongside the same narrative pair.
+    # returns structured fields and audit notes; its summary is rendered locally
+    # after deterministic record reduction.
     text_kind = (
         "document_voucher_analysis"
         if _voucher_document(document)

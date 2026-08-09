@@ -1049,9 +1049,111 @@ def test_voucher_workflow_persists_registry_backed_reduced_records(monkeypatch):
     assert analysis["records"][0]["record_kind"] == "procure_to_pay.purchase_order"
     assert analysis["records"][0]["identifiers"][0]["value"]["value"] == "po-2025-001"
     assert analysis["records"][0]["fields"][0]["value"]["value"] == 4800
+    assert analysis["summary_markdown"].startswith("## Structured voucher summary")
+    assert analysis["summary_origin"] == "structured_evidence"
+    assert "Purchase order" in analysis["summary_markdown"]
+    assert "PO-2025-001" in analysis["summary_markdown"]
+    assert "Purchase order evidence" not in analysis["summary_markdown"]
     assert document_analysis.registry_evidence_records(
         workspaces.load_workspace(ws.id), reference
     )[0]["record_id"] == analysis["records"][0]["record_id"]
+    detail = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )
+    with pytest.raises(
+        workspaces.WorkspaceError,
+        match="derived from structured evidence",
+    ):
+        document_analysis.patch_review(
+            workspaces.load_workspace(ws.id),
+            voucher["id"],
+            {
+                "review_revision": detail["review_revision"],
+                "summary_markdown": "Auditor-authored replacement",
+            },
+        )
+
+
+def test_multi_chunk_voucher_reduces_and_summarizes_without_a_reduction_call(
+    monkeypatch,
+):
+    """Structured voucher chunks need no second model-authored narrative."""
+
+    reference = cycle_vouching.DEFAULT_REGISTRY.reference("procure_to_pay").to_dict()
+    repeated_record = (
+        "GOODS RECEIPT NOTE\nGRN2024004\n"
+        "Purchase order P02024004\nReceipt status Received\n"
+    )
+    source_bytes = (repeated_record * 700).encode()
+
+    def voucher_response(user: str) -> dict:
+        source = _source_of(user)
+        page = int(user.split("\nPAGE: ", 1)[1].splitlines()[0])
+        citations = [
+            {"id": "C1", "page": page, "excerpt": "GOODS RECEIPT NOTE"},
+            {"id": "C2", "page": page, "excerpt": "GRN2024004"},
+            {
+                "id": "C3",
+                "page": page,
+                "excerpt": "Purchase order P02024004",
+            },
+            {"id": "C4", "page": page, "excerpt": "Receipt status Received"},
+        ]
+        assert all(item["excerpt"] in source for item in citations)
+        return {
+            "audit_notes": [],
+            "citations": citations,
+            "registry": reference,
+            "record_fragments": [
+                {
+                    "record_kind": "procure_to_pay.goods_receipt",
+                    "classification_evidence": ["C1"],
+                    "identifiers": [
+                        {
+                            "kind": "procure_to_pay.goods_receipt_number",
+                            "value": _value("GRN2024004", "C2"),
+                        },
+                        {
+                            "kind": "procure_to_pay.purchase_order_number",
+                            "value": _value("P02024004", "C3"),
+                        },
+                    ],
+                    "fields": [
+                        {
+                            "group": "statuses",
+                            "kind": "status",
+                            "attribute": "value",
+                            "value": _value("Received", "C4"),
+                        }
+                    ],
+                }
+            ],
+        }
+
+    ws, voucher = _voucher_workspace(
+        "Multi-chunk voucher local reduction", source_bytes, "GRN2024004.txt"
+    )
+    fake = _fake_model(monkeypatch, {VOUCHER_TAG: voucher_response})
+    finished = _voucher_run(ws, voucher)
+    analysis = document_analysis.load_analysis(
+        workspaces.load_workspace(ws.id), voucher["id"]
+    )["effective"]
+
+    assert finished["status"] == "completed"
+    assert len(fake.calls) > 1
+    assert {call["tag"] for call in fake.calls} == {VOUCHER_TAG}
+    assert len(analysis["records"]) == 1
+    assert analysis["summary_markdown"].startswith("## Structured voucher summary")
+    assert "Goods receipt" in analysis["summary_markdown"]
+    assert analysis["audit_notes_markdown"].startswith("## Audit notes")
+    citation_ids = [item["id"] for item in analysis["citations"]]
+    assert len(citation_ids) == len(set(citation_ids))
+    assert all(value.startswith("AC-") for value in citation_ids)
+    assert {
+        citation
+        for identifier in analysis["records"][0]["identifiers"]
+        for citation in identifier["value"]["citation"]
+    } <= set(citation_ids)
 
 
 GRN_SOURCE = (
@@ -1159,19 +1261,20 @@ def test_the_submission_schema_states_the_vocabulary_the_registry_declares():
     properties = tool["function"]["parameters"]["properties"]
     fragment = properties["record_fragments"]["items"]["properties"]
 
-    # Narratives are split into bounded semantic fragments. This avoids the
-    # 1,024-character per-string boundary observed on tool-call providers while
-    # allowing the locally assembled Markdown to be arbitrarily longer.
+    # The provider supplies only structured notes and evidence. The summary is
+    # rendered locally from the reduced records and is absent from this schema.
     assert "summary_markdown" not in properties
+    assert "summary_sections" not in properties
+    assert "summary_sections" not in document_workers.VOUCHER_SYSTEM
     assert "audit_notes_markdown" not in properties
-    assert tool["function"]["parameters"]["required"][:2] == [
-        "summary_sections",
+    assert tool["function"]["parameters"]["required"] == [
         "audit_notes",
+        "citations",
+        "registry",
+        "record_fragments",
     ]
-    paragraph = properties["summary_sections"]["items"]["properties"][
-        "paragraphs"
-    ]["items"]
-    assert paragraph["maxLength"] < 1024
+    observation = properties["audit_notes"]["items"]["properties"]["observation"]
+    assert observation["maxLength"] < 1024
 
     assert "procure_to_pay.goods_receipt" in fragment["record_kind"]["enum"]
     assert "goods_receipt" not in fragment["record_kind"]["enum"]
@@ -1193,27 +1296,24 @@ def test_the_submission_schema_states_the_vocabulary_the_registry_declares():
     assert field["properties"]["value"]["additionalProperties"] is False
 
 
-def test_voucher_structured_narrative_assembles_long_markdown_with_block_breaks():
-    paragraph_one = "A" * 650 + " [C1]"
-    paragraph_two = "B" * 650 + " [C1]"
+def test_voucher_contract_assembles_only_structured_audit_notes():
+    observation = "A" * 650 + " [C1]"
+    rationale = "B" * 650 + " [C1]"
     payload = {
+        # Ignored compatibility input: voucher summaries are no longer accepted
+        # from the provider even if an old test double sends one.
         "summary_sections": [
             {
-                "heading": "Purpose and applicability",
-                "paragraphs": [paragraph_one],
+                "heading": "Ignored",
+                "paragraphs": ["This is not the persisted summary. [C1]"],
                 "bullets": [],
-            },
-            {
-                "heading": "Requirements",
-                "paragraphs": [paragraph_two],
-                "bullets": ["Approval is required before commitment. [C1]"],
-            },
+            }
         ],
         "audit_notes": [
             {
                 "title": "Approval evidence",
-                "observation": "The procedure defines an approval requirement. [C1]",
-                "why_it_matters": "The authority and timing should be unambiguous. [C1]",
+                "observation": observation,
+                "why_it_matters": rationale,
                 "follow_up": "Obtain the referenced approval matrix. [C1]",
             }
         ],
@@ -1224,28 +1324,24 @@ def test_voucher_structured_narrative_assembles_long_markdown_with_block_breaks(
 
     proposal = document_workers._voucher_response_schema(json.dumps(payload))
 
-    assert len(proposal["summary_markdown"]) > 1024
-    assert proposal["summary_markdown"].startswith(
-        "## Purpose and applicability\n\n"
-    )
-    assert "\n\n## Requirements\n\n" in proposal["summary_markdown"]
-    assert "\n- Approval is required" in proposal["summary_markdown"]
+    assert proposal["summary_markdown"] == ""
+    assert len(proposal["audit_notes_markdown"]) > 1024
     assert proposal["audit_notes_markdown"].startswith(
         "## Audit notes\n\n### 1. Approval evidence\n\n"
     )
-    assert proposal["_narrative_contract"] == "structured_blocks_v1"
+    assert proposal["_narrative_contract"] == "structured_voucher_notes_v1"
 
 
-def test_voucher_structured_narrative_rejects_dangling_citation_markers():
+def test_voucher_audit_notes_reject_dangling_citation_markers():
     payload = {
-        "summary_sections": [
+        "audit_notes": [
             {
-                "heading": "Summary",
-                "paragraphs": ["Approval is required. [C2]"],
-                "bullets": [],
+                "title": "Approval evidence",
+                "observation": "Approval is missing. [C2]",
+                "why_it_matters": "Authorization cannot be established. [C2]",
+                "follow_up": "Obtain the approval. [C2]",
             }
         ],
-        "audit_notes": [],
         "citations": [{"id": "C1", "page": 1, "excerpt": "approval"}],
         "registry": {},
         "record_fragments": [],
@@ -1347,7 +1443,7 @@ def test_a_near_miss_shape_is_repaired_locally_rather_than_sent_back(monkeypatch
     quantity = next(item for item in record["fields"] if item["kind"] == "total")
     assert quantity["value"]["value"] == 25
     assert quantity["value"]["citation"] == [
-        _cited(GRN_SOURCE.decode(), "Quantity received")
+        f"AC-0001-{_cited(GRN_SOURCE.decode(), 'Quantity received')}"
     ]
 
 

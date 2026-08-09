@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 from . import cycle_vouching, embedding
@@ -15,6 +16,142 @@ ANALYSIS_SCHEMA_VERSION = "5"
 ANALYSIS_PROMPT_VERSION = "document-analysis-v6-cycle-record-fragments"
 STATUS_SCHEMA_VERSION = 1
 ANALYSIS_CHUNK_CHARACTERS = 24_000
+
+
+def _markdown_text(value: object) -> str:
+    text = " ".join(str(value if value is not None else "").split())
+    for token in ("\\", "`", "*", "_", "[", "]", "<", ">"):
+        text = text.replace(token, f"\\{token}")
+    return text or "Not stated"
+
+
+def _evidence_markers(value: object) -> str:
+    supplied = value if isinstance(value, list) else [value]
+    identifiers: list[str] = []
+    for raw in supplied:
+        identifier = (
+            str(raw.get("id") or "") if isinstance(raw, Mapping) else str(raw or "")
+        )
+        if identifier and identifier not in identifiers:
+            identifiers.append(identifier)
+    return " ".join(f"[{identifier}]" for identifier in identifiers)
+
+
+def _evidence_value(envelope: Mapping[str, object]) -> str:
+    raw = envelope.get("raw_value")
+    if raw in (None, ""):
+        raw = envelope.get("value")
+    text = _markdown_text(raw)
+    if envelope.get("normalization_status") == "invalid":
+        text += " *(invalid source value)*"
+    markers = _evidence_markers(envelope.get("citation"))
+    return f"{text} {markers}".rstrip()
+
+
+def render_voucher_summary(reduction: Mapping[str, object]) -> str:
+    """Render a voucher summary solely from validated reduced evidence."""
+
+    registry = cycle_vouching.DEFAULT_REGISTRY
+    reference = registry.validate_reference(dict(reduction.get("registry") or {}))
+    lines = [
+        "## Structured voucher summary",
+        "",
+        "This summary is generated locally from validated registry-backed evidence.",
+    ]
+    records = [
+        dict(item)
+        for item in reduction.get("records") or []
+        if isinstance(item, Mapping)
+    ]
+    if not records:
+        lines.extend(
+            [
+                "",
+                "No complete registry-backed transaction record was identified in "
+                "the analyzed content.",
+            ]
+        )
+    for record in records:
+        record_definition = registry.record_kind(
+            reference.pack_id, str(record.get("record_kind") or "")
+        )
+        primary = dict(record.get("primary_identifier") or {})
+        primary_fact = next(
+            (
+                dict(item)
+                for item in record.get("identifiers") or []
+                if isinstance(item, Mapping)
+                and str(item.get("kind") or "") == str(primary.get("kind") or "")
+            ),
+            {},
+        )
+        primary_value = dict(primary_fact.get("value") or {})
+        heading_value = (
+            _evidence_value(primary_value)
+            if primary_value
+            else _markdown_text(primary.get("normalized_value"))
+        )
+        lines.extend(["", f"### {record_definition.label} — {heading_value}"])
+
+        identifiers = []
+        for item in record.get("identifiers") or []:
+            if not isinstance(item, Mapping):
+                continue
+            definition = registry.identifier_kind(
+                reference.pack_id, str(item.get("kind") or "")
+            )
+            identifiers.append(
+                f"{definition.label}: {_evidence_value(dict(item.get('value') or {}))}"
+            )
+        if identifiers:
+            lines.append("- Identifiers: " + "; ".join(identifiers))
+
+        grouped: dict[tuple[str, str, int], list[Mapping[str, object]]] = {}
+        entries_by_kind: dict[tuple[str, str], set[int]] = {}
+        for item in record.get("fields") or []:
+            if not isinstance(item, Mapping):
+                continue
+            selector = (str(item.get("group") or ""), str(item.get("kind") or ""))
+            entry = int(item.get("entry") or 0)
+            grouped.setdefault((*selector, entry), []).append(item)
+            entries_by_kind.setdefault(selector, set()).add(entry)
+        for (group, kind, entry), facts in sorted(grouped.items()):
+            definition = registry.field_kind(reference.pack_id, group, kind)
+            values = [
+                f"{str(item.get('attribute') or '').replace('_', ' ')}: "
+                f"{_evidence_value(dict(item.get('value') or {}))}"
+                for item in facts
+            ]
+            occurrence = (
+                f" #{entry + 1}" if len(entries_by_kind[(group, kind)]) > 1 else ""
+            )
+            lines.append(f"- {definition.label}{occurrence}: " + "; ".join(values))
+
+    unresolved = len(list(reduction.get("unresolved_fragments") or []))
+    conflicts = len(list(reduction.get("conflicts") or []))
+    if unresolved or conflicts:
+        lines.extend(["", "## Evidence requiring review"])
+        if unresolved:
+            lines.append(
+                f"- {unresolved} fragment{'s' if unresolved != 1 else ''} could not "
+                "be assigned to a complete record."
+            )
+        if conflicts:
+            lines.append(
+                f"- {conflicts} record conflict{'s' if conflicts != 1 else ''} "
+                "require auditor review."
+            )
+    return "\n".join(lines).strip()
+
+
+def structured_summary(artifact: Mapping[str, object] | None) -> bool:
+    """Whether this artifact's summary is a projection, not authored text."""
+
+    return bool(
+        artifact
+        and artifact.get("analysis_profile") == "voucher"
+        and artifact.get("summary_origin") == "structured_evidence"
+    )
 
 
 class AnalysisConflict(WorkspaceError):
@@ -136,6 +273,7 @@ def analysis_content_sha1(payload: dict) -> str:
     """
     material = {
         "summary_markdown": str(payload.get("summary_markdown") or "").strip(),
+        "summary_origin": str(payload.get("summary_origin") or "model"),
         "audit_notes_markdown": str(payload.get("audit_notes_markdown") or "").strip(),
         "derived_text_markdown": str(
             payload.get("derived_text_markdown") or ""
@@ -200,6 +338,7 @@ _GENERATED_PROJECTION_FIELDS = (
     "content_sha1",
     "agent_run_id",
     "summary_markdown",
+    "summary_origin",
     "audit_notes_markdown",
     "derived_text_markdown",
     "vision_used",
@@ -299,7 +438,13 @@ def _authoritative_status(workspace: Workspace, document: dict) -> dict:
         analysis_run_state=index.get("run_state") or "idle",
         analysis_updated_at=index.get("updated_at"),
         analysis_review_state=review.get("review_state") or "not_applicable",
-        has_analysis_overrides=bool(review.get("summary_override") is not None or review.get("audit_notes_override") is not None),
+        has_analysis_overrides=bool(
+            review.get("audit_notes_override") is not None
+            or (
+                not structured_summary(active)
+                and review.get("summary_override") is not None
+            )
+        ),
         candidate_analysis_id=index.get("candidate_analysis_id"),
         analysis_resumable_run_id=index.get("resumable_run_id"),
     )
@@ -513,6 +658,7 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
             # than repeated into a second artifact.
             "agent_run_id": agent_run_id, "unit_id": unit_id,
             "summary_markdown": str(output.get("summary_markdown") or "").strip(),
+            "summary_origin": str(output.get("summary_origin") or "model"),
             "audit_notes_markdown": str(output.get("audit_notes_markdown") or "").strip(),
             "citations": list(output.get("citations") or []),
             # Retained as the generic field surface used by simple/non-cycle
@@ -531,7 +677,13 @@ def persist_analysis(workspace: Workspace, document: dict, extracted: dict, outp
         write_json_atomic(_generated_path(workspace, document_id, analysis_id), artifact)
         if action == "refresh" and index.get("active_analysis_id"):
             index["candidate_analysis_id"] = analysis_id
-        elif index.get("active_analysis_id") and (review.get("summary_override") is not None or review.get("audit_notes_override") is not None):
+        elif index.get("active_analysis_id") and (
+            review.get("audit_notes_override") is not None
+            or (
+                not structured_summary(artifact)
+                and review.get("summary_override") is not None
+            )
+        ):
             index["candidate_analysis_id"] = analysis_id
         else:
             index["active_analysis_id"] = analysis_id
@@ -562,9 +714,23 @@ def load_analysis(workspace: Workspace, document_id: str, *, document: dict | No
     candidate = _load_generated(workspace, document_id, index.get("candidate_analysis_id"))
     effective = None
     if generated:
-        effective = {**generated,
-                     "summary_markdown": review.get("summary_override") if review.get("summary_override") is not None else generated.get("summary_markdown", ""),
-                     "audit_notes_markdown": review.get("audit_notes_override") if review.get("audit_notes_override") is not None else generated.get("audit_notes_markdown", "")}
+        effective = {
+            **generated,
+            # Voucher summaries are a deterministic projection of structured
+            # evidence and therefore have no auditor-authored override channel.
+            "summary_markdown": (
+                generated.get("summary_markdown", "")
+                if structured_summary(generated)
+                else review.get("summary_override")
+                if review.get("summary_override") is not None
+                else generated.get("summary_markdown", "")
+            ),
+            "audit_notes_markdown": (
+                review.get("audit_notes_override")
+                if review.get("audit_notes_override") is not None
+                else generated.get("audit_notes_markdown", "")
+            ),
+        }
         if generated.get("record_fragments"):
             try:
                 reduction = cycle_vouching.reduce_record_fragments(
@@ -577,6 +743,11 @@ def load_analysis(workspace: Workspace, document_id: str, *, document: dict | No
                     records=reduction["records"],
                     unresolved_fragments=reduction["unresolved_fragments"],
                     conflicts=reduction["conflicts"],
+                    **(
+                        {"summary_markdown": render_voucher_summary(reduction)}
+                        if structured_summary(generated)
+                        else {}
+                    ),
                     evidence_content_sha256=hashlib.sha256(
                         json.dumps(
                             reduction,
@@ -608,6 +779,18 @@ def patch_review(workspace: Workspace, document_id: str, payload: dict) -> dict:
         review = load_review(workspace, document_id)
         if int(payload.get("review_revision", -1)) != int(review["revision"]):
             raise AnalysisConflict("Document analysis review changed; reload it before saving.")
+        active = _load_generated(
+            workspace,
+            document_id,
+            load_index(workspace, document_id).get("active_analysis_id"),
+        ) or {}
+        if (
+            structured_summary(active)
+            and payload.get("summary_markdown") is not None
+        ):
+            raise WorkspaceError(
+                "Voucher summaries are derived from structured evidence and cannot be edited."
+            )
         for request_key, storage_key in (("summary_markdown", "summary_override"), ("audit_notes_markdown", "audit_notes_override")):
             if request_key in payload:
                 value = payload[request_key]
@@ -616,11 +799,6 @@ def patch_review(workspace: Workspace, document_id: str, payload: dict) -> dict:
             overrides = payload.get("fragment_overrides")
             if not isinstance(overrides, list):
                 raise WorkspaceError("fragment_overrides must be an array.")
-            active = _load_generated(
-                workspace,
-                document_id,
-                load_index(workspace, document_id).get("active_analysis_id"),
-            ) or {}
             fragments = active.get("record_fragments") or []
             if not fragments and overrides:
                 raise WorkspaceError(
@@ -732,5 +910,8 @@ def compact_artifact(workspace: Workspace, document_id: str) -> dict | None:
             ),
             "citations": effective.get("citations", []), "coverage": effective.get("coverage", {}),
             "has_overrides": analysis["status"]["has_analysis_overrides"],
-            "summary_overridden": analysis["review"].get("summary_override") is not None,
+            "summary_overridden": bool(
+                not structured_summary(effective)
+                and analysis["review"].get("summary_override") is not None
+            ),
             "audit_notes_overridden": analysis["review"].get("audit_notes_override") is not None}

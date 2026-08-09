@@ -113,6 +113,7 @@ export interface GeneratedDocumentAnalysis {
   model: string | null
   generated_at: string
   summary_markdown: string
+  summary_origin?: 'model' | 'structured_evidence'
   audit_notes_markdown: string
   /** Profile-specific structured extraction, such as voucher IDs and approvals. */
   fields?: Record<string, unknown>
