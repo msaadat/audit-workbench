@@ -31,7 +31,6 @@ def _linked_tests(
     )
     return sorted(tests, key=lambda item: str(item.get("id") or ""))
 
-REQUIRED_FINDING_FIELDS = ("condition", "criteria", "cause", "effect", "recommendation")
 MODEL_CONTEXT_LIMIT = 30_000
 _PLANNING_FIELDS = ("objective", "entity", "period", "scope", "materiality")
 
@@ -59,10 +58,9 @@ def _safe_finding(item: dict) -> dict:
     return {
         key: item.get(key)
         for key in (
-            "id", "title", "severity", "condition", "criteria", "cause", "effect",
-            "recommendation", "management_response", "rcm_refs",
-            "test_refs", "execution_refs", "cause_pending",
-            "severity_rationale", "auditor_confirmed", "source",
+            "id", "title", "severity", "narrative", "management_response",
+            "rcm_refs", "test_refs", "execution_refs", "cause_pending",
+            "auditor_confirmed", "source",
         )
     } | {
         "evidence": [
@@ -334,6 +332,25 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
     }
 
 
+def _finding_narrative(item: dict) -> str:
+    """One finding's narrative, placed under its report heading unchanged.
+
+    The narrative is authored as final report prose, so it is copied rather than
+    reformatted. Only its heading depth moves: a finding sits at ``###`` in the
+    report, so the narrative's own ``##`` sections are demoted to ``####`` to
+    keep the document's outline intact. Authoring comments never travel.
+    """
+    body = templates_store.strip_guidance(item.get("narrative") or "").strip()
+    if not body:
+        return "The finding narrative has not been completed."
+    return re.sub(
+        r"^(#{1,4})(?=\s)",
+        lambda match: "#" * min(len(match.group(1)) + 2, 6),
+        body,
+        flags=re.MULTILINE,
+    )
+
+
 def _finding_link(item: dict) -> str:
     return f"[Finding {item['id']}](?tab=findings&finding={quote(str(item['id']))})"
 
@@ -475,11 +492,7 @@ def deterministic_markdown(workspace: Workspace, context: dict | None = None) ->
                 f"### {item.get('title') or item['id']}", "",
                 f"**Severity:** {item.get('severity', 'medium').title()}", "",
                 f"**Reference:** {_finding_link(item)}", "",
-                f"**Condition:** {item.get('condition') or 'Not stated'}", "",
-                f"**Criteria:** {item.get('criteria') or 'Not stated'}", "",
-                f"**Cause:** {item.get('cause') or 'Not stated'}", "",
-                f"**Effect:** {item.get('effect') or 'Not stated'}", "",
-                f"**Recommendation:** {item.get('recommendation') or 'Not stated'}", "",
+                _finding_narrative(item), "",
             ]
         )
     lines.extend(["## Management responses", ""])
@@ -543,7 +556,9 @@ def _generate_with_model(workspace: Workspace, template: str, context: dict, *, 
         "Use only the supplied structured context, retain clickable finding references, "
         "state limitations, do not invent evidence or issue an audit opinion, and return Markdown only. "
         "Every numeric statement must copy the supplied statistics exactly; statistics.risk_distribution "
-        "is the authoritative RCM rating count."
+        "is the authoritative RCM rating count. Each finding's `narrative` is auditor-approved report "
+        "text: reproduce it verbatim under that finding's title, demoting its `##` headings to `####`, "
+        "and never paraphrase, summarize, reorder, or drop one of its sections."
     )
     if len(serialized) <= MODEL_CONTEXT_LIMIT:
         return _model_turn(workspace, base, f"Template:\n{template}\n\nReport context:\n{serialized}", run_id=run_id), False
@@ -878,7 +893,7 @@ def markdown_to_html(markdown: str) -> str:
             continue
         if list_open:
             output.append("</ul>"); list_open = False
-        heading = re.match(r"^(#{1,4})\s+(.+)$", line)
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
         if heading:
             level = len(heading.group(1))
             output.append(f"<h{level}>{_inline_html(heading.group(2))}</h{level}>")

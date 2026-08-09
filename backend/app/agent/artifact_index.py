@@ -65,7 +65,7 @@ def build(workspace: Workspace) -> dict:
                                   linked=[f"doctest:{test['id']}"]))
     for item in workspace.findings:
         entries.append(_entry("finding", item["id"], item.get("title") or item["id"], item,
-                              body=" ".join(str(item.get(k) or "") for k in ("condition", "criteria", "cause", "effect", "recommendation")),
+                              body=str(item.get("narrative") or ""),
                               linked=[
                                   *[f"rcm:{v}" for v in item.get("rcm_refs") or []],
                                   *[str(v) for v in item.get("test_refs") or []],

@@ -117,6 +117,24 @@ def test_templates_default_override_and_reset():
     assert reset["source"] == "default"
 
 
+def test_template_sections_are_parsed_without_their_guidance():
+    markdown = (
+        "<!-- A preamble comment.\n\n## Not a heading, only guidance prose. -->\n\n"
+        "# Finding\n\n"
+        "## Condition\n\n<!-- section: What was found. -->\n\nObserved text.\n\n"
+        "##   Root Cause  \n\n"
+    )
+
+    # Comments are stripped before headings are read, so guidance that happens
+    # to contain a heading-shaped line cannot invent a section.
+    assert templates_store.sections(markdown) == ["Condition", "Root Cause"]
+    assert templates_store.section_bodies(markdown) == {
+        "condition": "Observed text.",
+        "root cause": "",
+    }
+    assert templates_store.scaffold(markdown) == "## Condition\n\n## Root Cause\n"
+
+
 def test_planning_crud_and_user_touch():
     ws = workspaces.create_workspace("Planning CRUD")
     planning = ws.update_planning({"context": {"entity": "Example Co"}, "apm_markdown": "# Draft"})

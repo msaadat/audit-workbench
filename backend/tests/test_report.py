@@ -3,7 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import doc_tests, findings, llm, report, workspaces
+from app import doc_tests, findings, llm, report, templates_store, workspaces
 from app.agent import store
 from app.main import create_app
 
@@ -40,22 +40,39 @@ def linked_workspace(workspace_with_data):
     return ws, rcm, procedure, execution, analysis, anchor
 
 
+COMPLETE_NARRATIVE = """## Condition
+
+Invoice 1006 appears twice.
+
+## Criteria
+
+Each invoice should be paid once.
+
+## Root Cause
+
+No duplicate check at invoice entry.
+
+## Risk
+
+Financial loss through duplicate payment.
+
+## Recommendation
+
+Configure and monitor a duplicate-payment control.
+"""
+
+
 def complete_finding_payload(rcm, procedure, execution, anchor):
     return {
         "title": "Duplicate invoices were processed",
         "severity": "high",
-        "condition": "Invoice 1006 appears twice.",
-        "criteria": "Each invoice should be paid once.",
-        "cause": "The duplicate check did not identify the repeated invoice.",
-        "effect": "Duplicate payment risk is elevated.",
-        "recommendation": "Configure and monitor a duplicate-payment control.",
+        "narrative": COMPLETE_NARRATIVE,
         "management_response": "Management will update the control.",
         "rcm_refs": [rcm["id"]],
         "procedure_refs": [procedure["id"]],
         "test_refs": [execution["id"]],
         "execution_refs": [f"doctest:{execution['id']}"],
         "evidence_refs": [anchor],
-        "severity_rationale": "A duplicate payment could cause a material financial loss.",
         "auditor_confirmed": True,
     }
 
@@ -103,7 +120,11 @@ def test_agent_finding_promotion_is_explicit_typed_and_idempotent(workspace_with
     assert promoted["id"] == again["id"]
     assert promoted["source"] == "promoted"
     assert "status" not in promoted
-    assert promoted["condition"] == "A duplicate invoice was observed."
+    # The run's statement seeds the first template section; the rest stay open
+    # for the auditor, so the promotion is a draft rather than a formal finding.
+    assert promoted["narrative"].startswith("## Condition\n\nA duplicate invoice was observed.")
+    assert "## Recommendation" in promoted["narrative"]
+    assert "narrative section not completed: Recommendation" in findings.support_issues(ws, promoted)
     assert promoted["evidence_refs"][0]["source_kind"] == "analysis"
 
 
@@ -125,6 +146,122 @@ def test_finding_derives_typed_evidence_from_execution_reference(workspace_with_
         ws, "doctest", execution["id"]
     )["sha1"]
     assert findings.support_issues(ws, item) == []
+
+
+def test_a_new_finding_starts_from_the_template_scaffold(workspace_with_data):
+    ws = workspace_with_data
+
+    item = findings.add(ws, {"title": "Blank finding"})
+
+    # The auditor is handed the firm's own sections rather than an empty box,
+    # and an empty scaffold never passes the confirmation gate.
+    assert findings.template_sections(ws) == [
+        "Condition", "Criteria", "Root Cause", "Risk", "Recommendation",
+    ]
+    assert item["narrative"] == (
+        "## Condition\n\n## Criteria\n\n## Root Cause\n\n## Risk\n\n## Recommendation\n"
+    )
+    # Template guidance is authoring instruction, never finding content.
+    assert "<!--" not in item["narrative"]
+    assert "narrative section not completed: Condition" in findings.support_issues(ws, item)
+
+
+def test_the_finding_gate_follows_the_workspace_template(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    templates_store.put_template(
+        ws, "finding", "# Finding\n\n## Observation\n\n## Remedy\n"
+    )
+    payload = complete_finding_payload(rcm, procedure, execution, anchor)
+    payload["auditor_confirmed"] = False
+
+    item = findings.add(ws, payload)
+
+    # The shipped headings no longer exist for this firm, so a narrative written
+    # against them answers nothing the template asks for.
+    assert findings.support_issues(ws, item) == [
+        "narrative section not completed: Observation",
+        "narrative section not completed: Remedy",
+    ]
+    answered = findings.update(
+        ws, item["id"],
+        {"narrative": "## Observation\n\nOne duplicate.\n\n## Remedy\n\nBlock it.\n"},
+    )
+    assert findings.support_issues(ws, answered) == []
+
+
+def test_root_cause_is_the_only_section_an_auditor_may_defer(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    payload = complete_finding_payload(rcm, procedure, execution, anchor)
+    payload["auditor_confirmed"] = False
+    payload["narrative"] = COMPLETE_NARRATIVE.replace(
+        "## Root Cause\n\nNo duplicate check at invoice entry.", "## Root Cause"
+    ).replace("## Risk\n\nFinancial loss through duplicate payment.", "## Risk")
+
+    item = findings.add(ws, payload)
+
+    assert findings.support_issues(ws, item) == [
+        "narrative section not completed: Root Cause",
+        "narrative section not completed: Risk",
+    ]
+    deferred = findings.update(ws, item["id"], {"cause_pending": True})
+    assert findings.support_issues(ws, deferred) == [
+        "narrative section not completed: Risk"
+    ]
+
+
+def test_legacy_field_findings_migrate_into_one_narrative(workspace_with_data):
+    ws = workspace_with_data
+    ws.findings.append({
+        "id": "F-LEGACY",
+        "title": "Approvals were missing",
+        "severity": "high",
+        "condition": "Twelve payments had no approval.",
+        "criteria": "Payments require approval.",
+        "cause": "No system check.",
+        "effect": "Unauthorized disbursement.",
+        "recommendation": "Enforce approval before release.",
+        "severity_rationale": "Material to the payment population.",
+    })
+    ws.save()
+
+    migrated = workspaces.load_workspace(ws.id).findings[0]
+
+    assert migrated["narrative"] == (
+        "## Condition\n\nTwelve payments had no approval.\n\n"
+        "## Criteria\n\nPayments require approval.\n\n"
+        "## Root Cause\n\nNo system check.\n\n"
+        "## Risk\n\nUnauthorized disbursement.\n\n"
+        "## Recommendation\n\nEnforce approval before release.\n\n"
+        # Severity rationale is no longer a required section, but the prose an
+        # auditor already wrote is carried rather than dropped.
+        "## Severity rationale\n\nMaterial to the payment population."
+    )
+    assert not any(field in migrated for field in findings.LEGACY_NARRATIVE_FIELDS)
+
+
+def test_a_stale_caller_cannot_write_a_removed_narrative_field(workspace_with_data):
+    ws = workspace_with_data
+    with pytest.raises(workspaces.WorkspaceError, match="section of the finding narrative"):
+        findings.add(ws, {"title": "Legacy", "condition": "Something happened."})
+    item = findings.add(ws, {"title": "Legacy"})
+    with pytest.raises(workspaces.WorkspaceError, match="section of the finding narrative"):
+        findings.update(ws, item["id"], {"recommendation": "Do better."})
+
+
+def test_the_report_copies_a_finding_narrative_verbatim(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
+
+    markdown = report.deterministic_markdown(ws)
+
+    # The narrative is auditor-approved report text, so only its heading depth
+    # moves: a finding sits at `###`, its sections one level below.
+    assert "#### Condition\n\nInvoice 1006 appears twice." in markdown
+    assert "#### Root Cause\n\nNo duplicate check at invoice entry." in markdown
+    assert "#### Risk\n\nFinancial loss through duplicate payment." in markdown
+    assert "**Condition:**" not in markdown
+    assert "\n## Condition" not in markdown
+    assert "<h4>Condition</h4>" in report.markdown_to_html(markdown)
 
 
 def test_report_context_excludes_rows_and_document_excerpts(workspace_with_data):

@@ -1,4 +1,14 @@
-"""First-class audit findings with provenance and durable evidence links."""
+"""First-class audit findings with provenance and durable evidence links.
+
+A finding is a typed spine — severity, provenance, and the RCM/test/execution/
+evidence references that make it traceable — carrying one free-Markdown
+``narrative``. The narrative's shape is not defined here: it is defined by the
+workspace's ``finding`` template, whose ``##`` headings are the sections an
+auditor must complete before the finding can be confirmed for formal reporting.
+A firm that renames "Root Cause" or drops a section edits that template; no code
+here changes. The narrative is written as final report prose and is copied into
+the report unchanged.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +16,25 @@ import hashlib
 import json
 import uuid
 
-from . import cycle_vouching, doc_tests
+from . import cycle_vouching, doc_tests, templates_store
 from .agent import store as agent_store
 from .evidence import normalize_anchor, normalize_many
 from .workspaces import Workspace, WorkspaceError, slugify
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 SOURCES = ("agent", "manual", "promoted")
+
+# The narrative fields a finding carried before the template owned its shape.
+# Rejected on write so a stale caller fails loudly instead of having its prose
+# silently dropped; ``Workspace`` migrates stored records on load.
+LEGACY_NARRATIVE_FIELDS = (
+    "condition", "criteria", "cause", "effect", "recommendation",
+    "severity_rationale",
+)
+# The one section the product lets an auditor formally defer. ``cause_pending``
+# records that the evidence does not yet establish why the exception occurred,
+# which is a better answer than an asserted cause fieldwork cannot support.
+_CAUSE_SECTION_KEYS = frozenset({"cause", "root cause"})
 
 
 def _now(workspace: Workspace) -> str:
@@ -159,15 +181,58 @@ def _severity(value: object) -> str:
     return result
 
 
+def template_sections(workspace: Workspace) -> list[str]:
+    """The section headings the workspace's finding template requires."""
+    return templates_store.sections(
+        templates_store.get_template(workspace, "finding")["markdown"]
+    )
+
+
+def narrative_scaffold(workspace: Workspace, *, first_section: str = "") -> str:
+    """An empty narrative carrying the template's headings.
+
+    A new finding starts from the firm's own structure rather than from a blank
+    box, so the auditor edits report prose instead of inventing a shape. The
+    scaffold never satisfies the completeness gate: its sections are empty.
+    """
+    markdown = templates_store.scaffold(
+        templates_store.get_template(workspace, "finding")["markdown"]
+    )
+    body = str(first_section or "").strip()
+    if not body:
+        return markdown
+    headings = templates_store.sections(markdown)
+    if not headings:
+        return body + "\n"
+    return markdown.replace(f"## {headings[0]}", f"## {headings[0]}\n\n{body}", 1)
+
+
+def narrative_issues(workspace: Workspace, item: dict) -> list[str]:
+    """Sections of the finding template this narrative has not answered."""
+    narrative = str(item.get("narrative") or "")
+    headings = template_sections(workspace)
+    if not headings:
+        # A template with no sections declares no shape; the gate falls back to
+        # requiring that the finding says something at all.
+        return [] if templates_store.strip_guidance(narrative).strip() else [
+            "the finding narrative is empty"
+        ]
+    bodies = templates_store.section_bodies(narrative)
+    missing = [
+        heading
+        for heading in headings
+        if not bodies.get(templates_store.section_key(heading))
+        and not (
+            templates_store.section_key(heading) in _CAUSE_SECTION_KEYS
+            and item.get("cause_pending")
+        )
+    ]
+    return ["narrative section not completed: " + heading for heading in missing]
+
+
 def support_issues(workspace: Workspace, item: dict) -> list[str]:
     """Return deterministic blockers to treating a draft as a formal finding."""
-    issues = []
-    required = ("condition", "criteria", "effect", "recommendation", "severity_rationale")
-    missing = [field for field in required if not str(item.get(field) or "").strip()]
-    if not str(item.get("cause") or "").strip() and not item.get("cause_pending"):
-        missing.append("cause or cause_pending")
-    if missing:
-        issues.append("missing " + ", ".join(missing))
+    issues = narrative_issues(workspace, item)
     rcm_refs = {str(value) for value in item.get("rcm_refs") or []}
     test_refs = {str(value) for value in item.get("test_refs") or []}
     if not rcm_refs:
@@ -264,6 +329,11 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
 def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
     if "status" in payload:
         raise WorkspaceError("Unknown finding field: status.")
+    legacy = [field for field in LEGACY_NARRATIVE_FIELDS if field in payload]
+    if legacy:
+        raise WorkspaceError(
+            f"Finding field '{legacy[0]}' is now a section of the finding narrative."
+        )
     title = str(payload.get("title") or "").strip()
     if not title:
         raise WorkspaceError("Finding title is required.")
@@ -299,11 +369,10 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         "source_observation_id": str(payload.get("source_observation_id") or "") or None,
         "title": title,
         "severity": _severity(payload.get("severity")),
-        "condition": str(payload.get("condition") or ""),
-        "criteria": str(payload.get("criteria") or ""),
-        "cause": str(payload.get("cause") or ""),
-        "effect": str(payload.get("effect") or ""),
-        "recommendation": str(payload.get("recommendation") or ""),
+        # A finding with no narrative starts from the firm's own section
+        # headings, so the auditor is never handed an empty box.
+        "narrative": str(payload.get("narrative") or "").strip()
+        or narrative_scaffold(workspace),
         "management_response": str(payload.get("management_response") or ""),
         "rcm_refs": rcm_refs,
         "procedure_refs": procedure_refs,
@@ -311,7 +380,6 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
         "execution_refs": execution_refs,
         "evidence_refs": evidence_refs,
         "cause_pending": bool(payload.get("cause_pending", False)),
-        "severity_rationale": str(payload.get("severity_rationale") or ""),
         "auditor_confirmed": bool(payload.get("auditor_confirmed", False)) if source == "manual" else False,
         "source": source,
         "created": created,
@@ -333,11 +401,15 @@ def add(workspace: Workspace, payload: dict, *, source: str = "manual") -> dict:
 def update(workspace: Workspace, finding_id: str, changes: dict) -> dict:
     item = _record(workspace, finding_id)
     allowed = {
-        "title", "severity", "condition", "criteria", "cause", "effect",
-        "recommendation", "management_response", "rcm_refs",
+        "title", "severity", "narrative", "management_response", "rcm_refs",
         "procedure_refs", "test_refs", "execution_refs", "evidence_refs",
-        "cause_pending", "severity_rationale", "auditor_confirmed",
+        "cause_pending", "auditor_confirmed",
     }
+    legacy = [field for field in LEGACY_NARRATIVE_FIELDS if field in changes]
+    if legacy:
+        raise WorkspaceError(
+            f"Finding field '{legacy[0]}' is now a section of the finding narrative."
+        )
     unknown = set(changes) - allowed
     if unknown:
         raise WorkspaceError(f"Unknown finding field: {sorted(unknown)[0]}.")
@@ -442,7 +514,9 @@ def promote(workspace: Workspace, run_id: str, agent_finding_id: str) -> dict:
             "agent_run_id": run_id,
             "title": statement[:120] or "Promoted agent observation",
             "severity": source.get("severity") or "medium",
-            "condition": statement,
+            # The run's statement is what was observed, so it seeds the first
+            # section; the remaining sections stay open for the auditor.
+            "narrative": narrative_scaffold(workspace, first_section=statement),
             "evidence_refs": anchors,
         },
         source="promoted",

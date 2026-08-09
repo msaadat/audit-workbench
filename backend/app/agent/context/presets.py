@@ -982,12 +982,22 @@ PRESETS.register(
                     representations=(ContextRepresentation("current_artifact"),),
                     budget=ContextBudget(max_items=1, max_characters=12_000),
                 ),
+                # The narrative's sections are the firm's, so the template is
+                # required context rather than a constant in the worker.
+                ContextSource(
+                    id="finding_template",
+                    source_type="templates",
+                    required=True,
+                    selector=ContextSelector(selector_id="templates.current"),
+                    representations=(ContextRepresentation("artifact_template"),),
+                    budget=ContextBudget(max_items=1, max_characters=16_000),
+                ),
             ),
-            budget=ContextBudget(max_items=4, max_characters=16_000),
+            budget=ContextBudget(max_items=5, max_characters=32_000),
             # A finding is grounded only in its exception observation and the
             # immutable execution result behind it; no document or table content
             # is declared.
-            privacy=ContextPrivacy(allow_document_text=True),
+            privacy=ContextPrivacy(allow_document_text=True, allow_template_text=True),
         ),
     )
 )

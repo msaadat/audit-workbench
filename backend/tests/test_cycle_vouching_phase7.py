@@ -262,12 +262,16 @@ def test_item_observation_finding_context_and_staleness_follow_canonical_hashes(
         unit_id=f"finding:{observation['id']}",
         proposal={"finding": {
             "title": "One tested cycle was dispositioned as an exception",
-            "condition": "One tested item contains an auditor-confirmed exception.",
-            "criteria": "The tested item should satisfy the declared assertions.",
             "cause_pending": True,
-            "effect": "The item requires follow-up.",
-            "recommendation": "Resolve the item-specific exception.",
-            "severity_rationale": "Limited to one targeted tested item.",
+            "narrative": (
+                "## Condition\n\nOne tested item contains an auditor-confirmed "
+                "exception.\n\n"
+                "## Criteria\n\nThe tested item should satisfy the declared "
+                "assertions.\n\n"
+                "## Root Cause\n\n"
+                "## Risk\n\nThe item requires follow-up.\n\n"
+                "## Recommendation\n\nResolve the item-specific exception.\n"
+            ),
         }},
         expected_revision=workspace.revision,
         expected_parents=parent_hashes(

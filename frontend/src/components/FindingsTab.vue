@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import MultiSelect from 'primevue/multiselect'
 import Select from 'primevue/select'
@@ -15,6 +16,7 @@ import { useAgentRun } from '../composables/useAgentRun'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AuditFinding, EvidenceRef, FindingsPayload, FindingSeverity, WorkspaceSummary } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
+import MarkdownEditor from './MarkdownEditor.vue'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
@@ -34,6 +36,8 @@ const anchor = ref<EvidenceRef | null>(null)
 const anchorOpen = ref(false)
 const search = ref('')
 const severityFilter = ref<string>('all')
+const template = ref<{ markdown: string; source: string } | null>(null)
+const templateOpen = ref(false)
 
 const severities: FindingSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 const severityOptions = ['all', ...severities]
@@ -41,7 +45,7 @@ const selected = computed(() => data.value?.items.find(item => item.id === selec
 const filtered = computed(() => (data.value?.items ?? []).filter(item => {
   const matchesSeverity = severityFilter.value === 'all' || item.severity === severityFilter.value
   const needle = search.value.trim().toLowerCase()
-  return matchesSeverity && (!needle || `${item.id} ${item.title} ${item.condition}`.toLowerCase().includes(needle))
+  return matchesSeverity && (!needle || `${item.id} ${item.title} ${item.narrative}`.toLowerCase().includes(needle))
 }))
 const rcmOptions = computed(() => (data.value?.rcm ?? []).map(item => ({ label: `${item.id} · ${item.risk}`, value: item.id })))
 const testOptions = computed(() => [
@@ -98,12 +102,11 @@ async function save() {
   try {
     const item = selected.value
     const saved = await api.patch<AuditFinding>(`/api/workspaces/${props.workspace.id}/findings/${item.id}`, {
-      title: item.title, severity: item.severity, condition: item.condition,
-      criteria: item.criteria, cause: item.cause, effect: item.effect,
-      recommendation: item.recommendation, management_response: item.management_response,
+      title: item.title, severity: item.severity, narrative: item.narrative,
+      management_response: item.management_response,
       rcm_refs: item.rcm_refs, test_refs: item.test_refs,
       execution_refs: item.execution_refs, cause_pending: item.cause_pending,
-      severity_rationale: item.severity_rationale, auditor_confirmed: item.auditor_confirmed,
+      auditor_confirmed: item.auditor_confirmed,
       evidence_refs: item.evidence_refs,
     })
     await reload(item.id)
@@ -138,6 +141,19 @@ function remove() {
   })
 }
 
+async function openTemplate() {
+  try { template.value = await api.get(`/api/workspaces/${props.workspace.id}/templates/finding`); templateOpen.value = true }
+  catch (error) { fail('Could not load the finding template', error) }
+}
+async function saveTemplate(reset = false) {
+  if (!template.value) return
+  try {
+    template.value = await api.put(`/api/workspaces/${props.workspace.id}/templates/finding`, reset ? { reset: true } : { markdown: template.value.markdown })
+    await reload(selectedId.value ?? undefined)
+    toast.add({ severity: 'success', summary: reset ? 'Default finding template restored' : 'Finding template saved', life: 1800 })
+  } catch (error) { fail('Could not save the finding template', error) }
+}
+
 function showAnchor(value: EvidenceRef) { anchor.value = value; anchorOpen.value = true }
 function addEvidence(value: EvidenceRef) {
   if (selected.value && !selected.value.evidence_refs.some(item => item.id === value.id)) selected.value.evidence_refs.push(value)
@@ -162,6 +178,7 @@ function openEvidence(value: EvidenceRef) {
 <template>
   <div class="findings-tab">
     <UiPageHeader title="Findings">
+      <Button label="Finding template" icon="pi pi-file-edit" severity="secondary" outlined size="small" @click="openTemplate" />
       <Button label="Add manual finding" icon="pi pi-plus" size="small" @click="addManual" />
     </UiPageHeader>
     <div v-if="data?.items.length" class="findings-layout">
@@ -181,14 +198,11 @@ function openEvidence(value: EvidenceRef) {
         </div>
         <h3 class="form-section-title">Finding</h3>
         <div class="top-fields"><label>Title<InputText v-model="selected.title" /></label><label>Severity<Select v-model="selected.severity" :options="severities" /></label></div>
-        <div class="iia-grid">
-          <label>Condition<Textarea v-model="selected.condition" rows="4" autoResize placeholder="What was observed?" /></label>
-          <label>Criteria<Textarea v-model="selected.criteria" rows="4" autoResize placeholder="What should have occurred?" /></label>
-          <label>Cause<Textarea v-model="selected.cause" rows="4" autoResize placeholder="Why did it occur?" /><span><input v-model="selected.cause_pending" type="checkbox"/> Cause pending auditor follow-up</span></label>
-          <label>Effect<Textarea v-model="selected.effect" rows="4" autoResize placeholder="What is the impact or exposure?" /></label>
-        </div>
-        <h3 class="form-section-title">Recommendation and response</h3>
-        <div class="iia-grid"><label>Severity rationale<Textarea v-model="selected.severity_rationale" rows="3" autoResize /></label><label><span><input v-model="selected.auditor_confirmed" type="checkbox"/> Auditor confirmed for formal reporting</span></label><label class="wide">Recommendation<Textarea v-model="selected.recommendation" rows="4" autoResize /></label><label class="wide">Management response<Textarea v-model="selected.management_response" rows="4" autoResize /></label></div>
+        <p class="narrative-hint">This narrative is copied into the report unchanged, so write it as final report text. Its sections come from the <button type="button" class="linkish" @click="openTemplate">finding template</button>.</p>
+        <div class="narrative-editor"><MarkdownEditor v-model="selected.narrative" /></div>
+        <div class="narrative-flags"><label><input v-model="selected.cause_pending" type="checkbox"/> Root cause pending auditor follow-up</label><label><input v-model="selected.auditor_confirmed" type="checkbox"/> Auditor confirmed for formal reporting</label></div>
+        <h3 class="form-section-title">Management response</h3>
+        <Textarea v-model="selected.management_response" rows="4" autoResize class="response-editor" placeholder="Management's own response, recorded as received." />
         <div class="link-grid">
           <label>RCM links<MultiSelect v-model="selected.rcm_refs" :options="rcmOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select risks and controls" /></label>
           <label>Test links<MultiSelect v-model="selected.test_refs" :options="testOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select tests" /></label>
@@ -214,18 +228,31 @@ function openEvidence(value: EvidenceRef) {
       <Button label="Add manual finding" icon="pi pi-plus" @click="addManual" />
     </UiEmptyState>
     <EvidenceAnchorDialog v-model="anchorOpen" :anchor="anchor" />
+    <Dialog v-model:visible="templateOpen" modal header="Finding template" :style="{width:'min(900px,94vw)'}">
+      <p class="muted">The <code>##</code> headings below are the sections every finding must complete before it can be confirmed for formal reporting. Comments are guidance for the auditor and the agent, and never appear in a finding or the report.</p>
+      <Textarea v-if="template" v-model="template.markdown" rows="22" spellcheck="false" class="template-editor"/>
+      <template #footer><Button label="Restore default" severity="secondary" text @click="saveTemplate(true)"/><Button label="Save override" icon="pi pi-save" @click="saveTemplate(false)"/></template>
+    </Dialog>
   </div>
 </template>
 
 <style scoped>
-.findings-tab { min-width:0 }.findings-head,.detail-toolbar,.provenance,.rail-title { display:flex; align-items:center }.findings-head { justify-content:space-between; gap:1rem; margin-bottom:1rem }.findings-head h2 { margin:.1rem 0 }.findings-layout { display:grid; grid-template-columns:18rem minmax(0,1fr); gap: var(--aw-section-gap) }.finding-rail { padding:.55rem; align-self:start; max-height:42rem; overflow:auto }.rail-filters { display:grid; grid-template-columns:1fr 6.5rem; gap:.4rem; padding:.2rem .15rem .6rem }.rail-filters :deep(.p-inputtext),.rail-filters :deep(.p-select) { width:100%; font-size:var(--aw-text-sm) }.finding-rail > button { width:100%; display:flex; flex-direction:column; gap:.3rem; text-align:left; border:0; border-radius:var(--aw-radius-control); background:transparent; padding:.7rem; color:var(--aw-ink); cursor:pointer }.finding-rail > button:hover,.finding-rail > button.active { background:var(--aw-teal-soft) }.rail-title { width:100%; justify-content:space-between }.finding-rail small { color:var(--aw-muted); text-transform:capitalize }.finding-detail { padding:1rem; min-width:0 }.detail-toolbar { gap:.45rem; padding-bottom:.8rem; border-bottom:1px solid var(--aw-border) }.provenance { gap:.45rem; flex-wrap:wrap }.grow { flex:1 }.top-fields { display:grid; grid-template-columns:minmax(0,1fr) 9rem 8rem; gap:.75rem; margin:1rem 0 }.iia-grid,.link-grid { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }.iia-grid .wide { grid-column:1/-1 } label { display:flex; flex-direction:column; gap:.35rem; font-size:var(--aw-text-sm); font-weight:700; color:var(--aw-muted) } label :deep(.p-inputtext),label :deep(.p-textarea),label :deep(.p-select),label :deep(.p-multiselect) { width:100%; font-size:var(--aw-text-sm); color:var(--aw-ink); font-weight:400 }.link-grid { margin-top:.9rem }.source-links { margin-top:1rem; padding-top:.8rem; border-top:1px solid var(--aw-border) }.source-links h3 { margin:0 0 .6rem; font-size:var(--aw-text-base) }.chips,.evidence-list { display:flex; flex-wrap:wrap; gap:.4rem }.chips button,.evidence-list button { border:1px solid var(--aw-border); background:var(--aw-canvas); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.3rem .6rem; cursor:pointer }.evidence-list { flex-direction:column }.evidence-list > div { display:flex; align-items:center; gap:.3rem }.evidence-list > div > button:first-child { flex:1; display:flex; align-items:center; text-align:left; border-radius:var(--aw-radius-control); gap:.55rem }.evidence-list button span { display:flex; flex-direction:column; flex:1 }.evidence-list small,.evidence-list code { color:var(--aw-muted) }.evidence-picker { margin-top:.6rem; padding:.6rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.evidence-picker summary { cursor:pointer; color:var(--aw-teal); font-weight:700; font-size:var(--aw-text-sm) }.evidence-picker > button { display:block; width:100%; margin-top:.35rem; padding:.45rem; border:0; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); text-align:left; cursor:pointer }.warning { padding:.7rem; background:var(--aw-warn-soft); color:var(--aw-warn-ink); border-radius:var(--aw-radius-control) }.empty,.empty-detail { color:var(--aw-muted); text-align:center }.empty-detail { min-height:20rem; display:grid; place-content:center }.empty-detail i { font-size:var(--aw-text-3xl) }.muted { color:var(--aw-muted) }
+.findings-tab { min-width:0 }.findings-head,.detail-toolbar,.provenance,.rail-title { display:flex; align-items:center }.findings-head { justify-content:space-between; gap:1rem; margin-bottom:1rem }.findings-head h2 { margin:.1rem 0 }.findings-layout { display:grid; grid-template-columns:18rem minmax(0,1fr); gap: var(--aw-section-gap) }.finding-rail { padding:.55rem; align-self:start; max-height:42rem; overflow:auto }.rail-filters { display:grid; grid-template-columns:1fr 6.5rem; gap:.4rem; padding:.2rem .15rem .6rem }.rail-filters :deep(.p-inputtext),.rail-filters :deep(.p-select) { width:100%; font-size:var(--aw-text-sm) }.finding-rail > button { width:100%; display:flex; flex-direction:column; gap:.3rem; text-align:left; border:0; border-radius:var(--aw-radius-control); background:transparent; padding:.7rem; color:var(--aw-ink); cursor:pointer }.finding-rail > button:hover,.finding-rail > button.active { background:var(--aw-teal-soft) }.rail-title { width:100%; justify-content:space-between }.finding-rail small { color:var(--aw-muted); text-transform:capitalize }.finding-detail { padding:1rem; min-width:0 }.detail-toolbar { gap:.45rem; padding-bottom:.8rem; border-bottom:1px solid var(--aw-border) }.provenance { gap:.45rem; flex-wrap:wrap }.grow { flex:1 }.top-fields { display:grid; grid-template-columns:minmax(0,1fr) 9rem 8rem; gap:.75rem; margin:1rem 0 }.link-grid { display:grid; grid-template-columns:1fr 1fr; gap:.8rem }.link-grid .wide { grid-column:1/-1 } label { display:flex; flex-direction:column; gap:.35rem; font-size:var(--aw-text-sm); font-weight:700; color:var(--aw-muted) } label :deep(.p-inputtext),label :deep(.p-textarea),label :deep(.p-select),label :deep(.p-multiselect) { width:100%; font-size:var(--aw-text-sm); color:var(--aw-ink); font-weight:400 }.link-grid { margin-top:.9rem }.source-links { margin-top:1rem; padding-top:.8rem; border-top:1px solid var(--aw-border) }.source-links h3 { margin:0 0 .6rem; font-size:var(--aw-text-base) }.chips,.evidence-list { display:flex; flex-wrap:wrap; gap:.4rem }.chips button,.evidence-list button { border:1px solid var(--aw-border); background:var(--aw-canvas); color:var(--aw-teal); border-radius:var(--aw-radius-pill); padding:.3rem .6rem; cursor:pointer }.evidence-list { flex-direction:column }.evidence-list > div { display:flex; align-items:center; gap:.3rem }.evidence-list > div > button:first-child { flex:1; display:flex; align-items:center; text-align:left; border-radius:var(--aw-radius-control); gap:.55rem }.evidence-list button span { display:flex; flex-direction:column; flex:1 }.evidence-list small,.evidence-list code { color:var(--aw-muted) }.evidence-picker { margin-top:.6rem; padding:.6rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }.evidence-picker summary { cursor:pointer; color:var(--aw-teal); font-weight:700; font-size:var(--aw-text-sm) }.evidence-picker > button { display:block; width:100%; margin-top:.35rem; padding:.45rem; border:0; border-radius:var(--aw-radius-control); background:var(--aw-canvas); color:var(--aw-ink); text-align:left; cursor:pointer }.warning { padding:.7rem; background:var(--aw-warn-soft); color:var(--aw-warn-ink); border-radius:var(--aw-radius-control) }.empty,.empty-detail { color:var(--aw-muted); text-align:center }.empty-detail { min-height:20rem; display:grid; place-content:center }.empty-detail i { font-size:var(--aw-text-3xl) }.muted { color:var(--aw-muted) }
 .findings-layout { grid-template-columns:17rem minmax(0,1fr) }
 .finding-rail { max-height:42rem }
 .detail-toolbar { position:sticky; top:-1rem; z-index:3; margin:-1rem -1rem .8rem; padding:.65rem 1rem; background:var(--aw-panel) }
 .top-fields { margin:.5rem 0 .8rem }
 .source-links { margin:0; padding:0; border:0 }
 .form-section-title { margin:.7rem 0 .5rem; color:var(--aw-muted); font-size:var(--aw-text-xs);}
+.narrative-hint { margin:.2rem 0 .6rem; color:var(--aw-muted); font-size:var(--aw-text-sm) }
+.linkish { border:0; background:none; padding:0; color:var(--aw-teal); font:inherit; text-decoration:underline; cursor:pointer }
+.narrative-editor { min-height:26rem; border:1px solid var(--aw-border); border-radius:var(--aw-radius-control) }
+.narrative-editor :deep(.markdown-editor) { min-height:26rem }
+.narrative-flags { display:flex; gap:1.2rem; flex-wrap:wrap; margin:.7rem 0 .2rem }
+.narrative-flags label { flex-direction:row; align-items:center; gap:.4rem; font-weight:400; color:var(--aw-ink); font-size:var(--aw-text-sm) }
+.response-editor { width:100%; font-size:var(--aw-text-sm) }
+.template-editor { width:100%; font-family:var(--aw-font-mono,monospace) }
 .admin-row { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; color:var(--aw-muted); font-size:var(--aw-text-sm) }.admin-row .p-button { margin-left:auto }
-@media (max-width:1050px) { .findings-layout { grid-template-columns:1fr }.finding-rail { max-height:16rem }.iia-grid,.link-grid { grid-template-columns:1fr }.iia-grid .wide { grid-column:auto } }
+@media (max-width:1050px) { .findings-layout { grid-template-columns:1fr }.finding-rail { max-height:16rem }.link-grid { grid-template-columns:1fr }.link-grid .wide { grid-column:auto } }
 @media (max-width:700px) { .top-fields { grid-template-columns:1fr }.findings-head { align-items:flex-start; flex-direction:column }.detail-toolbar { flex-wrap:wrap } }
 </style>

@@ -729,6 +729,38 @@ def _rewrite_python_table_references(code: str, old: str, new: str) -> tuple[str
     return tokenize.untokenize(rewritten), changed
 
 
+# The fixed narrative fields a finding carried before the ``finding`` template
+# owned its shape, paired with the heading each becomes. The first five are the
+# shipped template's sections; "Severity rationale" is not, so migrated prose
+# lands in a section the completeness gate does not require — the text an
+# auditor wrote survives without becoming a new obligation.
+_LEGACY_FINDING_SECTIONS = (
+    ("condition", "Condition"),
+    ("criteria", "Criteria"),
+    ("cause", "Root Cause"),
+    ("effect", "Risk"),
+    ("recommendation", "Recommendation"),
+    ("severity_rationale", "Severity rationale"),
+)
+
+
+def _migrate_finding_narrative(item: dict) -> None:
+    """Fold a pre-narrative finding's fields into one Markdown narrative.
+
+    One-way and idempotent: a record that already carries a narrative is left
+    alone, and the legacy keys are dropped so a later write cannot resurrect a
+    stale copy of prose the auditor has since edited.
+    """
+    if "narrative" not in item:
+        item["narrative"] = "\n\n".join(
+            f"## {heading}\n\n{str(item.get(field) or '').strip()}"
+            for field, heading in _LEGACY_FINDING_SECTIONS
+            if str(item.get(field) or "").strip()
+        )
+    for field, _heading in _LEGACY_FINDING_SECTIONS:
+        item.pop(field, None)
+
+
 class Workspace:
     def __init__(self, root: Path):
         self.root = Path(root)
@@ -807,7 +839,7 @@ class Workspace:
             item.setdefault("test_refs", [])
             item.setdefault("execution_refs", [])
             item.setdefault("cause_pending", False)
-            item.setdefault("severity_rationale", "")
+            _migrate_finding_narrative(item)
             # Legacy/manual origin is not equivalent to a formal auditor
             # confirmation. Unsupported records stay visible as drafts.
             item.setdefault("auditor_confirmed", False)

@@ -44,7 +44,47 @@ class _Gateway:
         return self.responses.pop(0)
 
 
-def _bundle():
+# The shipped finding template, reduced to the part the worker contract needs:
+# the section headings the narrative must answer, and one guidance comment that
+# must not survive into the narrative.
+TEMPLATE = """# Finding
+
+## Condition
+
+<!-- section: What was found, quantified, in the past tense. -->
+
+## Criteria
+
+## Root Cause
+
+## Risk
+
+## Recommendation
+"""
+
+NARRATIVE = """## Condition
+
+Of the 1,284 payments released in the period, 37 were duplicates.
+
+## Criteria
+
+Invoice identifiers are required to be unique.
+
+## Root Cause
+
+Lack of a duplicate check at invoice entry.
+
+## Risk
+
+Financial loss through duplicate payment.
+
+## Recommendation
+
+Enforce a uniqueness constraint on the invoice identifier.
+"""
+
+
+def _bundle(template: str = TEMPLATE):
     values = [
         (
             "observation",
@@ -77,6 +117,12 @@ def _bundle():
                 "immutable_execution_result": {"exception_count": 1},
                 "evidence_anchor": {"source_kind": "datatest"},
             },
+        ),
+        (
+            "finding_template",
+            "template:finding",
+            ContextRepresentation("artifact_template"),
+            template,
         ),
     ]
     items = tuple(
@@ -112,15 +158,18 @@ def _draft(**overrides):
     value = {
         "title": "Duplicate invoice processing",
         "severity": "medium",
-        "condition": "A duplicate invoice identifier was processed.",
-        "criteria": "Invoice identifiers should be unique.",
-        "cause_pending": True,
-        "effect": "Duplicate payment risk.",
-        "recommendation": "Prevent duplicate invoice identifiers.",
-        "severity_rationale": "The exception can cause financial loss.",
+        "narrative": NARRATIVE,
+        "cause_pending": False,
     }
     value.update(overrides)
     return value
+
+
+def _without_section(narrative: str, heading: str) -> str:
+    """The narrative with one section's body emptied, its heading intact."""
+    start = narrative.index(f"## {heading}")
+    end = narrative.find("\n## ", start)
+    return narrative[:start] + f"## {heading}\n\n" + narrative[end + 1:]
 
 
 def test_finding_worker_uses_only_the_supplied_observation_and_execution():
@@ -137,10 +186,12 @@ def test_finding_worker_uses_only_the_supplied_observation_and_execution():
     )
 
 
-def test_finding_worker_repairs_a_missing_cause_with_specific_guidance():
+def test_finding_worker_repairs_an_empty_template_section_by_name():
     gateway = _Gateway(
         [
-            json.dumps({"finding": _draft(cause_pending=False)}),
+            json.dumps(
+                {"finding": _draft(narrative=_without_section(NARRATIVE, "Criteria"))}
+            ),
             json.dumps({"finding": _draft()}),
         ]
     )
@@ -148,7 +199,51 @@ def test_finding_worker_repairs_a_missing_cause_with_specific_guidance():
     result = WORKERS.execute(_request(), gateway)
 
     assert result.repaired is True
-    assert "cause or cause_pending" in gateway.calls[1]["user"]
+    assert "narrative section 'Criteria' is empty" in gateway.calls[1]["user"]
+
+
+def test_finding_worker_accepts_an_open_root_cause_only_when_it_is_deferred():
+    deferred = _draft(
+        narrative=_without_section(NARRATIVE, "Root Cause"), cause_pending=True
+    )
+    gateway = _Gateway([json.dumps({"finding": deferred})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.proposal["finding"]["cause_pending"] is True
+    assert result.repaired is False
+
+
+def test_finding_worker_repairs_an_undeferred_empty_root_cause():
+    silent = json.dumps(
+        {"finding": _draft(narrative=_without_section(NARRATIVE, "Root Cause"))}
+    )
+    gateway = _Gateway([silent, json.dumps({"finding": _draft()})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.repaired is True
+    assert "unless cause_pending is true" in gateway.calls[1]["user"]
+
+
+def test_finding_worker_takes_its_required_sections_from_the_supplied_template():
+    # A firm that renames a section moves the contract with it; nothing in the
+    # worker enumerates the shipped headings.
+    request = WorkerRequest(
+        worker_id="reporting.finding",
+        capability_id="findings.drafted",
+        unit_id="finding:OBS-1",
+        context=_bundle(template="## Observation\n\n## Impact\n"),
+        unit_input={"input_sha1": "finding-input"},
+        activity={"artifact_refs": ["observation:OBS-1"]},
+    )
+    narrative = "## Observation\n\nA duplicate was released.\n\n## Impact\n\nLoss.\n"
+    gateway = _Gateway([json.dumps({"finding": _draft(narrative=narrative)})])
+
+    result = WORKERS.execute(request, gateway)
+
+    assert result.repaired is False
+    assert "Observation" in gateway.calls[0]["user"]
 
 
 def test_finding_worker_rejects_an_unsupported_severity():
@@ -228,7 +323,9 @@ def test_finding_executor_refuses_a_draft_that_fails_support_validation(
     workspace_with_data,
 ):
     ws, observation = _observed_workspace(workspace_with_data)
-    request = _finding_request(ws, observation, _draft(condition=""))
+    request = _finding_request(
+        ws, observation, _draft(narrative=_without_section(NARRATIVE, "Recommendation"))
+    )
     target = FindingExecutorTarget(ws, "run-unsupported", observation["id"])
 
     with pytest.raises(workspaces.WorkspaceError, match="support validation"):

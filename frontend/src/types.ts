@@ -1156,11 +1156,8 @@ export interface AuditFinding {
   agent_run_id: string | null
   title: string
   severity: FindingSeverity
-  condition: string
-  criteria: string
-  cause: string
-  effect: string
-  recommendation: string
+  /** Report-ready Markdown; its `##` sections come from the workspace finding template. */
+  narrative: string
   management_response: string
   rcm_refs: string[]
   procedure_refs: string[]
@@ -1169,7 +1166,6 @@ export interface AuditFinding {
   evidence_refs: EvidenceRef[]
   evidence_warnings?: string[]
   cause_pending: boolean
-  severity_rationale: string
   auditor_confirmed: boolean
   source: 'agent' | 'manual' | 'promoted'
   created: string

@@ -231,19 +231,11 @@ def verify_audit(workspace: Workspace) -> dict:
 # reporting.finding executor (P7H.2)
 # --------------------------------------------------------------------------- #
 FINDING_EXECUTOR_ID = "reporting.finding"
-# The narrative fields an accepted proposal may write. Every reference field —
-# RCM, test, execution, and evidence — is derived from the observation.
-FINDING_FIELDS = (
-    "title",
-    "severity",
-    "condition",
-    "criteria",
-    "cause",
-    "cause_pending",
-    "effect",
-    "recommendation",
-    "severity_rationale",
-)
+# What an accepted proposal may write: the finding's title, its severity, the
+# Markdown narrative whose sections the finding template defines, and the flag
+# that formally defers root cause. Every reference field — RCM, test, execution,
+# and evidence — is derived from the observation.
+FINDING_FIELDS = ("title", "severity", "narrative", "cause_pending")
 
 
 def _sha256_text(value: str) -> str:

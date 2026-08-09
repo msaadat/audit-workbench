@@ -1113,11 +1113,13 @@ _register("detach_document_from_test", "Detach a document from a test item", "re
 _register("update_test_comparisons", "Update document-test comparisons", "reversible_mutation", ("doctest_item",), ("checks",), {"checks": ARR})
 _register("generate_rcm_working_paper", "Generate an RCM-linked working paper", "compute", ("rcm",))
 _register("generate_working_paper", "Legacy compatibility: generate a procedure working paper", "reversible_mutation", ("procedure",))
+# The finding's narrative is one Markdown document whose sections the
+# workspace's ``finding`` template defines; the sections are not enumerated here
+# so a firm can rename them without a schema change.
 FINDING_PROPERTIES = {
     "title": STR,
     "severity": {"type": "string", "enum": list(findings.SEVERITIES)},
-    "condition": STR, "criteria": STR, "cause": STR, "cause_pending": {"type": "boolean"},
-    "effect": STR, "recommendation": STR, "severity_rationale": STR,
+    "narrative": STR, "cause_pending": {"type": "boolean"},
     "management_response": STR, "rcm_refs": ARR_STR, "test_refs": ARR_STR,
     "procedure_refs": ARR_STR, "execution_refs": ARR_STR, "evidence_refs": ARR,
 }
@@ -1126,10 +1128,7 @@ _register(
     "draft_finding_from_observation",
     "Draft a fully supported finding from an exception observation",
     "create", ("observation",),
-    required=(
-        "title", "severity", "condition", "criteria", "effect",
-        "recommendation", "severity_rationale",
-    ),
+    required=("title", "severity", "narrative"),
     properties=FINDING_PROPERTIES,
     model="draft",
 )

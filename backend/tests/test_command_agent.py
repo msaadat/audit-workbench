@@ -571,12 +571,16 @@ def test_observation_finding_action_derives_immutable_evidence_locally(
         "args": {
             "title": "Duplicate invoice identifiers were processed",
             "severity": "medium",
-            "condition": "A duplicate invoice identifier exists in the population.",
-            "criteria": "Invoice identifiers must be unique before payment.",
             "cause_pending": True,
-            "effect": "A duplicate payment may be processed.",
-            "recommendation": "Investigate and prevent duplicate invoice identifiers.",
-            "severity_rationale": "The exception could result in duplicate disbursement.",
+            "narrative": (
+                "## Condition\n\nA duplicate invoice identifier exists in the "
+                "population.\n\n"
+                "## Criteria\n\nInvoice identifiers must be unique before payment.\n\n"
+                "## Root Cause\n\n"
+                "## Risk\n\nA duplicate payment may be processed.\n\n"
+                "## Recommendation\n\nInvestigate and prevent duplicate invoice "
+                "identifiers.\n"
+            ),
         },
     }])[0]
 

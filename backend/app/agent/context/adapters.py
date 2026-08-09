@@ -1226,6 +1226,7 @@ FINDING_OBSERVATION_SOURCE_ID = "observation"
 FINDING_ROW_SOURCE_ID = "rcm_row"
 FINDING_TEST_SOURCE_ID = "test"
 FINDING_EXECUTION_SOURCE_ID = "execution_result"
+FINDING_TEMPLATE_SOURCE_ID = "finding_template"
 
 _FINDING_ROW_FIELDS = ("id", "risk", "control", "criteria", "risk_rating")
 _FINDING_TEST_FIELDS = (
@@ -1368,6 +1369,7 @@ def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextSco
         raise WorkspaceError(
             f"Observation '{observation_id}' does not resolve to an RCM row."
         )
+    finding_template = templates_store.get_template(workspace, "finding")["markdown"]
     execution_ref = str(observation.get("execution_ref") or "")
     execution = {
         "execution_ref": execution_ref,
@@ -1422,6 +1424,17 @@ def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextSco
                     source=execution,
                     representations={"current_artifact": execution},
                     metadata={"execution_ref": execution_ref},
+                ),
+            ),
+            # The finding template is the narrative's contract: its headings are
+            # the sections the draft must answer and its guidance comments are
+            # how the firm's house style reaches the turn.
+            FINDING_TEMPLATE_SOURCE_ID: (
+                ContextCandidate(
+                    source_ref="template:finding",
+                    source=finding_template,
+                    representations={"artifact_template": finding_template},
+                    metadata={"template": "finding"},
                 ),
             ),
         },

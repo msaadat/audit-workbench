@@ -15,6 +15,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from ... import templates_store
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -31,25 +32,33 @@ from .model import (
 
 FINDING_WORKER_ID = "reporting.finding"
 FINDING_SYSTEM = f"""[agent:finding]
-Draft one unconfirmed audit finding from the supplied exception
-observation and immutable execution reference. Return finding with title,
-severity (critical|high|medium|low|info), condition, criteria, cause or
-cause_pending, effect, recommendation, and severity_rationale. Do not create or
-alter RCM, planned-test, execution, or evidence references. Do not claim auditor
-confirmation. {JSON_RULES}"""
+Draft one unconfirmed audit finding from the supplied exception observation and
+immutable execution reference. Return finding with title, severity
+(critical|high|medium|low|info), narrative, and cause_pending.
+
+narrative is Markdown. Its sections are the `##` headings of the supplied
+finding template, in that order, with no heading added, renamed, or dropped.
+Follow the guidance comments in that template: they are instructions to you and
+must not be copied into the narrative. Every section must carry text, except
+that the root-cause section may be left empty when you set cause_pending true
+because the supplied evidence does not establish why the exception occurred.
+
+The narrative is copied into the audit report unchanged, so write final report
+prose: no first person, no test ids, run ids, table or column names, and no
+commentary about drafting. Any number you state must be a number the supplied
+execution result holds.
+
+Do not create or alter RCM, planned-test, execution, or evidence references. Do
+not claim auditor confirmation. {JSON_RULES}"""
 
 FINDING_OBSERVATION_SOURCE_ID = "observation"
 FINDING_EXECUTION_SOURCE_ID = "execution_result"
+FINDING_TEMPLATE_SOURCE_ID = "finding_template"
 _FINDING_SEVERITIES = {"critical", "high", "medium", "low", "info"}
-_FINDING_REQUIRED = (
-    "title",
-    "severity",
-    "condition",
-    "criteria",
-    "effect",
-    "recommendation",
-    "severity_rationale",
-)
+_FINDING_REQUIRED = ("title", "severity", "narrative")
+# The root-cause section is the one a draft may leave open, and only by saying
+# so through ``cause_pending``.
+_CAUSE_SECTION_KEYS = frozenset({"cause", "root cause"})
 
 
 def _sha256_text(value: str) -> str:
@@ -99,12 +108,20 @@ def validate_finding_proposal(
     proposal: Mapping[str, Any],
     request: WorkerRequest,
 ) -> Mapping[str, Any]:
-    """Apply the finding contract; evidence linkage stays with the executor."""
+    """Apply the finding contract; evidence linkage stays with the executor.
+
+    The narrative's shape is the supplied template's, not a list held here, so a
+    firm that renames a section moves the repair loop with it. The deterministic
+    gate in ``findings.support_issues`` applies the same rule at commit time;
+    checking it here is what lets the worker repair a thin draft before one is
+    written.
+    """
     value = proposal.get("finding")
     if not isinstance(value, Mapping):
         raise WorkerResponseValidationError("finding must be an object")
     # Reading the observation proves the draft was grounded in a supplied one.
     _resolved_item(request, FINDING_OBSERVATION_SOURCE_ID)
+    template = str(_resolved_item(request, FINDING_TEMPLATE_SOURCE_ID) or "")
     finding = _plain_json(value)
     errors: list[str] = []
     missing = [
@@ -114,8 +131,22 @@ def validate_finding_proposal(
         errors.append(f"finding is missing {missing[0]}")
     if finding.get("severity") not in _FINDING_SEVERITIES:
         errors.append("finding severity is unsupported")
-    if not str(finding.get("cause") or "").strip() and not finding.get("cause_pending"):
-        errors.append("finding needs cause or cause_pending")
+    bodies = templates_store.section_bodies(str(finding.get("narrative") or ""))
+    for heading in templates_store.sections(template):
+        key = templates_store.section_key(heading)
+        if bodies.get(key):
+            continue
+        if key in _CAUSE_SECTION_KEYS and finding.get("cause_pending"):
+            continue
+        errors.append(
+            f"narrative section '{heading}' is empty; every template section "
+            "needs text"
+            + (
+                " unless cause_pending is true"
+                if key in _CAUSE_SECTION_KEYS
+                else ""
+            )
+        )
     if errors:
         raise WorkerResponseValidationError(errors)
     return {"finding": finding}
@@ -133,18 +164,12 @@ def run_finding_worker(
             "IMMUTABLE EXECUTION RESULT": _resolved_item(
                 request, FINDING_EXECUTION_SOURCE_ID
             ),
+            "FINDING TEMPLATE": _resolved_item(request, FINDING_TEMPLATE_SOURCE_ID),
             "RESOLVED CONTEXT": request.context.to_dict(),
-            "REQUIRED OUTPUT": [
-                "title",
-                "severity",
-                "condition",
-                "criteria",
-                "cause",
-                "cause_pending",
-                "effect",
-                "recommendation",
-                "severity_rationale",
-            ],
+            "REQUIRED OUTPUT": ["title", "severity", "narrative", "cause_pending"],
+            "REQUIRED NARRATIVE SECTIONS": templates_store.sections(
+                str(_resolved_item(request, FINDING_TEMPLATE_SOURCE_ID) or "")
+            ),
         },
         indent=1,
         ensure_ascii=False,
@@ -200,6 +225,7 @@ WORKERS.register(FINDING_WORKER)
 __all__ = [
     "FINDING_RESPONSE_SCHEMA",
     "FINDING_SYSTEM",
+    "FINDING_TEMPLATE_SOURCE_ID",
     "FINDING_WORKER",
     "FINDING_WORKER_ID",
     "run_finding_worker",

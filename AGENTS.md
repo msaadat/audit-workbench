@@ -28,7 +28,13 @@ now centered on an RCM-driven audit workflow: planning context and APM, RCM
 rows, the Document and Data Tests that cover them, execution rollups,
 working-paper generation, findings, and report drafting. A test is one durable
 record with one source: an RCM row links to its tests through ``test_refs`` and
-holds no test description of its own.
+holds no test description of its own. A finding is a typed spine — severity,
+provenance, and its RCM/test/execution/evidence references — carrying one
+free-Markdown ``narrative`` whose sections are the ``##`` headings of the
+workspace's ``finding`` template. Completeness is checked against those
+headings, so a firm changes what a finding must say by editing the template, not
+the code, and the narrative is written as final report prose and copied into the
+report unchanged.
 
 ## 2. Architecture
 
@@ -76,12 +82,15 @@ backend/app/
 |- data_tests.py               - durable exploratory or RCM-linked data tests
 |- methodology.py              - methodology pack storage and retrieval
 |- evidence.py                 - typed evidence anchors and provenance helpers
-|- findings.py                 - evidence-linked findings CRUD and promotion
+|- findings.py                 - evidence-linked findings CRUD, promotion, and
+|                                template-derived narrative completeness
 |- report.py                   - draft report generation, reconciliation, QA
 |- rcm_execution.py            - coverage, rollups, observations, completion,
 |                                and RCM working-paper assembly
 |- working_papers.py           - legacy working-paper compatibility layer
-|- templates_store.py          - editable markdown template persistence
+|- templates_store.py          - editable markdown template persistence and the
+|                                shared `##`-section parsing those templates
+|                                define (headings, bodies, scaffold)
 |- debug_store.py              - local telemetry storage for calls/events/state
 |- debug_service.py            - debug read models, timing, causal analysis
 |- model_context.py            - shared model-context helpers

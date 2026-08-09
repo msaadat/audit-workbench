@@ -142,8 +142,9 @@ review, or qa. Use workspace_index `id` values in `*_id` arguments and typed `re
 for artifact targets or evidence/result references. Create document tests with rcm_id
 already assigned. Create a finding only from an already
 exception observation. Prefer draft_finding_from_observation so the orchestrator
-derives immutable evidence and relationship references locally; supply the complete narrative
-fields and leave auditor confirmation to the auditor.
+derives immutable evidence and relationship references locally; supply the finding narrative as
+Markdown whose `##` sections are those of the workspace finding template, and leave auditor
+confirmation to the auditor.
 The supplied table_schemas and table_profiles are authoritative; copy identifiers exactly and never
 invent or normalize field names. Ground validation ranges, categories, and conditional triggers
 in table_profiles; never invent allowed values or propose a condition that matches no observed

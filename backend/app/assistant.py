@@ -717,17 +717,17 @@ class _Session:
                 "total": len(self.workspace.findings),
                 "findings": [
                     {
-                        key: self._text(finding.get(key), 1_500)
+                        # The narrative now carries what five fields used to,
+                        # so it gets the budget those five shared.
+                        key: self._text(
+                            finding.get(key), 6_000 if key == "narrative" else 1_500
+                        )
                         for key in (
                             "id",
                             "title",
                             "status",
                             "severity",
-                            "condition",
-                            "criteria",
-                            "cause",
-                            "effect",
-                            "recommendation",
+                            "narrative",
                         )
                         if finding.get(key) not in (None, "")
                     }

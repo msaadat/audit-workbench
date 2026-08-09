@@ -355,12 +355,14 @@ def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
         {
             "title": "Duplicate invoice identifiers",
             "severity": "medium",
-            "condition": "One invoice identifier was repeated.",
-            "criteria": "Invoice identifiers must be unique.",
             "cause_pending": True,
-            "effect": "Duplicate payment risk.",
-            "recommendation": "Review and block duplicate identifiers.",
-            "severity_rationale": "A repeated identifier creates a material duplicate-payment risk.",
+            "narrative": (
+                "## Condition\n\nOne invoice identifier was repeated.\n\n"
+                "## Criteria\n\nInvoice identifiers must be unique.\n\n"
+                "## Root Cause\n\n"
+                "## Risk\n\nDuplicate payment risk.\n\n"
+                "## Recommendation\n\nReview and block duplicate identifiers.\n"
+            ),
             "rcm_refs": [row["id"]],
             "test_refs": [item["id"]],
             "execution_refs": [f"datatest:{source_id}"],

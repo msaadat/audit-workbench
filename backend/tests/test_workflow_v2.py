@@ -47,6 +47,23 @@ from app.workspace_transactions import (
 from conftest import FakeAgentLLM, wait_run
 
 
+# One finding draft the fake model returns for `agent:finding`. Its narrative
+# answers every section of the shipped finding template except Root Cause,
+# which `cause_pending` formally defers.
+FINDING_DRAFT = {
+    "title": "Duplicate invoice processing",
+    "severity": "medium",
+    "cause_pending": True,
+    "narrative": (
+        "## Condition\n\nA duplicate invoice identifier was processed.\n\n"
+        "## Criteria\n\nInvoice identifiers should be unique.\n\n"
+        "## Root Cause\n\n"
+        "## Risk\n\nDuplicate payment risk.\n\n"
+        "## Recommendation\n\nPrevent duplicate invoice identifiers.\n"
+    ),
+}
+
+
 def _planning_workspace(name: str = "Workflow planning") -> workspaces.Workspace:
     ws = workspaces.create_workspace(name)
     # A test is executable work, so drafting one needs material to test against.
@@ -2333,16 +2350,7 @@ def test_permission_mode_exceptions_proceed_directly_to_finding_batch(monkeypatc
     fake = FakeAgentLLM(
         {
             "agent:finding": {
-                "finding": {
-                    "title": "Duplicate invoice processing",
-                    "severity": "medium",
-                    "condition": "A duplicate invoice identifier was processed.",
-                    "criteria": "Invoice identifiers should be unique.",
-                    "cause_pending": True,
-                    "effect": "Duplicate payment risk.",
-                    "recommendation": "Prevent duplicate invoice identifiers.",
-                    "severity_rationale": "The exception can cause financial loss.",
-                }
+                "finding": FINDING_DRAFT
             }
         }
     )
@@ -2417,16 +2425,7 @@ def test_observation_exceptions_do_not_create_a_checkpoint(monkeypatch):
     fake = FakeAgentLLM(
         {
             "agent:finding": {
-                "finding": {
-                    "title": "Duplicate invoice processing",
-                    "severity": "medium",
-                    "condition": "A duplicate invoice identifier was processed.",
-                    "criteria": "Invoice identifiers should be unique.",
-                    "cause_pending": True,
-                    "effect": "Duplicate payment risk.",
-                    "recommendation": "Prevent duplicate invoice identifiers.",
-                    "severity_rationale": "The exception can cause financial loss.",
-                }
+                "finding": FINDING_DRAFT
             }
         }
     )
@@ -2547,16 +2546,7 @@ def test_full_workflow_runs_capability_closure_and_records_exception_observation
                 ]
             },
             "agent:finding": {
-                "finding": {
-                    "title": "Duplicate invoice processing",
-                    "severity": "medium",
-                    "condition": "A duplicate invoice identifier was processed.",
-                    "criteria": "Invoice identifiers should be unique.",
-                    "cause_pending": True,
-                    "effect": "Duplicate payment risk.",
-                    "recommendation": "Prevent duplicate invoice identifiers.",
-                    "severity_rationale": "The exception can cause financial loss.",
-                }
+                "finding": FINDING_DRAFT
             },
         }
     )
