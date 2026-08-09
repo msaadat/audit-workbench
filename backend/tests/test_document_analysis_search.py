@@ -238,9 +238,7 @@ def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
             "audit_notes_markdown": "The policy states a requirement; operation is not demonstrated.",
             "citations": [{"id": "1", "page": 1, "excerpt": source}],
         }
-        return {"content": "", "tool_calls": [{"type": "function", "function": {
-            "name": "submit_document_chunk_analysis", "arguments": json.dumps(payload),
-        }}]}
+        return {"content": json.dumps(payload)}
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "local", "model": "test"})
@@ -254,6 +252,60 @@ def test_durable_document_analysis_run_persists_valid_citations(monkeypatch):
     # reconciled against.
     assert analysis["generated"]["agent_run_id"] == finished["id"]
     assert analysis["generated"]["content_sha1"]
+
+
+def test_durable_document_analysis_persists_freeform_long_markdown(monkeypatch):
+    ws = workspaces.create_workspace("Freeform document narrative")
+    source = "Invoices require finance director approval before payment."
+    doc = documents.add_document(ws, "policy.txt", source.encode(), category="policy")
+    paragraph = " ".join(
+        [
+            "The supplied policy describes the approval requirement and its place "
+            "in the payment process. [C1]"
+        ]
+        * 7
+    )
+    summary = (
+        "## Purpose and applicability\n\n"
+        + paragraph
+        + "\n\n## Approval requirements\n\n"
+        + paragraph
+        + "\n\n- Finance director approval precedes payment. [C1]"
+    )
+    notes = (
+        "## Audit notes\n\n### Operating evidence\n\n"
+        "The supplied text states a requirement only. [C1]\n\n"
+        "**Why it matters:** Operation requires separate evidence. [C1]\n\n"
+        "**Follow-up:** Obtain approved transactions for testing. [C1]"
+    )
+
+    def fake_chat(messages, **kwargs):
+        tag = messages[0]["content"].split("]", 1)[0].lstrip("[")
+        assert tag == "agent:document_analysis_map"
+        assert "tools" not in kwargs
+        payload = {
+            "summary_markdown": summary,
+            "audit_notes_markdown": notes,
+            "citations": [{"id": "C1", "page": 1, "excerpt": source}],
+        }
+        return {"content": json.dumps(payload)}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(
+        llm,
+        "agent_status",
+        lambda: {"configured": True, "provider": "local", "model": "test"},
+    )
+    finished = wait_run(ws, _document_workflow_run(ws, [doc["id"]])["id"])
+
+    assert finished["status"] == "completed"
+    analysis = document_analysis.load_analysis(ws, doc["id"])
+    summary = analysis["effective"]["summary_markdown"]
+    notes = analysis["effective"]["audit_notes_markdown"]
+    assert len(summary) > 1024
+    assert summary.startswith("## Purpose and applicability\n\n")
+    assert "\n\n## Approval requirements\n\n" in summary
+    assert notes.startswith("## Audit notes\n\n### Operating evidence\n\n")
 
 
 def test_document_analysis_retries_blank_notes_and_persists_complete_output(monkeypatch):
@@ -278,9 +330,7 @@ def test_document_analysis_retries_blank_notes_and_persists_complete_output(monk
                 "audit_notes_markdown": "Obtain evidence that the approval operated. [C1]",
                 "citations": [{"id": "C1", "page": 1, "excerpt": source}],
             }
-        return {"content": "", "tool_calls": [{"type": "function", "function": {
-            "name": "submit_document_chunk_analysis", "arguments": json.dumps(payload),
-        }}]}
+        return {"content": json.dumps(payload)}
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(

@@ -499,8 +499,8 @@ def test_multi_chunk_fan_out_is_bounded_and_stably_ordered(monkeypatch):
         assert unit["receipt_sidecar"] is None
 
 
-def test_text_chunk_worker_submits_a_schema_bound_citation_tool_call(monkeypatch):
-    ws, document = _policy_workspace("Schema-bound chunk citations")
+def test_text_chunk_worker_returns_freeform_markdown_without_a_tool_call(monkeypatch):
+    ws, document = _policy_workspace("Freeform document Markdown")
     documents.extract_document(ws, document["id"])
     fake = _fake_model(monkeypatch)
     run = _document_run(ws, [document["id"]])
@@ -508,12 +508,9 @@ def test_text_chunk_worker_submits_a_schema_bound_citation_tool_call(monkeypatch
     _drive(ws, run, "documents.analysis_chunks_ready")
 
     call = next(item for item in fake.calls if item["tag"] == MAP_TAG)
-    assert call["tool_choice"]["function"]["name"] == (
-        document_workers.CHUNK_SUBMISSION_TOOL
-    )
-    citation = call["tools"][0]["function"]["parameters"]["properties"]["citations"]
-    assert citation["items"]["required"] == ["id", "page", "excerpt"]
-    assert citation["items"]["additionalProperties"] is False
+    assert call["tool_choice"] is None
+    assert call["tools"] is None
+    assert "freeform Markdown strings" in call["messages"][0]["content"]
 
 
 def test_text_chunk_accepts_the_legacy_exact_excerpt_alias_after_exact_validation(monkeypatch):
@@ -1162,6 +1159,20 @@ def test_the_submission_schema_states_the_vocabulary_the_registry_declares():
     properties = tool["function"]["parameters"]["properties"]
     fragment = properties["record_fragments"]["items"]["properties"]
 
+    # Narratives are split into bounded semantic fragments. This avoids the
+    # 1,024-character per-string boundary observed on tool-call providers while
+    # allowing the locally assembled Markdown to be arbitrarily longer.
+    assert "summary_markdown" not in properties
+    assert "audit_notes_markdown" not in properties
+    assert tool["function"]["parameters"]["required"][:2] == [
+        "summary_sections",
+        "audit_notes",
+    ]
+    paragraph = properties["summary_sections"]["items"]["properties"][
+        "paragraphs"
+    ]["items"]
+    assert paragraph["maxLength"] < 1024
+
     assert "procure_to_pay.goods_receipt" in fragment["record_kind"]["enum"]
     assert "goods_receipt" not in fragment["record_kind"]["enum"]
     assert properties["registry"]["properties"]["pack_id"]["enum"] == ["procure_to_pay"]
@@ -1180,6 +1191,110 @@ def test_the_submission_schema_states_the_vocabulary_the_registry_declares():
         "citation",
     ]
     assert field["properties"]["value"]["additionalProperties"] is False
+
+
+def test_voucher_structured_narrative_assembles_long_markdown_with_block_breaks():
+    paragraph_one = "A" * 650 + " [C1]"
+    paragraph_two = "B" * 650 + " [C1]"
+    payload = {
+        "summary_sections": [
+            {
+                "heading": "Purpose and applicability",
+                "paragraphs": [paragraph_one],
+                "bullets": [],
+            },
+            {
+                "heading": "Requirements",
+                "paragraphs": [paragraph_two],
+                "bullets": ["Approval is required before commitment. [C1]"],
+            },
+        ],
+        "audit_notes": [
+            {
+                "title": "Approval evidence",
+                "observation": "The procedure defines an approval requirement. [C1]",
+                "why_it_matters": "The authority and timing should be unambiguous. [C1]",
+                "follow_up": "Obtain the referenced approval matrix. [C1]",
+            }
+        ],
+        "citations": [{"id": "C1", "page": 1, "excerpt": "approval"}],
+        "registry": {},
+        "record_fragments": [],
+    }
+
+    proposal = document_workers._voucher_response_schema(json.dumps(payload))
+
+    assert len(proposal["summary_markdown"]) > 1024
+    assert proposal["summary_markdown"].startswith(
+        "## Purpose and applicability\n\n"
+    )
+    assert "\n\n## Requirements\n\n" in proposal["summary_markdown"]
+    assert "\n- Approval is required" in proposal["summary_markdown"]
+    assert proposal["audit_notes_markdown"].startswith(
+        "## Audit notes\n\n### 1. Approval evidence\n\n"
+    )
+    assert proposal["_narrative_contract"] == "structured_blocks_v1"
+
+
+def test_voucher_structured_narrative_rejects_dangling_citation_markers():
+    payload = {
+        "summary_sections": [
+            {
+                "heading": "Summary",
+                "paragraphs": ["Approval is required. [C2]"],
+                "bullets": [],
+            }
+        ],
+        "audit_notes": [],
+        "citations": [{"id": "C1", "page": 1, "excerpt": "approval"}],
+        "registry": {},
+        "record_fragments": [],
+    }
+
+    with pytest.raises(
+        document_workers.WorkerResponseValidationError,
+        match=r"\[C2\]",
+    ):
+        document_workers._voucher_response_schema(json.dumps(payload))
+
+
+def test_structured_narrative_rejects_markers_whose_excerpt_did_not_survive():
+    proposal = {
+        "summary_markdown": "## Summary\n\nApproval is required. [C1]",
+        "audit_notes_markdown": "## Audit notes\n\nNo specific observations.",
+        "citations": [{"id": "C1", "page": 1, "excerpt": "not in source"}],
+        "_narrative_contract": "structured_blocks_v1",
+    }
+    validated = {
+        "summary_markdown": proposal["summary_markdown"],
+        "audit_notes_markdown": proposal["audit_notes_markdown"],
+        "citations": [],
+    }
+
+    with pytest.raises(
+        document_workers.WorkerResponseValidationError,
+        match="did not survive exact source validation",
+    ):
+        document_workers._validate_surviving_narrative_citations(
+            proposal, validated
+        )
+
+
+def test_voucher_citations_reject_whole_paragraph_excerpts():
+    errors = document_workers._citation_shape_errors(
+        [
+            {
+                "id": "C1",
+                "page": 1,
+                "excerpt": "A" * (
+                    document_workers.CITATION_EXCERPT_CHARACTERS + 1
+                ),
+            }
+        ]
+    )
+
+    assert errors
+    assert "points at the part" in errors[0]
 
 
 def test_a_near_miss_shape_is_repaired_locally_rather_than_sent_back(monkeypatch):

@@ -52,11 +52,11 @@ VISUAL_WORKER_ID = "documents.analysis_visual_page"
 VOUCHER_WORKER_ID = "documents.analysis_voucher"
 REDUCTION_WORKER_ID = "documents.analysis_reduction"
 
-# Text document workers use a function call instead of asking the model to
-# serialize an unconstrained JSON object in its message text.  In particular,
-# ``excerpt`` is part of the durable citation contract; it must not be left to
-# a provider-specific preference such as ``exact_excerpt``.
-CHUNK_SUBMISSION_TOOL = "submit_document_chunk_analysis"
+# Voucher workers use a function call because their registry-backed extraction
+# contract benefits from provider-enforced enums and closed objects. Standard
+# documents return freeform Markdown inside a normal JSON response: tool-call
+# string fields on some providers are capped at 1,024 characters and flatten
+# Markdown newlines.
 VOUCHER_SUBMISSION_TOOL = "submit_document_voucher_analysis"
 
 DOCUMENT_METADATA_SOURCE_ID = "document_metadata"
@@ -64,6 +64,40 @@ DOCUMENT_IDENTITY_SOURCE_ID = "document_identity"
 DOCUMENT_CHUNK_SOURCE_ID = "document_chunk"
 DOCUMENT_VISUAL_SOURCE_ID = "document_page_images"
 CHUNK_ANALYSES_SOURCE_ID = "chunk_analyses"
+
+# Some OpenAI-compatible tool-call implementations cap an individual string
+# argument at 1,024 characters and flatten embedded newlines. Voucher narratives
+# therefore travel as small structured fragments alongside their structured
+# records. The application, not the provider, assembles those fragments into
+# Markdown. Standard document narratives do not use a tool call at all.
+NARRATIVE_FRAGMENT_MAX_CHARACTERS = 768
+NARRATIVE_HEADING_MAX_CHARACTERS = 160
+NARRATIVE_MAX_SECTIONS = 16
+NARRATIVE_MAX_ITEMS_PER_SECTION = 12
+NARRATIVE_MAX_AUDIT_NOTES = 16
+
+# The longest excerpt that still points at something. A citation is an anchor,
+# and an excerpt spanning the whole chunk anchors nothing while satisfying every
+# containment check trivially. Two lines is enough for a value the source wrapped
+# mid-phrase.
+CITATION_EXCERPT_CHARACTERS = 240
+CITATION_EXCERPT_LINES = 2
+
+STRUCTURED_NARRATIVE_RULES = f"""
+Narrative output uses structured fragments so formatting never depends on a
+provider preserving newlines inside one long string:
+- summary_sections is a non-empty array of sections. Each section has a short
+  plain-text heading, paragraphs, and bullets. Put each paragraph or bullet in
+  its own array item. Do not include heading markers or newline characters;
+  local code renders headings and lists as Markdown.
+- audit_notes is an array of concrete observations. Each item has a short
+  plain-text title plus observation, why_it_matters, and follow_up. Return an
+  empty array only when there is genuinely no specific observation; local code
+  then renders the standard no-observations statement.
+- Each paragraph, bullet, observation, rationale, and follow-up is limited to
+  {NARRATIVE_FRAGMENT_MAX_CHARACTERS} characters. Use another section, paragraph,
+  bullet, or note instead of truncating a thought.
+"""
 
 
 CHUNK_SYSTEM = f"""[agent:document_analysis_map]
@@ -95,8 +129,9 @@ in the supplied document` or `Not stated in the supplied extract`; never infer
 status or currency from a filename or category. Continuation chunks should
 omit claims that front-matter metadata is missing.
 
-Submit summary_markdown, audit_notes_markdown, and citations through the
-required function tool exactly once.
+Return exactly summary_markdown, audit_notes_markdown, and citations as one JSON
+object. summary_markdown and audit_notes_markdown are freeform Markdown strings;
+use real newline characters to separate headings, paragraphs, and lists.
 The summary must be a neutral, concise representation of the document.
 Audit notes must identify supported review observations such as missing or
 unclear governance metadata, unresolved template placeholders, ambiguous
@@ -107,16 +142,19 @@ follow-up. Describe omissions as not specified in the supplied document or
 extract, not as proof that the underlying process lacks them. Do not fill notes
 with a generic restatement of every documented control.
 
-summary_markdown and audit_notes_markdown are required and cannot be blank. If
-there is genuinely no specific review observation, use: `No specific drafting
-or control-design observations were identified from the supplied text.
-Operating effectiveness was not assessed.`
+Both Markdown fields are required and cannot be blank. If there is genuinely no
+specific review observation, use: `No specific drafting or control-design
+observations were identified from the supplied text. Operating effectiveness
+was not assessed.`
 
 Every substantive point must use citation markers such as [C1]. Citations is
 an array of objects with id, page, and an ``excerpt`` copied verbatim from this
 chunk. Metadata and generated orientation are context only and cannot support
 citations. Distinguish documented requirements from evidence that a control
-operated, and omit unsupported claims."""
+operated, and omit unsupported claims. Keep each excerpt focused on the source
+text that supports the point: at most {CITATION_EXCERPT_CHARACTERS} characters
+and {CITATION_EXCERPT_LINES} lines. Never join separate source lines with spaces.
+{JSON_RULES}"""
 
 
 REDUCTION_SYSTEM = f"""[agent:document_analysis_reduce]
@@ -330,6 +368,256 @@ def _voucher_fragment_schema(pack_ids: Iterable[str]) -> dict[str, Any]:
     }
 
 
+def _narrative_submission_properties() -> dict[str, Any]:
+    """Return the provider-safe narrative shape used by the voucher worker.
+
+    No individual generated string may reach the provider's observed 1,024
+    character boundary.  Arrays remove that boundary from the complete
+    narrative, and the closed objects keep Markdown layout deterministic.
+    """
+
+    fragment = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": NARRATIVE_FRAGMENT_MAX_CHARACTERS,
+    }
+    return {
+        "summary_sections": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": NARRATIVE_MAX_SECTIONS,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "heading": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": NARRATIVE_HEADING_MAX_CHARACTERS,
+                    },
+                    "paragraphs": {
+                        "type": "array",
+                        "maxItems": NARRATIVE_MAX_ITEMS_PER_SECTION,
+                        "items": dict(fragment),
+                    },
+                    "bullets": {
+                        "type": "array",
+                        "maxItems": NARRATIVE_MAX_ITEMS_PER_SECTION,
+                        "items": dict(fragment),
+                    },
+                },
+                "required": ["heading", "paragraphs", "bullets"],
+                "additionalProperties": False,
+            },
+        },
+        "audit_notes": {
+            "type": "array",
+            "maxItems": NARRATIVE_MAX_AUDIT_NOTES,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": NARRATIVE_HEADING_MAX_CHARACTERS,
+                    },
+                    "observation": dict(fragment),
+                    "why_it_matters": dict(fragment),
+                    "follow_up": dict(fragment),
+                },
+                "required": [
+                    "title",
+                    "observation",
+                    "why_it_matters",
+                    "follow_up",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _narrative_fragment(value: object, label: str, *, heading: bool = False) -> str:
+    if not isinstance(value, str):
+        raise WorkerResponseValidationError(f"`{label}` must be a string")
+    text = value.strip()
+    if not text:
+        raise WorkerResponseValidationError(f"`{label}` cannot be blank")
+    if "\n" in text or "\r" in text:
+        raise WorkerResponseValidationError(
+            f"`{label}` must be one fragment without newline characters"
+        )
+    limit = (
+        NARRATIVE_HEADING_MAX_CHARACTERS
+        if heading
+        else NARRATIVE_FRAGMENT_MAX_CHARACTERS
+    )
+    if len(text) > limit:
+        raise WorkerResponseValidationError(
+            f"`{label}` exceeds {limit} characters; split it into more fragments"
+        )
+    if heading and text.startswith("#"):
+        raise WorkerResponseValidationError(
+            f"`{label}` must be plain text without Markdown heading markers"
+        )
+    return text
+
+
+def _narrative_array(value: object, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise WorkerResponseValidationError(f"`{label}` must be an array")
+    if len(value) > NARRATIVE_MAX_ITEMS_PER_SECTION:
+        raise WorkerResponseValidationError(
+            f"`{label}` has more than {NARRATIVE_MAX_ITEMS_PER_SECTION} items"
+        )
+    return [
+        _narrative_fragment(item, f"{label}[{index}]")
+        for index, item in enumerate(value)
+    ]
+
+
+def _citation_marker_ids(text: str) -> set[str]:
+    return set(re.findall(r"\[([A-Za-z][A-Za-z0-9_-]{0,63})\]", text))
+
+
+def _structured_narrative(payload: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Assemble provider-safe fragments into stable application Markdown.
+
+    Freeform markdown fields remain readable for the standard document worker
+    and existing proposal sidecars. The voucher tool schema does not expose
+    them, so live voucher responses take the structured path.
+    """
+
+    structured = "summary_sections" in payload or "audit_notes" in payload
+    if not structured:
+        return (
+            str(payload.get("summary_markdown") or ""),
+            str(payload.get("audit_notes_markdown") or ""),
+            "legacy_markdown",
+        )
+
+    sections = payload.get("summary_sections")
+    notes = payload.get("audit_notes")
+    if not isinstance(sections, list) or not sections:
+        raise WorkerResponseValidationError(
+            "`summary_sections` must be a non-empty array"
+        )
+    if len(sections) > NARRATIVE_MAX_SECTIONS:
+        raise WorkerResponseValidationError(
+            f"`summary_sections` has more than {NARRATIVE_MAX_SECTIONS} items"
+        )
+    if not isinstance(notes, list):
+        raise WorkerResponseValidationError("`audit_notes` must be an array")
+    if len(notes) > NARRATIVE_MAX_AUDIT_NOTES:
+        raise WorkerResponseValidationError(
+            f"`audit_notes` has more than {NARRATIVE_MAX_AUDIT_NOTES} items"
+        )
+
+    summary_parts: list[str] = []
+    cited_text: list[str] = []
+    for index, raw in enumerate(sections):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(
+                f"`summary_sections[{index}]` must be an object"
+            )
+        heading = _narrative_fragment(
+            raw.get("heading"), f"summary_sections[{index}].heading", heading=True
+        )
+        paragraphs = _narrative_array(
+            raw.get("paragraphs"), f"summary_sections[{index}].paragraphs"
+        )
+        bullets = _narrative_array(
+            raw.get("bullets"), f"summary_sections[{index}].bullets"
+        )
+        if not paragraphs and not bullets:
+            raise WorkerResponseValidationError(
+                f"`summary_sections[{index}]` needs a paragraph or bullet"
+            )
+        blocks = [f"## {heading}"]
+        if paragraphs:
+            blocks.append("\n\n".join(paragraphs))
+            cited_text.extend(paragraphs)
+        if bullets:
+            blocks.append("\n".join(f"- {item}" for item in bullets))
+            cited_text.extend(bullets)
+        summary_parts.append("\n\n".join(blocks))
+
+    note_parts = ["## Audit notes"]
+    for index, raw in enumerate(notes):
+        if not isinstance(raw, Mapping):
+            raise WorkerResponseValidationError(
+                f"`audit_notes[{index}]` must be an object"
+            )
+        title = _narrative_fragment(
+            raw.get("title"), f"audit_notes[{index}].title", heading=True
+        )
+        observation = _narrative_fragment(
+            raw.get("observation"), f"audit_notes[{index}].observation"
+        )
+        why = _narrative_fragment(
+            raw.get("why_it_matters"), f"audit_notes[{index}].why_it_matters"
+        )
+        follow_up = _narrative_fragment(
+            raw.get("follow_up"), f"audit_notes[{index}].follow_up"
+        )
+        cited_text.extend((observation, why, follow_up))
+        note_parts.append(
+            f"### {index + 1}. {title}\n\n{observation}\n\n"
+            f"**Why it matters:** {why}\n\n**Follow-up:** {follow_up}"
+        )
+    if not notes:
+        note_parts.append(
+            "No specific drafting or control-design observations were identified "
+            "from the supplied text. Operating effectiveness was not assessed."
+        )
+
+    summary = "\n\n".join(summary_parts)
+    audit_notes = "\n\n".join(note_parts)
+    marker_ids = _citation_marker_ids("\n".join(cited_text))
+    supplied_ids = {
+        str(item.get("id") or "")
+        for item in payload.get("citations") or []
+        if isinstance(item, Mapping)
+    }
+    if not _citation_marker_ids(summary):
+        raise WorkerResponseValidationError(
+            "`summary_sections` must cite at least one supplied citation marker"
+        )
+    unknown = sorted(marker_ids - supplied_ids)
+    if unknown:
+        raise WorkerResponseValidationError(
+            "narrative citation marker(s) have no supplied citation: "
+            + ", ".join(f"[{value}]" for value in unknown)
+        )
+    return summary, audit_notes, "structured_blocks_v1"
+
+
+def _validate_surviving_narrative_citations(
+    proposal: Mapping[str, Any], validated: Mapping[str, Any]
+) -> None:
+    """Reject markers whose source excerpts were removed by exact validation."""
+
+    if proposal.get("_narrative_contract") != "structured_blocks_v1":
+        return
+    text = "\n".join(
+        (
+            str(validated.get("summary_markdown") or ""),
+            str(validated.get("audit_notes_markdown") or ""),
+        )
+    )
+    markers = _citation_marker_ids(text)
+    surviving = {
+        str(item.get("id") or "")
+        for item in validated.get("citations") or []
+        if isinstance(item, Mapping)
+    }
+    missing = sorted(markers - surviving)
+    if missing:
+        raise WorkerResponseValidationError(
+            "narrative citation marker(s) did not survive exact source validation: "
+            + ", ".join(f"[{value}]" for value in missing)
+        )
+
+
 def _citation_submission_tool(
     name: str,
     *,
@@ -340,8 +628,7 @@ def _citation_submission_tool(
     """Return the provider-enforced shape shared by text document workers."""
 
     properties: dict[str, Any] = {
-        "summary_markdown": {"type": "string", "minLength": 1},
-        "audit_notes_markdown": {"type": "string", "minLength": 1},
+        **_narrative_submission_properties(),
         "citations": {
             "type": "array",
             "minItems": 1,
@@ -357,7 +644,7 @@ def _citation_submission_tool(
             },
         },
     }
-    required = ["summary_markdown", "audit_notes_markdown", "citations"]
+    required = ["summary_sections", "audit_notes", "citations"]
     if voucher:
         # Registry and fragments retain their deeper, registry-aware validation
         # below — which combination of group, kind, and attribute a record kind
@@ -514,10 +801,12 @@ def _chunk_response_schema(response: str) -> Mapping[str, Any]:
         not isinstance(item, dict) for item in citations
     ):
         raise WorkerResponseValidationError("`citations` must be an array of objects")
+    summary, audit_notes, narrative_contract = _structured_narrative(payload)
     return {
-        "summary_markdown": payload.get("summary_markdown"),
-        "audit_notes_markdown": payload.get("audit_notes_markdown"),
+        "summary_markdown": summary,
+        "audit_notes_markdown": audit_notes,
         "citations": citations,
+        "_narrative_contract": narrative_contract,
     }
 
 
@@ -550,6 +839,7 @@ def validate_chunk_proposal(
         )
     except ValueError as error:
         raise WorkerResponseValidationError(str(error)) from error
+    _validate_surviving_narrative_citations(proposal, validated)
     return {
         "chunk_id": str(chunk.get("id") or ""),
         "document_id": str(document.get("document_id") or ""),
@@ -587,20 +877,16 @@ def run_chunk_worker(
         f"{'yes' if int(chunk['start_character']) == 0 else 'no'}\n\n"
         f"RAW SOURCE CHUNK:\n{chunk['text']}"
     )
-    instruction = (
-        "That submission was rejected. Call the required function again with a "
-        "complete corrected submission. Preserve every valid field. In "
-        "particular, citation text must use the field name `excerpt` and must "
-        "remain character-for-character in the supplied source chunk."
-    )
-    conversation = _repair_conversation(
-        user,
-        tool=CHUNK_SUBMISSION_TOOL,
-        attempt=attempt,
-        instruction=instruction,
-    )
-    if attempt.is_repair and conversation is None:
+    if attempt.is_repair:
+        instruction = (
+            "Return one complete corrected JSON object. Preserve every valid "
+            "field and preserve freeform Markdown with real newline characters. "
+            "Citation text must use the field name `excerpt` and remain "
+            "character-for-character in the supplied source chunk."
+        )
         user += "\n\n" + _repair_note(attempt, instruction)
+        if attempt.previous_response:
+            user += "\n\nYOUR PREVIOUS RESPONSE:\n" + attempt.previous_response
     activity = dict(request.activity)
     activity.setdefault(
         "context_metrics",
@@ -611,28 +897,12 @@ def run_chunk_worker(
             "selected_items": request.context.supplied_size.items,
         },
     )
-    message = gateway.complete(
+    return gateway.complete(
         CHUNK_SYSTEM,
         user,
         activity,
         attempt=attempt.number,
-        tools=[
-            _citation_submission_tool(
-                CHUNK_SUBMISSION_TOOL,
-                description=(
-                    "Submit the grounded document-chunk analysis. Every citation "
-                    "must carry id, page, and the exact source `excerpt`."
-                ),
-            )
-        ],
-        tool_choice={
-            "type": "function",
-            "function": {"name": CHUNK_SUBMISSION_TOOL},
-        },
-        conversation=conversation,
-        return_message=True,
     )
-    return _submission_response(message, CHUNK_SUBMISSION_TOOL)
 
 
 # --------------------------------------------------------------------------- #
@@ -643,14 +913,6 @@ def run_chunk_worker(
 # registry-backed `record_fragments`. Every extracted fact carries a citation id;
 # durable record identities are deliberately deferred to deterministic reduction.
 # --------------------------------------------------------------------------- #
-# The longest excerpt that still points at something. A citation is an anchor,
-# and an excerpt spanning the whole chunk anchors nothing while satisfying every
-# containment check trivially — which is what a bare "must appear in its excerpt"
-# rule rewards. Two lines is enough for a value the source wrapped mid-phrase.
-CITATION_EXCERPT_CHARACTERS = 240
-CITATION_EXCERPT_LINES = 2
-
-
 def _field_selectors(field_ids: Iterable[str]) -> list[str]:
     """Render registered field kinds as the exact selectors a response must use.
 
@@ -755,20 +1017,19 @@ purchase order, goods-received note, receipt, approval record, or similar.
 Report only what this chunk states. Do not infer a value from a filename, from
 metadata, or from what a document of this type usually contains.
 
-Submit summary_markdown, audit_notes_markdown, citations, registry, and
-record_fragments through the required function tool exactly once.
+Submit summary_sections, audit_notes, citations, registry, and record_fragments
+through the required function tool exactly once.
 
-summary_markdown is a short neutral description of what this record is and what
-it evidences. audit_notes_markdown records observations visible on the face of
-the document — a missing signature or date, an unreferenced attachment, an
-internal inconsistency, an alteration, an incomplete field. State the
-observation and why it matters. Do not conclude that a control operated or
-failed; that determination is made elsewhere by comparing this record against
-the accounting population. If there is no such observation, use: `No
-observations were identified on the face of this record.`
+summary_sections form a short neutral description of what this record is and
+what it evidences. audit_notes records observations visible on the face of the
+document — a missing signature or date, an unreferenced attachment, an internal
+inconsistency, an alteration, an incomplete field. State the observation and
+why it matters. Do not conclude that a control operated or failed; that
+determination is made elsewhere by comparing this record against the accounting
+population. If there is no such observation, return an empty audit_notes array.
 
-Support every substantive statement in summary_markdown and audit_notes_markdown
-with a citation marker such as [c1]. A fact the registered fields below cannot
+Support every substantive statement in summary_sections and audit_notes with a
+citation marker such as [c1]. A fact the registered fields below cannot
 carry still belongs in the narrative, and there it needs the same anchor as
 anything else.
 
@@ -878,6 +1139,7 @@ Fields read `group.kind.attribute|attribute`. Copy a `group`, `kind`, and one
 `attribute` exactly as written below.
 {_VOUCHER_REGISTRY_DESCRIPTORS}
 
+{STRUCTURED_NARRATIVE_RULES}
 {JSON_RULES}"""
 
 
@@ -904,12 +1166,14 @@ def _voucher_response_schema(response: str) -> Mapping[str, Any]:
         raise WorkerResponseValidationError(
             "`record_fragments` must be an array of objects"
         )
+    summary, audit_notes, narrative_contract = _structured_narrative(payload)
     return {
-        "summary_markdown": payload.get("summary_markdown"),
-        "audit_notes_markdown": payload.get("audit_notes_markdown"),
+        "summary_markdown": summary,
+        "audit_notes_markdown": audit_notes,
         "citations": citations,
         "registry": payload.get("registry"),
         "record_fragments": fragments,
+        "_narrative_contract": narrative_contract,
     }
 
 
@@ -1370,6 +1634,7 @@ def validate_voucher_proposal(
         )
     except ValueError as error:
         raise WorkerResponseValidationError(str(error)) from error
+    _validate_surviving_narrative_citations(proposal, validated)
     excerpts = {
         str(value.get("id") or ""): str(value.get("excerpt") or "")
         for value in validated["citations"]
@@ -1876,7 +2141,7 @@ def run_reduction_worker(
 CHUNK_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="documents.analysis_chunk.response",
     schema_hash=_sha256_text(
-        "document-chunk-response:json-object-with-summary-notes-citations"
+        "document-chunk-response:v3:freeform-markdown-and-citations"
     ),
     validator=_chunk_response_schema,
 )
@@ -1926,7 +2191,7 @@ VISUAL_WORKER = WorkerDefinition(
 VOUCHER_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="documents.analysis_voucher.response",
     schema_hash=_sha256_text(
-        "document-voucher-response:v2:registry-record-fragments"
+        "document-voucher-response:v3:structured-narrative-registry-record-fragments"
     ),
     validator=_voucher_response_schema,
 )
