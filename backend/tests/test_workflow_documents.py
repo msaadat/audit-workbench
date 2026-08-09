@@ -2830,13 +2830,8 @@ def test_voucher_prompt_states_the_allowed_selectors_for_each_record_kind():
     assert "available_field_kinds" not in descriptors
 
 
-def test_vouchers_stay_out_of_the_unscoped_planning_default():
-    """Analyzing evidence must never become a cost every planning run pays.
-
-    A voucher is analyzed when something names it. It is not swept into the
-    bounded default set, so an APM-only run over a workspace holding a voucher
-    library analyses the policies and nothing else.
-    """
+def test_document_analysis_includes_vouchers_but_planning_default_excludes_them():
+    """Standalone analysis and audit planning have intentionally different defaults."""
     ws = workspaces.create_workspace("Voucher scope isolation")
     policy = documents.add_document(
         ws, "Policy.txt", b"Purchases require documented approval.", category="policy"
@@ -2848,7 +2843,13 @@ def test_vouchers_stay_out_of_the_unscoped_planning_default():
 
     default_scope = document_capabilities.resolve_document_scope(ws, {})
     assert policy["id"] in default_scope.document_ids
-    assert voucher["id"] not in default_scope.document_ids
+    assert voucher["id"] in default_scope.document_ids
+
+    planning_scope = document_capabilities.resolve_document_scope(
+        ws, {"document_scope_mode": "planning"}
+    )
+    assert policy["id"] in planning_scope.document_ids
+    assert voucher["id"] not in planning_scope.document_ids
 
     # Naming it explicitly still selects it, under the voucher profile.
     named = document_capabilities.resolve_document_scope(

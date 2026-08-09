@@ -466,9 +466,9 @@ def test_auto_planning_selects_planning_relevant_documents_deterministically(
     # No model turn selects documents: relevance is a declared category rule.
     call_tags = [call["tag"] for call in fake.calls]
     assert "agent:document_selection" not in call_tags
-    # P9.9: the planning-relevant policy is analyzed first, as the declared
-    # ``documents.analysis_generated`` dependency of planning context, and the
-    # voucher is excluded from both by the same category rule.
+    # The planning-relevant policy is analyzed first, as the declared
+    # ``documents.analysis_generated`` dependency of planning context; the
+    # voucher is excluded from the audit workflow's planning scope.
     assert "agent:document_analysis_map" in call_tags
     assert document_analysis.compact_artifact(reloaded, policy["id"]) is not None
     assert document_analysis.compact_artifact(reloaded, voucher["id"]) is None
@@ -879,4 +879,3 @@ def test_rcm_import_rejects_invalid_enum_values():
 
     unchanged = client.get(f"{base}/rcm").json()["items"][0]
     assert unchanged["risk_rating"] == "medium"
-

@@ -390,6 +390,29 @@ export interface CycleAssertion {
   role_quantifier?: 'all' | 'any'
 }
 
+export type CycleAssertionPlacement =
+  | { before_key: string }
+  | { after_key: string }
+
+export interface CycleAssertionMutationResponse {
+  test_id: string
+  test_sha1: string
+  definition_sha1: string
+  assertion_keys: string[]
+  mutation: {
+    changed: boolean
+    new_assertion_keys: string[]
+    changed_assertion_keys: string[]
+    before_definition_sha1: string
+    after_definition_sha1: string
+    before_test_sha1: string
+    after_test_sha1: string
+    retained_result_count: number
+    pending_result_count: number
+    stale_disposition_count: number
+  }
+}
+
 export interface CycleVouchDefinition {
   population: {
     candidate_id: string
@@ -625,6 +648,15 @@ export interface DocTestItem {
     evaluated_definition_sha1: string | null
     stale: boolean
   }
+  disposition_history?: Array<{
+    state: CycleDispositionState
+    evaluated_definition_sha1: string | null
+    stale: boolean
+    superseded_at: string
+    superseded_by: string
+    reason: string
+    definition_sha1: string
+  }>
 }
 
 export interface DocTestRollup {

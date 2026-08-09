@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 are implemented. Checkpoint A passed automated and live procurement validation. The first Checkpoint B rebuild passed structural inspection, but the 2026-08-09 Checkpoint C run exposed a semantic authoring gap: the model could reference a bank-account requirement while generating unrelated amount/date/name assertions, and the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary Cycle vouch test was absent. The Phase 2/3 robustness remediation now requires typed registry-backed `required_comparisons`, exact generated-assertion coverage, and fail-closed handling of admitted substitutes. Because this is a clean contract change, the current procurement RCM/test chain is invalid for acceptance and Checkpoints B and C must be repeated through the normal UX. **Checkpoint C repeat pending.** Phase 4 and Phase 5 are complete against domain-neutral fixtures and frontend mocks. Checkpoint D has not been performed, and no Phase 5 procurement validation was performed. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0, the domain-neutral Phase 0.1 refactor, and Phases 1 through 6 are implemented. Checkpoint A passed automated and live procurement validation. The first Checkpoint B rebuild passed structural inspection, but the 2026-08-09 Checkpoint C run exposed a semantic authoring gap: the model could reference a bank-account requirement while generating unrelated amount/date/name assertions, and the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary Cycle vouch test was absent. The Phase 2/3 robustness remediation now requires typed registry-backed `required_comparisons`, exact generated-assertion coverage, and fail-closed handling of admitted substitutes. Because this is a clean contract change, the current procurement RCM/test chain is invalid for acceptance and Checkpoints B and C must be repeated through the normal UX. **Checkpoint C repeat pending.** Phases 4 through 6 are complete against domain-neutral fixtures and frontend mocks. Checkpoint D was not performed, Checkpoint E was not performed, and no Phase 5 or Phase 6 procurement validation was performed. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -1462,6 +1462,55 @@ and all procurement validation were not performed.
 - enforce stale disposition and re-sign-off; then stop at Checkpoint E for user-driven authoring, execution, and sign-off.
 
 Exit condition: adding a column neither destroys prior results nor leaves an old sign-off appearing current.
+
+Automated implementation record (2026-08-09): `POST
+/api/workspaces/{workspace_id}/doc-tests/{test_id}/assertions` now accepts one
+typed registry-backed assertion, the exact expected Document Test SHA-1, and an
+optional structural `before_key` or `after_key` placement. The request uses the
+normal workspace revision contract as its outer compare-and-swap boundary, and
+the service rechecks the expected test SHA while holding the workspace writer
+lock. The response is a bounded mutation receipt; the Phase 4 grid remains the
+only grid projection, while the canonical full-test and item endpoints remain
+the authority for raw values, citations, complete role-link paths, notes, and
+auditor sign-off.
+
+The mutation service validates the whole proposed definition against its exact
+registry reference and current value-free evidence manifest. Existing assertion
+keys are changed in place, new keys are assigned structurally when omitted, and
+unmentioned assertions are never replaced. Item rematerialization reuses an
+unaffected result only when its assertion, input, and registry hashes still
+match; its entire result object, comparisons, evidence references, and hashes
+remain byte-for-byte equivalent. Only new or changed keys receive `not_run`
+results, making the aggregate deterministic evaluation stale until execution.
+Execution then evaluates only those pending keys. A current auditor disposition
+becomes explicitly stale, its prior signed state is appended to durable history,
+and a fresh manual sign-off is required after the deterministic evaluation is
+current again.
+
+The registered `append_cycle_assertions` action uses the same service, requires
+an expected test SHA and bounded typed assertion list, emits a bounded receipt,
+and reconciles an interrupted post-commit write by exact structural assertion
+containment. Its read tool supplies an exact, role-filtered registry descriptor
+and the value-free Cycle definition, never materialized items, frozen row values,
+citations, or extracted evidence. The Cycle vouch grid now opens an authoring dialog only on demand;
+the dialog fetches the canonical full test, requires its SHA to match the grid,
+resolves the exact runtime pack descriptor by id/version/hash, and offers only
+structural role, role-set, row-column, field, operator, tolerance, quantifier,
+and placement choices. It contains no pack-specific TypeScript union or
+procurement-specific branch and does not reconstruct cycle outcomes client-side.
+
+Focused automated gates pass: 103 Cycle vouch backend tests across Phases 0-6,
+36 Document Test Q&A/review/simple-vouching and shared-workflow regressions, two
+action-ledger/reconciliation regressions, 12 focused Vitest/Vue Test Utils grid,
+navigation, state-restoration, and assertion-authoring tests, and the production
+Vue/TypeScript build. Two separately known TestClient/API harness cases were
+excluded from the bounded regression command; the reference-validation API
+case reproduced its shutdown hang in an isolated attempt, and neither case is
+recorded as passing. No live browser or provider validation was claimed.
+No procurement workspace was inspected, regenerated, migrated, reanalyzed,
+executed, signed off, or modified. **Checkpoint C repeat pending.** Checkpoint D
+was not performed. Checkpoint E was not performed. Procurement validation was
+not performed.
 
 ### Phase 7 - downstream outputs and manual regeneration handoff
 

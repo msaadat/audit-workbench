@@ -10,10 +10,9 @@ usability only), its semantic unit expansion, and the registry key for its
 declared context. The dependency edges come from the authoritative graph; this
 module never restates them.
 
-Document scope resolution lives here too because every capability in the group is
-scoped the same way: explicitly named documents, or — for an audit run that named
-nothing — the bounded set of planning-relevant documents under the same declared
-category rule the planning presets use.
+Document scope resolution lives here too. Standalone document analysis defaults
+to every imported document; audit planning uses the bounded planning-relevant
+subset that its context presets consume.
 
 Everything in this module is read-only. Unit expansion in particular never
 extracts: it reads the extraction cache, so asking what work remains cannot
@@ -45,10 +44,8 @@ CAPABILITY_IDS: tuple[str, ...] = (
 # run must never wait on, or imply, an auditor's review of a generated analysis.
 AUDIT_CAPABILITY_IDS: tuple[str, ...] = documents_workflow.AUDIT_CAPABILITY_IDS
 
-# The bounded fallback: with no explicitly named document the workflow analyses
-# at most this many planning-relevant documents. Analysis is one model turn per
-# chunk, so the cap is what keeps an unscoped audit from turning a large document
-# library into an unbounded provider bill.
+# The bounded planning fallback: with no explicitly named document, an audit
+# planning workflow analyzes at most this many planning-relevant documents.
 MAX_SCOPE_DOCUMENTS = 12
 
 # Extraction states that carry model-usable text. ``image_only`` and ``failed``
@@ -88,12 +85,8 @@ def _requested_ids(scope: dict) -> tuple[str, ...]:
 
 
 def _planning_relevant(document: dict) -> bool:
-    """The declared category rule planning material is selected by.
+    """Whether a document is eligible for unscoped audit planning."""
 
-    Identical to the rule the planning context and APM presets constrain their
-    document selectors on, so an audit that named no document analyses exactly
-    the documents planning would consume — never a transaction voucher.
-    """
     category = str(document.get("category") or "")
     return not category or category in intake.PLANNING_DOCUMENT_CATEGORIES
 
@@ -118,14 +111,12 @@ def analysis_profile(workspace: Workspace, document_id: str) -> str:
 
 
 def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
-    """Resolve explicitly named documents or a bounded planning-relevant set.
+    """Resolve the document workflow scope for its owning route.
 
-    Transaction evidence is deliberately *not* in the unscoped default. A voucher
-    is analyzed when something asks for it by id — the Documents tab, or a
-    vouching test that has linked it to a population row — because that is what
-    keeps an APM-only run from paying to analyze a voucher library it will never
-    read. Naming a voucher explicitly still selects it, and it is then mapped
-    under the voucher profile.
+    ``document_scope_mode == "planning"`` preserves the bounded
+    planning-relevant default used by the audit workflow. The standalone
+    document-analysis workflow defaults to every imported document, including
+    vouchers, which use their dedicated structured profile.
     """
 
     known = {str(item.get("id")): item for item in workspace.documents}
@@ -136,7 +127,7 @@ def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
     ambiguity: str | None = None
     if requested:
         document_ids = tuple(dict.fromkeys(selected))
-    else:
+    elif scope.get("document_scope_mode") == "planning":
         eligible = tuple(
             document_id
             for document_id in sorted(known)
@@ -149,6 +140,8 @@ def resolve_document_scope(workspace: Workspace, scope: dict) -> DocumentScope:
                 f"was named; analysing the first {MAX_SCOPE_DOCUMENTS} in identifier "
                 "order. Name the documents to analyse instead."
             )
+    else:
+        document_ids = tuple(sorted(known))
     return DocumentScope(
         document_ids=document_ids,
         requested=requested,

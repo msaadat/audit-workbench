@@ -15,7 +15,7 @@ import unicodedata
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, Mapping
 
@@ -2938,6 +2938,257 @@ def validate_cycle_test_semantics(
     return validated
 
 
+def _assigned_assertion_key(
+    assertion: Mapping[str, object],
+    *,
+    existing_keys: set[str],
+) -> str:
+    """Return a structural immutable key for a newly authored assertion."""
+
+    supplied = assertion.get("key")
+    if supplied not in (None, ""):
+        return _key(supplied, "assertion.key")
+    base = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        str(assertion.get("label") or assertion.get("operator") or "assertion")
+        .strip()
+        .lower(),
+    ).strip("_-") or "assertion"
+    if not base[0].isalnum():
+        base = f"assertion_{base}"
+    candidate = base
+    suffix = 2
+    while candidate in existing_keys:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _validate_assertion_mutation_shape(
+    value: Mapping[str, object], *, label: str
+) -> None:
+    """Keep the incremental write contract narrow before semantic validation."""
+
+    unknown = set(value) - {
+        "key",
+        "label",
+        "left",
+        "right",
+        "operator",
+        "tolerance",
+        "role_quantifier",
+    }
+    if unknown:
+        raise CycleSchemaError(
+            f"{label} contains unsupported field '{sorted(unknown)[0]}'."
+        )
+    for side in ("left", "right"):
+        if value.get(side) is None:
+            continue
+        operand = _object(value.get(side), f"{label}.{side}")
+        source = str(operand.get("source") or "")
+        allowed = {
+            "row": {"source", "column", "value_type"},
+            "role": {"source", "role", "field"},
+            "roles": {"source", "roles", "field", "entry_quantifier"},
+        }.get(source, {"source"})
+        operand_unknown = set(operand) - allowed
+        if operand_unknown:
+            raise CycleSchemaError(
+                f"{label}.{side} contains unsupported field "
+                f"'{sorted(operand_unknown)[0]}'."
+            )
+        if source in {"role", "roles"} and operand.get("field") is not None:
+            field = _object(operand.get("field"), f"{label}.{side}.field")
+            field_unknown = set(field) - {"group", "kind", "attribute"}
+            if field_unknown:
+                raise CycleSchemaError(
+                    f"{label}.{side}.field contains unsupported field "
+                    f"'{sorted(field_unknown)[0]}'."
+                )
+    tolerance = value.get("tolerance")
+    if isinstance(tolerance, Mapping):
+        tolerance_unknown = set(tolerance) - {"absolute", "percent"}
+        if tolerance_unknown:
+            raise CycleSchemaError(
+                f"{label}.tolerance contains unsupported field "
+                f"'{sorted(tolerance_unknown)[0]}'."
+            )
+
+
+def _assertion_placement_index(
+    assertions: list[dict], placement: object,
+) -> int:
+    if placement is None:
+        return len(assertions)
+    value = _object(placement, "placement")
+    unknown = set(value) - {"before_key", "after_key"}
+    if unknown:
+        raise CycleSchemaError(
+            f"placement contains unsupported field '{sorted(unknown)[0]}'."
+        )
+    before = value.get("before_key")
+    after = value.get("after_key")
+    if (before in (None, "")) == (after in (None, "")):
+        raise CycleSchemaError(
+            "placement must name exactly one before_key or after_key."
+        )
+    target = _key(before or after, "placement assertion key")
+    keys = [str(assertion.get("key") or "") for assertion in assertions]
+    if target not in keys:
+        raise CycleSchemaError(f"Placement assertion '{target}' was not found.")
+    index = keys.index(target)
+    return index if before not in (None, "") else index + 1
+
+
+def mutate_cycle_assertions(
+    workspace,
+    test: Mapping[str, object],
+    assertions: Iterable[Mapping[str, object]],
+    *,
+    placement: object = None,
+    actor: str = "auditor",
+    manifest: Mapping[str, object] | None = None,
+) -> tuple[dict, dict]:
+    """Upsert typed assertion columns and selectively stale their item results.
+
+    The definition remains the only executable source.  Existing results are
+    projected through :func:`materialize_cycle_items`, whose assertion and input
+    hashes retain complete comparison/evidence payloads only when they are
+    still exact.  This function never evaluates a result.
+    """
+
+    current = validate_cycle_test(copy.deepcopy(dict(test)))
+    incoming = [dict(assertion) for assertion in assertions]
+    if not incoming:
+        raise CycleSchemaError("Add at least one assertion.")
+
+    existing = [dict(value) for value in current["definition"]["assertions"]]
+    existing_by_key = {str(value["key"]): value for value in existing}
+    assigned: list[dict] = []
+    seen = set(existing_by_key)
+    incoming_keys: set[str] = set()
+    for index, assertion in enumerate(incoming):
+        _validate_assertion_mutation_shape(
+            assertion, label=f"assertions[{index}]"
+        )
+        key = _assigned_assertion_key(assertion, existing_keys=seen)
+        if key in incoming_keys:
+            raise CycleSchemaError(f"Duplicate assertion key '{key}' in mutation.")
+        assertion["key"] = key
+        assigned.append(assertion)
+        incoming_keys.add(key)
+        seen.add(key)
+
+    changed_keys: list[str] = []
+    new_assertions: list[dict] = []
+    proposed = []
+    replacements = {str(value["key"]): value for value in assigned}
+    for existing_assertion in existing:
+        key = str(existing_assertion["key"])
+        replacement = replacements.pop(key, None)
+        if replacement is None:
+            proposed.append(existing_assertion)
+            continue
+        proposed.append(replacement)
+        if replacement != existing_assertion:
+            changed_keys.append(key)
+    for assertion in assigned:
+        if str(assertion["key"]) in existing_by_key:
+            continue
+        new_assertions.append(assertion)
+
+    if placement is not None and not new_assertions:
+        raise CycleSchemaError("placement applies only when adding a new assertion.")
+    if new_assertions:
+        index = _assertion_placement_index(proposed, placement)
+        proposed[index:index] = new_assertions
+
+    output = copy.deepcopy(dict(test))
+    output.setdefault("definition", {})["assertions"] = proposed
+    rcm_id = str(output.get("rcm_id") or "")
+    rcm_row = next(
+        (row for row in workspace.rcm if str(row.get("id") or "") == rcm_id),
+        None,
+    )
+    if rcm_row is None:
+        raise CycleSchemaError(f"RCM row '{rcm_id}' not found.")
+    semantic_manifest = manifest or transaction_evidence_manifest(
+        workspace, rcm_row.get("control_attributes") or []
+    )
+    output = validate_cycle_test_semantics(
+        output,
+        rcm_row=rcm_row,
+        manifest=semantic_manifest,
+    )
+
+    before_definition_sha1 = cycle_definition_sha1(current)
+    after_definition_sha1 = cycle_definition_sha1(output)
+    definition_changed = before_definition_sha1 != after_definition_sha1
+    before_items = {
+        str(item.get("id") or ""): copy.deepcopy(item)
+        for item in test.get("items") or []
+    }
+    if definition_changed:
+        output["items"] = materialize_cycle_items(workspace, output)
+    else:
+        output["items"] = copy.deepcopy(list(test.get("items") or []))
+
+    stale_dispositions = 0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for item in output.get("items") or []:
+        prior = before_items.get(str(item.get("id") or "")) or {}
+        history = copy.deepcopy(list(prior.get("disposition_history") or []))
+        prior_disposition = dict(prior.get("disposition") or {})
+        if (
+            definition_changed
+            and prior_disposition.get("state") in {"confirmed", "exception"}
+            and not prior_disposition.get("stale")
+        ):
+            history.append(
+                {
+                    **prior_disposition,
+                    "superseded_at": now,
+                    "superseded_by": actor,
+                    "reason": "cycle_assertion_definition_changed",
+                    "definition_sha1": before_definition_sha1,
+                }
+            )
+            stale_dispositions += 1
+        if history:
+            item["disposition_history"] = history
+
+    if definition_changed and output.get("items"):
+        output["status"] = "review_required"
+
+    retained_results = 0
+    pending_results = 0
+    for item in output.get("items") or []:
+        prior_results = (
+            before_items.get(str(item.get("id") or ""), {}).get(
+                "result_by_assertion"
+            )
+            or {}
+        )
+        for key, result in (item.get("result_by_assertion") or {}).items():
+            if key in prior_results and result == prior_results[key]:
+                retained_results += 1
+            if result.get("verdict") == "not_run":
+                pending_results += 1
+
+    return output, {
+        "changed": definition_changed,
+        "new_assertion_keys": [str(value["key"]) for value in new_assertions],
+        "changed_assertion_keys": changed_keys,
+        "before_definition_sha1": before_definition_sha1,
+        "after_definition_sha1": after_definition_sha1,
+        "retained_result_count": retained_results,
+        "pending_result_count": pending_results,
+        "stale_disposition_count": stale_dispositions,
+    }
+
+
 def _validate_assertion_meaning(
     assertion: Mapping[str, object],
     *,
@@ -3530,6 +3781,9 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
         }
         old = existing_by_id.get(item_id) or {}
         old_results = old.get("result_by_assertion") or {}
+        prior_evaluation_current = str(
+            (old.get("evaluation") or {}).get("state") or "not_run"
+        ) in CURRENT_EVALUATION_STATES
         for assertion in assertions:
             key = str(assertion["key"])
             assertion_sha1 = _sha1_hash(assertion)
@@ -3544,14 +3798,17 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
                 item["result_by_assertion"][key] = dict(old_result)
             else:
                 item["result_by_assertion"][key] = {
-                    **dict(old_result),
                     "registry_definition_hash": reference.definition_hash,
                     "assertion_sha1": assertion_sha1,
                     "input_hashes": inputs,
                     "verdict": "not_run",
+                    "display": "",
                     "comparisons": [],
                     "evidence_refs": [],
-                    "stale": bool(old_result),
+                    # Adding one assertion to a formerly evaluated item makes
+                    # the aggregate evaluation stale even though that new key
+                    # has no prior result object of its own.
+                    "stale": bool(old_result) or prior_evaluation_current,
                     "result_sha1": None,
                 }
         item["evaluation"]["state"] = _aggregate_evaluation(item)
@@ -3566,6 +3823,10 @@ def materialize_cycle_items(workspace, test: Mapping[str, object]) -> list[dict]
         )
         if old.get("runner_note"):
             item["runner_note"] = str(old["runner_note"])
+        if old.get("disposition_history"):
+            item["disposition_history"] = copy.deepcopy(
+                list(old.get("disposition_history") or [])
+            )
         old_disposition = dict(old.get("disposition") or {})
         if old_disposition:
             item["disposition"] = {
@@ -4221,6 +4482,30 @@ def normalize_cycle_item(
         raise CycleSchemaError("Cycle item disposition state is unsupported.")
     if not isinstance(disposition.get("stale", False), bool):
         raise CycleSchemaError("Cycle item disposition stale must be boolean.")
+    disposition_history = _list(
+        item.get("disposition_history") or [],
+        "cycle item.disposition_history",
+    )
+    for index, raw_history in enumerate(disposition_history):
+        history = _object(
+            raw_history, f"cycle item.disposition_history[{index}]"
+        )
+        if history.get("state") not in {"confirmed", "exception"}:
+            raise CycleSchemaError(
+                "Cycle item disposition history must contain a signed disposition."
+            )
+        if not isinstance(history.get("stale", False), bool):
+            raise CycleSchemaError(
+                "Cycle item disposition history stale must be boolean."
+            )
+        _text(
+            history.get("superseded_at"),
+            f"cycle item.disposition_history[{index}].superseded_at",
+        )
+        _text(
+            history.get("reason"),
+            f"cycle item.disposition_history[{index}].reason",
+        )
     results = item.get("result_by_assertion") or {}
     if not isinstance(results, dict):
         raise CycleSchemaError("cycle item.result_by_assertion must be an object.")
@@ -4240,6 +4525,8 @@ def normalize_cycle_item(
         disposition=disposition,
         result_by_assertion=results,
     )
+    if disposition_history or "disposition_history" in item:
+        item["disposition_history"] = disposition_history
     item.pop("state", None)
     return item
 

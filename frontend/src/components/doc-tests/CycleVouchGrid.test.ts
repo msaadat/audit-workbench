@@ -80,7 +80,7 @@ describe('CycleVouchGrid', () => {
   it('loads only the paged grid projection and labels targeted scope persistently', async () => {
     const get = vi.spyOn(api, 'get').mockResolvedValue(payload)
     const wrapper = mount(CycleVouchGrid, {
-      props: { workspaceId: 'WS-1', testId: 'DT-CYCLE', running: false, busy: false },
+      props: { workspaceId: 'WS-1', testId: 'DT-CYCLE', running: false, busy: false, metadata: null },
       global,
     })
     await flushPromises()
@@ -96,7 +96,7 @@ describe('CycleVouchGrid', () => {
     vi.spyOn(api, 'get').mockResolvedValue(payload)
     const openDetail = vi.fn()
     const wrapper = mount(CycleVouchGrid, {
-      props: { workspaceId: 'WS-1', testId: 'DT-CYCLE', running: false, busy: false },
+      props: { workspaceId: 'WS-1', testId: 'DT-CYCLE', running: false, busy: false, metadata: null },
       attrs: { onOpenDetail: openDetail },
       global,
     })
@@ -127,6 +127,7 @@ describe('CycleVouchGrid', () => {
           test-id="DT-CYCLE"
           :running="false"
           :busy="false"
+          :metadata="null"
           @open-detail="detailOpen = true"
         />
         <button v-if="detailOpen" class="back" @click="detailOpen = false">Back</button>

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 
-from .. import analytics, tooling, validation
+from .. import analytics, cycle_vouching, tooling, validation
 from ..workspaces import Workspace, WorkspaceError
 from . import actions, artifact_index
 
@@ -140,6 +140,88 @@ def _bounded_record(value: object) -> tuple[object, bool]:
     return encoded[:MAX_ARTIFACT_CHARS].rstrip() + "…", True
 
 
+def _model_artifact_record(record: object) -> object:
+    """Project Cycle-vouch authoring context without provider-visible rows.
+
+    The action interpreter needs the current definition SHA, structural roles,
+    assertions, and exact registry descriptors to author
+    ``append_cycle_assertions``. It never needs materialized items, frozen row
+    values, citations, or extracted evidence for that mutation.
+    """
+
+    if not isinstance(record, dict) or record.get("kind") != "cycle_vouch":
+        return record
+    reference = record.get("registry") or {}
+    structural = cycle_vouching.metadata()
+    pack = next(
+        (
+            value
+            for value in (structural.get("registry") or {}).get("packs") or []
+            if value.get("id") == reference.get("pack_id")
+            and value.get("version") == reference.get("pack_version")
+            and value.get("definition_hash") == reference.get("definition_hash")
+        ),
+        None,
+    )
+    definition = record.get("definition") or {}
+    if pack is not None:
+        role_kinds = {
+            str(role.get("record_kind") or "")
+            for role in definition.get("roles") or []
+            if isinstance(role, dict)
+        }
+        record_kinds = [
+            value
+            for value in pack.get("record_kinds") or []
+            if value.get("id") in role_kinds
+        ]
+        available_fields = {
+            str(field_id)
+            for value in record_kinds
+            for field_id in value.get("available_field_kinds") or []
+        }
+        pack = {
+            key: pack.get(key)
+            for key in ("id", "label", "version", "definition_hash")
+        } | {
+            "record_kinds": record_kinds,
+            "field_kinds": [
+                value
+                for value in pack.get("field_kinds") or []
+                if value.get("id") in available_fields
+            ],
+        }
+    return {
+        key: record.get(key)
+        for key in (
+            "id",
+            "kind",
+            "title",
+            "status",
+            "sha1",
+            "registry",
+            "rcm_id",
+            "requirement_refs",
+            "procedure_key",
+        )
+    } | {
+        "definition": {
+            "population": definition.get("population") or {},
+            "roles": definition.get("roles") or [],
+            "assertions": definition.get("assertions") or [],
+        },
+        "assertion_authoring": {
+            "pack": pack,
+            "operators": structural.get("operators") or [],
+            "entry_quantifiers": structural.get("entry_quantifiers") or [],
+            "role_quantifiers": structural.get("role_quantifiers") or [],
+            "max_assertions": (structural.get("limits") or {}).get(
+                "max_assertions"
+            ),
+        },
+    }
+
+
 class ActionToolSession:
     """Local dispatch for the action planner's explicitly limited read tools."""
 
@@ -178,7 +260,10 @@ class ActionToolSession:
         entry = artifact_index.by_ref(artifact_index.build(self.workspace), ref)
         if entry is None:
             raise WorkspaceError(f"Artifact '{ref}' was not found.")
-        record = actions.artifact_snapshot(self.workspace, str(entry["kind"]), str(entry["id"]))
+        record = actions.artifact_snapshot(
+            self.workspace, str(entry["kind"]), str(entry["id"])
+        )
+        record = _model_artifact_record(record)
         bounded, truncated = _bounded_record(record)
         return {
             "artifact": {

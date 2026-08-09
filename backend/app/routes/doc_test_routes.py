@@ -136,6 +136,42 @@ async def get_cycle_vouch_grid(
         raise WorkspaceError(str(error)) from error
 
 
+@router.post("/doc-tests/{test_id}/assertions")
+async def append_cycle_assertion(
+    workspace_id: str, test_id: str, payload: dict = Body(...)
+):
+    """Append or change one typed Cycle-vouch assertion definition."""
+
+    unknown = set(payload) - {"expected_test_sha1", "assertion", "placement"}
+    if unknown:
+        raise WorkspaceError(
+            f"Unknown assertion-mutation field '{sorted(unknown)[0]}'."
+        )
+    assertion = payload.get("assertion")
+    if not isinstance(assertion, dict):
+        raise WorkspaceError("assertion must be an object.")
+    outcome = await asyncio.to_thread(
+        doc_tests.append_cycle_assertions,
+        _ws(workspace_id),
+        test_id,
+        expected_test_sha1=str(payload.get("expected_test_sha1") or ""),
+        assertions=[assertion],
+        placement=payload.get("placement"),
+        actor="auditor",
+    )
+    test = outcome["test"]
+    return {
+        "test_id": str(test.get("id") or test_id),
+        "test_sha1": str(test.get("sha1") or ""),
+        "definition_sha1": cycle_vouching.cycle_definition_sha1(test),
+        "assertion_keys": [
+            str(assertion.get("key") or "")
+            for assertion in (test.get("definition") or {}).get("assertions") or []
+        ],
+        "mutation": outcome["mutation"],
+    }
+
+
 @router.patch("/doc-tests/{test_id}")
 async def patch_document_test(workspace_id: str, test_id: str, payload: dict = Body(...)):
     return doc_tests.update_test(_ws(workspace_id), test_id, payload)

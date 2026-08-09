@@ -37,8 +37,19 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .. import (
-    analytics, data_tests, doc_tests, explore, findings, intake, model_context,
-    rcm_execution, report, sandbox, validation, working_papers,
+    analytics,
+    cycle_vouching,
+    data_tests,
+    doc_tests,
+    explore,
+    findings,
+    intake,
+    model_context,
+    rcm_execution,
+    report,
+    sandbox,
+    validation,
+    working_papers,
 )
 from ..field_names import resolve_columns
 from ..workspaces import (
@@ -151,10 +162,55 @@ def validate_action(action: dict) -> ActionDefinition:
                 raise WorkspaceError(f"Invalid custom analysis code: {error}") from error
     elif definition.type == "create_document_test":
         _validate_document_test_action(action.get("args") or {})
+    elif definition.type == "append_cycle_assertions":
+        _validate_cycle_assertion_action(action.get("args") or {})
     target = action.get("target") or {}
     if definition.target_kinds and target.get("kind") not in definition.target_kinds:
         raise WorkspaceError(f"Action '{definition.type}' requires target kind: {', '.join(definition.target_kinds)}.")
     return definition
+
+
+def _validate_cycle_assertion_action(args: dict) -> None:
+    unknown = set(args) - {"expected_test_sha1", "assertions", "placement"}
+    if unknown:
+        raise WorkspaceError(
+            f"Unknown append_cycle_assertions field '{sorted(unknown)[0]}'."
+        )
+    if not str(args.get("expected_test_sha1") or "").strip():
+        raise WorkspaceError(
+            "append_cycle_assertions requires expected_test_sha1."
+        )
+    assertions = args.get("assertions")
+    if not isinstance(assertions, list) or not assertions:
+        raise WorkspaceError("append_cycle_assertions requires typed assertions.")
+    if len(assertions) > cycle_vouching.MAX_ASSERTIONS:
+        raise WorkspaceError(
+            f"append_cycle_assertions accepts at most {cycle_vouching.MAX_ASSERTIONS} assertions."
+        )
+    for index, assertion in enumerate(assertions):
+        if not isinstance(assertion, dict):
+            raise WorkspaceError(f"args.assertions[{index}] must be an object.")
+        if not str(assertion.get("key") or "").strip():
+            raise WorkspaceError(
+                f"args.assertions[{index}].key is required for an agent mutation."
+            )
+    placement = args.get("placement")
+    if placement is not None:
+        if not isinstance(placement, dict):
+            raise WorkspaceError("append_cycle_assertions placement must be an object.")
+        unknown_placement = set(placement) - {"before_key", "after_key"}
+        if unknown_placement:
+            raise WorkspaceError(
+                "Unknown append_cycle_assertions placement field "
+                f"'{sorted(unknown_placement)[0]}'."
+            )
+        before = str(placement.get("before_key") or "").strip()
+        after = str(placement.get("after_key") or "").strip()
+        if bool(before) == bool(after):
+            raise WorkspaceError(
+                "append_cycle_assertions placement requires exactly one "
+                "before_key or after_key."
+            )
 
 
 def _validate_document_test_action(args: dict) -> None:
@@ -377,6 +433,11 @@ def expected_postcondition(action: dict) -> dict:
         return {"fields": dict(args.get("changes") or {})}
     if type_ == "update_test_comparisons":
         return {"fields": {"checks": args.get("checks") or []}}
+    if type_ == "append_cycle_assertions":
+        return {
+            "cycle_assertions": copy.deepcopy(args.get("assertions") or []),
+            "placement": copy.deepcopy(args.get("placement")),
+        }
     if type_ in {"attach_document_to_test", "detach_document_from_test"}:
         return {"document_id": args.get("document_id"), "attached": type_.startswith("attach_")}
     if type_ == "edit_report":
@@ -402,6 +463,23 @@ def postcondition_matches(current: dict | None, expected: dict) -> bool:
         attached = document_id in (current.get("document_ids") or [])
         if attached != bool(expected.get("attached")):
             return False
+    if expected.get("cycle_assertions") is not None:
+        current_assertions = list(
+            ((current.get("definition") or {}).get("assertions") or [])
+        )
+        positions = {
+            str(assertion.get("key") or ""): index
+            for index, assertion in enumerate(current_assertions)
+            if isinstance(assertion, dict)
+        }
+        for assertion in expected.get("cycle_assertions") or []:
+            key = str(assertion.get("key") or "")
+            if key not in positions or current_assertions[positions[key]] != assertion:
+                return False
+        # Exact containment is the durable postcondition. A mixed mutation can
+        # update existing assertions in place while inserting only its new keys
+        # at ``placement``; treating every submitted key as inserted would make
+        # crash reconciliation reject a mutation that committed successfully.
     if expected.get("reconcile") == "replace" and current.get("markdown") != current.get("generated_markdown"):
         return False
     return bool(expected)
@@ -731,6 +809,21 @@ def _execute(workspace: Workspace, action: dict, run: dict) -> dict:
     if type_ == "edit_document_test":
         item = doc_tests.update_test(workspace, target_id, args["changes"])
         return _receipt(action, item, refs=[f"doctest:{target_id}"])
+    if type_ == "append_cycle_assertions":
+        outcome = doc_tests.append_cycle_assertions(
+            workspace,
+            target_id,
+            expected_test_sha1=args["expected_test_sha1"],
+            assertions=args["assertions"],
+            placement=args.get("placement"),
+            actor=f"agent:{run['id']}",
+        )
+        return _receipt(
+            action,
+            outcome["test"],
+            refs=[f"doctest:{target_id}"],
+            result=outcome["mutation"],
+        )
     if type_ == "delete_document_test":
         doc_tests.remove_test(workspace, target_id); return _receipt(action, refs=[f"doctest:{target_id}"])
     if type_ in {"attach_document_to_test", "detach_document_from_test", "update_test_comparisons"}:
@@ -997,6 +1090,23 @@ _register(
     },
 )
 _register("edit_document_test", "Edit a document test", "reversible_mutation", ("doctest",), ("changes",), {"changes": OBJ})
+_register(
+    "append_cycle_assertions",
+    "Append or change typed assertions on one registry-backed Cycle vouch test",
+    "reversible_mutation",
+    ("doctest",),
+    ("expected_test_sha1", "assertions"),
+    {
+        "expected_test_sha1": STR,
+        "assertions": {"type": "array", "items": {"type": "object"}},
+        "placement": {
+            "type": "object",
+            "properties": {"before_key": STR, "after_key": STR},
+            "additionalProperties": False,
+        },
+    },
+    model="draft",
+)
 _register("delete_document_test", "Delete a document test", "destructive", ("doctest",))
 _register("attach_document_to_test", "Attach a document to a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})
 _register("detach_document_from_test", "Detach a document from a test item", "reversible_mutation", ("doctest_item",), ("document_id",), {"document_id": STR})

@@ -943,6 +943,14 @@ def install_resolution(workspace: Workspace, run: dict, resolution: dict) -> Non
         # checkpoint answer or an explicitly selected document survives a resume.
         # Explicitly named documents normally arrive as ``document:<id>`` target
         # refs, which the scope resolver reads directly.
+        # A standalone document-analysis command covers the full inventory;
+        # document generation scheduled by the audit workflow remains limited to
+        # planning-relevant material unless the auditor explicitly names a file.
+        scope["document_scope_mode"] = (
+            "planning"
+            if definition_id == audit_workflow.WORKFLOW_ID
+            else "all"
+        )
         scope["document_ids"] = [
             str(value)
             for value in (

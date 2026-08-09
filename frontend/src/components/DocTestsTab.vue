@@ -559,10 +559,12 @@ onUnmounted(unsubscribe)
           :testId="selectedCycleTestId"
           :running="running"
           :busy="agent.isActive.value"
+          :metadata="cycleMetadata"
           @close="closeCycleGrid"
           @error="fail"
           @openDetail="openCycleDetail"
           @run="runTest"
+          @changed="refresh"
         />
         <template v-if="currentTest && currentItem">
           <div class="detail-return">

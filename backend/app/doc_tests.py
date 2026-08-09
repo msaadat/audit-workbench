@@ -1466,6 +1466,52 @@ def update_comparisons(workspace: Workspace, test_id: str, item_id: str, checks:
     return save_test(workspace, test)
 
 
+def append_cycle_assertions(
+    workspace: Workspace,
+    test_id: str,
+    *,
+    expected_test_sha1: str,
+    assertions: list[dict],
+    placement: object = None,
+    actor: str = "auditor",
+) -> dict:
+    """Atomically upsert canonical Cycle-vouch assertions under two CAS gates."""
+
+    from .workspace_transactions import ParentConflict
+
+    expected = str(expected_test_sha1 or "").strip()
+    if not expected:
+        raise WorkspaceError("expected_test_sha1 is required.")
+    with workspace_write_lock(workspace.root):
+        test = load_test(workspace, test_id)
+        current_sha1 = str(test.get("sha1") or "")
+        if current_sha1 != expected:
+            raise ParentConflict(
+                f"doctest:{test_id}", expected, current_sha1, workspace.revision
+            )
+        if not is_cycle_test(test):
+            raise WorkspaceError(
+                "Assertion columns can be authored only on cycle_vouch tests."
+            )
+        try:
+            mutated, mutation = cycle_vouching.mutate_cycle_assertions(
+                workspace,
+                test,
+                assertions,
+                placement=placement,
+                actor=actor,
+            )
+        except cycle_vouching.CycleSchemaError as error:
+            raise WorkspaceError(str(error)) from error
+        if mutation["changed"]:
+            mutated = save_test(workspace, mutated)
+        else:
+            mutated = test
+        mutation["before_test_sha1"] = current_sha1
+        mutation["after_test_sha1"] = str(mutated.get("sha1") or current_sha1)
+        return {"test": mutated, "mutation": mutation}
+
+
 # The only transitions an auditor may make by hand: sign off a result either
 # way, or send it back for re-run. ``agent_checked``/``manual_review`` are
 # outcomes the runner produces, never a state a person picks.

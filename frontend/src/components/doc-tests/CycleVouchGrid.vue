@@ -4,13 +4,16 @@ import Button from 'primevue/button'
 
 import { api } from '../../api'
 import type {
+  CycleAssertionMutationResponse,
   CycleAssertionVerdict,
   CycleEvaluationState,
   CycleVouchGridComparison,
   CycleVouchGridPayload,
+  CycleVouchMetadata,
 } from '../../types'
 import UiEmptyState from '../ui/UiEmptyState.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
+import CycleAssertionDialog from './CycleAssertionDialog.vue'
 import {
   EMPTY_CYCLE_GRID_FILTERS,
   cycleGridPageLabel,
@@ -23,12 +26,14 @@ const props = defineProps<{
   testId: string
   running: boolean
   busy: boolean
+  metadata: CycleVouchMetadata | null
 }>()
 const emit = defineEmits<{
   close: []
   error: [summary: string, error: unknown]
   openDetail: [itemId: string, assertionKey: string | null]
   run: []
+  changed: []
 }>()
 
 const payload = ref<CycleVouchGridPayload | null>(null)
@@ -39,6 +44,7 @@ const limit = ref(100)
 const filters = reactive<CycleGridFilters>({ ...EMPTY_CYCLE_GRID_FILTERS })
 const selectedCell = ref<{ itemId: string; assertionKey: string } | null>(null)
 const scrollContainer = ref<HTMLElement | null>(null)
+const authorOpen = ref(false)
 
 const evaluationOptions: Array<{ value: '' | CycleEvaluationState; label: string }> = [
   { value: '', label: 'All evaluations' },
@@ -170,6 +176,12 @@ function openDetail(itemId: string, assertionKey: string | null) {
   emit('openDetail', itemId, assertionKey)
 }
 
+async function assertionSaved(_response: CycleAssertionMutationResponse) {
+  selectedCell.value = null
+  await loadGrid()
+  emit('changed')
+}
+
 watch(
   () => [props.testId, offset.value, limit.value] as const,
   ([testId], previous) => {
@@ -195,6 +207,14 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
         <h3>{{ payload?.title ?? 'Cycle vouch review' }}</h3>
       </div>
       <div class="grid-actions">
+        <Button
+          label="Add or change assertion"
+          icon="pi pi-plus"
+          size="small"
+          outlined
+          :disabled="busy || !payload || !metadata"
+          @click="authorOpen = true"
+        />
         <Button
           label="Run test"
           icon="pi pi-play"
@@ -363,6 +383,17 @@ defineExpose({ filters, focusSelectedCell, loadGrid, offset, scrollContainer, se
       <Button label="Try again" icon="pi pi-refresh" size="small" outlined @click="loadGrid" />
     </UiEmptyState>
     <UiEmptyState v-else icon="pi pi-spin pi-spinner" title="Loading Cycle vouch grid" description="Reading the bounded grid projection." compact />
+
+    <CycleAssertionDialog
+      v-if="payload"
+      v-model="authorOpen"
+      :workspaceId="workspaceId"
+      :testId="testId"
+      :expectedTestSha1="payload.test_sha1"
+      :metadata="metadata"
+      @saved="assertionSaved"
+      @error="(summary, error) => emit('error', summary, error)"
+    />
   </section>
 </template>
 
