@@ -70,10 +70,46 @@ onBeforeUnmount(() => void unmount())
   background: var(--aw-panel);
 }
 
-/* Compact the Crepe top bar (toolbar) and halve the editor's text margins. */
+/*
+ * Crepe intentionally ships a self-contained document theme. Map that theme
+ * to the workbench tokens here so the editor is a native surface rather than
+ * a second visual language inside the app.
+ */
+.markdown-editor :deep(.milkdown) {
+  --crepe-color-background: var(--aw-panel);
+  --crepe-color-on-background: var(--aw-ink);
+  --crepe-color-surface: var(--aw-raised);
+  --crepe-color-surface-low: var(--aw-canvas);
+  --crepe-color-on-surface: var(--aw-ink);
+  --crepe-color-on-surface-variant: var(--aw-ink-soft);
+  --crepe-color-outline: var(--aw-border-strong);
+  --crepe-color-primary: var(--aw-teal);
+  --crepe-color-secondary: var(--aw-teal-soft);
+  --crepe-color-on-secondary: var(--aw-teal);
+  --crepe-color-inverse: var(--aw-navy-900);
+  --crepe-color-on-inverse: var(--aw-on-navy);
+  --crepe-color-inline-code: var(--aw-ink);
+  --crepe-color-error: var(--aw-danger);
+  --crepe-color-hover: var(--aw-teal-soft);
+  --crepe-color-selected: var(--aw-teal-line);
+  --crepe-color-inline-area: var(--aw-raised);
+  --crepe-font-title: var(--aw-font-sans);
+  --crepe-font-default: var(--aw-font-sans);
+  --crepe-font-code: var(--aw-font-mono);
+  --crepe-shadow-1: var(--aw-shadow-sm);
+  --crepe-shadow-2: var(--aw-shadow-md);
+}
+
+.markdown-editor:focus-within {
+  border-color: var(--aw-teal-600);
+  box-shadow: 0 0 0 1px var(--aw-teal-600);
+}
+
+/* Compact the Crepe top bar (toolbar) and align its controls with PrimeVue. */
 .markdown-editor :deep(.milkdown-top-bar) {
   min-height: 32px;
   padding: 0 8px;
+  border-bottom-color: var(--aw-border);
 }
 
 .markdown-editor :deep(.milkdown-top-bar .top-bar-divider) {
@@ -88,6 +124,7 @@ onBeforeUnmount(() => void unmount())
 .markdown-editor :deep(.milkdown-top-bar .top-bar-heading-button) {
   height: 24px;
   padding: 2px 2px 2px 6px;
+  border-radius: var(--aw-radius-control);
 }
 
 .markdown-editor :deep(.milkdown-top-bar .top-bar-heading-label) {
@@ -111,6 +148,7 @@ onBeforeUnmount(() => void unmount())
   height: 24px;
   margin: 4px;
   padding: 2px;
+  border-radius: var(--aw-radius-control);
 }
 
 .markdown-editor :deep(.milkdown-top-bar .top-bar-item svg) {
@@ -123,6 +161,7 @@ onBeforeUnmount(() => void unmount())
   height: 24px;
   margin: 4px;
   padding: 2px;
+  border-radius: var(--aw-radius-control);
 }
 
 .markdown-editor :deep(.milkdown-toolbar .toolbar-item svg) {
@@ -135,7 +174,110 @@ onBeforeUnmount(() => void unmount())
   margin: 7px;
 }
 
+.markdown-editor :deep(.milkdown-top-bar .top-bar-heading-dropdown),
+.markdown-editor :deep(.milkdown-toolbar) {
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-control);
+}
+
+.markdown-editor :deep(.milkdown button:focus-visible),
+.markdown-editor :deep(.milkdown input:focus-visible) {
+  outline: 3px solid rgb(13 148 136 / 30%);
+  outline-offset: 1px;
+}
+
 .markdown-editor :deep(.ProseMirror) {
-  padding: 30px 60px;
+  padding: var(--aw-space-4) var(--aw-space-5);
+  color: var(--aw-ink);
+  font-family: var(--aw-font-sans);
+  font-size: var(--aw-text-base);
+  line-height: 1.55;
+}
+
+/* Match the compact markdown renderer used in previews, chat, and reports. */
+.markdown-editor :deep(.ProseMirror h1),
+.markdown-editor :deep(.ProseMirror h2),
+.markdown-editor :deep(.ProseMirror h3),
+.markdown-editor :deep(.ProseMirror h4),
+.markdown-editor :deep(.ProseMirror h5),
+.markdown-editor :deep(.ProseMirror h6) {
+  color: var(--aw-ink);
+  font-family: var(--aw-font-sans);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.markdown-editor :deep(.ProseMirror h1) { font-size: var(--aw-text-xl); line-height: 1.25; margin: 0 0 0.8rem; }
+.markdown-editor :deep(.ProseMirror h2) { font-size: var(--aw-text-lg); line-height: 1.3; margin: 1rem 0 0.4rem; }
+.markdown-editor :deep(.ProseMirror h3),
+.markdown-editor :deep(.ProseMirror h4) { font-size: var(--aw-text-md); line-height: 1.35; margin: 0.8rem 0 0.3rem; }
+.markdown-editor :deep(.ProseMirror h5),
+.markdown-editor :deep(.ProseMirror h6) { font-size: var(--aw-text-base); line-height: 1.4; margin: 0.7rem 0 0.25rem; }
+
+.markdown-editor :deep(.ProseMirror p) {
+  padding: 0;
+  margin: 0.35rem 0;
+  font-size: var(--aw-text-base);
+  line-height: 1.55;
+}
+
+.markdown-editor :deep(.ProseMirror ul),
+.markdown-editor :deep(.ProseMirror ol) {
+  margin: 0.35rem 0;
+  padding-left: 1.25rem;
+}
+
+.markdown-editor :deep(.ProseMirror li) { line-height: 1.55; }
+
+.markdown-editor :deep(.ProseMirror a) {
+  color: var(--aw-teal);
+  text-underline-offset: 2px;
+}
+
+.markdown-editor :deep(.ProseMirror code) {
+  display: inline;
+  padding: 0 0.25rem;
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-raised);
+  color: var(--aw-ink);
+  font-family: var(--aw-font-mono);
+}
+
+.markdown-editor :deep(.ProseMirror pre) {
+  margin: 0.75rem 0;
+  padding: var(--aw-space-3);
+  border-radius: var(--aw-radius-control);
+  background: var(--aw-raised);
+}
+
+.markdown-editor :deep(.ProseMirror pre code) { padding: 0; }
+
+.markdown-editor :deep(.ProseMirror blockquote) {
+  margin: 0.75rem 0;
+  padding-left: var(--aw-space-3);
+  color: var(--aw-ink-soft);
+}
+
+.markdown-editor :deep(.ProseMirror blockquote::before) { background: var(--aw-teal-line); }
+
+.markdown-editor :deep(.milkdown-table-block) { margin: 0.75rem 0; }
+
+.markdown-editor :deep(.milkdown-table-block table) {
+  width: 100%;
+  font-size: var(--aw-text-sm);
+}
+
+.markdown-editor :deep(.milkdown-table-block th),
+.markdown-editor :deep(.milkdown-table-block td) {
+  padding: 0.45rem 0.55rem;
+  border-color: var(--aw-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-editor :deep(.milkdown-table-block th) { background: var(--aw-raised); }
+
+@media (max-width: 700px) {
+  .markdown-editor :deep(.ProseMirror) { padding: var(--aw-space-3) var(--aw-space-4); }
 }
 </style>
