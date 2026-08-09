@@ -174,13 +174,56 @@ def _coverage_warnings(coverage: dict) -> list[str]:
     return warnings
 
 
+def _report_test_projection(test: dict) -> dict:
+    """Project one test without reviving narrative Cycle-vouch checks."""
+
+    projection = {
+        key: test.get(key)
+        for key in (
+            "id",
+            "title",
+            "objective",
+            "criteria",
+            "status",
+            "result_summary",
+            "conclusion",
+            "scope_limitations",
+            "exception_count",
+            "open_exception_count",
+            "finding_refs",
+            "sha1",
+        )
+    }
+    if doc_tests.is_cycle_test(test):
+        rollup = doc_tests.result_rollup(test)
+        projection.update(
+            rollup=rollup,
+            control_conclusion=rollup["control_conclusion"],
+        )
+    else:
+        projection.update(
+            steps=list(test.get("steps") or []),
+            control_conclusion=test.get("control_conclusion"),
+        )
+    return projection
+
+
 def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict:
     """Build report context without structured rows or document excerpts."""
     document_tests = rcm_execution.document_test_index(workspace)
     rolled = rcm_execution.rollup(workspace, document_tests=document_tests)
     completion = rcm_execution.completion(workspace, document_tests=document_tests)
     test_summaries = []
-    totals = {"items": 0, "exceptions": 0, "manual_review": 0, "pending": 0}
+    totals = {
+        "items": 0,
+        "tested_items": 0,
+        "failed_items": 0,
+        "incomplete_items": 0,
+        "assertion_mismatches": 0,
+        "exceptions": 0,
+        "manual_review": 0,
+        "pending": 0,
+    }
     for test in document_tests.tests:
         rollup = doc_tests.result_rollup(test)
         for key in totals:
@@ -226,6 +269,7 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
     incomplete_coverage = _incomplete_coverage(
         workspace, workflow, document_tests=document_tests,
     )
+    rolled_by_rcm = {item["rcm_id"]: item for item in rolled["rows"]}
     return {
         "workspace": {"id": workspace.id, "name": workspace.name, "description": workspace.description},
         "planning": {
@@ -240,19 +284,11 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
                 "business_cycle": item.get("business_cycle"),
                 "control_attributes": list(item.get("control_attributes") or []),
                 "control": item.get("control"),
-                "control_conclusion": (item.get("execution_rollup") or {}).get("control_conclusion"),
+                "control_conclusion": (rolled_by_rcm.get(item["id"]) or {}).get("control_conclusion"),
                 "review_status": item.get("review_status"),
                 "test_refs": list(item.get("test_refs") or []),
                 "tests": [
-                    {
-                        key: test.get(key)
-                        for key in (
-                            "id", "title", "objective", "criteria", "steps",
-                            "status", "result_summary",
-                            "conclusion", "control_conclusion", "scope_limitations",
-                            "exception_count", "open_exception_count", "finding_refs",
-                        )
-                    }
+                    _report_test_projection(test)
                     for test in _linked_tests(workspace, item["id"], document_tests)
                 ],
             }
@@ -268,6 +304,18 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
             for row in workspace.rcm
             for test in _linked_tests(workspace, row["id"], document_tests)
             if str(test.get("scope_limitations") or "").strip()
+        ] + [
+            {
+                "rcm_id": row["id"],
+                "test_id": test["id"],
+                "text": (
+                    "Targeted evidence - not a sample; this test cannot support a "
+                    "population control conclusion or projected exception rate."
+                ),
+            }
+            for row in workspace.rcm
+            for test in _linked_tests(workspace, row["id"], document_tests)
+            if doc_tests.assurance_scope(test) == "targeted_evidence_only"
         ],
         "completion": completion,
         "preliminary": completion["status"] != "completed",
@@ -660,19 +708,40 @@ def quality_checks(
             issues.append(_issue("finding_missing_from_report", "warning", f"{finding['id']} is not cited in the report.", [ref]))
 
     observed_doc_tests = {
-        str(item.get("execution_ref") or "").split(":", 1)[1]
+        str(item.get("test_id") or "")
         for item in workspace.observations
         if str(item.get("execution_ref") or "").startswith("doctest:")
+        and item.get("outcome") == "exception"
+    }
+    observed_cycle_items = {
+        (str(item.get("test_id") or ""), str(item.get("cycle_item_id") or ""))
+        for item in workspace.observations
+        if item.get("outcome") == "exception" and item.get("cycle_item_id")
     }
     for test in document_tests.tests:
-        exceptions = [
-            item for item in test.get("items") or []
-            if item.get("state") == "exception"
-        ]
-        if exceptions and test["id"] not in observed_doc_tests:
+        if doc_tests.is_cycle_test(test):
+            exceptions = [
+                item
+                for item in test.get("items") or []
+                if doc_tests.item_execution_current(test, item)
+                and doc_tests.item_disposition_current(test, item)
+                and (item.get("disposition") or {}).get("state") == "exception"
+            ]
+            missing = [
+                item
+                for item in exceptions
+                if (str(test["id"]), str(item["id"])) not in observed_cycle_items
+            ]
+        else:
+            exceptions = [
+                item for item in test.get("items") or []
+                if item.get("state") == "exception"
+            ]
+            missing = exceptions if exceptions and test["id"] not in observed_doc_tests else []
+        if missing:
             issues.append(_issue(
                 "unresolved_exception", "error",
-                f"{len(exceptions)} exception(s) in {test['id']} have no RCM observation.",
+                f"{len(missing)} exception item(s) in {test['id']} have no current RCM observation.",
                 [f"doctest:{test['id']}"],
             ))
     exception_count = sum(int(item.get("exception_count") or 0) for item in workspace.observations)

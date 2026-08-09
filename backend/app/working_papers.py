@@ -7,7 +7,7 @@ import html
 import re
 from datetime import datetime, timezone
 
-from . import data_tests, doc_tests, rcm_execution
+from . import cycle_vouching, data_tests, doc_tests, rcm_execution
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
 
 
@@ -188,6 +188,135 @@ def _render_test_step(step: object) -> list[str]:
     return lines
 
 
+def _markdown_cell(value: object) -> str:
+    return str(value if value not in (None, "") else "—").replace("|", "\\|").replace("\n", " ")
+
+
+def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
+    """Render the canonical Cycle vouch definition and item results once."""
+
+    rollup = doc_tests.result_rollup(test)
+    definition = test["definition"]
+    population = definition["population"]
+    selection = population["selection"]
+    coverage = rollup["coverage"]
+    assertions = list(definition["assertions"])
+    tested = [
+        item
+        for item in test.get("items") or []
+        if doc_tests.item_execution_current(test, item)
+    ]
+    lines = [
+        "Canonical Cycle vouch procedure:", "",
+        f"- Population: {population['table']} keyed by {population['row_key']['column']}",
+        f"- Selection basis: {selection['mode']}",
+        f"- Assurance scope: **{rollup['assurance_label']}**",
+        f"- Conclusion eligible: {'yes' if rollup['conclusion_eligible'] else 'no'}",
+        f"- Coverage: {coverage.get('selected_rows', len(test.get('items') or []))} selected; "
+        f"{coverage.get('rows_with_evidence', '—')} with evidence; "
+        f"{coverage.get('complete_cycles', '—')} complete cycle(s)",
+        "- Missing required roles: "
+        + (
+            ", ".join(
+                f"{role}={count}"
+                for role, count in sorted(
+                    (coverage.get("missing_role_counts") or {}).items()
+                )
+            )
+            or "none"
+        ),
+        f"- Tested items: {rollup['tested_items']}; failed: {rollup['failed_items']}; "
+        f"incomplete: {rollup['incomplete_items']}; need review: {rollup['needs_review_items']}",
+        f"- Auditor dispositions: {rollup['confirmed_items']} confirmed; "
+        f"{rollup['open_exceptions']} open exception(s); "
+        f"{rollup['pending_dispositions']} pending",
+        f"- Diagnostic assertion mismatches: {rollup['assertion_mismatches']}",
+        "",
+        "Assertion columns:", "",
+    ]
+    for assertion in assertions:
+        key = str(assertion["key"])
+        counts = {
+            verdict: sum(
+                str(((item.get("result_by_assertion") or {}).get(key) or {}).get("verdict") or "not_run")
+                == verdict
+                for item in test.get("items") or []
+            )
+            for verdict in cycle_vouching.ASSERTION_VERDICTS
+        }
+        lines.append(
+            f"- {assertion.get('label') or key} (`{key}`): "
+            + ", ".join(f"{name}={count}" for name, count in counts.items())
+        )
+    lines.extend(["", "Tested cycle grid:", ""])
+    headers = ["Item", "Evaluation", "Auditor disposition", *[
+        str(assertion.get("label") or assertion["key"]) for assertion in assertions
+    ]]
+    lines.extend([
+        "| " + " | ".join(_markdown_cell(value) for value in headers) + " |",
+        "| " + " | ".join("---" for _value in headers) + " |",
+    ])
+    for item in tested:
+        results = item.get("result_by_assertion") or {}
+        values = [
+            item.get("label") or item["id"],
+            (item.get("evaluation") or {}).get("state"),
+            (item.get("disposition") or {}).get("state"),
+        ]
+        for assertion in assertions:
+            result = results.get(str(assertion["key"])) or {}
+            values.append(
+                f"{result.get('verdict') or 'not_run'}"
+                + (f" — {result['display']}" if result.get("display") else "")
+            )
+        lines.append("| " + " | ".join(_markdown_cell(value) for value in values) + " |")
+    if not tested:
+        lines.append("| No tested cycles | — | — |" + " — |" * len(assertions))
+    lines.extend(["", "Cycle evidence details:", ""])
+    hashes = [
+        str(test.get("sha1") or ""),
+        cycle_vouching.cycle_definition_sha1(test),
+        str(test.get("registry", {}).get("definition_hash") or ""),
+    ]
+    for item in tested:
+        evaluation = item.get("evaluation") or {}
+        hashes.append(str(evaluation.get("result_sha1") or ""))
+        lines.append(
+            f"- **{item.get('label') or item['id']}** (`{item['id']}`) — "
+            f"evaluation {evaluation.get('state')}; disposition "
+            f"{(item.get('disposition') or {}).get('state')}"
+        )
+        for binding in item.get("role_bindings") or []:
+            chain = " → ".join(
+                f"{edge.get('identifier_kind')}={edge.get('normalized_value')}"
+                for edge in binding.get("matched_by") or []
+            ) or "manual/current binding"
+            lines.append(
+                f"  - Role {binding.get('role')}: document {binding.get('document_id')}, "
+                f"record {binding.get('record_id')}; matched by {chain}"
+            )
+            hashes.extend(
+                str(value or "")
+                for value in (
+                    binding.get("record_content_hash"),
+                    binding.get("extraction_hash"),
+                )
+            )
+        for assertion in assertions:
+            key = str(assertion["key"])
+            result = (item.get("result_by_assertion") or {}).get(key) or {}
+            hashes.extend(
+                str(value or "")
+                for value in (result.get("assertion_sha1"), result.get("result_sha1"))
+            )
+            for anchor in result.get("evidence_refs") or []:
+                lines.append(
+                    f"  - {assertion.get('label') or key}: {_citation(anchor)}"
+                )
+                hashes.append(str(anchor.get("source_sha1") or ""))
+    return lines, list(dict.fromkeys(value for value in hashes if value))
+
+
 def _rcm_row(workspace: Workspace, rcm_id: str) -> dict:
     row = next((item for item in workspace.rcm if item.get("id") == rcm_id), None)
     if row is None:
@@ -228,22 +357,35 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
         if test is None:
             lines.append(f"Missing test reference: {test_ref}")
             continue
+        execution_rollup = next(
+            (
+                value
+                for value in (row.get("execution_rollup") or {}).get("test_rollups") or []
+                if value.get("test_id") == test_id
+            ),
+            {},
+        )
         lines.extend(
             [
                 f"### {test.get('title') or test_id} ({test_id})", "",
                 f"Objective: {test.get('objective') or 'Not stated'}", "",
                 f"Source: {'data' if kind == 'datatest' else 'document'}; "
                 f"status: {test.get('status')}; "
-                f"control conclusion: {test.get('control_conclusion') or 'no_conclusion'}.", "",
-                "Steps:", "",
+                f"control conclusion: {execution_rollup.get('control_conclusion') or 'no_conclusion'}.", "",
             ]
         )
-        steps = test.get("steps") or []
-        if steps:
-            for step in steps:
-                lines.extend(_render_test_step(step))
+        if kind == "doctest" and doc_tests.is_cycle_test(test):
+            cycle_lines, cycle_hashes = _cycle_test_lines(test)
+            lines.extend(cycle_lines)
+            source_hashes.extend(cycle_hashes)
         else:
-            lines.append("No steps recorded.")
+            lines.extend(["Steps:", ""])
+            steps = test.get("steps") or []
+            if steps:
+                for step in steps:
+                    lines.extend(_render_test_step(step))
+            else:
+                lines.append("No steps recorded.")
         lines.append("")
         for ref in [test_ref]:
             kind, separator, execution_id = str(ref).partition(":")
@@ -270,11 +412,20 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
                 test = doc_tests.load_test(workspace, execution_id)
                 rollup = doc_tests.result_rollup(test)
                 source_hashes.append(test["sha1"])
-                lines.append(
-                    f"- Document Test {test['id']} — {test.get('status')}; {rollup['items']} item(s); "
-                    f"{rollup['exceptions']} confirmed exception(s); {rollup['manual_review']} manual review; "
-                    f"source hash {test['sha1']}."
-                )
+                if doc_tests.is_cycle_test(test):
+                    lines.append(
+                        f"- Document Test {test['id']} — {test.get('status')}; "
+                        f"{rollup['tested_items']} tested item(s); "
+                        f"{rollup['open_exceptions']} open item exception(s); "
+                        f"{rollup['assertion_mismatches']} diagnostic assertion mismatch(es); "
+                        f"source hash {test['sha1']}."
+                    )
+                else:
+                    lines.append(
+                        f"- Document Test {test['id']} — {test.get('status')}; {rollup['items']} item(s); "
+                        f"{rollup['exceptions']} confirmed exception(s); {rollup['manual_review']} manual review; "
+                        f"source hash {test['sha1']}."
+                    )
         lines.extend(
             [
                 "", "Result summary:", "",
@@ -282,7 +433,12 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
                 "Conclusion:", "",
                 test.get("conclusion") or "No conclusion recorded.", "",
                 "Scope limitations:", "",
-                test.get("scope_limitations") or "No scope limitations recorded.", "",
+                (
+                    "Targeted evidence - not a sample; no population control conclusion "
+                    "or projected exception rate is permitted."
+                    if execution_rollup.get("assurance_scope") == "targeted_evidence_only"
+                    else test.get("scope_limitations") or "No scope limitations recorded."
+                ), "",
             ]
         )
     lines.extend(["## Observations and findings", ""])

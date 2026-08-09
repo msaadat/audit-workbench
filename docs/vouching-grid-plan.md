@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: Phase 0, the domain-neutral Phase 0.1 refactor, and Phases 1 through 6 are implemented. Checkpoint A passed automated and live procurement validation. The first Checkpoint B rebuild passed structural inspection, but the 2026-08-09 Checkpoint C run exposed a semantic authoring gap: the model could reference a bank-account requirement while generating unrelated amount/date/name assertions, and the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary Cycle vouch test was absent. The Phase 2/3 robustness remediation now requires typed registry-backed `required_comparisons`, exact generated-assertion coverage, and fail-closed handling of admitted substitutes. Because this is a clean contract change, the current procurement RCM/test chain is invalid for acceptance and Checkpoints B and C must be repeated through the normal UX. **Checkpoint C repeat pending.** Phases 4 through 6 are complete against domain-neutral fixtures and frontend mocks. Checkpoint D was not performed, Checkpoint E was not performed, and no Phase 5 or Phase 6 procurement validation was performed. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0, the domain-neutral Phase 0.1 refactor, and Phases 1 through 7 are implemented. Checkpoint A passed automated and live procurement validation. The first Checkpoint B rebuild passed structural inspection, but the 2026-08-09 Checkpoint C run exposed a semantic authoring gap: the model could reference a bank-account requirement while generating unrelated amount/date/name assertions, and the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary Cycle vouch test was absent. The Phase 2/3 robustness remediation now requires typed registry-backed `required_comparisons`, exact generated-assertion coverage, and fail-closed handling of admitted substitutes. Because this is a clean contract change, the current procurement RCM/test chain is invalid for acceptance and Checkpoints B and C must be repeated through the normal UX. **Checkpoint C repeat pending.** Phases 4 through 7 are complete against domain-neutral fixtures and frontend mocks. Checkpoint D was not performed, Checkpoint E was not performed, Checkpoint F was not performed, and no Phase 5, Phase 6, or Phase 7 procurement validation was performed. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -1519,6 +1519,70 @@ not performed.
 - stop at Checkpoint F and tell the user in chat to disposition results and regenerate rollups, working papers, and report inputs through the existing UX.
 
 Exit condition: no production path reads the old cycle schema; automated fixtures show grid/detail/RCM/working-paper agreement; targeted evidence can create item-specific exceptions but never a population control conclusion; and the user receives the exact Checkpoint F actions. The implementation never resets or regenerates the procurement workspace itself.
+
+Automated implementation record (2026-08-09): the canonical Cycle-vouch
+rollup now publishes independently computed tested, failed, incomplete,
+needs-review, confirmed, open-exception, and assertion-mismatch counts. Failed,
+incomplete, and open-exception counts use distinct tested items; diagnostic
+assertion mismatches remain a separate cell count and are never added to item
+exceptions. The RCM projection carries selection basis, coverage, structurally
+derived assurance scope, conclusion eligibility, and the auditor-owned control
+conclusion. Evidence-linked Cycle tests and evidence-aware simple vouching are
+fixed at `targeted_evidence_only`: their effective downstream conclusion is
+`no_conclusion`, the update service rejects a population conclusion, audit
+completion records an assurance gap, and report inputs state that neither a
+population control conclusion nor projected exception rate is permitted.
+
+RCM rollup creates one current observation per auditor-dispositioned Cycle item
+exception. The observation records the exact item, definition hash, evaluation
+result hash, assurance scope, diagnostic assertion keys, and immutable
+item-specific evidence; its value-free finding context contains no frozen row,
+raw value, display value, or excerpt. A stale evaluation or disposition makes
+the prior observation non-current, and deterministic finding support then
+rejects it. The registered finding executor derives the item citations and the
+whole-test immutable anchor from that observation. Report quality checks also
+require a current per-item observation instead of treating any test-level
+observation as support for every exception.
+
+The RCM working paper renders the canonical population and selection, explicit
+assurance label, coverage and missing roles, the same typed assertion columns,
+one row per currently tested cycle, per-column verdict counts, a separate
+citation/role-link detail section, preparation/review identity, and current
+definition/source/result hashes. RCM cards, the Planning execution projection,
+audit verification, and report context use the same rollup. Cycle report inputs
+omit narrative steps so they cannot become a second assertion source. The
+Phase 4 grid remains the only grid projection and full item detail remains the
+authority for local raw values, citations, and complete role-link paths.
+
+The superseded broad Cycle builder path, dotted-path parser/resolver, duplicate
+per-item Cycle checks, synthetic `date_order`/`present` comparison branch, and
+old detail UI were removed. Literal simple vouching and every Q&A, review, and
+attribute path remain intact. No compatibility reader, alias, migration, dual
+write, pack-specific TypeScript union, procurement switch, or row-level
+provider context was added.
+
+Focused automated gates pass: 122 Cycle-vouch backend tests across Phases 0-7;
+11 local simple-vouching/Q&A/working-paper tests; four evidence-aware vouching
+tests; 21 shared Document Test workflow tests with a test-only configured
+provider (the known run-endpoint harness excluded); 15 reporting
+executor/finding tests; 21 bounded context-adapter tests; 17 non-route report
+tests; 14 of 15 existing RCM execution tests; 14 focused Vitest/Vue Test Utils
+grid, navigation, state-restoration, assertion-authoring, and conclusion-
+eligibility tests; Python compilation; diff whitespace checks; and the
+production Vue/TypeScript build. The remaining RCM test is an existing
+non-Cycle expectation mismatch: deterministic Data Test execution currently
+records an `ineffective` conclusion immediately, while that test expects an
+open completion gate until a later auditor update. Phase 7 did not change the
+Data Test conclusion contract or rewrite that unrelated test.
+
+The separately known Document Test reference-validation and workflow
+run-endpoint harnesses reproduced their shutdown stalls and are not counted as
+passing. The report route harness exhibited the same shutdown behavior and is
+also reported separately. No live browser or external provider validation was
+claimed. No procurement workspace was inspected, regenerated, migrated,
+reanalyzed, executed, signed off, or modified. **Checkpoint C repeat pending.**
+Checkpoint D was not performed. Checkpoint E was not performed. Checkpoint F was
+not performed. Procurement validation was not performed.
 
 ## 11. Required tests
 

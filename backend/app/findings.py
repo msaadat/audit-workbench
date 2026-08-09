@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 
-from . import doc_tests
+from . import cycle_vouching, doc_tests
 from .agent import store as agent_store
 from .evidence import normalize_anchor, normalize_many
 from .workspaces import Workspace, WorkspaceError, slugify
@@ -216,6 +216,48 @@ def support_issues(workspace: Workspace, item: dict) -> list[str]:
                 issues.append(f"unlinked Document Test {source_id}")
             if not str(execution.get("status") or "").startswith("completed"):
                 issues.append(f"Document Test {source_id} is not complete")
+    observation_id = str(item.get("source_observation_id") or "")
+    if observation_id:
+        observation = next(
+            (
+                value
+                for value in workspace.observations
+                if str(value.get("id") or "") == observation_id
+            ),
+            None,
+        )
+        if observation is None:
+            issues.append(f"missing source observation {observation_id}")
+        elif observation.get("outcome") != "exception":
+            issues.append(f"source observation {observation_id} is not a current exception")
+        elif observation.get("cycle_item_id"):
+            test_id = str(observation.get("test_id") or "")
+            test = doc_tests.load_test(workspace, test_id) if doc_tests.exists(workspace, test_id) else None
+            cycle_item = next(
+                (
+                    value
+                    for value in (test or {}).get("items") or []
+                    if value.get("id") == observation.get("cycle_item_id")
+                ),
+                None,
+            )
+            if (
+                test is None
+                or cycle_item is None
+                or not doc_tests.item_execution_current(test, cycle_item)
+                or not doc_tests.item_disposition_current(test, cycle_item)
+                or (cycle_item.get("disposition") or {}).get("state") != "exception"
+            ):
+                issues.append(
+                    f"source observation {observation_id} no longer resolves to a current item exception"
+                )
+            else:
+                definition_sha1 = cycle_vouching.cycle_definition_sha1(test)
+                evaluation_sha1 = (cycle_item.get("evaluation") or {}).get("result_sha1")
+                if observation.get("definition_sha1") != definition_sha1:
+                    issues.append(f"source observation {observation_id} has a stale definition hash")
+                if observation.get("evaluation_result_sha1") != evaluation_sha1:
+                    issues.append(f"source observation {observation_id} has a stale evaluation hash")
     return list(dict.fromkeys(issues))
 
 

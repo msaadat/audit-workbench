@@ -476,6 +476,12 @@ const rcmActions = computed(() => [
           <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>
           <p class="planned-title">{{ item.title }}</p>
           <p class="muted">{{ item.result_summary || 'Not executed yet.' }}</p>
+          <p v-if="item.assurance_scope" class="muted">
+            <strong>{{ item.assurance_label }}</strong> · {{ item.tested_items ?? 0 }} tested item(s) ·
+            {{ item.failed_items ?? 0 }} failed · {{ item.incomplete_items ?? 0 }} incomplete ·
+            {{ item.assertion_mismatches ?? 0 }} diagnostic assertion mismatch(es) ·
+            {{ item.conclusion_eligible ? 'population conclusion eligible' : 'no population conclusion' }}
+          </p>
           <p v-if="item.scope_limitations" class="muted">Limitation: {{ item.scope_limitations }}</p>
           <div class="card-actions"><Button label="Open test" icon="pi pi-arrow-up-right" size="small" outlined @click="openTest(item)"/></div>
         </article><p v-if="!linkedTests(selectedRcm).length" class="empty">This RCM row has no linked test and cannot pass coverage.</p></section>

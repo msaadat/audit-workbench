@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ... import data_tests, doc_tests, rcm_execution
+from ... import cycle_vouching, data_tests, doc_tests, rcm_execution
 from ...evidence import document_anchor
 from ...workspace_transactions import (
     ParentConflict,
@@ -209,7 +209,7 @@ def run_document_test(
             "execute as document Q&A units, not as a local document test."
         )
     if test.get("kind") == "cycle_vouch":
-        evaluated = doc_tests.cycle_vouching.evaluate_cycle_test(workspace, test)
+        evaluated = cycle_vouching.evaluate_cycle_test(workspace, test)
         if (
             evaluated.get("items") == test.get("items")
             and evaluated.get("status") == test.get("status")

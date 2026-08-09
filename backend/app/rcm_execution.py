@@ -10,7 +10,8 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from . import data_tests, doc_tests
+from . import cycle_vouching, data_tests, doc_tests
+from .evidence import normalize_anchor
 from .workspace_transactions import canonical_sha1, material_projection
 from .workspaces import Workspace
 
@@ -162,9 +163,7 @@ def test_manifest(workspace: Workspace) -> list[dict]:
                 "procedure_key": str(item.get("procedure_key") or ""),
                 "definition": dict(item.get("definition") or {}),
                 "coverage": dict(item.get("coverage") or {}),
-                "assurance_scope": str(
-                    (item.get("coverage") or {}).get("assurance_scope") or ""
-                ),
+                "assurance_scope": doc_tests.assurance_scope(item) or "",
                 "status": str(item.get("status") or ""),
                 "created_by": str(item.get("created_by") or ""),
                 "specified": _specified(test),
@@ -234,6 +233,19 @@ def coverage(
                         "reason": "Effective conclusion conflicts with open exceptions or limitations.",
                     }
                 )
+            if (
+                doc_tests.assurance_scope(item) == "targeted_evidence_only"
+                and item.get("control_conclusion") != "no_conclusion"
+            ):
+                inconsistent_conclusions.append(
+                    {
+                        "rcm_id": row["id"],
+                        "test_id": test["id"],
+                        "reason": (
+                            "Targeted evidence cannot support a population control conclusion."
+                        ),
+                    }
+                )
         if row.get("risk_rating") in {"high", "critical"} and tests and not usable:
             high_risks_without_executable_work.append(row["id"])
 
@@ -275,9 +287,18 @@ def _observation(
     exception_count: int,
     classification: str,
     summary: str,
+    observation_key: str | None = None,
+    details: dict | None = None,
+    evidence_refs: list[dict] | None = None,
 ) -> dict:
+    key = observation_key or execution_ref
     existing = next(
-        (item for item in workspace.observations if item.get("execution_ref") == execution_ref),
+        (
+            item
+            for item in workspace.observations
+            if str(item.get("observation_key") or item.get("execution_ref") or "")
+            == key
+        ),
         None,
     )
     # Data Tests retain only their current durable result. Older workspaces may
@@ -307,6 +328,7 @@ def _observation(
             "rcm_id": rcm_id,
             "test_id": test_id,
             "execution_ref": execution_ref,
+            "observation_key": key,
             "exception_count": exception_count,
             "summary": summary,
             "classification": classification,
@@ -324,6 +346,11 @@ def _observation(
             outcome="exception" if exception_count else "needs_manual_check",
             updated=workspace._updated_now(),
         )
+    existing["observation_key"] = key
+    if details:
+        existing.update(details)
+    if evidence_refs is not None:
+        existing["evidence_refs"] = list(evidence_refs)
     return existing
 
 
@@ -359,6 +386,115 @@ def _rollup_datatest(workspace: Workspace, row: dict, item: dict) -> tuple[str, 
     return status, exceptions, open_exceptions, executed
 
 
+def _cycle_observation_evidence(item: dict) -> list[dict]:
+    """Citation-complete evidence for one tested item, without copying results."""
+
+    anchors: dict[tuple[str, str, int | None, str | None], dict] = {}
+    results = item.get("result_by_assertion") or {}
+    exceptional = {
+        key: result
+        for key, result in results.items()
+        if result.get("verdict") != "match"
+    } or results
+    for assertion_key, result in exceptional.items():
+        for raw in result.get("evidence_refs") or []:
+            anchor = normalize_anchor(
+                {
+                    **raw,
+                    "item_id": item.get("id"),
+                    "field": assertion_key,
+                },
+                require_hash=True,
+            )
+            identity = (
+                str(anchor["source_kind"]),
+                str(anchor["source_id"]),
+                anchor.get("page"),
+                anchor.get("field"),
+            )
+            anchors[identity] = anchor
+    return list(anchors.values())
+
+
+def _sync_cycle_observations(
+    workspace: Workspace,
+    row: dict,
+    test: dict,
+    rollup: dict,
+) -> int:
+    """Maintain one current observation per auditor-dispositioned cycle item."""
+
+    definition_sha1 = cycle_vouching.cycle_definition_sha1(test)
+    assertion_labels = {
+        str(assertion["key"]): str(assertion.get("label") or assertion["key"])
+        for assertion in (test.get("definition") or {}).get("assertions") or []
+    }
+    active_keys: set[str] = set()
+    for cycle_item in test.get("items") or []:
+        if not (
+            doc_tests.item_execution_current(test, cycle_item)
+            and doc_tests.item_disposition_current(test, cycle_item)
+            and (cycle_item.get("disposition") or {}).get("state") == "exception"
+        ):
+            continue
+        item_id = str(cycle_item["id"])
+        observation_key = f"doctest:{test['id']}:item:{item_id}"
+        active_keys.add(observation_key)
+        results = cycle_item.get("result_by_assertion") or {}
+        diagnostic_keys = [
+            key for key, result in results.items() if result.get("verdict") != "match"
+        ]
+        labels = [assertion_labels.get(str(key), str(key)) for key in diagnostic_keys]
+        summary = (
+            f"{rollup['assurance_label']} identified an auditor-dispositioned "
+            f"exception in one tested item. Diagnostic assertions: "
+            + (", ".join(labels) if labels else "none; see the item-specific evidence")
+            + ". This observation does not project beyond that tested item."
+        )
+        _observation(
+            workspace,
+            rcm_id=row["id"],
+            test_id=test["id"],
+            execution_ref=f"doctest:{test['id']}",
+            observation_key=observation_key,
+            exception_count=1,
+            classification="draft_finding_candidate",
+            summary=summary,
+            evidence_refs=_cycle_observation_evidence(cycle_item),
+            details={
+                "cycle_item_id": item_id,
+                "assurance_scope": rollup["assurance_scope"],
+                "definition_sha1": definition_sha1,
+                "evaluation_result_sha1": (cycle_item.get("evaluation") or {}).get(
+                    "result_sha1"
+                ),
+                "evaluation_state": (cycle_item.get("evaluation") or {}).get("state"),
+                "disposition_state": "exception",
+                "assertion_keys": list(diagnostic_keys),
+                "assertion_mismatch_count": sum(
+                    result.get("verdict") == "mismatch" for result in results.values()
+                ),
+            },
+        )
+    for observation in workspace.observations:
+        if (
+            observation.get("test_id") == test.get("id")
+            and observation.get("cycle_item_id")
+            and str(observation.get("observation_key") or "") not in active_keys
+        ):
+            observation.update(
+                exception_count=0,
+                outcome="needs_manual_check",
+                classification="stale_cycle_disposition",
+                summary=(
+                    "The prior Cycle vouch exception is no longer current; rerun or "
+                    "re-disposition the item before using it downstream."
+                ),
+                updated=workspace._updated_now(),
+            )
+    return len(active_keys)
+
+
 def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, int, int, int, list]:
     rollup = doc_tests.result_rollup(item)
     status = str(item.get("status") or "draft")
@@ -366,9 +502,10 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
     # exception disposition.  Cycle tests keep those concepts separate all the
     # way through the rollup; downstream Phase 7 work can enrich the assurance
     # presentation without reviving the old double count.
+    cycle = doc_tests.is_cycle_test(item)
     exceptions = int(
-        rollup["exceptions"]
-        if doc_tests.is_cycle_test(item)
+        rollup["exception_items"]
+        if cycle
         else rollup["exceptions"] + rollup["mismatched"]
     )
     open_exceptions = 0
@@ -378,10 +515,10 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
     )
     executed = int(
         current_items
-        if doc_tests.is_cycle_test(item)
+        if cycle
         else status in _DURABLE_DOC_TEST_STATUSES or current_items
     )
-    if doc_tests.is_cycle_test(item) and current_items and not all(
+    if cycle and current_items and not all(
         doc_tests.item_disposition_current(item, test_item)
         for test_item in item.get("items") or []
     ):
@@ -391,7 +528,11 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
         for test_item in item.get("items") or []
         for anchor in test_item.get("evidence_refs") or []
     ]
-    if exceptions:
+    if cycle:
+        open_exceptions = _sync_cycle_observations(
+            workspace, row, item, rollup
+        )
+    elif exceptions:
         observation = _observation(
             workspace,
             rcm_id=row["id"],
@@ -418,7 +559,9 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
         status, exceptions, open_exceptions, executed = _rollup_datatest(
             workspace, row, item
         )
+        detailed_rollup: dict = {}
     else:
+        detailed_rollup = doc_tests.result_rollup(item)
         status, exceptions, open_exceptions, executed, anchors = _rollup_doctest(
             workspace, row, item
         )
@@ -426,6 +569,32 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
     if not _specified(test):
         status = "draft"
 
+    assurance_scope = detailed_rollup.get("assurance_scope")
+    conclusion_eligible = bool(
+        detailed_rollup.get("conclusion_eligible", True)
+    )
+    control_conclusion = (
+        str(detailed_rollup.get("control_conclusion") or "no_conclusion")
+        if test["kind"] == "doctest"
+        else str(item.get("control_conclusion") or "no_conclusion")
+    )
+    if assurance_scope == "targeted_evidence_only":
+        item["control_conclusion"] = "no_conclusion"
+        item["control_conclusion_source"] = "none"
+    if test["kind"] == "doctest" and doc_tests.is_cycle_test(item):
+        result_summary = (
+            f"{detailed_rollup['tested_items']} of {detailed_rollup['items']} item(s) tested; "
+            f"{detailed_rollup['failed_items']} failed, "
+            f"{detailed_rollup['incomplete_items']} incomplete, "
+            f"{detailed_rollup['needs_review_items']} need review; "
+            f"{detailed_rollup['assertion_mismatches']} assertion mismatch(es); "
+            f"{open_exceptions} open item exception(s)."
+        )
+    else:
+        result_summary = (
+            f"{executed} run(s); {exceptions} exception result(s), "
+            f"{open_exceptions} open."
+        )
     item.update(
         status=status,
         exception_count=exceptions,
@@ -433,10 +602,7 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
         evidence_refs=list(
             {anchor.get("id") or str(anchor): anchor for anchor in evidence_refs}.values()
         ),
-        result_summary=(
-            f"{executed} run(s); {exceptions} exception result(s), "
-            f"{open_exceptions} open."
-        ),
+        result_summary=result_summary,
         updated=workspace._updated_now(),
     )
     return {
@@ -450,7 +616,20 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
         "status": status,
         "result_summary": item["result_summary"],
         "conclusion": item.get("conclusion") or "",
-        "control_conclusion": item.get("control_conclusion") or "no_conclusion",
+        "control_conclusion": control_conclusion,
+        "conclusion_eligible": conclusion_eligible,
+        "assurance_scope": assurance_scope,
+        "assurance_label": detailed_rollup.get("assurance_label"),
+        "selection_basis": str(
+            (detailed_rollup.get("coverage") or {}).get("selection_basis") or ""
+        ),
+        "coverage": dict(detailed_rollup.get("coverage") or {}),
+        "tested_items": int(detailed_rollup.get("tested_items") or 0),
+        "failed_items": int(detailed_rollup.get("failed_items") or 0),
+        "incomplete_items": int(detailed_rollup.get("incomplete_items") or 0),
+        "needs_review_items": int(detailed_rollup.get("needs_review_items") or 0),
+        "confirmed_items": int(detailed_rollup.get("confirmed_items") or detailed_rollup.get("confirmed") or 0),
+        "assertion_mismatches": int(detailed_rollup.get("assertion_mismatches") or 0),
         "scope_limitations": item.get("scope_limitations") or "",
         "finding_refs": item.get("finding_refs") or [],
     }
@@ -486,7 +665,11 @@ def rollup(
         for test in tests:
             if test["kind"] == "doctest":
                 documents_to_write[test["id"]] = test["item"]
-        conclusions = [item["control_conclusion"] for item in test_rollups]
+        conclusions = [
+            item["control_conclusion"]
+            for item in test_rollups
+            if item["conclusion_eligible"]
+        ]
         if "ineffective" in conclusions:
             control_conclusion = "ineffective"
         elif "partially_effective" in conclusions:
@@ -509,6 +692,28 @@ def rollup(
             "draft": sum(item["status"] == "draft" for item in test_rollups),
             "exceptions": sum(item["exception_count"] for item in test_rollups),
             "open_exceptions": sum(item["open_exception_count"] for item in test_rollups),
+            "tested_items": sum(item["tested_items"] for item in test_rollups),
+            "failed_items": sum(item["failed_items"] for item in test_rollups),
+            "incomplete_items": sum(item["incomplete_items"] for item in test_rollups),
+            "needs_review_items": sum(item["needs_review_items"] for item in test_rollups),
+            "confirmed_items": sum(item["confirmed_items"] for item in test_rollups),
+            "assertion_mismatches": sum(
+                item["assertion_mismatches"] for item in test_rollups
+            ),
+            "conclusion_eligible_tests": sum(
+                item["conclusion_eligible"] for item in test_rollups
+            ),
+            "supplemental_tests": sum(
+                item.get("assurance_scope") == "targeted_evidence_only"
+                for item in test_rollups
+            ),
+            "assurance_scopes": sorted(
+                {
+                    str(item["assurance_scope"])
+                    for item in test_rollups
+                    if item.get("assurance_scope")
+                }
+            ),
             "control_conclusion": control_conclusion,
             "findings": len(row.get("finding_refs") or []),
             "review_status": row.get("review_status") or "draft",
@@ -560,6 +765,10 @@ def completion(
         {"rcm_id": row["id"], "test_id": test["id"]}
         for row, test in linked
         if str(test["item"].get("status") or "").startswith("completed")
+        and (
+            test["kind"] != "doctest"
+            or doc_tests.conclusion_eligible(test["item"])
+        )
         and test["item"].get("control_conclusion") not in CONCLUDED_CONTROL_CONCLUSIONS
     ]
     blocked_without_plan = [
@@ -591,6 +800,19 @@ def completion(
             for test in _tests(workspace, row["id"], document_tests)
         )
     ]
+    assurance_gaps = [
+        {
+            "rcm_id": row["id"],
+            "reason": (
+                "Targeted evidence is supplemental and cannot support a population "
+                "control conclusion."
+            ),
+        }
+        for row in workspace.rcm
+        if (row.get("execution_rollup") or {}).get("tests")
+        and not (row.get("execution_rollup") or {}).get("conclusion_eligible_tests")
+        and (row.get("execution_rollup") or {}).get("supplemental_tests")
+    ]
     pending_cycle_dispositions = [
         {
             "rcm_id": row["id"],
@@ -611,6 +833,7 @@ def completion(
         or blank_conclusions
         or blocked_without_plan
         or rcm_without_conclusion
+        or assurance_gaps
         or pending_cycle_dispositions
         or any(
             test["item"].get("status") in {"blocked", "review_required"}
@@ -625,5 +848,6 @@ def completion(
         "blank_conclusions": blank_conclusions,
         "blocked_without_plan": blocked_without_plan,
         "rcm_without_conclusion": rcm_without_conclusion,
+        "assurance_gaps": assurance_gaps,
         "pending_cycle_dispositions": pending_cycle_dispositions,
     }

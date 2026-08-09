@@ -1252,7 +1252,12 @@ _FINDING_DATA_TEST_FIELDS = (
 )
 
 
-def _finding_execution_projection(workspace: Workspace, execution_ref: str) -> dict | None:
+def _finding_execution_projection(
+    workspace: Workspace,
+    execution_ref: str,
+    *,
+    cycle_item_id: str | None = None,
+) -> dict | None:
     """Project the immutable execution result a finding must be grounded in."""
     from ... import data_tests
 
@@ -1265,6 +1270,50 @@ def _finding_execution_projection(workspace: Workspace, execution_ref: str) -> d
         return {key: result.get(key) for key in _FINDING_DATA_TEST_FIELDS}
     if kind == "doctest" and doc_tests.exists(workspace, source_id):
         test = doc_tests.load_test(workspace, source_id)
+        if doc_tests.is_cycle_test(test):
+            selected = next(
+                (
+                    item
+                    for item in test.get("items") or []
+                    if str(item.get("id") or "") == str(cycle_item_id or "")
+                ),
+                None,
+            )
+            if selected is None:
+                return None
+            return {
+                "id": test.get("id"),
+                "kind": "cycle_vouch",
+                "status": test.get("status"),
+                "sha1": test.get("sha1"),
+                "definition_sha1": cycle_vouching.cycle_definition_sha1(test),
+                "assurance_scope": doc_tests.assurance_scope(test),
+                "rollup": doc_tests.result_rollup(test),
+                "item": {
+                    "id": selected.get("id"),
+                    "evaluation": dict(selected.get("evaluation") or {}),
+                    "disposition": dict(selected.get("disposition") or {}),
+                    "assertion_results": [
+                        {
+                            "key": key,
+                            "verdict": result.get("verdict"),
+                            "assertion_sha1": result.get("assertion_sha1"),
+                            "result_sha1": result.get("result_sha1"),
+                            "evidence": [
+                                {
+                                    field: anchor.get(field)
+                                    for field in (
+                                        "source_kind", "source_id", "source_sha1",
+                                        "page", "item_id", "field",
+                                    )
+                                }
+                                for anchor in result.get("evidence_refs") or []
+                            ],
+                        }
+                        for key, result in (selected.get("result_by_assertion") or {}).items()
+                    ],
+                },
+            }
         return {
             "id": test.get("id"),
             "status": test.get("status"),
@@ -1323,19 +1372,31 @@ def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextSco
     execution = {
         "execution_ref": execution_ref,
         "immutable_execution_result": _finding_execution_projection(
-            workspace, execution_ref
+            workspace,
+            execution_ref,
+            cycle_item_id=str(observation.get("cycle_item_id") or "") or None,
         ),
         "evidence_anchor": findings.anchor_from_ref(workspace, execution_ref),
     }
     row_projection = {key: row.get(key) for key in _FINDING_ROW_FIELDS}
     test_projection = {key: test.get(key) for key in _FINDING_TEST_FIELDS}
+    observation_projection = {
+        key: observation.get(key)
+        for key in (
+            "id", "rcm_id", "test_id", "execution_ref", "exception_count",
+            "summary", "classification", "outcome", "cycle_item_id",
+            "assurance_scope", "definition_sha1", "evaluation_result_sha1",
+            "evaluation_state", "disposition_state", "assertion_keys",
+            "assertion_mismatch_count",
+        )
+    }
     return ContextScope(
         candidates={
             FINDING_OBSERVATION_SOURCE_ID: (
                 ContextCandidate(
                     source_ref=f"observation:{observation['id']}",
-                    source=dict(observation),
-                    representations={"current_artifact": dict(observation)},
+                    source=observation_projection,
+                    representations={"current_artifact": observation_projection},
                     metadata={"observation_id": str(observation["id"])},
                 ),
             ),

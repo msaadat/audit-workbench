@@ -9,9 +9,6 @@ import type {
   AuditDocument,
   AuditFinding,
   DocTest,
-  DocTestCheck,
-  DocTestCheckSide,
-  DocComparison,
   DocTestItem,
   EvidenceRef,
 } from '../../types'
@@ -49,11 +46,7 @@ const methods = [
   'fuzzy',
   'numeric_tolerance',
   'date_tolerance',
-  'date_order',
-  'present',
 ]
-// `present` reads only the left side, so a cycle check using it shows one row.
-const unaryMethods = new Set(['present'])
 const kindLabel: Record<string, string> = {
   vouching: 'Vouching / tracing',
   attribute: 'Attribute test',
@@ -104,54 +97,6 @@ const canClearSignOff = computed(() => isCanonicalCycle.value
   : (props.item.state ?? 'pending') !== 'pending')
 const cycleResults = computed(() => Object.entries(props.item.result_by_assertion ?? {}))
 
-
-// A cycle check names both sides by path; a legacy check searches page text for
-// a literal. They render differently because they mean different things — one
-// is a resolved comparison between two records, the other a text match.
-function isCycleCheck(check: DocTestCheck) {
-  return Boolean(check.left)
-}
-function sides(check: DocTestCheck): DocTestCheckSide[] {
-  return (check.comparisons ?? []).filter(
-    (entry): entry is DocTestCheckSide => 'side' in entry && 'matches' in entry,
-  )
-}
-function legacyComparisons(check: DocTestCheck): DocComparison[] {
-  if (isCycleCheck(check)) return []
-  return (check.comparisons ?? []).filter(
-    (entry): entry is DocComparison => !('side' in entry),
-  )
-}
-function visibleSides(check: DocTestCheck) {
-  const resolved = sides(check)
-  if (unaryMethods.has(check.method as string)) {
-    return resolved.filter(side => side.side === 'left')
-  }
-  return resolved.filter(side => side.path)
-}
-function sideValue(side: DocTestCheckSide) {
-  if (side.state === 'missing') return 'not found'
-  if (side.state === 'ambiguous') return 'conflicting values'
-  const value = side.matches[0]?.value
-  if (value === null || value === undefined || value === '') return 'empty'
-  return String(value)
-}
-// `row.<column>` reads the frozen population row and has no document behind it;
-// every other path resolves to an excerpt in a named document.
-function sideOrigin(side: DocTestCheckSide) {
-  if (side.path.startsWith('row.')) return 'Population record'
-  const match = side.matches[0]
-  if (!match?.document_id) return 'No source'
-  return `${documentTitle(match.document_id)} · page ${match.page ?? '—'}`
-}
-function sideAnchor(side: DocTestCheckSide): EvidenceRef | null {
-  const match = side.matches.find(entry => entry.document_id && entry.excerpt)
-  if (!match) return null
-  return (props.item.evidence_refs ?? []).find(
-    ref => ref.source_id === match.document_id && ref.excerpt === match.excerpt,
-  ) ?? null
-}
-
 const cycleSpec = computed(() => (props.test.spec ?? {}) as Record<string, any>)
 const cycleCoverage = computed(() => {
   const coverage = props.test.coverage ?? cycleSpec.value.coverage
@@ -167,18 +112,32 @@ const cycleCoverage = computed(() => {
 const cycleDocuments = computed<Array<{
   document_id: string
   role: string
-  document_type?: string
-  matched_by?: string | Array<Record<string, unknown>>
+  matched_by?: Array<Record<string, unknown>>
 }>>(() => {
-  if (props.item.role_bindings?.length) return props.item.role_bindings.map(binding => ({
+  return (props.item.role_bindings ?? []).map(binding => ({
     document_id: binding.document_id,
     role: binding.role,
     matched_by: binding.matched_by,
   }))
-  return props.item.documents ?? []
 })
 const missingRoles = computed(() => props.item.missing_roles ?? [])
 const frozenRow = computed(() => Object.entries(props.item.frozen_row ?? props.item.frozen ?? {}))
+const cycleConclusionEligible = computed(() => {
+  if (!isCanonicalCycle.value) return true
+  const selection = props.test.definition?.population.selection
+  if (selection?.mode !== 'sample') return false
+  return Boolean(props.test.items.length) && props.test.items.every(item =>
+    ['passed', 'failed'].includes(item.evaluation?.state ?? '')
+    && ['confirmed', 'exception'].includes(item.disposition?.state ?? '')
+    && !item.disposition?.stale,
+  )
+})
+const controlConclusionReason = computed(() => {
+  if (!isCanonicalCycle.value || cycleConclusionEligible.value) return ''
+  return props.test.definition?.population.selection.mode === 'evidence_linked'
+    ? 'Targeted evidence is item-specific and cannot support a population control conclusion or projected exception rate.'
+    : 'Complete deterministic evaluation and current auditor disposition are required before recording a control conclusion.'
+})
 
 function edgeLabel(edge: Record<string, unknown>) {
   return `${String(edge.identifier_kind ?? 'identifier')} = ${String(edge.normalized_value ?? '—')}`
@@ -303,11 +262,6 @@ onMounted(() => { void focusAssertion() })
       <div v-for="entry in cycleDocuments" :key="entry.document_id" class="role-row">
         <span class="role-name">{{ entry.role }}</span>
         <span class="role-doc">{{ documentTitle(entry.document_id) }}</span>
-        <span
-          v-if="entry.document_type && entry.document_type !== entry.role"
-          class="role-type"
-          :title="'Extracted document type, mapped into this role'"
-        >{{ entry.document_type }}</span>
         <small v-if="Array.isArray(entry.matched_by) && entry.matched_by.length" class="matched-chain">
           {{ entry.matched_by.map(edgeLabel).join(' → ') }}
         </small>
@@ -377,28 +331,9 @@ onMounted(() => { void focusAssertion() })
           <UiTestStatus :status="check.verdict" showLabel />
         </div>
 
-        <!-- Cycle comparison: two resolved sides, each with its own source. -->
-        <template v-if="isCycleCheck(check)">
-          <div v-for="side in visibleSides(check)" :key="side.side" class="comparison">
-            <span class="comparison-source">{{ sideOrigin(side) }}</span>
-            <code :class="{ unresolved: side.state !== 'resolved' }">{{ sideValue(side) }}</code>
-            <span class="path" :title="side.path">{{ side.path }}</span>
-            <Button
-              v-if="sideAnchor(side)"
-              icon="pi pi-link"
-              text
-              rounded
-              size="small"
-              aria-label="Open evidence"
-              @click="emit('anchor', sideAnchor(side)!)"
-            />
-          </div>
-          <p v-if="check.note" class="check-note">{{ check.note }}</p>
-        </template>
-
-        <!-- Legacy comparison: a literal expectation matched against page text. -->
+        <!-- Literal expectation matched against page text for simple vouching. -->
         <div
-          v-for="result in legacyComparisons(check)"
+          v-for="result in check.comparisons"
           :key="`${result.document_id}:${result.page}`"
           class="comparison"
         >
@@ -417,7 +352,7 @@ onMounted(() => { void focusAssertion() })
         </div>
         <UiAdvancedSection title="Matching rule" description="Change how this field is compared">
           <div class="comparison-settings">
-            <span v-if="!isCycleCheck(check)">Expected: <code>{{ check.expected }}</code></span>
+            <span>Expected: <code>{{ check.expected }}</code></span>
             <Select v-model="check.method" :options="methods" />
             <InputText
               :modelValue="String(check.tolerance ?? '')"
@@ -569,8 +504,13 @@ onMounted(() => { void focusAssertion() })
             :options="controlConclusions"
             optionLabel="label"
             optionValue="value"
+            class="control-conclusion-select"
+            :disabled="isCanonicalCycle && !cycleConclusionEligible"
           />
         </label>
+        <p v-if="controlConclusionReason" class="rail-note assurance-restriction">
+          {{ controlConclusionReason }}
+        </p>
         <label>
           Conclusion
           <Textarea

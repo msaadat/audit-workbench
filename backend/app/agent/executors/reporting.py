@@ -184,6 +184,22 @@ def verify_audit(workspace: Workspace) -> dict:
             for item in doc_tests.list_tests(workspace)
             if item.get("rcm_id")
         ),
+        "cycle_tested_items": sum(
+            int(doc_tests.result_rollup(item).get("tested_items") or 0)
+            for item in linked_tests
+            if doc_tests.is_cycle_test(item)
+        ),
+        "cycle_failed_items": sum(
+            int(doc_tests.result_rollup(item).get("failed_items") or 0)
+            for item in linked_tests
+            if doc_tests.is_cycle_test(item)
+        ),
+        "cycle_assertion_mismatches": sum(
+            int(doc_tests.result_rollup(item).get("assertion_mismatches") or 0)
+            for item in linked_tests
+            if doc_tests.is_cycle_test(item)
+        ),
+        "assurance_gaps": list(completion.get("assurance_gaps") or []),
         # Exceptions are recorded outcomes, not unresolved auditor gates.
         "recorded_exception_observations": sum(
             item.get("outcome") == "exception" for item in workspace.observations
@@ -200,6 +216,12 @@ def verify_audit(workspace: Workspace) -> dict:
         "report_quality_errors": len(errors),
         "output_readiness": output_states,
         "open_gate_count": int((completion.get("coverage") or {}).get("issue_count") or 0)
+        + len(completion.get("incomplete_outcomes") or [])
+        + len(completion.get("blank_conclusions") or [])
+        + len(completion.get("blocked_without_plan") or [])
+        + len(completion.get("rcm_without_conclusion") or [])
+        + len(completion.get("pending_cycle_dispositions") or [])
+        + len(completion.get("assurance_gaps") or [])
         + len(errors)
         + len(issues),
     }
@@ -338,6 +360,16 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
         observation = _observation(fresh, target.observation_id)
         execution_ref = str(observation["execution_ref"])
         anchor = findings.anchor_from_ref(fresh, execution_ref, run_id=target.run_id)
+        evidence_refs = list(observation.get("evidence_refs") or [])
+        if anchor:
+            evidence_refs.append(anchor)
+        evidence_refs = list(
+            {
+                str(value.get("id") or "")
+                or f"{value.get('source_kind')}:{value.get('source_id')}:{value.get('page')}:{value.get('field')}": value
+                for value in evidence_refs
+            }.values()
+        )
         item = {
             **draft,
             "id": finding_stable_id(semantic),
@@ -348,7 +380,7 @@ def execute_finding(request: ExecutorRequest, raw_target: object) -> ExecutorRes
             "procedure_refs": [],
             "test_refs": [observation["test_id"]],
             "execution_refs": [execution_ref],
-            "evidence_refs": [anchor] if anchor else [],
+            "evidence_refs": evidence_refs,
             "auditor_confirmed": False,
         }
         issues = findings.support_issues(fresh, item)

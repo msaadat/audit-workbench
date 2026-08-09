@@ -4626,9 +4626,39 @@ def result_rollup(test: Mapping[str, object]) -> dict:
     tested_items = sum(
         item_counts[state] for state in sorted(CURRENT_EVALUATION_STATES)
     )
+    current_items = [item for item in items if execution_current(item, cycle=True)]
+    failed_items = sum(
+        any(
+            result.get("verdict") == "mismatch"
+            for result in (item.get("result_by_assertion") or {}).values()
+        )
+        for item in current_items
+    )
+    incomplete_items = sum(
+        any(
+            result.get("verdict") in {"missing_evidence", "invalid_extraction"}
+            for result in (item.get("result_by_assertion") or {}).values()
+        )
+        for item in current_items
+    )
     pending_dispositions = sum(
         disposition_pending(item, cycle=True) for item in items
     )
+    evaluations_current = bool(items) and tested_items == len(items)
+    dispositions_current = bool(items) and (
+        disposition_counts["confirmed"] + disposition_counts["exception"]
+        == len(items)
+    )
+    conclusion_eligible = bool(
+        scope == "sampled_population"
+        and evaluations_current
+        and dispositions_current
+        and not item_counts["incomplete"]
+        and not item_counts["needs_review"]
+    )
+    control_conclusion = str(test.get("control_conclusion") or "no_conclusion")
+    if not conclusion_eligible:
+        control_conclusion = "no_conclusion"
     return {
         "items": len(items),
         "tested_items": tested_items,
@@ -4639,15 +4669,19 @@ def result_rollup(test: Mapping[str, object]) -> dict:
             "total": len(items) * len(assertion_keys),
             **assertion_counts,
         },
-        "failed_items": item_counts["failed"],
-        "incomplete_items": item_counts["incomplete"],
+        "failed_items": failed_items,
+        "incomplete_items": incomplete_items,
         "needs_review_items": item_counts["needs_review"],
         "confirmed_items": disposition_counts["confirmed"],
         "exception_items": disposition_counts["exception"],
+        "open_exceptions": disposition_counts["exception"],
         "pending_dispositions": pending_dispositions,
         "coverage": coverage,
         "assurance_scope": scope,
         "assurance_label": _assurance_label(scope),
+        "conclusion_eligible": conclusion_eligible,
+        "control_conclusion": control_conclusion,
+        "assertion_mismatches": assertion_counts["mismatch"],
         # Common Document Test rollup fields remain canonical for consumers
         # that aggregate all test kinds. They are not added to the item counts.
         "matched": assertion_counts["match"],

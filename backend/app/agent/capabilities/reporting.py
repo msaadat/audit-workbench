@@ -226,18 +226,10 @@ def _report_working_draft() -> Capability:
 # audit.verified (P7L)
 # --------------------------------------------------------------------------- #
 def _verified(workspace: Workspace, _scope: dict) -> Readiness:
-    coverage = rcm_execution.coverage(workspace)
+    completion = rcm_execution.completion(workspace)
     quality = report.quality_checks(workspace)
     errors = [item for item in quality.get("issues") or [] if item.get("severity") == "error"]
-    open_items = bool(
-        coverage.get("issue_count")
-        or any(
-            str(item.get("status") or "")
-            not in {"completed_no_exception", "completed_with_exception", "not_applicable"}
-            for item in _all_tests(workspace)
-        )
-    )
-    status = "completed" if not open_items else "completed_with_open_items"
+    status = str(completion.get("status") or "completed_with_open_items")
     if status == "completed" and not errors:
         return Readiness(
             "satisfied",
