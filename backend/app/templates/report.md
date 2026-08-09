@@ -7,7 +7,10 @@ Two headings carry structural meaning and should be kept:
   declared before it is rendered as a sub-part of an inserted "Executive
   Summary" heading; everything from it onward stays top level. Its body is
   assembled from the confirmed findings themselves and is never drafted.
-- "Key Findings" is rendered as a table of the high-risk findings only.
+- "Key Findings" is rendered as a table of the high-risk findings only, grouped
+  by process.
+- "Summary of Findings" is rendered as a count of the confirmed findings by
+  severity. It is assembled from the records and is never drafted.
 
 "Audit Conclusion" carries the engagement rating. The rating is chosen from
 Satisfactory, Fair, Marginal, and Unsatisfactory, but only from within the band
@@ -23,7 +26,7 @@ no rating is assigned at all while fieldwork remains open. -->
 entity, the period, and the process or function reviewed, and state the
 authority the audit was carried out under where the planning basis records one.
 Two or three sentences of orientation for a reader who has seen no other
-document. Do not preview the conclusion or the findings here. -->
+document. Do not include any findings or conclusions here. -->
 
 ## Objective and Scope
 
@@ -51,15 +54,23 @@ an unstated gap is worse than a narrower conclusion honestly bounded. -->
 ## Key Findings
 
 <!-- section: A table of the high-risk findings for senior management, one row
-each, highest risk first:
+each, grouped by process and highest risk first:
 
-    | Process | Key Finding | Risk Level | Recommendation |
+    | # | Process | Key Finding | Risk Level | Recommendation |
 
 Each cell is the crux, not a summary of the narrative. The reader is deciding
 where to direct attention and should be able to do that from this table alone,
 without reading the detailed findings. Compress hard: one sentence per cell,
 concrete, quantified where the finding is quantified, no qualifying clauses.
 Never introduce a fact the detailed finding does not already carry. -->
+
+## Summary of Findings
+
+<!-- section: Assembled, not drafted. The confirmed findings counted by
+severity, one row per audited unit:
+
+    | Unit | Critical | High | Medium | Low |
+-->
 
 ## Detailed Findings
 

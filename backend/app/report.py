@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
+import itertools
 import json
 import re
 from datetime import datetime, timezone
@@ -10,7 +12,7 @@ from urllib.parse import quote
 
 from . import data_tests, debug_store, doc_tests, llm, rcm_execution, templates_store
 from .documents import append_activity
-from .findings import artifact, support_issues
+from .findings import CAUSE_SECTION_KEYS, artifact, support_issues
 from .workspaces import Workspace, WorkspaceError
 
 
@@ -48,13 +50,25 @@ EXECUTIVE_SUMMARY_HEADING = "Executive Summary"
 _DETAIL_SECTION_KEY = "detailed findings"
 _CONCLUSION_SECTION_KEY = "audit conclusion"
 _KEY_FINDINGS_SECTION_KEY = "key findings"
+_SUMMARY_SECTION_KEY = "summary of findings"
 _INTRODUCTION_SECTION_KEY = "introduction"
 _SCOPE_SECTION_KEY = "objective and scope"
 _DEFAULT_HEADINGS = (
     "Introduction", "Objective and Scope", "Audit Conclusion",
-    "Key Findings", "Detailed Findings",
+    "Key Findings", "Summary of Findings", "Detailed Findings",
 )
+# The severities the summary table counts, in column order.
+_SUMMARY_SEVERITIES = ("critical", "high", "medium", "low")
 _UNWRITTEN_SECTION = "Content to be completed by the auditor."
+# How many recorded limitations the deterministic draft lists before it counts
+# the rest. Limitations are recorded per test, so a thinly evidenced engagement
+# restates the same few gaps many times over.
+_SCOPE_LIMITATION_LIMIT = 6
+# How alike two finding titles must be before the pair is worth an auditor's
+# attention. Set to catch a restatement, not a shared subject: across the
+# procurement engagement the one true duplicate pair scores 0.88 and the next
+# closest unrelated pair 0.58, so the gap is wide and this sits inside it.
+_DUPLICATE_TITLE_RATIO = 0.75
 _PRELIMINARY_BANNER = (
     "> **Preliminary working draft:** fieldwork, evidence, review, or auditor "
     "judgment remains open. This document is not a final audit opinion."
@@ -171,6 +185,11 @@ def _narrative_section(item: dict, *needles: str) -> str:
     return ""
 
 
+def _comparable_title(item: dict) -> str:
+    """One finding's title reduced to what a duplicate check should compare."""
+    return " ".join(str(item.get("title") or "").casefold().split())
+
+
 def _ordered_findings(items: list[dict]) -> list[dict]:
     """Confirmed findings, most severe first, ties broken by id."""
     return sorted(
@@ -202,10 +221,9 @@ def rating_band(context: dict) -> dict:
             "assignable": False,
             "ceiling": None,
             "allowed": [],
-            "reasons": [
-                "fieldwork, evidence, or auditor judgment remains open, so no "
-                "overall rating is assigned"
-            ],
+            # A reason completes "no rating because …" and "no rating while …",
+            # so it names the cause and stops there.
+            "reasons": ["fieldwork, evidence, or auditor judgment remains open"],
         }
     severities = {str(item.get("severity") or "").casefold() for item in findings}
     conclusions = [str(row.get("control_conclusion") or "").casefold() for row in rows]
@@ -458,6 +476,43 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
     }
 
 
+def _answer_empty_sections(markdown: str, *, cause_pending: bool) -> str:
+    """Give an unanswered narrative heading a statement, not a blank space.
+
+    An auditor may formally defer the cause when the evidence does not establish
+    it, which is the honest answer — but the report has to say so. Rendering the
+    heading with nothing beneath it reads as an omission, and repeated once per
+    finding it reads as a broken document.
+    """
+    # Horizontal whitespace only: a ``\s*$`` tail would consume the blank line
+    # after the heading, and the replacement text would land in the wrong place.
+    matches = list(re.finditer(r"^(#{1,6})[ \t]+(.+?)[ \t]*$", markdown, re.MULTILINE))
+    parts: list[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+        body = markdown[match.end():end]
+        parts.append(markdown[cursor:match.end()])
+        if not body.strip():
+            deferred = (
+                cause_pending
+                and templates_store.section_key(match.group(2)) in CAUSE_SECTION_KEYS
+            )
+            parts.append(
+                "\n\n"
+                + (
+                    "Not established by the evidence obtained; pending auditor "
+                    "follow-up."
+                    if deferred
+                    else "Not stated."
+                )
+            )
+        parts.append(body)
+        cursor = end
+    parts.append(markdown[cursor:])
+    return "".join(parts)
+
+
 def _finding_narrative(item: dict) -> str:
     """One finding's narrative, placed under its report heading unchanged.
 
@@ -469,11 +524,14 @@ def _finding_narrative(item: dict) -> str:
     body = templates_store.strip_guidance(item.get("narrative") or "").strip()
     if not body:
         return "The finding narrative has not been completed."
-    return re.sub(
-        r"^(#{1,4})(?=\s)",
-        lambda match: "#" * min(len(match.group(1)) + 2, 6),
-        body,
-        flags=re.MULTILINE,
+    return _answer_empty_sections(
+        re.sub(
+            r"^(#{1,4})(?=\s)",
+            lambda match: "#" * min(len(match.group(1)) + 2, 6),
+            body,
+            flags=re.MULTILINE,
+        ),
+        cause_pending=bool(item.get("cause_pending")),
     )
 
 
@@ -563,6 +621,30 @@ def _report_title(workspace: Workspace, context: dict, template: str) -> str:
     return title
 
 
+def _part_label(index: int) -> str:
+    """The letter one top-level part is numbered with: A, B, ... Z, AA."""
+    label = ""
+    while True:
+        index, remainder = divmod(index, 26)
+        label = chr(ord("A") + remainder) + label
+        if index == 0:
+            return label
+        index -= 1
+
+
+def _finding_numbers(context: dict) -> dict[str, int]:
+    """Each confirmed finding's number in the report, from its detail order.
+
+    One numbering serves both places a finding appears, so an executive table
+    row names the finding a reader then turns to rather than leaving them to
+    match on title.
+    """
+    return {
+        str(item.get("id")): index + 1
+        for index, item in enumerate(_ordered_findings(context.get("findings") or []))
+    }
+
+
 def _assemble(workspace: Workspace, context: dict, sections: dict[str, str]) -> str:
     """Render the configured sections into the report's two-level structure.
 
@@ -582,13 +664,20 @@ def _assemble(workspace: Workspace, context: dict, sections: dict[str, str]) -> 
         len(headings),
     )
     lines = [_report_title(workspace, context, template), ""]
+    part = 0
     for index, heading in enumerate(headings):
         if index == 0 and detail_index:
-            lines.extend([f"## {EXECUTIVE_SUMMARY_HEADING}", ""])
+            lines.extend([f"## {_part_label(part)}. {EXECUTIVE_SUMMARY_HEADING}", ""])
+            part += 1
         body = str(sections.get(templates_store.section_key(heading)) or "").strip()
+        if index < detail_index:
+            label = f"### {index + 1}. {heading}"
+        else:
+            label = f"## {_part_label(part)}. {heading}"
+            part += 1
         lines.extend(
             [
-                f"{'###' if index < detail_index else '##'} {heading}",
+                label,
                 "",
                 body or _UNWRITTEN_SECTION,
                 "",
@@ -642,6 +731,37 @@ def _key_findings(context: dict) -> list[dict]:
     ]
 
 
+def _grouped_by_process(context: dict, items: list[dict]) -> list[dict]:
+    """Findings ordered so that those sharing a process sit together.
+
+    Groups lead with their most severe finding, and the severest group leads the
+    table, so grouping never buries a critical finding behind a quieter process.
+    """
+    groups: dict[str, list[dict]] = {}
+    for item in items:
+        groups.setdefault(_finding_processes(context, item), []).append(item)
+    return [
+        item
+        for _rank, _process, group in sorted(
+            (
+                (
+                    min(
+                        _SEVERITY_RANK.get(
+                            str(entry.get("severity") or "").casefold(), 9
+                        )
+                        for entry in group
+                    ),
+                    process,
+                    group,
+                )
+                for process, group in groups.items()
+            ),
+            key=lambda entry: entry[:2],
+        )
+        for item in group
+    ]
+
+
 def _key_findings_table(context: dict, drafted: list[dict] | None = None) -> str:
     """The executive table: drafted prose fills two cells, records fill the rest.
 
@@ -656,17 +776,26 @@ def _key_findings_table(context: dict, drafted: list[dict] | None = None) -> str
         for row in drafted or []
         if isinstance(row, dict)
     }
+    numbers = _finding_numbers(context)
     lines = [
-        "| Process | Key Finding | Risk Level | Recommendation |",
-        "| --- | --- | --- | --- |",
+        "| # | Process | Key Finding | Risk Level | Recommendation |",
+        "| --- | --- | --- | --- | --- |",
     ]
-    for item in items:
+    seen_processes: set[str] = set()
+    for item in _grouped_by_process(context, items):
         row = cells.get(str(item.get("id"))) or {}
+        process = _finding_processes(context, item)
+        # Markdown has no row spanning, so a process is named once and its
+        # remaining findings continue under a blank cell — which is what a
+        # merged cell looks like in a rendered table.
+        label = "" if process in seen_processes else process
+        seen_processes.add(process)
         lines.append(
             "| "
             + " | ".join(
                 (
-                    _table_cell(_finding_processes(context, item)),
+                    _table_cell(numbers.get(str(item.get("id")), "")),
+                    _table_cell(label) if label else " ",
                     _table_cell(
                         row.get("key_finding")
                         or _first_sentence(_narrative_section(item, "condition"))
@@ -686,6 +815,42 @@ def _key_findings_table(context: dict, drafted: list[dict] | None = None) -> str
     return "\n".join(lines)
 
 
+def _summary_of_findings(workspace: Workspace, context: dict) -> str:
+    """The confirmed findings counted by severity for the audited unit.
+
+    Assembled, never drafted: this is arithmetic over the same findings the
+    detail section carries, and a count a model produced would be one more
+    number the report's own checks would have to police.
+    """
+    items = context.get("findings") or []
+    if not items:
+        return "No auditor-confirmed, evidence-supported findings have been recorded."
+    counts = {
+        severity: sum(
+            str(item.get("severity") or "").casefold() == severity for item in items
+        )
+        for severity in _SUMMARY_SEVERITIES
+    }
+    uncounted = len(items) - sum(counts.values())
+    lines = [
+        "| Unit | " + " | ".join(name.title() for name in _SUMMARY_SEVERITIES) + " |",
+        "| --- | " + " | ".join("---" for _ in _SUMMARY_SEVERITIES) + " |",
+        f"| {_table_cell(workspace.name)} | "
+        + " | ".join(str(counts[name]) for name in _SUMMARY_SEVERITIES)
+        + " |",
+    ]
+    if uncounted:
+        # The table's columns are the severities a finding is reported at; an
+        # informational finding is still recorded, so it is stated rather than
+        # quietly dropped from a count the reader will treat as complete.
+        lines.extend([
+            "",
+            f"A further {uncounted} finding(s) are recorded at informational "
+            "severity and are not counted above.",
+        ])
+    return "\n".join(lines)
+
+
 def _detailed_findings(context: dict) -> str:
     """Every confirmed finding in full, most severe first.
 
@@ -696,23 +861,29 @@ def _detailed_findings(context: dict) -> str:
     items = _ordered_findings(context.get("findings") or [])
     if not items:
         return "No auditor-confirmed, evidence-supported findings have been recorded."
-    response_label = "**Management response:** "
-    return "\n\n".join(
-        "\n\n".join(
-            (
-                f"### {item.get('title') or item['id']}",
-                f"**Severity:** {str(item.get('severity') or 'medium').title()} · "
-                f"**Reference:** {_finding_link(item)}",
-                _finding_narrative(item),
-                response_label
-                + (
-                    str(item.get("management_response") or "").strip()
-                    or "No management response has been recorded."
-                ),
-            )
-        )
-        for item in items
+    numbers = _finding_numbers(context)
+    # Where no response has been received at all, that is one fact about the
+    # engagement rather than a line to repeat under every finding.
+    any_response = any(
+        str(item.get("management_response") or "").strip() for item in items
     )
+    blocks = []
+    for item in items:
+        response = str(item.get("management_response") or "").strip()
+        parts = [
+            f"### {numbers[str(item['id'])]}. {item.get('title') or item['id']}",
+            f"**Severity:** {str(item.get('severity') or 'medium').title()} · "
+            f"**Reference:** {_finding_link(item)}",
+            _finding_narrative(item),
+        ]
+        if response:
+            parts.append(f"**Management response:** {response}")
+        blocks.append("\n\n".join(parts))
+    if not any_response:
+        blocks.insert(
+            0, "No management responses have been received for the findings below."
+        )
+    return "\n\n".join(blocks)
 
 
 def _introduction_body(workspace: Workspace, context: dict) -> str:
@@ -741,9 +912,19 @@ def _scope_body(context: dict) -> str:
         lines.extend(["", f"**Materiality:** {planning['materiality']}"])
     lines.extend(["", "**Scope limitations**", ""])
     texts = _limitation_texts(context)
-    lines.extend(
-        [f"- {text}" for text in texts] or ["No scope limitations were recorded."]
-    )
+    if not texts:
+        lines.append("No scope limitations were recorded.")
+        return "\n".join(lines)
+    # Limitations are recorded per test, so an engagement with thin evidence
+    # produces the same few gaps restated twenty times. Grouping them is the
+    # drafting call's job; without it, the count is more use than the list.
+    lines.extend(f"- {text}" for text in texts[:_SCOPE_LIMITATION_LIMIT])
+    remaining = len(texts) - _SCOPE_LIMITATION_LIMIT
+    if remaining > 0:
+        lines.append(
+            f"- A further {remaining} limitation(s) are recorded against "
+            "individual tests and are set out in the working papers."
+        )
     return "\n".join(lines)
 
 
@@ -779,6 +960,7 @@ def _deterministic_sections(
         _SCOPE_SECTION_KEY: _scope_body(context),
         _CONCLUSION_SECTION_KEY: _conclusion_body(context, band),
         _KEY_FINDINGS_SECTION_KEY: _key_findings_table(context),
+        _SUMMARY_SECTION_KEY: _summary_of_findings(workspace, context),
         _DETAIL_SECTION_KEY: _detailed_findings(context),
     }
 
@@ -810,15 +992,32 @@ def _model_turn(workspace: Workspace, system: str, user: str, *, run_id: str | N
     return content.strip()
 
 
+# This call is the one that returns multi-paragraph prose with a bulleted list.
+# Asking for that inside a JSON string invites an unescaped newline and loses
+# the whole section to a parse error, so it returns Markdown under two known
+# headings and the sections are split back out deterministically.
 OVERVIEW_SYSTEM = (
     "[agent:report_overview]\n"
     "You draft the opening of an internal-audit report for auditor review. "
-    "Return one JSON object only, with string keys `introduction` and "
-    "`objective_and_scope`, each holding Markdown body text with no heading of "
-    "its own. Use only the supplied context. State every recorded scope "
-    "limitation in `objective_and_scope`. Do not preview the conclusion, do not "
-    "assign a rating, do not name tests or other workbench identifiers, and do "
-    "not invent an authority, a period, or a criterion the context lacks."
+    "Return Markdown only, under exactly these two headings and no others:\n"
+    "## Introduction\n"
+    "## Objective and Scope\n"
+    "Under `Introduction`, one short paragraph of three or four lines: who was "
+    "audited, over what period, and what the process covers.\n"
+    "Under `Objective and Scope`, two short paragraphs of three or four lines "
+    "each — the objective, then the scope — stating the boundary of the work: "
+    "what the audit covered and what it did not. Do not enumerate process areas, "
+    "controls, or sub-processes; a list of everything in scope is an inventory, "
+    "not a scope.\n"
+    "Then a bolded `**Scope limitations**` line followed by at most five short "
+    "bullets. The recorded limitations repeat the same few gaps in different "
+    "words, so group them by what was missing — operating evidence, approval "
+    "records, sourcing documentation, and so on — and say what each gap prevents "
+    "the report from concluding. Reproducing the list is not a disclosure; a "
+    "reader will not read twenty bullets.\n"
+    "Use only the supplied context. Do not preview the conclusion, do not assign "
+    "a rating, do not name tests or other workbench identifiers, and do not "
+    "invent an authority, a period, or a criterion the context lacks."
 )
 
 CONCLUSION_SYSTEM = (
@@ -833,20 +1032,36 @@ CONCLUSION_SYSTEM = (
     "control environment: what the pattern across control conclusions and "
     "findings shows about how well the process is controlled, and where the "
     "weight of the risk sits. Do not recount the findings one by one. Disclose "
-    "incomplete coverage. Copy every number from `statistics` exactly. Three to "
-    "five sentences, no test identifiers, no hedging."
+    "incomplete coverage.\n"
+    "Any figure you state must match `statistics` exactly — but state only the "
+    "few that carry the conclusion. Reciting the set is not a conclusion, and a "
+    "senior reader will not read past it.\n"
+    "Write in audit language, never in the language of the tool: no test counts, "
+    "no test identifiers, and no mention of data tests, document tests, items, "
+    "roll-ups, manual reviews, assertion mismatches, or exception records. "
+    "Three to five sentences, no hedging."
 )
 
 KEY_FINDINGS_SYSTEM = (
     "[agent:report_key_findings]\n"
     "You compress audit findings into an executive table. Return one JSON "
     "object only, with a `rows` array holding one object per supplied finding: "
-    "string `finding_id`, string `key_finding`, and string `recommendation`. "
-    "Each is one short sentence written for a senior reader who will not read "
-    "the detailed finding, quantified wherever the narrative is quantified. "
-    "State the crux, not a summary of the narrative. Never introduce a fact the "
-    "narrative does not carry, never omit a supplied finding, and keep each "
-    "cell on one line."
+    "string `finding_id`, string `key_finding`, and string `recommendation`.\n"
+    "`key_finding` is one short sentence stating the scale of the issue and the "
+    "control that failed — how many cases, and their total value where the "
+    "narrative gives amounts. Aggregate: this reader is deciding where to direct "
+    "attention, not reviewing transactions.\n"
+    "    Write: \"1 case totalling 99.3 million where the approver's delegated "
+    "financial authority was exceeded.\"\n"
+    "    Not:   \"REQ2024081 for 99,348,150 was approved by approver 1002, whose "
+    "delegated limit was 10,000,000.\"\n"
+    "Never name an individual record, person, staff number, document, file, or "
+    "system field, and never mention tests, exceptions recorded or withheld, "
+    "result validity, or any other mechanic of how the work was performed.\n"
+    "`recommendation` is one short imperative sentence: the action management "
+    "should take, with no record identifiers.\n"
+    "Never introduce a fact the narrative does not carry, never omit a supplied "
+    "finding, and keep every cell on one line."
 )
 
 
@@ -880,16 +1095,11 @@ def _overview_call_context(workspace: Workspace, context: dict) -> dict:
         "background_from_planning_memorandum": _apm_section(
             workspace, "introduction", "background"
         ),
+        # Counts only. Handing over the process names produced a scope paragraph
+        # that listed all nineteen of them: an inventory, not a boundary.
         "coverage": {
             "controls": context["statistics"]["rcm_rows"],
             "tests": context["statistics"]["tests"],
-            "processes": sorted(
-                {
-                    str(row.get("process") or "").strip()
-                    for row in context["rcm"]
-                    if str(row.get("process") or "").strip()
-                }
-            ),
         },
         "scope_limitations": _limitation_texts(context),
         "preliminary": context["preliminary"],
@@ -961,16 +1171,23 @@ def _drafted_sections(
     warnings: list[str] = []
 
     def overview() -> None:
-        parsed = _model_json(
-            workspace, OVERVIEW_SYSTEM,
-            _overview_call_context(workspace, context), run_id=run_id,
+        bodies = templates_store.section_bodies(
+            _model_turn(
+                workspace,
+                OVERVIEW_SYSTEM,
+                json.dumps(
+                    _overview_call_context(workspace, context),
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                run_id=run_id,
+            )
         )
-        for key, section in (
-            ("introduction", _INTRODUCTION_SECTION_KEY),
-            ("objective_and_scope", _SCOPE_SECTION_KEY),
-        ):
-            if body := str(parsed.get(key) or "").strip():
-                drafted[section] = body
+        for key in (_INTRODUCTION_SECTION_KEY, _SCOPE_SECTION_KEY):
+            if body := str(bodies.get(key) or "").strip():
+                drafted[key] = body
+        if not drafted.keys() & {_INTRODUCTION_SECTION_KEY, _SCOPE_SECTION_KEY}:
+            raise ValueError("the response carried neither expected heading")
 
     def conclusion() -> None:
         parsed = _model_json(
@@ -1121,6 +1338,35 @@ def reconcile(workspace: Workspace, action: str) -> dict:
     return payload(workspace)
 
 
+def _report_claims(workspace: Workspace, text: str) -> str:
+    """The report's own prose, with the copied finding narratives removed.
+
+    A finding's narrative is auditor-authored text the report reproduces
+    unchanged, and it legitimately counts the exceptions in its own population —
+    "1 exception" in a finding is not a claim that the engagement found one. The
+    arithmetic checks govern what the report itself asserts about the
+    engagement, so the copied lines come out before they run. Headings survive
+    the removal, which is harmless: they carry no figures.
+
+    Table rows come out for the same reason: a Key Findings row compresses one
+    finding and counts that finding's cases. Only the report's own prose speaks
+    for the engagement as a whole.
+    """
+    narrative_lines = {
+        line.strip()
+        for finding in workspace.findings
+        for line in templates_store.strip_guidance(
+            finding.get("narrative") or ""
+        ).splitlines()
+        if line.strip()
+    }
+    return "\n".join(
+        line
+        for line in str(text).splitlines()
+        if line.strip() not in narrative_lines and not line.strip().startswith("|")
+    )
+
+
 def _issue(code: str, severity: str, message: str, refs: list[str] | None = None, *, source: str = "deterministic") -> dict:
     return {"code": code, "severity": severity, "message": message, "refs": refs or [], "source": source}
 
@@ -1210,6 +1456,23 @@ def quality_checks(
                 f"{len(missing)} exception item(s) in {test['id']} have no current RCM observation.",
                 [f"doctest:{test['id']}"],
             ))
+    # Two findings that restate each other become two rows of the executive
+    # table, which reads to management as two problems. The pair need not share
+    # an RCM row — the same underlying weakness is often observed through more
+    # than one control — so titles are compared across every confirmed finding.
+    # Whether they are genuinely distinct is the auditor's call, so this is
+    # advisory: it points at the pair rather than merging or hiding either.
+    for first, second in itertools.combinations(supported_findings, 2):
+        similarity = difflib.SequenceMatcher(
+            None, _comparable_title(first), _comparable_title(second)
+        ).ratio()
+        if similarity >= _DUPLICATE_TITLE_RATIO:
+            issues.append(_issue(
+                "duplicate_finding", "warning",
+                f"{first['id']} and {second['id']} report near-identical findings; "
+                "consider merging them or distinguishing them.",
+                [f"finding:{first['id']}", f"finding:{second['id']}"],
+            ))
     exception_count = sum(int(item.get("exception_count") or 0) for item in workspace.observations)
 
     if not text.strip():
@@ -1217,12 +1480,13 @@ def quality_checks(
     for match in re.finditer(r"\?tab=findings&finding=([A-Za-z0-9_-]+)", text):
         if not any(item.get("id") == match.group(1) for item in workspace.findings):
             issues.append(_issue("broken_report_citation", "error", f"The report cites missing finding {match.group(1)}.", [f"finding:{match.group(1)}"]))
-    finding_claim = re.search(r"\b(\d+)\s+(?:draft\s+)?finding\(s\)|\b(\d+)\s+findings?\b", text, re.IGNORECASE)
+    claims = _report_claims(workspace, text)
+    finding_claim = re.search(r"\b(\d+)\s+(?:draft\s+)?finding\(s\)|\b(\d+)\s+findings?\b", claims, re.IGNORECASE)
     if finding_claim:
         claimed = int(next(value for value in finding_claim.groups() if value is not None))
         if claimed != len(supported_findings):
             issues.append(_issue("report_arithmetic", "error", f"The report states {claimed} findings but {len(supported_findings)} are auditor-confirmed and supported."))
-    exception_claim = re.search(r"\b(\d+)\s+exceptions?\b", text, re.IGNORECASE)
+    exception_claim = re.search(r"\b(\d+)\s+exceptions?\b", claims, re.IGNORECASE)
     if exception_claim and int(exception_claim.group(1)) != exception_count:
         issues.append(_issue("report_arithmetic", "error", f"The report states {exception_claim.group(1)} exceptions but {exception_count} are stored."))
     number_words = {
@@ -1238,7 +1502,7 @@ def quality_checks(
     }
     risk_count_text = "\n".join(
         line
-        for line in text.splitlines()
+        for line in claims.splitlines()
         if "risk distribution" in line.casefold() or "rcm" in line.casefold()
     )
     for rating, actual in risk_distribution.items():

@@ -355,7 +355,7 @@ def test_deterministic_preliminary_report_discloses_incomplete_workflow_coverage
     assert "# Preliminary Internal Audit Working Draft" in generated["markdown"]
     # Limitations bound the scope, so they are disclosed under it rather than in
     # a section of their own a reader has to go looking for.
-    assert "### Objective and Scope" in generated["markdown"]
+    assert "### 2. Objective and Scope" in generated["markdown"]
     assert "**Scope limitations**" in generated["markdown"]
     assert "Incomplete planning coverage: 1 planning workflow unit(s) failed" in generated["markdown"]
     assert "Incomplete execution-definition coverage: 1 execution-definition workflow unit(s) failed" in generated["markdown"]
@@ -369,15 +369,54 @@ def test_report_nests_the_executive_summary_under_one_heading(workspace_with_dat
 
     # The template declares one flat list of sections; the detail section is the
     # boundary, and everything before it renders one level down under an
-    # inserted grouping heading.
-    assert "## Executive Summary" in markdown
-    for heading in ("Introduction", "Objective and Scope", "Audit Conclusion", "Key Findings"):
-        assert f"### {heading}" in markdown
-    assert "## Detailed Findings" in markdown
-    assert markdown.index("## Executive Summary") < markdown.index("## Detailed Findings")
+    # inserted grouping heading. Parts are lettered, sub-parts numbered.
+    assert "## A. Executive Summary" in markdown
+    for number, heading in enumerate(
+        ("Introduction", "Objective and Scope", "Audit Conclusion", "Key Findings"), 1
+    ):
+        assert f"### {number}. {heading}" in markdown
+    assert "## B. Detailed Findings" in markdown
+    assert markdown.index("## A. Executive Summary") < markdown.index("## B. Detailed Findings")
+    # Findings are numbered in the order they are presented.
+    assert "### 1. Duplicate invoices were processed" in markdown
     # The management response sits with the finding it answers.
     assert "**Management response:** Management will update the control." in markdown
     assert "## Management responses" not in markdown
+
+
+def test_a_deferred_root_cause_is_stated_rather_than_left_blank(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    payload = complete_finding_payload(rcm, procedure, execution, anchor)
+    payload["narrative"] = COMPLETE_NARRATIVE.replace(
+        "## Root Cause\n\nNo duplicate check at invoice entry.", "## Root Cause"
+    )
+    payload["cause_pending"] = True
+    findings.add(ws, payload)
+
+    markdown = report.deterministic_markdown(ws)
+
+    # An auditor may formally defer the cause; the report has to say so rather
+    # than print the heading over empty space.
+    assert (
+        "#### Root Cause\n\nNot established by the evidence obtained; "
+        "pending auditor follow-up."
+    ) in markdown
+    assert "#### Root Cause\n\n#### Risk" not in markdown
+
+
+def test_the_management_response_line_is_stated_once_when_none_exist(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    for title in ("First gap", "Second gap"):
+        findings.add(ws, {
+            **complete_finding_payload(rcm, procedure, execution, anchor),
+            "title": title, "management_response": "",
+        })
+
+    markdown = report.deterministic_markdown(ws)
+
+    # One fact about the engagement, not a line repeated under every finding.
+    assert markdown.count("No management responses have been received") == 1
+    assert "**Management response:**" not in markdown
 
 
 def test_key_findings_table_carries_high_risk_findings_only(workspace_with_data):
@@ -393,15 +432,127 @@ def test_key_findings_table_carries_high_risk_findings_only(workspace_with_data)
     )
 
     markdown = report.deterministic_markdown(ws)
-    table = markdown.split("### Key Findings", 1)[1].split("##", 1)[0]
+    table = markdown.split("### 4. Key Findings", 1)[1].split("##", 1)[0]
 
-    assert "| Process | Key Finding | Risk Level | Recommendation |" in table
+    assert "| # | Process | Key Finding | Risk Level | Recommendation |" in table
     assert "Payables" in table and "High" in table
+    # The row names the numbered finding a reader then turns to, so the
+    # executive table and the detail section share one numbering.
+    assert "| 1 | Payables |" in table
+    assert f"### 1. {high['title']}" in markdown
     # Senior management is deciding where to look, so the table carries the
     # high-risk findings only; every finding still appears in full below.
     assert low["title"] not in table
-    assert low["title"] in markdown
-    assert high["title"] in markdown
+    assert f"### 2. {low['title']}" in markdown
+
+
+def test_key_findings_group_the_findings_of_one_process(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    other = ws.add_rcm({"process": "Vendors", "risk": "Unvetted vendors", "risk_rating": "high"})
+    for title, row in (
+        ("Duplicate one", rcm), ("Vendor gap", other), ("Duplicate two", rcm),
+    ):
+        payload = {**complete_finding_payload(rcm, procedure, execution, anchor), "title": title}
+        if row is other:
+            payload["rcm_refs"] = [rcm["id"], other["id"]]
+        findings.add(ws, payload)
+
+    table = report.deterministic_markdown(ws).split("### 4. Key Findings", 1)[1].split("\n##", 1)[0]
+    rows = [line for line in table.splitlines() if line.startswith("| ") and "---" not in line][1:]
+    processes = [line.split("|")[2].strip() for line in rows]
+
+    # Markdown cannot span rows, so a process is named once and its remaining
+    # findings continue under a blank cell.
+    assert processes[0] == "Payables"
+    assert processes[1] == ""
+    assert processes.count("") == len(processes) - len({p for p in processes if p})
+
+
+def test_summary_of_findings_counts_every_confirmed_finding(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    for title, severity in (("A", "high"), ("B", "high"), ("C", "medium"), ("D", "info")):
+        findings.add(ws, {
+            **complete_finding_payload(rcm, procedure, execution, anchor),
+            "title": title, "severity": severity,
+        })
+
+    summary = report.deterministic_markdown(ws).split("### 5. Summary of Findings", 1)[1]
+
+    assert "| Unit | Critical | High | Medium | Low |" in summary
+    assert f"| {ws.name} | 0 | 2 | 1 | 0 |" in summary
+    # An informational finding has no column, so it is stated rather than
+    # dropped from a count a reader will take as complete.
+    assert "A further 1 finding(s) are recorded at informational severity" in summary
+
+
+def test_recorded_limitations_are_capped_and_the_remainder_counted(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
+    context = report.build_context(ws)
+    context["scope_limitations"] = [
+        {"rcm_id": rcm["id"], "test_id": f"T-{index}", "text": f"Limitation {index}."}
+        for index in range(report._SCOPE_LIMITATION_LIMIT + 4)
+    ]
+    context["preliminary"] = False
+
+    body = report._scope_body(context)
+
+    # Limitations are recorded per test, so a thinly evidenced engagement
+    # restates the same few gaps many times; the count is more use than the list.
+    assert body.count("\n- ") == report._SCOPE_LIMITATION_LIMIT + 1
+    assert "A further 4 limitation(s) are recorded" in body
+
+
+def test_a_findings_own_counts_are_not_read_as_the_reports_arithmetic(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    payload = complete_finding_payload(rcm, procedure, execution, anchor)
+    payload["narrative"] = COMPLETE_NARRATIVE.replace(
+        "Invoice 1006 appears twice.",
+        "The review identified 1 exception across the invoices examined.",
+    )
+    findings.add(ws, payload)
+
+    codes = {
+        issue["code"]
+        for issue in report.quality_checks(ws, report.deterministic_markdown(ws))["issues"]
+    }
+
+    # The finding counts exceptions in its own population; only the report's own
+    # prose claims a total for the engagement.
+    assert "report_arithmetic" not in codes
+    # A total the report itself states is still held to the records.
+    assert "report_arithmetic" in {
+        issue["code"]
+        for issue in report.quality_checks(ws, "# Report\n\nFieldwork found 7 exceptions.")["issues"]
+    }
+
+
+def test_near_identical_findings_are_flagged_for_the_auditor(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    first = findings.add(ws, {
+        **complete_finding_payload(rcm, procedure, execution, anchor),
+        "title": "Segregation-of-duties exception result is not reliable",
+    })
+    second = findings.add(ws, {
+        **complete_finding_payload(rcm, procedure, execution, anchor),
+        "title": "Procurement segregation-of-duties exception result was not reliable",
+    })
+    findings.add(ws, {
+        **complete_finding_payload(rcm, procedure, execution, anchor),
+        "title": "Payment recorded before invoice date",
+    })
+
+    duplicates = [
+        issue
+        for issue in report.quality_checks(ws)["issues"]
+        if issue["code"] == "duplicate_finding"
+    ]
+
+    # Advisory, and only for the restatement — a finding that merely shares a
+    # subject is a different finding.
+    assert len(duplicates) == 1
+    assert duplicates[0]["severity"] == "warning"
+    assert set(duplicates[0]["refs"]) == {f"finding:{first['id']}", f"finding:{second['id']}"}
 
 
 def test_the_model_drafts_three_sections_and_never_the_findings(monkeypatch, workspace_with_data):
@@ -421,9 +572,14 @@ def test_the_model_drafts_three_sections_and_never_the_findings(monkeypatch, wor
             return {"content": json.dumps({
                 "rating": "marginal", "conclusion": "**Marginal.** Controls need work."
             })}
-        return {"content": json.dumps({
-            "introduction": "Drafted introduction.", "objective_and_scope": "Drafted scope.",
-        })}
+        # The overview call returns Markdown, not JSON: its body is multi-
+        # paragraph prose with a bulleted list, which a JSON string escapes
+        # badly and loses the whole section to a parse error.
+        return {"content": (
+            "## Introduction\n\nDrafted introduction.\n\n"
+            "## Objective and Scope\n\nDrafted scope.\n\n"
+            "**Scope limitations**\n\n- Operating evidence was not supplied.\n"
+        )}
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "fake", "model": "fake"})
@@ -446,6 +602,7 @@ def test_the_model_drafts_three_sections_and_never_the_findings(monkeypatch, wor
     assert "Controls need work" not in result["markdown"]
     assert "No overall rating is assigned" in result["markdown"]
     assert "Drafted introduction." in result["markdown"]
+    assert "Drafted scope." in result["markdown"]
     assert "Two payments duplicated." in result["markdown"]
     # The narrative is auditor-approved text: it is assembled, never redrafted,
     # so no call is ever given the chance to rewrite it.

@@ -33,8 +33,10 @@ LEGACY_NARRATIVE_FIELDS = (
 )
 # The one section the product lets an auditor formally defer. ``cause_pending``
 # records that the evidence does not yet establish why the exception occurred,
-# which is a better answer than an asserted cause fieldwork cannot support.
-_CAUSE_SECTION_KEYS = frozenset({"cause", "root cause"})
+# which is a better answer than an asserted cause fieldwork cannot support. The
+# report needs the same set, so that a deferred section reads as a deliberate
+# answer rather than rendering as a blank heading.
+CAUSE_SECTION_KEYS = frozenset({"cause", "root cause"})
 
 
 def _now(workspace: Workspace) -> str:
@@ -223,7 +225,7 @@ def narrative_issues(workspace: Workspace, item: dict) -> list[str]:
         for heading in headings
         if not bodies.get(templates_store.section_key(heading))
         and not (
-            templates_store.section_key(heading) in _CAUSE_SECTION_KEYS
+            templates_store.section_key(heading) in CAUSE_SECTION_KEYS
             and item.get("cause_pending")
         )
     ]
