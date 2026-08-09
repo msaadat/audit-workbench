@@ -281,15 +281,23 @@ def test_gate_ignores_direction_for_a_date_it_has_not_staged(contract):
 
 
 def test_gate_rejects_a_role_no_assertion_reads(contract):
+    contract = copy.deepcopy(contract)
+    comparison_key = "invoice_amount_to_purchase_order"
+    contract["control_attributes"][0]["required_comparisons"] = [
+        item
+        for item in contract["control_attributes"][0]["required_comparisons"]
+        if item["key"] != comparison_key
+    ]
     test = _test_payload(contract)
     test["definition"]["assertions"] = [
         item
         for item in test["definition"]["assertions"]
-        if item["key"] != "invoice_amount_to_purchase_order"
+        if item["key"] != comparison_key
     ]
 
     with pytest.raises(
-        cycle_vouching.CycleSchemaError, match="Role 'purchase_order' is declared"
+        cycle_vouching.CycleSchemaError,
+        match="Role 'purchase_order' is declared",
     ):
         _validate(contract, test)
 

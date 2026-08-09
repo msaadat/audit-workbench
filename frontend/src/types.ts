@@ -366,6 +366,7 @@ export type CycleDispositionState = 'pending' | 'confirmed' | 'exception'
 export type CycleAssertionVerdict = 'match' | 'mismatch' | 'missing_evidence' | 'invalid_extraction' | 'ambiguous' | 'not_run'
 export type CycleAssuranceScope = 'targeted_evidence_only' | 'sampled_population'
 export type CycleOperator = 'equal_exact' | 'equal_normalized' | 'numeric_within' | 'date_on_or_before' | 'date_within' | 'present'
+export type CycleReuseRule = 'exclusive' | 'allowed'
 
 export interface CycleFieldSelector {
   group: string
@@ -408,6 +409,8 @@ export interface CycleVouchDefinition {
   }>
   assertions: CycleAssertion[]
 }
+
+export type CycleVouchPopulation = CycleVouchDefinition['population']
 
 export interface CycleCandidate {
   candidate_id: string
@@ -625,6 +628,20 @@ export interface DocTestItem {
 
 export interface DocTestRollup {
   items: number
+  tested_items?: number
+  item_counts?: Partial<Record<CycleEvaluationState, number>>
+  disposition_counts?: Partial<Record<CycleDispositionState, number>>
+  assertion_columns?: number
+  assertion_counts?: CycleAssertionCounts
+  failed_items?: number
+  incomplete_items?: number
+  needs_review_items?: number
+  confirmed_items?: number
+  exception_items?: number
+  pending_dispositions?: number
+  coverage?: Record<string, unknown>
+  assurance_scope?: CycleAssuranceScope
+  assurance_label?: string
   matched: number
   mismatched: number
   confirmed: number
@@ -657,8 +674,11 @@ export type DocTestClassification =
 
 export type DocTestCounts = Record<DocTestClassification, number>
 
+export type CycleAssertionCounts = Record<CycleAssertionVerdict, number> & { total: number }
+
 /** One worklist item, flattened across tests for engagement-level triage. */
 export interface DocTestSummaryItem {
+  entry_type: 'item'
   test_id: string
   test_title: string
   test_kind: DocTestKind | null
@@ -685,32 +705,110 @@ export interface DocTestSummaryItem {
   updated: string
 }
 
-export interface DocTestSummaryTest {
+export interface DocTestSummaryCycleTest {
+  entry_type: 'cycle_test'
   test_id: string
   title: string
-  kind: DocTestKind | null
-  status: TestStatus
+  test_kind: 'cycle_vouch'
+  test_status: TestStatus
   rcm_id: string | null
+  classification: DocTestClassification
   item_count: number
-  counts: DocTestCounts
-  objective: string
-  result_summary: string
-  conclusion: string
-  control_conclusion: ControlConclusion
-  scope_limitations: string
-  next_action: string
-  exception_count: number
-  open_exception_count: number
-  requirement_refs?: string[]
-  coverage?: Record<string, unknown>
-  assurance_scope?: CycleAssuranceScope | null
+  tested_item_count: number
+  evaluation_counts: Partial<Record<CycleEvaluationState, number>>
+  disposition_counts: Partial<Record<CycleDispositionState, number>>
+  assertion_columns: number
+  assertion_counts: CycleAssertionCounts
+  coverage: Record<string, unknown>
+  selection_basis: 'evidence_linked' | 'sample'
+  assurance_scope: CycleAssuranceScope
+  assurance_label: string
+  requirement_refs: string[]
   updated: string
 }
 
+export type DocTestSummaryEntry = DocTestSummaryItem | DocTestSummaryCycleTest
+
 export interface DocTestSummaryPayload {
-  counts: DocTestCounts
-  items: DocTestSummaryItem[]
-  tests: DocTestSummaryTest[]
+  entry_counts: DocTestCounts
+  test_counts: Record<DocTestKind, number> & { total: number; item_first: number }
+  tested_item_counts: {
+    total: number
+    executed: number
+    passed: number
+    failed: number
+    incomplete: number
+    needs_review: number
+    not_run: number
+    stale: number
+    confirmed: number
+    exceptions: number
+    pending_disposition: number
+  }
+  assertion_counts: CycleAssertionCounts
+  entries: DocTestSummaryEntry[]
+}
+
+export interface CycleVouchGridComparison {
+  side?: string
+  role?: string
+  document_id?: string | null
+  state?: string
+  verdict?: CycleAssertionVerdict
+  record_ids: string[]
+  display_values: unknown[]
+  entry_count: number
+  evidence_count: number
+}
+
+export interface CycleVouchGridCell {
+  verdict: CycleAssertionVerdict
+  display: string
+  comparison_count: number
+  evidence_count: number
+  comparisons: CycleVouchGridComparison[]
+}
+
+export interface CycleVouchGridPayload {
+  test_id: string
+  test_sha1: string
+  definition_sha1: string
+  title: string
+  population: CycleVouchPopulation
+  coverage: Record<string, unknown>
+  selection_basis: 'evidence_linked' | 'sample'
+  assurance_scope: CycleAssuranceScope
+  assurance_label: string
+  tested_item_counts: Partial<Record<CycleEvaluationState, number>>
+  assertion_counts: CycleAssertionCounts
+  columns: Array<{
+    key: string
+    label: string
+    operator: CycleOperator
+    applicable_roles: string[]
+    counts: Record<CycleAssertionVerdict, number>
+  }>
+  rows: Array<{
+    item_id: string
+    label: string
+    evaluation_state: CycleEvaluationState
+    disposition_state: CycleDispositionState
+    disposition_stale: boolean
+    roles_present: string[]
+    missing_roles: string[]
+    shared_record_facts: Array<{
+      role: string
+      record_id: string
+      related_item_ids: string[]
+      related_item_count: number
+      related_items_truncated: boolean
+      reuse_across_items: CycleReuseRule
+      identifier_edge: Record<string, unknown>
+    }>
+    cells: Record<string, CycleVouchGridCell>
+  }>
+  page: { offset: number; limit: number; total: number }
+  truncated: boolean
 }
 
 export interface DocTest extends TestPlan, TestOutcome {

@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import type { DocTestSummaryItem } from '../../types'
+import type { DocTestSummaryEntry } from '../../types'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 
-defineProps<{ items: DocTestSummaryItem[]; selectedId: string | null }>()
-defineEmits<{ select: [item: DocTestSummaryItem] }>()
+defineProps<{ items: DocTestSummaryEntry[]; selectedId: string | null }>()
+defineEmits<{ select: [item: DocTestSummaryEntry] }>()
+
+function entryId(entry: DocTestSummaryEntry) {
+  return entry.entry_type === 'cycle_test' ? entry.test_id : entry.item_id
+}
+
+function entryLabel(entry: DocTestSummaryEntry) {
+  return entry.entry_type === 'cycle_test' ? entry.title : (entry.label || entry.item_id)
+}
 
 const kindLabel: Record<string, string> = {
   vouching: 'Vouching',
@@ -21,22 +29,29 @@ const kindLabel: Record<string, string> = {
          through without adding information. -->
     <button
       v-for="item in items"
-      :key="item.item_id"
+      :key="`${item.entry_type}:${entryId(item)}`"
       type="button"
       class="row"
       :data-classification="item.classification"
-      :class="{ active: item.item_id === selectedId }"
+      :class="{ active: entryId(item) === selectedId }"
       @click="$emit('select', item)"
     >
       <span class="row-head">
-        <strong>{{ item.label || item.item_id }}</strong>
+        <strong>{{ entryLabel(item) }}</strong>
         <UiTestStatus :status="item.classification" showLabel />
       </span>
-      <small class="row-test">{{ item.test_title }}</small>
+      <small class="row-test">
+        {{ item.entry_type === 'cycle_test'
+          ? `${item.tested_item_count} of ${item.item_count} items tested`
+          : item.test_title }}
+      </small>
       <small class="row-meta">
         {{ kindLabel[item.test_kind ?? ''] ?? 'Document work' }}
         <template v-if="item.rcm_id"> · {{ item.rcm_id }}</template>
         <template v-else> · unlinked</template>
+      </small>
+      <small v-if="item.entry_type === 'cycle_test'" class="row-scope">
+        {{ item.assurance_label }} · {{ item.assertion_columns }} assertion columns
       </small>
     </button>
     <p v-if="!items.length" class="empty">No worklist items match this filter.</p>
@@ -66,6 +81,7 @@ const kindLabel: Record<string, string> = {
 .row-head strong { min-width: 0; font-size: var(--aw-text-sm); line-height: 1.3; }
 .row-test { min-width: 0; overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .row-meta { color: var(--aw-muted); font-size: var(--aw-text-xs); }
+.row-scope { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }
 
 .row[data-classification='exception'] { border-left-color: var(--aw-danger); }
 .row[data-classification='needs_review'],

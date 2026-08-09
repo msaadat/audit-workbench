@@ -444,7 +444,9 @@ def test_cycle_execution_expands_once_then_waits_only_for_auditor_disposition(
     assert ready.state == "satisfied"
 
 
-def test_disposition_workflow_exposes_review_without_signing_off(procurement_contract):
+def test_disposition_workflow_exposes_review_without_signing_off(
+    procurement_contract, fake_agent_llm
+):
     ws, test = _persist_cycle_test(procurement_contract)
     stored = doc_tests.load_test(ws, test["id"])
     stored["items"][0]["evaluation"]["state"] = "failed"

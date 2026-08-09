@@ -90,13 +90,14 @@ def test_materializer_builds_stable_complete_role_bindings(contract, monkeypatch
     assert all(binding["extraction_hash"] for binding in item["role_bindings"])
     assert "state" not in item
 
-    # The existing item-first Document Tests surface can start the Phase 3 run
-    # without a Phase 4 summary redesign: GET projection builds local not-run
-    # items, while the durable test remains untouched until execution.
+    # The Phase 4 summary projects Cycle vouching once at test grain rather
+    # than flattening every transaction into the ordinary item worklist. The
+    # read still materializes locally and leaves the durable test untouched.
     summary = doc_tests.summary_payload(workspace)
-    assert [(value["test_id"], value["item_id"]) for value in summary["items"]] == [
-        (test["id"], item["id"])
+    assert [(value["entry_type"], value["test_id"]) for value in summary["entries"]] == [
+        ("cycle_test", test["id"])
     ]
+    assert summary["tested_item_counts"]["not_run"] == 1
     stored = json.loads(
         (workspace.root / "DocTests" / f"{test['id']}.json").read_text("utf-8")
     )

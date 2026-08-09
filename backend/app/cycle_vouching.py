@@ -41,6 +41,10 @@ class SelectionConfirmationRequired(CycleSchemaError):
         self.proposal = proposal
 
 
+class GridStaleDefinitionError(CycleSchemaError):
+    """Stored evaluated results cannot be projected against this definition."""
+
+
 SCHEMA_VERSION = 2
 CARDINALITIES = frozenset({"one", "many"})
 REUSE_RULES = frozenset({"exclusive", "allowed"})
@@ -96,6 +100,8 @@ MAX_TRAVERSED_EDGES = 100
 MAX_ROLES = 20
 MAX_ASSERTIONS = 50
 MAX_ITEMS = 500
+MAX_GRID_PAGE_SIZE = 200
+MAX_GRID_RELATED_ITEMS = 25
 MIN_CYCLE_RECORD_KINDS = 2
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -4282,6 +4288,321 @@ def disposition_pending(item: Mapping[str, object], *, cycle: bool) -> bool:
     )
 
 
+def _assurance_label(scope: str) -> str:
+    return (
+        "Targeted evidence - not a sample"
+        if scope == "targeted_evidence_only"
+        else "Sampled population"
+    )
+
+
+def result_rollup(test: Mapping[str, object]) -> dict:
+    """Count cycle items and assertion cells as separate, non-additive units."""
+
+    validated = validate_cycle_test(test)
+    items = list(test.get("items") or [])
+    item_counts = {state: 0 for state in sorted(EVALUATION_STATES)}
+    disposition_counts = {state: 0 for state in sorted(DISPOSITION_STATES)}
+    assertion_counts = {verdict: 0 for verdict in sorted(ASSERTION_VERDICTS)}
+    assertion_keys = [
+        str(assertion["key"])
+        for assertion in validated["definition"]["assertions"]
+    ]
+    for item in items:
+        evaluation_state = str(
+            (item.get("evaluation") or {}).get("state") or "not_run"
+        )
+        item_counts[evaluation_state] += 1
+        disposition_state = str(
+            (item.get("disposition") or {}).get("state") or "pending"
+        )
+        if disposition_current(item, cycle=True):
+            disposition_counts[disposition_state] += 1
+        else:
+            disposition_counts["pending"] += 1
+        results = item.get("result_by_assertion") or {}
+        for key in assertion_keys:
+            verdict = str((results.get(key) or {}).get("verdict") or "not_run")
+            assertion_counts[verdict] += 1
+
+    scope = assurance_scope_for(
+        validated["definition"]["population"]["selection"]
+    )
+    selection_basis = str(
+        validated["definition"]["population"]["selection"].get("mode") or ""
+    )
+    coverage = {
+        **dict(test.get("coverage") or {}),
+        "selection_basis": selection_basis,
+        "assurance_scope": scope,
+    }
+    tested_items = sum(
+        item_counts[state] for state in sorted(CURRENT_EVALUATION_STATES)
+    )
+    pending_dispositions = sum(
+        disposition_pending(item, cycle=True) for item in items
+    )
+    return {
+        "items": len(items),
+        "tested_items": tested_items,
+        "item_counts": item_counts,
+        "disposition_counts": disposition_counts,
+        "assertion_columns": len(assertion_keys),
+        "assertion_counts": {
+            "total": len(items) * len(assertion_keys),
+            **assertion_counts,
+        },
+        "failed_items": item_counts["failed"],
+        "incomplete_items": item_counts["incomplete"],
+        "needs_review_items": item_counts["needs_review"],
+        "confirmed_items": disposition_counts["confirmed"],
+        "exception_items": disposition_counts["exception"],
+        "pending_dispositions": pending_dispositions,
+        "coverage": coverage,
+        "assurance_scope": scope,
+        "assurance_label": _assurance_label(scope),
+        # Common Document Test rollup fields remain canonical for consumers
+        # that aggregate all test kinds. They are not added to the item counts.
+        "matched": assertion_counts["match"],
+        "mismatched": sum(
+            assertion_counts[verdict]
+            for verdict in (
+                "mismatch",
+                "missing_evidence",
+                "invalid_extraction",
+                "ambiguous",
+            )
+        ),
+        "confirmed": disposition_counts["confirmed"],
+        "exceptions": disposition_counts["exception"],
+        "manual_review": sum(
+            1
+            for item in items
+            if execution_current(item, cycle=True)
+            and not disposition_current(item, cycle=True)
+        ),
+        "pending": sum(
+            1
+            for item in items
+            if execution_pending(item, cycle=True)
+            or disposition_pending(item, cycle=True)
+        ),
+    }
+
+
+def _grid_comparison(value: object) -> dict:
+    """Project one comparison without extraction envelopes or evidence text."""
+
+    comparison = _object(value, "assertion comparison")
+    entries = [
+        _object(entry, "assertion comparison entry")
+        for entry in comparison.get("entries") or []
+    ]
+    evidence_count = sum(
+        len(entry.get("evidence_refs") or []) for entry in entries
+    )
+    display_values = []
+    for entry in comparison.get("entry_results") or []:
+        entry_object = _object(entry, "assertion comparison result")
+        if "value" in entry_object:
+            display_values.append(_bounded_value(entry_object.get("value")))
+    if not display_values and comparison.get("state") == "resolved":
+        display_values.append(_bounded_value(comparison.get("value")))
+    return {
+        key: comparison.get(key)
+        for key in ("side", "role", "document_id", "state", "verdict")
+        if comparison.get(key) is not None
+    } | {
+        "record_ids": [
+            str(record_id) for record_id in comparison.get("record_ids") or []
+        ],
+        "display_values": display_values,
+        "entry_count": len(entries),
+        "evidence_count": evidence_count,
+    }
+
+
+def _grid_cell(result: Mapping[str, object]) -> dict:
+    comparisons = [
+        _grid_comparison(value) for value in result.get("comparisons") or []
+    ]
+    return {
+        "verdict": str(result.get("verdict") or "not_run"),
+        "display": str(result.get("display") or "")[:240],
+        "comparison_count": len(comparisons),
+        "evidence_count": len(result.get("evidence_refs") or []),
+        "comparisons": comparisons,
+    }
+
+
+def _assert_grid_definition_current(
+    test: Mapping[str, object],
+    *,
+    definition_sha1: str,
+    assertions: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Fail when evaluated cells cannot be attributed to current columns."""
+
+    for item in test.get("items") or []:
+        results = item.get("result_by_assertion") or {}
+        evaluated = any(
+            str(result.get("verdict") or "not_run") != "not_run"
+            for result in results.values()
+        )
+        item_definition_sha1 = str(
+            (item.get("evaluation") or {}).get("definition_sha1") or ""
+        )
+        if evaluated and item_definition_sha1 != definition_sha1:
+            raise GridStaleDefinitionError(
+                "Cycle results were produced for a different test definition."
+            )
+        for key, result in results.items():
+            if str(result.get("verdict") or "not_run") == "not_run":
+                continue
+            assertion = assertions.get(str(key))
+            if assertion is None or result.get("assertion_sha1") != _sha1_hash(assertion):
+                raise GridStaleDefinitionError(
+                    "Cycle results cannot be attributed to the current assertion columns."
+                )
+
+
+def grid_projection(
+    test: Mapping[str, object],
+    *,
+    offset: int = 0,
+    limit: int = 100,
+) -> dict:
+    """Return a bounded, read-only grid over canonical cycle item results."""
+
+    if str(test.get("kind") or "") != "cycle_vouch":
+        raise CycleSchemaError("The grid is available only for cycle_vouch tests.")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise CycleSchemaError("Grid offset must be a non-negative integer.")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 1
+        or limit > MAX_GRID_PAGE_SIZE
+    ):
+        raise CycleSchemaError(
+            f"Grid limit must be between 1 and {MAX_GRID_PAGE_SIZE}."
+        )
+    validated = validate_cycle_test(test)
+    assertion_values = validated["definition"]["assertions"]
+    if len(assertion_values) > MAX_ASSERTIONS:
+        # validate_cycle_test enforces this too; retaining the projection guard
+        # makes the no-silent-column-truncation property explicit here.
+        raise CycleSchemaError(
+            f"A cycle grid may project at most {MAX_ASSERTIONS} assertions."
+        )
+    assertions = {
+        str(assertion["key"]): assertion for assertion in assertion_values
+    }
+    definition_sha1 = cycle_definition_sha1(validated)
+    _assert_grid_definition_current(
+        test,
+        definition_sha1=definition_sha1,
+        assertions=assertions,
+    )
+    items = sorted(
+        [dict(item) for item in test.get("items") or []],
+        key=lambda item: (str(item.get("label") or ""), str(item.get("id") or "")),
+    )
+    rollup = result_rollup({**dict(validated), **dict(test), "items": items})
+    columns = []
+    for assertion in assertion_values:
+        key = str(assertion["key"])
+        applicable_roles: list[str] = []
+        for operand in (assertion.get("left"), assertion.get("right")):
+            if not isinstance(operand, Mapping):
+                continue
+            if operand.get("source") == "role":
+                applicable_roles.append(str(operand.get("role") or ""))
+            elif operand.get("source") == "roles":
+                applicable_roles.extend(str(role) for role in operand.get("roles") or [])
+        counts = {verdict: 0 for verdict in sorted(ASSERTION_VERDICTS)}
+        for item in items:
+            result = (item.get("result_by_assertion") or {}).get(key) or {}
+            counts[str(result.get("verdict") or "not_run")] += 1
+        columns.append(
+            {
+                "key": key,
+                "label": str(assertion.get("label") or key),
+                "operator": str(assertion.get("operator") or ""),
+                "applicable_roles": list(dict.fromkeys(applicable_roles)),
+                "counts": counts,
+            }
+        )
+    page_items = items[offset : offset + limit]
+    rows = []
+    for item in page_items:
+        results = item.get("result_by_assertion") or {}
+        rows.append(
+            {
+                "item_id": str(item.get("id") or ""),
+                "label": str(item.get("label") or ""),
+                "evaluation_state": str(
+                    (item.get("evaluation") or {}).get("state") or "not_run"
+                ),
+                "disposition_state": str(
+                    (item.get("disposition") or {}).get("state") or "pending"
+                ),
+                "disposition_stale": bool(
+                    (item.get("disposition") or {}).get("stale")
+                ),
+                "roles_present": sorted({
+                    str(binding.get("role") or "")
+                    for binding in item.get("role_bindings") or []
+                }),
+                "missing_roles": list(item.get("missing_roles") or []),
+                "shared_record_facts": [
+                    {
+                        "role": str(fact.get("role") or ""),
+                        "record_id": str(fact.get("record_id") or ""),
+                        "related_item_ids": list(
+                            fact.get("related_item_ids") or []
+                        )[:MAX_GRID_RELATED_ITEMS],
+                        "related_item_count": len(
+                            fact.get("related_item_ids") or []
+                        ),
+                        "related_items_truncated": len(
+                            fact.get("related_item_ids") or []
+                        ) > MAX_GRID_RELATED_ITEMS,
+                        "reuse_across_items": str(
+                            fact.get("reuse_across_items") or ""
+                        ),
+                        "identifier_edge": dict(fact.get("identifier_edge") or {}),
+                    }
+                    for fact in item.get("shared_record_facts") or []
+                ],
+                "cells": {
+                    key: _grid_cell(results.get(key) or {"verdict": "not_run"})
+                    for key in assertions
+                },
+            }
+        )
+    selection = validated["definition"]["population"]["selection"]
+    scope = assurance_scope_for(selection)
+    total = len(items)
+    return {
+        "test_id": str(test.get("id") or ""),
+        "test_sha1": str(test.get("sha1") or ""),
+        "definition_sha1": definition_sha1,
+        "title": str(test.get("title") or ""),
+        "population": dict(validated["definition"]["population"]),
+        "coverage": dict(rollup["coverage"]),
+        "selection_basis": str(selection.get("mode") or ""),
+        "assurance_scope": scope,
+        "assurance_label": _assurance_label(scope),
+        "tested_item_counts": dict(rollup["item_counts"]),
+        "assertion_counts": dict(rollup["assertion_counts"]),
+        "columns": columns,
+        "rows": rows,
+        "page": {"offset": offset, "limit": limit, "total": total},
+        "truncated": offset + len(rows) < total,
+    }
+
+
 def metadata() -> dict:
     """Structural vocabulary plus immutable descriptors for installed packs."""
 
@@ -4303,6 +4624,8 @@ def metadata() -> dict:
             "max_roles": MAX_ROLES,
             "max_assertions": MAX_ASSERTIONS,
             "max_items": MAX_ITEMS,
+            "max_grid_page_size": MAX_GRID_PAGE_SIZE,
+            "max_grid_related_items": MAX_GRID_RELATED_ITEMS,
             "min_cycle_record_kinds": MIN_CYCLE_RECORD_KINDS,
         },
     }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import JSONResponse
 
 from .. import cycle_vouching, doc_tests, working_papers, workspaces
 from ..workspaces import WorkspaceError
@@ -112,6 +113,27 @@ async def get_document_test(workspace_id: str, test_id: str):
         "rollup": doc_tests.result_rollup(test),
         "evidence_requests": evidence_requests,
     }
+
+
+@router.get("/doc-tests/{test_id}/grid")
+async def get_cycle_vouch_grid(
+    workspace_id: str,
+    test_id: str,
+    offset: int = 0,
+    limit: int = 100,
+):
+    """Project the current Cycle vouch result grid without executing or writing."""
+
+    test = doc_tests.load_test(_ws(workspace_id), test_id)
+    try:
+        return cycle_vouching.grid_projection(test, offset=offset, limit=limit)
+    except cycle_vouching.GridStaleDefinitionError as error:
+        return JSONResponse(
+            {"detail": str(error), "code": "stale_definition"},
+            status_code=409,
+        )
+    except cycle_vouching.CycleSchemaError as error:
+        raise WorkspaceError(str(error)) from error
 
 
 @router.patch("/doc-tests/{test_id}")

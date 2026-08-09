@@ -19,7 +19,7 @@ import type {
   DocTestClassification,
   DocTestItem,
   DocTestKind,
-  DocTestSummaryItem,
+  DocTestSummaryEntry,
   DocTestSummaryPayload,
   EvidenceRef,
   PlanningPayload,
@@ -72,9 +72,9 @@ const anchor = ref<EvidenceRef | null>(null)
 // control over the same axis, and it was exactly the union of the three cards
 // beside it — the counts say the same thing without the extra row.
 const triage = computed<TriageCount[]>(() => {
-  const counts = summary.value?.counts
+  const counts = summary.value?.entry_counts
   return [
-    { key: 'all', label: 'All items', value: summary.value?.items.length ?? 0 },
+    { key: 'all', label: 'All work', value: summary.value?.entries.length ?? 0 },
     { key: 'exception', label: 'Exceptions', value: counts?.exception ?? 0, tone: 'danger' },
     { key: 'needs_review', label: 'Need review', value: counts?.needs_review ?? 0, tone: 'warn' },
     { key: 'awaiting_evidence', label: 'Awaiting evidence', value: counts?.awaiting_evidence ?? 0, tone: 'warn' },
@@ -83,12 +83,15 @@ const triage = computed<TriageCount[]>(() => {
   ]
 })
 const visibleItems = computed(() => {
-  const items = summary.value?.items ?? []
+  const items = summary.value?.entries ?? []
   const query = search.value.trim().toLowerCase()
   return items.filter(item => {
     if (filter.value !== 'all' && item.classification !== filter.value) return false
     if (!query) return true
-    return [item.label, item.test_title, item.instruction, item.question, item.response]
+    const values = item.entry_type === 'cycle_test'
+      ? [item.title, item.assurance_label, item.rcm_id ?? '']
+      : [item.label, item.test_title, item.instruction, item.question, item.response]
+    return values
       .some(value => value.toLowerCase().includes(query))
   })
 })
@@ -96,12 +99,20 @@ const activeFilterLabel = computed(() =>
   triage.value.find(count => count.key === filter.value)?.label.toLowerCase() ?? 'items')
 const currentItem = computed<DocTestItem | null>(() =>
   currentTest.value?.items.find(item => item.id === selectedItemId.value) ?? null)
+const selectedEntryId = computed(() =>
+  currentTest.value?.kind === 'cycle_vouch'
+    ? currentTest.value.id
+    : selectedItemId.value)
 const linkedFindings = computed<AuditFinding[]>(() => {
   const testId = currentTest.value?.id
   return testId ? (planning.value?.findings ?? []).filter(finding => finding.test_refs.includes(testId)) : []
 })
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
-const hasTests = computed(() => Boolean(summary.value?.tests.length))
+const hasTests = computed(() => Boolean(summary.value?.test_counts.total))
+
+function entryId(entry: DocTestSummaryEntry) {
+  return entry.entry_type === 'cycle_test' ? entry.test_id : entry.item_id
+}
 
 function fail(summary_: string, error: unknown) {
   toast.add({ severity: 'error', summary: summary_, detail: error instanceof ApiError ? error.message : String(error), life: 6000 })
@@ -109,7 +120,7 @@ function fail(summary_: string, error: unknown) {
 
 async function loadSummary() {
   summary.value = await api.get<DocTestSummaryPayload>(`/api/workspaces/${props.workspace.id}/doc-tests/summary`)
-  const items = summary.value.items
+  const items = summary.value.entries
   // A dashboard/deep link can point to a test the current filter hides. Keep
   // the requested test visible instead of letting the selection watcher
   // replace it with the first item that happens to match.
@@ -121,7 +132,7 @@ async function loadSummary() {
   }
   // Honour a deep link first, then keep the current selection, then fall back
   // to the most severe item so the tab opens on work that needs doing.
-  const target = items.find(item => item.item_id === selectedItemId.value)
+  const target = items.find(item => item.entry_type === 'item' && item.item_id === selectedItemId.value)
     ?? (requestedTestId.value ? items.find(item => item.test_id === requestedTestId.value) : undefined)
     ?? items[0]
   requestedTestId.value = null
@@ -150,9 +161,12 @@ async function loadTest(testId: string) {
     await syncUrl()
   }
 }
-async function select(item: DocTestSummaryItem) {
-  selectedItemId.value = item.item_id
+async function select(item: DocTestSummaryEntry) {
+  selectedItemId.value = item.entry_type === 'item' ? item.item_id : null
   if (currentTest.value?.id !== item.test_id) await loadTest(item.test_id)
+  else if (item.entry_type === 'cycle_test') {
+    selectedItemId.value = currentTest.value.items[0]?.id ?? null
+  }
   await syncUrl()
 }
 async function syncUrl() {
@@ -406,7 +420,7 @@ function showAnchor(value: EvidenceRef) {
 
 // A filter change can hide the selected item; move to the first visible one.
 watch(visibleItems, items => {
-  if (!items.length || items.some(item => item.item_id === selectedItemId.value)) return
+  if (!items.length || items.some(item => entryId(item) === selectedEntryId.value)) return
   void select(items[0])
 })
 
@@ -455,7 +469,7 @@ onUnmounted(unsubscribe)
           <InputText v-model="search" size="small" placeholder="Search items, tests, and answers" />
         </IconField>
         <span class="muted">
-          {{ visibleItems.length }} of {{ summary?.items.length ?? 0 }} · {{ activeFilterLabel }}
+          {{ visibleItems.length }} of {{ summary?.entries.length ?? 0 }} · {{ activeFilterLabel }}
         </span>
       </div>
 
@@ -463,7 +477,7 @@ onUnmounted(unsubscribe)
            the width it gives back is what makes room for the action rail. -->
       <UiMasterDetail railWidth="16rem" class="layout">
         <template #rail>
-          <DocTestItemList :items="visibleItems" :selectedId="selectedItemId" @select="select" />
+          <DocTestItemList :items="visibleItems" :selectedId="selectedEntryId" @select="select" />
         </template>
         <DocTestItemDetail
           v-if="currentTest && currentItem"

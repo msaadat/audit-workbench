@@ -2197,45 +2197,7 @@ def evidence_blocked(test: dict) -> bool:
 def result_rollup(test: dict) -> dict:
     items = test.get("items") or []
     if is_cycle_test(test):
-        results = [
-            result
-            for item in items
-            for result in (item.get("result_by_assertion") or {}).values()
-        ]
-        return {
-            "items": len(items),
-            "matched": sum(result.get("verdict") == "match" for result in results),
-            "mismatched": sum(
-                result.get("verdict")
-                in {
-                    "mismatch",
-                    "missing_evidence",
-                    "invalid_extraction",
-                    "ambiguous",
-                }
-                for result in results
-            ),
-            "confirmed": sum(
-                item_disposition_current(test, item)
-                and (item.get("disposition") or {}).get("state") == "confirmed"
-                for item in items
-            ),
-            "exceptions": sum(
-                item_disposition_current(test, item)
-                and (item.get("disposition") or {}).get("state") == "exception"
-                for item in items
-            ),
-            "manual_review": sum(
-                item_execution_current(test, item)
-                and not item_disposition_current(test, item)
-                for item in items
-            ),
-            "pending": sum(
-                item_execution_pending(test, item)
-                or item_disposition_pending(test, item)
-                for item in items
-            ),
-        }
+        return cycle_vouching.result_rollup(test)
     checks = [check for item in items for check in (item.get("checks") or [])]
     return {
         "items": len(items),
@@ -2284,17 +2246,62 @@ def _item_classification(test: dict, item: dict) -> str:
     return "not_run"
 
 
-def summary_payload(workspace: Workspace) -> dict:
-    """Return every worklist item across the engagement, flattened and bucketed.
+def _cycle_test_classification(test: dict, rollup: dict) -> str:
+    """Bucket one Cycle vouch test without flattening its assertion cells."""
 
-    Document tests carry very few items each (commonly one or two), so the
-    engagement-level unit of review is the item, not the test.  This keeps the
-    tab to one request and lets it show a single triage list instead of nesting
-    a rail inside a rail.
-    """
-    counts = {name: 0 for name in SUMMARY_CLASSES}
-    items: list[dict] = []
-    tests: list[dict] = []
+    if rollup["exception_items"]:
+        return "exception"
+    items = test.get("items") or []
+    missing_evidence = any(
+        item.get("missing_roles")
+        or any(
+            result.get("verdict") == "missing_evidence"
+            for result in (item.get("result_by_assertion") or {}).values()
+        )
+        for item in items
+    )
+    if missing_evidence:
+        return "awaiting_evidence"
+    requires_review = bool(
+        rollup["failed_items"]
+        or rollup["incomplete_items"]
+        or rollup["needs_review_items"]
+        or (rollup["tested_items"] and rollup["pending_dispositions"])
+    )
+    if requires_review:
+        return "needs_review"
+    if rollup["items"] and rollup["confirmed_items"] == rollup["items"]:
+        return "confirmed"
+    return "not_run"
+
+
+def summary_payload(workspace: Workspace) -> dict:
+    """Return discriminated Cycle-test and ordinary-item triage entries."""
+
+    entry_counts = {name: 0 for name in SUMMARY_CLASSES}
+    test_counts = {
+        "total": 0,
+        "item_first": 0,
+        **{kind: 0 for kind in sorted(KINDS)},
+    }
+    tested_item_counts = {
+        "total": 0,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "incomplete": 0,
+        "needs_review": 0,
+        "not_run": 0,
+        "stale": 0,
+        "confirmed": 0,
+        "exceptions": 0,
+        "pending_disposition": 0,
+    }
+    assertion_counts = {
+        "total": 0,
+        **{verdict: 0 for verdict in sorted(cycle_vouching.ASSERTION_VERDICTS)},
+    }
+    entries: list[dict] = []
     for path in tests_dir(workspace).glob("*.json"):
         try:
             test = _project_cycle_items(
@@ -2303,15 +2310,83 @@ def summary_payload(workspace: Workspace) -> dict:
             )
         except (OSError, json.JSONDecodeError, WorkspaceError):
             continue
-        test_counts = {name: 0 for name in SUMMARY_CLASSES}
+        test_counts["total"] += 1
+        kind = str(test.get("kind") or "")
+        if kind in KINDS:
+            test_counts[kind] += 1
+        if is_cycle_test(test):
+            rollup = result_rollup(test)
+            classification = _cycle_test_classification(test, rollup)
+            entry_counts[classification] += 1
+            for state in cycle_vouching.EVALUATION_STATES:
+                tested_item_counts[state] += int(rollup["item_counts"][state])
+            tested_item_counts["total"] += int(rollup["items"])
+            tested_item_counts["executed"] += int(rollup["tested_items"])
+            tested_item_counts["confirmed"] += int(rollup["confirmed_items"])
+            tested_item_counts["exceptions"] += int(rollup["exception_items"])
+            tested_item_counts["pending_disposition"] += int(
+                rollup["pending_dispositions"]
+            )
+            for verdict in cycle_vouching.ASSERTION_VERDICTS:
+                assertion_counts[verdict] += int(
+                    rollup["assertion_counts"][verdict]
+                )
+            assertion_counts["total"] += int(rollup["assertion_counts"]["total"])
+            entries.append({
+                "entry_type": "cycle_test",
+                "test_id": test.get("id"),
+                "title": test.get("title") or "Untitled test",
+                "test_kind": test.get("kind"),
+                "test_status": test.get("status"),
+                "rcm_id": test.get("rcm_id"),
+                "classification": classification,
+                "item_count": int(rollup["items"]),
+                "tested_item_count": int(rollup["tested_items"]),
+                "evaluation_counts": dict(rollup["item_counts"]),
+                "disposition_counts": dict(rollup["disposition_counts"]),
+                "assertion_columns": int(rollup["assertion_columns"]),
+                "assertion_counts": dict(rollup["assertion_counts"]),
+                "coverage": dict(rollup["coverage"]),
+                "selection_basis": str(rollup["coverage"]["selection_basis"]),
+                "assurance_scope": rollup["assurance_scope"],
+                "assurance_label": rollup["assurance_label"],
+                "requirement_refs": list(test.get("requirement_refs") or []),
+                "updated": test.get("updated"),
+            })
+            continue
+
+        test_counts["item_first"] += 1
         for item in test.get("items") or []:
             classification = _item_classification(test, item)
-            counts[classification] += 1
-            test_counts[classification] += 1
+            entry_counts[classification] += 1
             coverage = item.get("evidence_coverage") or {}
             checks = item.get("checks") or []
             conflicts = item.get("document_conflicts") or {}
-            items.append({
+            state = item_state_projection(test, item)
+            tested_item_counts["total"] += 1
+            if item_execution_current(test, item):
+                tested_item_counts["executed"] += 1
+            if state == "pending":
+                tested_item_counts["not_run"] += 1
+            elif state in {"agent_checked", "manual_review"}:
+                tested_item_counts["needs_review"] += 1
+                tested_item_counts["pending_disposition"] += 1
+            elif state == "confirmed":
+                tested_item_counts["confirmed"] += 1
+            elif state == "exception":
+                tested_item_counts["exceptions"] += 1
+            verdict_map = {
+                "match": "match",
+                "mismatch": "mismatch",
+                "missing": "missing_evidence",
+                "invalid": "invalid_extraction",
+            }
+            for check in checks:
+                verdict = verdict_map.get(str(check.get("verdict") or ""), "not_run")
+                assertion_counts[verdict] += 1
+                assertion_counts["total"] += 1
+            entries.append({
+                "entry_type": "item",
                 "test_id": test.get("id"),
                 "test_title": test.get("title") or "Untitled test",
                 "test_kind": test.get("kind"),
@@ -2320,7 +2395,7 @@ def summary_payload(workspace: Workspace) -> dict:
                 "item_id": item.get("id"),
                 "label": item.get("label") or "",
                 "instruction": item.get("instruction") or "",
-                "state": item_state_projection(test, item),
+                "state": state,
                 "classification": classification,
                 "question": item.get("question") or "",
                 "response": item.get("response") or "",
@@ -2339,34 +2414,20 @@ def summary_payload(workspace: Workspace) -> dict:
                 "has_conflict": bool(conflicts.get("duplicate_documents")),
                 "updated": test.get("updated"),
             })
-        tests.append({
-            "test_id": test.get("id"),
-            "title": test.get("title") or "Untitled test",
-            "kind": test.get("kind"),
-            "status": test.get("status"),
-            "rcm_id": test.get("rcm_id"),
-            "item_count": len(test.get("items") or []),
-            "counts": test_counts,
-            "objective": test.get("objective") or "",
-            "result_summary": test.get("result_summary") or "",
-            "conclusion": test.get("conclusion") or "",
-            "control_conclusion": test.get("control_conclusion"),
-            "scope_limitations": test.get("scope_limitations") or "",
-            "next_action": test.get("next_action") or "",
-            "exception_count": test.get("exception_count") or 0,
-            "open_exception_count": test.get("open_exception_count") or 0,
-            "requirement_refs": list(test.get("requirement_refs") or []),
-            "coverage": dict(test.get("coverage") or {}),
-            "assurance_scope": (
-                (test.get("definition") or {})
-                .get("population", {})
-                .get("selection", {})
-                .get("assurance_scope")
-            ),
-            "updated": test.get("updated"),
-        })
-    # Stable sorts: newest engagement work first, then severity on top.
-    items.sort(key=lambda item: (str(item.get("test_title") or ""), str(item.get("label") or "")))
-    items.sort(key=lambda item: _SUMMARY_RANK[item["classification"]])
-    tests.sort(key=lambda test: str(test.get("updated") or ""), reverse=True)
-    return {"counts": counts, "items": items, "tests": tests}
+    # Stable sorts: title/label within severity, with the most urgent first.
+    entries.sort(
+        key=lambda entry: (
+            _SUMMARY_RANK[entry["classification"]],
+            str(entry.get("title") or entry.get("test_title") or ""),
+            str(entry.get("label") or ""),
+            str(entry.get("test_id") or ""),
+            str(entry.get("item_id") or ""),
+        )
+    )
+    return {
+        "entry_counts": entry_counts,
+        "test_counts": test_counts,
+        "tested_item_counts": tested_item_counts,
+        "assertion_counts": assertion_counts,
+        "entries": entries,
+    }
