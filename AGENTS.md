@@ -15,11 +15,22 @@ PrimeVue 4. There is no Tailwind, pandas, or DuckDB in the core path.
 
 **Privacy boundary:** Computation runs on the user's machine. The read-only
 assistant and the audit agent can call local tools, and row-level table data is
-withheld from the model provider with exactly one declared exception: the rows a
-saved analysis *flagged as exceptions* reach the EDA-summary capability, capped
-per procedure, under its own `allow_analysis_exception_rows` permission. Nothing
-else may request rows — `allow_table_rows` is denied everywhere and the resolver
-rejects the `table_rows` representation structurally. The privacy choke points
+withheld from the model provider with exactly two declared exceptions, each
+carrying its own permission and its own cap:
+
+1. The rows a saved analysis *flagged as exceptions* reach the EDA-summary
+   capability, capped per procedure, under `allow_analysis_exception_rows`.
+2. The rows a durable Data Test *flagged as exceptions* reach the finding-draft
+   capability, capped by row count and serialized size in the adapter
+   (`FINDING_EXCEPTION_ROW_LIMIT`), under `allow_datatest_exception_rows`. This
+   is what lets a finding name the invoice that failed instead of only counting
+   it; the projection always reports how many rows were withheld so a truncated
+   table cannot be drafted as a complete population.
+
+The two are deliberately separate permissions so revoking one never silently
+revokes the other. Nothing else may request rows — `allow_table_rows` is denied
+everywhere and the resolver rejects the `table_rows` representation
+structurally. The privacy choke points
 are the assistant context builders and the bounded agent context bundles.
 
 **Current product shape:** The original data-workbench surfaces still exist

@@ -7,6 +7,7 @@ enforce context policy, call a model, or duplicate domain retrieval logic.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 
@@ -1227,6 +1228,15 @@ FINDING_ROW_SOURCE_ID = "rcm_row"
 FINDING_TEST_SOURCE_ID = "test"
 FINDING_EXECUTION_SOURCE_ID = "execution_result"
 FINDING_TEMPLATE_SOURCE_ID = "finding_template"
+FINDING_EXCEPTION_ROWS_SOURCE_ID = "exception_rows"
+
+# The cap on the exception table one finding may be drafted from. A finding
+# names the records that failed; it does not reproduce a population. Past the
+# cap the model is given the leading rows and told how many were withheld, so
+# the narrative reports a truncated illustration rather than implying it saw
+# everything.
+FINDING_EXCEPTION_ROW_LIMIT = 25
+FINDING_EXCEPTION_ROW_CHARACTERS = 8_000
 
 _FINDING_ROW_FIELDS = ("id", "risk", "control", "criteria", "risk_rating")
 _FINDING_TEST_FIELDS = (
@@ -1251,6 +1261,109 @@ _FINDING_DATA_TEST_FIELDS = (
     "semantic_issues",
     "error",
 )
+
+
+def _document_titles(workspace: Workspace, document_ids: Iterable[str]) -> list[dict]:
+    """Name the documents behind a tested item, in stable order.
+
+    A finding that says "the supplied documentation did not establish X" is not
+    actionable; one that names the document is. The title is workspace metadata
+    the evidence anchor already points at — this resolves the id the anchor
+    carries into the name a reader recognizes.
+    """
+    by_id = {str(item.get("id")): item for item in workspace.documents}
+    named: dict[str, dict] = {}
+    for value in document_ids:
+        key = str(value or "")
+        document = by_id.get(key)
+        if key and key not in named:
+            named[key] = {
+                "id": key,
+                "title": (document or {}).get("title") or key,
+                "sha1": (document or {}).get("sha1"),
+            }
+    return list(named.values())
+
+
+def _item_document_ids(item: Mapping[str, object]) -> list[str]:
+    """Every document one tested item is grounded in, declared or cited."""
+    ids = [str(value) for value in item.get("document_ids") or []]
+    ids.extend(
+        str(anchor.get("source_id"))
+        for anchor in item.get("evidence_refs") or []
+        if isinstance(anchor, Mapping) and anchor.get("source_kind") == "document"
+    )
+    return ids
+
+
+def finding_exception_rows(workspace: Workspace, execution_ref: str) -> dict | None:
+    """The capped exception table one Data Test flagged, or None.
+
+    This is the row-level source class in the finding contract, admitted under
+    ``allow_datatest_exception_rows`` alone. It is capped twice — by row count
+    and by serialized size — and always states how many rows were withheld, so
+    a narrative drafted from a truncated table cannot silently read as a
+    complete one. Document Tests have no tabular exception population and
+    return None rather than an empty table.
+    """
+    from ... import data_tests
+
+    kind, _separator, source_id = str(execution_ref or "").partition(":")
+    if kind != "datatest":
+        return None
+    artifact = data_tests.result_artifact(workspace, source_id)
+    if not artifact:
+        return None
+    result = artifact["item"]
+    frame = result.get("exception_frame") or {}
+    columns = [str(value) for value in frame.get("columns") or []]
+    rows = list(frame.get("rows") or [])
+    if not columns or not rows:
+        return None
+    supplied: list[list] = []
+    characters = 0
+    for row in rows[:FINDING_EXCEPTION_ROW_LIMIT]:
+        size = len(json.dumps(row, default=str))
+        if supplied and characters + size > FINDING_EXCEPTION_ROW_CHARACTERS:
+            break
+        supplied.append(list(row))
+        characters += size
+    withheld = len(rows) - len(supplied)
+    definition = next(
+        (
+            item
+            for item in workspace.data_tests
+            if str(item.get("id")) == str(result.get("data_test_id") or "")
+        ),
+        None,
+    )
+    instructions = {
+        str(step.get("step_id") or ""): step.get("instruction")
+        for step in ((definition or {}).get("spec") or {}).get("steps") or []
+    }
+    return {
+        "execution_ref": execution_ref,
+        "result_sha1": result.get("result_sha1"),
+        "semantic_valid": result.get("semantic_valid"),
+        "exception_count": result.get("exception_count"),
+        "columns": columns,
+        "rows": supplied,
+        "rows_supplied": len(supplied),
+        "rows_withheld": withheld,
+        "truncated": bool(withheld) or bool(frame.get("truncated")),
+        # What each step was looking for, so the rows can be read as evidence
+        # of a specific failure rather than as an undifferentiated table. The
+        # instruction comes from the test definition; the outcome from the run.
+        "steps": [
+            {
+                "step_id": step.get("step_id"),
+                "label": step.get("step_label"),
+                "instruction": instructions.get(str(step.get("step_id") or "")),
+                "exception_count": step.get("exception_count"),
+            }
+            for step in result.get("step_results") or []
+        ],
+    }
 
 
 def _finding_execution_projection(
@@ -1294,6 +1407,9 @@ def _finding_execution_projection(
                     "id": selected.get("id"),
                     "evaluation": dict(selected.get("evaluation") or {}),
                     "disposition": dict(selected.get("disposition") or {}),
+                    "documents": _document_titles(
+                        workspace, _item_document_ids(selected)
+                    ),
                     "assertion_results": [
                         {
                             "key": key,
@@ -1324,8 +1440,22 @@ def _finding_execution_projection(
                 {
                     **{
                         key: item.get(key)
-                        for key in ("id", "label", "state", "runner_note")
+                        for key in (
+                            "id", "label", "state", "runner_note", "question",
+                        )
                     },
+                    # Which documents the item was answered from. Without these
+                    # a finding can only say "the supplied documentation", which
+                    # management cannot act on.
+                    "documents": _document_titles(workspace, _item_document_ids(item)),
+                    "checks": [
+                        {
+                            key: check.get(key)
+                            for key in ("field", "expected", "found", "verdict")
+                        }
+                        for check in item.get("checks") or []
+                        if check.get("verdict") in ("mismatch", "missing")
+                    ],
                     "check_verdicts": {
                         verdict: sum(
                             check.get("verdict") == verdict
@@ -1371,6 +1501,7 @@ def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextSco
         )
     finding_template = templates_store.get_template(workspace, "finding")["markdown"]
     execution_ref = str(observation.get("execution_ref") or "")
+    exception_rows = finding_exception_rows(workspace, execution_ref)
     execution = {
         "execution_ref": execution_ref,
         "immutable_execution_result": _finding_execution_projection(
@@ -1436,6 +1567,21 @@ def finding_draft_scope(workspace: Workspace, observation_id: str) -> ContextSco
                     representations={"artifact_template": finding_template},
                     metadata={"template": "finding"},
                 ),
+            ),
+            # The rows the test flagged, so the finding names the records that
+            # failed instead of only counting them. Empty for a Document Test,
+            # which has no tabular exception population.
+            FINDING_EXCEPTION_ROWS_SOURCE_ID: (
+                (
+                    ContextCandidate(
+                        source_ref=f"{execution_ref}:exceptions",
+                        source=exception_rows,
+                        representations={"datatest_exception_rows": exception_rows},
+                        metadata={"execution_ref": execution_ref},
+                    ),
+                )
+                if exception_rows
+                else ()
             ),
         },
         selector_context={

@@ -39,6 +39,31 @@ record of the exception.
             payment instruction."
     Not:   "DAT-14 returned 37 exception rows where CREATED_BY = APPROVED_BY."
 
+**Identify the exceptions; do not merely count them.** A finding that says "1
+exception was identified" gives management nothing to act on.
+
+- Where the finding rests on a document, name the document.
+
+      Write: "The Procurement Standard Operating Procedure extract does not
+              define how vendor documentation is retained."
+      Not:   "The supplied documentation did not establish the requirement."
+
+- Where the exceptions are few, set them out as a Markdown table directly under
+  this prose. Use only the columns that evidence the exception — the record
+  identifier and the fields the test compared — and give each a readable
+  heading rather than the underlying column name. The table travels into the
+  report with the rest of this section.
+
+      | Invoice | Invoice date | Payment date | Amount (AED) |
+      | --- | --- | --- | --- |
+      | INV2024008 | 20 Dec 2024 | 29 Nov 2024 | 24,939,790 |
+
+- Where the exceptions are many, describe the pattern, quantify it, and name a
+  few examples by identifier rather than tabling all of them.
+- Where only part of the exception population was available, say so and give
+  the full count. A table showing the first rows of a larger population must
+  never read as though it were the whole of it.
+
 Do not conclude here. Whether the control failed belongs to the Risk section and
 to the test's conclusion; this section records what was observed. -->
 

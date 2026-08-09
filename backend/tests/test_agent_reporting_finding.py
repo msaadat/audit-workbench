@@ -84,7 +84,21 @@ Enforce a uniqueness constraint on the invoice identifier.
 """
 
 
-def _bundle(template: str = TEMPLATE):
+EXCEPTION_ROWS = {
+    "execution_ref": "datatest:DAT-1",
+    "result_sha1": "sha1-result",
+    "semantic_valid": True,
+    "exception_count": 1,
+    "columns": ["INVOICE_ID", "INVOICE_DATE", "PAYMENT_DATE"],
+    "rows": [["INV2024008", "2024-12-20", "2024-11-29"]],
+    "rows_supplied": 1,
+    "rows_withheld": 0,
+    "truncated": False,
+    "steps": [{"step_id": "STEP-1", "label": "Verification timing"}],
+}
+
+
+def _bundle(template: str = TEMPLATE, exception_rows: dict | None = EXCEPTION_ROWS):
     values = [
         (
             "observation",
@@ -125,6 +139,15 @@ def _bundle(template: str = TEMPLATE):
             template,
         ),
     ]
+    if exception_rows is not None:
+        values.append(
+            (
+                "exception_rows",
+                "datatest:DAT-1:exceptions",
+                ContextRepresentation("datatest_exception_rows"),
+                exception_rows,
+            )
+        )
     items = tuple(
         ContextBundleItem(
             source_id=source_id,
@@ -224,6 +247,37 @@ def test_finding_worker_repairs_an_undeferred_empty_root_cause():
 
     assert result.repaired is True
     assert "unless cause_pending is true" in gateway.calls[1]["user"]
+
+
+def test_finding_worker_is_given_the_exception_rows_and_told_to_identify_them():
+    gateway = _Gateway([json.dumps({"finding": _draft()})])
+
+    WORKERS.execute(_request(), gateway)
+
+    user = gateway.calls[0]["user"]
+    # The identifier reaches the prompt, so the draft can name the record.
+    assert "INV2024008" in user
+    assert '"rows_withheld": 0' in user.replace(" ", " ")
+    assert "identify the records that failed" in gateway.calls[0]["system"].casefold()
+
+
+def test_finding_worker_runs_without_an_exception_table():
+    # A Document Test unit resolves no exception-row item at all. That is the
+    # normal shape for those findings, not a contract violation.
+    request = WorkerRequest(
+        worker_id="reporting.finding",
+        capability_id="findings.drafted",
+        unit_id="finding:OBS-1",
+        context=_bundle(exception_rows=None),
+        unit_input={"input_sha1": "finding-input"},
+        activity={"artifact_refs": ["observation:OBS-1"]},
+    )
+    gateway = _Gateway([json.dumps({"finding": _draft()})])
+
+    result = WORKERS.execute(request, gateway)
+
+    assert result.repaired is False
+    assert '"EXCEPTION ROWS": null' in gateway.calls[0]["user"]
 
 
 def test_finding_worker_takes_its_required_sections_from_the_supplied_template():

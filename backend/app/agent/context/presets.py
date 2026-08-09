@@ -51,6 +51,7 @@ _REPRESENTATION_PRIVACY_FIELD = {
     "table_rows_small": "allow_small_table_rows",
     "analysis_result": "allow_analysis_results",
     "analysis_exception_rows": "allow_analysis_exception_rows",
+    "datatest_exception_rows": "allow_datatest_exception_rows",
     "analysis_summary": "allow_analysis_summary",
 }
 
@@ -992,12 +993,33 @@ PRESETS.register(
                     representations=(ContextRepresentation("artifact_template"),),
                     budget=ContextBudget(max_items=1, max_characters=16_000),
                 ),
+                # The rows the Data Test flagged. Optional: a Document Test has
+                # no tabular exception population, and the finding is drafted
+                # from its item disposition instead.
+                ContextSource(
+                    id="exception_rows",
+                    source_type="artifacts",
+                    required=False,
+                    selector=ContextSelector(selector_id="artifacts.current"),
+                    representations=(
+                        ContextRepresentation("datatest_exception_rows"),
+                    ),
+                    budget=ContextBudget(max_items=1, max_characters=10_000),
+                ),
             ),
-            budget=ContextBudget(max_items=5, max_characters=32_000),
-            # A finding is grounded only in its exception observation and the
-            # immutable execution result behind it; no document or table content
-            # is declared.
-            privacy=ContextPrivacy(allow_document_text=True, allow_template_text=True),
+            budget=ContextBudget(max_items=6, max_characters=42_000),
+            # A finding is grounded in its exception observation, the immutable
+            # execution result behind it, and — for a Data Test — the rows that
+            # result flagged. The row admission is the deliberate widening: it
+            # is what lets a finding name the invoice that failed instead of
+            # only counting it, and it is capped by row count and characters in
+            # the adapter before this budget applies. No document text, no table
+            # slice, and no population beyond the flagged rows is declared.
+            privacy=ContextPrivacy(
+                allow_document_text=True,
+                allow_template_text=True,
+                allow_datatest_exception_rows=True,
+            ),
         ),
     )
 )

@@ -109,11 +109,11 @@ async function runQuality(editorial = false) {
   finally { busy.value = false }
 }
 
-async function copy(kind: 'markdown' | 'html') {
+async function copy() {
   await save(false)
   if (!report.value) return
-  await navigator.clipboard.writeText(kind === 'markdown' ? report.value.markdown : report.value.html)
-  toast.add({ severity: 'success', summary: `${kind === 'markdown' ? 'Markdown' : 'HTML'} copied`, life: 1600 })
+  await navigator.clipboard.writeText(report.value.markdown)
+  toast.add({ severity: 'success', summary: 'Markdown copied', life: 1600 })
 }
 
 async function openTemplate() {
@@ -142,8 +142,7 @@ const secondaryActions = computed(() => [
   { label: 'Quality checks', icon: 'pi pi-check-circle', command: () => void runQuality(false) },
   { label: 'Edit report template', icon: 'pi pi-file-edit', command: () => void openTemplate() },
   { separator: true },
-  { label: 'Copy Markdown', icon: 'pi pi-copy', command: () => void copy('markdown') },
-  { label: 'Copy HTML', icon: 'pi pi-copy', command: () => void copy('html') },
+  { label: 'Copy Markdown', icon: 'pi pi-copy', command: () => void copy() },
 ])
 </script>
 

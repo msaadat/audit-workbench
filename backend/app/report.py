@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import re
 from datetime import datetime, timezone
@@ -31,8 +30,43 @@ def _linked_tests(
     )
     return sorted(tests, key=lambda item: str(item.get("id") or ""))
 
-MODEL_CONTEXT_LIMIT = 30_000
 _PLANNING_FIELDS = ("objective", "entity", "period", "scope", "materiality")
+
+# The engagement ratings, most to least favourable. The draft assigns one; the
+# recorded evidence decides how favourable it is allowed to be.
+RATINGS = ("satisfactory", "fair", "marginal", "unsatisfactory")
+_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+# The severities the executive Key Findings table carries. Senior management is
+# deciding where to direct attention, not reading the whole population.
+KEY_FINDING_SEVERITIES = ("critical", "high")
+
+# The report has two levels but the template declares one flat list of sections.
+# The detail section is the boundary: every section before it is rendered as a
+# sub-part of an inserted executive-summary heading. A firm therefore reorders
+# or renames the sub-parts without having to restate the two-level structure.
+EXECUTIVE_SUMMARY_HEADING = "Executive Summary"
+_DETAIL_SECTION_KEY = "detailed findings"
+_CONCLUSION_SECTION_KEY = "audit conclusion"
+_KEY_FINDINGS_SECTION_KEY = "key findings"
+_INTRODUCTION_SECTION_KEY = "introduction"
+_SCOPE_SECTION_KEY = "objective and scope"
+_DEFAULT_HEADINGS = (
+    "Introduction", "Objective and Scope", "Audit Conclusion",
+    "Key Findings", "Detailed Findings",
+)
+_UNWRITTEN_SECTION = "Content to be completed by the auditor."
+_PRELIMINARY_BANNER = (
+    "> **Preliminary working draft:** fieldwork, evidence, review, or auditor "
+    "judgment remains open. This document is not a final audit opinion."
+)
+# A rating is claimed either in bold or after the word "rating". Both forms are
+# required to carry the word itself, because "fair" is ordinary English and a
+# looser pattern would raise an error on prose that assigns nothing.
+_RATING_CLAIM = re.compile(
+    r"\*\*\s*(satisfactory|fair|marginal|unsatisfactory)\s*\*\*"
+    r"|\brating\b[^A-Za-z0-9]{0,12}(satisfactory|fair|marginal|unsatisfactory)\b",
+    re.IGNORECASE,
+)
 
 
 def _now() -> str:
@@ -108,6 +142,103 @@ def _planning_context(workspace: Workspace) -> dict:
     }
 
 
+def _apm_section(workspace: Workspace, *needles: str) -> str:
+    """The first APM section whose heading matches one of ``needles``.
+
+    The APM already holds the engagement's background in the auditor's own
+    prose, so the report takes it from there rather than re-deriving it from the
+    control matrix. A firm that renames the heading loses the passage rather
+    than getting the wrong one; objective and scope still come from the
+    structured planning context either way.
+    """
+    bodies = templates_store.section_bodies(
+        str(workspace.planning.get("apm_markdown") or "")
+    )
+    for needle in needles:
+        for key, body in bodies.items():
+            if needle in key and body.strip():
+                return body.strip()
+    return ""
+
+
+def _narrative_section(item: dict, *needles: str) -> str:
+    """One section of a finding's narrative, matched loosely by heading."""
+    bodies = templates_store.section_bodies(str(item.get("narrative") or ""))
+    for needle in needles:
+        for key, body in bodies.items():
+            if needle in key and body.strip():
+                return body.strip()
+    return ""
+
+
+def _ordered_findings(items: list[dict]) -> list[dict]:
+    """Confirmed findings, most severe first, ties broken by id."""
+    return sorted(
+        items,
+        key=lambda item: (
+            _SEVERITY_RANK.get(str(item.get("severity") or "").casefold(), 9),
+            str(item.get("id") or ""),
+        ),
+    )
+
+
+def rating_band(context: dict) -> dict:
+    """The engagement ratings the recorded evidence permits.
+
+    The draft chooses the rating; it never chooses the band. Confirmed finding
+    severities, ineffective controls, and rows the fieldwork could not conclude
+    on each set a ceiling, and open fieldwork withholds a rating entirely. An
+    overstated rating is the one claim in this report a reader cannot check
+    against the evidence themselves, so the ceiling is computed here and
+    enforced by :func:`quality_checks` against whatever the draft finally says.
+
+    Only optimism is constrained. An auditor who judges the environment worse
+    than the ceiling is exercising judgment the evidence does not contradict.
+    """
+    rows = context.get("rcm") or []
+    findings = context.get("findings") or []
+    if context.get("preliminary"):
+        return {
+            "assignable": False,
+            "ceiling": None,
+            "allowed": [],
+            "reasons": [
+                "fieldwork, evidence, or auditor judgment remains open, so no "
+                "overall rating is assigned"
+            ],
+        }
+    severities = {str(item.get("severity") or "").casefold() for item in findings}
+    conclusions = [str(row.get("control_conclusion") or "").casefold() for row in rows]
+    ineffective = sum(value == "ineffective" for value in conclusions)
+    unconcluded = sum(value in ("", "no_conclusion") for value in conclusions)
+    constraints: list[tuple[int, str]] = []
+    if "critical" in severities:
+        constraints.append((2, "a confirmed critical-severity finding was recorded"))
+    if "high" in severities:
+        constraints.append((1, "a confirmed high-severity finding was recorded"))
+    if ineffective:
+        constraints.append((1, f"{ineffective} control(s) were concluded ineffective"))
+    if rows and ineffective >= max(1, len(rows) // 3):
+        constraints.append((
+            2, f"{ineffective} of {len(rows)} controls were concluded ineffective"
+        ))
+    if rows and unconcluded >= max(1, len(rows) // 3):
+        constraints.append((
+            1, f"{unconcluded} of {len(rows)} controls reached no conclusion"
+        ))
+    if rows and unconcluded >= max(1, len(rows) // 2):
+        constraints.append((
+            2, f"{unconcluded} of {len(rows)} controls reached no conclusion"
+        ))
+    ceiling = max((index for index, _reason in constraints), default=0)
+    return {
+        "assignable": True,
+        "ceiling": RATINGS[ceiling],
+        "allowed": list(RATINGS[ceiling:]),
+        "reasons": list(dict.fromkeys(reason for _index, reason in constraints)),
+    }
+
+
 def _incomplete_coverage(
     workspace: Workspace,
     workflow: dict | None = None,
@@ -172,8 +303,17 @@ def _coverage_warnings(coverage: dict) -> list[str]:
     return warnings
 
 
-def _report_test_projection(test: dict) -> dict:
-    """Project one test without reviving narrative Cycle-vouch checks."""
+def _report_test_projection(workspace: Workspace, test: dict) -> dict:
+    """Project what one test *found*, without how it was performed.
+
+    A report states what was tested and what came of it. The procedure itself —
+    step instructions, questions, document ids — is working-paper material, and
+    reproducing it here was the single largest part of the drafting payload
+    while contributing nothing a reader of the report can use. Hashes go for the
+    same reason: provenance travels on the finding's evidence anchors and in the
+    activity ledger, not through a drafting prompt. Recorded limitations are
+    collected once at the top level rather than repeated under every test.
+    """
 
     projection = {
         key: test.get(key)
@@ -185,33 +325,48 @@ def _report_test_projection(test: dict) -> dict:
             "status",
             "result_summary",
             "conclusion",
-            "scope_limitations",
             "exception_count",
             "open_exception_count",
             "finding_refs",
-            "sha1",
         )
     }
     if doc_tests.is_cycle_test(test):
+        # A cycle test's item counts live only in its roll-up, and they are what
+        # its control conclusion rests on.
         rollup = doc_tests.result_rollup(test)
-        projection.update(
-            rollup=rollup,
-            control_conclusion=rollup["control_conclusion"],
-        )
+        projection["rollup"] = rollup
+        projection["control_conclusion"] = rollup["control_conclusion"]
     else:
-        projection.update(
-            steps=list(test.get("steps") or []),
-            control_conclusion=test.get("control_conclusion"),
-        )
+        projection["control_conclusion"] = test.get("control_conclusion")
+    if "engine" in test and test.get("last_run"):
+        # A Data Test's durable result carries the one thing its definition does
+        # not: whether the comparison it ran was semantically capable of finding
+        # anything. A clean result from an impossible comparison is not evidence,
+        # and a conclusion drawn over it would be unsupported.
+        result = data_tests.load_result(workspace, test["id"], test["last_run"]["id"])
+        projection["latest_result"] = {
+            key: result.get(key)
+            for key in (
+                "status", "verdict", "verdict_text", "exception_count",
+                "semantic_valid", "semantic_issues",
+            )
+        }
     return projection
 
 
 def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict:
-    """Build report context without structured rows or document excerpts."""
+    """Build report context without structured rows or document excerpts.
+
+    This is the engagement's reporting state, and it is deliberately one view of
+    each fact. The same test previously appeared under its RCM row, again in the
+    roll-up, and again in the document-test list; the report needs it once. What
+    remains is what a reader of the report could be told: the planning basis,
+    the matrix and what each control concluded, what each test found, the
+    confirmed findings, and the limitations bounding all of it.
+    """
     document_tests = rcm_execution.document_test_index(workspace)
     rolled = rcm_execution.rollup(workspace, document_tests=document_tests)
     completion = rcm_execution.completion(workspace, document_tests=document_tests)
-    test_summaries = []
     totals = {
         "items": 0,
         "tested_items": 0,
@@ -226,33 +381,8 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
         rollup = doc_tests.result_rollup(test)
         for key in totals:
             totals[key] += int(rollup.get(key) or 0)
-        test_summaries.append(
-            {
-                "id": test["id"], "title": test.get("title"), "kind": test.get("kind"),
-                "status": test.get("status"), "rcm_refs": test.get("rcm_refs") or [],
-                "rcm_id": test.get("rcm_id"), "rollup": rollup,
-            }
-        )
     context = _planning_context(workspace)
-    data_test_summaries = []
-    for item in workspace.data_tests:
-        if not item.get("rcm_id"):
-            continue
-        latest = None
-        if item.get("last_run"):
-            result = data_tests.load_result(workspace, item["id"], item["last_run"]["id"])
-            latest = {
-                key: result.get(key)
-                for key in (
-                    "id", "status", "verdict", "verdict_text", "statistics",
-                    "exception_count", "semantic_valid", "semantic_issues", "result_sha1",
-                )
-            }
-        data_test_summaries.append({
-            "id": item["id"], "title": item.get("title"), "objective": item.get("objective"),
-            "engine": item.get("engine"), "status": item.get("status"),
-            "rcm_id": item.get("rcm_id"), "latest_result": latest,
-        })
+    linked_data_tests = [item for item in workspace.data_tests if item.get("rcm_id")]
     supported = [
         item for item in workspace.findings
         if item.get("auditor_confirmed") and not support_issues(workspace, item)
@@ -280,21 +410,17 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
                 "id": item.get("id"), "process": item.get("process"),
                 "risk": item.get("risk"), "risk_rating": item.get("risk_rating"),
                 "business_cycle": item.get("business_cycle"),
-                "control_attributes": list(item.get("control_attributes") or []),
                 "control": item.get("control"),
                 "control_conclusion": (rolled_by_rcm.get(item["id"]) or {}).get("control_conclusion"),
+                "assurance_scopes": (rolled_by_rcm.get(item["id"]) or {}).get("assurance_scopes") or [],
                 "review_status": item.get("review_status"),
-                "test_refs": list(item.get("test_refs") or []),
                 "tests": [
-                    _report_test_projection(test)
+                    _report_test_projection(workspace, test)
                     for test in _linked_tests(workspace, item["id"], document_tests)
                 ],
             }
             for item in workspace.rcm
         ],
-        "rcm_rollup": rolled["rows"],
-        "data_tests": data_test_summaries,
-        "document_tests": test_summaries,
         "findings": [_safe_finding(item) for item in supported],
         "draft_findings_excluded": [item["id"] for item in workspace.findings if item not in supported],
         "scope_limitations": [
@@ -325,7 +451,7 @@ def build_context(workspace: Workspace, *, workflow: dict | None = None) -> dict
                 len(_linked_tests(workspace, row["id"], document_tests))
                 for row in workspace.rcm
             ),
-            "data_tests": len(data_test_summaries), "findings": len(supported),
+            "data_tests": len(linked_data_tests), "findings": len(supported),
             "draft_findings": len(workspace.findings) - len(supported),
             "document_tests": len(document_tests.tests), **totals,
         },
@@ -417,118 +543,253 @@ def _ensure_preliminary_label(markdown: str, preliminary: bool) -> str:
     return body.strip() + "\n"
 
 
-def _template_order(workspace: Workspace, generated: str, context: dict) -> str:
-    """Apply configured report heading order to the deterministic fallback."""
-    template = templates_store.get_template(workspace, "report")["markdown"]
-    matches = list(re.finditer(r"^##\s+(.+)$", generated, re.MULTILINE))
-    generated_sections: dict[str, str] = {}
-    generated_order: list[str] = []
-    for index, match in enumerate(matches):
-        title = match.group(1).strip()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(generated)
-        generated_sections[title.casefold()] = generated[match.end():end].strip()
-        generated_order.append(title)
-    template_headings = [match.group(1).strip() for match in re.finditer(r"^##\s+(.+)$", template, re.MULTILINE)]
-    if not template_headings:
-        return generated
+def _report_title(workspace: Workspace, context: dict, template: str) -> str:
+    """The template's title line with its planning placeholders filled."""
     planning = context["planning"]
     replacements = {
-        "workspace": workspace.name, "entity": planning.get("entity") or "Not stated",
-        "period": planning.get("period") or "Not stated", "objective": planning.get("objective") or "Not stated",
-        "scope": planning.get("scope") or "Not stated", "materiality": planning.get("materiality") or "Not stated",
+        "workspace": workspace.name,
+        "entity": planning.get("entity") or "Not stated",
+        "period": planning.get("period") or "Not stated",
+        "objective": planning.get("objective") or "Not stated",
+        "scope": planning.get("scope") or "Not stated",
+        "materiality": planning.get("materiality") or "Not stated",
     }
-    title = next((line.strip() for line in template.splitlines() if line.startswith("# ")), "# Internal Audit Report")
+    title = next(
+        (line.strip() for line in template.splitlines() if line.startswith("# ")),
+        "# Internal Audit Report",
+    )
     for key, value in replacements.items():
         title = title.replace(f"{{{{{key}}}}}", str(value))
-    lines = [title, ""]
-    included: set[str] = set()
-    for heading in template_headings:
-        key = heading.casefold()
-        body = generated_sections.get(key)
-        if body is None:
-            # Preserve a custom empty section without copying model-instruction comments.
-            body = "Content to be completed by the auditor."
-        lines.extend([f"## {heading}", "", body, ""])
-        included.add(key)
-    # Limitations are required even when an older/custom template omitted them.
-    for heading in generated_order:
-        key = heading.casefold()
-        if key == "scope limitations" and key not in included:
-            lines.extend([f"## {heading}", "", generated_sections[key], ""])
+    return title
+
+
+def _assemble(workspace: Workspace, context: dict, sections: dict[str, str]) -> str:
+    """Render the configured sections into the report's two-level structure.
+
+    The template declares one flat list of sections; the document has two
+    levels. Everything before the detail section is a sub-part of the executive
+    summary and renders one level down under an inserted grouping heading, so a
+    firm reorders or renames those sub-parts without restating the nesting.
+    """
+    template = templates_store.get_template(workspace, "report")["markdown"]
+    headings = templates_store.sections(template) or list(_DEFAULT_HEADINGS)
+    detail_index = next(
+        (
+            index
+            for index, heading in enumerate(headings)
+            if templates_store.section_key(heading) == _DETAIL_SECTION_KEY
+        ),
+        len(headings),
+    )
+    lines = [_report_title(workspace, context, template), ""]
+    for index, heading in enumerate(headings):
+        if index == 0 and detail_index:
+            lines.extend([f"## {EXECUTIVE_SUMMARY_HEADING}", ""])
+        body = str(sections.get(templates_store.section_key(heading)) or "").strip()
+        lines.extend(
+            [
+                f"{'###' if index < detail_index else '##'} {heading}",
+                "",
+                body or _UNWRITTEN_SECTION,
+                "",
+            ]
+        )
     return "\n".join(lines).strip() + "\n"
+
+
+def _table_cell(value: object) -> str:
+    """One table cell: single-line, with the column separator neutralized."""
+    return " ".join(str(value or "").split()).replace("|", "\\|") or "Not stated"
+
+
+def _first_sentence(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    match = re.match(r"(.+?[.!?])(?:\s|$)", text)
+    return (match.group(1) if match else text).strip()
+
+
+def _limitation_texts(context: dict) -> list[str]:
+    """Every recorded limitation once, in a stable order."""
+    texts = list(
+        dict.fromkeys(
+            str(item.get("text") or "").strip()
+            for item in context.get("scope_limitations") or []
+            if str(item.get("text") or "").strip()
+        )
+    )
+    if context.get("preliminary"):
+        texts.extend(_coverage_warnings(context.get("incomplete_coverage") or {}))
+    return texts
+
+
+def _finding_processes(context: dict, item: dict) -> str:
+    """The RCM process name(s) one finding sits under."""
+    refs = {str(value) for value in item.get("rcm_refs") or []}
+    names = {
+        str(row.get("process") or "").strip()
+        for row in context.get("rcm") or []
+        if str(row.get("id")) in refs
+    }
+    return "; ".join(sorted(value for value in names if value))
+
+
+def _key_findings(context: dict) -> list[dict]:
+    """The findings the executive table carries, most severe first."""
+    return [
+        item
+        for item in _ordered_findings(context.get("findings") or [])
+        if str(item.get("severity") or "").casefold() in KEY_FINDING_SEVERITIES
+    ]
+
+
+def _key_findings_table(context: dict, drafted: list[dict] | None = None) -> str:
+    """The executive table: drafted prose fills two cells, records fill the rest.
+
+    Process and risk level are already recorded facts, so they are never taken
+    from a response — only the two cells that genuinely require compression are.
+    """
+    items = _key_findings(context)
+    if not items:
+        return "No high-risk findings were identified."
+    cells = {
+        str(row.get("finding_id")): row
+        for row in drafted or []
+        if isinstance(row, dict)
+    }
+    lines = [
+        "| Process | Key Finding | Risk Level | Recommendation |",
+        "| --- | --- | --- | --- |",
+    ]
+    for item in items:
+        row = cells.get(str(item.get("id"))) or {}
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    _table_cell(_finding_processes(context, item)),
+                    _table_cell(
+                        row.get("key_finding")
+                        or _first_sentence(_narrative_section(item, "condition"))
+                        or item.get("title")
+                    ),
+                    _table_cell(str(item.get("severity") or "").title()),
+                    _table_cell(
+                        row.get("recommendation")
+                        or _first_sentence(
+                            _narrative_section(item, "recommendation", "remedy")
+                        )
+                    ),
+                )
+            )
+            + " |"
+        )
+    return "\n".join(lines)
+
+
+def _detailed_findings(context: dict) -> str:
+    """Every confirmed finding in full, most severe first.
+
+    Assembled, never drafted: the narrative is auditor-approved report prose and
+    the management response belongs with the finding it answers, not in a
+    separate list a reader has to cross-reference.
+    """
+    items = _ordered_findings(context.get("findings") or [])
+    if not items:
+        return "No auditor-confirmed, evidence-supported findings have been recorded."
+    response_label = "**Management response:** "
+    return "\n\n".join(
+        "\n\n".join(
+            (
+                f"### {item.get('title') or item['id']}",
+                f"**Severity:** {str(item.get('severity') or 'medium').title()} · "
+                f"**Reference:** {_finding_link(item)}",
+                _finding_narrative(item),
+                response_label
+                + (
+                    str(item.get("management_response") or "").strip()
+                    or "No management response has been recorded."
+                ),
+            )
+        )
+        for item in items
+    )
+
+
+def _introduction_body(workspace: Workspace, context: dict) -> str:
+    planning = context["planning"]
+    opening = (
+        f"This report presents the results of the internal audit of "
+        f"{workspace.name} at {planning.get('entity') or 'the entity'} for "
+        f"{planning.get('period') or 'the period under review'}."
+    )
+    # The planning memorandum's citation markers are workbench navigation, not
+    # report prose; the report's traceability travels on its evidence anchors.
+    background = re.sub(
+        r"\s*\[document:[^\]]*\]", "", _apm_section(workspace, "introduction", "background")
+    )
+    return "\n\n".join(part for part in (opening, background.strip()) if part)
+
+
+def _scope_body(context: dict) -> str:
+    planning = context["planning"]
+    lines = [
+        f"**Objective:** {planning.get('objective') or 'Not stated'}",
+        "",
+        f"**Scope:** {planning.get('scope') or 'Not stated'}",
+    ]
+    if str(planning.get("materiality") or "").strip():
+        lines.extend(["", f"**Materiality:** {planning['materiality']}"])
+    lines.extend(["", "**Scope limitations**", ""])
+    texts = _limitation_texts(context)
+    lines.extend(
+        [f"- {text}" for text in texts] or ["No scope limitations were recorded."]
+    )
+    return "\n".join(lines)
+
+
+def _conclusion_body(context: dict, band: dict) -> str:
+    stats = context["statistics"]
+    recorded = (
+        f"Fieldwork recorded {stats['findings']} confirmed finding(s) across "
+        f"{stats['tests']} test(s) over {stats['rcm_rows']} control(s)."
+    )
+    if not band["assignable"]:
+        return (
+            "No overall rating is assigned because "
+            + "; ".join(band["reasons"])
+            + f". {recorded}"
+        )
+    lines = [
+        f"**Rating: {str(band['ceiling']).title()}**",
+        "",
+        "This is the most favourable rating the recorded evidence permits and "
+        f"requires auditor judgment to confirm or lower. {recorded}",
+    ]
+    if band["reasons"]:
+        lines.extend(["", "It is bounded by: " + "; ".join(band["reasons"]) + "."])
+    return "\n".join(lines)
+
+
+def _deterministic_sections(
+    workspace: Workspace, context: dict, band: dict
+) -> dict[str, str]:
+    """A body for every section, written from records alone."""
+    return {
+        _INTRODUCTION_SECTION_KEY: _introduction_body(workspace, context),
+        _SCOPE_SECTION_KEY: _scope_body(context),
+        _CONCLUSION_SECTION_KEY: _conclusion_body(context, band),
+        _KEY_FINDINGS_SECTION_KEY: _key_findings_table(context),
+        _DETAIL_SECTION_KEY: _detailed_findings(context),
+    }
 
 
 def deterministic_markdown(workspace: Workspace, context: dict | None = None) -> str:
     context = context or build_context(workspace)
-    planning = context["planning"]
-    stats = context["statistics"]
-    findings = context.get("findings") or []
-    lines = [
-        "# Preliminary Internal Audit Working Draft" if context.get("preliminary") else "# Internal Audit Report",
-        "",
-    ]
-    if context.get("preliminary"):
-        lines.extend([
-            "> **Preliminary working draft:** fieldwork, evidence, review, or auditor judgment remains open. This document is not a final audit opinion.",
-            "",
-        ])
-    lines.extend([
-        "## Executive summary", "",
-        f"This draft reports the results of the {workspace.name} engagement. "
-        f"Fieldwork recorded {stats['findings']} supported finding(s) across "
-        f"{stats['tests']} RCM test(s).",
-        "", "## Background, objective, and scope", "",
-        f"**Entity:** {planning.get('entity') or 'Not stated'}", "",
-        f"**Period:** {planning.get('period') or 'Not stated'}", "",
-        f"**Objective:** {planning.get('objective') or 'Not stated'}", "",
-        f"**Scope:** {planning.get('scope') or 'Not stated'}", "",
-        "## Findings and recommendations", "",
-    ])
-    if not findings:
-        lines.append("No auditor-confirmed, evidence-supported findings have been recorded.")
-    for item in findings:
-        lines.extend(
-            [
-                f"### {item.get('title') or item['id']}", "",
-                f"**Severity:** {item.get('severity', 'medium').title()}", "",
-                f"**Reference:** {_finding_link(item)}", "",
-                _finding_narrative(item), "",
-            ]
-        )
-    lines.extend(["## Management responses", ""])
-    responses = [item for item in findings if str(item.get("management_response") or "").strip()]
-    lines.extend(
-        [f"- {_finding_link(item)}: {item['management_response']}" for item in responses]
-        or ["No management responses have been recorded."]
+    band = rating_band(context)
+    rendered = _assemble(
+        workspace, context, _deterministic_sections(workspace, context, band)
     )
-    lines.extend(["", "## Conclusion", ""])
-    if findings:
-        lines.append(
-            "The findings above require management consideration and auditor evaluation. "
-            "This draft does not constitute an audit opinion."
-        )
-    else:
-        lines.append("No conclusion is drawn because no findings have been recorded.")
-    lines.extend(["", "## Scope limitations", ""])
-    limitations = context.get("scope_limitations") or []
-    limitation_lines = [
-        f"- RCM {item['rcm_id']} / test {item['test_id']}: {item['text']}"
-        for item in limitations
-    ]
-    if context.get("preliminary"):
-        limitation_lines.extend(
-            f"- {warning}" for warning in _coverage_warnings(
-                context.get("incomplete_coverage") or {}
-            )
-        )
-    lines.extend(limitation_lines or ["No scope limitations were recorded."])
-    rendered = _template_order(workspace, "\n".join(lines).strip() + "\n", context)
     return _ensure_preliminary_label(rendered, bool(context.get("preliminary")))
-
-
-def _template_sections(markdown: str) -> list[str]:
-    headings = [match.group(1).strip() for match in re.finditer(r"^##\s+(.+)$", markdown, re.MULTILINE)]
-    return headings or ["Complete report"]
 
 
 def _model_turn(workspace: Workspace, system: str, user: str, *, run_id: str | None = None) -> str:
@@ -545,48 +806,233 @@ def _model_turn(workspace: Workspace, system: str, user: str, *, run_id: str | N
     if not content:
         raise llm.LLMError("The report model returned an empty response.")
     if content.startswith("```"):
-        content = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"^```(?:json|markdown)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
     return content.strip()
 
 
-def _generate_with_model(workspace: Workspace, template: str, context: dict, *, run_id: str | None = None) -> tuple[str, bool]:
-    serialized = json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
-    base = (
-        "[agent:report]\nYou draft an internal-audit report for auditor review. "
-        "Use only the supplied structured context, retain clickable finding references, "
-        "state limitations, do not invent evidence or issue an audit opinion, and return Markdown only. "
-        "Every numeric statement must copy the supplied statistics exactly; statistics.risk_distribution "
-        "is the authoritative RCM rating count. Each finding's `narrative` is auditor-approved report "
-        "text: reproduce it verbatim under that finding's title, demoting its `##` headings to `####`, "
-        "and never paraphrase, summarize, reorder, or drop one of its sections."
-    )
-    if len(serialized) <= MODEL_CONTEXT_LIMIT:
-        return _model_turn(workspace, base, f"Template:\n{template}\n\nReport context:\n{serialized}", run_id=run_id), False
-    sections = []
-    for heading in _template_sections(template):
-        system = base.replace("[agent:report]", "[agent:report_section]")
-        body = _model_turn(
+OVERVIEW_SYSTEM = (
+    "[agent:report_overview]\n"
+    "You draft the opening of an internal-audit report for auditor review. "
+    "Return one JSON object only, with string keys `introduction` and "
+    "`objective_and_scope`, each holding Markdown body text with no heading of "
+    "its own. Use only the supplied context. State every recorded scope "
+    "limitation in `objective_and_scope`. Do not preview the conclusion, do not "
+    "assign a rating, do not name tests or other workbench identifiers, and do "
+    "not invent an authority, a period, or a criterion the context lacks."
+)
+
+CONCLUSION_SYSTEM = (
+    "[agent:report_conclusion]\n"
+    "You draft the audit conclusion of an internal-audit report, written for "
+    "senior management. Return one JSON object only, with a string `rating` and "
+    "a string `conclusion` holding Markdown body text with no heading of its "
+    "own. `rating` must be one of `rating_band.allowed` — the set the recorded "
+    "evidence permits — and a more favourable rating will be rejected; where "
+    "`rating_band.assignable` is false, return an empty `rating` and assign "
+    "none. Open the conclusion with the rating in bold. Evaluate the overall "
+    "control environment: what the pattern across control conclusions and "
+    "findings shows about how well the process is controlled, and where the "
+    "weight of the risk sits. Do not recount the findings one by one. Disclose "
+    "incomplete coverage. Copy every number from `statistics` exactly. Three to "
+    "five sentences, no test identifiers, no hedging."
+)
+
+KEY_FINDINGS_SYSTEM = (
+    "[agent:report_key_findings]\n"
+    "You compress audit findings into an executive table. Return one JSON "
+    "object only, with a `rows` array holding one object per supplied finding: "
+    "string `finding_id`, string `key_finding`, and string `recommendation`. "
+    "Each is one short sentence written for a senior reader who will not read "
+    "the detailed finding, quantified wherever the narrative is quantified. "
+    "State the crux, not a summary of the narrative. Never introduce a fact the "
+    "narrative does not carry, never omit a supplied finding, and keep each "
+    "cell on one line."
+)
+
+
+def _model_json(
+    workspace: Workspace, system: str, payload: dict, *, run_id: str | None = None
+) -> dict:
+    """One contracted model turn whose response must be a JSON object."""
+    parsed = json.loads(
+        _model_turn(
             workspace,
             system,
-            f"Draft only the section headed '## {heading}'.\nReport context:\n{serialized}",
+            json.dumps(payload, ensure_ascii=False, default=str),
             run_id=run_id,
         )
-        sections.append(body if body.startswith("## ") else f"## {heading}\n\n{body}")
-    return "# Internal Audit Report\n\n" + "\n\n".join(sections).strip() + "\n", True
+    )
+    if not isinstance(parsed, dict):
+        raise TypeError("the report model returned a non-object response")
+    return parsed
 
 
-def _record_activity(workspace: Workspace, markdown: str, *, run_id: str | None, chunked: bool) -> None:
+def _overview_call_context(workspace: Workspace, context: dict) -> dict:
+    """What the introduction and scope call may use.
+
+    The objective and scope are the auditor's own, taken from the planning
+    basis; the control matrix is not offered, because the reader needs the
+    boundary of the work rather than its inventory.
+    """
+    return {
+        "engagement": workspace.name,
+        "planning": context["planning"],
+        "background_from_planning_memorandum": _apm_section(
+            workspace, "introduction", "background"
+        ),
+        "coverage": {
+            "controls": context["statistics"]["rcm_rows"],
+            "tests": context["statistics"]["tests"],
+            "processes": sorted(
+                {
+                    str(row.get("process") or "").strip()
+                    for row in context["rcm"]
+                    if str(row.get("process") or "").strip()
+                }
+            ),
+        },
+        "scope_limitations": _limitation_texts(context),
+        "preliminary": context["preliminary"],
+    }
+
+
+def _conclusion_call_context(context: dict, band: dict) -> dict:
+    """What the audit-conclusion call may use.
+
+    A conclusion about the control environment is drawn from what the controls
+    concluded and what the findings expose, so each finding contributes its risk
+    section rather than its whole narrative.
+    """
+    return {
+        "planning": context["planning"],
+        "statistics": context["statistics"],
+        "completion_status": (context.get("completion") or {}).get("status"),
+        "preliminary": context["preliminary"],
+        "rating_band": band,
+        "controls": [
+            {
+                key: row.get(key)
+                for key in ("process", "risk", "risk_rating", "control_conclusion")
+            }
+            for row in context["rcm"]
+        ],
+        "findings": [
+            {
+                "id": item.get("id"),
+                "title": item.get("title"),
+                "severity": item.get("severity"),
+                "risk": _narrative_section(item, "risk", "effect", "impact"),
+            }
+            for item in _ordered_findings(context.get("findings") or [])
+        ],
+        "scope_limitations": _limitation_texts(context),
+    }
+
+
+def _key_findings_call_context(context: dict) -> dict:
+    """What the executive-table call may use: only the findings it compresses."""
+    return {
+        "findings": [
+            {
+                "finding_id": item.get("id"),
+                "title": item.get("title"),
+                "severity": item.get("severity"),
+                "process": _finding_processes(context, item),
+                "narrative": templates_store.strip_guidance(
+                    str(item.get("narrative") or "")
+                ).strip(),
+            }
+            for item in _key_findings(context)
+        ]
+    }
+
+
+def _drafted_sections(
+    workspace: Workspace, context: dict, band: dict, *, run_id: str | None = None
+) -> tuple[dict[str, str], list[str]]:
+    """Draft the model-written sections, one bounded call each.
+
+    The calls are independent, so a failed or rejected response costs one
+    section its drafted prose and nothing else — the report still assembles from
+    records. The findings themselves are never offered to a model here: they are
+    auditor-approved text and are copied, not rewritten.
+    """
+    drafted: dict[str, str] = {}
+    warnings: list[str] = []
+
+    def overview() -> None:
+        parsed = _model_json(
+            workspace, OVERVIEW_SYSTEM,
+            _overview_call_context(workspace, context), run_id=run_id,
+        )
+        for key, section in (
+            ("introduction", _INTRODUCTION_SECTION_KEY),
+            ("objective_and_scope", _SCOPE_SECTION_KEY),
+        ):
+            if body := str(parsed.get(key) or "").strip():
+                drafted[section] = body
+
+    def conclusion() -> None:
+        parsed = _model_json(
+            workspace, CONCLUSION_SYSTEM,
+            _conclusion_call_context(context, band), run_id=run_id,
+        )
+        rating = str(parsed.get("rating") or "").strip().casefold()
+        if band["assignable"] and rating not in band["allowed"]:
+            raise ValueError(
+                f"the proposed rating '{rating or 'none'}' is not one the recorded "
+                f"evidence permits ({', '.join(band['allowed'])})"
+            )
+        if not band["assignable"] and rating:
+            raise ValueError(
+                "no overall rating may be assigned while fieldwork remains open"
+            )
+        if body := str(parsed.get("conclusion") or "").strip():
+            drafted[_CONCLUSION_SECTION_KEY] = body
+
+    def key_findings() -> None:
+        parsed = _model_json(
+            workspace, KEY_FINDINGS_SYSTEM,
+            _key_findings_call_context(context), run_id=run_id,
+        )
+        rows = parsed.get("rows")
+        if not isinstance(rows, list):
+            raise TypeError("the key-findings response carries no `rows` array")
+        drafted[_KEY_FINDINGS_SECTION_KEY] = _key_findings_table(context, rows)
+
+    calls = [
+        ("introduction and scope", overview),
+        ("audit conclusion", conclusion),
+    ]
+    if _key_findings(context):
+        calls.append(("key findings", key_findings))
+    for label, call in calls:
+        try:
+            call()
+        except (
+            llm.LLMError, json.JSONDecodeError, ValueError, TypeError, KeyError
+        ) as error:
+            warnings.append(
+                f"The {label} section kept its deterministic draft: {error}"
+            )
+    return drafted, warnings
+
+
+def _record_activity(
+    workspace: Workspace, markdown: str, *, run_id: str | None, sections: list[str]
+) -> None:
     profile = llm.agent_status()
     template = templates_store.get_template(workspace, "report")
     append_activity(
         workspace, run_id=run_id, stage="agent:report", task=None, purpose="report_generation",
         provider=profile.get("provider"), model=profile.get("model"), vision_used=False,
-        prompt_version="report-v1", template_versions=[{
+        prompt_version="report-v2", template_versions=[{
             "name": "report", "source": template["source"],
             "sha1": hashlib.sha1(template["markdown"].encode("utf-8")).hexdigest(),
         }], knowledge_packs=[], document_ids=[], page_ranges=[], source_hashes=[],
         response_at=_now(), response_hash=hashlib.sha1(markdown.encode("utf-8")).hexdigest(),
-        artifact_ref="report:draft", disposition="generated_chunked" if chunked else "generated",
+        artifact_ref="report:draft",
+        disposition="drafted:" + ",".join(sorted(sections)),
     )
 
 
@@ -595,22 +1041,27 @@ def generate(
     workflow: dict | None = None,
 ) -> dict:
     context = build_context(workspace, workflow=workflow)
-    candidate = deterministic_markdown(workspace, context)
+    band = rating_band(context)
+    sections = _deterministic_sections(workspace, context, band)
     warnings = _coverage_warnings(context["incomplete_coverage"])
-    used_model = False
-    chunked = False
+    drafted_sections: list[str] = []
     if use_model and llm.agent_status().get("configured"):
-        try:
-            template = templates_store.get_template(workspace, "report")["markdown"]
-            candidate, chunked = _generate_with_model(workspace, template, context, run_id=run_id)
-            candidate = _normalize_finding_citations(workspace, candidate)
-            used_model = True
-            _record_activity(workspace, candidate, run_id=run_id, chunked=chunked)
-        except (llm.LLMError, ValueError, TypeError) as error:
-            warnings.append(f"Model drafting was unavailable; deterministic draft used: {error}")
+        drafted, drafting_warnings = _drafted_sections(
+            workspace, context, band, run_id=run_id
+        )
+        sections.update(drafted)
+        warnings.extend(drafting_warnings)
+        drafted_sections = sorted(drafted)
     elif use_model:
         warnings.append("The report model is not configured; deterministic draft used.")
+    candidate = _normalize_finding_citations(
+        workspace, _assemble(workspace, context, sections)
+    )
     candidate = _ensure_preliminary_label(candidate, bool(context.get("preliminary")))
+    if drafted_sections:
+        _record_activity(
+            workspace, candidate, run_id=run_id, sections=drafted_sections
+        )
 
     current = hydrate(workspace)
     had_edits = bool(current["markdown"] and current["edited"])
@@ -635,8 +1086,8 @@ def generate(
         "requires_reconcile": had_edits,
         "current_markdown": current["markdown"] if had_edits else candidate,
         "candidate_markdown": candidate,
-        "used_model": used_model,
-        "chunked": chunked,
+        "used_model": bool(drafted_sections),
+        "drafted_sections": drafted_sections,
     }
 
 
@@ -824,6 +1275,36 @@ def quality_checks(
             "preliminary_label_missing", "error",
             "Open fieldwork remains, so the report must be clearly labelled as a preliminary working draft.",
         ))
+    # The rating is the one claim a reader cannot check against the evidence
+    # themselves, so an assigned rating is held to the band the records permit.
+    # Only optimism is an error: a rating at or below the ceiling is auditor
+    # judgment the evidence does not contradict. The band is computed from the
+    # three inputs it needs rather than from a full report context, because this
+    # runs on every report read and a context build is not free.
+    band = rating_band({
+        "preliminary": completion["status"] != "completed",
+        "findings": supported_findings,
+        "rcm": rcm_execution.rollup(workspace, document_tests=document_tests)["rows"],
+    })
+    claim = _RATING_CLAIM.search(text)
+    claimed = (
+        next(value for value in claim.groups() if value is not None).casefold()
+        if claim
+        else ""
+    )
+    if claimed and not band["assignable"]:
+        issues.append(_issue(
+            "report_rating_unsupported", "error",
+            f"The report assigns a '{claimed.title()}' rating, but no overall rating "
+            f"can be assigned while {'; '.join(band['reasons'])}.",
+        ))
+    elif claimed and claimed not in band["allowed"]:
+        issues.append(_issue(
+            "report_rating_unsupported", "error",
+            f"The report assigns a '{claimed.title()}' rating, but the recorded "
+            f"evidence supports no better than '{str(band['ceiling']).title()}': "
+            f"{'; '.join(band['reasons'])}.",
+        ))
 
     counts = {level: sum(item["severity"] == level for item in issues) for level in ("error", "warning", "info")}
     return {"checked_at": _now(), "issues": issues, "counts": counts, "ok": counts["error"] == 0}
@@ -869,42 +1350,6 @@ def editorial_review(workspace: Workspace) -> dict:
     return result
 
 
-def _inline_html(value: str) -> str:
-    escaped = html.escape(value)
-    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
-    pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-    def link(match: re.Match) -> str:
-        href = html.unescape(match.group(2))
-        if not (href.startswith("?tab=") or href.startswith("/") or href.startswith("https://") or href.startswith("http://")):
-            return match.group(1)
-        return f'<a href="{html.escape(href, quote=True)}">{match.group(1)}</a>'
-    return pattern.sub(link, escaped)
-
-
-def markdown_to_html(markdown: str) -> str:
-    output: list[str] = ['<article class="audit-report">']
-    list_open = False
-    for raw in str(markdown or "").splitlines():
-        line = raw.strip()
-        if line.startswith("- "):
-            if not list_open:
-                output.append("<ul>"); list_open = True
-            output.append(f"<li>{_inline_html(line[2:])}</li>")
-            continue
-        if list_open:
-            output.append("</ul>"); list_open = False
-        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
-        if heading:
-            level = len(heading.group(1))
-            output.append(f"<h{level}>{_inline_html(heading.group(2))}</h{level}>")
-        elif line:
-            output.append(f"<p>{_inline_html(line)}</p>")
-    if list_open:
-        output.append("</ul>")
-    output.append("</article>")
-    return "".join(output)
-
-
 def payload(workspace: Workspace) -> dict:
     current = hydrate(workspace)
-    return {**current, "html": markdown_to_html(current["markdown"]), "quality": quality_checks(workspace)}
+    return {**current, "quality": quality_checks(workspace)}

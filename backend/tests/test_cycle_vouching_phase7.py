@@ -349,8 +349,10 @@ def test_grid_rcm_working_paper_and_report_inputs_share_current_results(
     assert context["statistics"]["assertion_mismatches"] == rollup[
         "assertion_mismatches"
     ]
-    assert context["rcm_rollup"][0]["assurance_scopes"] == [
-        "targeted_evidence_only"
-    ]
+    # The row carries its own assurance scope; the report context holds one view
+    # of each test rather than a row list, a roll-up list, and a doc-test list.
+    assert context["rcm"][0]["assurance_scopes"] == ["targeted_evidence_only"]
+    assert "rcm_rollup" not in context
+    assert "document_tests" not in context
     assert "steps" not in context["rcm"][0]["tests"][0]
-    assert "steps" not in context["document_tests"][0]["rollup"]
+    assert "steps" not in context["rcm"][0]["tests"][0]["rollup"]

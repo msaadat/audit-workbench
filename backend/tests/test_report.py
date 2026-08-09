@@ -261,7 +261,6 @@ def test_the_report_copies_a_finding_narrative_verbatim(workspace_with_data):
     assert "#### Risk\n\nFinancial loss through duplicate payment." in markdown
     assert "**Condition:**" not in markdown
     assert "\n## Condition" not in markdown
-    assert "<h4>Condition</h4>" in report.markdown_to_html(markdown)
 
 
 def test_report_context_excludes_rows_and_document_excerpts(workspace_with_data):
@@ -354,28 +353,160 @@ def test_deterministic_preliminary_report_discloses_incomplete_workflow_coverage
         "unit(s) failed and 1 required execution definition(s) are missing.",
     ]
     assert "# Preliminary Internal Audit Working Draft" in generated["markdown"]
-    assert "## Scope limitations" in generated["markdown"]
+    # Limitations bound the scope, so they are disclosed under it rather than in
+    # a section of their own a reader has to go looking for.
+    assert "### Objective and Scope" in generated["markdown"]
+    assert "**Scope limitations**" in generated["markdown"]
     assert "Incomplete planning coverage: 1 planning workflow unit(s) failed" in generated["markdown"]
     assert "Incomplete execution-definition coverage: 1 execution-definition workflow unit(s) failed" in generated["markdown"]
 
 
-def test_model_report_and_section_chunking_record_generation(monkeypatch, workspace_with_data):
+def test_report_nests_the_executive_summary_under_one_heading(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
+
+    markdown = report.deterministic_markdown(ws)
+
+    # The template declares one flat list of sections; the detail section is the
+    # boundary, and everything before it renders one level down under an
+    # inserted grouping heading.
+    assert "## Executive Summary" in markdown
+    for heading in ("Introduction", "Objective and Scope", "Audit Conclusion", "Key Findings"):
+        assert f"### {heading}" in markdown
+    assert "## Detailed Findings" in markdown
+    assert markdown.index("## Executive Summary") < markdown.index("## Detailed Findings")
+    # The management response sits with the finding it answers.
+    assert "**Management response:** Management will update the control." in markdown
+    assert "## Management responses" not in markdown
+
+
+def test_key_findings_table_carries_high_risk_findings_only(workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    high = findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
+    low = findings.add(
+        ws,
+        {
+            **complete_finding_payload(rcm, procedure, execution, anchor),
+            "title": "A minor gap",
+            "severity": "low",
+        },
+    )
+
+    markdown = report.deterministic_markdown(ws)
+    table = markdown.split("### Key Findings", 1)[1].split("##", 1)[0]
+
+    assert "| Process | Key Finding | Risk Level | Recommendation |" in table
+    assert "Payables" in table and "High" in table
+    # Senior management is deciding where to look, so the table carries the
+    # high-risk findings only; every finding still appears in full below.
+    assert low["title"] not in table
+    assert low["title"] in markdown
+    assert high["title"] in markdown
+
+
+def test_the_model_drafts_three_sections_and_never_the_findings(monkeypatch, workspace_with_data):
     ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
     findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
     calls = []
 
     def fake_chat(messages, tools=None, temperature=0.0, profile="assistant"):
-        calls.append(messages[0]["content"].splitlines()[0])
-        return {"content": "## Generated section\n\nEvidence-linked model draft."}
+        stage = messages[0]["content"].splitlines()[0]
+        calls.append((stage, messages[1]["content"]))
+        if "key_findings" in stage:
+            return {"content": json.dumps({"rows": [
+                {"finding_id": ws.findings[0]["id"], "key_finding": "Two payments duplicated.",
+                 "recommendation": "Block duplicate invoice numbers."}
+            ]})}
+        if "conclusion" in stage:
+            return {"content": json.dumps({
+                "rating": "marginal", "conclusion": "**Marginal.** Controls need work."
+            })}
+        return {"content": json.dumps({
+            "introduction": "Drafted introduction.", "objective_and_scope": "Drafted scope.",
+        })}
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "fake", "model": "fake"})
-    monkeypatch.setattr(report, "MODEL_CONTEXT_LIMIT", 1)
+
     result = report.generate(ws)
+
     assert result["used_model"] is True
-    assert result["chunked"] is True
-    assert len(calls) >= 5
-    assert "Evidence-linked model draft" in result["markdown"]
+    # One bounded call per drafted section, and no call carries the whole context.
+    assert [stage for stage, _user in calls] == [
+        "[agent:report_overview]", "[agent:report_conclusion]", "[agent:report_key_findings]",
+    ]
+    # The old whole-context prompt overflowed a 30,000-character budget and fell
+    # back to re-sending everything once per section; each call now fits easily.
+    assert all(len(user) < 30_000 for _stage, user in calls)
+    # Fieldwork is still open here, so the proposed rating is refused and the
+    # conclusion keeps the deterministic body that assigns none.
+    assert result["drafted_sections"] == [
+        "introduction", "key findings", "objective and scope",
+    ]
+    assert "Controls need work" not in result["markdown"]
+    assert "No overall rating is assigned" in result["markdown"]
+    assert "Drafted introduction." in result["markdown"]
+    assert "Two payments duplicated." in result["markdown"]
+    # The narrative is auditor-approved text: it is assembled, never redrafted,
+    # so no call is ever given the chance to rewrite it.
+    assert "#### Condition\n\nInvoice 1006 appears twice." in result["markdown"]
+    assert not any("Invoice 1006 appears twice" in user for _stage, user in calls[:2])
+
+
+def test_the_rating_band_is_bounded_by_the_recorded_evidence():
+    closed = {"preliminary": False, "rcm": [], "findings": []}
+
+    assert report.rating_band(closed)["ceiling"] == "satisfactory"
+
+    # A confirmed finding caps the rating however the conclusion is worded.
+    high = report.rating_band({**closed, "findings": [{"severity": "high"}]})
+    assert high["ceiling"] == "fair"
+    assert "satisfactory" not in high["allowed"]
+    assert report.rating_band(
+        {**closed, "findings": [{"severity": "critical"}]}
+    )["ceiling"] == "marginal"
+
+    # Controls the fieldwork could not conclude on are a coverage failure, and
+    # they bound the rating as surely as an adverse result does.
+    unconcluded = report.rating_band({**closed, "rcm": [
+        {"control_conclusion": "no_conclusion"}, {"control_conclusion": "no_conclusion"},
+        {"control_conclusion": "effective"}, {"control_conclusion": "effective"},
+    ]})
+    assert unconcluded["ceiling"] == "marginal"
+    assert unconcluded["allowed"] == ["marginal", "unsatisfactory"]
+
+    # Open fieldwork withholds a rating rather than assigning a cautious one.
+    open_fieldwork = report.rating_band({**closed, "preliminary": True})
+    assert open_fieldwork["assignable"] is False
+    assert open_fieldwork["allowed"] == []
+
+
+def test_an_overstated_rating_is_rejected_and_flagged(monkeypatch, workspace_with_data):
+    ws, rcm, procedure, execution, _analysis, anchor = linked_workspace(workspace_with_data)
+    findings.add(ws, complete_finding_payload(rcm, procedure, execution, anchor))
+
+    def fake_chat(messages, tools=None, temperature=0.0, profile="assistant"):
+        if "conclusion" in messages[0]["content"].splitlines()[0]:
+            return {"content": json.dumps({
+                "rating": "satisfactory", "conclusion": "**Satisfactory.** All is well.",
+            })}
+        return {"content": json.dumps({"rows": [], "introduction": "", "objective_and_scope": ""})}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    monkeypatch.setattr(llm, "agent_status", lambda: {"configured": True, "provider": "fake", "model": "fake"})
+
+    result = report.generate(ws)
+
+    assert "audit conclusion" not in result["drafted_sections"]
+    assert "All is well" not in result["markdown"]
+    assert any("no overall rating may be assigned" in warning
+               for warning in result["generation_warnings"])
+    # An auditor who types the overstated rating back in is told the same thing.
+    codes = {
+        issue["code"]
+        for issue in report.quality_checks(ws, "# Report\n\n**Rating: Satisfactory**")["issues"]
+    }
+    assert "report_rating_unsupported" in codes
 
 
 def test_quality_checks_are_advisory_and_detect_traceability_arithmetic_and_exceptions(workspace_with_data):
@@ -455,16 +586,6 @@ def test_linked_markdown_finding_references_satisfy_report_quality(
     checked = report.quality_checks(ws, f"# Report\n\n{markdown}")
 
     assert "finding_missing_from_report" not in {issue["code"] for issue in checked["issues"]}
-
-
-def test_report_html_escapes_content_and_only_allows_safe_links():
-    value = report.markdown_to_html(
-        "# <script>alert(1)</script>\n\n[Bad](javascript:alert(1)) [Finding](?tab=findings&finding=F-1)"
-    )
-    assert "<script>" not in value
-    assert "&lt;script&gt;" in value
-    assert "javascript:" not in value
-    assert 'href="?tab=findings&amp;finding=F-1"' in value
 
 
 def test_editorial_review_degrades_safely_on_wrong_issue_shape(

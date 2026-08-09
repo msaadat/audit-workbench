@@ -13,6 +13,7 @@ import Textarea from 'primevue/textarea'
 
 import { api, ApiError } from '../api'
 import { useAgentRun } from '../composables/useAgentRun'
+import { useAssistantChat } from '../composables/useAssistantChat'
 import { useWorkspaceNav } from '../composables/useWorkspaceNavigation'
 import type { AuditFinding, EvidenceRef, FindingsPayload, FindingSeverity, WorkspaceSummary } from '../types'
 import EvidenceAnchorDialog from './EvidenceAnchorDialog.vue'
@@ -28,10 +29,14 @@ const nav = useWorkspaceNav()
 const toast = useToast()
 const confirm = useConfirm()
 const agent = useAgentRun(props.workspace.id)
+const { isActive, launchMode } = agent
+const assistantChat = useAssistantChat(props.workspace.id)
 
 const data = ref<FindingsPayload | null>(null)
 const selectedId = ref<string | null>(String(route.query.finding || '') || null)
 const saving = ref(false)
+const confirmingAll = ref(false)
+const generatingFindings = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
 const anchorOpen = ref(false)
 const search = ref('')
@@ -59,6 +64,8 @@ const executionOptions = computed(() => [
 const availableEvidence = computed(() => (data.value?.evidence_options ?? []).filter(
   option => !selected.value?.evidence_refs.some(item => item.id === option.anchor.id),
 ))
+const unconfirmed = computed(() => (data.value?.items ?? []).filter(item => !item.auditor_confirmed))
+const agentBusy = computed(() => isActive.value || !agent.state.status?.configured)
 
 const severityTone: Record<string, string> = { critical: 'danger', high: 'danger', medium: 'warn', low: 'info', info: 'secondary' }
 
@@ -141,6 +148,59 @@ function remove() {
   })
 }
 
+function confirmAll() {
+  const targets = unconfirmed.value
+  if (!targets.length) return
+  confirm.require({
+    header: 'Confirm all findings',
+    message: `Mark ${targets.length} finding(s) as auditor confirmed for formal reporting? Findings missing a complete narrative, required links, or evidence will be skipped.`,
+    icon: 'pi pi-check-square',
+    acceptProps: { label: `Confirm ${targets.length}` },
+    rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
+    accept: async () => {
+      confirmingAll.value = true
+      let confirmed = 0
+      const skipped: string[] = []
+      try {
+        for (const item of targets) {
+          try {
+            await api.patch<AuditFinding>(`/api/workspaces/${props.workspace.id}/findings/${item.id}`, { auditor_confirmed: true })
+            confirmed += 1
+          } catch (error) {
+            skipped.push(`${item.id}: ${error instanceof ApiError ? error.message : String(error)}`)
+          }
+        }
+        await reload(selectedId.value ?? undefined)
+        emit('changed')
+        if (confirmed) toast.add({ severity: 'success', summary: `${confirmed} finding(s) confirmed`, life: 2500 })
+        if (skipped.length) {
+          toast.add({ severity: 'warn', summary: `${skipped.length} finding(s) could not be confirmed`, detail: skipped.join(' · '), life: 9000 })
+        }
+      } finally { confirmingAll.value = false }
+    },
+  })
+}
+
+async function generateAllFindings() {
+  generatingFindings.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      'Draft all eligible findings from the RCM observations.',
+      'act', launchMode.value,
+      { command: 'draft_findings', source: 'tab_button' },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({
+      severity: 'success',
+      summary: 'Generating all eligible findings',
+      detail: 'Exception observations are used directly for finding drafts.',
+      life: 4000,
+    })
+  } catch (error) { fail('Could not start finding generation', error) }
+  finally { generatingFindings.value = false }
+}
+
 async function openTemplate() {
   try { template.value = await api.get(`/api/workspaces/${props.workspace.id}/templates/finding`); templateOpen.value = true }
   catch (error) { fail('Could not load the finding template', error) }
@@ -178,6 +238,26 @@ function openEvidence(value: EvidenceRef) {
 <template>
   <div class="findings-tab">
     <UiPageHeader title="Findings">
+      <Button
+        label="Generate all findings"
+        icon="pi pi-sparkles"
+        severity="secondary"
+        outlined
+        size="small"
+        :disabled="agentBusy"
+        :loading="generatingFindings"
+        @click="generateAllFindings"
+      />
+      <Button
+        v-if="unconfirmed.length"
+        label="Confirm all findings"
+        icon="pi pi-check-square"
+        severity="secondary"
+        outlined
+        size="small"
+        :loading="confirmingAll"
+        @click="confirmAll"
+      />
       <Button label="Finding template" icon="pi pi-file-edit" severity="secondary" outlined size="small" @click="openTemplate" />
       <Button label="Add manual finding" icon="pi pi-plus" size="small" @click="addManual" />
     </UiPageHeader>

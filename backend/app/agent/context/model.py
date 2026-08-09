@@ -284,6 +284,16 @@ class ContextPrivacy(_JSONModel):
     # them. A summary that can say "1 invoice was backdated" but not which one
     # is not a summary an auditor can use.
     allow_analysis_exception_rows: bool = False
+    # The rows a *Data Test* flagged, for the one capability that must describe
+    # them: drafting a finding. Deliberately separate from
+    # ``allow_analysis_exception_rows`` — that admits the rows a saved
+    # exploratory procedure flagged to the EDA memo, this admits the rows a
+    # durable, RCM-linked test flagged to the finding narrative — so revoking
+    # one never silently revokes the other. Capped by row count and characters
+    # in the adapter before the resolver's budget is even applied. A finding
+    # that can say "1 invoice was paid before it was verified" but not which
+    # invoice is a finding management cannot act on.
+    allow_datatest_exception_rows: bool = False
     # The written EDA memo. Its own permission rather than a reuse of
     # ``allow_analysis_results``: the memo is prose that may quote the
     # identifiers of flagged rows, so it is a wider content class than the
@@ -305,6 +315,7 @@ class ContextPrivacy(_JSONModel):
         "allow_small_table_rows",
         "allow_analysis_results",
         "allow_analysis_exception_rows",
+        "allow_datatest_exception_rows",
         "allow_analysis_summary",
     )
 

@@ -4,7 +4,17 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-from app import dashboard, data_tests, findings, rcm_execution, report, workspaces
+from app import (
+    dashboard,
+    data_tests,
+    doc_tests,
+    documents,
+    findings,
+    rcm_execution,
+    report,
+    workspaces,
+)
+from app.agent.context import adapters
 from app.main import create_app
 
 
@@ -338,6 +348,130 @@ def test_null_exception_field_with_populated_identifier_is_valid(workspace_with_
     assert not any("entirely null" in issue for issue in result["semantic_issues"])
 
 
+def test_finding_exception_rows_name_the_records_that_failed(workspace_with_data):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    result = data_tests.run(ws, item["id"])
+
+    rows = adapters.finding_exception_rows(ws, f"datatest:{item['id']}:{result['id']}")
+
+    # The whole point of admitting these rows: a finding can say which invoice
+    # was duplicated rather than only that one was.
+    assert "invoice_no" in rows["columns"]
+    assert rows["rows_supplied"] == result["exception_count"] == len(rows["rows"])
+    assert rows["rows_withheld"] == 0
+    assert rows["truncated"] is False
+    assert rows["result_sha1"] == result["result_sha1"]
+    # The identifier itself reaches the draft, which is what lets the narrative
+    # name the record instead of counting it.
+    invoice = rows["columns"].index("invoice_no")
+    assert {str(value[invoice]) for value in rows["rows"]} == {"1006"}
+
+
+def test_exception_rows_carry_what_each_step_was_looking_for(workspace_with_data):
+    ws = workspace_with_data
+    item = data_tests.create(ws, {
+        "title": "Large transactions",
+        "objective": "Identify transactions greater than 500.",
+        "rcm_id": _rcm_row(ws)["id"],
+        "engine": "polars",
+        "spec": _polars_spec(
+            label="Large transactions",
+            instruction="Filter transactions greater than 500.",
+            table_refs=["transactions"],
+            code="result = transactions.filter(pl.col('amount') > 500)",
+        ),
+    })
+    result = data_tests.run(ws, item["id"])
+
+    rows = adapters.finding_exception_rows(ws, f"datatest:{item['id']}:{result['id']}")
+
+    # Rows alone are an undifferentiated table; the step's instruction is what
+    # makes them evidence of a specific failure.
+    step = rows["steps"][0]
+    assert step["label"] == "Large transactions"
+    assert step["instruction"] == "Filter transactions greater than 500."
+    assert step["exception_count"] == result["exception_count"]
+
+
+def test_finding_exception_rows_are_capped_and_disclose_the_withheld_count(
+    workspace_with_data, monkeypatch
+):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    result = data_tests.run(ws, item["id"])
+    assert result["exception_count"] > 1
+    monkeypatch.setattr(adapters, "FINDING_EXCEPTION_ROW_LIMIT", 1)
+
+    rows = adapters.finding_exception_rows(ws, f"datatest:{item['id']}:{result['id']}")
+
+    # A truncated table must never be draftable as a complete population.
+    assert rows["rows_supplied"] == 1
+    assert rows["rows_withheld"] == result["exception_count"] - 1
+    assert rows["truncated"] is True
+    assert rows["exception_count"] == result["exception_count"]
+
+
+def test_a_character_budget_caps_the_exception_table_before_the_row_limit(
+    workspace_with_data, monkeypatch
+):
+    ws = workspace_with_data
+    row = _rcm_row(ws)
+    item = data_tests.create(ws, _analytics_payload(row))
+    result = data_tests.run(ws, item["id"])
+    monkeypatch.setattr(adapters, "FINDING_EXCEPTION_ROW_CHARACTERS", 1)
+
+    rows = adapters.finding_exception_rows(ws, f"datatest:{item['id']}:{result['id']}")
+
+    # One row is always supplied: a table of nothing is not evidence, and the
+    # withheld count is what keeps the narrative honest about the rest.
+    assert rows["rows_supplied"] == 1
+    assert rows["truncated"] is True
+
+
+def test_document_tests_supply_no_exception_table(workspace_with_data):
+    ws = workspace_with_data
+    test = doc_tests.create_test(ws, {
+        "kind": "review", "title": "Procedure review",
+        "objective": "Assess the documented procedure.",
+        "rcm_id": _rcm_row(ws)["id"],
+        "items": [{"label": "Review the SOP", "state": "exception"}],
+    })
+
+    # A Document Test has no tabular exception population; the optional source
+    # resolving to nothing is the normal shape, not a missing projection.
+    assert adapters.finding_exception_rows(ws, f"doctest:{test['id']}") is None
+
+
+def test_document_test_findings_can_name_the_documents_they_rest_on(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    source = documents.add_document(ws, "procurement_sop.txt", b"The procedure text.")
+    test = doc_tests.create_test(ws, {
+        "kind": "review", "title": "Procedure review",
+        "objective": "Assess the documented procedure.",
+        "rcm_id": _rcm_row(ws)["id"],
+        "items": [
+            {
+                "label": "Review the SOP",
+                "state": "exception",
+                "document_ids": [source["id"]],
+            }
+        ],
+    })
+
+    projection = adapters._finding_execution_projection(ws, f"doctest:{test['id']}")
+
+    # "The supplied documentation did not establish X" is not actionable; the
+    # document's name is what makes it so.
+    assert projection["items"][0]["documents"] == [
+        {"id": source["id"], "title": source["title"], "sha1": source["sha1"]}
+    ]
+
+
 def test_result_can_be_used_as_immutable_finding_evidence(workspace_with_data):
     ws = workspace_with_data
     row = _rcm_row(ws)
@@ -398,7 +532,13 @@ def test_exploratory_data_test_runs_without_counting_as_rcm_execution(workspace_
     assert result["exception_count"] == 2
     assert rcm_execution.coverage(ws)["invalid_test_parents"] == []
     assert dashboard.curate_rcm_tiles(ws)["curation"]["created_count"] == 0
-    assert item["id"] not in {test["id"] for test in report.build_context(ws)["data_tests"]}
+    # An exploratory test is not audit coverage, so it reaches no RCM row and
+    # therefore never reaches the report.
+    assert item["id"] not in {
+        test["id"]
+        for row in report.build_context(ws)["rcm"]
+        for test in row["tests"]
+    }
 
 
 def test_data_test_rejects_a_link_to_a_row_that_does_not_exist(workspace_with_data):

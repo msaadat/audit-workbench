@@ -1218,22 +1218,18 @@ export interface AuditReport {
   edited: boolean
   updated: string | null
   generation_warnings: string[]
-  html: string
   quality: ReportQuality
   requires_reconcile?: boolean
   current_markdown?: string
   candidate_markdown?: string
   used_model?: boolean
-  chunked?: boolean
+  drafted_sections?: string[]
 }
 
 export interface ReportContext {
   workspace: { id: string; name: string; description: string }
   planning: Record<string, unknown>
   rcm: Array<Record<string, unknown>>
-  rcm_rollup: Array<Record<string, unknown>>
-  data_tests: Array<Record<string, unknown>>
-  document_tests: Array<Record<string, unknown>>
   findings: Array<Record<string, unknown>>
   draft_findings_excluded: string[]
   scope_limitations: Array<{ rcm_id: string; test_id: string; text: string }>

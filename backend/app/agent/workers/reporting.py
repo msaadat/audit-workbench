@@ -44,9 +44,27 @@ that the root-cause section may be left empty when you set cause_pending true
 because the supplied evidence does not establish why the exception occurred.
 
 The narrative is copied into the audit report unchanged, so write final report
-prose: no first person, no test ids, run ids, table or column names, and no
+prose: no first person, no test ids, run ids, or run mechanics, and no
 commentary about drafting. Any number you state must be a number the supplied
 execution result holds.
+
+Be specific. A finding that counts exceptions without identifying them is not
+actionable:
+
+- When the supplied item names documents, name them in the condition rather
+  than writing "the supplied documentation".
+- When EXCEPTION ROWS is supplied, identify the records that failed. Where the
+  rows are few, set them out as a Markdown table inside the condition section,
+  choosing only the columns that evidence the exception — the identifier and
+  the fields the test compared — and giving each a readable heading rather than
+  the raw column name. Where they are many, describe the pattern and quantify
+  it, and name a small number of examples by identifier.
+- EXCEPTION ROWS states rows_supplied, rows_withheld, and truncated. When rows
+  were withheld, say the table shows the first rows_supplied of
+  exception_count; never present a truncated table as the full population.
+- When semantic_valid is false the rows do not establish the exception. Report
+  what the result does and does not support, and recommend validating and
+  rerunning the check.
 
 Do not create or alter RCM, planned-test, execution, or evidence references. Do
 not claim auditor confirmation. {JSON_RULES}"""
@@ -54,6 +72,7 @@ not claim auditor confirmation. {JSON_RULES}"""
 FINDING_OBSERVATION_SOURCE_ID = "observation"
 FINDING_EXECUTION_SOURCE_ID = "execution_result"
 FINDING_TEMPLATE_SOURCE_ID = "finding_template"
+FINDING_EXCEPTION_ROWS_SOURCE_ID = "exception_rows"
 _FINDING_SEVERITIES = {"critical", "high", "medium", "low", "info"}
 _FINDING_REQUIRED = ("title", "severity", "narrative")
 # The root-cause section is the one a draft may leave open, and only by saying
@@ -82,6 +101,23 @@ def _resolved_item(request: WorkerRequest, source_id: str) -> object:
             f"Context source '{source_id}' must supply exactly one item."
         )
     return matches[0]
+
+
+def _optional_item(request: WorkerRequest, source_id: str) -> object | None:
+    """One item from a declared-but-optional source, or None when it is absent.
+
+    A Document Test has no tabular exception population, so the exception-row
+    source resolves to nothing for those units. That is a normal shape, not a
+    contract violation.
+    """
+    matches = [
+        item.content for item in request.context.items if item.source_id == source_id
+    ]
+    if len(matches) > 1:
+        raise WorkerContractError(
+            f"Context source '{source_id}' must supply at most one item."
+        )
+    return matches[0] if matches else None
 
 
 def _finding_response_schema(response: str) -> Mapping[str, Any]:
@@ -165,6 +201,9 @@ def run_finding_worker(
                 request, FINDING_EXECUTION_SOURCE_ID
             ),
             "FINDING TEMPLATE": _resolved_item(request, FINDING_TEMPLATE_SOURCE_ID),
+            "EXCEPTION ROWS": _optional_item(
+                request, FINDING_EXCEPTION_ROWS_SOURCE_ID
+            ),
             "RESOLVED CONTEXT": request.context.to_dict(),
             "REQUIRED OUTPUT": ["title", "severity", "narrative", "cause_pending"],
             "REQUIRED NARRATIVE SECTIONS": templates_store.sections(
@@ -223,6 +262,7 @@ WORKERS.register(FINDING_WORKER)
 
 
 __all__ = [
+    "FINDING_EXCEPTION_ROWS_SOURCE_ID",
     "FINDING_RESPONSE_SCHEMA",
     "FINDING_SYSTEM",
     "FINDING_TEMPLATE_SOURCE_ID",
