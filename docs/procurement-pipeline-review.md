@@ -15,17 +15,19 @@ The pipeline produces artifacts that *look* like a competent audit and are struc
 the APM reads like a real planning memo, the RCM is coherent, the report is well-formed prose.
 But on the thing that actually matters, **it misses most of what is in the data**.
 
-Of roughly 17 distinct issue classes present in the source material, the pipeline reported
-**2 cleanly, 2 partially, downgraded 1 to "unreliable result", and missed 12 entirely.**
+Working the source material independently produced **33 issues** (Appendix A). Of those the
+pipeline reported **3 intact, 4 partially, downgraded 2 to "unreliable result", left 3 in the
+EDA layer without carrying them forward, and missed 21 entirely.** Recall to the report is 9%.
 
 The single largest item in the population — a PKR 100,000,000 invoice that was **paid with no
 vendor, no PO and no GRN** — appears in no test, no observation, no finding, and no report.
 The string `INV2024144` does not occur anywhere in `Planning/`, `DataTests/`, `DocTests/`,
 `Findings/`, `Observations/` or `Reports/`.
 
-The root cause is not model quality. It is **three structural breaks** described in
-§6, the most serious being that the EDA layer *did* find several of the missed issues and
-nothing carries them forward.
+The root cause is not model quality. It is a small number of **structural breaks** — analysed in
+§6 and with fix plans in §7 — the most consequential being that one field on an RCM row
+(`evidence_kind: inquiry`) makes a data test *unreachable* for the very rows where no control
+exists, and that the EDA layer *did* find several of the misses with nothing to carry them forward.
 
 ---
 
@@ -74,6 +76,28 @@ correctly disciplined about not asserting exceptions from profiling alone, and t
    *after* the APM and were never fed back. The APM also declares the audit period "not available"
    while the profiles it cites make the range plain (2023-01-10 → 2025-07-30).
 
+### Fix plan — planning / APM
+
+**P1. Order the stages, or make the APM re-runnable.** The APM is generated before the EDA and
+never revisited, so the planning basis is permanently poorer than the evidence on hand. Either
+gate APM generation on the analysis workflow having completed, or add an explicit
+`refresh_apm` step after analysis that re-runs the memo with `analysis_memo` flattened into the
+planning context. The adapter already exists (`backend/app/analysis_memo.py`,
+`flatten_embeds()`); it is the sequencing that is missing.
+
+**P2. Derive the audit period from the populations.** When the planning context supplies no
+period, state the observed min/max of the date columns as a *proposed* scope with a clear
+"to be confirmed" qualifier, rather than emitting `_[audit period — not available]_`. The memo
+already cites row counts from the same profiles; it should cite ranges from them too.
+
+**P3. Add a fraud risk section to the APM template.** This is a template change, not a code
+change — `templates_store.py` derives sections from the `##` headings, so adding a
+**Fraud risk and management override** heading to the workspace `apm` template is sufficient
+to make the worker populate it. The absence of this section is the upstream cause of the
+missing splitting, duplicate-payment and conflict-of-interest coverage in the RCM.
+
+**P4. Add a value-for-money / price-reasonableness risk** to the same template, which owns G14.
+
 ## 3. RCM — best artifact in the chain; one structural hole
 
 19 rows with sensible risk statements and honest control descriptions ("No control identified
@@ -98,6 +122,85 @@ document tests and no data test at all:
 on the strength of two tests that check only that Vendor IDs are unique and status values are
 spelled correctly. Duplicate bank accounts and self-approved vendor records sit untested
 underneath an "effective" conclusion. That is the most dangerous single output in the workspace.
+
+### The mechanism behind the unarmed rows
+
+This is not a model judgement call — it is a deterministic consequence of one field.
+
+When the RCM worker finds no asserted control it writes `"No control identified for …"`
+(`backend/app/agent/workers/planning.py:259`) and then sets **`evidence_kind: inquiry`** on
+every attribute of that row. Every one of the four unarmed rows above has *only* `inquiry`
+attributes:
+
+| Row | Attributes | evidence_kind |
+|---|---|---|
+| RCM-459752 Duplicate invoice prevention | 1 | `inquiry` |
+| RCM-6E29FF Vendor & bank-account integrity (critical) | 2 | `inquiry`, `inquiry` |
+| RCM-6F8420 PO completeness & accuracy | 1 | `inquiry` |
+| RCM-99C6E0 Approval aggregation & splitting | 1 | `inquiry` |
+
+`_relevant_table_schemas()` (`backend/app/agent/workers/tests.py:175`) then does this:
+
+```python
+evidence_kinds = {str(item.get("evidence_kind") or "") for item in attributes}
+if attributes and "tabular_population" not in evidence_kinds:
+    return []
+```
+
+With no table schemas in the prompt, `allowed_variants` never gains `"data"`
+(`tests.py:281`), so **a data test cannot be generated for that row at all**. The only
+reachable variant is `document_question`, which asks whether the documentation describes the
+missing control. It does not — so the row yields a "policy not documented" finding and no
+substantive testing ever happens.
+
+The logical error is the equation of *"management asserts no control"* with *"the population
+cannot be tested"*. Absence of a control is precisely when substantive testing matters most.
+This one inference is the direct cause of four missed issue classes — G5, G6/G7, G12 and G13 —
+covering the duplicate payments, the shared vendor bank accounts, the 80M-against-8M invoice,
+and the 35 candidate split pairs.
+
+RCM-4301AC is the same defect one step subtler: its `vendor_master_amendment` attribute — the
+one whose requirement names *"changes to vendor and bank-account information"* — was classified
+`manual_inspection`, so the duplicate-bank-account test was never generated, while its two
+`tabular_population` attributes produced the two weak tests that carried the row to "effective".
+
+### Fix plan — RCM
+
+**R1. Decouple `evidence_kind` from control existence.** (`agent/workers/planning.py`, prompt
+~line 277)
+`evidence_kind` must describe where evidence for *the requirement* lives, not whether a control
+exists. Add to the prompt, adjacent to the existing `evidence_kind` menu:
+
+> A row whose control field says "No control identified" still requires evidence_kind to be
+> chosen from the supplied material. Where the imported tables carry the fields the requirement
+> names, that is `tabular_population` regardless of whether a control is asserted — testing the
+> population is how the absence of the control is evidenced. Use `inquiry` only where no
+> supplied table and no supplied document can answer the requirement.
+
+**R2. Gate it in `validate_rcm_proposal`** (`planning.py:593`). Reject a proposal where a row
+has no `tabular_population` attribute while the supplied table profiles carry columns matching
+the requirement's tokens. Reuse the existing `_schema_relevance_tokens()` scorer so the check is
+the same relevance signal the test worker already applies — if the test worker *would have*
+ranked a table into the prompt, the RCM row may not claim `inquiry`. This is the same class of
+gate as the phrasing/coverage checks in `docs/rcm-generation-quality.md` §7, and belongs beside
+them.
+
+**R3. Add the missing goods-receipt / three-way-match row to the required-coverage set.**
+The APM raises it, the RCM never emits it, and it owns G5, G10 and G11. Coverage assertion:
+for a procure-to-pay engagement the RCM must contain a row whose control concerns receipt of
+goods evidenced before payment. Same enforcement point as R2.
+
+**R4. Block `effective` on thin evidence.** `rcm_execution.py` must refuse a
+`control_conclusion` of `effective` where every contributing test is an inquiry doc test, or
+where the row's own risk text names a concept (`bank account`, `duplicate`, `split`) that no
+executed test predicate references. Downgrade to `partially_effective` with an explicit
+`scope_limitations` string instead. This alone would have stopped the RCM-4301AC false negative
+reaching the report.
+
+**R5. Fraud-lens coverage rows.** Splitting, duplicate payment and vendor-employee conflict
+rows should be seeded from the methodology pack rather than left to the model to invent — the
+model *did* invent the splitting row here and then failed to arm it, which is the worse of the
+two failure modes because the RCM looks complete.
 
 ## 4. Tests
 
@@ -134,6 +237,60 @@ the GRN renders as `A~ K./tVl.lll t`, the voucher as `Signed Signed`. Any doc te
 extracted text is structurally blind to signature evidence. The names are legible in the page
 image (`Ethan Smith (1041)`, `Ahmed Khan`; `Olivia Smith`, `Max Baker`).
 
+**Why no vouching test exists — this is the known Phase 2/3 gap.** All 27 doc tests carry
+`kind: qa`; there are **zero** `cycle` tests. Across all 19 RCM rows, **not one control attribute
+carries `evidence_kind: transaction_cycle`** (the distribution is `tabular_population` 19,
+`manual_inspection` 14, `document_content` 9, `inquiry` 9, `mixed` 1). Since
+`allowed_variants` only gains `"cycle_vouch"` when the manifest yields candidates for such an
+attribute (`tests.py:281`), the entire cycle-vouching subsystem — `cycle_vouching.py`, the
+registry packs, the evaluator, the grid — was **silently bypassed for this engagement**.
+
+That is precisely the failure recorded in the status line of `docs/vouching-grid-plan.md`:
+*"the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary
+Cycle vouch test was absent."* This review is independent confirmation of that gap, on the full
+workspace rather than one row, and it should be treated as evidence for **Checkpoint C repeat**
+rather than as a new workstream.
+
+### Fix plan — tests
+
+**T1. Fail loudly when a cycle-capable engagement generates zero cycle tests.**
+The bypass is silent today: nothing in the run reports that a five-document voucher package was
+analysed, matched to a registered `procure_to_pay` pack, and then never vouched. Add a
+post-generation assertion in `agent/capabilities/tests.py` — where a transaction-evidence
+manifest yields candidates for a pack, an engagement with zero `kind: cycle` tests raises a
+`review_required` stage warning naming the pack and the unvouched record kinds. Silent
+degradation to `qa` doc tests is the specific behaviour to eliminate.
+
+**T2. Carry `transaction_cycle` classification through — tracked in the vouching-grid plan.**
+The RCM-side cause (nothing classified as `transaction_cycle`) is Phase 2/3 robustness
+remediation already specified in `docs/vouching-grid-plan.md` §3.1/§4.2, including typed
+registry-backed `required_comparisons` and exact generated-assertion coverage. No new design is
+needed here. What this review adds is that the failure is **total, not partial** — 0 of 52
+attributes — so Checkpoint C repeat should assert a non-zero `transaction_cycle` count as an
+acceptance criterion, not just inspect the tests that happen to be produced.
+
+**T3. Anchor tests on the population being asserted about.** Both lifecycle tests
+(`DAT-85368A37FA`, `DAT-BBEE43384F`) start from `requisitions`, so an invoice with no
+requisition cannot appear in any result — the mechanism by which INV2024144 (100M, paid) is
+invisible. Add a step-contract rule to the test-generation prompt
+(`agent/workers/tests.py`): where a requirement concerns invoices or payments, the step's base
+frame must be the invoice population, with joins outward; a step asserting about population A
+may not be anchored on population B. This is the same concern as *"separate population from
+exceptions in the step contract"* — `docs/test-generation-quality.md` §1 open recommendation —
+and should be folded into it.
+
+**T4. Make `review_required` non-terminal.** Two tests ended there holding 24 real exceptions
+and nothing escalated. `rcm_execution.py:525` sets the status; nothing drives it forward. A
+test in `review_required` carrying a non-zero exception count must either raise an auditor
+action item or roll up as an unresolved exception — it must not let the owning row settle at
+`no_conclusion` while genuine exceptions sit inside it.
+
+**T5. OCR the signature blocks, or route signature attributes to image review.** An
+`Authorization` attribute whose evidence is a handwritten signature cannot be tested from
+extracted text. Either extend extraction to OCR signature regions, or have the validator refuse
+a text-based assertion on a signature attribute and require the `visual` evidence path that
+`agent/workers/documents.py:2125` already implements.
+
 ## 5. Findings and report
 
 13 findings, 12 in the report. Composition:
@@ -169,9 +326,55 @@ Two report-level weaknesses:
   — but that risk produced no finding because it was never data-tested. The report describes the
   gap as a coverage limitation rather than testing it.
 
-## 6. Root causes (what to fix in the pipeline)
+### Fix plan — findings and report
 
-**A. The EDA layer and the RCM layer never talk.**
+**F1. Stop emitting test-quality defects as client-facing findings.** F-91FBE5, F-AE7223 and
+F-E8D783 report the tool's own unreliability to the auditee. Where the finding-draft worker
+concludes a result is not semantically reliable, the correct output is a **QA item against the
+test**, not a finding against the client. Route on the existing signal — the result already
+carries `semantic_valid` and `semantic_issues` (`DataTestResults/*/DTR-CURRENT.json`) — and have
+the reporting worker refuse to draft a finding from a result whose `semantic_valid` is false,
+raising the test back to `review_required` with the issue attached instead.
+
+This matters beyond presentation: F-AE7223 and F-E8D783 concern SoD exceptions I reproduced
+independently and confirmed as **real**. The pipeline found genuine control failures and
+converted them into a statement about its own tooling. Fixing the routing recovers a real
+high-severity finding rather than merely suppressing noise.
+
+**F2. Deduplicate findings on shared subject.** F-3FCA6C and F-D92220 are both INV2024008 and
+both High. Where two findings cite the same primary record and the same RCM row, merge them
+into one finding with two conditions, or suppress the weaker. Compare on
+`evidence_refs[].source_id` plus the exception row key.
+
+**F3. Assert findings→report reconciliation.** 13 findings exist, 12 reach the report, with no
+recorded rationale. `report.py:_ordered_findings()` is the choke point: any finding excluded from
+the assembled report must be recorded in `generation_warnings` (currently `[]`) with a reason,
+and the QA pass should fail on a silent drop.
+
+**F4. Quantify exposure in the executive summary.** Individual findings carry amounts;
+`_key_findings()` never totals them. Add a value column and a total to the Summary of Findings,
+sourced from the exception frames the findings already reference. A report covering PKR 2.5bn of
+payments should state what is at risk.
+
+**F5. Distinguish "control absent" from "control tested and failed" in severity.**
+Five of thirteen findings are "the SOP does not define X" — legitimate, but currently rated High
+alongside findings evidencing actual paid exceptions. Give the design-gap findings a distinct
+severity basis so a reader can tell a documentation gap from a payment that should not have been
+made.
+
+**F6. Fill root cause, or say why not.** All 13 findings carry `cause_pending: true` and an empty
+Root Cause. The report substitutes *"Not established by the evidence obtained; pending auditor
+follow-up"*, which is honest and correctly implemented — but 13 of 13 means the cause step is
+effectively not running. Either drive it from the exception data (an approver ID recurring across
+exceptions is a cause signal) or surface it as an explicit auditor to-do count rather than
+per-finding boilerplate.
+
+## 6. Root cause analysis
+
+Diagnosis only — the remedies are in the per-stage fix plans above and in §7. Each cause is
+tagged with the fix that owns it.
+
+**A. The EDA layer and the RCM layer never talk.** → owned by **S1**
 This is the big one. 15 saved analyses produced exceptions that never reached a finding:
 
 | Analysis | Found | Fate |
@@ -188,36 +391,220 @@ The analyses ran at 16:11Z; findings were drafted at 16:56Z. The information was
 45 minutes old. Findings are drafted only from RCM test executions, so exploratory exceptions
 have no path into the RCM, into a test, or into a finding.
 
-**B. RCM rows are created without a matching data test.**
-Four high/critical rows carry only inquiry doc tests. Nothing in the workflow requires a row
-whose risk is data-observable to acquire a data test, so the RCM records intent to test and the
-execution layer records `no_conclusion` — and the report reads that as a scope limitation rather
-than an untested control.
+One correction to the framing above: A-272B7E11 "Duplicate vendor invoice references" was not
+merely dropped — it **ran and returned a clean pass**. It keyed on
+`(VENDOR_ID, VENDOR_INVOICE_NUMBER)` over all 118 rows and reported *"No duplicate keys found"*,
+`verdict: ok`. The actual duplicates are the same vendor invoice number under **different**
+vendor IDs (A07, A08), which that key excludes by construction. An analysis that affirmatively
+clears a risk it cannot see is worse than one that never ran, and S1 must not treat a green
+analysis as evidence of coverage.
 
-**C. Document tests only interrogate policy, never vouch transactions.**
-The doc-test generator produces "does the documentation define X" for every RCM row. With a
-voucher package on hand, it should be generating tie-out attributes (amount agreement across
-five documents, date sequence, quantity agreement, signature/authority checks). `cycle_vouching.py`
-and the evidence-recipe registry exist in the codebase; this workspace shows no sign of them
-being exercised.
+**B. A row with no asserted control cannot be data-tested.** → owned by **R1**, **R2**, **S2**
+Not a workflow omission — a hard block. `evidence_kind: inquiry` empties the table schemas in
+the generation prompt (`tests.py:175`), so `"data"` never enters `allowed_variants` and no data
+test is reachable. The RCM records intent to test, the execution layer records `no_conclusion`,
+and the report renders that as a scope limitation rather than an untested control. Four
+high/critical rows and four issue classes (A06, A07/A08, A21, A26) trace to this single line.
+
+**C. Document tests only interrogate policy, never vouch transactions.** → owned by **T1**, **T2**
+Now measured rather than inferred: 0 of 52 control attributes carry `evidence_kind:
+transaction_cycle`, and all 27 doc tests are `kind: qa`. `cycle_vouching.py`, the registry packs
+and the evaluator were not merely unused — they were **unreachable**, and the run reported
+success. This is the Phase 2/3 gap already recorded in `docs/vouching-grid-plan.md`.
 
 **Secondary:**
-- **D.** Requisition-anchored test construction makes invoice-only anomalies structurally
-  invisible. Tests should be anchored on the population being asserted about.
-- **E.** `review_required` is terminal. Two tests carrying 24 real exceptions ended there and
-  nothing escalated them.
-- **F.** Low-confidence test results are converted into findings *about the test*. These should
-  be routed to a QA queue, not to the client-facing report.
-- **G.** OCR/extraction does not capture handwriting, so signature attributes cannot be tested
-  from text. Either OCR the signature blocks or route signature attributes to image review.
+- **D.** → **T3**, **S5**. Requisition-anchored test construction makes invoice-only anomalies
+  structurally invisible. This alone hides A02, the largest item in the population.
+- **E.** → **T4**. `review_required` is terminal. Two tests carrying 24 real exceptions ended
+  there and nothing escalated them.
+- **F.** → **F1**, **S4**. Low-confidence test results are converted into findings *about the
+  test*, losing the real control failures underneath.
+- **G.** → **T5**. Extraction does not capture handwriting, so signature attributes cannot be
+  tested from text.
 
-## 7. Suggested priority
+## 7. Structural fixes
 
-1. Wire exploratory analysis exceptions into RCM coverage — biggest recall win, and the
-   evidence is already sitting in `Analyses/.results/`.
-2. Require a data test for any RCM row whose risk is data-observable; block `effective`
-   conclusions on rows whose only tests are inquiry doc tests (fixes the RCM-4301AC false negative).
-3. Add a goods-receipt / three-way-match RCM row and the invoice-anchored tests behind it.
-4. Generate real vouching attributes for uploaded document packages.
-5. Stop emitting "test result is unreliable" as a client-facing finding.
-6. Add a findings→report reconciliation assertion (13 in, 12 out, silently).
+The per-stage plans above address defects that live inside one stage. These are the
+cross-cutting ones — each spans stages, and none can be fixed by improving a single prompt.
+
+### S1. Give exploratory analysis a path into the RCM
+
+**The defect.** Findings are drafted only from RCM test executions. Saved analyses are a parallel
+universe with no edge into the audit graph, so 15 analyses holding real exceptions — including
+three of the highest-value misses in this engagement — expired where they were computed.
+
+**The shape of the fix.** An analysis exception is a *candidate observation*, not a finding. It
+should not auto-promote (that would flood the RCM with weekend-approval noise), but it must
+become visible to the stage that decides coverage. Two seams, in preference order:
+
+1. **Coverage reconciliation at RCM generation.** Feed the analysis result index — titles,
+   exception counts, and the tables/columns each touched, *not* rows — into the RCM worker's
+   context. Add a validation gate: an analysis with a non-zero exception count whose subject
+   matches no RCM row's attributes is a coverage gap the proposal must answer, either by adding
+   a row or by recording why the exceptions are not control-relevant.
+2. **Candidate observations at fieldwork.** Where an analysis exception maps to an existing RCM
+   row, raise it as an unconfirmed observation against that row so it appears in the rollup and
+   an auditor dispositions it, rather than being silently absent.
+
+**Privacy constraint — this is already solved and must be reused.** Per `AGENTS.md`, analysis
+exception rows reach the model only under `allow_analysis_exception_rows`, capped per procedure,
+and the two exception-row permissions are deliberately separate. Option 1 above needs no rows at
+all — counts and column names are enough for coverage reconciliation, which keeps the highest-value
+fix entirely outside the row-disclosure path. Option 2 must go through the existing capped
+projection and must not widen it.
+
+**Why this is first.** It is the largest recall win available, it needs no new analytics, and the
+evidence is already computed and sitting in `Analyses/.results/`.
+
+### S2. A row that cannot be tested must not look like a row that passed
+
+**The defect.** Three separate mechanisms let untested controls present as satisfactory:
+
+- `evidence_kind: inquiry` makes a data test *unreachable* (§3, R1/R2) — the row is not
+  under-tested, it is untestable by construction;
+- a row whose only tests are inquiry doc tests can still reach `control_conclusion: effective`
+  (RCM-4301AC);
+- `no_conclusion` rows are narrated in the report as scope limitations, which reads to a client
+  as "we could not look" rather than "we did not test".
+
+**The shape of the fix.** One invariant, enforced at three points: *a conclusion may never be
+stronger than the evidence class behind it.* Inquiry-only evidence caps a row at
+`partially_effective` with a mandatory `scope_limitations` string; a row whose risk names a
+data-observable concept that no executed predicate references cannot settle at all; and the
+report must distinguish **not tested** from **tested, no exceptions** in the coverage narrative.
+Today both render as an absence.
+
+### S3. Silent subsystem bypass
+
+**The defect.** The cycle-vouching subsystem — registry packs, evaluator, grid — was fully
+bypassed for this engagement and *nothing said so*. Zero of 52 control attributes carried
+`transaction_cycle`, so zero cycle tests were generated, and the run reported success. The same
+class of silence hides the empty-table-schema path in §3 and the `review_required` dead end in §4.
+
+**The shape of the fix.** Any point where the pipeline degrades from a stronger evidence path to
+a weaker one must emit a warning that survives into the run record and the report's coverage
+section. Specifically: a registered pack matched against analysed documents with no cycle test
+generated; an RCM row for which table schemas were withheld; a test that ends `review_required`
+holding exceptions. Degradation is acceptable; **silent** degradation is not.
+
+### S4. The pipeline reports on itself to the client
+
+**The defect.** Three of thirteen findings are about the tool's own test quality, two reached the
+client-facing report, and the real control failures underneath them were lost in the process.
+
+**The shape of the fix.** A hard boundary between two channels: findings describe the auditee;
+QA items describe the engagement's own execution. The `semantic_valid` / `semantic_issues` signal
+already exists on every result and is the natural router (§5, F1). Nothing whose subject is a test
+should be able to reach the report assembler.
+
+### S5. Anchor and completeness invariants
+
+**The defect.** Tests are anchored on whichever population the model started from, so an invoice
+with no requisition cannot appear in any result. INV2024144 — the single largest anomaly in the
+population — is invisible for this reason alone, not because of any judgement error.
+
+**The shape of the fix.** A step asserting about population A must be anchored on population A.
+Pair it with a reconciliation assertion per population: every row of `invoice_data` must be
+reachable by at least one executed test, and the count of unreached rows is reported. That check
+alone surfaces INV2024144 without anyone having to anticipate it.
+
+### S6. Regression harness
+
+None of the above is verifiable without a fixture that states what *should* be found. The
+procurement workspace now has an independently derived answer key (Appendix A) with 25 issues,
+IDs, and values. Wire it as an acceptance fixture: after a clean regeneration, assert recall
+against the register and fail the build on regression. `docs/vouching-grid-plan.md` §9 already
+defines the manual regeneration checkpoints this would slot into — Checkpoint B and C are the
+natural gates.
+
+Without this, "the findings got better" stays a matter of opinion.
+
+### Sequencing
+
+| Order | Fix | Why here |
+|---|---|---|
+| 1 | S1 option 1 — analysis coverage reconciliation | Largest recall win, no new analytics, no row disclosure |
+| 2 | R1 + R2 — decouple `evidence_kind` from control existence | Unblocks four unarmed rows; cheapest high-value change |
+| 3 | S2 — conclusion may not exceed evidence class | Stops the RCM-4301AC false negative reaching a client |
+| 4 | S4 / F1 — QA channel split | Recovers a real SoD finding currently reported as tooling noise |
+| 5 | R3 + T3 / S5 — GRN row and anchor invariants | Owns G5, G10, G11, and surfaces INV2024144 |
+| 6 | T1 / S3 — bypass warnings | Prevents the next silent regression |
+| 7 | T2 — Checkpoint C repeat with a non-zero cycle-test assertion | Tracked in `vouching-grid-plan.md`; no new design |
+| 8 | S6 — regression harness over Appendix A | Makes every fix above measurable |
+
+---
+
+## Appendix A — independent issue register
+
+Every issue found by working the six Excel files and seven documents directly, before any
+pipeline artifact was opened. This is the answer key for S6.
+
+`Captured` is against the **audit output** — an issue reported only by a saved analysis is *not*
+captured, because nothing carried it into the RCM, a finding, or the report. Those rows are
+marked **EDA only** and are the direct evidence for S1.
+
+| ID | Issue | Value (PKR) | Captured | Captured where |
+|---|---|---:|---|---|
+| A01 | 20 invoices reference a requisition id or nothing in `PO_NUMBER_LINK` — no PO exists | 1,054.4M (563.6M paid) | Partial | `DAT-BBEE43384F` → F-F1C01E, framed as requisition-side linkage; unvalued |
+| A02 | **INV2024144 paid with no vendor, no PO, no GRN**; vendor invoice no. `VINV011-202313` | 100.0M | **No** | — (string absent from every artifact) |
+| A03 | 4 invoices raised against **Rejected** requisitions | 158.0M | **No** | — |
+| A04 | INV2025009 re-raises rejected REQ2024047 for the identical amount | 44.1M | **No** | — |
+| A05 | Six invoices numbered `VINSUSP001`–`VINSUSP006`, each re-billing a closed prior-year PO | 157.1M | **No** | — |
+| A06 | Invoice amount exceeds PO total (5 invoices; incl. 80M against an 8M PO) | 79.8M variance | EDA only | `A-D6F9512D` found 3 of 5; never promoted |
+| A07 | Duplicate vendor invoice number across **different** vendors, both paid (`VINV011-202404`) | 16.2M | **No** | `A-272B7E11` keyed on `(VENDOR_ID, VENDOR_INVOICE_NUMBER)` and returned *"No duplicate keys found"* — a false clear |
+| A08 | Second duplicate number pair `VINV006-202412` (V1027 paid, V1003 pending) | 9.0M | **No** | as A07 |
+| A09 | Same vendor + identical amount, both paid (V1002 × 30.0M) | 30.0M | **No** | — |
+| A10 | REQ2024081 approved by CFO against a 10.0M limit | 99.3M | **Yes** | `DAT-2DF158A860` → F-13ACA8 → report §2 |
+| A11 | INV2024079 approved by Financial Controller against a 5.0M limit | 27.6M | **No** | invoice-side authority never tested |
+| A12 | 110 of 118 invoices approved by roles absent from the approval matrix | 2,855.6M | **No** | — |
+| A13 | Segregation of duties — 10 requisitions (requester = verifier / = fin approver) | 504.4M | Downgraded | `DAT-50957C1BF2`, `DAT-864DB4A949` → F-AE7223 / F-E8D783, reported as *"result is not reliable"* |
+| A14 | INV2024063 verifier = supervisor approver, paid | 98.1M | Downgraded | as A13 |
+| A15 | Cross-document SoD — invoice approver is also the requisition approver (10 invoices) | 166.0M | **No** | — |
+| A16 | Invoice dated before its PO (4 invoices, all paid) | 35.2M | **Yes** | `DAT-85368A37FA` → F-13D9B6 → report §3 |
+| A17 | Invoice dated before GRN (5 invoices) | 60.2M | Partial | `A-8964691B` (EDA); lifecycle test covers 4 via F-13D9B6 |
+| A18 | Payment made before goods receipt (3 invoices) | 50.2M | Partial | inside F-F1C01E's 43 rows; not stated as a payment-before-receipt condition |
+| A19 | INV2024008 paid before its own invoice date **and** before supervisor approval | 24.9M | **Yes** | `DAT-EBA9DB1CB1` → F-3FCA6C; `DAT-ADC849F3F2` → F-D92220 (duplicated, see F2) |
+| A20 | 22 invoices with no GRN link, incl. INV2024017 (12.0M paid) | 12.0M+ | **No** | noted only as an 18.64% null rate in the APM profile |
+| A21 | Two vendor pairs share a bank account (V1008+V1009, V1007+V1018) | — | EDA only | `A-A86687CB`, `A-D2310860`; RCM-4301AC concluded **effective** |
+| A22 | 5 vendors created and approved by the same person | — | **No** | — |
+| A23 | V1010 "Under Review" paid | 36.4M | EDA only | `A-9A87B89F`; never promoted |
+| A24 | V1016 approved the same day it was added — no due-diligence interval | — | **No** | — |
+| A25 | No vendor approved by anyone outside Procurement | — | **No** | — |
+| A26 | 35 same-vendor requisition pairs within 30 days (REQ2024060+65: 128.8M, 1 day apart) | — | **No** | RCM-99C6E0 exists but carries only an inquiry doc test |
+| A27 | Same item at wildly different unit prices (Cybersecurity Training +194%, Cloud Migration +167%) | — | **No** | — |
+| A28 | 94 of 112 requisitions state a department contradicting the HR master | — | **No** | — |
+| A29 | 3 staff pairs share a bank account (1002/1023, 1003/1034, 1004/1045) | — | **No** | — |
+| A30 | `BUYER_ID` B001–B006 reconcile to no staff record | — | **No** | — |
+| A31 | GRN2024004 signed "Received and inspected by" by the requisitioner (Ethan Smith, 1041) | 2.0M | **No** | no doc test vouches the package; name lost in extraction |
+| A32 | Payment voucher signatures carry no date | 2.0M | **No** | — |
+| A33 | SOP §3.2 mandates RFQ/comparative bids; no bid or quotation field exists in any table | 2,868M | Partial | F-6E104E raises the policy gap, never the population-wide absence of evidence |
+
+### Tally
+
+| Outcome | Count | Share |
+|---|---:|---:|
+| **Yes** — reached a finding and the report | 3 | 9% |
+| **Partial** — surfaced but mis-framed, unvalued, or incidental | 4 | 12% |
+| **Downgraded** — real exceptions reported as tool unreliability | 2 | 6% |
+| **EDA only** — found by a saved analysis, never carried forward | 3 | 9% |
+| **No** — absent from every artifact | 21 | 64% |
+| | **33** | |
+
+Only **3 of 33 issues (9%)** made it intact from the source data to the report.
+
+Three of the four highest-value single items in the population — A02 (100.0M), A05 (157.1M) and
+A03 (158.0M) — are in the **No** band.
+
+### Caveats on the register
+
+- **A12 is a judgement call, not a certainty.** The approval matrix governs requisition financial
+  approval; whether it also governs invoice supervisor approval is not stated in the SOP. The
+  point stands regardless: the pipeline never raised the question, so the ambiguity was never
+  put to the auditee.
+- **A26 flags candidates, not confirmed splits.** 35 same-vendor pairs inside 30 days is a
+  screening result requiring auditor judgement on whether the purchases are genuinely divisible.
+  No screen was run at all, which is the finding.
+- **A28–A30 are data-integrity observations** rather than control failures on their own; they
+  undermine reliance on the requester and buyer fields used by other tests.
+- Values are the gross transaction amounts touched by each issue, not quantified loss, and they
+  overlap across rows — do not sum the column.
