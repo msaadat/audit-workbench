@@ -47,6 +47,14 @@ def _sha256_text(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
+_PARTIAL_CYCLE_COVERAGE = re.compile(
+    r"\b(?:not covered|not available|outside (?:the )?scope|"
+    r"cannot (?:test|verify|establish)|unable to (?:test|verify|establish)|"
+    r"as a prerequisite|prerequisite for)\b",
+    re.IGNORECASE,
+)
+
+
 def _plain_json(value: object) -> object:
     """Deep-copy frozen proposal values back to plain JSON containers."""
     if isinstance(value, Mapping):
@@ -447,7 +455,13 @@ by some returned cycle test. Group compatible assertions sharing one population
 and lifecycle scope into one test. Roles name exact reachable record kinds and
 state required, cardinality (one|many), and reuse_across_items
 (exclusive|allowed) independently. Every declared role must be read by at least
-one assertion. Assertions use explicit row/role/roles operands and one of
+one assertion. Every referenced control attribute carries required_comparisons;
+the returned assertions must cover each one with the exact record kinds, field
+selectors, operator, and tolerance, mapping record kinds to the hydrated role
+aliases. A related prerequisite or a `requirement_ref` without those comparisons
+is not coverage. If the manifest does not supply the required field, do not
+substitute another assertion: the RCM evidence strategy or supplied evidence
+must be repaired. Assertions use explicit row/role/roles operands and one of
 {", ".join(sorted(cycle_vouching.OPERATORS))}; field selectors always name
 group, kind, and attribute. Use numeric tolerance objects and integer day
 tolerances. Do not invent identifiers, fields, mappings, roles, or literal row
@@ -731,6 +745,18 @@ def _validate_generate_cycle_test(
     if not isinstance(assertions, (list, tuple)) or not assertions:
         errors.append(f"{path}.assertions must be a non-empty array")
         return None
+    for field, text in (
+        ("objective", str(value.get("objective") or "")),
+        ("selection_reason", selection_reason),
+    ):
+        if _PARTIAL_CYCLE_COVERAGE.search(text):
+            errors.append(
+                f"{path}.{field} admits that the proposed cycle procedure does "
+                "not cover its referenced requirement; return no substitute. "
+                "The RCM evidence strategy must be corrected or the missing "
+                "evidence supplied."
+            )
+            return None
     candidate = {
         "source": "document",
         "kind": "cycle_vouch",

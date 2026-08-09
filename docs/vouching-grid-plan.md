@@ -1,6 +1,6 @@
 # Cycle-linked vouching and grid plan
 
-Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, Phase 2, and Phase 3 are implemented as of 2026-08-08. Checkpoint A passed automated and live procurement validation, including auditor review of the five regenerated voucher analyses. The user completed the clean procurement rebuild through test generation for Checkpoint B, and the implementer verified the complete linked test set and Cycle vouch definitions read-only without executing a test. Phase 3 has passed its focused backend, workflow, and production-build gates; Checkpoint C now awaits user-driven cycle execution and review. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
+Status: Phase 0, the domain-neutral Phase 0.1 refactor, Phase 1, Phase 2, and Phase 3 are implemented. Checkpoint A passed automated and live procurement validation. The first Checkpoint B rebuild passed structural inspection, but the 2026-08-09 Checkpoint C run exposed a semantic authoring gap: the model could reference a bank-account requirement while generating unrelated amount/date/name assertions, and the regenerated RCM classified PO/GRN agreement as tabular-only so the planned documentary Cycle vouch test was absent. The Phase 2/3 robustness remediation now requires typed registry-backed `required_comparisons`, exact generated-assertion coverage, and fail-closed handling of admitted substitutes. Because this is a clean contract change, the current procurement RCM/test chain is invalid for acceptance and Checkpoints B and C must be repeated through the normal UX. Phase 4 has not begun. Procurement remains the first UX validation engagement, while the core contracts are proven independently with procure-to-pay and payroll packs. This is a clean target design with mandatory model-to-user regeneration checkpoints, not a legacy-migration plan.
 
 ## 1. Decision
 
@@ -210,7 +210,7 @@ Because map fragments have no durable IDs, two chunks cannot independently creat
 
 ### 3.2 RCM control attributes
 
-Keep one risk and one asserted control per RCM row, but replace the single top-level `assertion` string with canonical `control_attributes`. These describe what the control requires; they do not contain executable table names, columns, document paths, or expected values.
+Keep one risk and one asserted control per RCM row, but replace the single top-level `assertion` string with canonical `control_attributes`. These describe what the control requires. Transaction-cycle attributes also declare their minimum registry comparisons, but do not choose an executable table, population column, document path, or literal expected value.
 
 ```yaml
 id: RCM-...
@@ -231,6 +231,37 @@ control_attributes:
       - procure_to_pay.purchase_order
       - procure_to_pay.goods_receipt
       - procure_to_pay.payment_voucher
+    required_comparisons:
+      - key: invoice_to_order_amount
+        label: Invoice amount agrees to purchase order
+        left:
+          record_kind: procure_to_pay.vendor_invoice
+          field: {group: amounts, kind: total, attribute: value}
+        right:
+          record_kind: procure_to_pay.purchase_order
+          field: {group: amounts, kind: total, attribute: value}
+        operator: numeric_within
+        tolerance: {absolute: 0.01, percent: 0}
+      - key: receipt_to_order_quantity
+        label: Goods receipt quantity agrees to purchase order
+        left:
+          record_kind: procure_to_pay.goods_receipt
+          field: {group: quantities, kind: total, attribute: value}
+        right:
+          record_kind: procure_to_pay.purchase_order
+          field: {group: quantities, kind: total, attribute: value}
+        operator: numeric_within
+        tolerance: {absolute: 0, percent: 0}
+      - key: invoice_to_payment_amount
+        label: Invoice amount agrees to payment
+        left:
+          record_kind: procure_to_pay.vendor_invoice
+          field: {group: amounts, kind: total, attribute: value}
+        right:
+          record_kind: procure_to_pay.payment_voucher
+          field: {group: amounts, kind: total, attribute: value}
+        operator: numeric_within
+        tolerance: {absolute: 0.01, percent: 0}
   - key: receipt_before_payment
     assertion: Cut-off
     requirement: Receipt occurs no later than payment.
@@ -242,14 +273,27 @@ control_attributes:
     required_record_kinds:
       - procure_to_pay.goods_receipt
       - procure_to_pay.payment_voucher
+    required_comparisons:
+      - key: receipt_before_payment
+        label: Receipt date is on or before payment
+        left:
+          record_kind: procure_to_pay.goods_receipt
+          field: {group: dates, kind: receipt_date, attribute: value}
+        right:
+          record_kind: procure_to_pay.payment_voucher
+          field: {group: dates, kind: payment_date, attribute: value}
+        operator: date_on_or_before
 ```
 
 The RCM worker and validator must require unique attribute keys, the existing
 assertion vocabulary, and a registered evidence strategy. Evidence strategy is
-a discriminator: `transaction_cycle` requires an exact registry reference and at
-least two unique bindable record kinds from that pack; `tabular_population`,
-`document_content`, `manual_inspection`, `inquiry`, and `mixed` forbid record
-kinds. A cycle is a link between records, so a requirement satisfied by a single
+a discriminator: `transaction_cycle` requires an exact registry reference, at
+least two unique bindable record kinds from that pack, and one or more typed
+`required_comparisons`; `tabular_population`, `document_content`,
+`manual_inspection`, `inquiry`, and `mixed` forbid all three registry-backed
+fields. Required-comparison operands name record kinds rather than procedure
+role aliases, and their selectors, operator, direction, and tolerance validate
+against the immutable pack. A cycle is a link between records, so a requirement satisfied by a single
 record kind is `document_content` or `tabular_population`, never a cycle whose
 graph can only reach its own seed. The row's `business_cycle` is a projection of
 the validated attributes: it is derived on every write, never required from the
@@ -593,6 +637,7 @@ For one RCM row, `tests.generate` receives its `control_attributes` and the tran
 For cycle tests it must:
 
 - reference every covered RCM control attribute;
+- cover every referenced attribute's typed `required_comparisons` exactly;
 - choose one validated population candidate;
 - group all compatible assertions sharing that population and lifecycle scope into one `cycle_vouch` test;
 - use exact `record_kind` roles with within-item cardinality and cross-item reuse semantics;
@@ -612,7 +657,11 @@ The semantic validator rejects:
 - implicit field attributes;
 - reversed or untyped date operators;
 - invalid tolerance shapes;
-- duplicate assertion keys; and
+- duplicate assertion keys;
+- a `requirement_ref` whose exact required record kinds, selectors, operator,
+  direction, or tolerance are absent from the generated assertions;
+- a proposal that admits its procedure is uncovered, outside scope, or merely
+  a prerequisite for the referenced requirement; and
 - multiple proposed cycle tests for the same RCM procedure/population that could be one assertion set.
 
 If the chosen evidence-linked candidate would exceed 500 items, semantic validation returns the deterministic `selection_confirmation` proposal rather than accepting the definition or failing with an authoring dead end.
@@ -1007,35 +1056,66 @@ Trigger: the new item builder and evaluator are available against the clean Phas
 Use these exact current UI actions. The user, not the implementer, performs all
 execution and review steps:
 
-1. Reload the `procurement` engagement and open **Document Tests**.
-2. Open **Vouch GRN Accuracy Against Purchase Order**, select its projected
-   not-run item, and select **Run test** in the action rail. Wait for the
-   assistant run to finish. Repeat this for **Completeness of Supporting
-   Documents for Purchase Requisitions and Orders** and **Vouch PO references
-   to specifications or contracts against purchase requisition**.
-3. For every evaluated item, open **Transaction cycle**. Confirm every required
+1. First complete the repeated Checkpoint B rebuild through the existing
+   Home/intake UX. Reload the `procurement` engagement and open **Document
+   Tests**.
+2. Review every regenerated **Cycle vouch** definition before execution. Locate
+   the source-record PO/GRN agreement procedure and confirm its assertions cover
+   the RCM's exact PO/GRN comparisons. Confirm no bank-account requirement is
+   linked to unrelated amount, date, party-name, or approval assertions. If the
+   PO/GRN procedure is absent, or any proposal describes a referenced
+   requirement as uncovered, outside scope, or a prerequisite, stop and report
+   Checkpoint C as failed without running that test.
+3. For each semantically complete Cycle vouch test, select its projected
+   not-run item and select **Run test** in the action rail. Wait for the
+   assistant run to finish before starting the next test.
+4. For every evaluated item, open **Transaction cycle**. Confirm every required
    role appears separately, inspect its document/record identity and extraction
    state, and follow the complete matched-by chain. A role with multiple
    candidates must be reported as ambiguity; it must not silently use the first
    match.
-4. Open **Assertion results** and review every assertion and every document
+5. Open **Assertion results** and review every assertion and every document
    sub-result. Use the **Page N** evidence controls to inspect cited source
-   anchors. Check the quantity and receipt-date assertions in the GRN/PO test,
-   all three requisition/PO reachability assertions, and the specification or
-   contract-reference and normalized-description assertions in the third test.
+   anchors. Check every typed PO/GRN amount, quantity, date, or presence
+   comparison that the regenerated RCM requires, plus every other generated
+   cycle assertion.
    Confirm that any differing source identifier remains an exact mismatch, and
    that missing evidence, invalid extraction, and ambiguity are not collapsed
    into mismatch.
-5. Confirm the deterministic evaluation is current, then inspect **Your
+6. Confirm the deterministic evaluation is current, then inspect **Your
    conclusion**. It must still be pending after execution, and final audit
    verification must remain blocked. At this checkpoint, stop before selecting
    **Confirm result** or **Mark exception**; those controls record the auditor's
    separate disposition and the implementer must not select them.
-6. Report the observed verdicts, any missing/invalid/ambiguous role, and whether
+7. Report the observed verdicts, any missing/invalid/ambiguous role, and whether
    each evidence control opened the expected source. Do not regenerate the
    workspace or rerun document analysis as part of this checkpoint.
 
 Expected result: evaluation produces current `result_by_assertion` entries, leaves auditor disposition pending, and distinguishes mismatch, missing evidence, invalid extraction, and ambiguity.
+
+First live Checkpoint C result (2026-08-09): failed and superseded. The two
+generated Cycle vouch tests executed deterministically with current hashes,
+complete invoice/payment role bindings, five matches, two explainable exact-name
+mismatches, evidence anchors, and pending auditor dispositions. However, both
+tests referenced vendor-bank requirements without a vendor-master or payment
+account comparison; their own proposals described the assertions as uncovered
+or prerequisite evidence. No PO/GRN Cycle vouch test existed because the RCM
+model had declared those agreement requirements as `tabular_population`. The
+execution engine behaved correctly, but the authoring chain did not meet the
+checkpoint's substantive coverage requirement. No result was signed off.
+
+Robustness remediation (2026-08-09): every `transaction_cycle` control
+attribute now carries non-empty `required_comparisons` over exact registry
+record kinds and field selectors. RCM authoring receives the compact selector
+catalog and must use a non-cycle evidence strategy when the requirement cannot
+be expressed. The Cycle vouch semantic gate requires generated assertions to
+cover every referenced comparison exactly, including operator and tolerance,
+and the worker rejects proposals that admit they are uncovered, out of scope,
+or merely prerequisites. The evidence-strategy prompt now distinguishes broad
+tabular population assurance from source-record agreement: both may be separate
+attributes when both procedures are required. The Planning editor exposes the
+same typed comparison contract. There is no reader or migration for the prior
+attribute shape.
 
 ### Checkpoint D - grid review after Phase 5
 
@@ -1131,7 +1211,7 @@ vendor/buyer edges, and leave the PO typo visible without breaking the whole
 cycle. Checkpoint A's user-driven regeneration and auditor review are recorded
 in section 9.
 
-### Phase 2 - RCM and test generation (implemented; Checkpoint B passed)
+### Phase 2 - RCM and test generation (implemented; robustness remediation requires Checkpoint B repeat)
 
 - update the RCM worker, response schema, executor fields, hashes, and UI for
   discriminated `control_attributes`; only transaction-cycle attributes select
@@ -1194,7 +1274,7 @@ executor gates pass, and the Vue/TypeScript production build passes. The live
 procurement exit condition was claimed only after the user completed Checkpoint
 B and the implementer performed the read-only verification recorded above.
 
-### Phase 3 - item builder and evaluator (implemented; Checkpoint C pending)
+### Phase 3 - item builder and evaluator (implemented; Checkpoint C repeat pending)
 
 - materialize selected population rows and complete role bindings;
 - evaluate scalar and explicit role-set assertions;
@@ -1350,6 +1430,11 @@ Exit condition: no production path reads the old cycle schema; automated fixture
   reach and then by registered naming, is never dropped where it is a table's
   only viable row key, and is omitted only when tied on every signal;
 - a transaction-cycle control attribute requires at least two record kinds;
+- transaction-cycle attributes require non-empty, registry-valid typed
+  comparisons, and generated assertions must cover every referenced comparison
+  exactly rather than satisfying it with a related or substitute procedure;
+- PO/GRN source-record agreement remains cycle evidence when it is declared as
+  such, even when a separate tabular-population procedure is also appropriate;
 - a stale pack reference flags its own RCM row and still loads the engagement;
 - regeneration replaces a cycle definition without resetting the durable test's
   status or auditor links, and refuses a commit whose evidence manifest moved;

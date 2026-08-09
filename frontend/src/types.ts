@@ -436,6 +436,11 @@ export interface CycleCandidate {
 export interface CycleEvidenceManifestGroup {
   registry: CycleRegistryReference
   requirement_refs: string[]
+  requirements: Array<{
+    key: string
+    requirement: string
+    required_comparisons: RcmCycleRequiredComparison[]
+  }>
   required_record_kinds: EvidenceRecordKindId[]
   roles: CycleVouchDefinition['roles']
   records: Array<{
@@ -797,16 +802,32 @@ export interface RcmControlAttributeBase {
   requirement: string
 }
 
+export interface RcmCycleEvidenceOperand {
+  record_kind: EvidenceRecordKindId
+  field: CycleFieldSelector
+}
+
+export interface RcmCycleRequiredComparison {
+  key: string
+  label: string
+  left: RcmCycleEvidenceOperand
+  right?: RcmCycleEvidenceOperand
+  operator: CycleOperator
+  tolerance?: number | { absolute: number; percent: number }
+}
+
 export type RcmControlAttribute = RcmControlAttributeBase & (
   | {
       evidence_kind: 'transaction_cycle'
       registry: CycleRegistryReference
       required_record_kinds: EvidenceRecordKindId[]
+      required_comparisons: RcmCycleRequiredComparison[]
     }
   | {
       evidence_kind: 'tabular_population' | 'document_content' | 'manual_inspection' | 'inquiry' | 'mixed'
       registry?: never
       required_record_kinds?: never
+      required_comparisons?: never
     }
 )
 

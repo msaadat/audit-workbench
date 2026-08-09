@@ -29,6 +29,14 @@ cycle test carries `{pack_id, pack_version, definition_hash}`. Assertion results
 carry the definition hash. A missing, cross-pack, or stale reference fails
 closed rather than being interpreted with the currently installed vocabulary.
 
+Transaction-cycle RCM attributes also carry non-empty `required_comparisons`.
+Each comparison names exact registry record kinds, field selectors, operator,
+and tolerance before a test population or role alias exists. A generated Cycle
+vouch test must cover every comparison attached to each `requirement_ref`; the
+reference alone is not coverage. A selector the pack cannot express or the
+supplied evidence does not contain fails closed instead of being replaced with
+a related prerequisite. Non-cycle evidence strategies forbid this field.
+
 ## Fifth-kind switch inventory
 
 | Surface | Phase 0 disposition |

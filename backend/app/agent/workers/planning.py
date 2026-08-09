@@ -243,9 +243,10 @@ control_attributes,
 plus criteria and control_owner where the planning basis supports them.
 All ids and narrative fields are strings. business_cycle is derived locally
 from validated transaction-cycle attributes; do not infer or return it.
-Describe the risk and the control only — how the control is tested is decided
-later, one test at a time. Do not invent control operation as fact when evidence
-is absent.
+Describe the risk and the control. Test populations are decided later, but every
+transaction-cycle attribute must declare the exact minimum registry comparisons
+that would answer its requirement. Do not invent control operation as fact when
+evidence is absent.
 
 Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
 - Cover the standard risks a competent auditor would consider for every in-scope
@@ -281,25 +282,36 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
                         counts, or a value compared against another column.
                         This is the default whenever a table carries the fields
                         the requirement names.
-    transaction_cycle   the answer needs several *documents* of different
+    transaction_cycle   the answer needs several *source records* of different
                         registered record kinds linked by transaction
-                        identifiers, and the tables alone cannot establish it.
+                        identifiers. A denormalized table repeating values from
+                        two source records does not replace vouching those source
+                        records when the requirement is their agreement.
     document_content    one document states the requirement or the fact.
     manual_inspection, inquiry, mixed  no imported evidence answers it.
-  Prefer tabular_population over transaction_cycle wherever the tables hold the
-  fields: a cycle attribute reaches only those transactions that have uploaded
-  documents, which is usually a tiny part of the population and can never
-  support a population-level conclusion. Do not use inquiry for something the
-  supplied tables can measure.
-- Only transaction_cycle entries carry registry and required_record_kinds. For
+  Prefer tabular_population for population-level completeness, uniqueness,
+  threshold, and status tests. For agreement between distinct source records,
+  retain a transaction_cycle attribute when source-record vouching is required;
+  add a separate tabular_population attribute if the table can also provide
+  broader population assurance. Do not use inquiry for something supplied
+  tables can measure.
+- Only transaction_cycle entries carry registry, required_record_kinds, and
+  required_comparisons. For
   those entries, registry is an object with exactly pack_id, pack_version, and
   definition_hash copied from one installed pack. required_record_kinds is a
   sibling of registry on the control-attribute object, never a key inside
   registry, and contains at least two unique bindable record-kind ids from that
   same pack — a cycle is a link between records, so a requirement needing one
   record kind is document_content or tabular_population instead. Every other
-  evidence kind forbids both fields. The application derives the row's
-  business_cycle from these validated attributes.
+  evidence kind forbids all three fields. required_comparisons is non-empty and
+  names the exact minimum evidence contract. Each comparison contains key,
+  label, operator, left, optional right, and operator tolerance. Each operand is
+  {{record_kind, field:{{group,kind,attribute}}}} copied from the installed pack
+  catalog below. Each comparison must directly answer the requirement: never
+  substitute a related
+  prerequisite. If the named evidence is unavailable, choose manual_inspection,
+  inquiry, or mixed instead. The application derives the row's business_cycle
+  from these validated attributes.
 - criteria and control_owner are optional: cite or name only what the planning
   basis supplies, and leave the field empty otherwise rather than guessing.
 - Supplied table profiles are value-free shape statistics, not evidence. A null
@@ -317,18 +329,39 @@ _RCM_CANONICAL_PACK_REFERENCES = [
             "pack_version": pack["version"],
             "definition_hash": pack["definition_hash"],
         },
-        "bindable_record_kinds": [
-            record_kind["id"]
+        "record_kinds": [
+            {
+                "id": record_kind["id"],
+                "available_field_kinds": record_kind["available_field_kinds"],
+            }
             for record_kind in pack["record_kinds"]
             if record_kind["bindable"]
+        ],
+        "field_kinds": [
+            {
+                "id": field["id"],
+                "group": field["group"],
+                "kind": field["kind"],
+                "attributes": [
+                    {
+                        "id": attribute["id"],
+                        "semantic_type": attribute["semantic_type"],
+                        "control_evidence": bool(
+                            attribute.get("control_evidence", False)
+                        ),
+                    }
+                    for attribute in field["attributes"]
+                ],
+            }
+            for field in pack["field_kinds"]
         ],
     }
     for pack in cycle_vouching.metadata()["registry"]["packs"]
 ]
 RCM_SYSTEM += (
     "\nInstalled transaction-evidence packs. Copy one `registry` object exactly "
-    "and choose two or more of its bindable_record_kinds, only where the "
-    "requirement genuinely needs linked documents:\n"
+    "and choose two or more bindable record kinds plus exact field selectors, "
+    "only where the requirement genuinely needs linked source records:\n"
 ) + json.dumps(
     _RCM_CANONICAL_PACK_REFERENCES,
     sort_keys=True,

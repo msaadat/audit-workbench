@@ -242,6 +242,168 @@ def test_a_transaction_cycle_needs_more_than_one_record_kind(contract):
         cycle_vouching.validate_control_attributes([attribute])
 
 
+def test_transaction_cycle_requires_typed_evidence_comparisons(contract):
+    attribute = copy.deepcopy(contract["control_attributes"][0])
+    attribute.pop("required_comparisons")
+
+    with pytest.raises(cycle_vouching.CycleSchemaError, match="required_comparisons"):
+        cycle_vouching.validate_control_attributes([attribute])
+
+
+def test_transaction_cycle_rejects_unregistered_bank_account_substitute(contract):
+    attribute = copy.deepcopy(contract["control_attributes"][0])
+    attribute["required_record_kinds"] = [
+        "procure_to_pay.vendor_invoice",
+        "procure_to_pay.payment_voucher",
+    ]
+    attribute["required_comparisons"] = [
+        {
+            "key": "payment_bank_to_vendor_bank",
+            "label": "Payment account agrees to approved vendor account",
+            "left": {
+                "record_kind": "procure_to_pay.payment_voucher",
+                "field": {
+                    "group": "identifiers",
+                    "kind": "account_number",
+                    "attribute": "value",
+                },
+            },
+            "right": {
+                "record_kind": "procure_to_pay.vendor_invoice",
+                "field": {
+                    "group": "identifiers",
+                    "kind": "account_number",
+                    "attribute": "value",
+                },
+            },
+            "operator": "equal_exact",
+        }
+    ]
+
+    with pytest.raises(cycle_vouching.CycleSchemaError, match="is not registered"):
+        cycle_vouching.validate_control_attributes([attribute])
+
+
+def test_semantic_gate_rejects_related_assertions_as_requirement_coverage(contract):
+    manifest = _manifest(contract)
+    test = _test_payload(contract)
+    test["definition"]["assertions"] = [
+        assertion
+        for assertion in test["definition"]["assertions"]
+        if assertion["key"] != "invoice_amount_to_payment"
+    ]
+
+    with pytest.raises(cycle_vouching.CycleSchemaError, match="requires comparison"):
+        cycle_vouching.validate_cycle_test_semantics(
+            test,
+            rcm_row=_row_payload(contract),
+            manifest=manifest,
+        )
+
+
+def test_semantic_gate_accepts_declared_purchase_order_to_receipt_agreement(contract):
+    """A PO/GRN agreement becomes a Cycle Vouch only when the RCM says so.
+
+    This guards the exact failure observed in the first live Checkpoint C: a
+    model may also propose a tabular population procedure, but that must not
+    erase a separately declared source-record agreement requirement.
+    """
+    comparison = {
+        "key": "purchase_order_quantity_to_receipt",
+        "label": "Received quantity agrees to the purchase order",
+        "left": {
+            "record_kind": "procure_to_pay.purchase_order",
+            "field": {
+                "group": "quantities",
+                "kind": "total",
+                "attribute": "value",
+            },
+        },
+        "right": {
+            "record_kind": "procure_to_pay.goods_receipt",
+            "field": {
+                "group": "quantities",
+                "kind": "total",
+                "attribute": "value",
+            },
+        },
+        "operator": "numeric_within",
+        "tolerance": {"absolute": 0, "percent": 0},
+    }
+    attribute = {
+        "key": "purchase_order_to_receipt_agreement",
+        "assertion": "Accuracy",
+        "requirement": "Received quantities agree to the approved purchase order.",
+        "evidence_kind": "transaction_cycle",
+        "registry": copy.deepcopy(contract["cycle_test"]["registry"]),
+        "required_record_kinds": [
+            "procure_to_pay.purchase_order",
+            "procure_to_pay.goods_receipt",
+        ],
+        "required_comparisons": [comparison],
+    }
+    row = _row_payload(contract)
+    row["control_attributes"] = [attribute]
+    test = _test_payload(contract)
+    test["requirement_refs"] = [f"{test['rcm_id']}:{attribute['key']}"]
+    test["definition"]["roles"] = [
+        role
+        for role in test["definition"]["roles"]
+        if role["record_kind"] in set(attribute["required_record_kinds"])
+    ]
+    role_by_kind = {
+        role["record_kind"]: role["role"] for role in test["definition"]["roles"]
+    }
+    test["definition"]["assertions"] = [
+        {
+            "key": comparison["key"],
+            "label": comparison["label"],
+            "left": {
+                "source": "role",
+                "role": role_by_kind[comparison["left"]["record_kind"]],
+                "field": copy.deepcopy(comparison["left"]["field"]),
+            },
+            "right": {
+                "source": "role",
+                "role": role_by_kind[comparison["right"]["record_kind"]],
+                "field": copy.deepcopy(comparison["right"]["field"]),
+            },
+            "operator": comparison["operator"],
+            "tolerance": copy.deepcopy(comparison["tolerance"]),
+        }
+    ]
+    manifest = _manifest(contract)
+    manifest["groups"][0]["requirement_refs"] = [attribute["key"]]
+    manifest["groups"][0]["required_record_kinds"] = list(
+        attribute["required_record_kinds"]
+    )
+    manifest["groups"][0]["roles"] = copy.deepcopy(test["definition"]["roles"])
+    for record in manifest["groups"][0]["records"]:
+        if record["record_kind"] not in set(attribute["required_record_kinds"]):
+            continue
+        record["available_fields"].append(
+            {
+                "group": "quantities",
+                "kind": "total",
+                "label": "Total quantity",
+                "attributes": ["value"],
+                "attribute_types": {"value": "number"},
+                "control_evidence_attributes": [],
+                "normalization_status": "normalized",
+                "entry_count": 1,
+                "distinct_value_counts": {"value": 1},
+            }
+        )
+
+    validated = cycle_vouching.validate_cycle_test_semantics(
+        test,
+        rcm_row=row,
+        manifest=manifest,
+    )
+
+    assert validated["definition"]["assertions"][0]["key"] == comparison["key"]
+
+
 def test_oversized_evidence_selection_returns_confirmation_without_persisting(
     contract, monkeypatch
 ):

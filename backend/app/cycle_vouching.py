@@ -1898,6 +1898,16 @@ def transaction_evidence_manifest(
                 "requirement_refs": [
                     str(attribute["key"]) for attribute in grouped_attributes
                 ],
+                "requirements": [
+                    {
+                        "key": str(attribute["key"]),
+                        "requirement": str(attribute["requirement"]),
+                        "required_comparisons": copy.deepcopy(
+                            attribute["required_comparisons"]
+                        ),
+                    }
+                    for attribute in grouped_attributes
+                ],
                 "required_record_kinds": required_kinds,
                 "roles": roles,
                 "records": [_record_manifest(record, registry) for record in records],
@@ -1935,6 +1945,100 @@ def select_prevalidated_candidate(
     if selected is None:
         raise CycleSchemaError("The selected candidate ID is not prevalidated.")
     return {**selected, "selection_reason": _text(selection_reason, "selection_reason")}
+
+
+def _required_comparison_assertion(
+    value: object,
+    *,
+    label: str,
+    required_record_kinds: set[str],
+) -> dict:
+    """Translate an RCM evidence contract into the canonical assertion shape.
+
+    RCM rows do not know procedure-local role aliases or a population yet. A
+    transaction-cycle attribute therefore names exact registry record kinds.
+    Test generation later maps those kinds to its hydrated roles and must cover
+    this exact comparison; a prose ``requirement_ref`` alone is never coverage.
+    """
+
+    comparison = _object(value, label)
+    assertion = {
+        "key": _key(comparison.get("key"), f"{label}.key"),
+        "label": _text(comparison.get("label"), f"{label}.label"),
+        "operator": comparison.get("operator"),
+    }
+    for side in ("left", "right"):
+        raw_operand = comparison.get(side)
+        if side == "right" and raw_operand is None:
+            continue
+        operand = _object(raw_operand, f"{label}.{side}")
+        record_kind = _text(
+            operand.get("record_kind"), f"{label}.{side}.record_kind"
+        )
+        if record_kind not in required_record_kinds:
+            raise CycleSchemaError(
+                f"{label}.{side}.record_kind '{record_kind}' is not one of the "
+                "attribute's required record kinds."
+            )
+        assertion[side] = {
+            "source": "role",
+            "role": record_kind,
+            "field": _object(operand.get("field"), f"{label}.{side}.field"),
+        }
+    if comparison.get("tolerance") is not None:
+        assertion["tolerance"] = comparison.get("tolerance")
+    return assertion
+
+
+def _validate_required_comparisons(
+    value: object,
+    *,
+    label: str,
+    reference: RegistryReference,
+    required_record_kinds: list[str],
+    registry: CycleRegistry,
+) -> list[dict]:
+    comparisons = _list(value, label, nonempty=True)
+    if len(comparisons) > MAX_ASSERTIONS:
+        raise CycleSchemaError(
+            f"A transaction-cycle attribute may require at most {MAX_ASSERTIONS} comparisons."
+        )
+    required = set(required_record_kinds)
+    assertions: list[dict] = []
+    normalized: list[dict] = []
+    keys: set[str] = set()
+    for index, raw in enumerate(comparisons):
+        comparison_label = f"{label}[{index}]"
+        assertion = _required_comparison_assertion(
+            raw,
+            label=comparison_label,
+            required_record_kinds=required,
+        )
+        if assertion["key"] in keys:
+            raise CycleSchemaError(
+                f"Duplicate required comparison key '{assertion['key']}'."
+            )
+        keys.add(assertion["key"])
+        assertions.append(assertion)
+        normalized.append(_object(raw, comparison_label))
+
+    roles = {record_kind: record_kind for record_kind in required_record_kinds}
+    validated = validate_assertions(
+        assertions,
+        roles=roles,
+        pack_id=reference.pack_id,
+        registry=registry,
+    )
+    for assertion in validated:
+        _validate_assertion_meaning(
+            assertion,
+            role_kinds=roles,
+            required_roles=set(roles),
+            multiplicity_by_kind={},
+            pack_id=reference.pack_id,
+            registry=registry,
+        )
+    return normalized
 
 
 def validate_control_attributes(
@@ -1981,6 +2085,7 @@ def validate_control_attributes(
                 f"Unsupported evidence kind '{evidence_kind_id}'."
             )
         kinds_value = attribute.get("required_record_kinds")
+        comparisons_value = attribute.get("required_comparisons")
         if evidence_kind.record_kind_requirement == "required":
             if attribute_reference is None:
                 raise CycleSchemaError(
@@ -2018,9 +2123,20 @@ def validate_control_attributes(
                     raise CycleSchemaError(
                         "Control attributes require unique, bindable record kinds."
                     )
+            attribute["required_comparisons"] = _validate_required_comparisons(
+                comparisons_value,
+                label=f"control_attributes[{index}].required_comparisons",
+                reference=attribute_reference,
+                required_record_kinds=[str(kind) for kind in kinds],
+                registry=registry,
+            )
         elif kinds_value not in (None, []):
             raise CycleSchemaError(
                 f"Evidence kind '{evidence_kind_id}' does not accept record kinds."
+            )
+        elif comparisons_value not in (None, []):
+            raise CycleSchemaError(
+                f"Evidence kind '{evidence_kind_id}' does not accept required comparisons."
             )
         normalized.append(attribute)
     return normalized
@@ -2459,6 +2575,69 @@ def manifest_group_for_test(test: Mapping[str, object], manifest: Mapping[str, o
     return matches[0]
 
 
+_SYMMETRIC_OPERATORS = frozenset(
+    {"equal_exact", "equal_normalized", "numeric_within", "date_within"}
+)
+
+
+def _comparison_operand_signature(
+    operand: object,
+    *,
+    role_kinds: Mapping[str, str] | None = None,
+) -> tuple[str, str, str, str]:
+    value = _object(operand, "comparison operand")
+    if role_kinds is None:
+        record_kind = str(value.get("record_kind") or "")
+    else:
+        if value.get("source") != "role":
+            return ("", "", "", "")
+        record_kind = str(role_kinds.get(str(value.get("role") or "")) or "")
+    field = value.get("field") or {}
+    return (
+        record_kind,
+        str(field.get("group") or ""),
+        str(field.get("kind") or ""),
+        str(field.get("attribute") or ""),
+    )
+
+
+def _assertion_covers_required_comparison(
+    assertion: Mapping[str, object],
+    comparison: Mapping[str, object],
+    *,
+    role_kinds: Mapping[str, str],
+) -> bool:
+    operator = str(comparison.get("operator") or "")
+    if str(assertion.get("operator") or "") != operator:
+        return False
+    if _plain_json(assertion.get("tolerance")) != _plain_json(
+        comparison.get("tolerance")
+    ):
+        return False
+    expected_left = _comparison_operand_signature(comparison.get("left"))
+    actual_left = _comparison_operand_signature(
+        assertion.get("left"), role_kinds=role_kinds
+    )
+    expected_right = (
+        _comparison_operand_signature(comparison.get("right"))
+        if comparison.get("right") is not None
+        else None
+    )
+    actual_right = (
+        _comparison_operand_signature(assertion.get("right"), role_kinds=role_kinds)
+        if assertion.get("right") is not None
+        else None
+    )
+    if actual_left == expected_left and actual_right == expected_right:
+        return True
+    return bool(
+        operator in _SYMMETRIC_OPERATORS
+        and expected_right is not None
+        and actual_left == expected_right
+        and actual_right == expected_left
+    )
+
+
 def validate_cycle_test_semantics(
     value: object,
     *,
@@ -2674,6 +2853,24 @@ def validate_cycle_test_semantics(
                         "allocation or aggregation rule; grouped population reducers "
                         "are not supported by this definition version."
                     )
+
+    assertions = list(validated["definition"]["assertions"])
+    for attribute in referenced_attributes:
+        for comparison in attribute.get("required_comparisons") or []:
+            if any(
+                _assertion_covers_required_comparison(
+                    assertion,
+                    comparison,
+                    role_kinds=role_kinds,
+                )
+                for assertion in assertions
+            ):
+                continue
+            raise CycleSchemaError(
+                f"RCM control attribute '{attribute['key']}' requires comparison "
+                f"'{comparison['key']}', but no generated assertion covers its "
+                "exact record kinds, field selectors, operator, and tolerance."
+            )
 
     selected_is_join = candidate.get("source_kind") == "derived_join"
     if selected_is_join:

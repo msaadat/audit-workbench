@@ -478,6 +478,39 @@ def test_generate_worker_hydrates_the_canonical_cycle_definition_locally():
     assert model_payload["allowed_test_variants"] == ["cycle_vouch"]
 
 
+def test_generate_worker_rejects_an_admitted_partial_cycle_substitute():
+    from test_cycle_vouching_phase2 import _manifest, _row_payload, _test_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cycle = _test_payload(contract)
+    population = cycle["definition"]["population"]
+    response = {
+        "source": "document",
+        "kind": "cycle_vouch",
+        "title": cycle["title"],
+        "objective": "Validate amounts as a prerequisite for the referenced requirement.",
+        "requirement_refs": cycle["requirement_refs"],
+        "procedure_key": cycle["procedure_key"],
+        "candidate_id": population["candidate_id"],
+        "selection_reason": population["selection_reason"],
+        "selection": {"mode": "evidence_linked"},
+        "assertions": cycle["definition"]["assertions"],
+    }
+    bundle = _bundle(
+        rcm_rows=(cycle["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+    )
+    serialized = json.dumps({"tests": [response]})
+
+    with pytest.raises(WorkerRunError, match="does not cover its referenced requirement"):
+        WORKERS.execute(_request(bundle), _Gateway([serialized, serialized, serialized]))
+
+
 def test_generate_worker_refuses_to_leave_a_cycle_attribute_untested():
     """A transaction-cycle requirement has exactly one executable form.
 

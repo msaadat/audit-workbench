@@ -128,6 +128,39 @@ def _row(**overrides):
     return row
 
 
+def _three_way_required_comparisons():
+    return [
+        {
+            "key": "invoice_po_amount",
+            "label": "Invoice amount agrees to purchase order",
+            "left": {
+                "record_kind": "procure_to_pay.vendor_invoice",
+                "field": {"group": "amounts", "kind": "total", "attribute": "value"},
+            },
+            "right": {
+                "record_kind": "procure_to_pay.purchase_order",
+                "field": {"group": "amounts", "kind": "total", "attribute": "value"},
+            },
+            "operator": "numeric_within",
+            "tolerance": {"absolute": 0.01, "percent": 0},
+        },
+        {
+            "key": "po_grn_quantity",
+            "label": "Purchase order quantity agrees to goods receipt",
+            "left": {
+                "record_kind": "procure_to_pay.purchase_order",
+                "field": {"group": "quantities", "kind": "total", "attribute": "value"},
+            },
+            "right": {
+                "record_kind": "procure_to_pay.goods_receipt",
+                "field": {"group": "quantities", "kind": "total", "attribute": "value"},
+            },
+            "operator": "numeric_within",
+            "tolerance": {"absolute": 0, "percent": 0},
+        },
+    ]
+
+
 def test_rcm_worker_uses_only_bundle_and_returns_validated_rows():
     gateway = _Gateway([json.dumps({"rows": [_row()]})])
 
@@ -189,11 +222,12 @@ def test_rcm_worker_derives_business_cycle_and_drops_non_durable_reason():
                 "requirement": "Invoices agree to purchase and receipt records.",
                 "evidence_kind": "transaction_cycle",
                 "registry": registry,
-                "required_record_kinds": [
-                    "procure_to_pay.purchase_order",
-                    "procure_to_pay.goods_receipt",
-                    "procure_to_pay.vendor_invoice",
-                ],
+                    "required_record_kinds": [
+                        "procure_to_pay.purchase_order",
+                        "procure_to_pay.goods_receipt",
+                        "procure_to_pay.vendor_invoice",
+                    ],
+                    "required_comparisons": _three_way_required_comparisons(),
             }
         ],
     )
@@ -267,6 +301,7 @@ def test_rcm_worker_repairs_transaction_cycle_registry_to_canonical_reference(
         **malformed_attribute,
         "registry": registry,
         "required_record_kinds": record_kinds,
+        "required_comparisons": _three_way_required_comparisons(),
     }
     gateway = _Gateway(
         [

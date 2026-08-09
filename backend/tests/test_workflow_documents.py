@@ -2517,6 +2517,30 @@ def test_voucher_pack_is_constrained_to_the_packs_the_engagement_uses(monkeypatc
                         "procure_to_pay.purchase_order",
                         "procure_to_pay.goods_receipt",
                     ],
+                    "required_comparisons": [
+                        {
+                            "key": "po_grn_quantity",
+                            "label": "Purchase order quantity agrees to goods receipt",
+                            "left": {
+                                "record_kind": "procure_to_pay.purchase_order",
+                                "field": {
+                                    "group": "quantities",
+                                    "kind": "total",
+                                    "attribute": "value",
+                                },
+                            },
+                            "right": {
+                                "record_kind": "procure_to_pay.goods_receipt",
+                                "field": {
+                                    "group": "quantities",
+                                    "kind": "total",
+                                    "attribute": "value",
+                                },
+                            },
+                            "operator": "numeric_within",
+                            "tolerance": {"absolute": 0, "percent": 0},
+                        }
+                    ],
                 }
             ],
         }

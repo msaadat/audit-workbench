@@ -616,6 +616,37 @@
         "procure_to_pay.goods_receipt",
         "procure_to_pay.vendor_invoice",
         "procure_to_pay.payment_voucher"
+      ],
+      "required_comparisons": [
+        {
+          "key": "invoice_amount_to_payment",
+          "label": "Invoice amount agrees to payment",
+          "left": {"record_kind": "procure_to_pay.vendor_invoice", "field": {"group": "amounts", "kind": "total", "attribute": "value"}},
+          "right": {"record_kind": "procure_to_pay.payment_voucher", "field": {"group": "amounts", "kind": "total", "attribute": "value"}},
+          "operator": "numeric_within",
+          "tolerance": {"absolute": 0.01, "percent": 0}
+        },
+        {
+          "key": "invoice_amount_to_purchase_order",
+          "label": "Invoice amount agrees to the purchase order",
+          "left": {"record_kind": "procure_to_pay.vendor_invoice", "field": {"group": "amounts", "kind": "total", "attribute": "value"}},
+          "right": {"record_kind": "procure_to_pay.purchase_order", "field": {"group": "amounts", "kind": "total", "attribute": "value"}},
+          "operator": "numeric_within",
+          "tolerance": {"absolute": 0.01, "percent": 0}
+        },
+        {
+          "key": "receipt_before_payment",
+          "label": "Receipt date is on or before payment",
+          "left": {"record_kind": "procure_to_pay.goods_receipt", "field": {"group": "dates", "kind": "receipt_date", "attribute": "value"}},
+          "right": {"record_kind": "procure_to_pay.payment_voucher", "field": {"group": "dates", "kind": "payment_date", "attribute": "value"}},
+          "operator": "date_on_or_before"
+        },
+        {
+          "key": "requisition_approved",
+          "label": "Purchase requisition records an approver",
+          "left": {"record_kind": "procure_to_pay.purchase_requisition", "field": {"group": "approvals", "kind": "approval", "attribute": "approver"}},
+          "operator": "present"
+        }
       ]
     },
     {
@@ -631,6 +662,15 @@
       "required_record_kinds": [
         "procure_to_pay.goods_receipt",
         "procure_to_pay.payment_voucher"
+      ],
+      "required_comparisons": [
+        {
+          "key": "receipt_before_payment",
+          "label": "Receipt date is on or before payment",
+          "left": {"record_kind": "procure_to_pay.goods_receipt", "field": {"group": "dates", "kind": "receipt_date", "attribute": "value"}},
+          "right": {"record_kind": "procure_to_pay.payment_voucher", "field": {"group": "dates", "kind": "payment_date", "attribute": "value"}},
+          "operator": "date_on_or_before"
+        }
       ]
     }
   ],
