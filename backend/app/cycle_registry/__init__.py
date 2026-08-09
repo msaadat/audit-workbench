@@ -19,6 +19,7 @@ from .recipes import (
     RecipeOperand,
     recipe,
     recipes_for_pack,
+    required_selectors,
 )
 from .registry import CycleRegistry, RegistryError, canonical_sha256
 
@@ -67,5 +68,6 @@ __all__ = [
     "operator",
     "recipe",
     "recipes_for_pack",
+    "required_selectors",
     "unsupported_operator_message",
 ]

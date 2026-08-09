@@ -138,6 +138,8 @@ def _model_transaction_manifest(value: object) -> object:
                 for key in (
                     "registry",
                     "requirement_refs",
+                    "requirements",
+                    "recipe_options",
                     "required_record_kinds",
                     "roles",
                 )
@@ -407,6 +409,7 @@ GENERATE_RESPONSE_CONTRACT = {
                 "candidate_id",
                 "selection_reason",
                 "selection",
+                "recipe_bindings",
             ],
             "source": "document",
             "kind": "cycle_vouch",
@@ -438,14 +441,28 @@ Return JSON with a non-empty `tests` array. A test is one of:
    question-mode steps using only supplied document ids. A missing-evidence step
    has an empty document_ids array and a specific missing_evidence string.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
-   requirement_refs, procedure_key, candidate_id, selection_reason, and
-   selection. It has no assertions, registry, definition, roles, or steps. Every
-   comparison the procedure performs is derived locally from the
-   required_comparisons the referenced control attributes already carry, and the
-   registry-backed fields are hydrated from the chosen manifest candidate.
+   requirement_refs, procedure_key, candidate_id, selection_reason, selection,
+   and recipe_bindings. It has no assertions, registry, definition, roles, or
+   steps. Every comparison the procedure performs is expanded locally from the
+   recipes the referenced control attributes cite, under the bindings you
+   choose, and the registry-backed fields are hydrated from the chosen candidate.
 
-For Cycle Vouch you decide two things: which population to vouch, and which
-requirements belong in one procedure. Nothing else.
+For Cycle Vouch you decide three things: which population to vouch, which
+requirements belong in one procedure, and which record kinds fill each cited
+recipe's placeholders. Nothing else.
+
+The RCM row names the audit shape; you name the records that answer it here,
+because only this turn is shown what the engagement's evidence actually
+contains. `transaction_evidence.recipe_options` lists, per cited recipe, the
+`eligible_bindings` the extracted records can support — each one already checked
+to carry every field selector that recipe reads. Copy one of them exactly into
+recipe_bindings as {{"recipe_id": "...", "bindings": {{role: record_kind}}}},
+binding every recipe cited by every requirement_ref you reference.
+
+If a cited recipe has an empty `eligible_bindings`, no record kind in this
+workspace can answer that shape. Do not substitute a different comparison and do
+not reference that requirement: return your other tests, and leave it uncovered
+so the evidence gap is reported rather than papered over.
 
 The supplied `transaction_evidence` manifest is authoritative. Choose an exact
 candidate_id copied from one supplied registry group and explain the choice in
@@ -474,7 +491,10 @@ The exact Cycle Vouch response shape is:
 "objective":"...","requirement_refs":["RCM-ID:attribute_key"],
 "procedure_key":"invoice-three-way-match",
 "candidate_id":"CYCLE-CAND-EXACTLY-AS-SUPPLIED","selection_reason":"...",
-"selection":{{"mode":"evidence_linked"}}}}
+"selection":{{"mode":"evidence_linked"}},
+"recipe_bindings":[{{"recipe_id":"common.quantity_agreement",
+"bindings":{{"source":"procure_to_pay.purchase_order",
+"target":"procure_to_pay.goods_receipt"}}}}]}}
 
 Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
 normally produces a Data Test; document-content, inspection, inquiry, and mixed
@@ -714,13 +734,25 @@ def _validate_generate_cycle_test(
             return None
     requirement_refs = _plain_json(value.get("requirement_refs"))
     rcm_row = _generate_rcm_row(request)
+    recipe_bindings = _plain_json(value.get("recipe_bindings"))
+    if not isinstance(recipe_bindings, list) or not recipe_bindings:
+        errors.append(
+            f"{path}.recipe_bindings must bind every recipe the referenced "
+            "control attributes cite, as "
+            "[{'recipe_id':..., 'bindings':{role: record_kind}}] chosen from "
+            "the manifest's eligible_bindings"
+        )
+        return None
     try:
-        assertions = cycle_vouching.compile_required_assertions(
+        comparisons = cycle_vouching.required_comparisons_for(
             rcm_row=rcm_row,
             requirement_refs=(
                 requirement_refs if isinstance(requirement_refs, list) else []
             ),
-            group=group,
+            recipe_bindings=recipe_bindings,
+        )
+        assertions = cycle_vouching.compile_required_assertions(
+            comparisons=comparisons, group=group
         )
     except cycle_vouching.CycleSchemaError as error:
         errors.append(f"{path} {error}")
@@ -728,10 +760,25 @@ def _validate_generate_cycle_test(
     if not assertions:
         errors.append(
             f"{path}.requirement_refs cite no transaction_cycle control "
-            "attribute of this row that carries required comparisons; reference "
+            "attribute of this row that carries a comparison recipe; reference "
             "the exact '<RCM id>:<attribute key>' the procedure answers"
         )
         return None
+    bound_kinds = {
+        str(kind)
+        for entry in recipe_bindings
+        if isinstance(entry, Mapping)
+        for kind in (entry.get("bindings") or {}).values()
+    }
+    # Only the record kinds the chosen shapes actually read become roles. The
+    # manifest offers every extracted kind so the binding has something to
+    # choose from; a role no assertion reads is coverage, not evidence.
+    roles = [
+        _plain_json(role)
+        for role in group.get("roles") or []
+        if isinstance(role, Mapping)
+        and str(role.get("record_kind") or "") in bound_kinds
+    ]
     candidate = {
         "source": "document",
         "kind": "cycle_vouch",
@@ -749,8 +796,9 @@ def _validate_generate_cycle_test(
                 "cycle_keys": _plain_json(selected.get("cycle_keys")),
                 "selection": _plain_json(selection),
             },
-            "roles": _plain_json(group.get("roles")),
+            "roles": roles,
             "assertions": assertions,
+            "recipe_bindings": recipe_bindings,
         },
         "steps": [],
     }

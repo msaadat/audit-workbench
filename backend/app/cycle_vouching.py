@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import re
 import unicodedata
@@ -174,14 +175,10 @@ COMPARISON_KEYS = frozenset(
     {"key", "label", "operator", "left", "right", "tolerance"}
 )
 RECIPE_REFERENCE_KEYS = frozenset({"recipe_id", "bindings"})
-# Validation records which recipes it expanded under this key and clears
-# ``comparison_recipes``, because validation runs more than once over the life of
-# a row: the worker normalizes the proposal, the executor re-validates it before
-# committing, and the workspace re-validates it on load. Expanding into
-# ``required_comparisons`` while leaving the recipe list in place made the second
-# pass expand it again and collide with its own first expansion. The applied form
-# is provenance only and is never expanded.
-APPLIED_RECIPES_KEY = "comparison_recipes_applied"
+# An RCM row cites a recipe by id alone. Which record kinds fill its
+# placeholders is decided where the evidence is visible, so an unbound citation
+# carries nothing else.
+RECIPE_CITATION_KEYS = frozenset({"recipe_id"})
 CONTROL_ATTRIBUTE_KEYS = frozenset(
     {
         "key",
@@ -189,10 +186,7 @@ CONTROL_ATTRIBUTE_KEYS = frozenset(
         "requirement",
         "evidence_kind",
         "registry",
-        "required_record_kinds",
-        "required_comparisons",
         "comparison_recipes",
-        APPLIED_RECIPES_KEY,
     }
 )
 
@@ -1948,6 +1942,36 @@ def default_roles(required_record_kinds: Iterable[object]) -> list[dict]:
     return roles
 
 
+def _available_selectors(
+    record_manifests: Iterable[Mapping[str, object]],
+) -> dict[str, set[tuple[str, str, str]]]:
+    """Exact field selectors each record kind's extracted evidence can answer."""
+
+    available: dict[str, set[tuple[str, str, str]]] = {}
+    for record in record_manifests:
+        record_kind = str(record.get("record_kind") or "")
+        selectors = available.setdefault(record_kind, set())
+        for field in record.get("available_fields") or []:
+            if not isinstance(field, Mapping):
+                continue
+            for attribute in field.get("attributes") or []:
+                selectors.add(
+                    (
+                        str(field.get("group") or ""),
+                        str(field.get("kind") or ""),
+                        str(attribute),
+                    )
+                )
+    return available
+
+
+def _is_bindable(pack_id: str, record_kind: str, registry: CycleRegistry) -> bool:
+    try:
+        return bool(registry.record_kind(pack_id, record_kind).bindable)
+    except RegistryError:
+        return False
+
+
 def transaction_evidence_manifest(
     workspace,
     control_attributes: Iterable[object],
@@ -1976,14 +2000,30 @@ def transaction_evidence_manifest(
         records = document_analysis.registry_evidence_records(
             workspace, reference.to_dict(), excluded=excluded
         )
-        required_kinds = list(
-            dict.fromkeys(
-                str(kind)
-                for attribute in grouped_attributes
-                for kind in attribute.get("required_record_kinds") or []
-            )
+        # Roles are every bindable record kind the workspace actually extracted
+        # for this pack, not a set the planning turn named in advance. Which of
+        # them a procedure requires follows from the bindings chosen against
+        # this manifest, so the manifest must offer all of them.
+        record_manifests = [_record_manifest(record, registry) for record in records]
+        available_selectors = _available_selectors(record_manifests)
+        required_kinds = sorted(
+            kind
+            for kind in available_selectors
+            if _is_bindable(reference.pack_id, kind, registry)
         )
         roles = default_roles(required_kinds)
+        recipe_options = [
+            {
+                "recipe_id": citation["recipe_id"],
+                "eligible_bindings": eligible_recipe_bindings(
+                    citation["recipe_id"],
+                    reference=reference,
+                    available_selectors=available_selectors,
+                ),
+            }
+            for attribute in grouped_attributes
+            for citation in attribute.get("comparison_recipes") or []
+        ]
         mappings = infer_cycle_mappings(
             workspace,
             registry_ref=reference.to_dict(),
@@ -2018,15 +2058,16 @@ def transaction_evidence_manifest(
                     {
                         "key": str(attribute["key"]),
                         "requirement": str(attribute["requirement"]),
-                        "required_comparisons": copy.deepcopy(
-                            attribute["required_comparisons"]
+                        "comparison_recipes": copy.deepcopy(
+                            attribute.get("comparison_recipes") or []
                         ),
                     }
                     for attribute in grouped_attributes
                 ],
+                "recipe_options": recipe_options,
                 "required_record_kinds": required_kinds,
                 "roles": roles,
-                "records": [_record_manifest(record, registry) for record in records],
+                "records": record_manifests,
                 # Named, not merely absent: an analysis excluded for a stale pack
                 # or stale reviewed assignments is evidence that exists and is not
                 # being counted, which reads very differently from a document that
@@ -2121,6 +2162,94 @@ def _required_comparison_assertion(
     return assertion
 
 
+def _validate_recipe_citations(
+    value: object,
+    *,
+    label: str,
+    reference: RegistryReference,
+) -> list[dict]:
+    """Validate the unbound recipe ids an RCM row cites.
+
+    A citation names the audit shape and stops there. Which record kinds fill
+    the shape's placeholders is a statement about the evidence a workspace
+    holds, and the planning turn is deliberately not shown that evidence, so it
+    is decided during test generation instead.
+    """
+
+    entries = _list(value, label, nonempty=True)
+    offered = _recipes.recipes_for_pack(reference.pack_id)
+    seen: set[str] = set()
+    citations: list[dict] = []
+    errors: list[str] = []
+    for index, raw in enumerate(entries):
+        entry_label = f"{label}[{index}]"
+
+        def cite(raw=raw, entry_label=entry_label) -> dict:
+            entry = _object(raw, entry_label)
+            _reject_unknown_keys(entry, RECIPE_CITATION_KEYS, label=entry_label)
+            recipe_id = _text(entry.get("recipe_id"), f"{entry_label}.recipe_id")
+            definition = _recipes.recipe(recipe_id)
+            if definition is None or definition not in offered:
+                raise CycleSchemaError(
+                    f"{entry_label}.recipe_id '{recipe_id}' is not a comparison "
+                    f"recipe offered for pack '{reference.pack_id}'. Available "
+                    f"recipes are: {', '.join(item.id for item in offered)}."
+                )
+            if recipe_id in seen:
+                raise CycleSchemaError(
+                    f"{entry_label}.recipe_id '{recipe_id}' is cited twice. One "
+                    "citation names the shape; a shape used against two "
+                    "different record pairs is bound twice during generation."
+                )
+            seen.add(recipe_id)
+            return {"recipe_id": recipe_id}
+
+        result = _collect(errors, cite)
+        if result is not None:
+            citations.append(result)
+    if errors:
+        raise CycleSchemaError(errors)
+    return citations
+
+
+def eligible_recipe_bindings(
+    recipe_id: object,
+    *,
+    reference: RegistryReference,
+    available_selectors: Mapping[str, set[tuple[str, str, str]]],
+) -> list[dict[str, str]]:
+    """Every placeholder assignment the supplied evidence can actually answer.
+
+    ``available_selectors`` maps a record kind to the exact field selectors its
+    extracted records carry. A binding is eligible when each bound record kind
+    answers every selector its placeholder is read on, and no two placeholders
+    share a record kind — a cycle compares distinct records. Offering the
+    authoring turn only these removes the mistake the recipe shape cannot catch:
+    a quantity agreement bound to invoices that carry no quantity.
+    """
+
+    definition = _recipes.recipe(recipe_id)
+    if definition is None or definition not in _recipes.recipes_for_pack(
+        reference.pack_id
+    ):
+        return []
+    needed = _recipes.required_selectors(definition)
+    per_role = [
+        sorted(
+            kind
+            for kind, selectors in available_selectors.items()
+            if needed[role] <= selectors
+        )
+        for role in definition.roles
+    ]
+    bindings: list[dict[str, str]] = []
+    for combination in itertools.product(*per_role):
+        if len(set(combination)) != len(combination):
+            continue
+        bindings.append(dict(zip(definition.roles, combination)))
+    return bindings
+
+
 def _expand_comparison_recipes(
     value: object,
     *,
@@ -2197,10 +2326,17 @@ def _expand_comparison_recipes(
                         f"({', '.join(sorted(required))})."
                     )
                 bound[role] = record_kind
-            labels = {
-                role: registry.record_kind(reference.pack_id, record_kind).label
-                for role, record_kind in bound.items()
-            }
+            try:
+                labels = {
+                    role: registry.record_kind(reference.pack_id, record_kind).label
+                    for role, record_kind in bound.items()
+                }
+            except RegistryError as error:
+                # A binding naming a record kind the pack does not define is an
+                # authoring error like any other here. Letting the registry's own
+                # exception escape put it outside the validation errors the
+                # worker repairs against, so it read as a crash instead.
+                raise CycleSchemaError(f"{entry_label}.bindings: {error}") from error
             suffix = (
                 "_" + "_".join(
                     bound[role].rpartition(".")[2] for role in definition.roles
@@ -2444,115 +2580,23 @@ def _validate_control_attribute(
             f"must be exactly one of: "
             f"{', '.join(sorted(registry.evidence_kinds))}."
         )
-    kinds_value = attribute.get("required_record_kinds")
-    comparisons_value = attribute.get("required_comparisons")
     recipes_value = attribute.get("comparison_recipes")
     if evidence_kind.record_kind_requirement == "required":
-        # Nothing at all, rather than something malformed. Reporting the missing
-        # registry first sent the author to fix one field of a contract that had
-        # not been written, so the absence is named as the absence it is.
-        if (
-            attribute_reference is None
-            and not kinds_value
-            and not comparisons_value
-            and not recipes_value
-        ):
+        if attribute_reference is None and not recipes_value:
             raise CycleSchemaError(
                 f"{label} declares evidence kind '{evidence_kind_id}' but names "
-                "no evidence contract. Supply registry, required_record_kinds, "
-                "and comparison_recipes or required_comparisons."
+                "no evidence contract. Supply registry and comparison_recipes."
             )
         if attribute_reference is None:
             raise CycleSchemaError(
                 f"Evidence kind '{evidence_kind_id}' requires a registry reference."
             )
-        kinds = _list(
-            kinds_value,
-            f"{label}.required_record_kinds",
-            nonempty=True,
-        )
-        if len(set(kinds)) != len(kinds):
-            raise CycleSchemaError(
-                "Control attributes require unique, bindable record kinds."
-            )
-        # A cycle is a relationship between records. One record kind has no
-        # transaction linkage to test, so the requirement belongs to a
-        # document-content or tabular strategy instead of producing a cycle
-        # test whose graph can only ever reach its own seed.
-        if len(kinds) < MIN_CYCLE_RECORD_KINDS:
-            raise CycleSchemaError(
-                f"{label} uses evidence kind "
-                f"'{evidence_kind_id}' with one record kind; a transaction "
-                f"cycle links at least {MIN_CYCLE_RECORD_KINDS} record kinds. "
-                "Use document_content or tabular_population for a "
-                "single-record requirement."
-            )
-        for kind in kinds:
-            try:
-                definition = registry.record_kind(
-                    attribute_reference.pack_id, str(kind)
-                )
-            except RegistryError as error:
-                raise CycleSchemaError(str(error)) from error
-            if not definition.bindable:
-                raise CycleSchemaError(
-                    "Control attributes require unique, bindable record kinds."
-                )
-        record_kinds = [str(kind) for kind in kinds]
-        authored_recipes = _list(
-            recipes_value if recipes_value is not None else [],
-            f"{label}.comparison_recipes",
-        )
-        expanded = _expand_comparison_recipes(
-            authored_recipes,
+        attribute["comparison_recipes"] = _validate_recipe_citations(
+            recipes_value,
             label=f"{label}.comparison_recipes",
             reference=attribute_reference,
-            required_record_kinds=record_kinds,
-            registry=registry,
         )
-        supplied_comparisons = (
-            _list(comparisons_value, f"{label}.required_comparisons")
-            if comparisons_value is not None
-            else []
-        )
-        if not expanded and not supplied_comparisons:
-            raise CycleSchemaError(
-                f"{label} declares evidence kind '{evidence_kind_id}' but names "
-                "no evidence contract. Supply comparison_recipes, or "
-                "required_comparisons, or both."
-            )
-        attribute["required_comparisons"] = _validate_required_comparisons(
-            [*expanded, *supplied_comparisons],
-            label=f"{label}.required_comparisons",
-            reference=attribute_reference,
-            required_record_kinds=record_kinds,
-            registry=registry,
-            recipe_count=len(expanded),
-        )
-        # The expansion now lives in required_comparisons, so the recipe list is
-        # retired to its applied form. Validating this attribute again is then a
-        # no-op rather than a second expansion.
-        if authored_recipes:
-            attribute[APPLIED_RECIPES_KEY] = [
-                *_list(
-                    attribute.get(APPLIED_RECIPES_KEY) or [],
-                    f"{label}.{APPLIED_RECIPES_KEY}",
-                ),
-                *authored_recipes,
-            ]
-        attribute.pop("comparison_recipes", None)
-    elif kinds_value not in (None, []):
-        raise CycleSchemaError(
-            f"Evidence kind '{evidence_kind_id}' does not accept record kinds."
-        )
-    elif comparisons_value not in (None, []):
-        raise CycleSchemaError(
-            f"Evidence kind '{evidence_kind_id}' does not accept required comparisons."
-        )
-    elif recipes_value not in (None, []) or attribute.get(APPLIED_RECIPES_KEY) not in (
-        None,
-        [],
-    ):
+    elif recipes_value not in (None, []):
         raise CycleSchemaError(
             f"Evidence kind '{evidence_kind_id}' does not accept comparison recipes."
         )
@@ -2873,6 +2917,19 @@ def validate_cycle_definition(
                 "stratify_by is valid only for stratified sampling."
             )
     roles = _list(definition.get("roles"), "definition.roles", nonempty=True)
+    # The rule that a transaction cycle links records rather than inspecting one
+    # used to be enforced on the RCM row's declared record kinds. Those are now
+    # derived from the bindings this procedure chose, so the procedure is where
+    # it belongs: a single-role definition has no linkage to vouch and the
+    # requirement belongs to a document-content or tabular strategy.
+    if len({_object(raw, "definition.roles").get("record_kind") for raw in roles}) < (
+        MIN_CYCLE_RECORD_KINDS
+    ):
+        raise CycleSchemaError(
+            f"A cycle procedure links at least {MIN_CYCLE_RECORD_KINDS} record "
+            "kinds; use document_content or tabular_population for a "
+            "single-record requirement."
+        )
     if len(roles) > MAX_ROLES:
         raise CycleSchemaError(f"A cycle test may have at most {MAX_ROLES} roles.")
     role_kinds: dict[str, str] = {}
@@ -2906,11 +2963,78 @@ def validate_cycle_definition(
         registry=registry,
         table_columns=table_columns,
     )
+    definition["recipe_bindings"] = _validate_recipe_bindings(
+        definition.get("recipe_bindings"),
+        label="definition.recipe_bindings",
+        reference=reference,
+        role_kinds=role_kinds,
+    )
     definition["population"] = {
         **population,
         "selection": {**selection, "assurance_scope": derived_scope},
     }
     return definition
+
+
+def _validate_recipe_bindings(
+    value: object,
+    *,
+    label: str,
+    reference: RegistryReference,
+    role_kinds: Mapping[str, str],
+) -> list[dict]:
+    """Validate the placeholder assignments a generated procedure carries.
+
+    These are the durable record of which record kinds answered the row's cited
+    shapes. The coverage gate re-expands them, so they must name recipes the
+    pack offers and record kinds the procedure actually bound to a role.
+    """
+
+    entries = _list(value if value is not None else [], label)
+    offered = _recipes.recipes_for_pack(reference.pack_id)
+    bound_kinds = set(role_kinds.values())
+    validated: list[dict] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(entries):
+        entry_label = f"{label}[{index}]"
+        entry = _object(raw, entry_label)
+        _reject_unknown_keys(entry, RECIPE_REFERENCE_KEYS, label=entry_label)
+        recipe_id = _text(entry.get("recipe_id"), f"{entry_label}.recipe_id")
+        definition = _recipes.recipe(recipe_id)
+        if definition is None or definition not in offered:
+            raise CycleSchemaError(
+                f"{entry_label}.recipe_id '{recipe_id}' is not offered for pack "
+                f"'{reference.pack_id}'."
+            )
+        bindings = _object(entry.get("bindings"), f"{entry_label}.bindings")
+        if {str(key) for key in bindings} != set(definition.roles):
+            raise CycleSchemaError(
+                f"{entry_label}.bindings must bind exactly "
+                f"{', '.join(definition.roles)} for recipe '{recipe_id}'."
+            )
+        normalized: dict[str, str] = {}
+        for role in definition.roles:
+            record_kind = _text(
+                bindings.get(role), f"{entry_label}.bindings.{role}"
+            )
+            if record_kind not in bound_kinds:
+                raise CycleSchemaError(
+                    f"{entry_label}.bindings.{role} names record kind "
+                    f"'{record_kind}', which no role of this procedure binds."
+                )
+            normalized[role] = record_kind
+        identity = json.dumps(
+            {"recipe_id": recipe_id, "bindings": normalized},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if identity in seen:
+            raise CycleSchemaError(
+                f"{entry_label} repeats an identical binding of '{recipe_id}'."
+            )
+        seen.add(identity)
+        validated.append({"recipe_id": recipe_id, "bindings": normalized})
+    return validated
 
 
 def validate_cycle_test(
@@ -3173,29 +3297,105 @@ def _compiled_operand(
     return {"source": "role", "role": role, "field": field}, False
 
 
-def compile_required_assertions(
+def required_comparisons_for(
     *,
     rcm_row: Mapping[str, object],
     requirement_refs: Iterable[object],
+    recipe_bindings: Iterable[object],
+    registry: CycleRegistry = DEFAULT_REGISTRY,
+) -> list[dict]:
+    """Expand the recipes a row cites, under the bindings generation chose.
+
+    The row fixes *which* audit shapes answer its requirement; the bindings fix
+    which record kinds fill them. Neither half is authored by the turn that is
+    checked against the result: the shape comes from planning, the eligible
+    bindings from the evidence manifest. So the comparisons remain an external
+    contract even though they are assembled here.
+    """
+
+    wanted = {
+        str(reference).split(":", 1)[-1] for reference in requirement_refs or []
+    }
+    bound_by_id: dict[str, list[dict]] = {}
+    for raw in recipe_bindings or []:
+        entry = _object(raw, "recipe_bindings entry")
+        _reject_unknown_keys(entry, RECIPE_REFERENCE_KEYS, label="recipe_bindings entry")
+        recipe_id = _text(entry.get("recipe_id"), "recipe_bindings.recipe_id")
+        bound_by_id.setdefault(recipe_id, []).append(entry)
+    comparisons: list[dict] = []
+    for attribute in rcm_row.get("control_attributes") or []:
+        if not isinstance(attribute, Mapping):
+            continue
+        if attribute.get("evidence_kind") != "transaction_cycle":
+            continue
+        if str(attribute.get("key") or "") not in wanted:
+            continue
+        reference = _registry_reference(attribute.get("registry"), registry)
+        entries: list[dict] = []
+        for citation in attribute.get("comparison_recipes") or []:
+            recipe_id = str((citation or {}).get("recipe_id") or "")
+            supplied = bound_by_id.get(recipe_id) or []
+            if not supplied:
+                raise CycleSchemaError(
+                    f"Control attribute '{attribute.get('key')}' cites recipe "
+                    f"'{recipe_id}' and no binding was supplied for it."
+                )
+            # One cited shape may answer more than one record pair — an invoice
+            # total agreeing to its order *and* to its payment is two uses of
+            # one shape. Expansion qualifies the repeated keys by binding.
+            entries.extend(
+                {
+                    "recipe_id": recipe_id,
+                    "bindings": _object(
+                        entry.get("bindings"), f"{recipe_id}.bindings"
+                    ),
+                }
+                for entry in supplied
+            )
+        if not entries:
+            continue
+        record_kinds = sorted(
+            {str(value) for entry in entries for value in entry["bindings"].values()}
+        )
+        expanded = _expand_comparison_recipes(
+            entries,
+            label=f"comparison_recipes[{attribute.get('key')}]",
+            reference=reference,
+            required_record_kinds=record_kinds,
+            registry=registry,
+        )
+        # A recipe is a shortcut through authoring, never through the gate: the
+        # expansion goes through the same operand, type, tolerance, direction,
+        # and availability checks a hand-written comparison faced.
+        comparisons.extend(
+            _validate_required_comparisons(
+                expanded,
+                label=f"required_comparisons[{attribute.get('key')}]",
+                reference=reference,
+                required_record_kinds=record_kinds,
+                registry=registry,
+                recipe_count=len(expanded),
+            )
+        )
+    return comparisons
+
+
+def compile_required_assertions(
+    *,
+    comparisons: Iterable[Mapping[str, object]],
     group: Mapping[str, object],
 ) -> list[dict]:
-    """Derive a cycle procedure's assertions from the requirements it cites.
+    """Derive a cycle procedure's assertions from its required comparisons.
 
-    A ``required_comparison`` on the RCM row already fixes the operator, the
-    tolerance, both record kinds, and both field selectors, and the coverage
-    gate then demands an assertion that matches all of it exactly. Asking the
-    model to restate that under a role alias was transcription, not judgment:
-    it had no freedom to exercise and every opportunity to be imprecise, and
-    the operand form it had to pick — scalar or generalized — follows
-    mechanically from what the evidence holds. Deriving all of it here makes
-    coverage true by construction and the whole class of near-miss assertion
-    unrepresentable. What remains genuinely the model's is which population to
-    vouch and which requirements belong in one procedure.
+    A comparison already fixes the operator, the tolerance, both record kinds,
+    and both field selectors, and the coverage gate then demands an assertion
+    that matches all of it exactly. Asking the model to restate that under a
+    role alias was transcription, not judgment: it had no freedom to exercise
+    and every opportunity to be imprecise, and the operand form it had to pick
+    — scalar or generalized — follows mechanically from what the evidence
+    holds. Deriving all of it here makes coverage true by construction and the
+    whole class of near-miss assertion unrepresentable.
     """
-    wanted = {
-        str(reference).split(":", 1)[-1]
-        for reference in requirement_refs or []
-    }
     roles_by_kind: dict[str, str] = {}
     for role in group.get("roles") or []:
         if isinstance(role, Mapping):
@@ -3204,76 +3404,66 @@ def compile_required_assertions(
             )
     multiplicity = _multiplicity_by_selector(group)
     assertions: list[dict] = []
-    # Two cited attributes may legitimately name the same comparison — a broad
-    # cycle requirement and a narrow one often share an edge — and it is one
+    # One shape may legitimately answer two cited requirements, and it is one
     # assertion either way. Two *different* comparisons under one key would
     # instead make the assertion key ambiguous, so say so rather than choose.
     seen: dict[str, str] = {}
-    for attribute in rcm_row.get("control_attributes") or []:
-        if not isinstance(attribute, Mapping):
+    for comparison in comparisons or []:
+        if not isinstance(comparison, Mapping):
             continue
-        if attribute.get("evidence_kind") != "transaction_cycle":
-            continue
-        key = str(attribute.get("key") or "")
-        if key not in wanted:
-            continue
-        for comparison in attribute.get("required_comparisons") or []:
-            if not isinstance(comparison, Mapping):
-                continue
-            comparison_key = str(comparison.get("key") or "")
-            signature = json.dumps(
-                _plain_json(comparison), sort_keys=True, separators=(",", ":")
-            )
-            if comparison_key in seen:
-                if seen[comparison_key] != signature:
-                    raise CycleSchemaError(
-                        f"Control attributes of this row define different "
-                        f"comparisons under the key '{comparison_key}'; one key "
-                        "must name one comparison."
-                    )
-                continue
-            seen[comparison_key] = signature
-            operator = str(comparison.get("operator") or "")
-            definition = _operators.operator(operator)
-            if definition is None:
+        comparison_key = str(comparison.get("key") or "")
+        signature = json.dumps(
+            _plain_json(comparison), sort_keys=True, separators=(",", ":")
+        )
+        if comparison_key in seen:
+            if seen[comparison_key] != signature:
                 raise CycleSchemaError(
-                    _operators.unsupported_operator_message(
-                        operator, label=f"required comparison '{comparison_key}'"
-                    )
+                    f"Two different comparisons are named '{comparison_key}'; "
+                    "one key must name one comparison."
                 )
-            unary = definition.arity == "unary"
-            label = f"required comparison '{comparison_key}'"
-            left, left_set = _compiled_operand(
-                _object(comparison.get("left"), f"{label}.left"),
+            continue
+        seen[comparison_key] = signature
+        operator = str(comparison.get("operator") or "")
+        definition = _operators.operator(operator)
+        if definition is None:
+            raise CycleSchemaError(
+                _operators.unsupported_operator_message(
+                    operator, label=f"required comparison '{comparison_key}'"
+                )
+            )
+        unary = definition.arity == "unary"
+        label = f"required comparison '{comparison_key}'"
+        left, left_set = _compiled_operand(
+            _object(comparison.get("left"), f"{label}.left"),
+            roles_by_kind=roles_by_kind,
+            multiplicity=multiplicity,
+            # A unary operator takes one scalar operand and admits no
+            # generalized form, so a multi-valued selector there is a real
+            # evidence problem the assertion gate must report.
+            allow_set=not unary,
+            label=f"{label}.left",
+        )
+        assertion: dict = {
+            "key": comparison_key,
+            "label": str(comparison.get("label") or comparison_key),
+            "operator": operator,
+            "left": left,
+        }
+        if "tolerance" in comparison:
+            assertion["tolerance"] = _plain_json(comparison.get("tolerance"))
+        right_set = False
+        if not unary:
+            right, right_set = _compiled_operand(
+                _object(comparison.get("right"), f"{label}.right"),
                 roles_by_kind=roles_by_kind,
                 multiplicity=multiplicity,
-                # A unary operator takes one scalar operand and admits no
-                # generalized form, so a multi-valued selector there is a real
-                # evidence problem the assertion gate must report.
-                allow_set=not unary,
-                label=f"{label}.left",
+                allow_set=True,
+                label=f"{label}.right",
             )
-            assertion: dict = {
-                "key": comparison_key,
-                "label": str(comparison.get("label") or comparison_key),
-                "operator": operator,
-                "left": left,
-            }
-            if "tolerance" in comparison:
-                assertion["tolerance"] = _plain_json(comparison.get("tolerance"))
-            right_set = False
-            if not unary:
-                right, right_set = _compiled_operand(
-                    _object(comparison.get("right"), f"{label}.right"),
-                    roles_by_kind=roles_by_kind,
-                    multiplicity=multiplicity,
-                    allow_set=True,
-                    label=f"{label}.right",
-                )
-                assertion["right"] = right
-            if left_set or right_set:
-                assertion["role_quantifier"] = "all"
-            assertions.append(assertion)
+            assertion["right"] = right
+        if left_set or right_set:
+            assertion["role_quantifier"] = "all"
+        assertions.append(assertion)
     return assertions
 
 
@@ -3494,8 +3684,18 @@ def validate_cycle_test_semantics(
                     )
 
     assertions = list(validated["definition"]["assertions"])
+    # Re-derived here rather than trusted from the definition: the shapes come
+    # from the row and the bindings from the test, so neither the turn that
+    # chose the bindings nor the code that compiled the assertions can quietly
+    # narrow what the procedure owes.
     for attribute in referenced_attributes:
-        for comparison in attribute.get("required_comparisons") or []:
+        expected = required_comparisons_for(
+            rcm_row=rcm_row,
+            requirement_refs=[str(attribute["key"])],
+            recipe_bindings=definition.get("recipe_bindings") or [],
+            registry=registry,
+        )
+        for comparison in expected:
             if any(
                 _assertion_covers_required_comparison(
                     assertion,

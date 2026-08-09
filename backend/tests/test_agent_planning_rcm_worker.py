@@ -163,47 +163,18 @@ def _contract(**overrides):
         "row_index": 1,
         "attribute_key": "three_way_match",
         "registry": _registry(),
-        "required_record_kinds": [
-            "procure_to_pay.purchase_order",
-            "procure_to_pay.goods_receipt",
-            "procure_to_pay.vendor_invoice",
-        ],
-        "required_comparisons": _three_way_required_comparisons(),
+        "comparison_recipes": _three_way_recipes(),
     }
     contract.update(overrides)
     return contract
 
 
-def _three_way_required_comparisons():
+def _three_way_recipes():
+    """The shapes the evidence pass now cites, unbound."""
+
     return [
-        {
-            "key": "invoice_po_amount",
-            "label": "Invoice amount agrees to purchase order",
-            "left": {
-                "record_kind": "procure_to_pay.vendor_invoice",
-                "field": {"group": "amounts", "kind": "total", "attribute": "value"},
-            },
-            "right": {
-                "record_kind": "procure_to_pay.purchase_order",
-                "field": {"group": "amounts", "kind": "total", "attribute": "value"},
-            },
-            "operator": "numeric_within",
-            "tolerance": {"absolute": 0.01, "percent": 0},
-        },
-        {
-            "key": "po_grn_quantity",
-            "label": "Purchase order quantity agrees to goods receipt",
-            "left": {
-                "record_kind": "procure_to_pay.purchase_order",
-                "field": {"group": "quantities", "kind": "total", "attribute": "value"},
-            },
-            "right": {
-                "record_kind": "procure_to_pay.goods_receipt",
-                "field": {"group": "quantities", "kind": "total", "attribute": "value"},
-            },
-            "operator": "numeric_within",
-            "tolerance": {"absolute": 0, "percent": 0},
-        },
+        {"recipe_id": "procure_to_pay.three_way_match"},
+        {"recipe_id": "common.party_agreement"},
     ]
 
 
@@ -323,9 +294,9 @@ def test_rcm_worker_derives_business_cycle_and_drops_non_durable_keys():
     assert "test_procedure" not in normalized
     attribute = normalized["control_attributes"][0]
     assert attribute["registry"] == _registry()
-    assert [item["key"] for item in attribute["required_comparisons"]] == [
-        "invoice_po_amount",
-        "po_grn_quantity",
+    assert [item["recipe_id"] for item in attribute["comparison_recipes"]] == [
+        "procure_to_pay.three_way_match",
+        "common.party_agreement",
     ]
 
 
@@ -447,9 +418,9 @@ def test_rcm_worker_repairs_transaction_cycle_registry_to_canonical_reference(
 ):
     """A misplaced key is named as a misplaced key.
 
-    ``required_record_kinds`` nested inside ``registry`` used to surface as a
-    stale-reference or bad-version error, sending the next attempt to look at the
-    pack version — the one thing that was not wrong.
+    A stray key nested inside ``registry`` used to surface as a stale-reference
+    or bad-version error, sending the next attempt to look at the pack version —
+    the one thing that was not wrong.
     """
 
     gateway = _Gateway(
@@ -484,9 +455,9 @@ def test_rcm_worker_repairs_transaction_cycle_registry_to_canonical_reference(
         for entry in repair_request["ROWS TO CORRECT"]
         for error in entry["errors"]
     )
-    assert "required_record_kinds is a sibling of registry" in (
-        planning.RCM_EVIDENCE_SYSTEM
-    )
+    # The prompt no longer needs to say where record kinds go, because a row
+    # does not name them at all; the registry key set still rejects the
+    # misplacement itself.
 
 
 def test_rcm_worker_tolerates_stray_characters_after_a_complete_object():
@@ -557,9 +528,9 @@ def test_a_whole_document_re_ask_still_runs_the_evidence_pass():
     assert gateway.calls[2]["system"] == planning.RCM_EVIDENCE_SYSTEM
     attribute = result.proposal["rows"][0]["control_attributes"][0]
     assert attribute["registry"] == _registry()
-    assert [item["key"] for item in attribute["required_comparisons"]] == [
-        "invoice_po_amount",
-        "po_grn_quantity",
+    assert [item["recipe_id"] for item in attribute["comparison_recipes"]] == [
+        "procure_to_pay.three_way_match",
+        "common.party_agreement",
     ]
 
 
@@ -602,12 +573,8 @@ def test_rcm_worker_survives_an_unparseable_evidence_pass():
                                     {
                                         **_cycle_attribute(),
                                         "registry": _registry(),
-                                        "required_record_kinds": [
-                                            "procure_to_pay.vendor_invoice",
-                                            "procure_to_pay.purchase_order",
-                                        ],
-                                        "required_comparisons": [
-                                            _three_way_required_comparisons()[0]
+                                        "comparison_recipes": [
+                                            _three_way_recipes()[0]
                                         ],
                                     }
                                 ]
@@ -699,14 +666,7 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
 
     attribute = _cycle_attribute()
     row = _row(control_attributes=[attribute])
-    broken = _contract(
-        required_comparisons=[
-            {
-                **_three_way_required_comparisons()[0],
-                "operator": "equals",
-            }
-        ]
-    )
+    broken = _contract(comparison_recipes=[{"recipe_id": "common.invented"}])
     gateway = _Gateway(
         [
             json.dumps({"rows": [row]}),
@@ -720,12 +680,8 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
                                     {
                                         **attribute,
                                         "registry": _registry(),
-                                        "required_record_kinds": [
-                                            "procure_to_pay.vendor_invoice",
-                                            "procure_to_pay.purchase_order",
-                                        ],
-                                        "required_comparisons": [
-                                            _three_way_required_comparisons()[0]
+                                        "comparison_recipes": [
+                                            _three_way_recipes()[0]
                                         ],
                                     }
                                 ]
@@ -743,9 +699,11 @@ def test_rcm_worker_repairs_an_evidence_contract_without_retouching_judgment():
     assert result.repaired is True
     repair_request = json.loads(gateway.calls[2]["user"])
     errors = repair_request["ROWS TO CORRECT"][0]["errors"]
-    assert any("not a supported operator" in error for error in errors)
-    # The repair turn is given the vocabulary, not just the violation.
-    assert "equal_exact" in gateway.calls[2]["system"]
+    assert any(
+        "is not a comparison recipe offered for pack" in error for error in errors
+    )
+    # The repair turn is given the catalog, not just the violation.
+    assert "procure_to_pay.three_way_match" in gateway.calls[2]["system"]
     assert result.proposal["rows"][0]["risk"] == "Duplicate payments are processed"
 
 

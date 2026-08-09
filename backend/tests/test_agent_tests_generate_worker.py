@@ -9,6 +9,7 @@ resolver, or scheduler.
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -450,7 +451,7 @@ def test_generate_worker_hydrates_the_canonical_cycle_definition_locally():
         "candidate_id": population["candidate_id"],
         "selection_reason": population["selection_reason"],
         "selection": {"mode": "evidence_linked"},
-        "assertions": cycle["definition"]["assertions"],
+        "recipe_bindings": cycle["definition"]["recipe_bindings"],
     }
     bundle = _bundle(
         rcm_rows=(cycle["rcm_id"],),
@@ -1455,6 +1456,7 @@ def _cycle_response(contract, **overrides):
         "candidate_id": population["candidate_id"],
         "selection_reason": population["selection_reason"],
         "selection": {"mode": "evidence_linked"},
+        "recipe_bindings": copy.deepcopy(cycle["definition"]["recipe_bindings"]),
     }
     value.update(overrides)
     return value
@@ -1478,23 +1480,23 @@ def test_generate_worker_compiles_assertions_the_model_never_authors():
     result = WORKERS.execute(_request(bundle), gateway)
 
     assertions = result.proposal["tests"][0]["definition"]["assertions"]
-    assert assertions, "assertions are derived from required_comparisons"
-    cited = {
-        reference.split(":", 1)[-1]
-        for reference in contract["cycle_test"]["requirement_refs"]
-    }
-    # Deduplicated: the broad and narrow attributes here share one edge, and
-    # that edge is one assertion.
-    required = list(
-        dict.fromkeys(
-            comparison["key"]
-            for attribute in contract["control_attributes"]
-            if attribute.get("evidence_kind") == "transaction_cycle"
-            and attribute["key"] in cited
-            for comparison in attribute.get("required_comparisons") or []
-        )
+    assert assertions, "assertions are derived from the cited recipes"
+    from app import cycle_vouching
+
+    expected = cycle_vouching.required_comparisons_for(
+        rcm_row=_row_payload(contract),
+        requirement_refs=contract["cycle_test"]["requirement_refs"],
+        recipe_bindings=contract["cycle_test"]["definition"]["recipe_bindings"],
     )
-    assert [item["key"] for item in assertions] == required
+    # Two attributes may cite one shape over the same records; that is one
+    # assertion, and the compiler dedupes it.
+    assert [item["key"] for item in assertions] == list(
+        dict.fromkeys(item["key"] for item in expected)
+    )
+    # One cited shape answered two record pairs, and each got its own assertion.
+    assert sum(
+        1 for item in assertions if item["key"].startswith("total_amount_agreement")
+    ) == 2
     # The prompt no longer describes the assertion DSL at all.
     assert "role_quantifier" not in gateway.calls[0]["system"]
 

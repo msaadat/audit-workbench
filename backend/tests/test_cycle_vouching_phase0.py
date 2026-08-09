@@ -295,7 +295,7 @@ def test_non_cycle_evidence_strategies_do_not_require_a_domain_pack():
     assert attributes[0]["evidence_kind"] == "document_content"
 
     invalid = copy.deepcopy(attributes)
-    invalid[0]["required_record_kinds"] = ["payroll.payslip"]
+    invalid[0]["comparison_recipes"] = [{"recipe_id": "common.party_agreement"}]
     with pytest.raises(cycle_vouching.CycleSchemaError, match="does not accept"):
         cycle_vouching.validate_control_attributes(invalid)
 

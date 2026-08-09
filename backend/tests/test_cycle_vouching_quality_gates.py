@@ -280,62 +280,50 @@ def test_gate_ignores_direction_for_a_date_it_has_not_staged(contract):
     )
 
 
-def test_rcm_gate_rejects_a_required_record_kind_no_comparison_reads(contract):
-    """The defect is caught where it is still cheap to fix.
+def test_an_unread_record_kind_is_now_unrepresentable(contract):
+    """The defect class the RCM gate used to catch no longer exists.
 
-    A required record kind no comparison reads becomes a bound role in the
-    generated test that no assertion consumes. That was only rejected at test
-    generation, one capability downstream of the turn that authored it, so the
-    RCM row was already committed by the time anything complained.
+    A required record kind that no comparison reads became a bound role the
+    generated test could not consume. Record kinds are no longer declared on the
+    row at all: they arrive as the bindings of a cited recipe, and a recipe
+    reads every placeholder it declares. There is nothing left to under-read.
     """
 
-    contract = copy.deepcopy(contract)
-    attribute = contract["control_attributes"][0]
-    attribute["required_comparisons"] = [
-        item
-        for item in attribute["required_comparisons"]
-        if item["key"] != "invoice_amount_to_purchase_order"
-    ]
-
-    with pytest.raises(
-        cycle_vouching.CycleSchemaError,
-        match=(
-            "required record kind 'procure_to_pay.purchase_order' is never read "
-            "by a comparison"
-        ),
-    ):
-        cycle_vouching.validate_control_attributes(
-            contract["control_attributes"]
-        )
+    attribute = copy.deepcopy(contract["control_attributes"][0])
+    assert "required_record_kinds" not in attribute
+    validated = cycle_vouching.validate_control_attributes([attribute])
+    assert [item["recipe_id"] for item in validated[0]["comparison_recipes"]]
+    assert "required_record_kinds" not in validated[0]
 
 
 def test_gate_rejects_a_role_no_assertion_reads(contract):
     """The downstream gate still stands on its own.
 
-    Set up so the RCM contract is itself valid — the purchase order is dropped
-    from both the comparison and the required kinds — leaving the *test* to
-    declare a role that nothing reads. The earlier RCM-level gate has nothing to
-    say about that, so the test-definition rule is what has to fire.
+    Set up so the RCM contract is itself valid — the row cites only the receipt
+    ordering shape — leaving the *test* to declare a purchase-order role that
+    nothing reads.
     """
 
     contract = copy.deepcopy(contract)
-    comparison_key = "invoice_amount_to_purchase_order"
     attribute = contract["control_attributes"][0]
-    attribute["required_comparisons"] = [
-        item
-        for item in attribute["required_comparisons"]
-        if item["key"] != comparison_key
-    ]
-    attribute["required_record_kinds"] = [
-        kind
-        for kind in attribute["required_record_kinds"]
-        if kind != "procure_to_pay.purchase_order"
+    attribute["comparison_recipes"] = [
+        {"recipe_id": "procure_to_pay.receipt_before_payment"}
     ]
     test = _test_payload(contract)
+    test["requirement_refs"] = [f"{test['rcm_id']}:{attribute['key']}"]
+    test["definition"]["recipe_bindings"] = [
+        {
+            "recipe_id": "procure_to_pay.receipt_before_payment",
+            "bindings": {
+                "receipt_record": "procure_to_pay.goods_receipt",
+                "payment_record": "procure_to_pay.payment_voucher",
+            },
+        }
+    ]
     test["definition"]["assertions"] = [
         item
         for item in test["definition"]["assertions"]
-        if item["key"] != comparison_key
+        if item["key"] == "receipt_before_payment"
     ]
 
     with pytest.raises(
@@ -475,18 +463,23 @@ def test_compiled_assertions_choose_the_operand_form_the_evidence_allows(contrac
     approval["distinct_value_counts"]["approver"] = 3
 
     compiled = cycle_vouching.compile_required_assertions(
-        rcm_row=_row_payload(contract),
-        requirement_refs=contract["cycle_test"]["requirement_refs"],
+        comparisons=cycle_vouching.required_comparisons_for(
+            rcm_row=_row_payload(contract),
+            requirement_refs=contract["cycle_test"]["requirement_refs"],
+            recipe_bindings=contract["cycle_test"]["definition"]["recipe_bindings"],
+        ),
         group=group,
     )
 
-    approved = next(item for item in compiled if item["key"] == "requisition_approved")
+    approved = next(item for item in compiled if item["key"] == "approval_present")
     # ``present`` is unary and admits only a scalar operand, so a multi-valued
     # selector there is an evidence problem the assertion gate must report — not
     # something the compiler can paper over with a generalized form.
     assert approved["left"]["source"] == "role"
     amount = next(
-        item for item in compiled if item["key"] == "invoice_amount_to_purchase_order"
+        item
+        for item in compiled
+        if item["key"].startswith("total_amount_agreement")
     )
     assert amount["left"]["source"] == "role"
     assert "role_quantifier" not in amount

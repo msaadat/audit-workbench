@@ -209,7 +209,15 @@ def test_a_table_ranks_the_key_of_its_own_grain_first(populated, contract):
         mappings=_mappings(populated, contract),
         records=_records(contract),
         required_roles=cycle_vouching.default_roles(
-            contract["control_attributes"][0]["required_record_kinds"]
+            sorted(
+                {
+                    kind
+                    for entry in contract["cycle_test"]["definition"][
+                        "recipe_bindings"
+                    ]
+                    for kind in entry["bindings"].values()
+                }
+            )
         ),
     )
     po_candidates = [
@@ -255,7 +263,15 @@ def test_role_coverage_counts_only_the_rows_a_test_would_select(
         mappings=_mappings(populated, contract),
         records=_records(contract),
         required_roles=cycle_vouching.default_roles(
-            contract["control_attributes"][0]["required_record_kinds"]
+            sorted(
+                {
+                    kind
+                    for entry in contract["cycle_test"]["definition"][
+                        "recipe_bindings"
+                    ]
+                    for kind in entry["bindings"].values()
+                }
+            )
         ),
     )
     invoice = next(

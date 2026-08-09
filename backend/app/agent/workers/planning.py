@@ -360,45 +360,41 @@ _RCM_PACK_IDS = tuple(
 # needs it, and lets that call state the DSL properly.
 # --------------------------------------------------------------------------- #
 RCM_EVIDENCE_SYSTEM = f"""[agent:rcm_evidence]
-Author the evidence contract for control attributes that have already been
-judged to need linked source records. The risk, control, and requirement are
-settled: do not revise them, and do not add or remove attributes.
+Name the audit shapes that would answer control attributes already judged to
+need linked source records. The risk, control, and requirement are settled: do
+not revise them, and do not add or remove attributes.
+
+You are choosing what would prove the requirement, not how it will be tested
+here. Which record kinds fill a shape's placeholders, and whether this
+engagement's evidence can fill them at all, is decided later against the
+extracted records — you are not shown those, and must not guess at them.
 
 Return an object with `contracts`, one entry per supplied attribute, each with
 row_index and attribute_key copied exactly from the request, plus:
 - registry: an object with exactly pack_id, pack_version, and definition_hash,
   copied verbatim from one installed pack below. All attributes of one row must
-  use the same pack.
-- required_record_kinds: at least two unique bindable record-kind ids from that
-  same pack. A transaction cycle is a link between records, so every record kind
-  you list must be read by at least one comparison — list only what the contract
-  actually compares. required_record_kinds is a sibling of registry, never a key
-  inside registry.
-- comparison_recipes and/or required_comparisons: the evidence contract.
+  use the same pack. The pack is the business cycle the control belongs to.
+- comparison_recipes: a non-empty array of {{"recipe_id": "<id>"}} objects and
+  nothing else. No bindings, no record kinds, no field selectors, no operators.
+  Cite each shape once; a shape used against two different record pairs is bound
+  twice downstream, not cited twice here.
 
 {prompts.comparison_recipe_catalog(_RCM_PACK_IDS)}
 
-Where no recipe fits, author required_comparisons directly. Each comparison has
-key, label, operator, left, right (omitted only for a unary operator), and the
-tolerance its operator requires — and no other keys. Each operand is exactly
-{{"record_kind": "<id from required_record_kinds>", "field": {{"group": "...",
-"kind": "...", "attribute": "..."}}}}, with the field selector copied from the
-pack catalog below and available on that record kind.
-
-{prompts.operator_table()}
-
-A comparison must directly answer its requirement; never substitute a related
-prerequisite. If the pack cannot express the requirement, say so by returning
-`unsupported: true` with a one-line reason instead of the contract fields, and
-the attribute's evidence strategy will be reconsidered rather than answered with
-a comparison that proves something else. {JSON_RULES}"""
+Choose only shapes that directly answer the requirement; never cite a related
+prerequisite because it is close. If no recipe answers the requirement, say so
+by returning `unsupported: true` with a one-line reason instead of the contract
+fields, and the attribute's evidence strategy will be reconsidered rather than
+answered by a shape that proves something else. {JSON_RULES}"""
 
 RCM_EVIDENCE_SYSTEM += (
     "\n\nInstalled transaction-evidence packs. Copy one `registry` object "
-    "exactly and choose two or more bindable record kinds plus exact field "
-    "selectors:\n"
+    "exactly:\n"
 ) + json.dumps(
-    _RCM_CANONICAL_PACK_REFERENCES,
+    [
+        {"registry": pack["registry"]}
+        for pack in _RCM_CANONICAL_PACK_REFERENCES
+    ],
     sort_keys=True,
     separators=(",", ":"),
 )
@@ -680,11 +676,7 @@ def _cycle_attribute_requests(rows: list[dict]) -> list[dict]:
                 continue
             if attribute.get("evidence_kind") != "transaction_cycle":
                 continue
-            if (
-                attribute.get("required_comparisons")
-                or attribute.get("comparison_recipes")
-                or attribute.get(cycle_vouching.APPLIED_RECIPES_KEY)
-            ):
+            if attribute.get("comparison_recipes"):
                 continue
             pending.append(
                 {
@@ -702,9 +694,7 @@ def _cycle_attribute_requests(rows: list[dict]) -> list[dict]:
 
 _CONTRACT_FIELDS = (
     "registry",
-    "required_record_kinds",
     "comparison_recipes",
-    "required_comparisons",
 )
 
 

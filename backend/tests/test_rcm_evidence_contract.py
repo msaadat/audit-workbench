@@ -1,10 +1,17 @@
-"""The RCM evidence contract: the DSL, its gate, and the real failure it lost to.
+"""The evidence contract: what planning decides, what generation decides.
 
 Every rule here exists because one live procurement RCM generation failed twice
 and took thirteen rows with it. The verbatim response is
-``fixtures/rcm_operator_rejection.json``; the root cause was that the operator
-vocabulary appeared nowhere in the turn that had to author it, and the rejection
-that came back named the offending value without ever naming a legal one.
+``fixtures/rcm_operator_rejection.json``. The original root cause was that the
+operator vocabulary appeared nowhere in the turn that had to author it.
+
+The deeper cause outlasted that fix: the planning turn was authoring an
+evidence contract — record kinds, field selectors, operators — while being
+deliberately denied any sight of the evidence, so it could name a comparison
+against a field the extracted invoices did not carry, and only test generation,
+one capability downstream, could discover it. A row now cites the audit *shape*
+and stops. Which records fill the shape is bound during generation, against a
+manifest of what the workspace actually holds.
 """
 
 from __future__ import annotations
@@ -31,36 +38,37 @@ def _registry() -> dict:
     return DEFAULT_REGISTRY.reference("procure_to_pay").to_dict()
 
 
-def _attribute(**overrides) -> dict:
+def _attribute(recipe_ids=("common.total_amount_agreement",), **overrides) -> dict:
     attribute = {
         "key": "invoice_match",
         "assertion": "Accuracy",
         "requirement": "The invoice agrees to the purchase order.",
         "evidence_kind": "transaction_cycle",
         "registry": _registry(),
-        "required_record_kinds": [
-            "procure_to_pay.vendor_invoice",
-            "procure_to_pay.purchase_order",
-        ],
-        "required_comparisons": [
-            {
-                "key": "invoice_to_order",
-                "label": "Invoice total agrees to the order",
-                "operator": "numeric_within",
-                "left": {
-                    "record_kind": "procure_to_pay.vendor_invoice",
-                    "field": {"group": "amounts", "kind": "total", "attribute": "value"},
-                },
-                "right": {
-                    "record_kind": "procure_to_pay.purchase_order",
-                    "field": {"group": "amounts", "kind": "total", "attribute": "value"},
-                },
-                "tolerance": {"absolute": 0.01, "percent": 0},
-            }
-        ],
+        "comparison_recipes": [{"recipe_id": value} for value in recipe_ids],
     }
     attribute.update(overrides)
     return attribute
+
+
+def _row(attribute: dict) -> dict:
+    return {"id": "RCM-1", "control_attributes": [attribute]}
+
+
+def _expand(attribute: dict, bindings: list[dict]) -> list[dict]:
+    """Expand one attribute's cited shapes under the supplied bindings."""
+
+    return cycle_vouching.required_comparisons_for(
+        rcm_row=_row(attribute),
+        requirement_refs=[f"RCM-1:{attribute['key']}"],
+        recipe_bindings=bindings,
+    )
+
+
+def _expand_errors(attribute: dict, bindings: list[dict]) -> tuple[str, ...]:
+    with pytest.raises(cycle_vouching.CycleSchemaError) as raised:
+        _expand(attribute, bindings)
+    return raised.value.errors
 
 
 def _errors(attribute: dict) -> tuple[str, ...]:
@@ -69,7 +77,16 @@ def _errors(attribute: dict) -> tuple[str, ...]:
     return raised.value.errors
 
 
-# --- the vocabulary is stated, once, where both prompts can read it ----------
+_PO_TO_INVOICE = {
+    "recipe_id": "common.total_amount_agreement",
+    "bindings": {
+        "source": "procure_to_pay.vendor_invoice",
+        "target": "procure_to_pay.purchase_order",
+    },
+}
+
+
+# --- the vocabulary lives in the catalog, not in a prompt --------------------
 
 
 def test_the_gate_and_the_operator_table_cannot_drift_apart():
@@ -79,84 +96,43 @@ def test_the_gate_and_the_operator_table_cannot_drift_apart():
     }
 
 
-def test_the_authoring_prompt_states_the_whole_operator_vocabulary():
-    """Whichever prompt authors comparisons must state every operator.
+def test_no_authoring_prompt_states_an_operator_because_none_authors_one():
+    """The vocabulary that caused the live failure is no longer reachable.
 
-    That is now exactly one prompt. ``tests.generate`` used to restate the
-    vocabulary because it authored assertions too, and the two prompts had to be
-    kept in parity. It no longer authors them: a cycle procedure's comparisons
-    are compiled from the ``required_comparisons`` this prompt produces, so the
-    operator table belongs here alone.
+    Operators, tolerances, and field selectors are fixed inside the recipe
+    catalog. Planning cites a shape by id and generation binds it to records, so
+    neither turn can name an operator — and neither can get one wrong.
     """
 
-    for operator_id in sorted(cycle_vouching.OPERATORS):
-        assert operator_id in planning.RCM_EVIDENCE_SYSTEM, operator_id
+    # ``present`` is excluded only because it is a substring of the recipe ids
+    # that offer it (``common.approval_present``), not because it is authorable.
+    authorable = sorted(cycle_vouching.OPERATORS - {"present"})
+    assert authorable
+    for prompt in (planning.RCM_EVIDENCE_SYSTEM, tests_worker.GENERATE_SYSTEM):
+        for operator_id in authorable:
+            assert operator_id not in prompt, operator_id
+    assert "operator_tolerance" not in planning.RCM_EVIDENCE_SYSTEM
+    assert "tolerance" not in planning.RCM_EVIDENCE_SYSTEM
 
 
-def test_the_generation_prompt_no_longer_authors_comparisons():
-    """The operator vocabulary is absent from generation because it is unused."""
+def test_the_evidence_prompt_offers_the_recipe_catalog_and_nothing_lower_level():
+    assert (
+        prompts.comparison_recipe_catalog(planning._RCM_PACK_IDS)
+        in planning.RCM_EVIDENCE_SYSTEM
+    )
+    unwrapped = " ".join(planning.RCM_EVIDENCE_SYSTEM.split())
+    assert "No bindings, no record kinds, no field selectors, no operators" in unwrapped
+    assert "unsupported" in planning.RCM_EVIDENCE_SYSTEM
 
-    assert "operand1" not in tests_worker.GENERATE_SYSTEM
-    assert "entry_quantifier" not in tests_worker.GENERATE_SYSTEM
+
+def test_the_generation_prompt_binds_shapes_it_does_not_author_them():
+    assert "recipe_bindings" in tests_worker.GENERATE_SYSTEM
+    assert "eligible_bindings" in tests_worker.GENERATE_SYSTEM
     assert "It has no assertions" in tests_worker.GENERATE_SYSTEM
-
-
-def test_the_rcm_prompt_names_the_operators_it_rejects():
-    table = prompts.operator_table()
-    assert "equals" in table and "greater_than_or_equal" in table
-    assert table in planning.RCM_EVIDENCE_SYSTEM
-    # And it tells the author which direction a date comparison runs, which is
-    # the correction a rename alone does not make.
-    assert "EARLIER event on the left" in planning.RCM_EVIDENCE_SYSTEM
+    assert "entry_quantifier" not in tests_worker.GENERATE_SYSTEM
 
 
 # --- replaying the live failure ---------------------------------------------
-
-
-def test_the_live_rejection_now_reports_every_invalid_operator_at_once(
-    rejected_rows,
-):
-    """Six invalid operators produced two error messages.
-
-    Each row stopped at its first bad comparison, so a bounded repair turn was
-    told about two problems out of six. Correcting both would still have failed.
-    """
-
-    errors = _all_errors(rejected_rows)
-    operator_errors = [item for item in errors if "not a supported operator" in item]
-    assert len(operator_errors) == 6
-    assert sum("'equals'" in item for item in operator_errors) == 4
-    assert sum("'greater_than_or_equal'" in item for item in operator_errors) == 2
-
-
-def test_the_live_rejection_also_reveals_the_invented_key_the_prompt_caused(
-    rejected_rows,
-):
-    """Every failing comparison also carried an ``operator_tolerance`` key.
-
-    The old prompt asked for "key, label, operator, left, optional right, and
-    operator tolerance", which reads as a field name — so the model wrote one.
-    The key was silently ignored, meaning the tolerance was silently dropped, and
-    nothing said so. Both defects on one comparison are now reported together,
-    because fixing the operator alone would leave the tolerance still missing.
-    """
-
-    errors = _all_errors(rejected_rows)
-    misplaced = [item for item in errors if "'operator_tolerance'" in item]
-    assert len(misplaced) == 6
-    assert all("It accepts exactly: key, label, left, operator" in item for item in misplaced)
-    # The replacement prompt cannot be read that way.
-    assert "operator_tolerance" not in planning.RCM_EVIDENCE_SYSTEM
-    unwrapped = " ".join(planning.RCM_EVIDENCE_SYSTEM.split())
-    assert "the tolerance its operator requires — and no other keys" in unwrapped
-
-
-def _all_errors(rows: list[dict]) -> list[str]:
-    return [
-        message
-        for index, row in enumerate(rows, start=1)
-        for message in _row_errors(row, index)
-    ]
 
 
 def _row_errors(row: dict, index: int) -> list[str]:
@@ -167,24 +143,32 @@ def _row_errors(row: dict, index: int) -> list[str]:
     return []
 
 
-def test_the_live_rejection_message_now_carries_the_legal_vocabulary(
-    rejected_rows,
-):
-    """The old message named the wrong value and stopped.
+def _all_errors(rows: list[dict]) -> list[str]:
+    return [
+        message
+        for index, row in enumerate(rows, start=1)
+        for message in _row_errors(row, index)
+    ]
 
-    The repair turn was told ``eq`` was unsupported and answered ``equals``. The
-    message now states the closed set, so the correction is available.
+
+def test_the_live_response_can_no_longer_even_be_expressed(rejected_rows):
+    """Six invalid operators, on comparisons a row may no longer author.
+
+    The whole defect class is gone by construction rather than by a better
+    error message: the keys those comparisons lived in are not part of a control
+    attribute any more.
     """
 
     errors = _all_errors(rejected_rows)
-    operator_error = next(
+    assert errors
+    rejected_keys = [
         item
         for item in errors
-        if "'equals'" in item and "not a supported operator" in item
-    )
-    for operator_id in sorted(cycle_vouching.OPERATORS):
-        assert operator_id in operator_error
-    assert "For 'equals' use 'equal_exact'" in operator_error
+        if "unexpected key 'required_comparisons'" in item
+        or "unexpected key 'required_record_kinds'" in item
+    ]
+    assert rejected_keys
+    assert not [item for item in errors if "not a supported operator" in item]
 
 
 def test_the_live_rejection_keeps_the_rows_that_were_never_wrong(rejected_rows):
@@ -199,21 +183,16 @@ def test_the_live_rejection_keeps_the_rows_that_were_never_wrong(rejected_rows):
     assert len(rejected_rows) == 13
 
 
-# --- a rename is a suggestion, never a rewrite ------------------------------
-
-
-def test_the_live_document_validates_once_its_contracts_come_from_recipes():
+def test_the_live_document_validates_once_its_contracts_cite_recipes():
     """The end the live run never reached.
 
-    The same thirteen rows, with each transaction-cycle attribute's contract
-    authored as a recipe reference rather than hand-rolled DSL. Nothing about the
-    audit judgment changes; the four attributes that needed comparisons get them
-    from the catalog, and the document validates on the first attempt.
+    The same thirteen rows, with each transaction-cycle attribute citing a
+    recipe rather than hand-rolling DSL. Nothing about the audit judgment
+    changes, and the document validates on the first attempt.
     """
 
     rows = json.loads(FIXTURE.read_text(encoding="utf-8"))["rows"]
-    judged = [_strategy_only(row) for row in rows]
-    contracted = [_with_recipe_contracts(row) for row in judged]
+    contracted = [_with_recipe_citations(_strategy_only(row)) for row in rows]
 
     normalized, failures = planning._partition_rcm_rows(contracted, _blank_request())
 
@@ -247,8 +226,8 @@ def _strategy_only(row: dict) -> dict:
     }
 
 
-def _with_recipe_contracts(row: dict) -> dict:
-    """Attach the contract the evidence pass would author, via recipes."""
+def _with_recipe_citations(row: dict) -> dict:
+    """Attach the contract the evidence pass now authors: shapes, unbound."""
 
     return {
         **row,
@@ -258,18 +237,8 @@ def _with_recipe_contracts(row: dict) -> dict:
             else {
                 **attribute,
                 "registry": _registry(),
-                "required_record_kinds": [
-                    "procure_to_pay.vendor_invoice",
-                    "procure_to_pay.purchase_order",
-                ],
                 "comparison_recipes": [
-                    {
-                        "recipe_id": "common.total_amount_agreement",
-                        "bindings": {
-                            "source": "procure_to_pay.vendor_invoice",
-                            "target": "procure_to_pay.purchase_order",
-                        },
-                    }
+                    {"recipe_id": "common.total_amount_agreement"}
                 ],
             }
             for attribute in row["control_attributes"]
@@ -285,421 +254,217 @@ def _blank_request():
     return _request()
 
 
-def test_a_near_miss_operator_is_rejected_rather_than_guessed():
-    """``equals`` on an amount is not ``equal_exact``.
-
-    Choosing between exact agreement and a tolerance is an audit-design decision.
-    The message says what was probably meant and what the rename alone does not
-    fix; the payload is still rejected.
-    """
-
-    message = operators.unsupported_operator_message("equals", label="c[0]")
-    assert "use 'equal_exact'" in message
-    assert "numeric_within with a tolerance" in message
-    assert operators.operator("equals") is None
-    assert operators.operator("Equal_Exact") is None
-    # Whitespace is transport, not a choice.
-    assert operators.operator("  equal_exact ").id == "equal_exact"
+# --- what a row may and may not say -----------------------------------------
 
 
-def test_a_reversed_date_operator_is_told_to_swap_its_operands():
-    """The live failure wrote ``greater_than_or_equal`` for payment-after-receipt.
+def test_a_row_cites_a_shape_and_stops():
+    validated = cycle_vouching.validate_control_attributes([_attribute()])
 
-    Mapping that to ``date_on_or_before`` without swapping the operands would
-    silently assert the opposite of the requirement.
-    """
-
-    message = operators.unsupported_operator_message(
-        "greater_than_or_equal", label="c[0]"
-    )
-    assert "use 'date_on_or_before'" in message
-    assert "operands swapped so the earlier event is on the left" in message
-
-
-def test_a_backwards_date_comparison_is_rejected_against_the_pack_chronology():
-    errors = _errors(
-        _attribute(
-            required_record_kinds=[
-                "procure_to_pay.goods_receipt",
-                "procure_to_pay.payment_voucher",
-            ],
-            required_comparisons=[
-                {
-                    "key": "payment_before_receipt",
-                    "label": "Stated backwards on purpose",
-                    "operator": "date_on_or_before",
-                    "left": {
-                        "record_kind": "procure_to_pay.payment_voucher",
-                        "field": {
-                            "group": "dates",
-                            "kind": "payment_date",
-                            "attribute": "value",
-                        },
-                    },
-                    "right": {
-                        "record_kind": "procure_to_pay.goods_receipt",
-                        "field": {
-                            "group": "dates",
-                            "kind": "receipt_date",
-                            "attribute": "value",
-                        },
-                    },
-                }
-            ],
-        )
-    )
-
-    assert any("registered cycle order puts it later" in item for item in errors)
-
-
-# --- every independent violation, with a path -------------------------------
-
-
-def test_every_malformed_comparison_in_one_attribute_is_reported():
-    comparisons = [
-        {
-            "key": f"bad_{index}",
-            "label": "Invented operator",
-            "operator": name,
-            "left": {
-                "record_kind": "procure_to_pay.vendor_invoice",
-                "field": {"group": "amounts", "kind": "total", "attribute": "value"},
-            },
-            "right": {
-                "record_kind": "procure_to_pay.purchase_order",
-                "field": {"group": "amounts", "kind": "total", "attribute": "value"},
-            },
-        }
-        for index, name in enumerate(("equals", "eq", "gte", "matches"))
+    assert validated[0]["comparison_recipes"] == [
+        {"recipe_id": "common.total_amount_agreement"}
     ]
-
-    errors = _errors(_attribute(required_comparisons=comparisons))
-
-    assert len(errors) == 4
-    for index in range(4):
-        assert any(
-            f"required_comparisons[{index}]" in item for item in errors
-        ), index
-
-
-def test_every_malformed_attribute_of_one_control_is_reported():
-    errors = _errors_for(
-        [
-            _attribute(key="first", assertion="Correctness"),
-            _attribute(key="second", evidence_kind="table_scan"),
-        ]
-    )
-
-    assert len(errors) == 2
-    assert "control_attributes[0].assertion 'Correctness'" in errors[0]
-    assert "control_attributes[1].evidence_kind 'table_scan'" in errors[1]
-
-
-def _errors_for(attributes: list[dict]) -> tuple[str, ...]:
-    with pytest.raises(cycle_vouching.CycleSchemaError) as raised:
-        cycle_vouching.validate_control_attributes(attributes)
-    return raised.value.errors
-
-
-def test_an_error_path_reaches_the_exact_comparison_and_side():
-    errors = _errors(
-        _attribute(
-            required_comparisons=[
-                {
-                    "key": "bad_field",
-                    "label": "Unknown field selector",
-                    "operator": "equal_exact",
-                    "left": {
-                        "record_kind": "procure_to_pay.vendor_invoice",
-                        "field": {
-                            "group": "amounts",
-                            "kind": "invented",
-                            "attribute": "value",
-                        },
-                    },
-                    "right": {
-                        "record_kind": "procure_to_pay.purchase_order",
-                        "field": {
-                            "group": "amounts",
-                            "kind": "total",
-                            "attribute": "value",
-                        },
-                    },
-                }
-            ]
-        )
-    )
-
-    assert any(
-        "required_comparisons[0].left.field" in item for item in errors
-    ), errors
-
-
-# --- closed key sets where placement carries meaning ------------------------
+    assert "required_comparisons" not in validated[0]
+    assert "required_record_kinds" not in validated[0]
 
 
 @pytest.mark.parametrize(
-    ("mutation", "expected"),
+    "field,value",
     [
-        ({"confidence": "high"}, "control_attributes[0] has unexpected key"),
-        (
-            {"registry": {**{"note": "copied"}, **_registry()}},
-            "control_attributes[0].registry has unexpected key 'note'",
-        ),
+        ("required_record_kinds", ["procure_to_pay.vendor_invoice"]),
+        ("required_comparisons", [{"key": "x"}]),
+        ("comparison_recipes_applied", [{"recipe_id": "x"}]),
     ],
 )
-def test_an_unknown_key_in_the_evidence_contract_is_rejected(mutation, expected):
-    errors = _errors(_attribute(**mutation))
+def test_a_row_cannot_author_the_evidence_contract(field, value):
+    """Each of these describes evidence the planning turn was never shown."""
 
-    assert any(expected in item for item in errors), errors
+    errors = _errors(_attribute(**{field: value}))
+
+    assert any(f"unexpected key '{field}'" in item for item in errors)
 
 
-def test_a_misplaced_record_kinds_key_is_named_as_a_misplacement():
-    """The live prompt warned about this shape, and the gate mis-reported it.
-
-    Nested inside ``registry`` it produced a stale-reference complaint, which
-    pointed the author at the pack version rather than the misplaced key.
-    """
-
+def test_a_citation_carries_nothing_but_its_recipe_id():
     errors = _errors(
         _attribute(
-            registry={
-                "pack_id": "procure_to_pay",
-                "required_record_kinds": ["procure_to_pay.vendor_invoice"],
-            }
-        )
-    )
-
-    assert any("unexpected key 'required_record_kinds'" in item for item in errors)
-    assert any("siblings of registry" in item for item in errors)
-
-
-def test_an_unknown_comparison_key_is_rejected_with_the_accepted_set():
-    errors = _errors(
-        _attribute(
-            required_comparisons=[
+            comparison_recipes=[
                 {
-                    "key": "extra",
-                    "label": "Carries an invented field",
-                    "operator": "equal_exact",
-                    "operand1": {"record_kind": "procure_to_pay.vendor_invoice"},
-                    "left": {
-                        "record_kind": "procure_to_pay.vendor_invoice",
-                        "field": {
-                            "group": "amounts",
-                            "kind": "total",
-                            "attribute": "value",
-                        },
-                    },
-                    "right": {
-                        "record_kind": "procure_to_pay.purchase_order",
-                        "field": {
-                            "group": "amounts",
-                            "kind": "total",
-                            "attribute": "value",
-                        },
-                    },
+                    "recipe_id": "common.total_amount_agreement",
+                    "bindings": {"source": "procure_to_pay.vendor_invoice"},
                 }
             ]
         )
     )
 
-    assert any("unexpected key 'operand1'" in item for item in errors)
-    assert any("key, label, left, operator, right, tolerance" in item for item in errors)
+    assert any("unexpected key 'bindings'" in item for item in errors)
 
 
-# --- a declared record kind nothing reads -----------------------------------
+def test_a_transaction_cycle_attribute_must_cite_something():
+    errors = _errors(_attribute(comparison_recipes=[]))
+
+    assert any("comparison_recipes" in item for item in errors)
 
 
-def test_a_required_record_kind_no_comparison_reads_is_rejected():
+def test_an_unknown_recipe_is_rejected_with_the_available_ones():
+    errors = _errors(_attribute(recipe_ids=("common.invented",)))
+
+    assert any("is not a comparison recipe offered for pack" in item for item in errors)
+    assert any("common.total_amount_agreement" in item for item in errors)
+
+
+def test_a_recipe_offered_for_another_pack_is_not_available():
+    errors = _errors(_attribute(recipe_ids=("payroll.net_pay_agreement",)))
+
+    assert any("is not a comparison recipe offered for pack" in item for item in errors)
+
+
+def test_a_shape_is_cited_once_however_many_records_it_will_answer():
     errors = _errors(
         _attribute(
-            required_record_kinds=[
-                "procure_to_pay.vendor_invoice",
-                "procure_to_pay.purchase_order",
-                "procure_to_pay.goods_receipt",
-            ]
+            recipe_ids=(
+                "common.total_amount_agreement",
+                "common.total_amount_agreement",
+            )
         )
     )
 
-    assert any(
-        "required record kind 'procure_to_pay.goods_receipt' is never read"
-        in item
-        for item in errors
+    assert any("is cited twice" in item for item in errors)
+
+
+def test_a_non_cycle_attribute_cannot_cite_a_recipe():
+    errors = _errors(
+        _attribute(evidence_kind="document_content", registry=None)
     )
 
+    assert any("does not accept comparison recipes" in item for item in errors)
 
-# --- recipes --------------------------------------------------------------
+
+# --- binding a cited shape to real records ----------------------------------
 
 
 def test_a_recipe_expands_into_canonical_comparisons():
-    attributes = cycle_vouching.validate_control_attributes(
-        [
-            _attribute(
-                required_comparisons=None,
-                comparison_recipes=[
-                    {
-                        "recipe_id": "common.total_amount_agreement",
-                        "bindings": {
-                            "source": "procure_to_pay.vendor_invoice",
-                            "target": "procure_to_pay.purchase_order",
-                        },
-                    }
-                ],
-            )
-        ]
-    )
+    comparisons = _expand(_attribute(), [_PO_TO_INVOICE])
 
-    comparisons = attributes[0]["required_comparisons"]
     assert [item["key"] for item in comparisons] == ["total_amount_agreement"]
-    assert comparisons[0]["operator"] == "numeric_within"
-    assert comparisons[0]["tolerance"] == {"absolute": 0.01, "percent": 0}
-    # The label is rendered from the bound record kinds, not left as a template.
-    assert "Vendor invoice" in comparisons[0]["label"]
-    assert "{source}" not in comparisons[0]["label"]
+    comparison = comparisons[0]
+    assert comparison["operator"] == "numeric_within"
+    assert comparison["tolerance"] == {"absolute": 0.01, "percent": 0}
+    assert comparison["left"]["record_kind"] == "procure_to_pay.vendor_invoice"
+    assert comparison["right"]["record_kind"] == "procure_to_pay.purchase_order"
 
 
-def test_a_recipe_and_a_hand_written_comparison_compose():
-    attributes = cycle_vouching.validate_control_attributes(
+def test_one_shape_bound_twice_qualifies_its_keys_by_binding():
+    """An invoice agreeing to its order *and* its payment is one cited shape."""
+
+    comparisons = _expand(
+        _attribute(),
         [
-            _attribute(
-                comparison_recipes=[
-                    {
-                        "recipe_id": "common.party_agreement",
-                        "bindings": {
-                            "source": "procure_to_pay.vendor_invoice",
-                            "target": "procure_to_pay.purchase_order",
-                        },
-                    }
-                ]
-            )
-        ]
-    )
-
-    assert [item["key"] for item in attributes[0]["required_comparisons"]] == [
-        "party_agreement",
-        "invoice_to_order",
-    ]
-
-
-def test_validating_an_expanded_attribute_again_is_a_no_op():
-    """Run 20260809-133225-658b03: 16 good rows, lost at the commit step.
-
-    A row is validated more than once in its life — the worker normalizes the
-    proposal, the executor re-validates before committing, and the workspace
-    re-validates on load. Expanding into ``required_comparisons`` while leaving
-    ``comparison_recipes`` in place made the second pass expand the same recipes
-    again and collide with its own first expansion:
-
-        control_attributes[0].required_comparisons[2]: duplicate required
-        comparison key 'total_amount_agreement'.
-
-    Nothing was wrong with the response. Validation has to be idempotent.
-    """
-
-    authored = _attribute(
-        required_comparisons=None,
-        comparison_recipes=[
+            _PO_TO_INVOICE,
             {
                 "recipe_id": "common.total_amount_agreement",
                 "bindings": {
                     "source": "procure_to_pay.vendor_invoice",
-                    "target": "procure_to_pay.purchase_order",
-                },
-            },
-            {
-                "recipe_id": "common.quantity_agreement",
-                "bindings": {
-                    "source": "procure_to_pay.vendor_invoice",
-                    "target": "procure_to_pay.purchase_order",
+                    "target": "procure_to_pay.payment_voucher",
                 },
             },
         ],
     )
 
-    once = cycle_vouching.validate_control_attributes([authored])
-    twice = cycle_vouching.validate_control_attributes(once)
-    thrice = cycle_vouching.validate_control_attributes(twice)
-
-    assert [item["key"] for item in once[0]["required_comparisons"]] == [
-        "total_amount_agreement",
-        "quantity_agreement",
+    assert [item["key"] for item in comparisons] == [
+        "total_amount_agreement_vendor_invoice_purchase_order",
+        "total_amount_agreement_vendor_invoice_payment_voucher",
     ]
-    assert once == twice == thrice
-    # The recipe list is retired to its applied form, which is never expanded.
-    assert "comparison_recipes" not in once[0]
-    assert [
-        item["recipe_id"] for item in once[0][cycle_vouching.APPLIED_RECIPES_KEY]
-    ] == ["common.total_amount_agreement", "common.quantity_agreement"]
 
 
-def test_re_validating_a_mixed_recipe_and_hand_written_contract_is_stable():
-    """The exact shape of the failing row: two recipes plus one hand-written."""
+def test_a_cited_shape_with_no_binding_is_named():
+    errors = _expand_errors(
+        _attribute(recipe_ids=("common.total_amount_agreement",)), []
+    )
 
-    once = cycle_vouching.validate_control_attributes([_attribute(
-        comparison_recipes=[
+    assert any("no binding was supplied for it" in item for item in errors)
+
+
+def test_a_binding_must_cover_exactly_the_declared_roles():
+    errors = _expand_errors(
+        _attribute(recipe_ids=("procure_to_pay.three_way_match",)),
+        [
+            {
+                "recipe_id": "procure_to_pay.three_way_match",
+                "bindings": {
+                    "purchase_order": "procure_to_pay.purchase_order",
+                    "vendor_invoice": "procure_to_pay.vendor_invoice",
+                },
+            }
+        ],
+    )
+
+    assert any("must bind exactly" in item for item in errors)
+
+
+def test_a_binding_to_an_unregistered_record_kind_is_a_validation_error():
+    """Not an escaping registry exception: the worker repairs validation errors."""
+
+    errors = _expand_errors(
+        _attribute(),
+        [
             {
                 "recipe_id": "common.total_amount_agreement",
                 "bindings": {
                     "source": "procure_to_pay.vendor_invoice",
-                    "target": "procure_to_pay.purchase_order",
+                    "target": "procure_to_pay.bank_account",
                 },
-            },
-            {
-                "recipe_id": "common.quantity_agreement",
-                "bindings": {
-                    "source": "procure_to_pay.vendor_invoice",
-                    "target": "procure_to_pay.purchase_order",
-                },
-            },
-        ]
-    )])
-
-    assert [item["key"] for item in once[0]["required_comparisons"]] == [
-        "total_amount_agreement",
-        "quantity_agreement",
-        "invoice_to_order",
-    ]
-    assert cycle_vouching.validate_control_attributes(once) == once
-
-
-def test_one_recipe_applied_twice_qualifies_its_keys_by_binding():
-    """An invoice agreeing to its order *and* its receipt is two uses of one shape."""
-
-    validated = cycle_vouching.validate_control_attributes(
-        [
-            _attribute(
-                required_record_kinds=[
-                    "procure_to_pay.vendor_invoice",
-                    "procure_to_pay.purchase_order",
-                    "procure_to_pay.goods_receipt",
-                ],
-                required_comparisons=None,
-                comparison_recipes=[
-                    {
-                        "recipe_id": "common.total_amount_agreement",
-                        "bindings": {
-                            "source": "procure_to_pay.vendor_invoice",
-                            "target": "procure_to_pay.purchase_order",
-                        },
-                    },
-                    {
-                        "recipe_id": "common.total_amount_agreement",
-                        "bindings": {
-                            "source": "procure_to_pay.vendor_invoice",
-                            "target": "procure_to_pay.goods_receipt",
-                        },
-                    },
-                ],
-            )
-        ]
+            }
+        ],
     )
 
-    assert [item["key"] for item in validated[0]["required_comparisons"]] == [
-        "total_amount_agreement_vendor_invoice_purchase_order",
-        "total_amount_agreement_vendor_invoice_goods_receipt",
+    assert any("is not registered" in item for item in errors)
+
+
+def test_an_expansion_is_validated_like_any_comparison():
+    """A recipe is a shortcut through authoring, never through the gate.
+
+    Bound to record kinds whose pack does not offer the field, the expansion
+    fails exactly as a hand-written comparison naming that field would.
+    """
+
+    attribute = _attribute(
+        recipe_ids=("payroll.net_pay_agreement",),
+        registry=DEFAULT_REGISTRY.reference("payroll").to_dict(),
+    )
+    errors = _expand_errors(
+        attribute,
+        [
+            {
+                "recipe_id": "payroll.net_pay_agreement",
+                "bindings": {
+                    "source": "payroll.bank_payment",
+                    "target": "payroll.employment_contract",
+                },
+            }
+        ],
+    )
+
+    assert any("is unavailable on role" in item for item in errors)
+
+
+def test_the_three_way_match_recipe_expands_to_a_real_three_record_contract():
+    comparisons = _expand(
+        _attribute(recipe_ids=("procure_to_pay.three_way_match",)),
+        [
+            {
+                "recipe_id": "procure_to_pay.three_way_match",
+                "bindings": {
+                    "purchase_order": "procure_to_pay.purchase_order",
+                    "goods_receipt": "procure_to_pay.goods_receipt",
+                    "vendor_invoice": "procure_to_pay.vendor_invoice",
+                },
+            }
+        ],
+    )
+
+    assert [item["key"] for item in comparisons] == [
+        "invoice_amount_to_order",
+        "receipt_quantity_to_order",
     ]
-    assert cycle_vouching.validate_control_attributes(validated) == validated
 
 
 def test_catalogued_comparison_keys_are_unique_across_recipes():
@@ -713,146 +478,8 @@ def test_catalogued_comparison_keys_are_unique_across_recipes():
     assert len(keys) == len(set(keys))
 
 
-def test_a_recipe_expansion_is_validated_like_any_comparison():
-    """A recipe is a shortcut through authoring, never through the gate.
-
-    Bound to record kinds whose pack does not offer the field, the expansion
-    fails exactly as a hand-written comparison naming that field would.
-    """
-
-    errors = _errors(
-        _attribute(
-            registry=DEFAULT_REGISTRY.reference("payroll").to_dict(),
-            required_record_kinds=[
-                "payroll.bank_payment",
-                "payroll.employment_contract",
-            ],
-            required_comparisons=None,
-            comparison_recipes=[
-                {
-                    "recipe_id": "payroll.net_pay_agreement",
-                    "bindings": {
-                        "source": "payroll.bank_payment",
-                        "target": "payroll.employment_contract",
-                    },
-                }
-            ],
-        )
-    )
-
-    assert any("is unavailable on role" in item for item in errors)
-
-
-def test_an_unknown_recipe_is_rejected_with_the_available_ones():
-    errors = _errors(
-        _attribute(
-            required_comparisons=None,
-            comparison_recipes=[
-                {"recipe_id": "common.invented", "bindings": {"a": "b"}}
-            ],
-        )
-    )
-
-    assert any("is not a comparison recipe offered for pack" in item for item in errors)
-    assert any("common.total_amount_agreement" in item for item in errors)
-
-
-def test_a_recipe_offered_for_another_pack_is_not_available():
-    errors = _errors(
-        _attribute(
-            required_comparisons=None,
-            comparison_recipes=[
-                {
-                    "recipe_id": "payroll.net_pay_agreement",
-                    "bindings": {
-                        "source": "procure_to_pay.vendor_invoice",
-                        "target": "procure_to_pay.purchase_order",
-                    },
-                }
-            ],
-        )
-    )
-
-    assert any("is not a comparison recipe offered for pack" in item for item in errors)
-
-
-def test_recipe_bindings_must_cover_exactly_the_declared_roles():
-    errors = _errors(
-        _attribute(
-            required_comparisons=None,
-            comparison_recipes=[
-                {
-                    "recipe_id": "procure_to_pay.three_way_match",
-                    "bindings": {
-                        "purchase_order": "procure_to_pay.purchase_order",
-                        "vendor_invoice": "procure_to_pay.vendor_invoice",
-                    },
-                }
-            ],
-        )
-    )
-
-    assert any("must bind exactly" in item for item in errors)
-
-
-def test_a_recipe_binding_must_name_a_required_record_kind():
-    errors = _errors(
-        _attribute(
-            required_comparisons=None,
-            comparison_recipes=[
-                {
-                    "recipe_id": "common.total_amount_agreement",
-                    "bindings": {
-                        "source": "procure_to_pay.vendor_invoice",
-                        "target": "procure_to_pay.goods_receipt",
-                    },
-                }
-            ],
-        )
-    )
-
-    assert any(
-        "not one of the attribute's required record kinds" in item for item in errors
-    )
-
-
-def test_the_three_way_match_recipe_expands_to_a_real_three_record_contract():
-    attributes = cycle_vouching.validate_control_attributes(
-        [
-            _attribute(
-                required_record_kinds=[
-                    "procure_to_pay.purchase_order",
-                    "procure_to_pay.goods_receipt",
-                    "procure_to_pay.vendor_invoice",
-                ],
-                required_comparisons=None,
-                comparison_recipes=[
-                    {
-                        "recipe_id": "procure_to_pay.three_way_match",
-                        "bindings": {
-                            "purchase_order": "procure_to_pay.purchase_order",
-                            "goods_receipt": "procure_to_pay.goods_receipt",
-                            "vendor_invoice": "procure_to_pay.vendor_invoice",
-                        },
-                    }
-                ],
-            )
-        ]
-    )
-
-    comparisons = attributes[0]["required_comparisons"]
-    assert [item["key"] for item in comparisons] == [
-        "invoice_amount_to_order",
-        "receipt_quantity_to_order",
-    ]
-
-
 def test_every_catalogued_recipe_expands_into_a_contract_the_gate_accepts():
-    """The catalog cannot ship a recipe that cannot validate.
-
-    Each recipe is bound to record kinds its pack offers the fields on, and the
-    expansion is put through the real gate.
-    """
+    """The catalog cannot ship a recipe that cannot validate."""
 
     checked = 0
     for definition in recipes.COMPARISON_RECIPES:
@@ -860,62 +487,87 @@ def test_every_catalogued_recipe_expands_into_a_contract_the_gate_accepts():
             kinds = _bindable_kinds(pack_id, definition)
             if kinds is None:
                 continue
-            attribute = {
-                "key": "recipe_probe",
-                "assertion": "Accuracy",
-                "requirement": f"Probe for {definition.id}.",
-                "evidence_kind": "transaction_cycle",
-                "registry": DEFAULT_REGISTRY.reference(pack_id).to_dict(),
-                "required_record_kinds": sorted(set(kinds.values())),
-                "comparison_recipes": [
-                    {"recipe_id": definition.id, "bindings": kinds}
-                ],
-            }
-            if len(set(kinds.values())) < cycle_vouching.MIN_CYCLE_RECORD_KINDS:
-                # A single-role recipe cannot stand alone: it reads one record,
-                # and a cycle needs a link. Composition is covered below.
-                continue
-            validated = cycle_vouching.validate_control_attributes([attribute])
-            assert validated[0]["required_comparisons"]
+            attribute = _attribute(
+                recipe_ids=(definition.id,),
+                registry=DEFAULT_REGISTRY.reference(pack_id).to_dict(),
+            )
+            comparisons = _expand(
+                attribute, [{"recipe_id": definition.id, "bindings": kinds}]
+            )
+            assert comparisons
             checked += 1
-    single_role = [
-        definition.id
-        for definition in recipes.COMPARISON_RECIPES
-        if len(definition.roles) == 1
-    ]
-    assert checked == len(recipes.COMPARISON_RECIPES) - len(single_role)
-    assert single_role == ["common.approval_present", "common.attachment_present"]
+    assert checked == len(recipes.COMPARISON_RECIPES)
 
 
-@pytest.mark.parametrize(
-    "recipe_id", ["common.approval_present", "common.attachment_present"]
-)
-def test_a_single_role_recipe_composes_with_a_linking_one(recipe_id):
-    """It cannot stand alone, and combined with a link it validates.
+# --- eligibility: what the evidence can actually answer ----------------------
 
-    Alone it would leave the second required record kind unread, which is the
-    defect the unused-kind rule exists to catch.
+
+def _selectors(**by_kind) -> dict[str, set[tuple[str, str, str]]]:
+    return {
+        kind: {tuple(item.split(".")) for item in selectors}
+        for kind, selectors in by_kind.items()
+    }
+
+
+def test_only_record_kinds_carrying_every_read_selector_are_eligible():
+    """The mistake the shape itself cannot catch.
+
+    A quantity agreement bound to invoices that carry no quantity is exactly the
+    contract the live engagement produced, and it could not be repaired by the
+    turn that met it.
     """
-
-    link = {
-        "recipe_id": "common.total_amount_agreement",
-        "bindings": {
-            "source": "procure_to_pay.vendor_invoice",
-            "target": "procure_to_pay.purchase_order",
-        },
-    }
-    alone = {
-        "recipe_id": recipe_id,
-        "bindings": {"record": "procure_to_pay.vendor_invoice"},
-    }
-
-    errors = _errors(_attribute(required_comparisons=None, comparison_recipes=[alone]))
-    assert any("is never read by a comparison" in item for item in errors)
-
-    validated = cycle_vouching.validate_control_attributes(
-        [_attribute(required_comparisons=None, comparison_recipes=[link, alone])]
+    available = _selectors(
+        **{
+            "procure_to_pay.purchase_order": [
+                "quantities.total.value",
+                "amounts.total.value",
+            ],
+            "procure_to_pay.goods_receipt": ["quantities.total.value"],
+            "procure_to_pay.vendor_invoice": ["amounts.total.value"],
+        }
     )
-    assert len(validated[0]["required_comparisons"]) == 2
+
+    eligible = cycle_vouching.eligible_recipe_bindings(
+        "common.quantity_agreement",
+        reference=DEFAULT_REGISTRY.reference("procure_to_pay"),
+        available_selectors=available,
+    )
+
+    bound = {tuple(sorted(item.values())) for item in eligible}
+    assert bound == {
+        ("procure_to_pay.goods_receipt", "procure_to_pay.purchase_order")
+    }
+    assert all("procure_to_pay.vendor_invoice" not in item.values() for item in eligible)
+
+
+def test_a_shape_no_record_kind_can_answer_offers_nothing():
+    available = _selectors(
+        **{"procure_to_pay.vendor_invoice": ["amounts.total.value"]}
+    )
+
+    assert (
+        cycle_vouching.eligible_recipe_bindings(
+            "common.quantity_agreement",
+            reference=DEFAULT_REGISTRY.reference("procure_to_pay"),
+            available_selectors=available,
+        )
+        == []
+    )
+
+
+def test_one_record_kind_cannot_fill_two_placeholders_of_one_shape():
+    available = _selectors(
+        **{"procure_to_pay.vendor_invoice": ["amounts.total.value"]}
+    )
+
+    assert (
+        cycle_vouching.eligible_recipe_bindings(
+            "common.total_amount_agreement",
+            reference=DEFAULT_REGISTRY.reference("procure_to_pay"),
+            available_selectors=available,
+        )
+        == []
+    )
 
 
 def _bindable_kinds(pack_id: str, definition) -> dict[str, str] | None:

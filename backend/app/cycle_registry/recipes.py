@@ -325,6 +325,28 @@ COMPARISON_RECIPES: tuple[ComparisonRecipeDefinition, ...] = (
         pack_ids=("payroll",),
     ),
     ComparisonRecipeDefinition(
+        id="payroll.net_pay_to_payment",
+        label="Net pay reaches the bank",
+        purpose=(
+            "the net pay a payroll record states is the amount actually paid out"
+        ),
+        roles=("payroll_record", "payment_record"),
+        comparisons=(
+            RecipeComparison(
+                key="net_pay_to_payment",
+                label="{payroll_record} net pay agrees to {payment_record}",
+                operator="numeric_within",
+                # The two sides read different field kinds on purpose: a payment
+                # states one total, and what it must equal is the payroll
+                # record's *net* figure, never its gross.
+                left=RecipeOperand("payroll_record", "amounts", "net_pay", "value"),
+                right=RecipeOperand("payment_record", "amounts", "total", "value"),
+                tolerance={"absolute": 0.01, "percent": 0},
+            ),
+        ),
+        pack_ids=("payroll",),
+    ),
+    ComparisonRecipeDefinition(
         id="payroll.pay_period_agreement",
         label="Pay period agreement",
         purpose="two payroll records cover the same pay period",
@@ -448,6 +470,31 @@ def recipes_for_pack(pack_id: object) -> tuple[ComparisonRecipeDefinition, ...]:
     )
 
 
+def required_selectors(
+    definition: ComparisonRecipeDefinition,
+) -> dict[str, set[tuple[str, str, str]]]:
+    """Field selectors each placeholder role must be able to answer.
+
+    A recipe fixes its selectors and leaves only the record kinds open, so this
+    is exactly what decides whether a candidate binding is possible against the
+    evidence a workspace actually holds. Binding a quantity agreement to a
+    record kind whose extracted invoices carry no quantity is the one mistake
+    the shape itself cannot prevent.
+    """
+
+    selectors: dict[str, set[tuple[str, str, str]]] = {
+        role: set() for role in definition.roles
+    }
+    for comparison in definition.comparisons:
+        for operand in (comparison.left, comparison.right):
+            if operand is None:
+                continue
+            selectors.setdefault(operand.role, set()).add(
+                (operand.group, operand.kind, operand.attribute)
+            )
+    return selectors
+
+
 __all__ = [
     "COMPARISON_RECIPES",
     "ComparisonRecipeDefinition",
@@ -455,4 +502,5 @@ __all__ = [
     "RecipeOperand",
     "recipe",
     "recipes_for_pack",
+    "required_selectors",
 ]
