@@ -19,11 +19,77 @@ import re
 from pathlib import PurePosixPath
 
 from .. import analytics, validation
+from ..cycle_registry import operators as _operators
+from ..cycle_registry import recipes as _recipes
 
 JSON_RULES = (
     "Respond with a single JSON object only — no prose, no markdown fence. "
     "Use exactly the keys described; omit optional keys you have nothing for."
 )
+
+
+# --------------------------------------------------------------------------- #
+# The comparison DSL, rendered from the same table the gate validates against.
+#
+# Two prompts ask a model to author comparisons: ``planning.rcm`` states an RCM
+# row's evidence contract, and ``tests.generate`` turns one into executable
+# assertions. The vocabulary is identical and the gate is shared, so stating it
+# twice in prose guaranteed drift — and did: the RCM prompt never listed the
+# operators at all, so every operator it produced was invented and every RCM
+# generation failed. These renderers make one table the source for both.
+# --------------------------------------------------------------------------- #
+def operator_table() -> str:
+    """Render the complete operator vocabulary, one entry per operator."""
+
+    lines = []
+    for definition in sorted(_operators.OPERATOR_DEFINITIONS, key=lambda d: d.id):
+        shape = [definition.arity]
+        if definition.operand_type:
+            shape.append(f"{definition.operand_type} operands")
+        shape.append(
+            {
+                "forbidden": "no tolerance",
+                "numeric_object": "tolerance object required",
+                "integer_days": "integer day tolerance required",
+            }[definition.tolerance]
+        )
+        lines.append(
+            f"  {definition.id} ({', '.join(shape)}) — {definition.guidance}"
+        )
+    return (
+        "The operator vocabulary is closed. Use exactly one of these and never "
+        "an arithmetic or SQL-style name such as equals, ==, gte, or "
+        "greater_than_or_equal — those are rejected:\n" + "\n".join(lines)
+    )
+
+
+def comparison_recipe_catalog(pack_ids: tuple[str, ...] = ()) -> str:
+    """Render the named recipes, which are the preferred way to author a contract.
+
+    A recipe is a shortcut through authoring four nested objects, not through the
+    gate: its expansion is validated exactly like a hand-written comparison.
+    """
+
+    grouped: list[str] = []
+    seen: set[str] = set()
+    for pack_id in pack_ids or ("",):
+        for definition in _recipes.recipes_for_pack(pack_id):
+            if definition.id in seen:
+                continue
+            seen.add(definition.id)
+            roles = ", ".join(definition.roles)
+            grouped.append(
+                f"  {definition.id} (bind {roles}) — {definition.purpose}"
+            )
+    return (
+        "Prefer a named comparison recipe. Each names one audit test and expands "
+        "locally into canonical comparisons, so you supply only the recipe id and "
+        "the record kind each of its roles binds to:\n"
+        '  "comparison_recipes": [{"recipe_id": "<id>", '
+        '"bindings": {"<role>": "<record kind id>"}}]\n'
+        "Bind every role the recipe declares, to record kinds you also list in "
+        "required_record_kinds. Available recipes:\n" + "\n".join(sorted(grouped))
+    )
 
 COMMAND_INTERPRETER_SYSTEM = """[agent:command_interpreter]
 You interpret one auditor command into a bounded graph of registered engagement actions.

@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import cycle_vouching, doc_tests, sandbox
+from .. import prompts
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -461,14 +462,15 @@ selectors, operator, and tolerance, mapping record kinds to the hydrated role
 aliases. A related prerequisite or a `requirement_ref` without those comparisons
 is not coverage. If the manifest does not supply the required field, do not
 substitute another assertion: the RCM evidence strategy or supplied evidence
-must be repaired. Assertions use explicit row/role/roles operands and one of
-{", ".join(sorted(cycle_vouching.OPERATORS))}; field selectors always name
-group, kind, and attribute. Use numeric tolerance objects and integer day
-tolerances. Do not invent identifiers, fields, mappings, roles, or literal row
-values. Do not emit dotted paths, checks, document_types, or a vouch mode step.
+must be repaired. Assertions use explicit row/role/roles operands; field
+selectors always name group, kind, and attribute. Do not invent identifiers,
+fields, mappings, roles, or literal row values. Do not emit dotted paths, checks,
+document_types, or a vouch mode step.
 Evidence-linked selection is targeted evidence only. Sampling uses random,
 interval, or stratified with size 1..{cycle_vouching.MAX_ITEMS} and an integer
 seed. assurance_scope is derived locally and may be omitted.
+
+{prompts.operator_table()}
 
 An assertion earns its place by being able to fail for an audit reason. Prefer,
 in this order: agreement of a value across two records (`numeric_within` on an

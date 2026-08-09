@@ -4,7 +4,22 @@ from __future__ import annotations
 
 from . import common
 from .models import *  # noqa: F403 - public registry contract
+from .operators import (
+    OPERATOR_DEFINITIONS,
+    OPERATORS,
+    OperatorDefinition,
+    operator,
+    unsupported_operator_message,
+)
 from .packs import payroll, procure_to_pay
+from .recipes import (
+    COMPARISON_RECIPES,
+    ComparisonRecipeDefinition,
+    RecipeComparison,
+    RecipeOperand,
+    recipe,
+    recipes_for_pack,
+)
 from .registry import CycleRegistry, RegistryError, canonical_sha256
 
 DEFAULT_REGISTRY = CycleRegistry(
@@ -29,6 +44,8 @@ DEFAULT_REGISTRY = CycleRegistry(
 )
 
 __all__ = [
+    "COMPARISON_RECIPES",
+    "ComparisonRecipeDefinition",
     "CyclePackDefinition",
     "CycleRegistry",
     "DEFAULT_REGISTRY",
@@ -38,8 +55,17 @@ __all__ = [
     "FieldKindDefinition",
     "IdentifierKindDefinition",
     "NormalizerDefinition",
+    "OPERATOR_DEFINITIONS",
+    "OPERATORS",
+    "OperatorDefinition",
+    "RecipeComparison",
+    "RecipeOperand",
     "RecordKindDefinition",
     "RegistryReference",
     "RegistryError",
     "canonical_sha256",
+    "operator",
+    "recipe",
+    "recipes_for_pack",
+    "unsupported_operator_message",
 ]

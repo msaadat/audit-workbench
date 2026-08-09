@@ -1,0 +1,470 @@
+{
+ "provenance": {
+  "run_id": "20260809-122429-3142de",
+  "workspace": "procurement",
+  "note": "The verbatim planning.rcm response that failed the gate twice and failed the run. Every operator it authored was invented, because the prompt never stated the vocabulary."
+ },
+ "rows": [
+  {
+   "operation": "create",
+   "process": "Requisition Initiation",
+   "risk": "Purchase requisitions may be initiated without a demonstrated business need, approved budget, or complete and accurate specification, leading to unauthorized or unnecessary purchases.",
+   "risk_rating": "high",
+   "control": "The SOP requires the requisitioning department to raise a purchase requisition in the ERP system specifying description, quantity, delivery date, justification, budget, cost centre, and vendor preferences. Whether the system validates that these fields are complete and accurate, or that the requisition is supported by an approved budget, is not confirmed in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "req_completeness",
+     "assertion": "Completeness",
+     "requirement": "Each purchase requisition records the description, quantity, delivery date, justification, budget, cost centre, and vendor preferences.",
+     "evidence_kind": "tabular_population"
+    },
+    {
+     "key": "req_authorization",
+     "assertion": "Authorization",
+     "requirement": "The requisition is supported by an approved budget and a demonstrated business need before purchase processing continues.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Requisition Initiation",
+   "risk": "Requisitions may be initiated, verified, or approved by the same individual, permitting self-approval and circumvention of segregation of duties.",
+   "risk_rating": "high",
+   "control": "The SOP assigns requisition initiation to the requisitioning department and approval to financial authorities, and the requisition record captures a verifier and an approver. Whether the system prevents the same person from initiating, verifying, and approving is not confirmed in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "req_segregation",
+     "assertion": "Authorization",
+     "requirement": "The individual who initiates a requisition is not the same individual who verifies or approves it.",
+     "evidence_kind": "tabular_population"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Procurement Evaluation and Sourcing",
+   "risk": "Purchases may be sourced without competitive evaluation or may be split to remain below sourcing or approval thresholds, resulting in elevated cost or circumvention of controls.",
+   "risk_rating": "high",
+   "control": "The SOP requires Procurement to review the requisition, determine the sourcing method, obtain and evaluate quotations or bids, negotiate where applicable, prepare a comparative statement, and obtain internal approval. The SOP does not define the sourcing-method thresholds that would govern when each method is required; those thresholds are unconfirmed in the planning basis.",
+   "control_type": "detective",
+   "control_attributes": [
+    {
+     "key": "sourcing_evaluation",
+     "assertion": "Operational",
+     "requirement": "Procurement determines the appropriate sourcing method and obtains and evaluates quotations or bids for the purchase.",
+     "evidence_kind": "inquiry"
+    },
+    {
+     "key": "sourcing_comparative",
+     "assertion": "Completeness",
+     "requirement": "A comparative statement is prepared and internal approval is obtained for the selected sourcing approach.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Financial Authority Approval",
+   "risk": "Purchase requisitions may be approved by an official whose delegated authority limit is below the transaction amount, or may be approved after the fact or without review of supporting documents.",
+   "risk_rating": "critical",
+   "control": "The financial approval matrix sets maximum approval amounts by role, and the SOP requires the approved requisition and supporting documents to be submitted to the relevant financial authority for approval or rejection against the Authority Matrix. The relationship between the Authority Matrix referenced in the SOP and the supplied financial approval matrix is not established, and the rules for aggregation, splitting, exceptions, and emergency approvals are not defined in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "approval_limit",
+     "assertion": "Authorization",
+     "requirement": "Each requisition is approved by a financial authority whose delegated limit equals or exceeds the requisition amount.",
+     "evidence_kind": "tabular_population"
+    },
+    {
+     "key": "approval_support",
+     "assertion": "Completeness",
+     "requirement": "The approving financial authority reviews the requisition together with its supporting documents before approval or rejection.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Purchase Order Generation and Issuance",
+   "risk": "Purchase orders may be generated that do not reflect the approved requisition and agreed terms, or may be issued to vendors without evidence of issuance, leading to unauthorized commitments.",
+   "risk_rating": "high",
+   "control": "The SOP requires Procurement to generate a formal purchase order in the ERP system reflecting the agreed terms, including PO number, vendor details, item description, pricing, delivery, and payment terms, and to issue the PO to the vendor via email while retaining a record of issuance. Whether the system restricts PO generation to approved requisitions or validates that the PO agrees with the approved terms is not confirmed in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "po_terms",
+     "assertion": "Accuracy",
+     "requirement": "The purchase order reflects the vendor details, item description, pricing, delivery, and payment terms agreed with the vendor.",
+     "evidence_kind": "document_content"
+    },
+    {
+     "key": "po_link",
+     "assertion": "Completeness",
+     "requirement": "Each purchase order is linked to the approved requisition it supports.",
+     "evidence_kind": "tabular_population"
+    },
+    {
+     "key": "po_issuance",
+     "assertion": "Existence",
+     "requirement": "The purchase order is issued to the vendor and evidence of issuance is retained.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Purchase Order Generation and Issuance",
+   "risk": "Purchase orders may be issued for goods or services with no underlying business need or to unapproved or fictitious vendors.",
+   "risk_rating": "high",
+   "control": "The SOP requires the purchase order to be generated from an approved requisition and issued to a vendor. Vendor onboarding controls require registration, due diligence, approval, and addition to the Approved Vendor List before the vendor is used. Whether the system restricts PO issuance to vendors on the Approved Vendor List is not confirmed in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "po_approved_vendor",
+     "assertion": "Authorization",
+     "requirement": "The purchase order is issued only to a vendor that has been approved and added to the Approved Vendor List.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Goods Receipt",
+   "risk": "Goods or services may be recorded as received without inspection against the purchase order, or receipt may be recorded in the wrong period, allowing payment for goods not actually delivered or received in a different period.",
+   "risk_rating": "high",
+   "control": "The SOP requires the requisitioning department to inspect the delivery against the purchase order, generate a Goods Receipt Note with number, PO reference, item details, and comments on discrepancies, and confirm receipt. Whether the system blocks receipt recording before the PO is issued or validates the inspection is not confirmed in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "grn_inspection",
+     "assertion": "Existence",
+     "requirement": "The delivery is inspected against the purchase order before a Goods Receipt Note is generated.",
+     "evidence_kind": "inquiry"
+    },
+    {
+     "key": "grn_link",
+     "assertion": "Completeness",
+     "requirement": "Each Goods Receipt Note records the purchase-order reference and item details.",
+     "evidence_kind": "tabular_population"
+    },
+    {
+     "key": "grn_discrepancy",
+     "assertion": "Completeness",
+     "requirement": "Discrepancies between the delivery and the purchase order are documented in the Goods Receipt Note.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Invoice Processing and Payment",
+   "risk": "Invoices may be paid without evidence that the goods were received or that the invoice agrees with the purchase order and receipt, resulting in payment for goods not delivered or at incorrect amounts.",
+   "risk_rating": "critical",
+   "control": "The SOP requires Procurement to perform an initial invoice check and match the invoice to the purchase order and GRN before forwarding it to Finance for payment. Whether the system blocks payment when the invoice does not match the PO and GRN is not confirmed in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "invoice_match",
+     "assertion": "Existence",
+     "requirement": "The invoice is matched to the purchase order and the Goods Receipt Note before payment is processed.",
+     "evidence_kind": "transaction_cycle",
+     "registry": {
+      "pack_id": "procure_to_pay",
+      "pack_version": 6,
+      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+     },
+     "required_record_kinds": [
+      "procure_to_pay.vendor_invoice",
+      "procure_to_pay.goods_receipt",
+      "procure_to_pay.purchase_order"
+     ],
+     "required_comparisons": [
+      {
+       "key": "invoice_po_match",
+       "label": "Invoice references a purchase order",
+       "operator": "equals",
+       "left": {
+        "record_kind": "procure_to_pay.vendor_invoice",
+        "field": {
+         "group": "common",
+         "kind": "note",
+         "attribute": "value"
+        }
+       },
+       "operator_tolerance": "exact"
+      },
+      {
+       "key": "invoice_grn_match",
+       "label": "Invoice references a goods receipt",
+       "operator": "equals",
+       "left": {
+        "record_kind": "procure_to_pay.vendor_invoice",
+        "field": {
+         "group": "common",
+         "kind": "note",
+         "attribute": "value"
+        }
+       },
+       "operator_tolerance": "exact"
+      }
+     ]
+    },
+    {
+     "key": "invoice_amount",
+     "assertion": "Accuracy",
+     "requirement": "The invoice amount agrees with the purchase order and the goods receipt.",
+     "evidence_kind": "transaction_cycle",
+     "registry": {
+      "pack_id": "procure_to_pay",
+      "pack_version": 6,
+      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+     },
+     "required_record_kinds": [
+      "procure_to_pay.vendor_invoice",
+      "procure_to_pay.goods_receipt",
+      "procure_to_pay.purchase_order"
+     ],
+     "required_comparisons": [
+      {
+       "key": "invoice_po_amount",
+       "label": "Invoice total equals purchase order total",
+       "operator": "equals",
+       "left": {
+        "record_kind": "procure_to_pay.vendor_invoice",
+        "field": {
+         "group": "amounts",
+         "kind": "total",
+         "attribute": "value"
+        }
+       },
+       "right": {
+        "record_kind": "procure_to_pay.purchase_order",
+        "field": {
+         "group": "amounts",
+         "kind": "total",
+         "attribute": "value"
+        }
+       },
+       "operator_tolerance": "exact"
+      },
+      {
+       "key": "invoice_grn_quantity",
+       "label": "Invoice quantity equals goods receipt quantity",
+       "operator": "equals",
+       "left": {
+        "record_kind": "procure_to_pay.vendor_invoice",
+        "field": {
+         "group": "quantities",
+         "kind": "total",
+         "attribute": "value"
+        }
+       },
+       "right": {
+        "record_kind": "procure_to_pay.goods_receipt",
+        "field": {
+         "group": "quantities",
+         "kind": "total",
+         "attribute": "value"
+        }
+       },
+       "operator_tolerance": "exact"
+      }
+     ]
+    },
+    {
+     "key": "receipt_before_payment",
+     "assertion": "Cut-off",
+     "requirement": "The goods receipt precedes invoice processing and payment.",
+     "evidence_kind": "transaction_cycle",
+     "registry": {
+      "pack_id": "procure_to_pay",
+      "pack_version": 6,
+      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+     },
+     "required_record_kinds": [
+      "procure_to_pay.vendor_invoice",
+      "procure_to_pay.goods_receipt",
+      "procure_to_pay.payment_voucher"
+     ],
+     "required_comparisons": [
+      {
+       "key": "payment_after_receipt",
+       "label": "Payment date is on or after goods receipt date",
+       "operator": "greater_than_or_equal",
+       "left": {
+        "record_kind": "procure_to_pay.payment_voucher",
+        "field": {
+         "group": "procure_to_pay.date",
+         "kind": "payment_date",
+         "attribute": "value"
+        }
+       },
+       "right": {
+        "record_kind": "procure_to_pay.goods_receipt",
+        "field": {
+         "group": "procure_to_pay.date",
+         "kind": "receipt_date",
+         "attribute": "value"
+        }
+       },
+       "operator_tolerance": "none"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Invoice Processing and Payment",
+   "risk": "Invoices may be recorded in the wrong period, duplicated, or paid more than once, resulting in misstated payables and cash disbursements.",
+   "risk_rating": "high",
+   "control": "The SOP requires an initial invoice check and matching of the invoice to the PO and GRN before forwarding to Finance for payment. The planning basis does not describe a control that prevents duplicate invoice recording or ensures invoices are recorded in the correct period.",
+   "control_type": "detective",
+   "control_attributes": [
+    {
+     "key": "invoice_duplicate",
+     "assertion": "Completeness",
+     "requirement": "Each vendor invoice is recorded only once in the accounting records.",
+     "evidence_kind": "tabular_population"
+    },
+    {
+     "key": "invoice_period",
+     "assertion": "Cut-off",
+     "requirement": "Invoices are recorded in the period in which the related goods or services were received.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Vendor Management",
+   "risk": "Vendors may be onboarded without completing required due diligence and approval, or may be added to the Approved Vendor List without authorization, allowing transactions with unvetted or fictitious counterparties.",
+   "risk_rating": "high",
+   "control": "The SOP requires vendor registration and onboarding to collect legal and financial documentation, due diligence and vetting including background checks, financial health assessment, compliance checks, references, and risk assessment, and vendor approval by the Vendor Approval Committee before addition to the Approved Vendor List with a unique ID and categorization. The planning basis does not establish that the system restricts transactions to approved vendors.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "vendor_documentation",
+     "assertion": "Completeness",
+     "requirement": "Vendor registration collects the required legal and financial documentation before onboarding proceeds.",
+     "evidence_kind": "inquiry"
+    },
+    {
+     "key": "vendor_due_diligence",
+     "assertion": "Compliance",
+     "requirement": "Due diligence and vetting, including background checks, financial health assessment, compliance checks, references, and risk assessment, are completed before vendor approval.",
+     "evidence_kind": "inquiry"
+    },
+    {
+     "key": "vendor_committee_approval",
+     "assertion": "Authorization",
+     "requirement": "Vendor approval is granted by the Vendor Approval Committee before the vendor is added to the Approved Vendor List.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Vendor Management",
+   "risk": "Vendor master data may be created, updated, or deactivated without authorization, or may contain duplicate or stale records, resulting in payments to incorrect or unauthorized bank accounts.",
+   "risk_rating": "high",
+   "control": "The SOP requires the vendor database to be maintained by regularly updating vendor information, re-evaluating vendors periodically, and deactivating or removing vendors as needed. The planning basis does not describe a control that prevents unauthorized updates or duplicate vendor records, and does not define the vendor-review frequency.",
+   "control_type": "detective",
+   "control_attributes": [
+    {
+     "key": "vendor_master_update",
+     "assertion": "Authorization",
+     "requirement": "Changes to vendor master data are authorized before they are recorded.",
+     "evidence_kind": "inquiry"
+    },
+    {
+     "key": "vendor_duplicate",
+     "assertion": "Completeness",
+     "requirement": "Vendor master data contains no duplicate vendor records.",
+     "evidence_kind": "tabular_population"
+    },
+    {
+     "key": "vendor_periodic_review",
+     "assertion": "Operational",
+     "requirement": "Vendor records are periodically re-evaluated and updated or deactivated where appropriate.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Invoice Processing and Payment",
+   "risk": "Payments may be released without the required approvals or without evidence that the invoice was verified and matched, resulting in unauthorized or erroneous disbursements.",
+   "risk_rating": "critical",
+   "control": "The SOP requires Procurement to perform an initial invoice check and match the invoice to the PO and GRN before forwarding it to Finance for payment. The invoice record captures a verifier, a verification date, a supervisor approver, and an approval date. Whether the system prevents payment release without these approvals is not confirmed in the planning basis.",
+   "control_type": "preventive",
+   "control_attributes": [
+    {
+     "key": "payment_approval",
+     "assertion": "Authorization",
+     "requirement": "Payment is released only after the invoice has been verified and approved by the required personnel.",
+     "evidence_kind": "transaction_cycle",
+     "registry": {
+      "pack_id": "procure_to_pay",
+      "pack_version": 6,
+      "definition_hash": "sha256:1799f719295dc6b0510e178f083a18914e865bef9efbaec9fda451f14d845c0c"
+     },
+     "required_record_kinds": [
+      "procure_to_pay.vendor_invoice",
+      "procure_to_pay.payment_voucher"
+     ],
+     "required_comparisons": [
+      {
+       "key": "payment_after_verification",
+       "label": "Payment voucher date is on or after invoice verification date",
+       "operator": "greater_than_or_equal",
+       "left": {
+        "record_kind": "procure_to_pay.payment_voucher",
+        "field": {
+         "group": "procure_to_pay.date",
+         "kind": "payment_date",
+         "attribute": "value"
+        }
+       },
+       "right": {
+        "record_kind": "procure_to_pay.vendor_invoice",
+        "field": {
+         "group": "common.date",
+         "kind": "document_date",
+         "attribute": "value"
+        }
+       },
+       "operator_tolerance": "none"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "operation": "create",
+   "process": "Vendor Management",
+   "risk": "Vendor performance may not be monitored or reviewed, and vendors may continue to transact after their approval has lapsed or their status has been set to inactive or under review.",
+   "risk_rating": "medium",
+   "control": "The SOP requires vendor performance management, including monitoring KPIs, gathering feedback, conducting reviews, and addressing issues with corrective action plans, and requires vendor records to be periodically updated or deactivated where appropriate. The planning basis does not establish that the system prevents transactions with vendors whose status is not active.",
+   "control_type": "detective",
+   "control_attributes": [
+    {
+     "key": "vendor_performance",
+     "assertion": "Operational",
+     "requirement": "Vendor performance is monitored against KPIs and reviewed with feedback gathered from requisitioning departments.",
+     "evidence_kind": "inquiry"
+    },
+    {
+     "key": "vendor_status_enforcement",
+     "assertion": "Authorization",
+     "requirement": "Transactions are not processed with vendors whose status is not active or approved.",
+     "evidence_kind": "inquiry"
+    }
+   ]
+  }
+ ]
+}

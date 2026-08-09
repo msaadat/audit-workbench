@@ -124,11 +124,19 @@ control; leave the exceptions to the tests.
   Each attribute has a unique stable `key`, one assertion from `Existence`,
   `Completeness`, `Accuracy`, `Authorization`, `Valuation`, `Cut-off`,
   `Compliance`, or `Operational`, a plain-language `requirement`, and one
-  evidence strategy. Enumerate the requirements the control actually makes
-  rather than collapsing every control to a single attribute; a three-way match
-  before payment asserts the match, the receipt-before-payment order, and the
-  amount agreement separately. Keep all attributes of one risk/control on the
-  same RCM row.
+  evidence strategy — and nothing else. Enumerate the requirements the control
+  actually makes rather than collapsing every control to a single attribute; a
+  three-way match before payment asserts the match, the receipt-before-payment
+  order, and the amount agreement separately. Keep all attributes of one
+  risk/control on the same RCM row.
+
+  An attribute whose evidence strategy is `transaction_cycle` says so and stops
+  there. The comparisons that would answer it — which records, which fields,
+  which operator — are authored in a separate step that is given the installed
+  pack catalogue, and are not written on the row here. Deciding *that* a
+  requirement needs linked source records is the judgment this matrix makes;
+  expressing it as a comparison is mechanical, and mixing the two into one pass
+  is what produced rows whose evidence contracts were unusable.
 - **evidence_kind** — where the evidence for that requirement lives, judged from
   the supplied material rather than the requirement's wording. Use
   `tabular_population` whenever the imported tables carry the fields named —

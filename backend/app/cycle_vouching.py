@@ -22,11 +22,24 @@ from typing import Iterable, Mapping
 import polars as pl
 
 from .cycle_registry import DEFAULT_REGISTRY, CycleRegistry, RegistryError
+from .cycle_registry import operators as _operators
+from .cycle_registry import recipes as _recipes
 from .cycle_registry.models import RegistryReference
 
 
 class CycleSchemaError(ValueError):
     """A cycle-evidence payload violates the closed schema."""
+
+    def __init__(self, errors: str | Iterable[str]):
+        values = (errors,) if isinstance(errors, str) else tuple(errors)
+        normalized = tuple(str(item).strip() for item in values if str(item).strip())
+        if not normalized:
+            normalized = ("The payload violates the cycle schema.",)
+        #: Every independent violation found, not just the first. A caller that
+        #: feeds violations back to a model needs all of them: repairing one of
+        #: five and being told nothing about the other four cannot converge.
+        self.errors = normalized
+        super().__init__("; ".join(normalized))
 
 
 class SelectionConfirmationRequired(CycleSchemaError):
@@ -63,16 +76,9 @@ ASSERTIONS = frozenset(
         "Operational",
     }
 )
-OPERATORS = frozenset(
-    {
-        "equal_exact",
-        "equal_normalized",
-        "numeric_within",
-        "date_on_or_before",
-        "date_within",
-        "present",
-    }
-)
+# Derived from the one operator table every prompt also renders from, so the
+# gate and the instructions cannot drift apart.
+OPERATORS = _operators.OPERATORS
 ENTRY_QUANTIFIERS = frozenset({"one", "any", "all"})
 ROLE_QUANTIFIERS = frozenset({"all", "any"})
 NORMALIZATION_STATUSES = frozenset({"normalized", "invalid"})
@@ -153,6 +159,110 @@ def _key(value: object, label: str) -> str:
     if not _KEY_RE.fullmatch(text):
         raise CycleSchemaError(f"{label} contains unsupported characters.")
     return text
+
+
+# The closed key sets of the evidence contract an RCM row authors. Placement
+# carries meaning here — ``required_record_kinds`` nested inside ``registry``
+# instead of beside it is a different statement, and silently ignoring the
+# misplaced key produced either a confusing reference error or a row that passed
+# while meaning something the author did not write. So these objects reject
+# unknown keys rather than dropping them.
+REGISTRY_REFERENCE_KEYS = frozenset({"pack_id", "pack_version", "definition_hash"})
+FIELD_SELECTOR_KEYS = frozenset({"group", "kind", "attribute"})
+OPERAND_KEYS = frozenset({"record_kind", "field"})
+COMPARISON_KEYS = frozenset(
+    {"key", "label", "operator", "left", "right", "tolerance"}
+)
+RECIPE_REFERENCE_KEYS = frozenset({"recipe_id", "bindings"})
+# Validation records which recipes it expanded under this key and clears
+# ``comparison_recipes``, because validation runs more than once over the life of
+# a row: the worker normalizes the proposal, the executor re-validates it before
+# committing, and the workspace re-validates it on load. Expanding into
+# ``required_comparisons`` while leaving the recipe list in place made the second
+# pass expand it again and collide with its own first expansion. The applied form
+# is provenance only and is never expanded.
+APPLIED_RECIPES_KEY = "comparison_recipes_applied"
+CONTROL_ATTRIBUTE_KEYS = frozenset(
+    {
+        "key",
+        "assertion",
+        "requirement",
+        "evidence_kind",
+        "registry",
+        "required_record_kinds",
+        "required_comparisons",
+        "comparison_recipes",
+        APPLIED_RECIPES_KEY,
+    }
+)
+
+
+def _unknown_key_error(
+    value: Mapping[str, object],
+    allowed: frozenset[str],
+    *,
+    label: str,
+) -> str | None:
+    """Return the message for a key outside a closed set, or ``None``."""
+
+    unknown = sorted(str(key) for key in value if str(key) not in allowed)
+    if not unknown:
+        return None
+    return (
+        f"{label} has unexpected key '{unknown[0]}'. It accepts exactly: "
+        f"{', '.join(sorted(allowed))}."
+    )
+
+
+def _reject_unknown_keys(
+    value: Mapping[str, object],
+    allowed: frozenset[str],
+    *,
+    label: str,
+) -> None:
+    """Reject keys outside a closed set, naming what the object does accept."""
+
+    message = _unknown_key_error(value, allowed, label=label)
+    if message is not None:
+        raise CycleSchemaError(message)
+
+
+def _known_keys_only(
+    value: Mapping[str, object],
+    allowed: frozenset[str],
+    *,
+    label: str,
+    errors: list[str],
+) -> dict:
+    """Record an unknown key and carry on with the keys that are known.
+
+    Stopping here would hide whatever else is wrong with the same object. The
+    live failure did exactly that: a comparison carried an invented
+    ``operator_tolerance`` key *and* an invented operator, and reporting only the
+    key would have sent the next attempt back with the operator still wrong.
+    """
+
+    message = _unknown_key_error(value, allowed, label=label)
+    if message is not None:
+        errors.append(message)
+    return {key: item for key, item in value.items() if str(key) in allowed}
+
+
+def _collect(errors: list[str], operation) -> object:
+    """Run one independent validation, recording rather than raising its errors.
+
+    Independent here means what it says: a sibling comparison's operator does
+    not depend on this one's operand, so a caller that stops at the first
+    failure reports one violation out of five and cannot be repaired in one
+    turn. Callers use this where the units genuinely are independent, and plain
+    raising where a later check depends on an earlier one's result.
+    """
+
+    try:
+        return operation()
+    except CycleSchemaError as error:
+        errors.extend(error.errors)
+        return None
 
 
 def _registry_reference(
@@ -422,7 +532,7 @@ def _field_definition(
     try:
         definition = registry.field_kind(pack_id, group, kind)
     except RegistryError as error:
-        raise CycleSchemaError(str(error)) from error
+        raise CycleSchemaError(f"{label}: {error}") from error
     attributes = {item.id: item.semantic_type for item in definition.attributes}
     if attribute not in attributes:
         raise CycleSchemaError(
@@ -1958,6 +2068,7 @@ def _required_comparison_assertion(
     *,
     label: str,
     required_record_kinds: set[str],
+    errors: list[str],
 ) -> dict:
     """Translate an RCM evidence contract into the canonical assertion shape.
 
@@ -1967,7 +2078,9 @@ def _required_comparison_assertion(
     this exact comparison; a prose ``requirement_ref`` alone is never coverage.
     """
 
-    comparison = _object(value, label)
+    comparison = _known_keys_only(
+        _object(value, label), COMPARISON_KEYS, label=label, errors=errors
+    )
     assertion = {
         "key": _key(comparison.get("key"), f"{label}.key"),
         "label": _text(comparison.get("label"), f"{label}.label"),
@@ -1977,23 +2090,159 @@ def _required_comparison_assertion(
         raw_operand = comparison.get(side)
         if side == "right" and raw_operand is None:
             continue
-        operand = _object(raw_operand, f"{label}.{side}")
+        operand = _known_keys_only(
+            _object(raw_operand, f"{label}.{side}"),
+            OPERAND_KEYS,
+            label=f"{label}.{side}",
+            errors=errors,
+        )
         record_kind = _text(
             operand.get("record_kind"), f"{label}.{side}.record_kind"
         )
         if record_kind not in required_record_kinds:
             raise CycleSchemaError(
                 f"{label}.{side}.record_kind '{record_kind}' is not one of the "
-                "attribute's required record kinds."
+                "attribute's required record kinds "
+                f"({', '.join(sorted(required_record_kinds))})."
             )
+        field = _known_keys_only(
+            _object(operand.get("field"), f"{label}.{side}.field"),
+            FIELD_SELECTOR_KEYS,
+            label=f"{label}.{side}.field",
+            errors=errors,
+        )
         assertion[side] = {
             "source": "role",
             "role": record_kind,
-            "field": _object(operand.get("field"), f"{label}.{side}.field"),
+            "field": field,
         }
     if comparison.get("tolerance") is not None:
         assertion["tolerance"] = comparison.get("tolerance")
     return assertion
+
+
+def _expand_comparison_recipes(
+    value: object,
+    *,
+    label: str,
+    reference: RegistryReference,
+    required_record_kinds: list[str],
+    registry: CycleRegistry,
+) -> list[dict]:
+    """Expand named recipes into canonical comparisons.
+
+    The expansion is ordinary comparison payload: it goes on to the same
+    operand, type, tolerance, direction, and meaning checks a hand-authored
+    comparison does. A recipe removes the *authoring* of four nested objects
+    from a judgment-heavy turn; it does not remove the gate.
+    """
+
+    entries = _list(value, label)
+    required = set(required_record_kinds)
+    # One recipe legitimately applies twice to the same attribute — an invoice's
+    # amount agreeing to its order *and* to its goods receipt is two uses of one
+    # shape. The comparison keys it carries would then collide with themselves, so
+    # a repeated recipe qualifies its keys with the record kinds it was bound to.
+    # A single use keeps the plain key, which is what reads well downstream.
+    repeated = {
+        recipe_id
+        for recipe_id in (
+            str(entry.get("recipe_id") or "")
+            for entry in entries
+            if isinstance(entry, Mapping)
+        )
+        if sum(
+            1
+            for entry in entries
+            if isinstance(entry, Mapping)
+            and str(entry.get("recipe_id") or "") == recipe_id
+        )
+        > 1
+    }
+    errors: list[str] = []
+    expanded: list[dict] = []
+    for index, raw in enumerate(entries):
+        entry_label = f"{label}[{index}]"
+
+        def expand(raw=raw, entry_label=entry_label) -> list[dict]:
+            entry = _object(raw, entry_label)
+            _reject_unknown_keys(entry, RECIPE_REFERENCE_KEYS, label=entry_label)
+            recipe_id = _text(entry.get("recipe_id"), f"{entry_label}.recipe_id")
+            definition = _recipes.recipe(recipe_id)
+            offered = _recipes.recipes_for_pack(reference.pack_id)
+            if definition is None or definition not in offered:
+                raise CycleSchemaError(
+                    f"{entry_label}.recipe_id '{recipe_id}' is not a comparison "
+                    f"recipe offered for pack '{reference.pack_id}'. Available "
+                    f"recipes are: {', '.join(item.id for item in offered)}."
+                )
+            bindings = _object(entry.get("bindings"), f"{entry_label}.bindings")
+            supplied = {str(key) for key in bindings}
+            expected = set(definition.roles)
+            if supplied != expected:
+                raise CycleSchemaError(
+                    f"{entry_label}.bindings must bind exactly "
+                    f"{', '.join(definition.roles)} for recipe '{recipe_id}'."
+                )
+            bound: dict[str, str] = {}
+            for role in definition.roles:
+                record_kind = _text(
+                    bindings.get(role), f"{entry_label}.bindings.{role}"
+                )
+                if record_kind not in required:
+                    raise CycleSchemaError(
+                        f"{entry_label}.bindings.{role} names record kind "
+                        f"'{record_kind}', which is not one of the attribute's "
+                        f"required record kinds "
+                        f"({', '.join(sorted(required))})."
+                    )
+                bound[role] = record_kind
+            labels = {
+                role: registry.record_kind(reference.pack_id, record_kind).label
+                for role, record_kind in bound.items()
+            }
+            suffix = (
+                "_" + "_".join(
+                    bound[role].rpartition(".")[2] for role in definition.roles
+                )
+                if recipe_id in repeated
+                else ""
+            )
+            comparisons: list[dict] = []
+            for comparison in definition.comparisons:
+                payload: dict[str, object] = {
+                    "key": f"{comparison.key}{suffix}",
+                    "label": comparison.label.format(**labels),
+                    "operator": comparison.operator,
+                    "left": {
+                        "record_kind": bound[comparison.left.role],
+                        "field": {
+                            "group": comparison.left.group,
+                            "kind": comparison.left.kind,
+                            "attribute": comparison.left.attribute,
+                        },
+                    },
+                }
+                if comparison.right is not None:
+                    payload["right"] = {
+                        "record_kind": bound[comparison.right.role],
+                        "field": {
+                            "group": comparison.right.group,
+                            "kind": comparison.right.kind,
+                            "attribute": comparison.right.attribute,
+                        },
+                    }
+                if comparison.tolerance is not None:
+                    payload["tolerance"] = copy.deepcopy(comparison.tolerance)
+                comparisons.append(payload)
+            return comparisons
+
+        result = _collect(errors, expand)
+        if result is not None:
+            expanded.extend(result)
+    if errors:
+        raise CycleSchemaError(errors)
+    return expanded
 
 
 def _validate_required_comparisons(
@@ -2003,47 +2252,90 @@ def _validate_required_comparisons(
     reference: RegistryReference,
     required_record_kinds: list[str],
     registry: CycleRegistry,
+    recipe_count: int = 0,
 ) -> list[dict]:
+    """Validate an attribute's comparisons, reporting every independent failure.
+
+    Each comparison is validated on its own so that a row with five malformed
+    comparisons yields five errors. Reporting only the first meant a bounded
+    repair turn was told about one violation, corrected it, and failed again on
+    the four it had never been shown.
+    """
     comparisons = _list(value, label, nonempty=True)
     if len(comparisons) > MAX_ASSERTIONS:
         raise CycleSchemaError(
             f"A transaction-cycle attribute may require at most {MAX_ASSERTIONS} comparisons."
         )
     required = set(required_record_kinds)
-    assertions: list[dict] = []
+    roles = {record_kind: record_kind for record_kind in required_record_kinds}
+    errors: list[str] = []
     normalized: list[dict] = []
     keys: set[str] = set()
+    used_record_kinds: set[str] = set()
     for index, raw in enumerate(comparisons):
-        comparison_label = f"{label}[{index}]"
-        assertion = _required_comparison_assertion(
-            raw,
-            label=comparison_label,
-            required_record_kinds=required,
+        # A recipe expansion is prepended to whatever the author wrote, so the
+        # reported index has to point back at the payload they can actually see.
+        comparison_label = (
+            f"{label}[{index}]"
+            if index >= recipe_count
+            else f"comparison_recipes expansion[{index}]"
         )
-        if assertion["key"] in keys:
-            raise CycleSchemaError(
-                f"Duplicate required comparison key '{assertion['key']}'."
-            )
-        keys.add(assertion["key"])
-        assertions.append(assertion)
-        normalized.append(_object(raw, comparison_label))
 
-    roles = {record_kind: record_kind for record_kind in required_record_kinds}
-    validated = validate_assertions(
-        assertions,
-        roles=roles,
-        pack_id=reference.pack_id,
-        registry=registry,
-    )
-    for assertion in validated:
-        _validate_assertion_meaning(
-            assertion,
-            role_kinds=roles,
-            required_roles=set(roles),
-            multiplicity_by_kind={},
-            pack_id=reference.pack_id,
-            registry=registry,
+        # An invented key and an invented operator on the same comparison are two
+        # independent defects; both are reported, so one repair turn can fix both.
+        local: list[str] = []
+        try:
+            assertion = _required_comparison_assertion(
+                raw,
+                label=comparison_label,
+                required_record_kinds=required,
+                errors=local,
+            )
+            if assertion["key"] in keys:
+                raise CycleSchemaError(
+                    f"{comparison_label}: duplicate required comparison key "
+                    f"'{assertion['key']}'."
+                )
+            keys.add(assertion["key"])
+            validated = validate_assertions(
+                [assertion],
+                roles=roles,
+                pack_id=reference.pack_id,
+                registry=registry,
+                label_prefix=comparison_label,
+                index_labels=False,
+            )
+            for item in validated:
+                _validate_assertion_meaning(
+                    item,
+                    role_kinds=roles,
+                    required_roles=set(roles),
+                    multiplicity_by_kind={},
+                    pack_id=reference.pack_id,
+                    registry=registry,
+                )
+            for side in ("left", "right"):
+                operand = assertion.get(side)
+                if isinstance(operand, Mapping):
+                    used_record_kinds.add(str(operand.get("role")))
+        except CycleSchemaError as error:
+            local.extend(error.errors)
+        errors.extend(local)
+        if not local:
+            normalized.append(_object(raw, comparison_label))
+    # A declared record kind no comparison reads is a real defect, not a
+    # harmless surplus: it becomes a bound role in the generated cycle test that
+    # no assertion consumes, which test generation then rejects. Catching it
+    # here keeps the failure in the turn that can still fix it.
+    unused = sorted(required - used_record_kinds)
+    if unused and not errors:
+        raise CycleSchemaError(
+            f"{label}: required record kind '{unused[0]}' is never read by a "
+            "comparison. Either compare it against another record, or drop it "
+            "from required_record_kinds."
         )
+    if errors:
+        raise CycleSchemaError(errors)
     return normalized
 
 
@@ -2061,91 +2353,210 @@ def validate_control_attributes(
     )
     keys: set[str] = set()
     normalized: list[dict] = []
+    errors: list[str] = []
     for index, raw in enumerate(attributes):
-        attribute = _object(raw, f"control_attributes[{index}]")
-        attribute_reference = reference
-        if attribute.get("registry") is not None:
-            supplied_reference = _registry_reference(
-                attribute.get("registry"),
-                registry,
-                label=f"control_attributes[{index}].registry",
+        # Attributes are independent requirements of one control: a malformed
+        # third attribute says nothing about the first two, so all of them are
+        # reported together.
+        local: list[str] = []
+
+        def validate(raw=raw, index=index, local=local) -> dict:
+            return _validate_control_attribute(
+                raw,
+                label=f"control_attributes[{index}]",
+                reference=reference,
+                keys=keys,
+                registry=registry,
+                errors=local,
             )
-            if reference is not None and supplied_reference != reference:
-                raise CycleSchemaError(
-                    f"control_attributes[{index}].registry does not match "
-                    "the supplied registry."
-                )
-            attribute_reference = supplied_reference
-        key = _key(attribute.get("key"), f"control_attributes[{index}].key")
-        if key in keys:
-            raise CycleSchemaError(f"Duplicate control attribute key '{key}'.")
-        keys.add(key)
-        assertion = str(attribute.get("assertion") or "")
-        if assertion not in ASSERTIONS:
-            raise CycleSchemaError(f"Unsupported assertion '{assertion}'.")
-        _text(attribute.get("requirement"), f"control_attributes[{index}].requirement")
-        evidence_kind_id = str(attribute.get("evidence_kind") or "")
-        evidence_kind = registry.evidence_kinds.get(evidence_kind_id)
-        if evidence_kind is None:
+
+        attribute = _collect(local, validate)
+        errors.extend(local)
+        if attribute is not None and not local:
+            normalized.append(attribute)
+    if errors:
+        raise CycleSchemaError(errors)
+    return normalized
+
+
+def _validate_control_attribute(
+    raw: object,
+    *,
+    label: str,
+    reference: RegistryReference | None,
+    keys: set[str],
+    registry: CycleRegistry,
+    errors: list[str],
+) -> dict:
+    """Validate one control attribute of an asserted control."""
+
+    # An unknown key here is recorded and the rest of the attribute is still
+    # validated: a misspelled ``required_comparisons`` should report both the
+    # unknown key and the contract it therefore fails to supply.
+    attribute = _known_keys_only(
+        _object(raw, label), CONTROL_ATTRIBUTE_KEYS, label=label, errors=errors
+    )
+    attribute_reference = reference
+    if attribute.get("registry") is not None:
+        registry_label = f"{label}.registry"
+        supplied = _object(attribute.get("registry"), registry_label)
+        # Checked before the reference itself, because the misplacement is the
+        # cause: a ``required_record_kinds`` nested here is also missing from
+        # where it belongs, and reporting a stale-reference error instead sent
+        # the author looking at the pack version.
+        unknown = sorted(
+            str(key) for key in supplied if str(key) not in REGISTRY_REFERENCE_KEYS
+        )
+        if unknown:
             raise CycleSchemaError(
-                f"Unsupported evidence kind '{evidence_kind_id}'."
+                f"{registry_label} has unexpected key '{unknown[0]}'. A registry "
+                "reference has exactly pack_id, pack_version, and definition_hash, "
+                "copied from one installed pack; required_record_kinds, "
+                "required_comparisons, and comparison_recipes are siblings of "
+                "registry on the control attribute, never keys inside it."
             )
-        kinds_value = attribute.get("required_record_kinds")
-        comparisons_value = attribute.get("required_comparisons")
-        if evidence_kind.record_kind_requirement == "required":
-            if attribute_reference is None:
-                raise CycleSchemaError(
-                    f"Evidence kind '{evidence_kind_id}' requires a registry reference."
+        supplied_reference = _registry_reference(
+            supplied,
+            registry,
+            label=registry_label,
+        )
+        if reference is not None and supplied_reference != reference:
+            raise CycleSchemaError(
+                f"{registry_label} does not match the supplied registry."
+            )
+        attribute_reference = supplied_reference
+    key = _key(attribute.get("key"), f"{label}.key")
+    if key in keys:
+        raise CycleSchemaError(f"Duplicate control attribute key '{key}'.")
+    keys.add(key)
+    assertion = str(attribute.get("assertion") or "")
+    if assertion not in ASSERTIONS:
+        raise CycleSchemaError(
+            f"{label}.assertion '{assertion}' is not supported. It must be "
+            f"exactly one of: {', '.join(sorted(ASSERTIONS))}."
+        )
+    _text(attribute.get("requirement"), f"{label}.requirement")
+    evidence_kind_id = str(attribute.get("evidence_kind") or "")
+    evidence_kind = registry.evidence_kinds.get(evidence_kind_id)
+    if evidence_kind is None:
+        raise CycleSchemaError(
+            f"{label}.evidence_kind '{evidence_kind_id}' is not supported. It "
+            f"must be exactly one of: "
+            f"{', '.join(sorted(registry.evidence_kinds))}."
+        )
+    kinds_value = attribute.get("required_record_kinds")
+    comparisons_value = attribute.get("required_comparisons")
+    recipes_value = attribute.get("comparison_recipes")
+    if evidence_kind.record_kind_requirement == "required":
+        # Nothing at all, rather than something malformed. Reporting the missing
+        # registry first sent the author to fix one field of a contract that had
+        # not been written, so the absence is named as the absence it is.
+        if (
+            attribute_reference is None
+            and not kinds_value
+            and not comparisons_value
+            and not recipes_value
+        ):
+            raise CycleSchemaError(
+                f"{label} declares evidence kind '{evidence_kind_id}' but names "
+                "no evidence contract. Supply registry, required_record_kinds, "
+                "and comparison_recipes or required_comparisons."
+            )
+        if attribute_reference is None:
+            raise CycleSchemaError(
+                f"Evidence kind '{evidence_kind_id}' requires a registry reference."
+            )
+        kinds = _list(
+            kinds_value,
+            f"{label}.required_record_kinds",
+            nonempty=True,
+        )
+        if len(set(kinds)) != len(kinds):
+            raise CycleSchemaError(
+                "Control attributes require unique, bindable record kinds."
+            )
+        # A cycle is a relationship between records. One record kind has no
+        # transaction linkage to test, so the requirement belongs to a
+        # document-content or tabular strategy instead of producing a cycle
+        # test whose graph can only ever reach its own seed.
+        if len(kinds) < MIN_CYCLE_RECORD_KINDS:
+            raise CycleSchemaError(
+                f"{label} uses evidence kind "
+                f"'{evidence_kind_id}' with one record kind; a transaction "
+                f"cycle links at least {MIN_CYCLE_RECORD_KINDS} record kinds. "
+                "Use document_content or tabular_population for a "
+                "single-record requirement."
+            )
+        for kind in kinds:
+            try:
+                definition = registry.record_kind(
+                    attribute_reference.pack_id, str(kind)
                 )
-            kinds = _list(
-                kinds_value,
-                f"control_attributes[{index}].required_record_kinds",
-                nonempty=True,
-            )
-            if len(set(kinds)) != len(kinds):
+            except RegistryError as error:
+                raise CycleSchemaError(str(error)) from error
+            if not definition.bindable:
                 raise CycleSchemaError(
                     "Control attributes require unique, bindable record kinds."
                 )
-            # A cycle is a relationship between records. One record kind has no
-            # transaction linkage to test, so the requirement belongs to a
-            # document-content or tabular strategy instead of producing a cycle
-            # test whose graph can only ever reach its own seed.
-            if len(kinds) < MIN_CYCLE_RECORD_KINDS:
-                raise CycleSchemaError(
-                    f"control_attributes[{index}] uses evidence kind "
-                    f"'{evidence_kind_id}' with one record kind; a transaction "
-                    f"cycle links at least {MIN_CYCLE_RECORD_KINDS} record kinds. "
-                    "Use document_content or tabular_population for a "
-                    "single-record requirement."
-                )
-            for kind in kinds:
-                try:
-                    definition = registry.record_kind(
-                        attribute_reference.pack_id, str(kind)
-                    )
-                except RegistryError as error:
-                    raise CycleSchemaError(str(error)) from error
-                if not definition.bindable:
-                    raise CycleSchemaError(
-                        "Control attributes require unique, bindable record kinds."
-                    )
-            attribute["required_comparisons"] = _validate_required_comparisons(
-                comparisons_value,
-                label=f"control_attributes[{index}].required_comparisons",
-                reference=attribute_reference,
-                required_record_kinds=[str(kind) for kind in kinds],
-                registry=registry,
-            )
-        elif kinds_value not in (None, []):
+        record_kinds = [str(kind) for kind in kinds]
+        authored_recipes = _list(
+            recipes_value if recipes_value is not None else [],
+            f"{label}.comparison_recipes",
+        )
+        expanded = _expand_comparison_recipes(
+            authored_recipes,
+            label=f"{label}.comparison_recipes",
+            reference=attribute_reference,
+            required_record_kinds=record_kinds,
+            registry=registry,
+        )
+        supplied_comparisons = (
+            _list(comparisons_value, f"{label}.required_comparisons")
+            if comparisons_value is not None
+            else []
+        )
+        if not expanded and not supplied_comparisons:
             raise CycleSchemaError(
-                f"Evidence kind '{evidence_kind_id}' does not accept record kinds."
+                f"{label} declares evidence kind '{evidence_kind_id}' but names "
+                "no evidence contract. Supply comparison_recipes, or "
+                "required_comparisons, or both."
             )
-        elif comparisons_value not in (None, []):
-            raise CycleSchemaError(
-                f"Evidence kind '{evidence_kind_id}' does not accept required comparisons."
-            )
-        normalized.append(attribute)
-    return normalized
+        attribute["required_comparisons"] = _validate_required_comparisons(
+            [*expanded, *supplied_comparisons],
+            label=f"{label}.required_comparisons",
+            reference=attribute_reference,
+            required_record_kinds=record_kinds,
+            registry=registry,
+            recipe_count=len(expanded),
+        )
+        # The expansion now lives in required_comparisons, so the recipe list is
+        # retired to its applied form. Validating this attribute again is then a
+        # no-op rather than a second expansion.
+        if authored_recipes:
+            attribute[APPLIED_RECIPES_KEY] = [
+                *_list(
+                    attribute.get(APPLIED_RECIPES_KEY) or [],
+                    f"{label}.{APPLIED_RECIPES_KEY}",
+                ),
+                *authored_recipes,
+            ]
+        attribute.pop("comparison_recipes", None)
+    elif kinds_value not in (None, []):
+        raise CycleSchemaError(
+            f"Evidence kind '{evidence_kind_id}' does not accept record kinds."
+        )
+    elif comparisons_value not in (None, []):
+        raise CycleSchemaError(
+            f"Evidence kind '{evidence_kind_id}' does not accept required comparisons."
+        )
+    elif recipes_value not in (None, []) or attribute.get(APPLIED_RECIPES_KEY) not in (
+        None,
+        [],
+    ):
+        raise CycleSchemaError(
+            f"Evidence kind '{evidence_kind_id}' does not accept comparison recipes."
+        )
+    return attribute
 
 
 def assurance_scope_for(selection: Mapping[str, object]) -> str:
@@ -2229,8 +2640,19 @@ def validate_assertions(
     pack_id: str,
     registry: CycleRegistry = DEFAULT_REGISTRY,
     table_columns: set[str] | Mapping[str, str] | None = None,
+    label_prefix: str = "definition.assertions",
+    index_labels: bool = True,
 ) -> list[dict]:
-    assertions = _list(value, "definition.assertions")
+    """Validate assertion shape against the shared operator table.
+
+    ``label_prefix`` lets a caller keep its own path in the error text. An RCM
+    control attribute's comparisons are validated through here, and reporting
+    them as ``definition.assertions[0]`` pointed the reader at a structure that
+    does not exist in the payload they wrote. A caller validating one assertion
+    whose path it already knows passes ``index_labels=False`` so the path is not
+    given a second, meaningless index.
+    """
+    assertions = _list(value, label_prefix)
     if len(assertions) > MAX_ASSERTIONS:
         raise CycleSchemaError(
             f"A cycle test may have at most {MAX_ASSERTIONS} assertions."
@@ -2238,36 +2660,42 @@ def validate_assertions(
     keys: set[str] = set()
     normalized: list[dict] = []
     for index, raw in enumerate(assertions):
-        assertion = _object(raw, f"definition.assertions[{index}]")
-        key = _key(assertion.get("key"), f"definition.assertions[{index}].key")
+        label = f"{label_prefix}[{index}]" if index_labels else label_prefix
+        assertion = _object(raw, label)
+        key = _key(assertion.get("key"), f"{label}.key")
         if key in keys:
             raise CycleSchemaError(f"Duplicate assertion key '{key}'.")
         keys.add(key)
-        _text(assertion.get("label"), f"definition.assertions[{index}].label")
+        _text(assertion.get("label"), f"{label}.label")
         operator = str(assertion.get("operator") or "")
-        if operator not in OPERATORS:
-            raise CycleSchemaError(f"Unsupported assertion operator '{operator}'.")
+        definition = _operators.operator(operator)
+        if definition is None:
+            raise CycleSchemaError(
+                _operators.unsupported_operator_message(operator, label=label)
+            )
         left, left_type, left_set = _operand(
             assertion.get("left"),
-            f"definition.assertions[{index}].left",
+            f"{label}.left",
             roles=roles,
             pack_id=pack_id,
             registry=registry,
             table_columns=table_columns,
         )
         right_raw = assertion.get("right")
-        if operator == "present":
+        if definition.arity == "unary":
             if right_raw is not None or left_set:
                 raise CycleSchemaError(
-                    "present is unary and requires one scalar operand."
+                    f"{label}: {operator} is unary and requires one scalar operand."
                 )
             normalized.append(assertion)
             continue
         if right_raw is None:
-            raise CycleSchemaError(f"Assertion '{key}' requires a right operand.")
+            raise CycleSchemaError(
+                f"Assertion '{key}' requires a right operand."
+            )
         right, right_type, right_set = _operand(
             right_raw,
-            f"definition.assertions[{index}].right",
+            f"{label}.right",
             roles=roles,
             pack_id=pack_id,
             registry=registry,
@@ -2284,11 +2712,7 @@ def validate_assertions(
             raise CycleSchemaError(
                 "role_quantifier applies only to a roles operand."
             )
-        expected_type = {
-            "numeric_within": "number",
-            "date_on_or_before": "date",
-            "date_within": "date",
-        }.get(operator)
+        expected_type = definition.operand_type
         known_types = {
             item for item in (left_type, right_type) if item != "unknown"
         }
@@ -2300,36 +2724,56 @@ def validate_assertions(
             raise CycleSchemaError(
                 f"Assertion '{key}' compares unlike semantic types."
             )
-        tolerance = assertion.get("tolerance")
-        if operator == "numeric_within":
-            tolerance_object = _object(tolerance, f"assertion '{key}' tolerance")
-            absolute = tolerance_object.get("absolute", 0)
-            percent = tolerance_object.get("percent", 0)
-            if any(
-                isinstance(item, bool)
-                or not isinstance(item, (int, float))
-                or item < 0
-                for item in (absolute, percent)
-            ):
-                raise CycleSchemaError(
-                    "numeric_within tolerance values must be non-negative numbers."
-                )
-        elif operator == "date_within":
-            if (
-                isinstance(tolerance, bool)
-                or not isinstance(tolerance, int)
-                or tolerance < 0
-            ):
-                raise CycleSchemaError(
-                    "date_within tolerance must be a non-negative integer day count."
-                )
-        elif tolerance is not None:
-            raise CycleSchemaError(
-                f"Operator '{operator}' does not accept a tolerance."
-            )
+        _validate_tolerance(
+            assertion.get("tolerance"),
+            definition=definition,
+            key=key,
+            label=label,
+        )
         assert left is not None and right is not None
         normalized.append(assertion)
     return normalized
+
+
+def _validate_tolerance(
+    tolerance: object,
+    *,
+    definition: _operators.OperatorDefinition,
+    key: str,
+    label: str,
+) -> None:
+    """Apply the tolerance rule the operator table declares for this operator."""
+
+    if definition.tolerance == "numeric_object":
+        tolerance_object = _object(tolerance, f"assertion '{key}' tolerance")
+        absolute = tolerance_object.get("absolute", 0)
+        percent = tolerance_object.get("percent", 0)
+        if any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or item < 0
+            for item in (absolute, percent)
+        ):
+            raise CycleSchemaError(
+                f"{label}: {definition.id} tolerance values must be non-negative "
+                'numbers, as {"absolute": <number>, "percent": <number>}.'
+            )
+        return
+    if definition.tolerance == "integer_days":
+        if (
+            isinstance(tolerance, bool)
+            or not isinstance(tolerance, int)
+            or tolerance < 0
+        ):
+            raise CycleSchemaError(
+                f"{label}: {definition.id} tolerance must be a non-negative "
+                "integer day count, not an object."
+            )
+        return
+    if tolerance is not None:
+        raise CycleSchemaError(
+            f"{label}: operator '{definition.id}' does not accept a tolerance."
+        )
 
 
 def validate_cycle_definition(

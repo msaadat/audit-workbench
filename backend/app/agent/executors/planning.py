@@ -468,6 +468,21 @@ def _plain_json(value: object) -> object:
     return value
 
 
+def _quarantined_rows(request: ExecutorRequest) -> list[dict]:
+    """Return the rows the worker could not repair, for the receipt.
+
+    An RCM is a set of independent rows, so one row that will not validate is not
+    a reason to commit none of them. The dropped rows travel to the receipt with
+    their reasons, which is what puts them in front of the auditor instead of
+    leaving a silently shorter matrix.
+    """
+
+    raw = request.proposal.get("quarantined")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [_plain_json(item) for item in raw if isinstance(item, Mapping)]
+
+
 def _validated_rcm(
     request: ExecutorRequest,
     target: object,
@@ -523,6 +538,10 @@ def _rcm_result(
     refs = list(
         dict.fromkeys(f"rcm:{item['id']}" for item in (changed or outcomes))
     )
+    quarantined = _quarantined_rows(request)
+    output: dict[str, object] = {"status": "updated", "rows": outcomes}
+    if quarantined:
+        output["quarantined"] = quarantined
     return ExecutorResult(
         executor_id=request.executor_id,
         capability_id=request.capability_id,
@@ -532,7 +551,7 @@ def _rcm_result(
         artifact_refs=refs,
         applied_parents=dict(request.expected_parents),
         postcondition_hashes=parent_hashes(workspace, refs),
-        output={"status": "updated", "rows": outcomes},
+        output=output,
     )
 
 

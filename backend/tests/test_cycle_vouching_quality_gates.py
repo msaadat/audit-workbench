@@ -280,13 +280,56 @@ def test_gate_ignores_direction_for_a_date_it_has_not_staged(contract):
     )
 
 
+def test_rcm_gate_rejects_a_required_record_kind_no_comparison_reads(contract):
+    """The defect is caught where it is still cheap to fix.
+
+    A required record kind no comparison reads becomes a bound role in the
+    generated test that no assertion consumes. That was only rejected at test
+    generation, one capability downstream of the turn that authored it, so the
+    RCM row was already committed by the time anything complained.
+    """
+
+    contract = copy.deepcopy(contract)
+    attribute = contract["control_attributes"][0]
+    attribute["required_comparisons"] = [
+        item
+        for item in attribute["required_comparisons"]
+        if item["key"] != "invoice_amount_to_purchase_order"
+    ]
+
+    with pytest.raises(
+        cycle_vouching.CycleSchemaError,
+        match=(
+            "required record kind 'procure_to_pay.purchase_order' is never read "
+            "by a comparison"
+        ),
+    ):
+        cycle_vouching.validate_control_attributes(
+            contract["control_attributes"]
+        )
+
+
 def test_gate_rejects_a_role_no_assertion_reads(contract):
+    """The downstream gate still stands on its own.
+
+    Set up so the RCM contract is itself valid — the purchase order is dropped
+    from both the comparison and the required kinds — leaving the *test* to
+    declare a role that nothing reads. The earlier RCM-level gate has nothing to
+    say about that, so the test-definition rule is what has to fire.
+    """
+
     contract = copy.deepcopy(contract)
     comparison_key = "invoice_amount_to_purchase_order"
-    contract["control_attributes"][0]["required_comparisons"] = [
+    attribute = contract["control_attributes"][0]
+    attribute["required_comparisons"] = [
         item
-        for item in contract["control_attributes"][0]["required_comparisons"]
+        for item in attribute["required_comparisons"]
         if item["key"] != comparison_key
+    ]
+    attribute["required_record_kinds"] = [
+        kind
+        for kind in attribute["required_record_kinds"]
+        if kind != "procure_to_pay.purchase_order"
     ]
     test = _test_payload(contract)
     test["definition"]["assertions"] = [

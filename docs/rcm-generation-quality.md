@@ -1,9 +1,15 @@
 # RCM generation quality: what was wrong, what was fixed, what is left
 
-**Status:** two rounds of changes have landed. Round 1 (changes 1–5) fixed
-coverage and risk wording; round 2 (changes 9–11) fixed the defects round 1
-introduced. Both rounds have been evaluated against a live regeneration.
-Recommendation 7 is now the highest-value open item; 6 and 8 are deferred.
+**Status:** three rounds have landed. Round 1 (changes 1–5) fixed coverage and
+risk wording; round 2 (changes 9–11) fixed the defects round 1 introduced. Round
+3 — *Round 3: the pipeline, not the prose* below — rebuilt the evidence contract
+and the repair loop after every RCM generation in the workspace began failing
+outright. Rounds 1 and 2 were evaluated against live regenerations; round 3 is
+evaluated against the two runs that failed, replayed as a fixture.
+
+Recommendation 6 is now closed (round 3 split the turn, at the altitude that
+mattered). Recommendation 7 is still the highest-value open item for the
+*narrative* fields; round 3 closed its structural half. 8 is still deferred.
 
 This document records an auditor's review of a generated RCM, the root-cause
 analysis of the generation turn that produced it, the criteria a good RCM has to
@@ -400,6 +406,188 @@ Suite after round 2: 1155 passed, 2 failed — the same two pre-existing failure
 **Round 2 has not yet been evaluated against a regeneration.** When it is, check
 D1–D5 specifically; the round-1 numbers above are the baseline.
 
+## Round 3: the pipeline, not the prose
+
+Rounds 1 and 2 tuned what the prompt *said*. Round 3 was forced by a different
+class of failure: after the transaction-cycle evidence contract was added to the
+row schema, **every RCM generation that reached the model failed outright**.
+
+### The evidence
+
+Two runs completed the model call; both failed, and one was already a linked
+retry of an earlier failure:
+
+```
+20260809-105349-fb0f80  failed  after 2 attempt(s): RCM row 11: Unsupported assertion operator 'equals'.
+20260809-122429-3142de  failed  after 2 attempt(s): RCM row 8: ... 'equals'.; RCM row 12: ... 'greater_than_or_equal'.
+```
+
+The preserved rejection (`AgentRuns/20260809-122429-3142de/rejections/rcm.json`,
+13 rows, 23,413 chars) is now
+`backend/tests/fixtures/rcm_operator_rejection.json`. Replaying it establishes
+the root causes:
+
+| Fact | Measured |
+|---|---|
+| Comparison operators the model authored | 6 |
+| Of those, valid | **0** |
+| Comparisons also carrying an invented `operator_tolerance` key | 6 of 6 |
+| Rows with no defect at all | 11 of 13 |
+| Errors the repair turn was actually told about | 2 of 12 |
+| Cost of run A attempt 1 | 29,661 reasoning tokens, 474s — discarded |
+
+Four separate defects, none of them about audit judgment:
+
+1. **The operator vocabulary was stated nowhere in the turn.** Not in
+   `RCM_SYSTEM`, not in `rcm.md`. The system prompt spent 11,222 of its 17,076
+   characters on the pack catalog — which record kinds and field selectors to
+   copy — and zero on the six verbs that consume them. `tests.generate`
+   documented them properly all along; the two prompts had drifted.
+2. **The rejection named the wrong value and never a right one.** The message was
+   `Unsupported assertion operator 'eq'.` Run A's trace is the proof that this
+   cannot converge: attempt 1 wrote `eq`, was told `eq` was unsupported, and
+   attempt 2 wrote `equals`.
+3. **Errors were truncated below the count needed to fix them.** Each row
+   aborted at its first bad comparison, so row 8's five defects were reported as
+   one. With `max_repair_attempts=1`, a perfect repair of what was reported still
+   failed.
+4. **The prompt's own phrasing manufactured a defect.** It asked for "key, label,
+   operator, left, optional right, and operator tolerance" — which reads as a
+   field name, so the model wrote `operator_tolerance`. The key was silently
+   ignored, so the tolerance was silently dropped, and nothing said so.
+
+Note what *is* absent from that list: the model's audit reasoning. Eleven of
+thirteen rows were substantively fine. This was a contract failure.
+
+### What changed
+
+12. **One operator table, read by the gate and both prompts**
+    (`app/cycle_registry/operators.py`). Arity, operand type, tolerance shape,
+    and direction as data. `cycle_vouching.OPERATORS` derives from it,
+    `validate_assertions` is driven by it, and `prompts.operator_table()` renders
+    it into both `planning.rcm` and `tests.generate`. The drift that caused this
+    is now structurally impossible, and a parity test asserts it.
+13. **Rejections teach.** `unsupported_operator_message` names the offending
+    value, the complete legal set, and — for a recognizable near-miss — the
+    operator probably meant *plus what the rename alone does not fix*. `equals`
+    on an amount is told it may need `numeric_within` with a tolerance;
+    `greater_than_or_equal` on dates is told to swap its operands. Deliberately
+    **not** auto-applied: both are audit-design decisions, and the live payload
+    proves it — `payment_after_receipt` written as `greater_than_or_equal` would
+    become the opposite test under a naive rename.
+14. **Every independent violation is reported, with a path.** Attributes and
+    comparisons are validated independently and their errors collected;
+    `CycleSchemaError` now carries `.errors`. Paths reach
+    `control_attributes[1].required_comparisons[0].left.field`. The live fixture
+    now yields 12 errors where it yielded 2. The repair policy was widened to 20
+    errors / 4,000 chars to match.
+15. **Closed key sets where placement carries meaning.** Control attributes,
+    comparisons, operands, field selectors, registry references, and recipe
+    references reject unknown keys, naming what they do accept — and record the
+    unknown key *alongside* the object's other defects rather than instead of
+    them. A `required_record_kinds` nested inside `registry` is now named as a
+    misplacement rather than surfacing as a stale-reference complaint. Row-level
+    extras are still dropped, not rejected: the workspace discards them anyway.
+16. **Named comparison recipes** (`app/cycle_registry/recipes.py`). Fourteen
+    named audit tests — three-way match, receipt-before-payment,
+    approval-before-document, amount/quantity/party agreement, pay-period
+    agreement — selected by id with record-kind bindings, expanded locally into
+    canonical comparisons. Free-form DSL remains available as the reviewed
+    fallback. A recipe is a shortcut through the *authoring*, never through the
+    gate: its expansion is validated identically, and a test binds all 14 through
+    the real validator.
+17. **The turn is split by altitude** (closes recommendation 6, differently).
+    `RCM_SYSTEM` decides risks, controls, and each attribute's evidence
+    *strategy*, and never sees the pack catalog. `RCM_EVIDENCE_SYSTEM` authors
+    contracts for the attributes that asked for one, and is the only prompt
+    carrying the DSL and the catalog — and it is skipped entirely when no
+    attribute needs it. In the live response only 4 of 28 attributes did.
+    Measured: the judgment prompt fell from 17,076 to 4,929 characters.
+18. **A declared record kind nothing reads is rejected at the RCM layer.** It was
+    only caught at test generation, one capability downstream of the row that
+    caused it. This found a real defect in the shipped payroll fixture.
+19. **Repair is scoped to the rows that failed**, and merged locally over the
+    rows that did not — carried through as the identical parsed objects, so a
+    repair cannot reword a row it was not asked about. Previously any single row
+    error regenerated the whole document, spending the one correction turn on
+    rows with nothing wrong with them.
+20. **Rows that will not repair are quarantined, not fatal.** On the last
+    attempt, rows that still fail are set aside with their reasons and travel to
+    the executor receipt; the rest commit. An empty survivor set is still a
+    failure. This is the change that converts "validation errors are rarer" into
+    "validation errors are not fatal" — the RCM is a set of independent rows, and
+    the executor already commits them one at a time.
+
+### The run that caught 21: validation has to be idempotent
+
+`20260809-133225-658b03`, the first run on the new pipeline, is the useful one.
+The generation side worked: **16 rows, recipes used on 3 of them, no repair turn,
+gate passed first time**. It then failed at the commit step:
+
+```
+control_attributes[0].required_comparisons[2]: duplicate required comparison key 'total_amount_agreement'.
+```
+
+Nothing was wrong with the response. A row is validated more than once in its
+life — the worker normalizes the proposal, the executor re-validates before
+committing, the workspace re-validates on load — and change 16 expanded recipes
+into `required_comparisons` while leaving `comparison_recipes` in place. The
+second pass expanded them again and collided with its own first expansion.
+
+21. **Expansion retires the recipe list.** `validate_control_attributes` now
+    clears `comparison_recipes` and records what it expanded under
+    `comparison_recipes_applied`, which is provenance and is never expanded.
+    Validating an attribute twice, or three times, is now a no-op. Two latent
+    versions of the same collision were closed with it: one recipe applied twice
+    to an attribute (legitimate — an invoice agreeing to its order *and* its
+    goods receipt) now qualifies its keys by binding, and comparison keys are
+    enforced unique across the whole catalog at import.
+
+Replayed against the contracts that run actually authored, all 16 rows validate
+and re-validate identically, with the one hand-written comparison preserved
+alongside the recipe expansion. No row had been committed, and the stale proposal
+sidecar cannot be replayed because the worker implementation hash it is bound to
+has changed.
+
+### The run that caught 22 and 23: two brackets
+
+`20260809-140906-19a740` failed with 13 attributes reporting *"declares evidence
+kind 'transaction_cycle' but names no evidence contract"*. The debug log shows
+only two model calls, **both `[agent:rcm]`** — the evidence pass never ran at all.
+
+The judgment pass had returned a complete, valid **24-row** object followed by two
+stray characters, `]}`, from the model closing brackets it had already closed.
+
+22. **`json.loads` requires the entire string to be one value**, so the whole
+    24-row draft was discarded — and because the rows never parsed, the evidence
+    pass was skipped. Parsing now takes the first complete JSON object via
+    `raw_decode` and ignores trailing surplus. Only surplus: a *truncated* object
+    still fails, because reading one as complete would commit a matrix that
+    silently stops halfway.
+23. **The whole-document re-ask returned the model's response directly**, skipping
+    the evidence pass. So even after the re-ask produced 17 clean rows, all 13 of
+    their transaction-cycle attributes were left without the contract the
+    judgment prompt had just told the model not to write. Every path that
+    produces a document now goes through one `_contracted_document` helper.
+
+Replayed through the fixed worker, that run's own judgment response yields **24
+accepted rows on the first attempt, no repair turn**, with 6 cycle attributes
+carrying validated contracts.
+
+Worth noting what these two runs have in common with the original failure: in all
+three the model's audit reasoning was sound and the pipeline threw the work away.
+That is the failure mode this artifact is prone to, and it is worth checking for
+first.
+
+Suite after round 3: 1476 passed, 2 failed — the same two pre-existing failures
+(`test_rcm_central_e2e`, `test_rcm_execution`), both unrelated to generation.
+
+**Round 3 has not yet been evaluated against a live regeneration.** The gate,
+the recipes, and the two-pass split are covered by
+`backend/tests/test_rcm_evidence_contract.py` and the replayed fixture; what a
+live run will show about the *narrative* criteria below is still open, and the
+round-2 column of the table is still unfilled.
+
 ## Criteria for a good RCM
 
 The standard the generated matrix should be measured against, and the basis for
@@ -452,7 +640,20 @@ any eval built later.
 
 ## Open recommendations
 
-### 6. Split the turn into two passes (deferred after round 1)
+### 6. Split the turn into two passes — CLOSED by round 3, at a different seam
+
+Round 3 split the turn, but not along the axis proposed here. Splitting *risk
+enumeration* from *engagement tailoring* stayed deferred for the reason given
+below: round 1's single-turn two-pass instruction lifted coverage from 15 rows to
+52, so the structural guarantee was buying little.
+
+What round 3 split instead was **judgment from mechanism**: the risk/control/
+strategy pass, and the evidence-contract pass. That seam was carrying the actual
+failures, and it also removed 11kB of pack catalog from the expensive call. The
+original proposal below is retained because its reasoning still applies if a
+coverage failure ever appears.
+
+
 
 Pass 1 enumerates the risk universe from the process flow and the model's own
 domain knowledge, with **no engagement observations supplied**. Pass 2 tailors
@@ -476,7 +677,21 @@ fails on coverage.
 
 ### 7. Add coverage and phrasing checks to `validate_rcm_proposal`
 
-**Now the highest-value open item.** Rounds 1 and 2 have taken prompt-only fixes
+**Still the highest-value open item, now narrowed to the narrative fields.**
+Round 3 built the deterministic gate for the *structured* half — the evidence
+contract, the operator vocabulary, closed key sets, unread record kinds — and the
+bullet below about the closed `assertion` list is done (it is a closed enum check
+in `_validate_control_attribute`, reported with the legal set). What remains is
+exactly the prose rules: the `%` and `ALL_CAPS_UNDERSCORE` rejection in `risk`
+and `control`, the aspirational-control guard, the system-enforcement flag, and
+deduplication.
+
+The infrastructure round 3 added makes these cheaper than they were: errors are
+collected per row rather than fail-fast, they carry paths, and a row that cannot
+be repaired is quarantined instead of sinking the document — so a phrasing gate
+can be strict without risking the whole matrix.
+
+Rounds 1 and 2 have taken prompt-only fixes
 about as far as they go: each round removed one defect class and the model found
 an adjacent field to express it in. A deterministic gate does not move.
 
@@ -486,9 +701,9 @@ Cheap gates in `app/agent/workers/planning.py`, which already has the repair loo
 - Reject `%` or an `ALL_CAPS_UNDERSCORE` token in **either** `risk` or
   `control`. Would have caught 22 round-1 rows. Scope it to both fields from the
   start — round 1's lesson is that a single-field rule migrates.
-- Reject an `assertion` outside the closed list. Pure enum check, no false
-  positives, would have caught 23 round-1 rows. **Do this one first** — it is
-  the cheapest and the highest-yield.
+- ~~Reject an `assertion` outside the closed list.~~ **Done in round 3.** Pure
+  enum check in `_validate_control_attribute`, reported with the legal set.
+  Would have caught 23 round-1 rows.
 - Reject a `control` opening with an aspirational construction ("Formal …
   defines", "Standardized … mandates", "Finalized … specifies") unless it is
   exactly `No control identified`. Round 2 shows 0 of these, so this is a
@@ -515,6 +730,15 @@ regardless of model. Round 1 showed the model *can* do the domain reasoning —
 coverage was good and unprompted risks like bank-detail diversion appeared — so
 the remaining defects look more like instruction-following than capability.
 Still worth a diff on a stronger model, but no longer the obvious lever.
+
+Round 3 reinforces this and adds one correction. The operator failures were not a
+capability problem — no model can guess a closed vocabulary that is stated
+nowhere — so a stronger model would not have fixed them. The correction: a
+provider-enforced JSON Schema is sometimes proposed as the answer here, and it is
+**net-new work**, not a config flag. `app/llm.py` has no `response_format` or
+`json_schema` path at all; only `tools` is wired (and does work against this
+provider — `finish_reason: tool_calls` appears in the call log). Worth doing on
+its own merits, but it would not have repaired an ambiguous contract.
 
 ## How to evaluate a re-run
 

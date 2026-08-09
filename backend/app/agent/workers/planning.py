@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import cycle_vouching
+from .. import prompts
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -243,10 +244,8 @@ control_attributes,
 plus criteria and control_owner where the planning basis supports them.
 All ids and narrative fields are strings. business_cycle is derived locally
 from validated transaction-cycle attributes; do not infer or return it.
-Describe the risk and the control. Test populations are decided later, but every
-transaction-cycle attribute must declare the exact minimum registry comparisons
-that would answer its requirement. Do not invent control operation as fact when
-evidence is absent.
+Describe the risk and the control. Test populations are decided later.
+Do not invent control operation as fact when evidence is absent.
 
 Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
 - Cover the standard risks a competent auditor would consider for every in-scope
@@ -263,12 +262,13 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   table shows a value is recorded, never that it is controlled.
 - The risk wording rules apply to the control field too. No percentages, null
   rates, counts, or column names, and no appended deficiency clause.
-- control_attributes is a non-empty array. Each entry describes one distinct
-  requirement of this same asserted control with key, assertion, requirement,
-  and evidence_kind. Assertions use exactly Existence, Completeness, Accuracy,
-  Authorization, Valuation, Cut-off, Compliance, or Operational. Attribute keys
-  are unique within the row. Do not split one risk/control into extra rows merely
-  because it has several attributes.
+- control_attributes is a non-empty array. Each entry has exactly key,
+  assertion, requirement, and evidence_kind — and nothing else. Each describes
+  one distinct requirement of this same asserted control. Assertions use exactly
+  Existence, Completeness, Accuracy, Authorization, Valuation, Cut-off,
+  Compliance, or Operational. Attribute keys are unique within the row. Do not
+  split one risk/control into extra rows merely because it has several
+  attributes.
 - Enumerate the control's requirements; do not collapse a control to one
   attribute out of habit. A control described as matching an invoice to its PO
   and receipt before payment carries separate requirements for the match, for
@@ -295,23 +295,11 @@ Follow the ACTIVE RCM TEMPLATE for methodology. Its non-negotiable rules:
   add a separate tabular_population attribute if the table can also provide
   broader population assurance. Do not use inquiry for something supplied
   tables can measure.
-- Only transaction_cycle entries carry registry, required_record_kinds, and
-  required_comparisons. For
-  those entries, registry is an object with exactly pack_id, pack_version, and
-  definition_hash copied from one installed pack. required_record_kinds is a
-  sibling of registry on the control-attribute object, never a key inside
-  registry, and contains at least two unique bindable record-kind ids from that
-  same pack — a cycle is a link between records, so a requirement needing one
-  record kind is document_content or tabular_population instead. Every other
-  evidence kind forbids all three fields. required_comparisons is non-empty and
-  names the exact minimum evidence contract. Each comparison contains key,
-  label, operator, left, optional right, and operator tolerance. Each operand is
-  {{record_kind, field:{{group,kind,attribute}}}} copied from the installed pack
-  catalog below. Each comparison must directly answer the requirement: never
-  substitute a related
-  prerequisite. If the named evidence is unavailable, choose manual_inspection,
-  inquiry, or mixed instead. The application derives the row's business_cycle
-  from these validated attributes.
+- A transaction_cycle attribute states evidence_kind and stops there. Do not
+  write registry, required_record_kinds, required_comparisons, or
+  comparison_recipes: the evidence contract for those attributes is authored in a
+  separate step that is given the installed pack catalog, and the row's
+  business_cycle is derived from it locally.
 - criteria and control_owner are optional: cite or name only what the planning
   basis supplies, and leave the field empty otherwise rather than guessing.
 - Supplied table profiles are value-free shape statistics, not evidence. A null
@@ -358,10 +346,57 @@ _RCM_CANONICAL_PACK_REFERENCES = [
     }
     for pack in cycle_vouching.metadata()["registry"]["packs"]
 ]
-RCM_SYSTEM += (
-    "\nInstalled transaction-evidence packs. Copy one `registry` object exactly "
-    "and choose two or more bindable record kinds plus exact field selectors, "
-    "only where the requirement genuinely needs linked source records:\n"
+_RCM_PACK_IDS = tuple(
+    str(pack["id"]) for pack in cycle_vouching.metadata()["registry"]["packs"]
+)
+
+# --------------------------------------------------------------------------- #
+# The second pass: the evidence contract for transaction-cycle attributes only.
+#
+# This vocabulary used to live in the judgment prompt above, where it was 11kB
+# of pack catalog carried by every RCM turn — including the great majority whose
+# attributes never touch it — while the operator vocabulary it depends on was
+# stated nowhere at all. Splitting it out puts the catalog only in the call that
+# needs it, and lets that call state the DSL properly.
+# --------------------------------------------------------------------------- #
+RCM_EVIDENCE_SYSTEM = f"""[agent:rcm_evidence]
+Author the evidence contract for control attributes that have already been
+judged to need linked source records. The risk, control, and requirement are
+settled: do not revise them, and do not add or remove attributes.
+
+Return an object with `contracts`, one entry per supplied attribute, each with
+row_index and attribute_key copied exactly from the request, plus:
+- registry: an object with exactly pack_id, pack_version, and definition_hash,
+  copied verbatim from one installed pack below. All attributes of one row must
+  use the same pack.
+- required_record_kinds: at least two unique bindable record-kind ids from that
+  same pack. A transaction cycle is a link between records, so every record kind
+  you list must be read by at least one comparison — list only what the contract
+  actually compares. required_record_kinds is a sibling of registry, never a key
+  inside registry.
+- comparison_recipes and/or required_comparisons: the evidence contract.
+
+{prompts.comparison_recipe_catalog(_RCM_PACK_IDS)}
+
+Where no recipe fits, author required_comparisons directly. Each comparison has
+key, label, operator, left, right (omitted only for a unary operator), and the
+tolerance its operator requires — and no other keys. Each operand is exactly
+{{"record_kind": "<id from required_record_kinds>", "field": {{"group": "...",
+"kind": "...", "attribute": "..."}}}}, with the field selector copied from the
+pack catalog below and available on that record kind.
+
+{prompts.operator_table()}
+
+A comparison must directly answer its requirement; never substitute a related
+prerequisite. If the pack cannot express the requirement, say so by returning
+`unsupported: true` with a one-line reason instead of the contract fields, and
+the attribute's evidence strategy will be reconsidered rather than answered with
+a comparison that proves something else. {JSON_RULES}"""
+
+RCM_EVIDENCE_SYSTEM += (
+    "\n\nInstalled transaction-evidence packs. Copy one `registry` object "
+    "exactly and choose two or more bindable record kinds plus exact field "
+    "selectors:\n"
 ) + json.dumps(
     _RCM_CANONICAL_PACK_REFERENCES,
     sort_keys=True,
@@ -369,6 +404,31 @@ RCM_SYSTEM += (
 )
 
 RCM_CURRENT_ROWS_SOURCE_ID = "current_rcm"
+# Keys a proposed row may carry into normalization. Anything else — a rationale,
+# a suggested procedure, a confidence note — is dropped rather than rejected: the
+# workspace already discards unknown row keys, and failing a whole row over a
+# harmless extra narrative field would trade a real defect class for a
+# manufactured one. Placement *inside* the evidence contract is different and is
+# rejected, because there a misplaced key silently changes what the row asserts.
+_RCM_ROW_KEYS = frozenset(
+    {
+        "operation",
+        "rcm_id",
+        "process",
+        "risk",
+        "risk_rating",
+        "control",
+        "control_type",
+        "control_attributes",
+        "criteria",
+        "control_owner",
+    }
+)
+# One initial call plus this many correction turns, mirrored into the registered
+# repair policy below. The worker needs it to know which attempt is its last, and
+# therefore when an unrepairable row should be quarantined rather than sink the
+# whole document.
+_RCM_MAX_REPAIR_ATTEMPTS = 1
 _RCM_REQUIRED_FIELDS = (
     "process",
     "risk",
@@ -411,23 +471,127 @@ def _canonical_rcm_id(value: object) -> str:
 
 
 def _rcm_response_schema(response: str) -> Mapping[str, Any]:
-    value = str(response or "").strip()
-    fenced = re.fullmatch(
-        r"```(?:json)?\s*\n?(.*?)\n?```",
-        value,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if fenced:
-        value = fenced.group(1).strip()
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError:
-        raise WorkerResponseValidationError("the response is not a valid JSON object")
-    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+    payload = _first_json_object(response)
+    if not isinstance(payload.get("rows"), list):
         raise WorkerResponseValidationError(
             "the response must be a JSON object with a `rows` array"
         )
-    return {"rows": payload["rows"]}
+    parsed: dict[str, Any] = {"rows": payload["rows"]}
+    # Rows the worker could not repair within its bounded allowance, carried so
+    # the executor can record them for the auditor instead of the run failing
+    # and discarding every row that was correct.
+    if isinstance(payload.get("quarantined"), list):
+        parsed["quarantined"] = payload["quarantined"]
+    return parsed
+
+
+def _partition_rcm_rows(
+    rows: object,
+    request: WorkerRequest,
+) -> tuple[list[dict], list[dict]]:
+    """Split proposed rows into normalized-valid and failed-with-reasons.
+
+    Rows are independent artifacts: the executor matches and commits them one at
+    a time. Validating them as a single document meant one unsupported operator
+    in one comparison of one row discarded twelve correct rows, so the partition
+    is what both the repair prompt and the quarantine decision are built on.
+    """
+
+    existing_ids = {
+        str(row.get("id"))
+        for row in _current_rcm_rows(request)
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    normalized: list[dict] = []
+    failures: list[dict] = []
+    for index, row in enumerate(rows or (), start=1):
+        try:
+            normalized.append(_normalized_rcm_row(row, index, existing_ids))
+        except WorkerResponseValidationError as error:
+            failures.append(
+                {
+                    "index": index,
+                    "row": _plain_json(row) if isinstance(row, Mapping) else row,
+                    "errors": list(error.errors),
+                }
+            )
+    return normalized, failures
+
+
+def _normalized_rcm_row(
+    row: object,
+    index: int,
+    existing_ids: set[str],
+) -> dict:
+    """Validate and normalize exactly one proposed RCM row."""
+
+    if not isinstance(row, Mapping):
+        raise WorkerResponseValidationError(f"RCM row {index} is not an object")
+    missing = [key for key in _RCM_REQUIRED_FIELDS if not row.get(key)]
+    if missing:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} is missing {missing[0]}"
+        )
+    non_string = [
+        key for key in _RCM_REQUIRED_FIELDS
+        if key != "control_attributes" and not isinstance(row.get(key), str)
+    ]
+    if non_string:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} field {non_string[0]} must be a string"
+        )
+    if str(row.get("risk_rating")).casefold() not in _RCM_RISK_RATINGS:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} has an unsupported risk rating; it must be exactly "
+            f"one of {', '.join(sorted(_RCM_RISK_RATINGS))}"
+        )
+    try:
+        attributes = cycle_vouching.validate_control_attributes(
+            _plain_json(row.get("control_attributes"))
+        )
+    except cycle_vouching.CycleSchemaError as error:
+        # Every independent attribute and comparison violation, each carrying its
+        # own path, rather than the first one found.
+        raise WorkerResponseValidationError(
+            [f"RCM row {index}: {message}" for message in error.errors]
+        ) from error
+    packs = {
+        str(attribute["registry"]["pack_id"])
+        for attribute in attributes
+        if attribute.get("evidence_kind") == "transaction_cycle"
+    }
+    if len(packs) > 1:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} mixes transaction-cycle packs"
+        )
+    expected_cycle = next(iter(packs), "")
+    operation = str(row.get("operation") or "").strip().lower()
+    if operation not in {"update", "create"}:
+        raise WorkerResponseValidationError(
+            f"RCM row {index} has an unsupported operation; it must be exactly "
+            "'update' or 'create'"
+        )
+    if operation == "update":
+        try:
+            row_id = _canonical_rcm_id(row.get("rcm_id"))
+        except ValueError:
+            raise WorkerResponseValidationError(
+                f"RCM row {index} has an invalid rcm_id"
+            )
+        if not row_id or row_id not in existing_ids:
+            raise WorkerResponseValidationError(
+                f"RCM row {index} does not identify an existing RCM row"
+            )
+    return {
+        **{
+            key: value
+            for key, value in _plain_json(row).items()
+            if key in _RCM_ROW_KEYS
+        },
+        "operation": operation,
+        "business_cycle": expected_cycle,
+        "control_attributes": attributes,
+    }
 
 
 def validate_rcm_proposal(
@@ -438,93 +602,38 @@ def validate_rcm_proposal(
     rows = proposal.get("rows")
     if not isinstance(rows, (list, tuple)) or not rows:
         raise WorkerResponseValidationError("no RCM rows were proposed")
-    existing_ids = {
-        str(row.get("id"))
-        for row in _current_rcm_rows(request)
-        if isinstance(row, Mapping) and row.get("id")
-    }
-    normalized: list[dict] = []
-    errors: list[str] = []
-    for index, row in enumerate(rows, start=1):
-        try:
-            if not isinstance(row, Mapping):
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} is not an object"
-                )
-            missing = [key for key in _RCM_REQUIRED_FIELDS if not row.get(key)]
-            if missing:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} is missing {missing[0]}"
-                )
-            non_string = [
-                key for key in _RCM_REQUIRED_FIELDS
-                if key != "control_attributes" and not isinstance(row.get(key), str)
-            ]
-            if non_string:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} field {non_string[0]} must be a string"
-                )
-            if str(row.get("risk_rating")).casefold() not in _RCM_RISK_RATINGS:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} has an unsupported risk rating"
-                )
-            try:
-                attributes = cycle_vouching.validate_control_attributes(
-                    _plain_json(row.get("control_attributes"))
-                )
-            except cycle_vouching.CycleSchemaError as error:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index}: {error}"
-                ) from error
-            packs = {
-                str(attribute["registry"]["pack_id"])
-                for attribute in attributes
-                if attribute.get("evidence_kind") == "transaction_cycle"
-            }
-            if len(packs) > 1:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} mixes transaction-cycle packs"
-                )
-            expected_cycle = next(iter(packs), "")
-            operation = str(row.get("operation") or "").strip().lower()
-            if operation not in {"update", "create"}:
-                raise WorkerResponseValidationError(
-                    f"RCM row {index} has an unsupported operation"
-                )
-            if operation == "update":
-                try:
-                    row_id = _canonical_rcm_id(row.get("rcm_id"))
-                except ValueError:
-                    raise WorkerResponseValidationError(
-                        f"RCM row {index} has an invalid rcm_id"
-                    )
-                if not row_id or row_id not in existing_ids:
-                    raise WorkerResponseValidationError(
-                        f"RCM row {index} does not identify an existing RCM row"
-                    )
-            normalized_row = {
-                **_plain_json(row),
-                "business_cycle": expected_cycle,
-                "control_attributes": attributes,
-            }
-            normalized_row.pop("new_risk_reason", None)
-            normalized.append(normalized_row)
-        except WorkerResponseValidationError as error:
-            errors.extend(error.errors)
-    if errors:
-        raise WorkerResponseValidationError(errors)
-    return {"rows": normalized}
+    normalized, failures = _partition_rcm_rows(rows, request)
+    if failures:
+        raise WorkerResponseValidationError(
+            [message for failure in failures for message in failure["errors"]]
+        )
+    accepted: dict[str, Any] = {"rows": normalized}
+    quarantined = proposal.get("quarantined")
+    if isinstance(quarantined, (list, tuple)) and quarantined:
+        accepted["quarantined"] = [_plain_json(item) for item in quarantined]
+    return accepted
 
 
-def run_rcm_worker(
-    request: WorkerRequest,
-    gateway: ModelGateway,
-    attempt: WorkerAttempt,
-) -> str:
-    """Transform only the supplied bundle into one budgeted model request."""
+def _rcm_activity(request: WorkerRequest, worker_kind: str) -> dict:
+    activity = dict(request.activity)
+    activity.setdefault(
+        "context_metrics",
+        {
+            "worker_kind": worker_kind,
+            "total_characters": request.context.supplied_size.characters,
+            "estimated_tokens": request.context.supplied_size.estimated_tokens,
+            "selected_items": request.context.supplied_size.items,
+        },
+    )
+    return activity
+
+
+def _rcm_judgment_user(request: WorkerRequest) -> str:
+    """Build the judgment pass's message from the declared bundle alone."""
+
     template = str(_resolved_item(request, "rcm_template") or "")
     current_apm = str(_resolved_item(request, "current_apm") or "")
-    user = json.dumps(
+    return json.dumps(
         {
             "ACTIVE RCM TEMPLATE (verbatim)": template,
             "REVISED APM": current_apm,
@@ -549,64 +658,455 @@ def run_rcm_worker(
         indent=1,
         ensure_ascii=False,
     )
-    conversation = None
+
+
+def _parsed_rows(response: str) -> list[dict]:
+    """Parse a `rows` document, raising the schema error the registry expects."""
+
+    parsed = _rcm_response_schema(response)
+    return [_plain_json(row) for row in parsed["rows"]]
+
+
+def _cycle_attribute_requests(rows: list[dict]) -> list[dict]:
+    """Collect the attributes that still need an evidence contract."""
+
+    pending: list[dict] = []
+    for index, row in enumerate(rows, start=1):
+        attributes = row.get("control_attributes")
+        if not isinstance(attributes, list):
+            continue
+        for attribute in attributes:
+            if not isinstance(attribute, Mapping):
+                continue
+            if attribute.get("evidence_kind") != "transaction_cycle":
+                continue
+            if (
+                attribute.get("required_comparisons")
+                or attribute.get("comparison_recipes")
+                or attribute.get(cycle_vouching.APPLIED_RECIPES_KEY)
+            ):
+                continue
+            pending.append(
+                {
+                    "row_index": index,
+                    "attribute_key": str(attribute.get("key") or ""),
+                    "process": str(row.get("process") or ""),
+                    "risk": str(row.get("risk") or ""),
+                    "control": str(row.get("control") or ""),
+                    "assertion": str(attribute.get("assertion") or ""),
+                    "requirement": str(attribute.get("requirement") or ""),
+                }
+            )
+    return pending
+
+
+_CONTRACT_FIELDS = (
+    "registry",
+    "required_record_kinds",
+    "comparison_recipes",
+    "required_comparisons",
+)
+
+
+def _merge_evidence_contracts(rows: list[dict], response: str) -> list[dict]:
+    """Write returned contracts onto the attributes that asked for them.
+
+    A contract that names no attribute, names one twice, or reports the pack
+    cannot express the requirement is simply not written. The attribute then
+    fails the gate as an evidence strategy with no contract, which is the honest
+    outcome and one the bounded repair turn can act on — quietly inventing a
+    comparison here would answer a different question than the requirement asked.
+    """
+
+    contracts = _first_json_object(response).get("contracts")
+    if not isinstance(contracts, list):
+        raise WorkerResponseValidationError(
+            "the evidence-contract response must be a JSON object with a "
+            "`contracts` array"
+        )
+    by_target: dict[tuple[int, str], Mapping[str, Any]] = {}
+    for entry in contracts:
+        if not isinstance(entry, Mapping) or entry.get("unsupported"):
+            continue
+        try:
+            row_index = int(entry.get("row_index"))
+        except (TypeError, ValueError):
+            continue
+        by_target[(row_index, str(entry.get("attribute_key") or ""))] = entry
+    merged: list[dict] = []
+    for index, row in enumerate(rows, start=1):
+        attributes = row.get("control_attributes")
+        if not isinstance(attributes, list):
+            merged.append(row)
+            continue
+        updated = []
+        for attribute in attributes:
+            entry = (
+                by_target.get((index, str(attribute.get("key") or "")))
+                if isinstance(attribute, Mapping)
+                else None
+            )
+            if entry is None:
+                updated.append(attribute)
+                continue
+            updated.append(
+                {
+                    **attribute,
+                    **{
+                        field: _plain_json(entry[field])
+                        for field in _CONTRACT_FIELDS
+                        if entry.get(field) is not None
+                    },
+                }
+            )
+        merged.append({**row, "control_attributes": updated})
+    return merged
+
+
+def _stripped_fence(response: str) -> str:
+    value = str(response or "").strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?\s*\n?(.*?)\n?```",
+        value,
+        re.DOTALL | re.IGNORECASE,
+    )
+    return fenced.group(1).strip() if fenced else value
+
+
+def _first_json_object(response: str) -> dict:
+    """Return the first complete JSON object in the response.
+
+    ``json.loads`` requires the *entire* string to be one value, so a complete
+    object followed by a couple of stray closing brackets is discarded whole. A
+    live 24-row draft was lost exactly that way: valid JSON, then a trailing
+    ``]}`` from the model closing brackets it had already closed.
+
+    Only *surplus* is tolerated, never shortfall. A truncated object still fails
+    to decode and is still rejected, so this cannot turn a partial draft into a
+    document that looks complete.
+    """
+
+    value = _stripped_fence(response)
+    start = value.find("{")
+    if start < 0:
+        raise WorkerResponseValidationError(
+            "the response is not a valid JSON object"
+        )
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(value[start:])
+    except json.JSONDecodeError:
+        raise WorkerResponseValidationError(
+            "the response is not a valid JSON object"
+        )
+    if not isinstance(payload, dict):
+        raise WorkerResponseValidationError("the response must be a JSON object")
+    return payload
+
+
+def _repair_scoped_rows(
+    rows: list[dict],
+    failures: list[dict],
+    response: str,
+) -> list[dict]:
+    """Splice corrected rows back over exactly the rows that failed.
+
+    Rows that validated are carried through as the identical objects that were
+    parsed, never re-serialized from a second model turn, so a repair cannot
+    quietly reword a row it was not asked about.
+    """
+
+    corrected = _first_json_object(response)
+    if not isinstance(corrected.get("rows"), list):
+        raise WorkerResponseValidationError(
+            "the repair response must be a JSON object with a `rows` array"
+        )
+    by_index: dict[int, dict] = {}
+    scoped = {failure["index"] for failure in failures}
+    for entry in corrected["rows"]:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            index = int(entry.get("row_index"))
+        except (TypeError, ValueError):
+            continue
+        if index in scoped:
+            by_index[index] = {
+                key: _plain_json(value)
+                for key, value in entry.items()
+                if key != "row_index"
+            }
+    return [by_index.get(index, row) for index, row in enumerate(rows, start=1)]
+
+
+def _quarantined(failures: list[dict]) -> list[dict]:
+    """Project unrepairable rows into the durable record of what was dropped."""
+
+    quarantined: list[dict] = []
+    for failure in failures:
+        row = failure["row"] if isinstance(failure["row"], Mapping) else {}
+        quarantined.append(
+            {
+                "process": str(row.get("process") or ""),
+                "risk": str(row.get("risk") or ""),
+                "errors": list(failure["errors"]),
+            }
+        )
+    return quarantined
+
+
+def run_rcm_worker(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+) -> str:
+    """Author one RCM revision from the supplied bundle.
+
+    Two passes, because the work is at two altitudes. The judgment pass decides
+    the risks, the controls, and each attribute's evidence strategy; it never
+    sees the cycle pack catalog. The evidence pass authors the comparison
+    contract for the attributes that asked for one, and it is the only call that
+    carries the DSL and the catalog. A repair is scoped to the rows that actually
+    failed and merged locally over the rows that did not.
+    """
+
+    user = _rcm_judgment_user(request)
     if attempt.is_repair:
         if attempt.previous_response is None:
             raise WorkerContractError("An RCM repair requires the previous response.")
-        conversation = [
-            {"role": "user", "content": user},
-            {"role": "assistant", "content": attempt.previous_response},
-            {
-                "role": "user",
-                "content": (
-                    "Correct every listed quality-gate error in the prior RCM draft "
-                    "while preserving all otherwise-valid rows and fields: "
-                    + "; ".join(attempt.validation_errors)
-                    + ". Return the complete corrected JSON object."
-                ),
-            },
-        ]
-    activity = dict(request.activity)
-    activity.setdefault(
-        "context_metrics",
-        {
-            "worker_kind": "rcm",
-            "total_characters": request.context.supplied_size.characters,
-            "estimated_tokens": request.context.supplied_size.estimated_tokens,
-            "selected_items": request.context.supplied_size.items,
-        },
-    )
-    return gateway.complete(
+        return _repaired_rcm(request, gateway, attempt, user)
+    response = gateway.complete(
         RCM_SYSTEM,
         user,
-        activity,
+        _rcm_activity(request, "rcm"),
         attempt=attempt.number,
-        conversation=conversation,
+    )
+    return _contracted_document(request, gateway, attempt, response)
+
+
+def _contracted_document(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    response: str,
+) -> str:
+    """Turn one judgment-pass response into the finished document.
+
+    Every path that produces a whole document goes through here — the initial
+    attempt and the whole-document re-ask alike. Returning a judgment response
+    directly, as the re-ask used to, skips the evidence pass and leaves every
+    transaction-cycle attribute without the contract it was told not to write.
+    """
+
+    try:
+        rows = _parsed_rows(response)
+    except WorkerResponseValidationError:
+        # A worker returns response text; the registry owns rejection and the
+        # bounded repair that follows it. Raising from here would escape that
+        # loop entirely, so an unusable draft is handed back verbatim to be
+        # rejected — and repaired — through the normal path.
+        return response
+    return _rcm_document(
+        request,
+        attempt,
+        _with_evidence_contracts(request, gateway, attempt, rows),
+    )
+
+
+def _rcm_document(
+    request: WorkerRequest,
+    attempt: WorkerAttempt,
+    rows: list[dict],
+) -> str:
+    """Serialize the finished rows, quarantining what will not repair.
+
+    Only on the last attempt. Rows that still fail are set aside with their
+    reasons rather than failing the run: the alternative discards every correct
+    row in the document, which is how a single unsupported operator used to cost
+    thirteen good rows. An empty survivor set is still a failure — there is
+    nothing to commit — and the gate reports it.
+    """
+
+    if attempt.number < 1 + _RCM_MAX_REPAIR_ATTEMPTS:
+        return json.dumps({"rows": rows}, ensure_ascii=False)
+    accepted, still_failing = _partition_rcm_rows(rows, request)
+    if not accepted or not still_failing:
+        return json.dumps({"rows": rows}, ensure_ascii=False)
+    dropped = {failure["index"] for failure in still_failing}
+    return json.dumps(
+        {
+            "rows": [
+                row
+                for index, row in enumerate(rows, start=1)
+                if index not in dropped
+            ],
+            "quarantined": _quarantined(still_failing),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _with_evidence_contracts(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    rows: list[dict],
+) -> list[dict]:
+    """Run the evidence pass, but only when an attribute actually needs it."""
+
+    pending = _cycle_attribute_requests(rows)
+    if not pending:
+        return rows
+    response = gateway.complete(
+        RCM_EVIDENCE_SYSTEM,
+        json.dumps(
+            {
+                "ATTRIBUTES NEEDING AN EVIDENCE CONTRACT": pending,
+                "INSTRUCTIONS": (
+                    "Return one contracts entry per supplied attribute, with "
+                    "row_index and attribute_key copied exactly."
+                ),
+            },
+            indent=1,
+            ensure_ascii=False,
+        ),
+        _rcm_activity(request, "rcm_evidence"),
+        attempt=attempt.number,
+    )
+    try:
+        return _merge_evidence_contracts(rows, response)
+    except WorkerResponseValidationError:
+        # Nothing to merge. The attributes stay without a contract and fail the
+        # gate as such, which is a bounded, repairable outcome — and a truthful
+        # one — where raising from inside the worker would not be.
+        return rows
+
+
+def _repaired_rcm(
+    request: WorkerRequest,
+    gateway: ModelGateway,
+    attempt: WorkerAttempt,
+    user: str,
+) -> str:
+    """Correct only the rows that failed, and quarantine what will not repair."""
+
+    try:
+        rows = _parsed_rows(str(attempt.previous_response))
+    except WorkerResponseValidationError:
+        # The prior draft was rejected by the schema rather than the quality
+        # gate — a linked retry from a parent run can start here — so there are
+        # no rows to scope to and the whole document is re-asked. It is a
+        # judgment-pass response like any other, so it goes through the evidence
+        # pass on the way out.
+        return _contracted_document(
+            request,
+            gateway,
+            attempt,
+            gateway.complete(
+                RCM_SYSTEM,
+                user
+                + "\n\nThe previous response could not be parsed: "
+                + "; ".join(attempt.validation_errors)
+                + ". Return the complete JSON object.",
+                _rcm_activity(request, "rcm_repair"),
+                attempt=attempt.number,
+            ),
+        )
+    _, failures = _partition_rcm_rows(rows, request)
+    if not failures:
+        # The prior draft validates as parsed: the errors were about the document
+        # as a whole (an empty rows array), so there is nothing to scope to.
+        return json.dumps({"rows": rows}, ensure_ascii=False)
+    response = gateway.complete(
+        RCM_SYSTEM + "\n\n" + RCM_EVIDENCE_SYSTEM,
+        json.dumps(
+            {
+                "ROWS TO CORRECT": [
+                    {
+                        "row_index": failure["index"],
+                        "row": failure["row"],
+                        "errors": failure["errors"],
+                    }
+                    for failure in failures
+                ],
+                "INSTRUCTIONS": (
+                    "Each supplied row failed the engagement quality gate for "
+                    "the listed reasons. Return an object with `rows` containing "
+                    "one corrected row per supplied row, each carrying its exact "
+                    "row_index. Correct every listed error and change nothing "
+                    "else. Rows not supplied here are already accepted and must "
+                    "not be returned: they are preserved unchanged."
+                ),
+            },
+            indent=1,
+            ensure_ascii=False,
+        ),
+        _rcm_activity(request, "rcm_repair"),
+        attempt=attempt.number,
+    )
+    try:
+        repaired = _repair_scoped_rows(rows, failures, response)
+    except WorkerResponseValidationError:
+        return response
+    return _rcm_document(
+        request,
+        attempt,
+        _with_evidence_contracts(request, gateway, attempt, repaired),
     )
 
 
 RCM_RESPONSE_SCHEMA = WorkerResponseSchema(
     schema_id="planning.rcm.response",
     schema_hash=_sha256_text(
-        "rcm-response:v2:json-object-with-rows-array-and-control-attributes"
+        "rcm-response:v4:first-json-object-with-rows-array-control-attributes-"
+        "recipe-expanded-contracts-and-quarantine"
     ),
     validator=_rcm_response_schema,
 )
 RCM_WORKER = WorkerDefinition(
     worker_id=RCM_WORKER_ID,
-    implementation_hash=_sha256_text(inspect.getsource(run_rcm_worker)),
-    prompt_hash=_sha256_text(RCM_SYSTEM),
+    # The implementation is now the two-pass sequence plus the local merges, so
+    # every part of it that decides what reaches the model is in the identity a
+    # persisted proposal is reused against.
+    implementation_hash=_sha256_text(
+        "".join(
+            inspect.getsource(function)
+            for function in (
+                run_rcm_worker,
+                _contracted_document,
+                _rcm_document,
+                _with_evidence_contracts,
+                _repaired_rcm,
+                _rcm_judgment_user,
+                _cycle_attribute_requests,
+                _merge_evidence_contracts,
+                _repair_scoped_rows,
+                _first_json_object,
+            )
+        )
+    ),
+    prompt_hash=_sha256_text(RCM_SYSTEM + RCM_EVIDENCE_SYSTEM),
     response_schema=RCM_RESPONSE_SCHEMA,
     repair_policy=WorkerRepairPolicy(
-        max_repair_attempts=1,
+        max_repair_attempts=_RCM_MAX_REPAIR_ATTEMPTS,
         guidance_hash=_sha256_text(
-            "Repair the prior RCM response against all bounded row errors and current ids."
+            "Repair only the RCM rows that failed, against all of their bounded "
+            "errors and current ids; quarantine what will not repair."
         ),
+        # Row-scoped repair means the guidance is grouped per row rather than
+        # flattened across the document, so a document with several bad rows needs
+        # more room than the default before errors start being dropped — and an
+        # error the model never sees is one it cannot fix.
+        max_validation_errors=20,
+        max_guidance_characters=4_000,
     ),
     implementation=run_rcm_worker,
     semantic_validation_hash=_sha256_text(
         inspect.getsource(validate_rcm_proposal)
+        + inspect.getsource(_partition_rcm_rows)
+        + inspect.getsource(_normalized_rcm_row)
         + inspect.getsource(cycle_vouching.validate_control_attributes)
+        + inspect.getsource(cycle_vouching._validate_control_attribute)
+        + inspect.getsource(cycle_vouching._validate_required_comparisons)
     ),
     semantic_validator=validate_rcm_proposal,
 )
@@ -822,6 +1322,7 @@ __all__ = [
     "PLANNING_CONTEXT_SYSTEM",
     "PLANNING_CONTEXT_WORKER",
     "PLANNING_CONTEXT_WORKER_ID",
+    "RCM_EVIDENCE_SYSTEM",
     "RCM_RESPONSE_SCHEMA",
     "RCM_SYSTEM",
     "RCM_WORKER",
