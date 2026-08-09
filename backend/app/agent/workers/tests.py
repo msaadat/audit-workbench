@@ -29,7 +29,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from ... import cycle_vouching, doc_tests, sandbox
-from .. import prompts
 from ..prompts import JSON_RULES
 from ..runtime.model_gateway import ModelGateway
 from .model import (
@@ -408,7 +407,6 @@ GENERATE_RESPONSE_CONTRACT = {
                 "candidate_id",
                 "selection_reason",
                 "selection",
-                "assertions",
             ],
             "source": "document",
             "kind": "cycle_vouch",
@@ -419,6 +417,7 @@ GENERATE_RESPONSE_CONTRACT = {
                 "steps",
                 "checks",
                 "document_types",
+                "assertions",
             ],
         },
     },
@@ -431,93 +430,51 @@ Return JSON with a non-empty `tests` array. A test is one of:
    has label, instruction, and self-contained Polars code assigning exception
    rows to `result`. Every step runs separately: it cannot use a variable made
    by another step. When more than one table is supplied, never use `df`; name
-   the exact in-memory table variable or use `tables["exact_table_name"]`. Do
-   not read files. For duration days use `.dt.total_days()`, not `.dt.days()` or
-   `.dt.day()`.
+   the exact in-memory table variable or use `tables["exact_table_name"]`. Never
+   import anything: `pl`, the table variables, and `tables['name']` are already
+   available. Do not read files. For duration days use `.dt.total_days()`, not
+   `.dt.days()` or `.dt.day()`.
 2. Document question: source `document`, title, objective, and non-empty
    question-mode steps using only supplied document ids. A missing-evidence step
    has an empty document_ids array and a specific missing_evidence string.
 3. Cycle Vouch: source `document`, kind `cycle_vouch`, title, objective,
-   requirement_refs, procedure_key, candidate_id, selection_reason, selection,
-   and assertions. It has no registry, definition, roles, or steps; those exact
-   registry-backed fields are hydrated locally from the chosen manifest candidate.
+   requirement_refs, procedure_key, candidate_id, selection_reason, and
+   selection. It has no assertions, registry, definition, roles, or steps. Every
+   comparison the procedure performs is derived locally from the
+   required_comparisons the referenced control attributes already carry, and the
+   registry-backed fields are hydrated from the chosen manifest candidate.
 
-For Cycle Vouch, the supplied `transaction_evidence` manifest is authoritative.
-Choose an exact candidate_id copied from one supplied registry group and explain
-the choice in selection_reason. Candidates carry `rank`; among candidates over
-the same `table` only the best-ranked one is accepted, because they are the same
-rows keyed differently and a table keyed on another record's identifier is a
-grain error. Choosing a different `table` is a real decision — make it on which
-grain the requirement is about — and say so in selection_reason. Do not repeat
-the candidate's table, row_key, cycle_keys, registry, or roles; local code copies
-them exactly. requirement_refs use `<RCM id>:<control attribute key>`. Every
-control attribute whose evidence_kind is `transaction_cycle` must be referenced
-by some returned cycle test. Group compatible assertions sharing one population
-and lifecycle scope into one test. Roles name exact reachable record kinds and
-state required, cardinality (one|many), and reuse_across_items
-(exclusive|allowed) independently. Every declared role must be read by at least
-one assertion. Every referenced control attribute carries required_comparisons;
-the returned assertions must cover each one with the exact record kinds, field
-selectors, operator, and tolerance, mapping record kinds to the hydrated role
-aliases. A related prerequisite or a `requirement_ref` without those comparisons
-is not coverage. If the manifest does not supply the required field, do not
-substitute another assertion: the RCM evidence strategy or supplied evidence
-must be repaired. Assertions use explicit row/role/roles operands; field
-selectors always name group, kind, and attribute. Do not invent identifiers,
-fields, mappings, roles, or literal row values. Do not emit dotted paths, checks,
-document_types, or a vouch mode step.
+For Cycle Vouch you decide two things: which population to vouch, and which
+requirements belong in one procedure. Nothing else.
+
+The supplied `transaction_evidence` manifest is authoritative. Choose an exact
+candidate_id copied from one supplied registry group and explain the choice in
+selection_reason. Candidates carry `rank`; among candidates over the same `table`
+only the best-ranked one is accepted, because they are the same rows keyed
+differently and a table keyed on another record's identifier is a grain error.
+Choosing a different `table` is a real decision — make it on which grain the
+requirement is about — and say so in selection_reason. Do not repeat the
+candidate's table, row_key, cycle_keys, registry, or roles; local code copies
+them exactly.
+
+requirement_refs use `<RCM id>:<control attribute key>` and must name control
+attributes of this row whose evidence_kind is `transaction_cycle`. Every such
+attribute must be referenced by some returned cycle test. Group requirements
+that share one population and lifecycle scope into one test: a three-way match
+over an invoice-grain population is one test, not four. Do not invent
+identifiers, fields, mappings, or roles, and do not emit assertions,
+dotted paths, checks, document_types, or a vouch mode step.
+
 Evidence-linked selection is targeted evidence only. Sampling uses random,
 interval, or stratified with size 1..{cycle_vouching.MAX_ITEMS} and an integer
 seed. assurance_scope is derived locally and may be omitted.
 
-{prompts.operator_table()}
-
-An assertion earns its place by being able to fail for an audit reason. Prefer,
-in this order: agreement of a value across two records (`numeric_within` on an
-amount or quantity, `equal_exact` on an identifier); ordering of two dates along
-the cycle (`date_on_or_before`, operands in the direction the cycle actually
-runs — a receipt follows its order, a payment follows its invoice); agreement
-between a population column and the records (`source: row` against
-`source: role`); and only then `present`, which is accepted solely on an
-approval or attachment attribute, never on a `source: row` column and never as a
-stand-in for a role existing — a required role is already bound before any
-assertion runs. Each record's `available_fields` gives `label`,
-`attribute_types`, `control_evidence_attributes`, and `distinct_value_counts`;
-a selector whose distinct_value_counts exceeds 1 cannot be read by a `role`
-operand, so use a `roles` operand with an entry_quantifier or pick another
-selector.
-
-A three-way match over an invoice-grain population is one test, not four:
-{{"source":"document","kind":"cycle_vouch","title":"Three-way match of paid invoices",
-"objective":"...","requirement_refs":["RCM-1:three_way_match"],
-"procedure_key":"invoice-three-way-match","candidate_id":"...","selection_reason":"...",
-"selection":{{"mode":"evidence_linked"}},"assertions":[
-{{"key":"invoice_total_to_po","label":"Invoice total agrees to purchase order",
-"left":{{"source":"role","role":"vendor_invoice","field":{{"group":"amounts","kind":"total","attribute":"value"}}}},
-"right":{{"source":"role","role":"purchase_order","field":{{"group":"amounts","kind":"total","attribute":"value"}}}},
-"operator":"numeric_within","tolerance":{{"absolute":0.01,"percent":0}}}},
-{{"key":"receipt_before_payment","label":"Goods are received before payment",
-"left":{{"source":"role","role":"goods_receipt","field":{{"group":"dates","kind":"receipt_date","attribute":"value"}}}},
-"right":{{"source":"role","role":"payment_voucher","field":{{"group":"dates","kind":"payment_date","attribute":"value"}}}},
-"operator":"date_on_or_before"}},
-{{"key":"row_amount_across_records","label":"Recorded amount agrees to every record",
-"left":{{"source":"row","column":"INVOICE_AMOUNT"}},
-"right":{{"source":"roles","roles":["purchase_order","vendor_invoice","payment_voucher"],
-"field":{{"group":"amounts","kind":"total","attribute":"value"}},"entry_quantifier":"one"}},
-"operator":"numeric_within","tolerance":{{"absolute":0.01,"percent":0}},"role_quantifier":"all"}}]}}
-
 The exact Cycle Vouch response shape is:
-{{"source":"document","kind":"cycle_vouch","title":"...","objective":"...",
-"requirement_refs":["RCM-ID:attribute_key"],"procedure_key":"stable-key",
+{{"source":"document","kind":"cycle_vouch","title":"Three-way match of paid invoices",
+"objective":"...","requirement_refs":["RCM-ID:attribute_key"],
+"procedure_key":"invoice-three-way-match",
 "candidate_id":"CYCLE-CAND-EXACTLY-AS-SUPPLIED","selection_reason":"...",
-"selection":{{"mode":"evidence_linked"}},"assertions":[{{"key":"stable-key",
-"label":"...","left":{{"source":"role","role":"exact supplied role",
-"field":{{"group":"...","kind":"...","attribute":"..."}}}},
-"right":{{"source":"role","role":"exact supplied role","field":
-{{"group":"...","kind":"...","attribute":"..."}}}},"operator":"equal_exact"}}]}}
-Use `left` and `right`, never operand1/operand2. Each assertion needs key, label,
-left, and operator; omit right only for the unary `present` operator. A row
-operand is {{"source":"row","column":"exact supplied candidate column"}}.
+"selection":{{"mode":"evidence_linked"}}}}
 
 Keep non-cycle attributes independent of cycle vocabulary. A tabular attribute
 normally produces a Data Test; document-content, inspection, inquiry, and mixed
@@ -743,10 +700,6 @@ def _validate_generate_cycle_test(
             "{'mode':'evidence_linked'}"
         )
         return None
-    assertions = value.get("assertions")
-    if not isinstance(assertions, (list, tuple)) or not assertions:
-        errors.append(f"{path}.assertions must be a non-empty array")
-        return None
     for field, text in (
         ("objective", str(value.get("objective") or "")),
         ("selection_reason", selection_reason),
@@ -759,13 +712,33 @@ def _validate_generate_cycle_test(
                 "evidence supplied."
             )
             return None
+    requirement_refs = _plain_json(value.get("requirement_refs"))
+    rcm_row = _generate_rcm_row(request)
+    try:
+        assertions = cycle_vouching.compile_required_assertions(
+            rcm_row=rcm_row,
+            requirement_refs=(
+                requirement_refs if isinstance(requirement_refs, list) else []
+            ),
+            group=group,
+        )
+    except cycle_vouching.CycleSchemaError as error:
+        errors.append(f"{path} {error}")
+        return None
+    if not assertions:
+        errors.append(
+            f"{path}.requirement_refs cite no transaction_cycle control "
+            "attribute of this row that carries required comparisons; reference "
+            "the exact '<RCM id>:<attribute key>' the procedure answers"
+        )
+        return None
     candidate = {
         "source": "document",
         "kind": "cycle_vouch",
         "schema_version": cycle_vouching.SCHEMA_VERSION,
         "rcm_id": rcm_id,
         "registry": group.get("registry"),
-        "requirement_refs": _plain_json(value.get("requirement_refs")),
+        "requirement_refs": requirement_refs,
         "procedure_key": value.get("procedure_key"),
         "definition": {
             "population": {
@@ -777,11 +750,10 @@ def _validate_generate_cycle_test(
                 "selection": _plain_json(selection),
             },
             "roles": _plain_json(group.get("roles")),
-            "assertions": _plain_json(assertions),
+            "assertions": assertions,
         },
         "steps": [],
     }
-    rcm_row = _generate_rcm_row(request)
     try:
         validated = cycle_vouching.validate_cycle_test_semantics(
             candidate, rcm_row=rcm_row, manifest=manifest
@@ -837,6 +809,65 @@ def _generate_response_schema(response: str) -> Mapping[str, Any]:
             "the response must be a JSON object with a `tests` array"
         )
     return {"tests": values}
+
+
+def _import_bindings(node: ast.Import | ast.ImportFrom) -> set[str]:
+    """The names one import statement introduces into the snippet namespace."""
+    return {
+        alias.asname or alias.name.split(".")[0] for alias in node.names
+    }
+
+
+def _redundant_imports(code: str, provided: set[str]) -> str:
+    """Drop imports that only re-bind a name the sandbox already supplies.
+
+    ``import polars as pl`` asks for something the snippet is handed anyway, so
+    rejecting it spent a provider turn — the single most common cause of repair
+    in observed runs — on a correction with exactly one possible outcome, and
+    left that turn unavailable for the semantic errors that genuinely need the
+    model. An import that reaches for anything else is a real attempt to widen
+    the sandbox and is deliberately left in place for it to refuse. Only
+    top-level statements are considered, and only when what remains still
+    parses.
+    """
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    drop = {
+        node.lineno
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and _import_bindings(node) <= provided
+    }
+    if not drop:
+        return code
+    kept = [
+        line
+        for number, line in enumerate(code.splitlines(), 1)
+        if number not in drop
+    ]
+    stripped = "\n".join(kept).strip()
+    try:
+        ast.parse(stripped, mode="exec")
+    except SyntaxError:
+        return code
+    return stripped
+
+
+def _step_text(step: Mapping[str, object], *fallbacks: str) -> str:
+    """The first non-empty candidate for a step's label or instruction.
+
+    Generated steps sometimes omit this boilerplate while carrying the same
+    sentence in ``question`` or ``instruction``. The value is descriptive, not
+    executable, so deriving it locally is exact where a repair turn is merely
+    likely — and it keeps that turn for errors only the model can fix.
+    """
+    for key in fallbacks:
+        text = str(step.get(key) or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _code_loaded_names(code: str) -> set[str]:
@@ -902,10 +933,15 @@ def _validate_generate_data_step(
     foreign = [key for key in _GENERATE_DOCUMENT_STEP_FIELDS if key in step and key not in _GENERATE_DATA_STEP_FIELDS]
     if foreign:
         errors.append(f"{path} has document-only field '{foreign[0]}' on a data step")
-    for key in ("label", "instruction"):
-        if not isinstance(step.get(key), str) or not step[key].strip():
-            errors.append(f"{path}.{key} must be a non-empty string")
+    label = _step_text(step, "label", "instruction")
+    instruction = _step_text(step, "instruction", "label")
+    if not label:
+        errors.append(f"{path}.label must be a non-empty string")
+    if not instruction:
+        errors.append(f"{path}.instruction must be a non-empty string")
     code = step.get("code")
+    if isinstance(code, str) and code.strip():
+        code = _redundant_imports(code, {"pl", "tables", "df", *known_tables})
     if not isinstance(code, str) or not code.strip():
         errors.append(f"{path}.code must be non-empty Polars code")
     else:
@@ -980,8 +1016,8 @@ def _validate_generate_data_step(
                             f"schemas: {error}"
                         )
     return {
-        "label": str(step.get("label") or "").strip(),
-        "instruction": str(step.get("instruction") or "").strip(),
+        "label": label,
+        "instruction": instruction,
         "code": str(code).strip() if isinstance(code, str) else "",
     }
 
@@ -999,20 +1035,19 @@ def _validate_generate_document_step(
     foreign = [key for key in _GENERATE_DATA_STEP_FIELDS if key in step and key not in _GENERATE_DOCUMENT_STEP_FIELDS]
     if foreign:
         errors.append(f"{path} has data-only field '{foreign[0]}' on a document step")
-    for key in ("label", "instruction"):
-        if not isinstance(step.get(key), str) or not step[key].strip():
-            errors.append(f"{path}.{key} must be a non-empty string")
+    label = _step_text(step, "label", "instruction", "question")
+    instruction = _step_text(step, "instruction", "question", "label")
+    if not label:
+        errors.append(f"{path}.label must be a non-empty string")
+    if not instruction:
+        errors.append(f"{path}.instruction must be a non-empty string")
     mode = step.get("mode")
     if mode == "vouch":
         errors.append(
             f"{path} uses the removed vouch-step schema; return a canonical "
             "cycle_vouch test definition"
         )
-        return {
-            "label": str(step.get("label") or "").strip(),
-            "instruction": str(step.get("instruction") or "").strip(),
-            "mode": "",
-        }, None
+        return {"label": label, "instruction": instruction, "mode": ""}, None
     if mode in (None, ""):
         # Ordinary generated Document Tests have exactly one accepted mode.
         # Treat omitted discriminator boilerplate as that closed default rather
@@ -1036,11 +1071,7 @@ def _validate_generate_document_step(
     question = str(step.get("question") or step.get("instruction") or "").strip()
     missing_evidence = str(step.get("missing_evidence") or "").strip()
     scope_limitation = str(step.get("scope_limitation") or "").strip()
-    normalized = {
-        "label": str(step.get("label") or "").strip(),
-        "instruction": str(step.get("instruction") or "").strip(),
-        "mode": mode or "",
-    }
+    normalized = {"label": label, "instruction": instruction, "mode": mode or ""}
     if mode == "question":
         if not question:
             errors.append(f"{path} needs a question")
@@ -1096,9 +1127,14 @@ def validate_generate_proposal(
     }
     errors: list[str] = []
     normalized: list[dict] = []
+    # Which entries of ``normalized`` were built without any error of their own.
+    # Tests on one row are independent records with independent semantic ids, so
+    # a sibling's defect is not a reason to discard them.
+    clean: list[dict] = []
     cycle_identities: set[tuple[str, str, str, str]] = set()
     for index, raw in enumerate(values, 1):
         path = f"tests[{index - 1}]"
+        errors_before = len(errors)
         if not isinstance(raw, Mapping):
             errors.append(f"{path} must be an object")
             continue
@@ -1152,13 +1188,14 @@ def validate_generate_proposal(
                         "its compatible assertions into one test"
                     )
                 cycle_identities.add(identity)
-                normalized.append(
-                    {
-                        **cycle_test,
-                        "rcm_id": rcm_id,
-                        "methodology_refs": methodology_refs,
-                    }
-                )
+                entry = {
+                    **cycle_test,
+                    "rcm_id": rcm_id,
+                    "methodology_refs": methodology_refs,
+                }
+                normalized.append(entry)
+                if len(errors) == errors_before:
+                    clean.append(entry)
             continue
         if value.get("kind") is not None:
             errors.append(f"{path}.kind is valid only for cycle_vouch")
@@ -1197,19 +1234,29 @@ def validate_generate_proposal(
                     f"{path} has {len(raw_steps)} vouch steps; a vouch test is one "
                     "cycle plan, so return separate tests"
                 )
-        normalized.append(
-            {
-                "source": source,
-                "title": str(value.get("title") or "").strip(),
-                "objective": str(value.get("objective") or "").strip(),
-                "steps": steps,
-                "rcm_id": rcm_id,
-                "methodology_refs": methodology_refs,
-            }
-        )
-    errors.extend(_missing_cycle_coverage(request, rcm_id, normalized))
+        entry = {
+            "source": source,
+            "title": str(value.get("title") or "").strip(),
+            "objective": str(value.get("objective") or "").strip(),
+            "steps": steps,
+            "rcm_id": rcm_id,
+            "methodology_refs": methodology_refs,
+        }
+        normalized.append(entry)
+        if len(errors) == errors_before:
+            clean.append(entry)
+    coverage = _missing_cycle_coverage(request, rcm_id, normalized)
+    errors.extend(coverage)
     if errors:
-        raise WorkerResponseValidationError(errors)
+        # A row-level coverage gap is the one failure a partial commit must not
+        # absorb: readiness is satisfied by any executable test, so committing
+        # the siblings would mark the row done and retire the very unit that
+        # still owes a cycle test. Every other defect is scoped to its own
+        # record, and its siblings are durable work worth keeping.
+        raise WorkerResponseValidationError(
+            errors,
+            partial=({"tests": clean} if clean and not coverage else None),
+        )
     return {"tests": normalized}
 
 
@@ -1345,7 +1392,10 @@ GENERATE_WORKER = WorkerDefinition(
         + inspect.getsource(_manifest_candidate_ids)
         + inspect.getsource(_code_loaded_names)
         + inspect.getsource(_code_polars_columns)
+        + inspect.getsource(_redundant_imports)
+        + inspect.getsource(_step_text)
         + inspect.getsource(_tables_covering_columns)
+        + inspect.getsource(cycle_vouching.compile_required_assertions)
         + inspect.getsource(cycle_vouching.validate_cycle_test_semantics)
     ),
     semantic_validator=validate_generate_proposal,

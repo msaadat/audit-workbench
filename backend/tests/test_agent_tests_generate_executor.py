@@ -449,3 +449,89 @@ def test_generate_executor_rejects_regenerating_a_settled_document_test():
 
     with pytest.raises(Exception, match="final-result items"):
         EXECUTORS.execute(request, target)
+
+
+def test_generate_executor_keeps_a_partly_sourced_document_test_runnable():
+    """A scope note beside a sourced question must not block the whole test.
+
+    Generation habitually pairs a real question over attached documents with a
+    document-less step naming what else would be needed. Reading that second
+    step as an unattached item blocked tests whose actual question had evidence
+    to work with.
+    """
+    workspace, rcm_id, doc_id = _workspace()
+    mixed = _document_test(
+        doc_id,
+        steps=[
+            {
+                "label": "Assess approval evidence",
+                "instruction": "Determine whether the payment was approved.",
+                "mode": "question",
+                "document_ids": [doc_id],
+                "question": "Was this payment approved before release?",
+                "missing_evidence": "",
+            },
+            {
+                "label": "Identify missing approval evidence",
+                "instruction": "Record evidence that is not available.",
+                "mode": "question",
+                "document_ids": [],
+                "question": "What approval evidence is still outstanding?",
+                "missing_evidence": "Signed approval memo",
+            },
+        ],
+    )
+    request = _request(workspace, rcm_id, [mixed])
+    target = TestGenerateExecutorTarget(workspace, "run-mixed", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    committed = doc_tests.load_test(
+        target.workspace, doc_tests.list_tests(target.workspace)[0]["id"]
+    )
+    assert committed["status"] != "blocked"
+    assert committed["scope_limitations"] == "Signed approval memo"
+    # Only the sourced step is an executable item, so nothing reports an
+    # unattached document.
+    assert len(committed["items"]) == 1
+    assert committed["items"][0]["document_ids"] == [doc_id]
+    assert doc_tests.execution_issues(committed) == []
+    # The absent evidence is still requested, just not as a blocker.
+    assert len(target.workspace.evidence_requests) == 1
+    assert target.workspace.evidence_requests[0]["reason"] == "Signed approval memo"
+
+
+def test_generate_executor_still_blocks_when_no_step_has_a_document():
+    workspace, rcm_id, doc_id = _workspace()
+    blocked = _document_test(
+        doc_id,
+        steps=[
+            {
+                "label": "Assess approval evidence",
+                "instruction": "Determine whether the payment was approved.",
+                "mode": "question",
+                "document_ids": [],
+                "question": "Was this payment approved before release?",
+                "missing_evidence": "Approval register",
+            },
+            {
+                "label": "Identify missing approval evidence",
+                "instruction": "Record evidence that is not available.",
+                "mode": "question",
+                "document_ids": [],
+                "question": "What approval evidence is still outstanding?",
+                "missing_evidence": "Signed approval memo",
+            },
+        ],
+    )
+    request = _request(workspace, rcm_id, [blocked])
+    target = TestGenerateExecutorTarget(workspace, "run-all-blocked", rcm_id)
+
+    EXECUTORS.execute(request, target)
+
+    committed = doc_tests.load_test(
+        target.workspace, doc_tests.list_tests(target.workspace)[0]["id"]
+    )
+    assert committed["status"] == "blocked"
+    assert committed["scope_limitations"] == "Approval register; Signed approval memo"
+    assert len(target.workspace.evidence_requests) == 2

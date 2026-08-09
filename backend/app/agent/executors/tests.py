@@ -246,6 +246,22 @@ def _validated_generation(
     return target, specs
 
 
+def _sourced_steps(
+    steps: list[Mapping[str, object]],
+) -> tuple[list[Mapping[str, object]], list[Mapping[str, object]]]:
+    """Split generated steps into those with attached documents and those without.
+
+    Generation habitually pairs a sourced question with a document-less step
+    naming what else would be needed — "Assess discrepancy resolution evidence"
+    beside "Identify missing discrepancy resolution evidence". That second step
+    is a scope note about the first, not an item anyone can execute, and reading
+    it as an unattached item blocked whole tests that had four documents on
+    their real question.
+    """
+    sourced = [step for step in steps if step.get("document_ids")]
+    return sourced, [step for step in steps if not step.get("document_ids")]
+
+
 def _document_items_from_steps(steps: list[Mapping[str, object]]) -> list[dict]:
     """Normalize each generated question step into the existing item model.
 
@@ -327,7 +343,12 @@ def _commit_document_test(
             },
         )
     kind = doc_tests.kind_from_steps(steps)
-    items = _document_items_from_steps(steps)
+    # ``steps`` stays the complete durable plan, including a step that only
+    # names absent evidence. ``items`` is the executable subset: an unattached
+    # step alongside sourced ones is a scope note, and carrying it as an item
+    # made ``execution_issues`` refuse the whole test.
+    sourced, _unsourced = _sourced_steps(steps)
+    items = _document_items_from_steps(sourced or steps)
     payload = {
         "title": common["title"],
         "objective": common["objective"],
@@ -363,42 +384,62 @@ def _generate_missing_evidence(
     target: TestGenerateExecutorTarget,
     unit_id: str,
 ) -> None:
-    """Block the test and register one evidence request per unattached step.
+    """Register one evidence request per unattached step, blocking only if none is attached.
 
-    Each request carries its own step's ``missing_evidence`` text; blocking
-    itself stays test-level, matching what ``doc_tests.execution_issues`` and
-    ``rcm_execution._executable`` already key on (merge plan section 5).
+    Each request carries its own step's ``missing_evidence`` text. A test whose
+    every step lacks documents cannot be attempted at all, so it blocks, keyed
+    the way ``doc_tests.execution_issues`` and ``rcm_execution._executable``
+    already expect (merge plan section 5). A test that *does* have sourced
+    questions stays runnable: the evidence is still requested and the gap is
+    recorded in ``scope_limitations``, but the auditor gets the answers the
+    attached documents can give instead of a wholly blocked test.
     """
-    pairs = list(zip(test.get("items") or [], steps))
-    blocked = [(item, step) for item, step in pairs if not item.get("document_ids")]
-    if not blocked:
+    sourced, unsourced = _sourced_steps(steps)
+    if not unsourced:
         return
-    test["status"] = "blocked"
     reasons = list(
         dict.fromkeys(
             str(step.get("missing_evidence") or "").strip()
-            for _, step in blocked
+            for step in unsourced
             if str(step.get("missing_evidence") or "").strip()
         )
     )
-    test["scope_limitations"] = "; ".join(reasons) or "Required evidence is not yet available."
+    limitation = "; ".join(reasons) or "Required evidence is not yet available."
+    # Items mirror the sourced steps, or every step when none was sourced —
+    # the same choice ``_commit_document_test`` made when it built them.
+    items_by_step = {
+        id(step): item
+        for item, step in zip(test.get("items") or [], sourced or steps)
+    }
+    if not sourced:
+        test["status"] = "blocked"
+        test["scope_limitations"] = limitation
+    else:
+        existing = str(test.get("scope_limitations") or "").strip()
+        test["scope_limitations"] = "; ".join(
+            part for part in (existing, limitation) if part
+        )
     evidence_hash = canonical_sha1(
         [
             {key: item.get(key) for key in ("id", "sha1", "category", "title")}
             for item in fresh.documents
         ]
     )
-    for item, step in blocked:
+    for step in unsourced:
         reason = (
             str(step.get("missing_evidence") or "").strip()
             or "Required evidence is not yet available."
+        )
+        item = items_by_step.get(id(step))
+        label = str(
+            (item or {}).get("label") or step.get("label") or ""
         )
         evidence_request = {
             "id": f"ER-{uuid.uuid4().hex[:10].upper()}",
             "rcm_id": target.rcm_id,
             "document_test_id": test["id"],
-            "item_id": item["id"],
-            "transaction_identifier": _item_identifier(item.get("label") or ""),
+            "item_id": (item or {}).get("id"),
+            "transaction_identifier": _item_identifier(label),
             "missing_document_types": ["supporting_evidence"],
             "status": "open",
             "reason": reason,
@@ -411,7 +452,8 @@ def _generate_missing_evidence(
             "updated": fresh._updated_now(),
         }
         fresh.evidence_requests.append(evidence_request)
-        item.setdefault("evidence_request_ids", []).append(evidence_request["id"])
+        if item is not None:
+            item.setdefault("evidence_request_ids", []).append(evidence_request["id"])
     doc_tests.save_test(fresh, test)
     fresh.save()
 

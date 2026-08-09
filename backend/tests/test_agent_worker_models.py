@@ -392,3 +392,61 @@ def test_worker_contract_layer_has_no_workspace_provider_or_scheduler_dependency
     assert "app.llm" not in source
     assert "ContextResolver" not in source
     assert "Workspace" not in source
+
+
+def _partial_validator(response):
+    """A validator that can salvage part of a rejected response."""
+    if response == "invalid":
+        raise WorkerResponseValidationError(
+            ("second section is empty",),
+            partial={"apm_markdown": "first section only"},
+        )
+    return {"apm_markdown": response}
+
+
+def test_an_exhausted_repair_commits_the_salvageable_part_of_a_response():
+    """Discarding a whole response because one part failed loses valid work."""
+    calls = []
+
+    def implementation(request, gateway, attempt):
+        calls.append(attempt.number)
+        return "invalid"
+
+    registry = WorkerRegistry()
+    registry.register(
+        _definition(
+            implementation,
+            response_schema=WorkerResponseSchema(
+                "planning.apm.response", HASH_C, _partial_validator
+            ),
+        )
+    )
+
+    result = registry.execute(_request(), _Gateway())
+
+    assert result.partial is True
+    assert dict(result.proposal) == {"apm_markdown": "first section only"}
+    # The allowance was spent trying for a whole response first.
+    assert calls == [1, 2]
+    assert result.attempts == 2
+
+
+def test_a_validator_that_offers_no_partial_still_fails_the_whole_unit():
+    def implementation(request, gateway, attempt):
+        return "invalid"
+
+    registry = WorkerRegistry()
+    registry.register(_definition(implementation))
+
+    with pytest.raises(WorkerRunError):
+        registry.execute(_request(), _Gateway())
+
+
+def test_a_clean_response_is_never_marked_partial():
+    def implementation(request, gateway, attempt):
+        return "complete draft"
+
+    registry = WorkerRegistry()
+    registry.register(_definition(implementation))
+
+    assert registry.execute(_request(), _Gateway()).partial is False

@@ -3035,13 +3035,36 @@ def _comparison_operand_signature(
     *,
     role_kinds: Mapping[str, str] | None = None,
 ) -> tuple[str, str, str, str]:
+    """The (record kind, group, kind, attribute) identity of one operand.
+
+    A required comparison names its record kind directly; an authored assertion
+    names a role alias, so ``role_kinds`` resolves it back. A ``roles`` operand
+    resolves the same way whenever its role set names exactly one record kind:
+    the multiplicity gate *requires* that form for a selector the record states
+    more than once, so refusing to recognize it here made those two rules
+    mutually unsatisfiable, and the requirement could not be covered by any
+    response. A genuinely cross-kind role set still has no single record-kind
+    identity and cannot stand in for one.
+    """
     value = _object(operand, "comparison operand")
     if role_kinds is None:
         record_kind = str(value.get("record_kind") or "")
     else:
-        if value.get("source") != "role":
+        source = value.get("source")
+        if source == "role":
+            record_kind = str(role_kinds.get(str(value.get("role") or "")) or "")
+        elif source == "roles":
+            kinds = {
+                str(role_kinds.get(str(role) or "") or "")
+                for role in value.get("roles") or []
+            }
+            if len(kinds) != 1:
+                return ("", "", "", "")
+            record_kind = kinds.pop()
+        else:
             return ("", "", "", "")
-        record_kind = str(role_kinds.get(str(value.get("role") or "")) or "")
+        if not record_kind:
+            return ("", "", "", "")
     field = value.get("field") or {}
     return (
         record_kind,
@@ -3086,6 +3109,172 @@ def _assertion_covers_required_comparison(
         and actual_left == expected_right
         and actual_right == expected_left
     )
+
+
+def _multiplicity_by_selector(
+    group: Mapping[str, object],
+) -> dict[tuple[str, str, str, str], int]:
+    """Worst observed value count per (record kind, group, kind, attribute)."""
+    observed: dict[tuple[str, str, str, str], int] = {}
+    for record in group.get("records") or []:
+        if not isinstance(record, Mapping):
+            continue
+        record_kind = str(record.get("record_kind") or "")
+        for field in record.get("available_fields") or []:
+            if not isinstance(field, Mapping):
+                continue
+            counts = field.get("distinct_value_counts") or {}
+            for attribute, count in counts.items():
+                selector = (
+                    record_kind,
+                    str(field.get("group") or ""),
+                    str(field.get("kind") or ""),
+                    str(attribute),
+                )
+                observed[selector] = max(observed.get(selector, 0), int(count or 0))
+    return observed
+
+
+def _compiled_operand(
+    operand: Mapping[str, object],
+    *,
+    roles_by_kind: Mapping[str, str],
+    multiplicity: Mapping[tuple[str, str, str, str], int],
+    allow_set: bool,
+    label: str,
+) -> tuple[dict, bool]:
+    """Turn one required-comparison operand into its authored assertion form."""
+    record_kind = str(operand.get("record_kind") or "")
+    role = roles_by_kind.get(record_kind)
+    if not role:
+        raise CycleSchemaError(
+            f"{label} names record kind '{record_kind}', which the procedure "
+            "does not bind to a role."
+        )
+    raw_field = operand.get("field") or {}
+    field = {
+        "group": str(raw_field.get("group") or ""),
+        "kind": str(raw_field.get("kind") or ""),
+        "attribute": str(raw_field.get("attribute") or ""),
+    }
+    selector = (record_kind, field["group"], field["kind"], field["attribute"])
+    if allow_set and multiplicity.get(selector, 1) > 1:
+        # The record states this selector more than once, so a scalar operand
+        # could only ever resolve as ambiguous.
+        return (
+            {
+                "source": "roles",
+                "roles": [role],
+                "field": field,
+                "entry_quantifier": "one",
+            },
+            True,
+        )
+    return {"source": "role", "role": role, "field": field}, False
+
+
+def compile_required_assertions(
+    *,
+    rcm_row: Mapping[str, object],
+    requirement_refs: Iterable[object],
+    group: Mapping[str, object],
+) -> list[dict]:
+    """Derive a cycle procedure's assertions from the requirements it cites.
+
+    A ``required_comparison`` on the RCM row already fixes the operator, the
+    tolerance, both record kinds, and both field selectors, and the coverage
+    gate then demands an assertion that matches all of it exactly. Asking the
+    model to restate that under a role alias was transcription, not judgment:
+    it had no freedom to exercise and every opportunity to be imprecise, and
+    the operand form it had to pick — scalar or generalized — follows
+    mechanically from what the evidence holds. Deriving all of it here makes
+    coverage true by construction and the whole class of near-miss assertion
+    unrepresentable. What remains genuinely the model's is which population to
+    vouch and which requirements belong in one procedure.
+    """
+    wanted = {
+        str(reference).split(":", 1)[-1]
+        for reference in requirement_refs or []
+    }
+    roles_by_kind: dict[str, str] = {}
+    for role in group.get("roles") or []:
+        if isinstance(role, Mapping):
+            roles_by_kind.setdefault(
+                str(role.get("record_kind") or ""), str(role.get("role") or "")
+            )
+    multiplicity = _multiplicity_by_selector(group)
+    assertions: list[dict] = []
+    # Two cited attributes may legitimately name the same comparison — a broad
+    # cycle requirement and a narrow one often share an edge — and it is one
+    # assertion either way. Two *different* comparisons under one key would
+    # instead make the assertion key ambiguous, so say so rather than choose.
+    seen: dict[str, str] = {}
+    for attribute in rcm_row.get("control_attributes") or []:
+        if not isinstance(attribute, Mapping):
+            continue
+        if attribute.get("evidence_kind") != "transaction_cycle":
+            continue
+        key = str(attribute.get("key") or "")
+        if key not in wanted:
+            continue
+        for comparison in attribute.get("required_comparisons") or []:
+            if not isinstance(comparison, Mapping):
+                continue
+            comparison_key = str(comparison.get("key") or "")
+            signature = json.dumps(
+                _plain_json(comparison), sort_keys=True, separators=(",", ":")
+            )
+            if comparison_key in seen:
+                if seen[comparison_key] != signature:
+                    raise CycleSchemaError(
+                        f"Control attributes of this row define different "
+                        f"comparisons under the key '{comparison_key}'; one key "
+                        "must name one comparison."
+                    )
+                continue
+            seen[comparison_key] = signature
+            operator = str(comparison.get("operator") or "")
+            definition = _operators.operator(operator)
+            if definition is None:
+                raise CycleSchemaError(
+                    _operators.unsupported_operator_message(
+                        operator, label=f"required comparison '{comparison_key}'"
+                    )
+                )
+            unary = definition.arity == "unary"
+            label = f"required comparison '{comparison_key}'"
+            left, left_set = _compiled_operand(
+                _object(comparison.get("left"), f"{label}.left"),
+                roles_by_kind=roles_by_kind,
+                multiplicity=multiplicity,
+                # A unary operator takes one scalar operand and admits no
+                # generalized form, so a multi-valued selector there is a real
+                # evidence problem the assertion gate must report.
+                allow_set=not unary,
+                label=f"{label}.left",
+            )
+            assertion: dict = {
+                "key": comparison_key,
+                "label": str(comparison.get("label") or comparison_key),
+                "operator": operator,
+                "left": left,
+            }
+            if "tolerance" in comparison:
+                assertion["tolerance"] = _plain_json(comparison.get("tolerance"))
+            right_set = False
+            if not unary:
+                right, right_set = _compiled_operand(
+                    _object(comparison.get("right"), f"{label}.right"),
+                    roles_by_kind=roles_by_kind,
+                    multiplicity=multiplicity,
+                    allow_set=True,
+                    label=f"{label}.right",
+                )
+                assertion["right"] = right
+            if left_set or right_set:
+                assertion["role_quantifier"] = "all"
+            assertions.append(assertion)
+    return assertions
 
 
 def validate_cycle_test_semantics(

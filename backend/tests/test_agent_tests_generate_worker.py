@@ -680,9 +680,13 @@ def test_generate_response_contract_discriminates_the_failure_prone_shapes():
     assert variants["cycle_vouch"]["kind"] == "cycle_vouch"
     assert "steps" in variants["cycle_vouch"]["forbidden"]
     assert "definition" in variants["cycle_vouch"]["forbidden"]
+    # Assertions are compiled from the row's required_comparisons, so a
+    # model-authored set is now as much a contract violation as a definition.
+    assert "assertions" in variants["cycle_vouch"]["forbidden"]
+    assert "assertions" not in variants["cycle_vouch"]["required"]
     assert "candidate_id" in variants["cycle_vouch"]["required"]
     assert "Cycle Vouch" in tests_workers.GENERATE_SYSTEM
-    assert "Do not emit dotted paths" in tests_workers.GENERATE_SYSTEM
+    assert "dotted paths" in tests_workers.GENERATE_SYSTEM
     assert "never use `df`" in tests_workers.GENERATE_SYSTEM
     assert "Every step runs separately" in tests_workers.GENERATE_SYSTEM
 
@@ -1328,3 +1332,190 @@ def test_generate_worker_requires_exactly_one_target_row():
 
     with pytest.raises(WorkerContractError, match="'rcm_row' must supply exactly one item"):
         WORKERS.execute(_request(_bundle(rcm_rows=("RCM-1", "RCM-2"))), gateway)
+
+
+# --------------------------------------------------------------------------- #
+# Locally absorbed deviations: corrections with exactly one possible outcome
+# are applied here rather than spent as a repair turn, which observed runs
+# showed was consuming the allowance the semantic errors needed.
+# --------------------------------------------------------------------------- #
+def test_generate_worker_strips_a_redundant_polars_import():
+    step = _data_step(
+        code="import polars as pl\nresult = transactions.filter(pl.col('invoice').is_duplicated())"
+    )
+    gateway = _Gateway([json.dumps({"tests": [_data_test(steps=[step])]})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    code = result.proposal["tests"][0]["steps"][0]["code"]
+    assert "import" not in code
+    assert code.startswith("result =")
+    # One call: the import cost no repair turn.
+    assert len(gateway.calls) == 1
+
+
+def test_generate_worker_still_refuses_an_import_the_sandbox_does_not_supply():
+    """Only names the snippet is handed anyway are absorbed."""
+    invalid = json.dumps(
+        {"tests": [_data_test(steps=[_data_step(code="import os\nresult = df")])]}
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="not allowed in the sandbox"):
+        WORKERS.execute(_request(), gateway)
+
+
+def test_generate_worker_derives_a_missing_step_label_from_its_question():
+    step = _question_step()
+    step.pop("label")
+    step.pop("instruction")
+    gateway = _Gateway([json.dumps({"tests": [_document_test(steps=[step])]})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    committed = result.proposal["tests"][0]["steps"][0]
+    assert committed["label"] == "Was this payment approved before release?"
+    assert committed["instruction"] == "Was this payment approved before release?"
+    assert len(gateway.calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Partial acceptance on exhaustion
+# --------------------------------------------------------------------------- #
+def test_generate_worker_commits_valid_siblings_when_repair_is_exhausted():
+    """A defective test must not take its valid siblings down with it."""
+    broken = _data_test(
+        title="Broken", steps=[_data_step(code="result = df.select(pl.col('ghost'))")]
+    )
+    response = json.dumps({"tests": [_data_test(), broken]})
+    gateway = _Gateway([response, response, response])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.partial is True
+    titles = [test["title"] for test in result.proposal["tests"]]
+    assert titles == ["Duplicate payment detection"]
+    # The allowance was still spent trying to fix it first.
+    assert len(gateway.calls) == 3
+
+
+def test_generate_worker_keeps_a_clean_response_whole_and_not_partial():
+    gateway = _Gateway([json.dumps({"tests": [_data_test(), _document_test()]})])
+
+    result = WORKERS.execute(_request(), gateway)
+
+    assert result.partial is False
+    assert len(result.proposal["tests"]) == 2
+
+
+def test_generate_worker_refuses_partial_commit_while_a_cycle_requirement_is_uncovered():
+    """Readiness is satisfied by any executable test.
+
+    Committing the siblings of a failed cycle test would mark the row done and
+    retire the unit that still owes that cycle test, so this one row-level gap
+    keeps the strict all-or-nothing behaviour.
+    """
+    from test_cycle_vouching_phase2 import _manifest, _row_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    bundle = _bundle(
+        rcm_rows=(contract["cycle_test"]["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+        document_categories={"DOC-1": "voucher"},
+    )
+    # A valid document question, and no cycle test at all for a row that
+    # declares transaction_cycle evidence.
+    response = json.dumps({"tests": [_document_test()]})
+    gateway = _Gateway([response, response, response])
+
+    with pytest.raises(WorkerRunError, match="declares transaction_cycle evidence"):
+        WORKERS.execute(_request(bundle), gateway)
+
+
+# --------------------------------------------------------------------------- #
+# Compiled cycle assertions
+# --------------------------------------------------------------------------- #
+def _cycle_response(contract, **overrides):
+    from test_cycle_vouching_phase2 import _test_payload
+
+    cycle = _test_payload(contract)
+    population = cycle["definition"]["population"]
+    value = {
+        "source": "document",
+        "kind": "cycle_vouch",
+        "title": cycle["title"],
+        "objective": cycle["objective"],
+        "requirement_refs": cycle["requirement_refs"],
+        "procedure_key": cycle["procedure_key"],
+        "candidate_id": population["candidate_id"],
+        "selection_reason": population["selection_reason"],
+        "selection": {"mode": "evidence_linked"},
+    }
+    value.update(overrides)
+    return value
+
+
+def test_generate_worker_compiles_assertions_the_model_never_authors():
+    from test_cycle_vouching_phase2 import _manifest, _row_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    bundle = _bundle(
+        rcm_rows=(contract["cycle_test"]["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+    )
+    gateway = _Gateway([json.dumps({"tests": [_cycle_response(contract)]})])
+
+    result = WORKERS.execute(_request(bundle), gateway)
+
+    assertions = result.proposal["tests"][0]["definition"]["assertions"]
+    assert assertions, "assertions are derived from required_comparisons"
+    cited = {
+        reference.split(":", 1)[-1]
+        for reference in contract["cycle_test"]["requirement_refs"]
+    }
+    # Deduplicated: the broad and narrow attributes here share one edge, and
+    # that edge is one assertion.
+    required = list(
+        dict.fromkeys(
+            comparison["key"]
+            for attribute in contract["control_attributes"]
+            if attribute.get("evidence_kind") == "transaction_cycle"
+            and attribute["key"] in cited
+            for comparison in attribute.get("required_comparisons") or []
+        )
+    )
+    assert [item["key"] for item in assertions] == required
+    # The prompt no longer describes the assertion DSL at all.
+    assert "role_quantifier" not in gateway.calls[0]["system"]
+
+
+def test_generate_worker_requires_requirement_refs_that_carry_comparisons():
+    from test_cycle_vouching_phase2 import _manifest, _row_payload
+
+    contract = json.loads(
+        (Path(__file__).parent / "fixtures" / "procurement_cycle_phase0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    bundle = _bundle(
+        rcm_rows=(contract["cycle_test"]["rcm_id"],),
+        rcm_payload=_row_payload(contract),
+        transaction_manifest=_manifest(contract),
+    )
+    invalid = json.dumps(
+        {"tests": [_cycle_response(contract, requirement_refs=["RCM-1:not_a_real_key"])]}
+    )
+    gateway = _Gateway([invalid, invalid, invalid])
+
+    with pytest.raises(WorkerRunError, match="cite no transaction_cycle control"):
+        WORKERS.execute(_request(bundle), gateway)

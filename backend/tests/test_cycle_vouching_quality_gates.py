@@ -404,3 +404,89 @@ def test_gate_leaves_a_different_table_to_the_authoring_turn(contract):
     validated = _validate(contract, test, manifest=manifest)
 
     assert validated["definition"]["population"]["table"] == "invoice_data"
+
+
+def test_the_multiplicity_and_coverage_gates_are_jointly_satisfiable(contract):
+    """Regression: the two gates once left no valid response at all.
+
+    A selector the evidence holds more than once must be read by a generalized
+    ``roles`` operand. The coverage gate matched an assertion to its required
+    comparison by record kind, and recognized that identity only on a scalar
+    ``role`` operand — so the form the first gate demanded was exactly the form
+    the second refused. Both cycle rows of the live procurement engagement hit
+    this, spent their whole repair allowance on it, and committed no test.
+    """
+    manifest = _manifest(contract)
+    invoice = next(
+        record
+        for group in manifest["groups"]
+        for record in group["records"]
+        if record["record_kind"] == "procure_to_pay.vendor_invoice"
+    )
+    total = next(
+        field for field in invoice["available_fields"] if field["kind"] == "total"
+    )
+    total["distinct_value_counts"]["value"] = 2
+
+    test = _test_payload(contract)
+    for key in ("invoice_amount_to_payment", "invoice_amount_to_purchase_order"):
+        assertion = _assertion(test, key)
+        assertion["left"] = {
+            "source": "roles",
+            "roles": ["vendor_invoice"],
+            "field": {"group": "amounts", "kind": "total", "attribute": "value"},
+            "entry_quantifier": "one",
+        }
+        assertion["role_quantifier"] = "all"
+
+    validated = _validate(contract, test, manifest=manifest)
+
+    assert _assertion(validated, "invoice_amount_to_payment")["left"]["source"] == "roles"
+
+
+def test_coverage_still_refuses_a_role_set_spanning_two_record_kinds(contract):
+    """A cross-kind set has no single record-kind identity to stand in for."""
+    test = _test_payload(contract)
+    assertion = _assertion(test, "invoice_amount_to_purchase_order")
+    assertion["left"] = {
+        "source": "roles",
+        "roles": ["vendor_invoice", "payment_voucher"],
+        "field": {"group": "amounts", "kind": "total", "attribute": "value"},
+        "entry_quantifier": "one",
+    }
+    assertion["role_quantifier"] = "all"
+
+    with pytest.raises(cycle_vouching.CycleSchemaError, match="requires comparison"):
+        _validate(contract, test)
+
+
+def test_compiled_assertions_choose_the_operand_form_the_evidence_allows(contract):
+    """The form follows from multiplicity, which is why it is not the model's."""
+    manifest = _manifest(contract)
+    group = manifest["groups"][0]
+    requisition = next(
+        record
+        for record in group["records"]
+        if record["record_kind"] == "procure_to_pay.purchase_requisition"
+    )
+    approval = next(
+        field for field in requisition["available_fields"] if field["kind"] == "approval"
+    )
+    approval["distinct_value_counts"]["approver"] = 3
+
+    compiled = cycle_vouching.compile_required_assertions(
+        rcm_row=_row_payload(contract),
+        requirement_refs=contract["cycle_test"]["requirement_refs"],
+        group=group,
+    )
+
+    approved = next(item for item in compiled if item["key"] == "requisition_approved")
+    # ``present`` is unary and admits only a scalar operand, so a multi-valued
+    # selector there is an evidence problem the assertion gate must report — not
+    # something the compiler can paper over with a generalized form.
+    assert approved["left"]["source"] == "role"
+    amount = next(
+        item for item in compiled if item["key"] == "invoice_amount_to_purchase_order"
+    )
+    assert amount["left"]["source"] == "role"
+    assert "role_quantifier" not in amount

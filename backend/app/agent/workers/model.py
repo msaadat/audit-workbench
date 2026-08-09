@@ -89,14 +89,32 @@ class WorkerContractError(ValueError):
 
 
 class WorkerResponseValidationError(ValueError):
-    """A model response failed the registered structured-response contract."""
+    """A model response failed the registered structured-response contract.
 
-    def __init__(self, errors: str | Iterable[str]):
+    A validator may attach ``partial``: the normalized proposal built from the
+    parts of the response that *did* satisfy the contract. It changes nothing
+    while repair turns remain — the loop still asks the model to correct the
+    whole response — but when the allowance is exhausted the registry commits
+    that subset instead of discarding the response wholesale. A validator is
+    responsible for offering a partial only when the missing parts are not
+    themselves a durable gap; omitting it keeps the strict all-or-nothing
+    behaviour.
+    """
+
+    def __init__(
+        self,
+        errors: str | Iterable[str],
+        *,
+        partial: Mapping[str, Any] | None = None,
+    ):
         values = (errors,) if isinstance(errors, str) else tuple(errors)
         normalized = tuple(str(item).strip() for item in values if str(item).strip())
         if not normalized:
             normalized = ("The response did not satisfy the registered schema.",)
+        if partial is not None and not isinstance(partial, Mapping):
+            raise ValueError("worker_response_validation.partial must be an object.")
         self.errors = normalized
+        self.partial = partial
         super().__init__("; ".join(normalized))
 
 
@@ -462,6 +480,7 @@ class WorkerResult:
     attempts: int
     response_hash: str
     response_schema_hash: str
+    partial: bool
     _proposal_json: str = field(repr=False)
 
     def __init__(
@@ -474,9 +493,13 @@ class WorkerResult:
         attempts: int,
         response_hash: str,
         response_schema_hash: str,
+        partial: bool = False,
     ) -> None:
         if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
             raise ValueError("worker_result.attempts must be a positive integer.")
+        if not isinstance(partial, bool):
+            raise ValueError("worker_result.partial must be a boolean.")
+        object.__setattr__(self, "partial", partial)
         object.__setattr__(self, "worker_id", _normalized_id(worker_id, "worker_result.worker_id"))
         object.__setattr__(
             self,
@@ -611,6 +634,26 @@ class WorkerRegistry:
                 previous_response = response
                 errors = definition.repair_policy.bounded_errors(error.errors)
                 if attempt_number == final_attempt:
+                    # The allowance is spent. Where the validator could salvage
+                    # part of the response, committing it beats discarding work
+                    # that satisfied the contract because a sibling did not.
+                    if error.partial:
+                        return WorkerResult(
+                            worker_id=definition.worker_id,
+                            capability_id=request.capability_id,
+                            unit_id=request.unit_id,
+                            proposal=_frozen_json(  # type: ignore[arg-type]
+                                json.loads(
+                                    _canonical_object(
+                                        error.partial, "worker_result.partial"
+                                    )
+                                )
+                            ),
+                            attempts=attempt_number,
+                            response_hash=_sha256_text(response),
+                            response_schema_hash=definition.response_schema.schema_hash,
+                            partial=True,
+                        )
                     raise WorkerRunError(
                         definition.worker_id,
                         attempt_number,

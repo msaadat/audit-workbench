@@ -79,16 +79,26 @@ def test_the_gate_and_the_operator_table_cannot_drift_apart():
     }
 
 
-def test_both_authoring_prompts_state_the_whole_operator_vocabulary():
-    """The parity that was missing is now structural.
+def test_the_authoring_prompt_states_the_whole_operator_vocabulary():
+    """Whichever prompt authors comparisons must state every operator.
 
-    ``tests.generate`` documented the vocabulary and ``planning.rcm`` did not, so
-    the RCM turn guessed. Both now render from the one table.
+    That is now exactly one prompt. ``tests.generate`` used to restate the
+    vocabulary because it authored assertions too, and the two prompts had to be
+    kept in parity. It no longer authors them: a cycle procedure's comparisons
+    are compiled from the ``required_comparisons`` this prompt produces, so the
+    operator table belongs here alone.
     """
 
-    for prompt in (planning.RCM_EVIDENCE_SYSTEM, tests_worker.GENERATE_SYSTEM):
-        for operator_id in sorted(cycle_vouching.OPERATORS):
-            assert operator_id in prompt, operator_id
+    for operator_id in sorted(cycle_vouching.OPERATORS):
+        assert operator_id in planning.RCM_EVIDENCE_SYSTEM, operator_id
+
+
+def test_the_generation_prompt_no_longer_authors_comparisons():
+    """The operator vocabulary is absent from generation because it is unused."""
+
+    assert "operand1" not in tests_worker.GENERATE_SYSTEM
+    assert "entry_quantifier" not in tests_worker.GENERATE_SYSTEM
+    assert "It has no assertions" in tests_worker.GENERATE_SYSTEM
 
 
 def test_the_rcm_prompt_names_the_operators_it_rejects():
