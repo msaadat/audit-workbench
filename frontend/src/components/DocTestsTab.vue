@@ -73,6 +73,8 @@ const search = ref('')
 const createOpen = ref(false)
 const creating = ref(false)
 const running = ref(false)
+const runningAll = ref(false)
+const runningOutstanding = ref(false)
 const anchorOpen = ref(false)
 const anchor = ref<EvidenceRef | null>(null)
 
@@ -123,6 +125,18 @@ const linkedFindings = computed<AuditFinding[]>(() => {
 })
 const assistantUnavailable = computed(() => agent.isActive.value || assistantChat.state.busy)
 const hasTests = computed(() => Boolean(summary.value?.test_counts.total))
+const allTestIds = computed(() => {
+  const ids = new Set<string>()
+  for (const entry of summary.value?.entries ?? []) ids.add(entry.test_id)
+  return Array.from(ids)
+})
+const outstandingTestIds = computed(() => {
+  const ids = new Set<string>()
+  for (const entry of summary.value?.entries ?? []) {
+    if (entry.classification !== 'confirmed') ids.add(entry.test_id)
+  }
+  return Array.from(ids)
+})
 
 function entryId(entry: DocTestSummaryEntry) {
   return entry.entry_type === 'cycle_test' ? entry.test_id : entry.item_id
@@ -424,6 +438,32 @@ async function runTest() {
   } catch (error) { fail('Could not start the document test', error) }
   finally { running.value = false }
 }
+async function runTestIds(testIds: string[], busy: typeof runningAll, failSummary: string) {
+  if (!testIds.length) return
+  busy.value = true
+  try {
+    await assistantChat.createChat()
+    await assistantChat.send(
+      `Run all ${testIds.length} Document Test${testIds.length === 1 ? '' : 's'} and preserve the results.`,
+      'act', launchMode.value,
+      { command: 'run_document_tests', source: 'tab_button', runContext: { test_ids: testIds } },
+    )
+    if (!agent.state.drawerOpen) agent.toggleDrawer()
+    toast.add({
+      severity: 'info',
+      summary: `Running ${testIds.length} Document Test${testIds.length === 1 ? '' : 's'}`,
+      detail: 'Progress is visible in the assistant.',
+      life: 4000,
+    })
+  } catch (error) { fail(failSummary, error) }
+  finally { busy.value = false }
+}
+async function runAllTests() {
+  await runTestIds(allTestIds.value, runningAll, 'Could not start the document tests')
+}
+async function runOutstandingTests() {
+  await runTestIds(outstandingTestIds.value, runningOutstanding, 'Could not start the outstanding document tests')
+}
 async function generateFinding(regenerate: boolean) {
   const test = currentTest.value
   if (!test?.rcm_id || !test.status.startsWith('completed')) return
@@ -523,6 +563,26 @@ onUnmounted(unsubscribe)
         size="small"
         :disabled="assistantUnavailable"
         @click="prepareTests"
+      />
+      <Button
+        v-if="hasTests"
+        label="Run all"
+        icon="pi pi-play"
+        size="small"
+        outlined
+        :loading="runningAll"
+        :disabled="assistantUnavailable || !allTestIds.length"
+        @click="runAllTests"
+      />
+      <Button
+        v-if="hasTests"
+        label="Run outstanding"
+        icon="pi pi-forward"
+        size="small"
+        outlined
+        :loading="runningOutstanding"
+        :disabled="assistantUnavailable || !outstandingTestIds.length"
+        @click="runOutstandingTests"
       />
       <Button label="New test" icon="pi pi-plus" size="small" outlined @click="createOpen = true" />
       <Button
