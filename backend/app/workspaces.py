@@ -768,6 +768,7 @@ class Workspace:
         definition = _migrate_artifacts(
             self.root, json.loads(self.definition_path.read_text(encoding="utf-8"))
         )
+        self._table_signature_cache: dict[str, tuple] = {}
         self.schema_version = int(definition.get("schema_version") or 1)
         self.revision = int(definition.get("revision") or 0)
         self.id: str = definition.get("id") or self.root.name
@@ -2004,20 +2005,33 @@ class Workspace:
     def _table_signature(self, name: str, _seen: frozenset = frozenset()) -> tuple:
         """A hashable fingerprint of a table's content: the source file's
         (size, mtime) for base tables, or the join spec plus both sides'
-        signatures, recursively. Used to key the on-disk profile cache."""
+        signatures, recursively. Used to key the on-disk profile cache.
+
+        Callers across data_tests/doc_tests/findings/analysis_results each
+        re-derive this for overlapping sets of tables, and joins-of-joins
+        re-derive shared base tables again on every recursive branch. Cached
+        per name for the life of this instance, since a Workspace is rebuilt
+        fresh on every load and the underlying files can't change out from
+        under it mid-request.
+        """
+        cached = self._table_signature_cache.get(name)
+        if cached is not None:
+            return cached
         if name in _seen:
             raise WorkspaceError(f"Join '{name}' references itself in a cycle.")
 
         entry = self._table_entry(name)
         if entry is not None:
-            return ("file", loader.file_signature(self.data_dir / entry["file"]))
+            signature = ("file", loader.file_signature(self.data_dir / entry["file"]))
+            self._table_signature_cache[name] = signature
+            return signature
 
         join = self._join_entry(name)
         if join is None:
             raise WorkspaceError(f"No table named '{name}'.")
 
         seen = _seen | {name}
-        return (
+        signature = (
             "join",
             join["how"],
             tuple(join["left_on"]),
@@ -2025,6 +2039,8 @@ class Workspace:
             self._table_signature(join["left"], seen),
             self._table_signature(join["right"], seen),
         )
+        self._table_signature_cache[name] = signature
+        return signature
 
     # ---------------------------------------------------------------- profile
     def _cache_dir(self) -> Path:
