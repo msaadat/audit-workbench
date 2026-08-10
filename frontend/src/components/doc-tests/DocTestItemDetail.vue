@@ -66,6 +66,24 @@ const controlConclusions = [
 
 const documentOptions = computed(() => props.documents.map(doc => ({ label: doc.title, value: doc.id })))
 const attachable = computed(() => documentOptions.value.filter(option => !props.item.document_ids.includes(option.value)))
+const machineNotePrefixes = [
+  'Model assessment outcome:',
+  'Cited answer generated from the attached pages',
+  'Cited answers were generated from the attached pages',
+  'Cited LLM assessment generated from the attached pages',
+]
+// The runner stamps `Model assessment outcome: <state>.` onto every LLM item —
+// the same fact the status chip already carries, in the runner's vocabulary
+// rather than the auditor's, and it was printed twice over: once as the banner
+// above Procedure and again as the sign-off note in the rail. Matching the
+// prefixes the runner itself writes (doc_tests.py:1464 and the cited-answer
+// paths) leaves a genuine note — a manual fallback, an OCR gap, an auditor
+// sign-off — untouched.
+const auditorNote = computed(() => {
+  const note = (props.item.runner_note ?? '').trim()
+  if (!note) return ''
+  return machineNotePrefixes.some(prefix => note.startsWith(prefix)) ? '' : note
+})
 // The per-document breakdown is the real answer whenever more than one
 // document was assessed; the flattened response loses which said what.
 const perDocumentAnswers = computed(() => Object.entries(props.item.qa_answers ?? {}))
@@ -202,14 +220,27 @@ onMounted(() => { void focusAssertion() })
 
     <!-- The record: what the procedure was and what the run found. -->
     <div class="detail-main">
-    <p v-if="item.runner_note" class="runner-note"><i class="pi pi-info-circle" />{{ item.runner_note }}</p>
+    <p v-if="auditorNote" class="runner-note"><i class="pi pi-info-circle" />{{ auditorNote }}</p>
 
+    <!-- `instruction` and `question` are one planned step written twice: the
+         runner emits an imperative and an interrogative form of the same
+         sentence. The old `question !== instruction` guard never fired — the
+         two strings are never byte-identical, so every item rendered both.
+         Nor does a similarity threshold separate them: the pair that reads
+         most obviously as duplicated shares only 52% of its words, and the
+         pair sharing 33% still asks the same thing, so any threshold low
+         enough to suppress the first fires on all of them. State the
+         procedure once; keep the question one disclosure away. -->
     <section class="block">
       <h4>Procedure</h4>
       <p class="instruction">{{ item.instruction || 'No instruction was recorded for this item.' }}</p>
-      <p v-if="item.question && item.question !== item.instruction" class="question">
-        <i class="pi pi-question-circle" />{{ item.question }}
-      </p>
+      <UiAdvancedSection
+        v-if="item.question"
+        title="Question put to the model"
+        description="The instruction as the runner phrased it"
+      >
+        <p class="question">{{ item.question }}</p>
+      </UiAdvancedSection>
     </section>
 
     <section v-if="showAssessment" class="block" :data-empty="!hasAssessment">
@@ -375,7 +406,40 @@ onMounted(() => { void focusAssertion() })
       <Button label="Save attribute notes" icon="pi pi-save" size="small" outlined @click="emit('saveAttributes')" />
     </section>
 
-    <!-- 3. Evidence: what is attached and what is still missing. -->
+    <!-- 3. What the run produced. The auditor's own conclusion is in the rail.
+         This sits above Evidence because it is what the reader came for: the
+         attachment list is the basis for the result, not the finish of it. -->
+    <section class="block outcome">
+      <h4>Result</h4>
+      <p v-if="test.result_summary" class="summary">{{ test.result_summary }}</p>
+      <!-- Coverage is what makes a cycle conclusion honest: how much of the
+           population was actually reached, stated beside the result. -->
+      <p v-if="cycleCoverage" class="coverage">
+        Selected <strong>{{ cycleCoverage.selected_rows }}</strong> of
+        <strong>{{ cycleCoverage.population_rows }}</strong> population row(s) from
+        <code>{{ test.definition?.population.table }}.{{ test.definition?.population.row_key.column }}</code>.
+        <span>{{ cycleCoverage.assurance_scope === 'sampled_population' ? 'Sampled population' : 'Targeted evidence — not a sample' }}.</span>
+        <span v-if="cycleCoverage.rows_with_evidence !== null">
+          {{ cycleCoverage.rows_with_evidence }} row(s) have linked evidence and {{ cycleCoverage.complete_cycles }} complete cycle(s) were identified.
+        </span>
+      </p>
+      <dl v-if="test.next_action || test.scope_limitations || test.exception_count || test.open_exception_count">
+        <template v-if="test.next_action">
+          <dt>Next action</dt><dd>{{ test.next_action }}</dd>
+        </template>
+        <template v-if="test.scope_limitations">
+          <dt>Limitation</dt><dd>{{ test.scope_limitations }}</dd>
+        </template>
+        <template v-if="test.exception_count || test.open_exception_count">
+          <dt>Exceptions</dt><dd>{{ test.exception_count }} recorded · {{ test.open_exception_count }} open</dd>
+        </template>
+      </dl>
+      <p v-if="!test.result_summary && !cycleCoverage" class="muted">
+        No test-level result has been recorded yet.
+      </p>
+    </section>
+
+    <!-- 4. Evidence: what is attached and what is still missing. -->
     <section class="block">
       <h4>Evidence</h4>
       <div v-if="item.document_ids.length" class="attached">
@@ -448,36 +512,6 @@ onMounted(() => { void focusAssertion() })
       </div>
     </section>
 
-    <!-- What the run produced. The auditor's own conclusion is in the rail. -->
-    <section class="block outcome">
-      <h4>Result</h4>
-      <p v-if="test.result_summary" class="summary">{{ test.result_summary }}</p>
-      <!-- Coverage is what makes a cycle conclusion honest: how much of the
-           population was actually reached, stated beside the result. -->
-      <p v-if="cycleCoverage" class="coverage">
-        Selected <strong>{{ cycleCoverage.selected_rows }}</strong> of
-        <strong>{{ cycleCoverage.population_rows }}</strong> population row(s) from
-        <code>{{ test.definition?.population.table }}.{{ test.definition?.population.row_key.column }}</code>.
-        <span>{{ cycleCoverage.assurance_scope === 'sampled_population' ? 'Sampled population' : 'Targeted evidence — not a sample' }}.</span>
-        <span v-if="cycleCoverage.rows_with_evidence !== null">
-          {{ cycleCoverage.rows_with_evidence }} row(s) have linked evidence and {{ cycleCoverage.complete_cycles }} complete cycle(s) were identified.
-        </span>
-      </p>
-      <dl v-if="test.next_action || test.scope_limitations || test.exception_count || test.open_exception_count">
-        <template v-if="test.next_action">
-          <dt>Next action</dt><dd>{{ test.next_action }}</dd>
-        </template>
-        <template v-if="test.scope_limitations">
-          <dt>Limitation</dt><dd>{{ test.scope_limitations }}</dd>
-        </template>
-        <template v-if="test.exception_count || test.open_exception_count">
-          <dt>Exceptions</dt><dd>{{ test.exception_count }} recorded · {{ test.open_exception_count }} open</dd>
-        </template>
-      </dl>
-      <p v-if="!test.result_summary && !cycleCoverage" class="muted">
-        No test-level result has been recorded yet.
-      </p>
-    </section>
     </div>
 
     <!-- The rail: everything the auditor decides, in one column that stays put
@@ -562,7 +596,7 @@ onMounted(() => { void focusAssertion() })
           {{ needsSignOff
             ? (isCanonicalCycle
                 ? 'The deterministic evaluation is complete. Confirm it or record an exception against the current definition and evidence hashes.'
-                : (item.runner_note || 'The model could not settle this item on its own — confirm the result or mark an exception.'))
+                : 'The model could not settle this item on its own — confirm the result or mark an exception.')
             : (isCanonicalCycle
                 ? (item.disposition?.stale ? 'The prior disposition is stale and cannot satisfy audit verification.' : 'The current evaluation and auditor disposition are recorded separately.')
                 : 'This result was derived directly from the model\'s assessment. Reset it to force a re-check.') }}
@@ -649,10 +683,15 @@ onMounted(() => { void focusAssertion() })
 /* A muted 0.72rem heading sitting directly on body copy of the same weight did
    not read as a section break. The heading now takes ink colour and the body
    size, and the rule gets room to breathe on both sides. */
+/* Measured: at `--aw-text-base` the heading was 14px/700 against body copy at
+   14px/400 in a near-identical ink, so weight alone had to carry the section
+   break. `--aw-text-md` is the one step between body and the panel title, which
+   gives the heading its own tier without introducing a size the scale does not
+   already define. */
 .block { display: flex; flex-direction: column; gap: 0.55rem; min-width: 0; padding: 1.15rem 0 0.35rem; border-top: 1px solid var(--aw-border); }
-.block h4 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-base); font-weight: 700; letter-spacing: -0.01em; }
+.block h4 { margin: 0; color: var(--aw-ink-strong); font-size: var(--aw-text-md); font-weight: 700; letter-spacing: -0.01em; }
 .instruction { margin: 0; font-size: var(--aw-text-base); line-height: 1.5; }
-.question { display: flex; align-items: flex-start; gap: 0.4rem; margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
+.question { margin: 0; color: var(--aw-ink); font-size: var(--aw-text-base); line-height: 1.5; }
 .response { margin: 0; font-size: var(--aw-text-base); line-height: 1.55; }
 .muted { margin: 0; color: var(--aw-muted); font-size: var(--aw-text-sm); }
 
@@ -710,6 +749,25 @@ code { font-family: var(--aw-font-mono); font-size: var(--aw-text-sm); overflow-
 
 label { display: flex; flex-direction: column; gap: 0.3rem; color: var(--aw-ink-soft); font-size: var(--aw-text-sm); font-weight: 600; }
 label :deep(.p-select), label :deep(.p-textarea) { width: 100%; }
+
+/* PrimeVue leaves its control text at the browser default, so any control
+   without an explicit `size` rendered at 16px — which made the "Attach another
+   document" placeholder the largest text in the Evidence block, larger than the
+   heading above it and larger than the document it attaches to. Binding the
+   controls to the panel's body size removes that tier from the panel entirely
+   rather than leaving a sixth size that belongs to no one. */
+/* The rule has to name the control as well as its label: a button with no
+   `size` prop keeps 16px on the host element even once the label span is
+   bound, which is what left "Attach" a size larger than everything near it. */
+.detail :deep(.p-button),
+.detail :deep(.p-button-label),
+.detail :deep(.p-select),
+.detail :deep(.p-select-label),
+.detail :deep(.p-inputtext),
+.detail :deep(.p-textarea) { font-size: var(--aw-text-base); }
+/* `<small>` in the disclosure summary is unsized globally, so it resolved to
+   0.8em of whatever it inherited — an eighth size that belongs to no tier. */
+.detail :deep(.ui-advanced > summary small) { font-size: var(--aw-text-xs); }
 
 /* Sized against the record column, not the whole detail column: the rail
    takes width out of it, so a query keyed to the outer column fired late. */
