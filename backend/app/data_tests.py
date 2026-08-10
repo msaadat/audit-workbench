@@ -18,7 +18,7 @@ from pathlib import Path
 
 import polars as pl
 
-from . import analytics, explore, sandbox, validation
+from . import analytics, exception_profile, explore, sandbox, validation
 from .agent import joins as join_diagnostics
 from .workspaces import (
     CONTROL_CONCLUSIONS,
@@ -680,6 +680,37 @@ def _step_reality_issues(
     return list(dict.fromkeys(issues))
 
 
+def _base_table_names(workspace: Workspace) -> list[str]:
+    """Imported tables only. A join is a view of a population, not a population."""
+    return [table["name"] for table in workspace.tables]
+
+
+def _verdict_text(rows: int, steps: int, profile: dict | None) -> str:
+    """The headline, led by records rather than rows wherever both are known.
+
+    A multi-step test returns one row per step a record failed, so its row count
+    reads as an exception rate several times the real one. State the records
+    first, against the population they came from, and keep the row count as the
+    secondary figure it is.
+    """
+    tail = f"{rows} exception row(s) across {steps} step(s)."
+    if not profile or not profile.get("entity_key"):
+        return tail
+    records = profile["record_count"]
+    population = profile.get("population")
+    if population:
+        rate = records / population
+        lead = (
+            f"{records} of {population} record(s) in "
+            f"{profile['population_table']} failed ({rate:.0%})"
+        )
+    elif records == rows:
+        return tail
+    else:
+        lead = f"{records} record(s) failed"
+    return f"{lead}; {tail}"
+
+
 def _run_polars_steps(
     workspace: Workspace, item: dict
 ) -> tuple[dict, pl.DataFrame | None, pl.DataFrame | None, int, list[str]]:
@@ -689,6 +720,8 @@ def _run_polars_steps(
     step_results: list[dict] = []
     summary_frames: list[pl.DataFrame] = []
     exception_frames: list[pl.DataFrame] = []
+    step_frames: list[pl.DataFrame] = []
+    reason_columns: dict[str, list[str]] = {}
     stdout_parts: list[str] = []
     total_exceptions = 0
     any_step_failed = False
@@ -725,10 +758,19 @@ def _run_polars_steps(
         total_exceptions += step_exception_count
         summary_frames.append(result)
         if step_exception_count:
+            # A step's filter is several alternative conditions; which one a row
+            # met is the first thing an auditor needs and the one thing the
+            # returned frame does not say. Recover it where the step allows.
+            reasons, columns_read = exception_profile.reasons_for_step(step, result)
+            reason_columns.update(columns_read)
+            step_frames.append(result)
             exception_frames.append(
                 result.with_columns(
                     pl.lit(step["step_id"]).alias("_step_id"),
                     pl.lit(step["label"]).alias("_step_label"),
+                    (reasons if reasons is not None else pl.lit(step["label"])).alias(
+                        "_reason"
+                    ),
                 )
             )
         step_results.append(
@@ -744,16 +786,23 @@ def _run_polars_steps(
     exceptions = pl.concat(exception_frames, how="diagonal_relaxed") if exception_frames else None
     if any_step_failed:
         issues.append("One or more steps failed to execute; see step results for detail.")
+    profile = exception_profile.build(
+        exceptions,
+        step_frames,
+        {name: frames[name] for name in _base_table_names(workspace) if name in frames},
+        reason_columns,
+    )
     output = {
         "verdict": "error" if any_step_failed else ("fail" if total_exceptions else "ok"),
         "statistics": [
             {"label": "Steps", "value": str(len(steps))},
             {"label": "Exception rows", "value": str(total_exceptions)},
         ],
-        "verdict_text": f"{total_exceptions} exception row(s) across {len(steps)} step(s).",
+        "verdict_text": _verdict_text(total_exceptions, len(steps), profile),
         "viz": {"type": "table"},
         "stdout": "\n".join(part for part in stdout_parts if part),
         "step_results": step_results,
+        "exception_profile": profile,
     }
     return output, summary, exceptions, total_exceptions, issues
 
@@ -889,6 +938,7 @@ def compute(workspace: Workspace, data_test_id: str) -> dict:
         "summary_frame": explore.frame_payload(summary, SUMMARY_ROWS) if summary is not None else None,
         "exception_frame": explore.frame_payload(exceptions, EXCEPTION_ROWS) if exceptions is not None else None,
         "exception_count": exception_count,
+        "exception_profile": output.get("exception_profile"),
         "semantic_valid": semantic_valid,
         "semantic_issues": semantic_issues,
         "join_diagnostics": diagnostics,

@@ -1088,6 +1088,27 @@ export interface DataTest extends TestPlan, TestOutcome {
   updated: string
 }
 
+export interface DataTestExceptionReason {
+  label: string
+  rows: number
+  records: number
+  /** The columns still carrying a value for the rows this reason claims. */
+  columns: string[]
+}
+
+/** The record-level reading of an exception frame: what failed, and out of how many. */
+export interface DataTestExceptionProfile {
+  /** The column identifying one record, when the steps agree on one. */
+  entity_key: string | null
+  record_count: number
+  row_count: number
+  population: number | null
+  population_table: string | null
+  /** 'step' means the reasons are step labels, not per-condition attribution. */
+  reason_source: 'predicate' | 'step'
+  reasons: DataTestExceptionReason[]
+}
+
 export interface DataTestResult extends DataTestRunSummary {
   data_test_id: string
   rcm_id: string | null
@@ -1097,6 +1118,7 @@ export interface DataTestResult extends DataTestRunSummary {
   stdout: string
   summary_frame: FramePayload | null
   exception_frame: FramePayload | null
+  exception_profile: DataTestExceptionProfile | null
   semantic_issues: string[]
   join_diagnostics: Array<Record<string, unknown>>
   step_results: DataTestStepResult[]

@@ -30,8 +30,10 @@ function context(test: DataTest) {
         <UiTestStatus :status="test.status" showLabel />
       </span>
       <small class="row-context" :class="{ exploratory: !test.rcm_id }">{{ context(test) }}</small>
+      <!-- "N exceptions · N open" restated one number as two. Nothing in a Data
+           Test ever dispositions an exception, so the second was always a copy. -->
       <small v-if="test.exception_count" class="row-meta">
-        {{ test.exception_count }} exception(s) · {{ test.open_exception_count }} open
+        {{ test.exception_count }} exception row(s)
       </small>
     </button>
     <p v-if="!tests.length" class="empty">No data test matches this filter.</p>

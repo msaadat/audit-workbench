@@ -3,10 +3,16 @@ import { computed } from 'vue'
 import Message from 'primevue/message'
 
 import type { DataTest, DataTestResult } from '../../types'
+import ExceptionExplorer from './ExceptionExplorer.vue'
 import FrameTable from '../FrameTable.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
 
 const props = defineProps<{ test: DataTest; result: DataTestResult | null }>()
+
+// Results stored before the profile existed still render the plain frame.
+const profile = computed(() =>
+  props.result?.exception_profile?.reasons?.length ? props.result.exception_profile : null,
+)
 
 const headline = computed(() => {
   if (props.result?.error) return props.result.error
@@ -35,11 +41,13 @@ const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.
 <template>
   <section class="result" :data-status="result?.status ?? test.status">
     <!-- The outcome leads. Editing the definition is the rarer action and now
-         sits below, collapsed. -->
+         sits below, collapsed. With an exception profile the outcome is stated
+         once, by the explorer, in records; repeating the runner's sentence above
+         it said the same thing twice in two different voices. -->
     <header>
       <div class="headline">
         <UiTestStatus :status="result?.status ?? test.status" showLabel />
-        <p :class="{ failed: Boolean(result?.error) }">{{ headline }}</p>
+        <p v-if="!profile" :class="{ failed: Boolean(result?.error) }">{{ headline }}</p>
       </div>
       <small v-if="ranAt" class="muted">Run {{ ranAt }}</small>
       <small v-else class="muted">Never run</small>
@@ -57,19 +65,26 @@ const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.
       </ul>
     </Message>
 
-    <div v-if="result?.statistics.length" class="stats">
+    <ExceptionExplorer
+      v-if="profile && result?.exception_frame"
+      :profile="profile"
+      :frame="result.exception_frame"
+    />
+
+    <!-- Statistics are the engine's own figures. Where the exception profile
+         exists it already states the outcome in records, so the tiles would only
+         repeat the headline back in a larger typeface. -->
+    <div v-if="result?.statistics.length && !profile" class="stats">
       <span v-for="stat in result.statistics" :key="stat.label">
         <small>{{ stat.label }}</small>
         <strong>{{ stat.value }}</strong>
       </span>
-      <span v-if="test.open_exception_count">
-        <small>Open exceptions</small>
-        <strong>{{ test.open_exception_count }}</strong>
-      </span>
     </div>
 
+    <!-- Which checks ran, below the result they produced. A step that found
+         nothing is still scope, so it stays; it just stops leading. -->
     <div v-if="result?.step_results?.length" class="steps">
-      <p class="block-head">Steps</p>
+      <p class="block-head">Checks that ran</p>
       <div v-for="step in result.step_results" :key="step.step_id" class="step-row">
         <UiTestStatus :status="step.status" showLabel />
         <span>{{ step.step_label }}</span>
@@ -90,7 +105,7 @@ const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.
       </dl>
     </div>
 
-    <details v-if="result?.exception_frame" open>
+    <details v-if="!profile && result?.exception_frame" open>
       <summary>Exception rows ({{ result.exception_count }})</summary>
       <FrameTable :frame="result.exception_frame" scrollHeight="24rem" />
     </details>

@@ -221,7 +221,12 @@ def test_validation_and_polars_engines_persist_bounded_exception_results(workspa
     )
     polars_run = data_tests.run(ws, polars_test["id"])
     assert polars_run["exception_count"] == 2
-    assert polars_run["exception_frame"]["columns"] == [*ws.get_frame("transactions").columns, "_step_id", "_step_label"]
+    assert polars_run["exception_frame"]["columns"] == [
+        *ws.get_frame("transactions").columns,
+        "_step_id",
+        "_step_label",
+        "_reason",
+    ]
     assert polars_run["step_results"][0]["exception_count"] == 2
 
 
@@ -367,6 +372,172 @@ def test_finding_exception_rows_name_the_records_that_failed(workspace_with_data
     # name the record instead of counting it.
     invoice = rows["columns"].index("invoice_no")
     assert {str(value[invoice]) for value in rows["rows"]} == {"1006"}
+
+
+def _lifecycle_test(ws, code, *, extra_step=None):
+    steps = [
+        {
+            "label": "Stage sequence",
+            "instruction": "Return records that break the required sequence.",
+            "table_refs": ["transactions"],
+            "code": code,
+        }
+    ]
+    if extra_step:
+        steps.append(extra_step)
+    return data_tests.create(ws, {
+        "title": "Transaction lifecycle",
+        "objective": "Identify transactions that break the required sequence.",
+        "rcm_id": _rcm_row(ws)["id"],
+        "engine": "polars",
+        "spec": {"schema_version": 2, "steps": steps},
+    })
+
+
+def test_each_exception_row_names_the_condition_it_failed(workspace_with_data):
+    ws = workspace_with_data
+    item = _lifecycle_test(
+        ws,
+        "result = transactions.filter(\n"
+        "    pl.col('cust_id').is_null()\n"
+        "    | (pl.col('amount') > 500)\n"
+        "    | (pl.col('invoice_no') == 1003)\n"
+        ")",
+    )
+
+    result = data_tests.run(ws, item["id"])
+    profile = result["exception_profile"]
+
+    # A filter is several alternative conditions. Which one a row met is the
+    # first thing the auditor needs, and the returned frame never says it.
+    assert profile["reason_source"] == "predicate"
+    assert {reason["label"] for reason in profile["reasons"]} == {
+        "amount is greater than 500",
+        "invoice_no is 1003",
+    }
+    reasons = result["exception_frame"]["columns"].index("_reason")
+    assert all(row[reasons] for row in result["exception_frame"]["rows"])
+
+
+def test_a_condition_that_cannot_be_reconstructed_falls_back_to_the_step(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    # The filter reads a column the step then drops, so the predicate cannot be
+    # re-evaluated against what came back. Naming the step is the honest answer.
+    item = _lifecycle_test(
+        ws,
+        "result = transactions.filter(\n"
+        "    (pl.col('amount') > 500) | pl.col('cust_id').is_null()\n"
+        ").select('invoice_no')",
+    )
+
+    profile = data_tests.run(ws, item["id"])["exception_profile"]
+
+    assert profile["reason_source"] == "step"
+    assert [reason["label"] for reason in profile["reasons"]] == ["Stage sequence"]
+
+
+def test_a_reason_names_only_the_fields_its_condition_reads(workspace_with_data):
+    ws = workspace_with_data
+    item = _lifecycle_test(
+        ws,
+        "joined = transactions.join(customers, left_on='cust_id', right_on='id', how='left')\n"
+        "result = joined.filter((pl.col('amount') > 500) | pl.col('customer').is_null())",
+    )
+
+    profile = data_tests.run(ws, item["id"])["exception_profile"]
+
+    # A step returns a whole joined record; almost none of it is what the step
+    # was looking at. Showing every populated column is how the old table got to
+    # be unreadable.
+    reasons = {reason["label"]: reason["columns"] for reason in profile["reasons"]}
+    assert reasons["amount is greater than 500"] == ["amount"]
+
+
+def test_a_step_that_cannot_be_split_still_narrows_to_the_fields_it_reads(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    # The threshold is a variable, so the branch cannot be re-evaluated on its
+    # own and the rows keep the step's label instead of a condition.
+    item = _lifecycle_test(
+        ws,
+        "limit = 500\n"
+        "result = transactions.filter((pl.col('amount') > limit) | pl.col('cust_id').is_null())",
+    )
+
+    profile = data_tests.run(ws, item["id"])["exception_profile"]
+
+    # No condition to name, but the step's source still says which fields it
+    # read — a far better answer than every column that holds a value.
+    assert profile["reason_source"] == "step"
+    assert profile["reasons"][0]["columns"] == ["cust_id", "amount"]
+
+
+def test_records_are_counted_once_across_the_steps_that_catch_them(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    item = _lifecycle_test(
+        ws,
+        "result = customers.filter((pl.col('id') == 'C1') | pl.col('customer').is_null())",
+        extra_step={
+            "label": "Named customers",
+            "instruction": "Return the customer the register duplicates.",
+            "table_refs": ["customers"],
+            "code": "result = customers.filter(pl.col('customer') == 'Alpha')",
+        },
+    )
+
+    result = data_tests.run(ws, item["id"])
+    profile = result["exception_profile"]
+
+    # Both steps catch the same customer, so the two rows they return are one
+    # exception. Reporting the rows doubles the exception rate.
+    assert profile["row_count"] == 2
+    assert profile["record_count"] == 1
+    assert profile["entity_key"] == "id"
+    assert "1 of 3 record(s) in customers failed (33%)" in result["verdict_text"]
+
+
+def test_the_population_the_exceptions_were_drawn_from_is_stated(workspace_with_data):
+    ws = workspace_with_data
+    item = _lifecycle_test(
+        ws,
+        "result = customers.filter((pl.col('id') == 'C1') | pl.col('customer').is_null())",
+    )
+
+    result = data_tests.run(ws, item["id"])
+    profile = result["exception_profile"]
+
+    # "1 exception" is unreadable without the population it came out of.
+    assert profile["population_table"] == "customers"
+    assert profile["population"] == 3
+    assert "1 of 3 record(s) in customers failed (33%)" in result["verdict_text"]
+
+
+def test_steps_over_unrelated_populations_are_left_without_a_record_count(
+    workspace_with_data,
+):
+    ws = workspace_with_data
+    item = _lifecycle_test(
+        ws,
+        "result = transactions.filter((pl.col('amount') > 500) | pl.col('cust_id').is_null())",
+        extra_step={
+            "label": "Customer register",
+            "instruction": "Return customers missing a name.",
+            "table_refs": ["customers"],
+            "code": "result = customers.filter((pl.col('id') == 'C1') | pl.col('customer').is_null())",
+        },
+    )
+
+    profile = data_tests.run(ws, item["id"])["exception_profile"]
+
+    # The steps test different things. A column both happen to carry is not the
+    # record, and a rate computed against it would not mean anything.
+    assert profile["entity_key"] is None
+    assert profile["population"] is None
 
 
 def test_exception_rows_carry_what_each_step_was_looking_for(workspace_with_data):
