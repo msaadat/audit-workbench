@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -15,6 +15,7 @@ import ChatComposer from './ChatComposer.vue'
 import ChatHistoryPanel from './ChatHistoryPanel.vue'
 import ChatTranscript from './ChatTranscript.vue'
 import DocumentContextPicker from './DocumentContextPicker.vue'
+import { workspaceContextKey } from '../../composables/useWorkspaceContext'
 
 /**
  * The assistant thread, independent of the frame around it. The console renders
@@ -35,6 +36,15 @@ const renameOpen = ref(false)
 const renameTitle = ref('')
 const documents = ref<AuditDocument[]>([])
 const mode = agent.launchMode
+// The shell owns the import dialog. Both places this thread renders — the
+// console surface and the sidecar drawer — sit under `WorkspaceView`, so the
+// context is always there; the fallback keeps the component mountable in a test
+// harness that renders it on its own.
+const shell = inject(workspaceContextKey, undefined)
+// An engagement with no tables and no documents cannot run any of the work the
+// assistant would otherwise offer, so the empty thread points at importing
+// instead. Matches the audit-file dashboard's own onboarding condition.
+const needsSources = computed(() => !props.workspace.tables.length && !props.workspace.document_count)
 
 const activeChat = computed(() => chats.state.chat)
 const status = computed(() => activeChat.value?.active_workspace_run?.status ?? '')
@@ -158,7 +168,7 @@ defineExpose({ rename, remove })
     </header>
     <ChatHistoryPanel v-if="showHistory && !dockedHistory" :chats="chats.state.summaries" :activeId="chats.state.activeChatId" @select="chats.switchChat($event); showHistory = false" @create="chats.createChat(); showHistory = false" @rename="rename" @remove="remove" @close="showHistory = false" />
     <div v-if="chats.state.loading && !displayChat" class="loading"><i class="pi pi-spin pi-spinner" /> Loading chat…</div>
-    <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
+    <ChatTranscript v-else-if="displayChat" :workspaceId="workspace.id" :chat="displayChat" :documents="documents" :actionBusy="actionBusy" :busy="chats.state.busy" :needsSources="needsSources" @shortcut="shortcut" @suggestion="nextStep" @command="send($event, 'act')" @import="shell?.requestImport()" @retry="chats.retry($event, mode).catch(error => fail('Message failed', error))" @changed="chats.refresh" @respond="respond" @decide="decide" />
     <ChatComposer
       v-if="activeChat"
       v-model:mode="mode"

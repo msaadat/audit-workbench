@@ -22,6 +22,7 @@ import type {
   WorkspaceSummary,
 } from '../../types'
 import { newRuleId } from './rules'
+import { plural } from '../../format'
 
 // Add/edit one check: pick a check type applicable to the field's kind, fill
 // its metadata-driven param form, choose severity (fail blocks, warn flags)
@@ -296,7 +297,7 @@ watch(visible, (open) => {
               style="width: 100%"
             />
             <small v-if="columnValues" class="muted">
-              {{ columnValues.distinct.toLocaleString() }} distinct value(s) in the current data<span
+              {{ plural(columnValues.distinct, 'distinct value') }} in the current data<span
                 v-if="columnValues.truncated"
               >
                 — showing the first {{ columnValues.values.length }}</span

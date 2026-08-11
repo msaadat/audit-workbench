@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import narration, workflow
+from ...text import plural_word
 from .run_runtime import Cancelled, LimitExceeded, RunRuntime
 from .unit_pipeline import (
     ContextIdentityProvider,
@@ -578,7 +579,10 @@ class WorkflowRunner:
 
     def _block_stage(self, stage: dict[str, Any], blocking: list[str]) -> None:
         units = self.ensure_stage_units(stage)
-        reason = "Blocked by prerequisite stage(s): " + ", ".join(blocking)
+        reason = (
+            f"Blocked by {plural_word(len(blocking), 'prerequisite stage')}: "
+            + ", ".join(blocking)
+        )
         for unit in units:
             if unit.get("status") == "queued":
                 self.set_unit(stage, unit, "blocked", error=reason)

@@ -25,6 +25,7 @@ from __future__ import annotations
 import threading
 
 from .. import doc_tests
+from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
 from . import narration, workflow
@@ -273,7 +274,7 @@ class DocTestWorkflowExecution(BaseRunner):
                 "status": "needs_review" if attention else "completed",
                 "headline": "Document tests prepared",
                 "summary": (
-                    f"{ready} test definition(s) are ready; "
+                    f"{counted(ready, 'test definition')} {verb(ready, 'is', 'are')} ready; "
                     f"{attention} still need attention."
                 ),
                 "metrics": [
@@ -302,10 +303,10 @@ class DocTestWorkflowExecution(BaseRunner):
             "status": "completed_with_issues" if needs_review else "completed",
             "headline": "Document testing complete",
             "summary": (
-                f"Ran {totals['items'] - unexecuted} of {totals['items']} item(s) "
-                f"across {len(tests)} test(s). {totals['exceptions']} exception(s), "
-                f"{totals['mismatched']} mismatch or missing result(s), and "
-                f"{totals['manual_review']} item(s) need manual review."
+                f"Ran {totals['items'] - unexecuted} of {counted(totals['items'], 'item')} "
+                f"across {counted(len(tests), 'test')}. {counted(totals['exceptions'], 'exception')}, "
+                f"{counted(totals['mismatched'], 'mismatch or missing result')}, and "
+                f"{counted(totals['manual_review'], 'item')} {verb(totals['manual_review'])} manual review."
             ),
             "metrics": [
                 {"label": "Tests", "value": len(tests)},

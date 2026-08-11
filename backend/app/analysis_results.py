@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .text import counted
 from .workspace_transactions import (
     complete_linked_write,
     mutate,
@@ -227,13 +228,13 @@ def bounded_result(
         if policy == "exception_rows":
             verdict = "warn" if row_count else "ok"
             verdict_text = (
-                f"{row_count:,} potential exception row(s) returned."
+                f"{counted(row_count, 'potential exception row')} returned."
                 if row_count
                 else "No potential exception rows returned."
             )
         else:
             verdict = "info"
-            verdict_text = f"{row_count:,} result row(s) returned."
+            verdict_text = f"{counted(row_count, 'result row')} returned."
     population = payload.get("population")
     population = int(population) if isinstance(population, int) else None
     tested = payload.get("tested")

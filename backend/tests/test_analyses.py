@@ -290,7 +290,7 @@ def test_python_exception_policy_turns_nonempty_result_into_a_review_signal(work
     executed = run_analysis(ws, analysis, run_id="run-summary")
     result = executed.result
     assert result["verdict"] == "warn"
-    assert result["verdict_text"] == "2 potential exception row(s) returned."
+    assert result["verdict_text"] == "2 potential exception rows returned."
     assert result["input_sha1"] == analysis_input_sha1(ws, analysis)
     # An exception_rows policy makes the returned rows the flagged rows, so the
     # execution carries evidence a reviewer can read back.

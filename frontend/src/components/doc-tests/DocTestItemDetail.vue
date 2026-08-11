@@ -14,6 +14,7 @@ import type {
 } from '../../types'
 import UiAdvancedSection from '../ui/UiAdvancedSection.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
+import { plural, pluralWord, verb } from '../../format'
 
 const props = defineProps<{
   test: DocTest
@@ -299,7 +300,7 @@ onMounted(() => { void focusAssertion() })
       </div>
       <div v-if="item.role_conflicts?.length || item.collisions?.length" class="conflict">
         <strong><i class="pi pi-exclamation-triangle" />Role binding requires review</strong>
-        <span>{{ item.role_conflicts?.length ?? 0 }} within-item conflict(s) · {{ item.collisions?.length ?? 0 }} cross-item collision(s)</span>
+        <span>{{ plural(item.role_conflicts?.length ?? 0, 'within-item conflict') }} · {{ plural(item.collisions?.length ?? 0, 'cross-item collision') }}</span>
       </div>
       <UiAdvancedSection title="Population record" description="The frozen row this cycle is tested against">
         <div class="frozen">
@@ -336,7 +337,7 @@ onMounted(() => { void focusAssertion() })
           </span>
           <code>{{ comparison.verdict ?? comparison.state ?? '—' }}</code>
           <span class="path">
-            {{ comparisonRecordIds(comparison) || `${comparisonEntryCount(comparison)} value(s)` }}
+            {{ comparisonRecordIds(comparison) || plural(comparisonEntryCount(comparison), 'value') }}
           </span>
           <div class="citations">
             <Button
@@ -416,11 +417,11 @@ onMounted(() => { void focusAssertion() })
            population was actually reached, stated beside the result. -->
       <p v-if="cycleCoverage" class="coverage">
         Selected <strong>{{ cycleCoverage.selected_rows }}</strong> of
-        <strong>{{ cycleCoverage.population_rows }}</strong> population row(s) from
+        <strong>{{ cycleCoverage.population_rows }}</strong> {{ pluralWord(cycleCoverage.population_rows, 'population row') }} from
         <code>{{ test.definition?.population.table }}.{{ test.definition?.population.row_key.column }}</code>.
         <span>{{ cycleCoverage.assurance_scope === 'sampled_population' ? 'Sampled population' : 'Targeted evidence — not a sample' }}.</span>
         <span v-if="cycleCoverage.rows_with_evidence !== null">
-          {{ cycleCoverage.rows_with_evidence }} row(s) have linked evidence and {{ cycleCoverage.complete_cycles }} complete cycle(s) were identified.
+          {{ plural(cycleCoverage.rows_with_evidence, 'row') }} {{ verb(cycleCoverage.rows_with_evidence, 'has', 'have') }} linked evidence and {{ plural(cycleCoverage.complete_cycles, 'complete cycle') }} {{ verb(cycleCoverage.complete_cycles, 'was', 'were') }} identified.
         </span>
       </p>
       <dl v-if="test.next_action || test.scope_limitations || test.exception_count || test.open_exception_count">
@@ -456,7 +457,7 @@ onMounted(() => { void focusAssertion() })
         </span>
         <span v-if="coverage.image_only">Scanned image only — requires manual reading or OCR.</span>
         <span v-if="item.evidence_request_ids?.length">
-          {{ item.evidence_request_ids.length }} evidence request(s) raised.
+          {{ plural(item.evidence_request_ids.length, 'evidence request') }} raised.
         </span>
       </div>
 

@@ -35,6 +35,7 @@ import UiMasterDetail from './ui/UiMasterDetail.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiTriageCounts from './ui/UiTriageCounts.vue'
 import type { TriageCount } from './ui/UiTriageCounts.vue'
+import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -288,7 +289,7 @@ async function runAllTests() {
       severity: batch.failed.length ? 'warn' : 'success',
       summary: `Ran ${batch.completed.length} of ${batch.total} Data Test${batch.total === 1 ? '' : 's'}`,
       detail: batch.failed.length
-        ? `${batch.failed.length} test(s) could not run: ${batch.failed.map(item => item.data_test_id).join(', ')}`
+        ? `${plural(batch.failed.length, 'test')} could not run: ${batch.failed.map(item => item.data_test_id).join(', ')}`
         : undefined,
       life: 6000,
     })
@@ -405,7 +406,7 @@ onUnmounted(unsubscribe)
 
       <!-- 16rem, not 20: the width the list gives back is what makes room for
            the action rail in the detail. -->
-      <UiMasterDetail railWidth="16rem" class="layout">
+      <UiMasterDetail railWidth="20rem" class="layout">
         <template #rail>
           <DataTestList :tests="visibleTests" :selectedId="selectedId" :rcmRows="rcmRows" @select="selectTest" />
         </template>

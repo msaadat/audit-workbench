@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 from . import data_tests, debug_store, doc_tests, llm, rcm_execution, templates_store
+from .text import counted, verb
 from .documents import append_activity
 from .findings import CAUSE_SECTION_KEYS, artifact, support_issues
 from .workspaces import Workspace, WorkspaceError
@@ -235,7 +236,7 @@ def rating_band(context: dict) -> dict:
     if "high" in severities:
         constraints.append((1, "a confirmed high-severity finding was recorded"))
     if ineffective:
-        constraints.append((1, f"{ineffective} control(s) were concluded ineffective"))
+        constraints.append((1, f"{counted(ineffective, 'control')} {verb(ineffective, 'was', 'were')} concluded ineffective"))
     if rows and ineffective >= max(1, len(rows) // 3):
         constraints.append((
             2, f"{ineffective} of {len(rows)} controls were concluded ineffective"
@@ -307,16 +308,16 @@ def _coverage_warnings(coverage: dict) -> list[str]:
     if failed_planning or missing_planning:
         warnings.append(
             "Incomplete planning coverage: "
-            f"{failed_planning} planning workflow unit(s) failed and "
-            f"{missing_planning} required planning item(s) are missing."
+            f"{counted(failed_planning, 'planning step')} failed and "
+            f"{counted(missing_planning, 'required planning item')} {verb(missing_planning, 'is', 'are')} missing."
         )
     failed_definitions = int(coverage.get("failed_execution_definition_units") or 0)
     missing_definitions = int(coverage.get("missing_execution_definitions") or 0)
     if failed_definitions or missing_definitions:
         warnings.append(
             "Incomplete execution-definition coverage: "
-            f"{failed_definitions} execution-definition workflow unit(s) failed and "
-            f"{missing_definitions} required execution definition(s) are missing."
+            f"{counted(failed_definitions, 'execution-definition step')} failed and "
+            f"{counted(missing_definitions, 'required execution definition')} {verb(missing_definitions, 'is', 'are')} missing."
         )
     return warnings
 
@@ -845,7 +846,7 @@ def _summary_of_findings(workspace: Workspace, context: dict) -> str:
         # quietly dropped from a count the reader will treat as complete.
         lines.extend([
             "",
-            f"A further {uncounted} finding(s) are recorded at informational "
+            f"A further {counted(uncounted, 'finding')} {verb(uncounted, 'is', 'are')} recorded at informational "
             "severity and are not counted above.",
         ])
     return "\n".join(lines)
@@ -922,7 +923,7 @@ def _scope_body(context: dict) -> str:
     remaining = len(texts) - _SCOPE_LIMITATION_LIMIT
     if remaining > 0:
         lines.append(
-            f"- A further {remaining} limitation(s) are recorded against "
+            f"- A further {counted(remaining, 'limitation')} {verb(remaining, 'is', 'are')} recorded against "
             "individual tests and are set out in the working papers."
         )
     return "\n".join(lines)
@@ -931,8 +932,8 @@ def _scope_body(context: dict) -> str:
 def _conclusion_body(context: dict, band: dict) -> str:
     stats = context["statistics"]
     recorded = (
-        f"Fieldwork recorded {stats['findings']} confirmed finding(s) across "
-        f"{stats['tests']} test(s) over {stats['rcm_rows']} control(s)."
+        f"Fieldwork recorded {counted(stats['findings'], 'confirmed finding')} across "
+        f"{counted(stats['tests'], 'test')} over {counted(stats['rcm_rows'], 'control')}."
     )
     if not band["assignable"]:
         return (
@@ -1453,7 +1454,8 @@ def quality_checks(
         if missing:
             issues.append(_issue(
                 "unresolved_exception", "error",
-                f"{len(missing)} exception item(s) in {test['id']} have no current RCM observation.",
+                f"{counted(len(missing), 'exception item')} in {test['id']} "
+                f"{verb(len(missing), 'has', 'have')} no current RCM observation.",
                 [f"doctest:{test['id']}"],
             ))
     # Two findings that restate each other become two rows of the executive
@@ -1518,7 +1520,8 @@ def quality_checks(
         if any(claim != actual for claim in claims):
             issues.append(_issue(
                 "report_risk_arithmetic", "error",
-                f"The report's {rating}-risk count conflicts with the {actual} RCM row(s) stored.",
+                f"The report's {rating}-risk count conflicts with the "
+                f"{counted(actual, 'RCM row')} stored.",
                 [f"rcm:{item['id']}" for item in workspace.rcm if str(item.get("risk_rating") or "").casefold() == rating],
             ))
     limitations = [

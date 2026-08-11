@@ -18,6 +18,7 @@ from . import analysis_results, analytics, data_tests, debug_store, explore, llm
 from .agent import capabilities as audit_capabilities
 from .agent.prompts import parse_json_object, validate_json_shape
 from .workspaces import Workspace, WorkspaceConflict, sync_workspace
+from .text import counted, verb
 
 VIZ_ROW_CAPS = {"bar": 30, "pie": 12, "line": 500, "table": 50}
 PHASE_TABS = {"planning": "planning", "fieldwork": "doc-tests", "report": "report"}
@@ -283,7 +284,10 @@ def _engagement_state(workspace: Workspace) -> dict:
     if not workspace.rcm:
         rcm_issues.append("No risks or controls are recorded in the RCM.")
     if rows_without_tests:
-        rcm_issues.append(f"{len(rows_without_tests)} RCM row(s) have no test.")
+        rcm_issues.append(
+            f"{counted(len(rows_without_tests), 'RCM row')} "
+            f"{verb(len(rows_without_tests), 'has', 'have')} no test."
+        )
 
     planning_started = apm_started or rcm_started
     planning_issues = [*apm_issues, *rcm_issues]
@@ -298,7 +302,7 @@ def _engagement_state(workspace: Workspace) -> dict:
     planning_summary = (
         "Planning context and RCM test coverage are complete."
         if planning_complete else (
-            f"{len(workspace.rcm)} RCM row(s) and {len(linked_tests)} test(s)."
+            f"{counted(len(workspace.rcm), 'RCM row')} and {counted(len(linked_tests), 'test')}."
         )
     )
 
@@ -317,20 +321,25 @@ def _engagement_state(workspace: Workspace) -> dict:
         or any(item.get("last_run") for item in workspace.data_tests)
     )
     fieldwork_issues = [
-        f"Coverage gate: {completion['coverage']['issue_count']} issue(s)."
+        f"Coverage gate: {counted(completion['coverage']['issue_count'], 'issue')}."
         for _ in [0] if completion["coverage"]["issue_count"]
     ]
     if incomplete_linked_tests:
-        fieldwork_issues.append(f"{len(incomplete_linked_tests)} test(s) have open execution or outcomes.")
+        fieldwork_issues.append(f"{counted(len(incomplete_linked_tests), 'test')} {verb(len(incomplete_linked_tests), 'has', 'have')} open execution or outcomes.")
     if incomplete_tests:
-        fieldwork_issues.append(f"{len(incomplete_tests)} document test(s) are incomplete.")
+        fieldwork_issues.append(f"{counted(len(incomplete_tests), 'document test')} {verb(len(incomplete_tests), 'is', 'are')} incomplete.")
     if state_counts["manual_review"]:
-        fieldwork_issues.append(f"{state_counts['manual_review']} test item(s) require manual review.")
+        fieldwork_issues.append(f"{counted(state_counts['manual_review'], 'test item')} {verb(state_counts['manual_review'], 'requires', 'require')} manual review.")
     unresolved_exceptions = [issue for issue in quality["issues"] if issue["code"] == "unresolved_exception"]
     fieldwork_issues.extend(issue["message"] for issue in unresolved_exceptions)
     if broken_analyses:
-        fieldwork_issues.append(f"{len(broken_analyses)} saved analysis item(s) reference a missing table.")
-    fieldwork_complete = completion["status"] == "completed"
+        fieldwork_issues.append(f"{counted(len(broken_analyses), 'saved analysis item')} {verb(len(broken_analyses), 'references', 'reference')} a missing table.")
+    # Every gate is vacuously satisfied before a single test exists, so the
+    # completion status alone reads "completed" on an empty engagement. Requiring
+    # that fieldwork actually happened is what stops the rail claiming every RCM
+    # test passed on a workspace that has none — and, downstream, stops the
+    # dashboard offering to write the report off the back of it.
+    fieldwork_complete = fieldwork_started and completion["status"] == "completed"
     fieldwork_attention = bool(
         completion["status"] in {"completed_with_open_items", "completed_with_issues"}
         or state_counts["manual_review"] or unresolved_exceptions
@@ -343,9 +352,12 @@ def _engagement_state(workspace: Workspace) -> dict:
     )
     fieldwork_summary = (
         "All RCM tests passed deterministic execution and outcome gates."
-        if fieldwork_complete else (
-            f"{len(workspace.data_tests)} Data Test(s), {len(tests)} Document Test(s), "
-            f"{sum(item.get('outcome') == 'exception' for item in workspace.observations)} exception observation(s)."
+        if fieldwork_complete
+        else "No tests have been planned yet."
+        if not fieldwork_started else (
+            f"{counted(len(workspace.data_tests), 'data test')}, "
+            f"{counted(len(tests), 'document test')}, "
+            f"{counted(sum(item.get('outcome') == 'exception' for item in workspace.observations), 'exception observation')}."
         )
     )
 
@@ -365,7 +377,7 @@ def _engagement_state(workspace: Workspace) -> dict:
     )
     report_summary = (
         "The report has content and no quality errors."
-        if report_complete else f"{len(workspace.findings)} finding(s), {quality['counts']['error']} quality error(s)."
+        if report_complete else f"{counted(len(workspace.findings), 'finding')}, {counted(quality['counts']['error'], 'quality error')}."
     )
 
     phases = [
@@ -467,9 +479,9 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     elif not planning_complete:
         actions.append(_action("complete-planning", "Complete engagement planning", planning_issues[0], "planning", priority="high"))
     if incomplete_tests:
-        actions.append(_action("review-doc-test", "Continue document testing", f"{len(incomplete_tests)} test(s) still require work.", "doc-tests", priority="high", object_id=incomplete_tests[0]["id"]))
+        actions.append(_action("review-doc-test", "Continue document testing", f"{counted(len(incomplete_tests), 'test')} still {verb(len(incomplete_tests), 'requires', 'require')} work.", "doc-tests", priority="high", object_id=incomplete_tests[0]["id"]))
     elif incomplete_linked_tests:
-        actions.append(_action("conclude-test", "Conclude RCM tests", f"Record results, limitations, and conclusions for {len(incomplete_linked_tests)} test(s).", "planning", priority="high", object_id=incomplete_linked_tests[0].get("rcm_id")))
+        actions.append(_action("conclude-test", "Conclude RCM tests", f"Record results, limitations, and conclusions for {counted(len(incomplete_linked_tests), 'test')}.", "planning", priority="high", object_id=incomplete_linked_tests[0].get("rcm_id")))
     elif planning_complete and not fieldwork_started:
         actions.append(_action("start-fieldwork", "Start fieldwork", "Run the RCM-linked Data Tests and Document Tests.", "data-tests", priority="high"))
     if state_counts["manual_review"] or unresolved_exceptions:
@@ -479,9 +491,9 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     if report_errors:
         actions.append(_action("fix-report-quality", "Resolve report quality errors", report_errors[0]["message"], "report", priority="high"))
     if broken_tiles:
-        actions.append(_action("repair-dashboard", "Repair broken pinned items", f"{len(broken_tiles)} pinned item(s) could not be recomputed.", "dashboard", priority="medium"))
+        actions.append(_action("repair-dashboard", "Repair broken pinned items", f"{counted(len(broken_tiles), 'pinned item')} could not be recomputed.", "dashboard", priority="medium"))
     elif failed_tiles:
-        actions.append(_action("review-pinned-results", "Review flagged analytics", f"{len(failed_tiles)} pinned result(s) need attention.", "dashboard", priority="medium"))
+        actions.append(_action("review-pinned-results", "Review flagged analytics", f"{counted(len(failed_tiles), 'pinned result')} {verb(len(failed_tiles))} attention.", "dashboard", priority="medium"))
     actions = actions[:5]
 
     attention = []
@@ -490,7 +502,7 @@ def _engagement_snapshot(workspace: Workspace, tiles: list[dict]) -> dict:
     for test in incomplete_tests:
         pending = int(test.get("state_counts", {}).get("pending", 0)) + int(test.get("state_counts", {}).get("manual_review", 0))
         if pending:
-            attention.append({"id": f"doctest:{test['id']}", "severity": "warning", "title": test["title"], "message": f"{pending} item(s) await auditor review.", "target": _target("doc-tests", test=test["id"])})
+            attention.append({"id": f"doctest:{test['id']}", "severity": "warning", "title": test["title"], "message": f"{counted(pending, 'item')} {verb(pending, 'awaits', 'await')} auditor review.", "target": _target("doc-tests", test=test["id"])})
     for issue in state["completion"]["coverage"].get("inconsistent_conclusions") or []:
         test_id = str(issue.get("test_id") or "")
         destination = "doc-tests" if test_id.startswith("DT-") else "data-tests"
@@ -561,7 +573,7 @@ def _candidate_score(workspace: Workspace, item: dict, result: dict) -> tuple[in
     exceptions = int(result.get("exception_count") or 0)
     if exceptions:
         score += min(7, 3 + exceptions)
-        reasons.append(f"{exceptions} exception(s)")
+        reasons.append(counted(exceptions, "exception"))
     viz = result.get("viz") or item.get("spec", {}).get("viz") or {}
     if viz.get("type") and viz.get("type") != "table":
         score += 2

@@ -37,6 +37,7 @@ import polars as pl
 from . import config  # noqa: F401  # load .env before reading WORKBENCH_DATA
 from . import loader, profiler
 from .field_names import resolve_columns
+from .text import counted, plural_word
 
 SCHEMA_VERSION = 4
 JOIN_TYPES = ("inner", "left", "full", "semi", "anti", "cross")
@@ -223,7 +224,7 @@ def join_suffix(
             return suffix
     raise WorkspaceError(
         f"Cannot join '{right_name or 'the right frame'}' without renaming "
-        f"{len(colliding)} colliding column(s); rename them first."
+        f"{counted(len(colliding), 'colliding column')}; rename them first."
     )
 
 # The one status vocabulary shared by Document Tests and Data Tests. ``draft`` is
@@ -1221,7 +1222,8 @@ class Workspace:
         ]
         if dependents:
             raise WorkspaceError(
-                f"'{name}' is used by join(s): {', '.join(dependents)}. Remove those first."
+                f"'{name}' is used by {plural_word(len(dependents), 'join')}: "
+                f"{', '.join(dependents)}. Remove those first."
             )
         data_test_refs = [
             item.get("id")
@@ -1230,7 +1232,8 @@ class Workspace:
         ]
         if data_test_refs:
             raise WorkspaceError(
-                f"'{name}' is used by Data Test(s): {', '.join(data_test_refs)}. Reassign those first."
+                f"'{name}' is used by {plural_word(len(data_test_refs), 'data test')}: "
+                f"{', '.join(data_test_refs)}. Reassign those first."
             )
 
         if entry is not None:
@@ -2047,7 +2050,12 @@ class Workspace:
         return self.data_dir / loader.CACHE_DIRNAME
 
     def _profile_cache_path(self, name: str, sig: tuple) -> Path:
-        digest = hashlib.sha1(repr(sig).encode()).hexdigest()[:16]
+        # The profiler's schema version is part of the key: the signature covers
+        # the table's *content*, so on its own it would keep serving a profile
+        # written in an older payload shape long after the shape changed.
+        digest = hashlib.sha1(
+            repr((profiler.SCHEMA_VERSION, sig)).encode()
+        ).hexdigest()[:16]
         return self._cache_dir() / f"{name}.{digest}.profile.json"
 
     def _clear_profile_cache(self, name: str) -> None:

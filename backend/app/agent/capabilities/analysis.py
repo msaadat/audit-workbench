@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from ... import analytics
+from ...text import counted, verb
 from ...analysis_results import analysis_result_state, summary_basis_digest
 from ...workspaces import Workspace
 from .. import joins as join_diagnostics
@@ -326,7 +327,7 @@ def _relationships_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
-        (f"{len(pending)} table pair(s) have no established relationship",),
+        (f"{counted(len(pending), 'table pair')} {verb(len(pending), 'has', 'have')} no established relationship",),
         details=details,
     )
 
@@ -380,7 +381,7 @@ def _join_utility_ready(workspace: Workspace, scope: dict) -> Readiness:
     return (
         Readiness("satisfied", details={"candidates": 0})
         if not pending
-        else Readiness("missing", (f"{len(pending)} table pair(s) need join-utility selection",), details={"pairs": len(pending)})
+        else Readiness("missing", (f"{counted(len(pending), 'table pair')} {verb(len(pending))} join-utility selection",), details={"pairs": len(pending)})
     )
 
 
@@ -425,7 +426,7 @@ def _joins_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
-        (f"{len(pending)} scoped table pair(s) are not joined",),
+        (f"{counted(len(pending), 'scoped table pair')} {verb(len(pending), 'is', 'are')} not joined",),
         details=details,
     )
 
@@ -485,7 +486,7 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
-        (f"{len(missing)} scoped frame(s) have no analysis definition",),
+        (f"{counted(len(missing), 'scoped frame')} {verb(len(missing), 'has', 'have')} no analysis definition",),
         details=details,
     )
 
@@ -547,7 +548,7 @@ def _executed_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
-        (f"{len(items) - len(executed)} analysis definition(s) have no result",),
+        (f"{counted(len(items) - len(executed), 'analysis definition')} {verb(len(items) - len(executed), 'has', 'have')} no result",),
         details=details,
     )
 

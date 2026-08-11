@@ -19,6 +19,7 @@ from pathlib import Path
 import polars as pl
 
 from . import analytics, exception_profile, explore, sandbox, validation
+from .text import counted, plural_word
 from .agent import joins as join_diagnostics
 from .workspaces import (
     CONTROL_CONCLUSIONS,
@@ -673,8 +674,9 @@ def _step_reality_issues(
         )
     if absent:
         issues.append(
-            f"Step '{label}' filters on the value(s) {sorted(set(absent))}, which do "
-            "not occur in the category column(s) it reads; the step cannot match the "
+            f"Step '{label}' filters on the "
+            f"{plural_word(len(set(absent)), 'value')} {sorted(set(absent))}, "
+            "which do not occur in the category columns it reads; the step cannot match the "
             "rows it describes."
         )
     return list(dict.fromkeys(issues))
@@ -693,7 +695,7 @@ def _verdict_text(rows: int, steps: int, profile: dict | None) -> str:
     first, against the population they came from, and keep the row count as the
     secondary figure it is.
     """
-    tail = f"{rows} exception row(s) across {steps} step(s)."
+    tail = f"{counted(rows, 'exception row')} across {counted(steps, 'check')}."
     if not profile or not profile.get("entity_key"):
         return tail
     records = profile["record_count"]
@@ -701,13 +703,13 @@ def _verdict_text(rows: int, steps: int, profile: dict | None) -> str:
     if population:
         rate = records / population
         lead = (
-            f"{records} of {population} record(s) in "
+            f"{records} of {counted(population, 'record')} in "
             f"{profile['population_table']} failed ({rate:.0%})"
         )
     elif records == rows:
         return tail
     else:
-        lead = f"{records} record(s) failed"
+        lead = f"{counted(records, 'record')} failed"
     return f"{lead}; {tail}"
 
 
@@ -843,7 +845,7 @@ def _run_engine(workspace: Workspace, item: dict) -> tuple[dict, pl.DataFrame | 
                 {"label": label.replace("_", " ").title(), "value": str(value)}
                 for label, value in run["counts"].items()
             ],
-            "verdict_text": f"{exception_count} validation exception(s).",
+            "verdict_text": f"{counted(exception_count, 'validation exception')}.",
             "viz": {"type": "table"},
         }
         issues.extend(validation.generated_rule_issues(frame, rules, workspace.get_frame))

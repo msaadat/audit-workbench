@@ -41,6 +41,35 @@ def test_an_unknown_template_is_refused_rather_than_guessed():
         engagement.plan_outcomes("not_a_template")
 
 
+def test_phases_partition_every_outcome_and_keep_run_order():
+    phases = engagement.plan_phases()
+    outcomes = engagement.plan_outcomes()
+
+    # A phase that swallowed or duplicated a step would put a step count on the
+    # screen that does not describe the run.
+    grouped = [step["capability"] for phase in phases for step in phase["steps"]]
+    assert grouped == [item["capability"] for item in outcomes]
+
+    order = [phase["id"] for phase in engagement.PLAN_PHASES]
+    assert [phase["id"] for phase in phases] == [
+        item for item in order if item in {phase["id"] for phase in phases}
+    ]
+    for phase in phases:
+        assert phase["title"] and phase["summary"] and phase["steps"]
+
+
+def test_every_capability_domain_is_placed_in_a_named_phase():
+    """A new domain must not be silently folded into an unrelated phase."""
+    unplaced = [
+        phase for phase in engagement.plan_phases()
+        if phase["id"] == engagement._UNGROUPED_PHASE
+    ]
+    assert not unplaced, (
+        "unmapped capability domains: "
+        f"{[step['capability'] for phase in unplaced for step in phase['steps']]}"
+    )
+
+
 def test_a_dependency_never_appears_after_the_outcome_that_needs_it():
     order = [item["capability"] for item in engagement.plan_outcomes()]
     position = {capability: index for index, capability in enumerate(order)}

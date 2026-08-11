@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import type { DataTestExceptionProfile, FramePayload } from '../../types'
 import FrameTable from '../FrameTable.vue'
+import { plural } from '../../format'
 
 const props = defineProps<{
   profile: DataTestExceptionProfile
@@ -130,7 +131,7 @@ function pick(label: string) {
         </span>
       </button>
       <p v-if="selected" class="filtered">
-        Showing the {{ rows.length }} row(s) that failed on “{{ selected }}”.
+        Showing the {{ plural(rows.length, 'row') }} that failed on “{{ selected }}”.
         <button type="button" class="link" @click="selected = null">Show all</button>
       </p>
     </div>
@@ -146,7 +147,7 @@ function pick(label: string) {
     <p class="note">
       <template v-if="withheldColumns > 0">
         Showing the identifier and the fields this test reads; open a row for the
-        other {{ withheldColumns }} field(s) of the record.
+        other {{ plural(withheldColumns, 'field') }} of the record.
       </template>
       <template v-if="truncated > 0">
         The stored result keeps the first {{ frame.rows.length }} rows; {{ truncated }} more are counted above but not listed.

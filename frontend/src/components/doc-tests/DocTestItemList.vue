@@ -36,20 +36,21 @@ const kindLabel: Record<string, string> = {
       :class="{ active: entryId(item) === selectedId }"
       @click="$emit('select', item)"
     >
+      <!-- Status leads as an eyebrow beside the RCM reference; sharing a flex
+           row with the title squeezed it to roughly seventeen characters, so
+           labels wrapped to five or six lines and card heights were uneven. -->
       <span class="row-head">
-        <strong>{{ entryLabel(item) }}</strong>
         <UiTestStatus :status="item.classification" showLabel />
+        <small v-if="item.rcm_id" class="row-rcm">{{ item.rcm_id }}</small>
+        <small v-else class="row-rcm row-rcm--none">Unlinked</small>
       </span>
+      <strong class="row-title">{{ entryLabel(item) }}</strong>
       <small class="row-test">
         {{ item.entry_type === 'cycle_test'
           ? `${item.tested_item_count} of ${item.item_count} items tested`
           : item.test_title }}
       </small>
-      <small class="row-meta">
-        {{ kindLabel[item.test_kind ?? ''] ?? 'Document work' }}
-        <template v-if="item.rcm_id"> · {{ item.rcm_id }}</template>
-        <template v-else> · unlinked</template>
-      </small>
+      <small class="row-meta">{{ kindLabel[item.test_kind ?? ''] ?? 'Document work' }}</small>
       <small v-if="item.entry_type === 'cycle_test'" class="row-scope">
         {{ item.assurance_label }} · {{ item.assertion_columns }} assertion columns
       </small>
@@ -77,8 +78,10 @@ const kindLabel: Record<string, string> = {
 }
 .row:hover { background: var(--aw-raised); }
 .row.active { border-color: var(--aw-teal); background: var(--aw-teal-soft); }
-.row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.4rem; min-width: 0; }
-.row-head strong { min-width: 0; font-size: var(--aw-text-sm); line-height: 1.3; }
+.row-head { display: flex; align-items: center; gap: 0.35rem; min-width: 0; margin-bottom: 0.1rem; }
+.row-rcm { flex: 0 0 auto; margin-left: auto; overflow: hidden; color: var(--aw-muted); font-family: var(--aw-font-mono); font-size: var(--aw-text-2xs); text-overflow: ellipsis; white-space: nowrap; }
+.row-rcm--none { font-family: inherit; font-style: italic; }
+.row-title { display: -webkit-box; overflow: hidden; min-width: 0; font-size: var(--aw-text-sm); line-height: 1.3; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .row-test { min-width: 0; overflow: hidden; color: var(--aw-ink); font-size: var(--aw-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .row-meta { color: var(--aw-muted); font-size: var(--aw-text-xs); }
 .row-scope { color: var(--aw-muted); font-size: var(--aw-text-xs); font-weight: 600; }

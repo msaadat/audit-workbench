@@ -1,3 +1,4 @@
+import { plural } from '../../format'
 import type { RcmRow } from '../../types'
 
 /**
@@ -58,16 +59,16 @@ export function nextMove(row: RcmRow, state: CoverageState): string {
   if (state === 'no_coverage') return 'Agent can specify a test for this risk'
   if (state === 'needs_you') {
     const parts: string[] = []
-    if (rollup.open_exceptions) parts.push(`${rollup.open_exceptions} exception(s) recorded`)
-    if (rollup.review_required) parts.push(`${rollup.review_required} test(s) awaiting review`)
-    if (rollup.blocked) parts.push(`${rollup.blocked} test(s) blocked`)
+    if (rollup.open_exceptions) parts.push(`${plural(rollup.open_exceptions, 'exception')} recorded`)
+    if (rollup.review_required) parts.push(`${plural(rollup.review_required, 'test')} awaiting review`)
+    if (rollup.blocked) parts.push(`${plural(rollup.blocked, 'test')} blocked`)
     if (!parts.length) parts.push('Row is marked for review')
     return parts.join(' · ')
   }
   if (state === 'concluded') {
     const conclusion = String(rollup.control_conclusion ?? '').replaceAll('_', ' ')
     const findings = rollup.findings ?? 0
-    return findings ? `${conclusion} · ${findings} finding(s)` : conclusion
+    return findings ? `${conclusion} · ${plural(findings, 'finding')}` : conclusion
   }
   // Execution finished but no conclusion was recorded. The four states have no
   // column for that, and it is the agent's roll-up that owes it — so the row
@@ -75,7 +76,7 @@ export function nextMove(row: RcmRow, state: CoverageState): string {
   // reporting progress that has already finished.
   const completed = rollup.completed ?? 0
   if (total && completed >= total) return 'Tests complete — awaiting roll-up conclusion'
-  return `${completed} of ${total} test(s) complete`
+  return `${completed} of ${plural(total, 'test')} complete`
 }
 
 export interface CoverageColumn {

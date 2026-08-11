@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFil
 from fastapi.responses import FileResponse
 
 from .. import document_analysis, document_search, documents, embedding, intake, methodology, workspaces
+from ..text import counted, plural_word
 from ..agent import runner, store
 from ..agent.workflows import documents as documents_workflow
 
@@ -54,7 +55,8 @@ async def upload_documents(
     if conflicts and not replace:
         names = ", ".join(conflicts)
         raise workspaces.WorkspaceError(
-            f"Document(s) already exist: {names}. Confirm replacement to overwrite them."
+            f"{plural_word(len(names.split(', ')), 'Document')} already exist: {names}. "
+            "Confirm replacement to overwrite them."
         )
     added = []
     replaced = []
@@ -157,7 +159,7 @@ def _analysis_command(
         mode if mode in {"auto", "permission"} else "auto",
         {
             "source": "tab_button",
-            "text": f"Analyze {len(document_ids)} selected document(s).",
+            "text": f"Analyse {counted(len(document_ids), 'selected document')}.",
             "goal_template": "document_analysis",
             "requested_outcomes": list(
                 documents_workflow.FULL_DOCUMENT_OUTCOMES

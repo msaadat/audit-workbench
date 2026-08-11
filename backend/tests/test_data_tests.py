@@ -498,7 +498,7 @@ def test_records_are_counted_once_across_the_steps_that_catch_them(
     assert profile["row_count"] == 2
     assert profile["record_count"] == 1
     assert profile["entity_key"] == "id"
-    assert "1 of 3 record(s) in customers failed (33%)" in result["verdict_text"]
+    assert "1 of 3 records in customers failed (33%)" in result["verdict_text"]
 
 
 def test_the_population_the_exceptions_were_drawn_from_is_stated(workspace_with_data):
@@ -514,7 +514,7 @@ def test_the_population_the_exceptions_were_drawn_from_is_stated(workspace_with_
     # "1 exception" is unreadable without the population it came out of.
     assert profile["population_table"] == "customers"
     assert profile["population"] == 3
-    assert "1 of 3 record(s) in customers failed (33%)" in result["verdict_text"]
+    assert "1 of 3 records in customers failed (33%)" in result["verdict_text"]
 
 
 def test_steps_over_unrelated_populations_are_left_without_a_record_count(

@@ -657,7 +657,7 @@ onUnmounted(unsubscribe)
 
       <!-- 16rem, not 20: the worklist row is a title and two short lines, and
            the width it gives back is what makes room for the action rail. -->
-      <UiMasterDetail v-else railWidth="16rem" class="layout">
+      <UiMasterDetail v-else railWidth="20rem" class="layout">
         <template #rail>
           <DocTestItemList :items="visibleItems" :selectedId="selectedEntryId" @select="select" />
         </template>

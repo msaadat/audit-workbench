@@ -111,9 +111,24 @@ async function create(withImport: boolean) {
       <aside v-if="plan" class="proposal">
         <h4>Here's what I'd do</h4>
 
-        <ol class="outcomes">
-          <li v-for="outcome in plan.outcomes" :key="outcome.capability">{{ outcome.title }}</li>
+        <!-- Grouped, because the twenty capability titles underneath are the
+             pipeline's vocabulary: read as one flat list they are a build log.
+             The steps stay one disclosure away for anyone who wants them. -->
+        <ol class="phases">
+          <li v-for="phase in plan.phases" :key="phase.id">
+            <p class="phase-head">
+              <strong>{{ phase.title }}</strong>
+              <small>{{ phase.steps.length }} steps</small>
+            </p>
+            <p class="phase-summary">{{ phase.summary }}</p>
+          </li>
         </ol>
+
+        <UiAdvancedSection :title="`All ${plan.outcomes.length} steps`" description="In the order they would run" icon="pi pi-list">
+          <ol class="outcomes">
+            <li v-for="outcome in plan.outcomes" :key="outcome.capability">{{ outcome.title }}</li>
+          </ol>
+        </UiAdvancedSection>
 
         <p class="gate"><i class="pi pi-pause-circle" />{{ plan.gates.summary }}</p>
 
@@ -170,6 +185,12 @@ async function create(withImport: boolean) {
 
 .proposal { padding: 0.9rem 1rem; border: 1px solid var(--aw-border); border-radius: var(--aw-radius-surface); background: var(--aw-canvas); }
 .proposal h4 { margin: 0 0 0.6rem; font-size: var(--aw-text-sm); }
+.phases { display: grid; gap: 0.6rem; margin: 0 0 0.8rem; padding: 0; list-style: none; }
+.phase-head { display: flex; align-items: baseline; gap: 0.4rem; margin: 0; }
+.phase-head strong { font-size: var(--aw-text-sm); }
+.phase-head small { margin-left: auto; color: var(--aw-muted); font-size: var(--aw-text-2xs); font-variant-numeric: tabular-nums; }
+.phase-summary { margin: 0.1rem 0 0; color: var(--aw-muted); font-size: var(--aw-text-xs); line-height: 1.45; }
+
 .outcomes { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.15rem; }
 .outcomes li { color: var(--aw-ink-soft); font-size: var(--aw-text-xs); line-height: 1.4; }
 .outcomes li::marker { color: var(--aw-teal); font-variant-numeric: tabular-nums; }

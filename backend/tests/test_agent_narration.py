@@ -8,6 +8,8 @@ auditor reads.
 
 import re
 
+import pytest
+
 from app import assistant_chats
 from app.agent import narration, store
 from app.workspaces import write_json_atomic
@@ -92,6 +94,22 @@ def test_unmapped_error_code_still_reads_as_a_sentence():
     assert "some_new_unmapped_code" not in blocker["message"]
     # The identity is still recoverable for support, just not as the message.
     assert blocker["code"] == "some_new_unmapped_code"
+
+
+@pytest.mark.parametrize("code", [".", "_", "___", "documents."])
+def test_a_code_that_reduces_to_nothing_does_not_leave_a_dangling_sentence(code):
+    """`humanize` strips domains and separators, so some codes reduce to "".
+
+    Those produced "Run document test — Vendor master periodic review stopped:
+    ." on screen: a sentence whose reason was a bare full stop.
+    """
+    run = _run(stages=[_stage("review_required", [_unit("blocked", code)])])
+    blocker = narration.blockers(run)[0]
+
+    assert "stopped:" not in blocker["message"]
+    assert blocker["message"].endswith("needs your input before it can continue.")
+    assert ": ." not in blocker["message"]
+    assert blocker["code"] == code
 
 
 def test_units_stopped_for_one_reason_group_into_one_question():

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import cycle_vouching, embedding
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
+from .text import plural_word
 
 ANALYSIS_SCHEMA_VERSION = "5"
 ANALYSIS_PROMPT_VERSION = "document-analysis-v6-cycle-record-fragments"
@@ -602,7 +603,7 @@ def validate_analysis_text(payload: dict) -> dict:
     if not audit_notes:
         missing.append("audit_notes_markdown")
     if missing:
-        raise ValueError(f"Required analysis field(s) were blank: {', '.join(missing)}")
+        raise ValueError(f"Required analysis {plural_word(len(missing), 'field')} were blank: {', '.join(missing)}")
     return {"summary_markdown": summary, "audit_notes_markdown": audit_notes}
 
 

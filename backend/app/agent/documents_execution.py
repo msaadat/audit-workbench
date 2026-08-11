@@ -21,6 +21,7 @@ from __future__ import annotations
 import uuid
 
 from .. import cycle_vouching, document_analysis, document_media
+from ..text import counted
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceError, load_workspace
 from . import narration, store, workflow
@@ -200,7 +201,7 @@ class DocumentWorkflowExecution(BaseRunner):
                 "headline": "Document content prepared",
                 "summary": (
                     f"Prepared extractable content for {done} of "
-                    f"{len(scope.document_ids)} scoped document(s); "
+                    f"{counted(len(scope.document_ids), 'scoped document')}; "
                     f"{skipped} were skipped."
                 ),
                 "metrics": [
@@ -233,7 +234,7 @@ class DocumentWorkflowExecution(BaseRunner):
             "headline": "Document analysis complete",
             "summary": (
                 f"Generated analyses for {len(analyzed)} of "
-                f"{len(scope.document_ids)} scoped document(s). "
+                f"{counted(len(scope.document_ids), 'scoped document')}. "
                 f"{len(partial)} have partial coverage and {skipped} were not analyzed. "
                 "Generated analyses remain subject to auditor review."
             ),
@@ -350,7 +351,7 @@ class DocumentWorkflowExecution(BaseRunner):
             self.task_status(task, "completed")
             return self._unreadable_document(document_id, (document_ref(document_id),))
         pages = len(extracted.get("pages") or [])
-        self.task_detail(task, f"{self._title(document_id)}: {pages} page(s) extracted.")
+        self.task_detail(task, f"{self._title(document_id)}: {counted(pages, 'page')} extracted.")
         self.task_status(task, "completed")
         return DeterministicUnitResult("succeeded", (document_ref(document_id),))
 
@@ -710,7 +711,7 @@ class DocumentWorkflowExecution(BaseRunner):
             if coverage["state"] != "complete":
                 self.warn(
                     f"'{self._title(document_id)}' was analyzed to its configured page "
-                    f"limit: {len(coverage['analyzed_pages'])} page(s) analyzed, "
+                    f"limit: {counted(len(coverage['analyzed_pages']), 'page')} analysed, "
                     f"{len(coverage['omitted_pages'])} omitted."
                 )
                 self.task_status(task, "completed")

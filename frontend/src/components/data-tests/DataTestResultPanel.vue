@@ -6,6 +6,7 @@ import type { DataTest, DataTestResult } from '../../types'
 import ExceptionExplorer from './ExceptionExplorer.vue'
 import FrameTable from '../FrameTable.vue'
 import UiTestStatus from '../ui/UiTestStatus.vue'
+import { plural } from '../../format'
 
 const props = defineProps<{ test: DataTest; result: DataTestResult | null }>()
 
@@ -88,7 +89,7 @@ const hasFollowUp = computed(() => Boolean(props.test.next_action || props.test.
       <div v-for="step in result.step_results" :key="step.step_id" class="step-row">
         <UiTestStatus :status="step.status" showLabel />
         <span>{{ step.step_label }}</span>
-        <small>{{ step.exception_count }} exception row(s)</small>
+        <small>{{ plural(step.exception_count, 'exception row') }}</small>
         <small v-if="step.error" class="step-error">{{ step.error }}</small>
       </div>
     </div>

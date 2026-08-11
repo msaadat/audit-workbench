@@ -8,6 +8,7 @@ import type { AgentRun, WorkflowStage, WorkflowUnit, WorkflowUnitStatus } from '
 import AgentActionList from './AgentActionList.vue'
 import AgentTaskList from './AgentTaskList.vue'
 import { capabilityClause } from './capabilityLabels'
+import { plural, verb } from '../../format'
 
 /**
  * The run's capability graph, at the pace it is being worked.
@@ -239,7 +240,7 @@ const note = computed(() => {
         <button class="row-head" :aria-expanded="isOpen(row)" @click="toggle(row)">
           <i class="dot" aria-hidden="true" />
           <span class="cap" :title="row.title">{{ row.title }}</span>
-          <span v-if="row.attention" class="attention" :title="`${row.attention} item(s) need attention`">{{ row.attention }}</span>
+          <span v-if="row.attention" class="attention" :title="`${plural(row.attention, 'item')} ${verb(row.attention)} attention`">{{ row.attention }}</span>
           <span v-else-if="row.count" class="n">{{ row.count }}</span>
           <i class="chevron" :class="isOpen(row) ? 'pi pi-chevron-up' : 'pi pi-chevron-down'" aria-hidden="true" />
         </button>
@@ -280,7 +281,7 @@ const note = computed(() => {
     </template>
 
     <details v-if="warnings.length" class="warnings">
-      <summary>{{ warnings.length }} warning(s)</summary>
+      <summary>{{ plural(warnings.length, 'warning') }}</summary>
       <ul><li v-for="warning in warnings" :key="warning">{{ warning }}</li></ul>
     </details>
 

@@ -22,6 +22,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from . import analytics, cycle_vouching, documents, explore
+from .text import counted, verb
 from .evidence import document_anchor, normalize_many
 from .workspaces import (
     CONTROL_CONCLUSIONS,
@@ -1013,7 +1014,7 @@ def prepare_evidence_aware_vouching(workspace: Workspace, payload: dict) -> dict
         else "in_progress"
     )
     test["scope_limitations"] = (
-        f"{len(requests)} selected item(s) require additional evidence."
+        f"{counted(len(requests), 'selected item')} {verb(len(requests), 'requires', 'require')} additional evidence."
         if requests
         else ""
     )

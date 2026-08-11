@@ -12,14 +12,16 @@ import AgentMilestoneCard from './AgentMilestoneCard.vue'
 import AgentThinking from './AgentThinking.vue'
 import ChatArtifactCard from './ChatArtifactCard.vue'
 import ChatRunCard from './ChatRunCard.vue'
+import { plural } from '../../format'
 
-const props = defineProps<{ workspaceId: string; chat: AssistantChat; documents: AuditDocument[]; actionBusy?: boolean; busy?: boolean }>()
+const props = defineProps<{ workspaceId: string; chat: AssistantChat; documents: AuditDocument[]; actionBusy?: boolean; busy?: boolean; needsSources?: boolean }>()
 const emit = defineEmits<{
   shortcut: [string, string]
   command: [string]
   suggestion: [AssistantSuggestion]
   retry: [AssistantChatMessage]
   changed: []
+  import: []
   respond: [string, AssistantInteractionProjection['interaction'], Record<string, unknown>]
   decide: [string, AssistantApprovalProjection['approval'], AgentDecision[]]
 }>()
@@ -100,7 +102,8 @@ const liveProgress = computed(() => {
 // one that settled with something still needing a decision (an approval, a
 // blocker), answers that question on its own, so the nudge stays out of its way.
 const canOfferNextStep = computed(() => {
-  if (empty.value || props.busy) return false
+  // With nothing imported, every suggestion would be for work that cannot run.
+  if (empty.value || props.busy || props.needsSources) return false
   const unresolved = props.chat.runs.some(
     item => !TERMINAL_STATUSES.includes(item.status) || item.pending_attention,
   )
@@ -129,7 +132,19 @@ function messageTime(value: string) {
 <template>
   <div ref="scroller" class="transcript" @scroll.passive="onScroll">
     <div ref="inner" class="transcript-inner">
-    <div v-if="empty" class="empty-state">
+    <!-- Nothing imported yet: every suggestion and workflow below would need
+         source material to run, so the console offers the one step that has to
+         come first. Same action, icon and framing as the audit-file dashboard's
+         onboarding card, so the two surfaces agree on what step one is. -->
+    <div v-if="empty && needsSources" class="empty-state">
+      <span class="empty-icon"><i class="pi pi-folder-open" /></span>
+      <strong>Start with the audit folder</strong>
+      <p>Drop files anywhere, or pick files or a folder. The workbench stages and classifies supported data and documents before importing them.</p>
+      <Button label="Import files" icon="pi pi-upload" @click="emit('import')" />
+      <p class="empty-followup">Once the files are in, I can plan the engagement, build the RCM, and run the tests.</p>
+    </div>
+
+    <div v-else-if="empty" class="empty-state">
       <span class="empty-icon"><i class="pi pi-sparkles" /></span>
       <strong>What should we work on?</strong>
       <p>Ask me anything about this engagement, or tell me what to do next.</p>
@@ -174,7 +189,7 @@ function messageTime(value: string) {
           <small v-if="item.role === 'user' && item.requested_intent !== 'auto'" class="intent">{{ item.requested_intent }}</small>
         </div>
         <Button v-if="item.state === 'failed' && item.role === 'user'" label="Retry" icon="pi pi-refresh" text size="small" @click="emit('retry', item)" />
-        <details v-if="item.tool_trace?.length" class="trace"><summary>{{ item.tool_trace.length }} local tool step(s)</summary><div v-for="(step,index) in item.tool_trace" :key="index"><i :class="step.ok ? 'pi pi-check' : 'pi pi-times'" /> {{ step.tool }}</div></details>
+        <details v-if="item.tool_trace?.length" class="trace"><summary>{{ plural(item.tool_trace.length, 'local tool step') }}</summary><div v-for="(step,index) in item.tool_trace" :key="index"><i :class="step.ok ? 'pi pi-check' : 'pi pi-times'" /> {{ step.tool }}</div></details>
         <div v-if="item.document_manifest?.trimmed" class="warning"><i class="pi pi-exclamation-triangle" /> Some attached document text was trimmed to the safe context budget.</div>
         <div v-if="item.citations?.length" class="citations">
           <Button v-for="citation in item.citations" :key="citation.id" :label="`${documentTitle(citation.source_id)} · p. ${citation.page}`" icon="pi pi-link" size="small" severity="secondary" outlined :disabled="citation.available === false || !documents.some(doc => doc.id === citation.source_id)" @click="openCitation(citation)" />
@@ -219,6 +234,8 @@ function messageTime(value: string) {
 
 <style scoped>
 .transcript{flex:1;min-height:0;overflow:auto}.transcript-inner{display:flex;flex-direction:column;gap:.65rem;min-height:100%;padding:.8rem .9rem}.empty-state{display:grid;justify-items:center;gap:.55rem;margin:auto;padding:1.5rem;text-align:center}.empty-icon{display:grid;place-items:center;width:3rem;height:3rem;border-radius:var(--aw-radius-surface);background:var(--aw-teal-soft);color:var(--aw-teal);font-size:var(--aw-text-xl)}.empty-state p{margin:0;color:var(--aw-muted);font-size:var(--aw-text-sm)}.empty-section{display:grid;justify-items:center;gap:.35rem;width:100%}.empty-section-title{font-size:var(--aw-text-xs);font-weight:700;color:var(--aw-muted)}.empty-section-note{font-size:var(--aw-text-xs);color:var(--aw-muted)}.shortcuts{display:flex;justify-content:center;flex-wrap:wrap;gap:.4rem}.suggestions{display:grid;gap:.35rem;width:100%;max-width:20rem}.suggestion{display:grid;gap:.1rem;padding:.5rem .6rem;border:1px solid var(--aw-border);border-radius:var(--aw-radius-control);background:var(--aw-panel);text-align:left;cursor:pointer;color:inherit}.suggestion:hover{border-color:var(--aw-teal);background:var(--aw-teal-soft)}.suggestion strong{font-size:var(--aw-text-sm);font-weight:500}.suggestion small{font-size:var(--aw-text-xs);color:var(--aw-muted)}.message{max-width:92%}.message.user{align-self:flex-end}.message.assistant{align-self:flex-start}.bubble{position:relative;display:flex;align-items:center;gap:.4rem;padding:.55rem .7rem;border-radius:var(--aw-radius-surface);font-size:var(--aw-text-sm);line-height:1.4}.message.user .bubble{background:var(--aw-teal);color:white;border-bottom-right-radius:3px}.message.assistant .bubble{padding:0;background:transparent;border-radius:0}.message.user.clarification .bubble{background:var(--aw-warn-soft);border:1px solid var(--aw-warn-line);color:inherit}.message.user.error .bubble,.message.user.failed .bubble{background:var(--aw-danger-soft);color:var(--aw-danger)}.bubble p{margin:0;white-space:pre-wrap}.bubble-markdown{min-width:0;font-size:var(--aw-text-sm)}.bubble-markdown :deep(> :first-child){margin-top:0}.bubble-markdown :deep(> :last-child){margin-bottom:0}.bubble-markdown :deep(h1){font-size:var(--aw-text-md);margin:.5rem 0 .3rem}.bubble-markdown :deep(h2){font-size:var(--aw-text-base);margin:.5rem 0 .25rem}.bubble-markdown :deep(h3),.bubble-markdown :deep(h4){font-size:var(--aw-text-sm);margin:.45rem 0 .2rem}.bubble-markdown :deep(table){font-size:var(--aw-text-xs);margin:.45rem 0}.bubble-markdown :deep(th),.bubble-markdown :deep(td){padding:.3rem .4rem}.bubble.typing{padding:.5rem .7rem;background:transparent}
+.empty-state p{max-width:30rem}
+.empty-followup{color:var(--aw-muted-strong);font-size:var(--aw-text-xs)}
 .run-log{display:grid;gap:.3rem;max-width:92%;align-self:flex-start;padding:.1rem 0}
 .next-steps{display:grid;gap:.4rem;max-width:92%;align-self:flex-start;padding:.3rem 0}
 .next-steps-label{font-size:var(--aw-text-xs);font-weight:700;color:var(--aw-muted)}

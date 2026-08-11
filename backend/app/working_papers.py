@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from . import cycle_vouching, data_tests, doc_tests, rcm_execution
 from .workspaces import Workspace, WorkspaceError, write_json_atomic
+from .text import counted, verb
 
 
 def _procedure(workspace: Workspace, procedure_id: str) -> dict:
@@ -43,9 +44,9 @@ def draft_results(workspace: Workspace, procedure_id: str) -> dict:
         limitations = "Link execution artifacts or document tests before drawing a conclusion."
     else:
         result = (
-            f"Executed {len(tests)} linked document test(s) covering {total_items} item(s). "
-            f"Deterministic checks recorded {matched} match(es) and {mismatched} mismatch/missing result(s); "
-            f"results recorded {exceptions} exception(s)."
+            f"Executed {counted(len(tests), 'linked document test')} covering {counted(total_items, 'item')}. "
+            f"Deterministic checks recorded {counted(matched, 'match', 'matches')} and {counted(mismatched, 'mismatch or missing result', 'mismatch or missing results')}; "
+            f"results recorded {counted(exceptions, 'exception')}."
         )
         if exceptions or mismatched:
             conclusion = "The stored results include exceptions or unmatched evidence that require auditor evaluation against the procedure criteria."
@@ -54,7 +55,7 @@ def draft_results(workspace: Workspace, procedure_id: str) -> dict:
         else:
             conclusion = "The linked results support the procedure objective, subject to the stated scope limitations."
         limitations = (
-            f"{manual} item(s) require manual review and {pending} item(s) have not run."
+            f"{counted(manual, 'item')} {verb(manual, 'requires', 'require')} manual review and {counted(pending, 'item')} {verb(pending, 'has', 'have')} not run."
             if manual or pending else "No unresolved document-test limitations were recorded."
         )
     return workspace.update_procedure(
@@ -214,7 +215,7 @@ def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
         f"- Conclusion eligible: {'yes' if rollup['conclusion_eligible'] else 'no'}",
         f"- Coverage: {coverage.get('selected_rows', len(test.get('items') or []))} selected; "
         f"{coverage.get('rows_with_evidence', '—')} with evidence; "
-        f"{coverage.get('complete_cycles', '—')} complete cycle(s)",
+        f"{coverage.get('complete_cycles', '—')} complete cycles",
         "- Missing required roles: "
         + (
             ", ".join(
@@ -228,7 +229,7 @@ def _cycle_test_lines(test: dict) -> tuple[list[str], list[str]]:
         f"- Tested items: {rollup['tested_items']}; failed: {rollup['failed_items']}; "
         f"incomplete: {rollup['incomplete_items']}; need review: {rollup['needs_review_items']}",
         f"- Auditor dispositions: {rollup['confirmed_items']} confirmed; "
-        f"{rollup['open_exceptions']} open exception(s); "
+        f"{counted(rollup['open_exceptions'], 'open exception')}; "
         f"{rollup['pending_dispositions']} pending",
         f"- Diagnostic assertion mismatches: {rollup['assertion_mismatches']}",
         "",
@@ -406,7 +407,7 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
                 source_hashes.append(result["result_sha1"])
                 lines.append(
                     f"- Data Test {item['id']} — {result['status']}; verdict {result['verdict']}; "
-                    f"{result['exception_count']} exception(s); result hash {result['result_sha1']}."
+                    f"{counted(result['exception_count'], 'exception')}; result hash {result['result_sha1']}."
                 )
             elif kind == "doctest" and doc_tests.exists(workspace, execution_id):
                 test = doc_tests.load_test(workspace, execution_id)
@@ -415,15 +416,15 @@ def render_rcm_markdown(workspace: Workspace, rcm_id: str) -> str:
                 if doc_tests.is_cycle_test(test):
                     lines.append(
                         f"- Document Test {test['id']} — {test.get('status')}; "
-                        f"{rollup['tested_items']} tested item(s); "
-                        f"{rollup['open_exceptions']} open item exception(s); "
+                        f"{counted(rollup['tested_items'], 'tested item')}; "
+                        f"{counted(rollup['open_exceptions'], 'open item exception')}; "
                         f"{rollup['assertion_mismatches']} diagnostic assertion mismatch(es); "
                         f"source hash {test['sha1']}."
                     )
                 else:
                     lines.append(
-                        f"- Document Test {test['id']} — {test.get('status')}; {rollup['items']} item(s); "
-                        f"{rollup['exceptions']} confirmed exception(s); {rollup['manual_review']} manual review; "
+                        f"- Document Test {test['id']} — {test.get('status')}; {counted(rollup['items'], 'item')}; "
+                        f"{counted(rollup['exceptions'], 'confirmed exception')}; {rollup['manual_review']} manual review; "
                         f"source hash {test['sha1']}."
                     )
         lines.extend(

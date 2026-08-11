@@ -1379,7 +1379,7 @@ export interface TableProfile {
   sampled: boolean
   sample_rows: number
   duplicate_rows: number
-  estimated_size_mb: number
+  estimated_size_bytes: number
   column_profiles: ColumnProfile[]
 }
 
@@ -2677,9 +2677,18 @@ export interface EngagementDestination {
   summary: string
 }
 
+/** `outcomes` grouped into the phases an auditor recognises. */
+export interface EngagementPlanPhase {
+  id: string
+  title: string
+  summary: string
+  steps: EngagementOutcome[]
+}
+
 export interface EngagementPlan {
   template: string
   outcomes: EngagementOutcome[]
+  phases: EngagementPlanPhase[]
   estimate: EngagementEstimate
   destination: EngagementDestination
   gates: { mode: 'auto' | 'permission'; summary: string }

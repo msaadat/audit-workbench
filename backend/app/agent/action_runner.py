@@ -6,6 +6,7 @@ import json
 import time
 
 from .. import analytics, assistant, debug_store, llm, sandbox, validation
+from ..text import counted
 from ..workspaces import Workspace, WorkspaceError
 from . import action_tools, actions, artifact_index, ledger, narration, prompts, routing, store
 from .base import BaseRunner, Cancelled, LimitExceeded
@@ -1033,7 +1034,7 @@ class ActionRunner(BaseRunner):
         succeeded = [item for item in self.run.get("actions") or [] if item["status"] == "succeeded"]
         skipped = [item for item in self.run.get("actions") or [] if item["status"] == "skipped"]
         lines = [f"## Command result", "", self.run["goal"].get("objective") or self.run["command"].get("text") or "Audit command", ""]
-        lines.append(f"Completed {len(succeeded)} action(s); {len(failed)} failed or blocked; {len(skipped)} skipped.")
+        lines.append(f"Completed {counted(len(succeeded), 'action')}; {len(failed)} failed or blocked; {len(skipped)} skipped.")
         if succeeded:
             lines.extend(["", "### Committed work", *[f"- {actions.REGISTRY.get(item['type'], item['definition_version']).description}" for item in succeeded]])
         if failed:
@@ -1048,7 +1049,7 @@ class ActionRunner(BaseRunner):
             status="completed_with_issues" if force_issue or failed else "completed",
             headline="Requested action complete",
             summary=(
-                f"Completed {len(succeeded)} action(s); {len(failed)} failed or "
+                f"Completed {counted(len(succeeded), 'action')}; {len(failed)} failed or "
                 f"were blocked; {len(skipped)} were skipped."
             ),
             metrics=[

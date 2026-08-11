@@ -16,6 +16,7 @@ handler.
 from __future__ import annotations
 
 from .. import doc_tests, rcm_execution
+from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import (
     Workspace,
@@ -221,9 +222,12 @@ class AuditWorkflowExecution(ActionRunner):
                 "status": state,
                 "headline": "Audit planning memorandum ready",
                 "summary": (
-                    f"Prepared the audit planning memorandum from "
-                    f"{len([value for value in context.values() if str(value).strip()])} "
-                    f"planning field(s)."
+                    "Prepared the audit planning memorandum from "
+                    + counted(
+                        len([value for value in context.values() if str(value).strip()]),
+                        "planning field",
+                    )
+                    + "."
                 ),
                 "metrics": [
                     {"label": "Updated", "value": updated},
@@ -244,11 +248,18 @@ class AuditWorkflowExecution(ActionRunner):
             )
             return {
                 "status": "completed_with_issues" if gaps or attention else state,
-                "headline": "Risk and control matrix ready",
+                "headline": (
+                    f"Risk and control matrix drafted — {counted(gaps, 'row')} incomplete"
+                    if gaps else "Risk and control matrix ready"
+                ),
                 "summary": (
-                    f"The RCM now contains {len(subject.rcm)} row(s), including "
-                    f"{high} high or critical risk row(s). {gaps} row(s) have a "
-                    f"missing risk or control description."
+                    f"The RCM now contains {counted(len(subject.rcm), 'row')}, including "
+                    f"{counted(high, 'high or critical risk')}."
+                    + (
+                        f" {counted(gaps, 'row')} {verb(gaps, 'has', 'have')} a "
+                        "missing risk or control description."
+                        if gaps else ""
+                    )
                 ),
                 "metrics": [
                     {"label": "RCM rows", "value": len(subject.rcm)},
@@ -265,11 +276,19 @@ class AuditWorkflowExecution(ActionRunner):
             uncovered = sum(not (row.get("test_refs") or []) for row in subject.rcm)
             return {
                 "status": "completed_with_issues" if uncovered or attention else state,
-                "headline": "Executable test specifications ready",
+                "headline": (
+                    f"Tests specified — {counted(uncovered, 'risk')} still uncovered"
+                    if uncovered else "Tests specified"
+                ),
                 "summary": (
-                    f"Prepared {total} executable test(s): {len(subject.data_tests)} "
-                    f"data test(s) and {doc_count} document test(s). "
-                    f"{uncovered} RCM row(s) still have no linked test."
+                    f"Prepared {counted(total, 'test')}: "
+                    f"{counted(len(subject.data_tests), 'data test')} and "
+                    f"{counted(doc_count, 'document test')}."
+                    + (
+                        f" {counted(uncovered, 'RCM row')} still "
+                        f"{verb(uncovered, 'has', 'have')} no linked test."
+                        if uncovered else ""
+                    )
                 ),
                 "metrics": [
                     {"label": "Tests", "value": total},
@@ -283,10 +302,21 @@ class AuditWorkflowExecution(ActionRunner):
         if capability_id == "fieldwork.executed":
             return {
                 "status": state,
-                "headline": "Fieldwork execution complete",
+                # Titled by outcome, not by stage lifecycle. "Complete" here only
+                # ever meant "the stage stopped running", so a card reading
+                # "Fieldwork execution complete" sat directly above a body saying
+                # 0 of 2 completed and 2 failed.
+                "headline": (
+                    f"Fieldwork ran — {counted(attention, 'test')} "
+                    f"{verb(attention)} you"
+                    if attention else "Fieldwork complete"
+                ),
                 "summary": (
-                    f"Completed {done} of {len(units)} scheduled fieldwork unit(s). "
-                    f"{attention} unit(s) failed or need auditor attention."
+                    f"Completed {done} of {counted(len(units), 'scheduled test')}. "
+                    f"{counted(attention, 'test')} failed or "
+                    f"{verb(attention)} your attention."
+                    if attention else
+                    f"Completed all {counted(len(units), 'scheduled test')}."
                 ),
                 "metrics": [
                     {"label": "Scheduled", "value": len(units)},
@@ -319,9 +349,9 @@ class AuditWorkflowExecution(ActionRunner):
                 ),
                 "headline": "Results and observations updated",
                 "summary": (
-                    f"Rolled results into {len(rows)} RCM row(s). Recorded "
-                    f"{exceptions} exception(s) across {exception_observations} "
-                    "exception observation(s)."
+                    f"Rolled results into {counted(len(rows), 'RCM row')}. "
+                    f"Recorded {counted(exceptions, 'exception')} across "
+                    f"{counted(exception_observations, 'exception observation')}."
                 ),
                 "metrics": [
                     {"label": "RCM rows", "value": len(rows)},
@@ -346,8 +376,12 @@ class AuditWorkflowExecution(ActionRunner):
                 "status": state,
                 "headline": "Finding drafts prepared",
                 "summary": (
-                    f"Prepared {len(findings)} evidence-linked finding draft(s) "
-                    f"({distribution}). {attention} item(s) need attention."
+                    f"Prepared {counted(len(findings), 'evidence-linked finding draft')} "
+                    f"({distribution})."
+                    + (
+                        f" {counted(attention, 'item')} {verb(attention)} attention."
+                        if attention else ""
+                    )
                 ),
                 "metrics": [
                     {"label": "Drafts prepared", "value": len(findings)},
@@ -360,8 +394,12 @@ class AuditWorkflowExecution(ActionRunner):
                 "status": state,
                 "headline": "RCM working papers generated",
                 "summary": (
-                    f"Generated {done} of {len(units)} scheduled working paper(s). "
-                    f"{attention} could not be completed."
+                    f"Generated {done} of "
+                    f"{counted(len(units), 'scheduled working paper')}."
+                    + (
+                        f" {counted(attention, 'paper')} could not be completed."
+                        if attention else ""
+                    )
                 ),
                 "metrics": [
                     {"label": "Generated", "value": done},
@@ -374,8 +412,9 @@ class AuditWorkflowExecution(ActionRunner):
                 "status": state,
                 "headline": "Dashboard curated",
                 "summary": (
-                    f"Updated the engagement dashboard with {len(refs)} "
-                    f"result-backed tile reference(s)."
+                    "Updated the engagement dashboard with "
+                    + counted(len(refs), "result-backed tile reference")
+                    + "."
                 ),
                 "metrics": [{"label": "Tile references", "value": len(refs)}],
                 "artifact_refs": refs,
@@ -392,8 +431,9 @@ class AuditWorkflowExecution(ActionRunner):
                 "status": "needs_review" if reconciliation else state,
                 "headline": "Report working draft ready",
                 "summary": (
-                    f"Prepared the report working draft using {supported} "
-                    f"auditor-confirmed finding(s). "
+                    "Prepared the report working draft using "
+                    + counted(supported, "auditor-confirmed finding")
+                    + ". "
                     + (
                         "An auditor-edited draft was preserved and needs reconciliation."
                         if reconciliation

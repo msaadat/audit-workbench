@@ -14,6 +14,13 @@ import re
 
 import polars as pl
 
+# Bumped whenever `profile_table` changes the shape of what it returns.
+# `Workspace.get_profile` caches profiles on disk keyed by table content alone,
+# so without this a payload change would keep serving the old shape forever to
+# every workspace that had already been profiled — which is how renaming
+# `estimated_size_mb` left the Profile tab reading "0 bytes".
+SCHEMA_VERSION = 2
+
 # Profiling runs on a capped sample — enough to characterize, cheap to compute.
 MAX_ROWS = 200_000
 TOP_VALUES = 8
@@ -128,7 +135,9 @@ def profile_table(df: pl.DataFrame) -> dict:
         "sampled": sampled,
         "sample_rows": sample.height,
         "duplicate_rows": duplicate_rows,
-        "estimated_size_mb": round(df.estimated_size("mb"), 2),
+        # Bytes, not megabytes: rounded to 2dp every table under ~5 KB reported
+        # itself as "0 MB". The caller picks a unit the number survives.
+        "estimated_size_bytes": int(df.estimated_size("b")),
         "column_profiles": [profile_column(sample, c) for c in sample.columns],
     }
 

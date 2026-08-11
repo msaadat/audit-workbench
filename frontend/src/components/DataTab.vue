@@ -13,6 +13,7 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 
 import { api, ApiError } from '../api'
+import { fileSize, plural, pluralWord } from '../format'
 import type {
   ColumnProfile,
   FramePayload,
@@ -199,13 +200,13 @@ async function renameTable() {
       renamed.updated.analyses +
       renamed.updated.rulesets
     const codeDetail = renamed.updated.python_snippets
-      ? ` Updated ${renamed.updated.python_snippets} saved Python snippet(s).`
+      ? ` Updated ${plural(renamed.updated.python_snippets, 'saved Python snippet')}.`
       : ''
     toast.add({
       severity: 'success',
       summary: `Renamed "${renamed.old_name}" to "${renamed.name}"`,
       detail: total
-        ? `Updated ${total} saved reference(s).${codeDetail}`
+        ? `Updated ${plural(total, 'saved reference')}.${codeDetail}`
         : codeDetail || 'No saved references needed changes.',
       life: 6000,
     })
@@ -237,7 +238,7 @@ async function replaceData(event: Event) {
         severity: 'warn',
         summary: `Replaced "${table}" — schema changed`,
         detail:
-          `Dropped column(s): ${removed_columns.join(', ')}. ` +
+          `Dropped ${pluralWord(removed_columns.length, 'column')}: ${removed_columns.join(', ')}. ` +
           `Saved queries or analyses using them may now error until updated.`,
         life: 9000,
       })
@@ -246,7 +247,7 @@ async function replaceData(event: Event) {
         severity: 'success',
         summary: `Replaced "${table}"`,
         detail: added_columns.length
-          ? `New column(s): ${added_columns.join(', ')}.`
+          ? `New ${pluralWord(added_columns.length, 'column')}: ${added_columns.join(', ')}.`
           : 'Saved queries and analyses now use the new data.',
         life: 5000,
       })
@@ -512,8 +513,8 @@ function rangeText(p: ColumnProfile): string {
                 </div>
               </div>
               <div class="stat-card">
-                <div class="label">In-memory size</div>
-                <div class="value">{{ profile.estimated_size_mb.toLocaleString() }} MB</div>
+                <div class="label">In memory</div>
+                <div class="value">{{ fileSize(profile.estimated_size_bytes) }}</div>
               </div>
             </div>
 
@@ -532,7 +533,10 @@ function rangeText(p: ColumnProfile): string {
               <Column field="name" header="Column">
                 <template #body="{ data }">
                   <strong>{{ data.name }}</strong>
-                  <span class="muted dtype"> {{ data.dtype }}</span>
+                  <!-- The separator is a margin, not a leading space in the
+                       markup: the template compiler drops that space and the
+                       cell renders as `JOB_TITLEString`. -->
+                  <span class="muted dtype">{{ data.dtype }}</span>
                 </template>
               </Column>
               <Column field="inferred_type" header="Type">
@@ -832,6 +836,7 @@ function rangeText(p: ColumnProfile): string {
 }
 
 .dtype {
+  margin-left: 0.4rem;
   font-size: var(--aw-text-sm);
 }
 

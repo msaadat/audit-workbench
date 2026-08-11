@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ... import doc_tests as doc_test_service
+from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import doc_tests as doc_tests_workflow
@@ -214,7 +215,7 @@ def document_test_units(
                 UnitSpec(
                     semantic_unit_id("document_test_execution", test_id),
                     "document_test_execution",
-                    f"Execute doctest — {title}",
+                    f"Run document test — {title}",
                     test_refs,
                     {"test_id": test_id},
                 )
@@ -313,7 +314,7 @@ def _definitions_ready(workspace: Workspace, scope: dict) -> Readiness:
     return Readiness(
         "review_required",
         (
-            f"{len(unusable)} Document Test definition(s) cannot perform even "
+            f"{counted(len(unusable), 'document test definition')} cannot perform even "
             "bounded local work",
         ),
         details=details,
@@ -407,13 +408,13 @@ def _executed_ready(workspace: Workspace, scope: dict) -> Readiness:
     if pending:
         return Readiness(
             "missing",
-            (f"{pending} Document Test(s) have unchecked items",),
+            (f"{counted(pending, 'document test')} {verb(pending, 'has', 'have')} unchecked items",),
             details=details,
         )
     if evidence_blocked:
         return Readiness(
             "review_required",
-            (f"{evidence_blocked} Document Test(s) are blocked on evidence",),
+            (f"{counted(evidence_blocked, 'document test')} {verb(evidence_blocked, 'is', 'are')} blocked on evidence",),
             details=details,
         )
     return Readiness("satisfied", details=details)
@@ -490,13 +491,13 @@ def _dispositioned_ready(workspace: Workspace, scope: dict) -> Readiness:
     if awaiting_execution:
         return Readiness(
             "missing",
-            (f"{awaiting_execution} Document Test item(s) must execute before disposition",),
+            (f"{counted(awaiting_execution, 'document test item')} must execute before disposition",),
             details=details,
         )
     if pending:
         return Readiness(
             "review_required",
-            (f"{pending} Document Test item(s) await auditor disposition",),
+            (f"{counted(pending, 'document test item')} {verb(pending, 'awaits', 'await')} auditor disposition",),
             details=details,
         )
     return Readiness("satisfied", details=details)

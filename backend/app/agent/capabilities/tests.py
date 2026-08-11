@@ -18,6 +18,7 @@ declared context. The dependency edges come from the authoritative graph in
 from __future__ import annotations
 
 from ... import rcm_execution
+from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import audit as audit_workflow
@@ -87,14 +88,14 @@ def _specified_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness(
             "review_required",
             (
-                f"{review_required} RCM row(s) carry an auditor-owned test that "
+                f"{counted(review_required, 'RCM row')} {verb(review_required, 'carries', 'carry')} an auditor-owned test that "
                 "cannot be overwritten",
             ),
             details={"ready": ready, "total": total},
         )
     return Readiness(
         "missing",
-        (f"{total - ready} RCM row(s) need at least one executable test",),
+        (f"{counted(total - ready, 'RCM row')} {verb(total - ready)} at least one executable test",),
         details={"ready": ready, "total": total},
     )
 

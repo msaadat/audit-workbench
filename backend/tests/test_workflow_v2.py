@@ -2171,10 +2171,10 @@ def test_partial_workflow_report_discloses_failed_and_missing_coverage(monkeypat
     assert completed["status"] == "completed_with_failures"
     assert current.report["markdown"]
     assert current.report["generation_warnings"] == [
-        "Incomplete planning coverage: 0 planning workflow unit(s) failed and 1 "
-        "required planning item(s) are missing.",
-        "Incomplete execution-definition coverage: 1 execution-definition workflow "
-        "unit(s) failed and 1 required execution definition(s) are missing.",
+        "Incomplete planning coverage: 0 planning steps failed and "
+        "1 required planning item is missing.",
+        "Incomplete execution-definition coverage: 1 execution-definition step "
+        "failed and 1 required execution definition is missing.",
     ]
     assert "# Preliminary Internal Audit Working Draft" in current.report["markdown"]
     assert "Incomplete execution-definition coverage" in current.report["markdown"]

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 
+from ..text import counted, verb
 from ..workspace_transactions import parent_hashes
 from ..workspaces import Workspace, WorkspaceConflict
 from . import joins as join_diagnostics, narration, store, workflow
@@ -166,10 +167,10 @@ class AnalysisWorkflowExecution(BaseRunner):
             return {
                 "headline": "Table relationships analyzed",
                 "summary": (
-                    f"Compared {len(scope.pairs())} table pair(s) across "
-                    f"{len(scope.tables)} scoped table(s). "
-                    f"{len(scope.joins)} join(s) are available; "
-                    f"{ambiguous} pair(s) still need confirmation."
+                    f"Compared {counted(len(scope.pairs()), 'table pair')} across "
+                    f"{counted(len(scope.tables), 'scoped table')}. "
+                    f"{counted(len(scope.joins), 'join')} {verb(len(scope.joins), 'is', 'are')} available; "
+                    f"{counted(ambiguous, 'pair')} still {verb(ambiguous)} confirmation."
                 ),
                 "metrics": [
                     {"label": "Scoped tables", "value": len(scope.tables)},
@@ -208,10 +209,10 @@ class AnalysisWorkflowExecution(BaseRunner):
         table_word = (
             "all eligible tables"
             if not scope.explicit and scope.ambiguity is None
-            else f"{len(scope.tables)} scoped table(s)"
+            else counted(len(scope.tables), "scoped table")
         )
         parts = [
-            f"Analyzed {table_word} with {len(items)} completed check(s).",
+            f"Analysed {table_word} with {counted(len(items), 'completed check')}.",
             f"{counts['needs_review']} need review",
             f"{counts['clear']} were clear",
         ]
@@ -257,7 +258,7 @@ class AnalysisWorkflowExecution(BaseRunner):
                     "label": item["title"],
                     "detail": item.get("error")
                     or item.get("verdict_text")
-                    or f"{item.get('row_count', 0)} result row(s).",
+                    or f"{counted(item.get('row_count', 0), 'result row')}.",
                     "artifact_ref": f"analysis:{item['analysis_id']}",
                 }
                 for item in issue_items[:3]
@@ -477,7 +478,7 @@ class AnalysisWorkflowExecution(BaseRunner):
         self.task_detail(
             task,
             f"{left} ↔ {right}: {len(record['strong'])} strong, "
-            f"{len(record['moderate'])} moderate candidate(s).",
+            f"{counted(len(record['moderate']), 'moderate candidate')}.",
         )
         self.task_status(task, "completed")
         if not record["candidates"] and record["join"] is None:
@@ -516,7 +517,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             self._analysis_record()["join_utility"] = list(proposal.get("decisions") or [])
             self.save()
             retained = sum(item.get("decision") == "retain" for item in proposal.get("decisions") or [])
-            self.task_detail(task, f"Retained {retained} audit-useful relationship(s).")
+            self.task_detail(task, f"Retained {counted(retained, 'audit-useful relationship')}.")
             self.task_status(task, "completed")
             return DeterministicUnitResult("succeeded")
 
@@ -630,7 +631,7 @@ class AnalysisWorkflowExecution(BaseRunner):
         if candidate is None:
             reported = ranked
             self.warn(
-                f"{len(reported)} join candidate(s) for '{left}' and '{right}' need "
+                f"{counted(len(reported), 'join candidate')} for '{left}' and '{right}' need "
                 "confirmation; none was applied."
             )
             self.task_status(task, "skipped")
@@ -740,7 +741,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             return
         self.warn(
             f"No join was materialized for '{left}' and '{right}': "
-            f"{len(rejected)} diagnosed relationship(s) were judged to support "
+            f"{counted(len(rejected), 'diagnosed relationship')} {verb(len(rejected), 'was', 'were')} judged to support "
             f"no audit test. {described}"
         )
 
@@ -1050,7 +1051,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             self.task_detail(
                 task,
                 f"{output.get('characters', 0)} characters, "
-                f"{output.get('cited', 0)} result(s) cited.",
+                f"{counted(output.get('cited', 0), 'result')} cited.",
             )
             self.task_status(task, "completed")
             self.emit(
@@ -1158,7 +1159,7 @@ class AnalysisWorkflowExecution(BaseRunner):
             return DeterministicUnitResult(
                 "awaiting_confirmation", refs, str(result["error"])
             )
-        self.task_detail(task, f"{title}: {result['row_count']} row(s).")
+        self.task_detail(task, f"{title}: {counted(result['row_count'], 'row')}.")
         self.task_status(task, "completed")
         return DeterministicUnitResult("succeeded", refs)
 

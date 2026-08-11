@@ -48,6 +48,84 @@ _MAX_RUNS_SCANNED = 40
 BRIEF_FIELDS = ("entity", "period", "materiality", "background_notes")
 
 
+# The capabilities a full audit resolves to are the pipeline's own vocabulary —
+# "Join utility selection", "Materialized joins", "Document chunk analysis". As a
+# flat numbered list on the brief screen they read as a build log, so the preview
+# also groups them into the phases an auditor recognises. The capability domain
+# already partitions the graph in run order, so this is a rename rather than a
+# second ordering that could drift out of step with the first.
+_PHASE_OF_DOMAIN = {
+    "data": "sources",
+    "analysis": "sources",
+    "documents": "documents",
+    "planning": "planning",
+    "tests": "planning",
+    "fieldwork": "fieldwork",
+    "results": "fieldwork",
+    "findings": "fieldwork",
+    "working_papers": "writeup",
+    "dashboard": "writeup",
+    "report": "writeup",
+    "audit": "writeup",
+}
+
+# Ordered. A domain this table does not name lands in the trailing catch-all
+# rather than being folded into whichever phase happens to be last — a new
+# capability should look unplaced here, not quietly mislabelled.
+_UNGROUPED_PHASE = "other"
+PLAN_PHASES: tuple[dict[str, str], ...] = (
+    {
+        "id": "sources",
+        "title": "Understand the data",
+        "summary": "Profile the tables, work out how they join, and summarise what the population shows.",
+    },
+    {
+        "id": "documents",
+        "title": "Read the documents",
+        "summary": "Extract the text, analyse each source, and keep every citation anchored to its page.",
+    },
+    {
+        "id": "planning",
+        "title": "Plan the engagement",
+        "summary": "Draft the planning memorandum, build the risk and control matrix, and specify the tests.",
+    },
+    {
+        "id": "fieldwork",
+        "title": "Do the fieldwork",
+        "summary": "Run the tests, record results and observations, and draft findings where the evidence supports one.",
+    },
+    {
+        "id": "writeup",
+        "title": "Write it up",
+        "summary": "Produce the working papers, curate the dashboard, and draft the report with its quality checks.",
+    },
+    {
+        "id": _UNGROUPED_PHASE,
+        "title": "Further steps",
+        "summary": "Other capabilities this template resolves to.",
+    },
+)
+
+
+def plan_phases(template: str = DEFAULT_TEMPLATE) -> list[dict[str, Any]]:
+    """`plan_outcomes` grouped into the phases an auditor recognises.
+
+    Every outcome appears in exactly one phase and phases with no outcomes are
+    dropped, so the step counts shown beside each phase still sum to the whole
+    template.
+    """
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for outcome in plan_outcomes(template):
+        domain = str(outcome["capability"]).split(".", 1)[0]
+        phase = _PHASE_OF_DOMAIN.get(domain, _UNGROUPED_PHASE)
+        grouped.setdefault(phase, []).append(outcome)
+    return [
+        {**phase, "steps": grouped[phase["id"]]}
+        for phase in PLAN_PHASES
+        if grouped.get(phase["id"])
+    ]
+
+
 def plan_outcomes(template: str = DEFAULT_TEMPLATE) -> list[dict[str, str]]:
     """The capabilities a template resolves to, in the order they would run."""
     requested = audit_workflow.outcomes_for_template(template)
@@ -171,7 +249,10 @@ def plan_preview(template: str = DEFAULT_TEMPLATE, mode: str = "auto") -> dict[s
     """Everything the brief screen states before the auditor approves."""
     return {
         "template": template,
+        # The flat list stays: it is what the brief screen falls back to, and it
+        # is the shape every existing consumer reads.
         "outcomes": plan_outcomes(template),
+        "phases": plan_phases(template),
         "estimate": cost_estimate(),
         "destination": destination(),
         "gates": gates(mode),

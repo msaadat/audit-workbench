@@ -163,6 +163,34 @@ def test_empty_workspace_dashboard_drives_onboarding():
     assert board["actions"][0]["target"]["tab"] == "data"
     assert board["ai_advice"] is None
 
+    # Every fieldwork gate is vacuously satisfied before a test exists, so the
+    # phase used to report itself complete and claim that all RCM tests passed
+    # on an engagement holding none.
+    fieldwork = next(phase for phase in board["phases"] if phase["id"] == "fieldwork")
+    assert fieldwork["complete"] is False
+    assert fieldwork["summary"] == "No tests have been planned yet."
+    assert "passed" not in fieldwork["summary"]
+
+    # And nothing may offer to write the report off the back of that.
+    assert "generate-report" not in {action["id"] for action in board["actions"]}
+    assert next(
+        phase for phase in board["phases"] if phase["id"] == "report"
+    )["complete"] is False
+
+
+def test_planned_rcm_without_tests_is_not_complete_fieldwork(workspace_with_data):
+    ws = workspace_with_data
+    ws.add_rcm({"process": "Revenue", "risk": "Revenue may be misstated"})
+
+    fieldwork = next(
+        phase for phase in engagement_status_payload(ws)["phases"]
+        if phase["id"] == "fieldwork"
+    )
+
+    assert fieldwork["complete"] is False
+    assert fieldwork["summary"] == "No tests have been planned yet."
+    assert fieldwork["state"] != "not_started"
+
 
 def test_dashboard_apm_status_rechecks_current_content(workspace_with_data):
     ws = workspace_with_data

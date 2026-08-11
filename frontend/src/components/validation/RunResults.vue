@@ -14,6 +14,7 @@ import type {
   WorkspaceSummary,
 } from '../../types'
 import FrameTable from '../FrameTable.vue'
+import { plural } from '../../format'
 
 // Results of one validation run: verdict banner, stat chips, and one row per
 // rule with drill-in to the failing rows. Failing rows are fetched lazily per
@@ -160,7 +161,7 @@ watch(
 
     <p v-if="run.counts.errored" class="error-hint">
       <i class="pi pi-exclamation-circle" />
-      {{ run.counts.errored }} rule(s) could not run — usually a column that is
+      {{ plural(run.counts.errored, 'rule') }} could not run — usually a column that is
       missing or renamed in this table. See the rows marked "error" below.
     </p>
 

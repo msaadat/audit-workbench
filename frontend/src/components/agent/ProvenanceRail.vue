@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { api, ApiError } from '../../api'
 import { useWorkspaceNav } from '../../composables/useWorkspaceNavigation'
 import type { ArtifactProvenance, ProvenanceSize } from '../../types'
+import { plural, verb } from '../../format'
 
 /**
  * Where a generated work product came from.
@@ -42,8 +43,8 @@ const documentIdFor = (sourceRef: string) =>
 
 function size(value?: ProvenanceSize) {
   if (!value) return ''
-  if (value.media_items) return `${value.media_items} image(s)`
-  if (!value.characters) return `${value.items} item(s)`
+  if (value.media_items) return plural(value.media_items, 'image')
+  if (!value.characters) return plural(value.items, 'item')
   return `${value.characters.toLocaleString()} chars · ~${value.estimated_tokens.toLocaleString()} tokens`
 }
 
@@ -192,7 +193,7 @@ defineExpose({ reload: load })
           </p>
           <p v-else-if="context?.state === 'available'" class="verdict warn">
             <i class="pi pi-exclamation-triangle" />
-            {{ omissions.length }} source(s) were not supplied and {{ truncations.length }} were cut short.
+            {{ plural(omissions.length, 'source') }} {{ verb(omissions.length, 'was', 'were') }} not supplied and {{ truncations.length }} were cut short.
             Anything resting on them is unsupported.
           </p>
           <p v-else class="verdict warn">

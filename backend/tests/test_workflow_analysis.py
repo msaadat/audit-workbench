@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import re
 
 import polars as pl
 import pytest
@@ -1512,7 +1513,14 @@ def test_execution_is_local_and_persists_only_the_bounded_result(
     assert result["informative"] is True
     assert result["uninformative_reason"] is None
     assert len(result["stats"]) <= analysis_executors.MAX_RESULT_STATS
-    assert "1001" not in json.dumps(result)
+    # Content hashes are opaque hex derived from the result; their digits carry
+    # no row value, and searching them for one produces a false positive as soon
+    # as any hashed input changes. Search everything else.
+    searchable = {
+        key: value for key, value in result.items()
+        if not re.fullmatch(r"[0-9a-f]{32,}", str(value))
+    }
+    assert "1001" not in json.dumps(searchable)
     # The definition itself is still a spec that recomputes on demand.
     assert dashboard.compute_payload(fresh, duplicates)["error"] is None
 

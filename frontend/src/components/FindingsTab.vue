@@ -21,6 +21,7 @@ import MarkdownEditor from './MarkdownEditor.vue'
 import UiAdvancedSection from './ui/UiAdvancedSection.vue'
 import UiEmptyState from './ui/UiEmptyState.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
+import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -153,7 +154,7 @@ function confirmAll() {
   if (!targets.length) return
   confirm.require({
     header: 'Confirm all findings',
-    message: `Mark ${targets.length} finding(s) as auditor confirmed for formal reporting? Findings missing a complete narrative, required links, or evidence will be skipped.`,
+    message: `Mark ${plural(targets.length, 'finding')} as auditor confirmed for formal reporting? Findings missing a complete narrative, required links, or evidence will be skipped.`,
     icon: 'pi pi-check-square',
     acceptProps: { label: `Confirm ${targets.length}` },
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
@@ -172,9 +173,9 @@ function confirmAll() {
         }
         await reload(selectedId.value ?? undefined)
         emit('changed')
-        if (confirmed) toast.add({ severity: 'success', summary: `${confirmed} finding(s) confirmed`, life: 2500 })
+        if (confirmed) toast.add({ severity: 'success', summary: `${plural(confirmed, 'finding')} confirmed`, life: 2500 })
         if (skipped.length) {
-          toast.add({ severity: 'warn', summary: `${skipped.length} finding(s) could not be confirmed`, detail: skipped.join(' · '), life: 9000 })
+          toast.add({ severity: 'warn', summary: `${plural(skipped.length, 'finding')} could not be confirmed`, detail: skipped.join(' · '), life: 9000 })
         }
       } finally { confirmingAll.value = false }
     },
@@ -288,7 +289,7 @@ function openEvidence(value: EvidenceRef) {
           <label>Test links<MultiSelect v-model="selected.test_refs" :options="testOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select tests" /></label>
           <label class="wide">Execution sources<MultiSelect v-model="selected.execution_refs" :options="executionOptions" optionLabel="label" optionValue="value" display="chip" filter placeholder="Select durable execution results" /></label>
         </div>
-        <UiAdvancedSection title="Evidence and traceability" :description="`${selected.evidence_refs.length} evidence link(s)`" :open="!selected.evidence_refs.length">
+        <UiAdvancedSection title="Evidence and traceability" :description="`${plural(selected.evidence_refs.length, 'evidence link')}`" :open="!selected.evidence_refs.length">
         <div class="source-links">
           <h3>Traceability and evidence</h3>
           <div class="chips"><button v-for="id in selected.rcm_refs" :key="`rcm:${id}`" @click="openPlanning(id)"><i class="pi pi-map"/> {{ id }}</button><button v-for="id in selected.test_refs" :key="`test:${id}`" @click="openPlanning(selected.rcm_refs[0] || '')"><i class="pi pi-list-check"/> {{ id }}</button></div>

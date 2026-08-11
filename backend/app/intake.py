@@ -22,6 +22,7 @@ from xml.etree import ElementTree
 
 from . import loader
 from .workspaces import Workspace, WorkspaceError, slugify, write_json_atomic
+from .text import counted, verb
 
 IMPORTS_DIRNAME = "Imports"
 INDEX_FILENAME = "index.json"
@@ -417,7 +418,7 @@ def complete_upload(workspace: Workspace, batch_id: str) -> dict:
         raise WorkspaceError("This import batch is no longer accepting uploads.")
     missing = [item["relative_path"] for item in batch["items"] if item["needs_upload"] and not item.get("uploaded")]
     if missing:
-        raise WorkspaceError(f"Upload is incomplete; {len(missing)} requested file(s) are missing.")
+        raise WorkspaceError(f"Upload is incomplete; {counted(len(missing), 'requested file')} {verb(len(missing), 'is', 'are')} missing.")
     index = load_index(workspace)
     hashes = {item.get("sha1"): item for item in index["files"] if item.get("sha1")}
     for item in batch["items"]:
@@ -737,7 +738,7 @@ def planning_actions_for_documents(imported_documents: list[dict]) -> list[dict]
             "agent_kind": "planning",
             "title": "Update planning from imported guidance",
             "reason": (
-                f"{len(planning_documents)} newly imported policy, procedure, or planning document(s) "
+                f"{counted(len(planning_documents), 'newly imported policy, procedure, or planning document')} "
                 "may affect the engagement context, APM, RCM, and its tests."
             ),
             "document_ids": [item["id"] for item in selected],

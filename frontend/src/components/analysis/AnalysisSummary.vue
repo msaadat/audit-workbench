@@ -7,6 +7,7 @@ import { api } from '../../api'
 import type { AnalysisMemo, SavedAnalysis, WorkspaceSummary } from '../../types'
 import MemoView from './MemoView.vue'
 import UiEmptyState from '../ui/UiEmptyState.vue'
+import { plural } from '../../format'
 
 // The Summary screen is the memo: an auditor's account of the EDA performed,
 // the exceptions noted, and what remains — with the results it cites rendered
@@ -57,7 +58,7 @@ const written = computed(() => {
       <header class="summary-head">
         <span class="muted">
           Written {{ written }}<span v-if="memo!.cited_analysis_ids.length">
-            · cites {{ memo!.cited_analysis_ids.length }} result(s)</span>
+            · cites {{ plural(memo!.cited_analysis_ids.length, 'result') }}</span>
         </span>
         <Button
           label="Regenerate"

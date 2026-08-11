@@ -20,6 +20,7 @@ from __future__ import annotations
 import threading
 
 from .. import intake, llm
+from ..text import counted
 from ..workspaces import Workspace
 from . import narration
 from .base import BaseRunner, Cancelled, LimitExceeded
@@ -163,7 +164,7 @@ class IntakeRunner(BaseRunner):
             refreshed = intake.load_batch(self.ws, batch_id)
             missing = [item["relative_path"] for item in refreshed["items"] if item.get("action") == "imported" and not item.get("target_ref")]
             if missing:
-                raise ValueError(f"{len(missing)} imported target(s) could not be verified.")
+                raise ValueError(f"{counted(len(missing), 'imported target')} could not be verified.")
             self.task_status(verify, "completed")
             self.run["intake"] = {
                 "batch_id": batch_id,
@@ -176,7 +177,7 @@ class IntakeRunner(BaseRunner):
             counts = self.run["intake"]
             self.run["summary_markdown"] = (
                 "# Folder intake summary\n\n"
-                f"Imported **{counts.get('imported', 0)}** file(s), ignored "
+                f"Imported **{counted(counts.get('imported', 0), 'file')}**, ignored "
                 f"**{counts.get('ignored', 0)}**, and left **{counts.get('ambiguous', 0)}** "
                 "for manual classification."
             )
@@ -193,7 +194,7 @@ class IntakeRunner(BaseRunner):
                 ),
                 headline="Folder intake complete",
                 summary=(
-                    f"Imported {counts.get('imported', 0)} file(s), ignored "
+                    f"Imported {counted(counts.get('imported', 0), 'file')}, ignored "
                     f"{counts.get('ignored', 0)}, and left "
                     f"{counts.get('ambiguous', 0)} for manual classification."
                 ),

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import polars as pl
 
 from .explore import QueryError, frame_payload
+from .text import counted, verb
 from .field_names import resolve_column, resolve_columns
 
 SUMMARY_MAX_ROWS = 500
@@ -237,7 +238,7 @@ def duplicates(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         title=f"Duplicates on {', '.join(columns)}",
         verdict=verdict,
         verdict_text=(
-            f"{counts.height:,} duplicated key(s) covering {dup_rows:,} rows"
+            f"{counted(counts.height, 'duplicated key')} covering {dup_rows:,} rows"
             if counts.height
             else "No duplicate keys found"
         ),
@@ -290,7 +291,7 @@ def gaps(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         verdict_text=(
             "Sequence is complete"
             if gap_rows.is_empty()
-            else f"{gap_rows.height:,} gap(s), {missing_total:,} missing number(s)"
+            else f"{counted(gap_rows.height, 'gap')}, {counted(missing_total, 'missing number')}"
         ),
         stats=[
             _stat("Range", f"{low:,} – {high:,}"),
@@ -407,7 +408,7 @@ def period_compare(df: pl.DataFrame, params: dict) -> AnalyticsResult:
             f"{frame['date'].min().isoformat()} – {frame['date'].max().isoformat()}",
         ),
     ]
-    verdict, text = "info", f"{table.height} {period}(s) compared on {measure}"
+    verdict, text = "info", f"{counted(table.height, period)} compared on {measure}"
     if swings.height:
         biggest = swings.sort(pl.col("change_pct").abs(), descending=True).row(0, named=True)
         stats.append(
@@ -532,7 +533,7 @@ def outliers(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         title=f"Outliers in {column} ({method.upper()})",
         verdict="warn" if flagged.height else "ok",
         verdict_text=(
-            f"{flagged.height:,} value(s) outside {band}"
+            f"{counted(flagged.height, 'value')} outside {band}"
             if flagged.height
             else f"No values outside {band}"
         ),
@@ -586,7 +587,7 @@ def threshold_check(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         title=f"Just-below-threshold clustering on {column} (limit {threshold:,.0f})",
         verdict="warn" if clustered else "info",
         verdict_text=(
-            f"{below_count:,} value(s) cluster just below {threshold:,.0f} "
+            f"{counted(below_count, 'value')} cluster just below {threshold:,.0f} "
             f"vs {above_count:,} just above — possible limit avoidance"
             if clustered
             else f"{below_count:,} just below vs {above_count:,} just above — no unusual clustering"
@@ -681,9 +682,9 @@ def date_lag(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         }
     )
     if backdated.height:
-        verdict, text = "fail", f"{backdated.height:,} row(s) have {to_col} before {from_col}"
+        verdict, text = "fail", f"{counted(backdated.height, 'row')} {verb(backdated.height, 'has', 'have')} {to_col} before {from_col}"
     elif excessive_n:
-        verdict, text = "warn", f"{excessive_n:,} row(s) exceed {max_days} days"
+        verdict, text = "warn", f"{counted(excessive_n, 'row')} {verb(excessive_n, 'exceeds', 'exceed')} {max_days} days"
     else:
         verdict, text = "ok", "No backdated or excessively lagged rows"
     return AnalyticsResult(
@@ -745,7 +746,7 @@ def stratify(df: pl.DataFrame, params: dict) -> AnalyticsResult:
     return AnalyticsResult(
         title=f"Stratification of {column} ({method}, {n_bands} bands)",
         verdict="info",
-        verdict_text=f"{total:,} values across {summary.height} band(s)",
+        verdict_text=f"{total:,} values across {counted(summary.height, 'band')}",
         stats=[
             _stat("Values tested", total),
             _stat("Range", f"{lo:,.2f} … {hi:,.2f}"),
@@ -787,7 +788,7 @@ def completeness(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         title=f"Completeness of {', '.join(columns)}",
         verdict="warn" if total_missing else "ok",
         verdict_text=(
-            f"{detail.height:,} row(s) have a blank in a checked column"
+            f"{counted(detail.height, 'row')} {verb(detail.height, 'has', 'have')} a blank in a checked column"
             if total_missing
             else "No blank values in the checked columns"
         ),
@@ -830,9 +831,9 @@ def sign_scan(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         title=f"Negative / zero values in {column}",
         verdict="warn" if neg else "ok",
         verdict_text=(
-            f"{neg:,} negative and {zero:,} zero value(s)"
+            f"{neg:,} negative and {counted(zero, 'zero value')}"
             if neg
-            else f"No negatives ({zero:,} zero value(s))"
+            else f"No negatives ({counted(zero, 'zero value')})"
         ),
         stats=[
             _stat("Values tested", n),
@@ -921,12 +922,12 @@ def rare_values(df: pl.DataFrame, params: dict) -> AnalyticsResult:
         else None
     )
     return AnalyticsResult(
-        title=f"Rare values in {column} (≤{max_count} occurrence(s))",
+        title=f"Rare values in {column} (≤{counted(max_count, 'occurrence')})",
         verdict="warn" if rare.height else "ok",
         verdict_text=(
-            f"{rare.height:,} value(s) occur ≤{max_count} time(s), covering {affected:,} row(s)"
+            f"{counted(rare.height, 'value')} occur ≤{counted(max_count, 'time')}, covering {counted(affected, 'row')}"
             if rare.height
-            else f"No values occur ≤{max_count} time(s)"
+            else f"No values occur ≤{counted(max_count, 'time')}"
         ),
         stats=[
             _stat("Distinct values", distinct),

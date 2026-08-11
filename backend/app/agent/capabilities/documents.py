@@ -29,6 +29,7 @@ from ... import (
     documents as document_service,
     intake,
 )
+from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec, semantic_unit_id
 from ..workflows import documents as documents_workflow
@@ -384,7 +385,7 @@ def _text_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
-        (f"{len(pending)} document(s) have no extracted text",),
+        (f"{counted(len(pending), 'document')} {verb(len(pending), 'has', 'have')} no extracted text",),
         details=details,
     )
 
@@ -455,7 +456,7 @@ def _chunks_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
-        (f"{len(pending)} document(s) have no analyzed source chunks",),
+        (f"{counted(len(pending), 'document')} {verb(len(pending), 'has', 'have')} no analysed source chunks",),
         details=details,
     )
 
@@ -574,7 +575,7 @@ def _generated_ready(workspace: Workspace, scope: dict) -> Readiness:
         return Readiness("satisfied", details=details)
     return Readiness(
         "missing",
-        (f"{len(pending)} document(s) have no generated analysis",),
+        (f"{counted(len(pending), 'document')} {verb(len(pending), 'has', 'have')} no generated analysis",),
         details=details,
     )
 

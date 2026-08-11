@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 
 from ... import findings, rcm_execution, report
+from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import (
     Capability,
@@ -56,7 +57,7 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     if invalid:
         return Readiness(
             "review_required",
-            (f"{len(invalid)} existing finding draft(s) fail support validation",),
+            (f"{counted(len(invalid), 'existing finding draft')} {verb(len(invalid), 'fails', 'fail')} support validation",),
             details={"eligible": len(eligible), "invalid": len(invalid)},
         )
     covered = set(linked)
@@ -64,7 +65,7 @@ def _findings_ready(workspace: Workspace, scope: dict) -> Readiness:
     if missing:
         return Readiness(
             "missing",
-            (f"{len(missing)} eligible observation(s) need finding drafts",),
+            (f"{counted(len(missing), 'eligible observation')} {verb(len(missing))} finding drafts",),
             details={"eligible": len(eligible)},
         )
     return Readiness("satisfied", details={"eligible": len(eligible), "drafted": len(eligible)})
@@ -126,7 +127,7 @@ def _working_papers_ready(workspace: Workspace, scope: dict) -> Readiness:
     return (
         Readiness(
             "missing",
-            (f"{len(missing)} RCM working paper(s) are missing",),
+            (f"{counted(len(missing), 'RCM working paper')} {verb(len(missing), 'is', 'are')} missing",),
             details={"missing": len(missing)},
         )
         if missing
@@ -237,7 +238,7 @@ def _verified(workspace: Workspace, _scope: dict) -> Readiness:
         )
     reasons = [f"audit completion status is {status}"]
     if errors:
-        reasons.append(f"report quality has {len(errors)} error(s)")
+        reasons.append(f"report quality has {counted(len(errors), 'error')}")
     return Readiness(
         "review_required",
         tuple(reasons),

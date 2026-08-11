@@ -319,11 +319,11 @@ def context_note(manifest: "ContextManifest", workspace: object, *, label: str =
     named = _grouped_source_labels(selections, workspace)
     if not named:
         return ""
-    size = getattr(manifest, "supplied_size", None)
-    tokens = int(getattr(size, "estimated_tokens", 0) or 0)
-    token_phrase = f"~{max(1, tokens // 1000)}k tokens" if tokens >= 1000 else f"{tokens} tokens"
+    # No token count. It is the one number in this sentence the auditor cannot
+    # act on, and it turns a line about evidence into a line about the model.
+    # The manifest still carries `supplied_size` for anyone debugging a run.
     subject = f" for {label}" if label else ""
-    sentence = f"Reading {_joined(named, 'and')}{subject} ({token_phrase})."
+    sentence = f"Reading {_joined(named, 'and')}{subject}."
     omissions = list(getattr(manifest, "omissions", None) or [])
     if omissions:
         buckets: dict[str, list] = {}
@@ -344,14 +344,14 @@ def context_note(manifest: "ContextManifest", workspace: object, *, label: str =
 def repair_note(reason: str = "") -> str:
     """What the agent says when a draft failed its quality gate and is retried.
 
-    The reason is the worker's own validation message
-    (agent/workers/model.py), so this stays a projection: it never decides
-    whether to repair, only states why one is happening.
+    ``reason`` is the worker's own validation message (agent/workers/model.py)
+    and is deliberately *not* repeated to the auditor: those messages describe
+    the response contract, not the audit — "the response must be a JSON object
+    with a `finding` object" told a reader nothing they could act on and made a
+    routine, recovered retry read like a defect. The parameter stays so callers
+    need not change and the reason remains available on the attempt itself.
     """
-    reason = str(reason or "").strip()
-    if reason:
-        return f"That draft didn't pass the quality check — {reason} — so I'm redoing it."
-    return "That draft didn't pass the quality check, so I'm redoing it."
+    return "The first draft didn't match the required shape, so I'm redoing it."
 
 
 _COMPLETION_HEADING_RE = re.compile(r"(?m)^#{1,6}\s+(.+?)\s*$")
@@ -459,14 +459,17 @@ def _blocker(stage: dict, unit: dict) -> dict:
     entry = _BLOCKERS.get(code, {})
     subject = subject_of(unit) or entry.get("fallback_subject") or ""
     template = entry.get("message")
+    # `humanize` strips the domain prefix and the separators, so a code that is
+    # only punctuation — "." — reduces to nothing and used to leave the sentence
+    # "… stopped: ." on screen. An unmapped code is only worth showing when it
+    # survives into words.
+    detail = humanize(code) if code else ""
     if template:
         message = template.format(subject=subject or "it")
-    elif code:
+    elif detail:
         # An unmapped code still beats a raw identifier: say what stopped and
         # show the code as supporting detail rather than as the message.
-        message = _sentence(
-            f"{unit.get('title') or 'A step'} stopped: {humanize(code)}."
-        )
+        message = _sentence(f"{unit.get('title') or 'A step'} stopped: {detail}.")
     else:
         message = _sentence(f"{unit.get('title') or 'A step'} needs your input before it can continue.")
     suggestions = [

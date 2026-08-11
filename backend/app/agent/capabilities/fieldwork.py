@@ -13,6 +13,7 @@ declared context. The dependency edges come from the authoritative graph in
 from __future__ import annotations
 
 from ... import rcm_execution
+from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import (
     Capability,
@@ -70,19 +71,19 @@ def _execution_ready(workspace: Workspace, scope: dict) -> Readiness:
     if pending:
         return Readiness(
             "missing",
-            (f"{len(pending)} execution artifact(s) have not run",),
+            (f"{counted(len(pending), 'execution artifact')} {verb(len(pending), 'has', 'have')} not run",),
             details=details,
         )
     if review:
         return Readiness(
             "review_required",
-            (f"{len(review)} execution artifact(s) require auditor review",),
+            (f"{counted(len(review), 'execution artifact')} {verb(len(review), 'requires', 'require')} auditor review",),
             details=details,
         )
     if blocked:
         return Readiness(
             "review_required",
-            (f"{len(blocked)} execution artifact(s) are blocked on evidence",),
+            (f"{counted(len(blocked), 'execution artifact')} {verb(len(blocked), 'is', 'are')} blocked on evidence",),
             details=details,
         )
     return Readiness("satisfied", details=details)
@@ -98,7 +99,7 @@ def _execution_units(workspace: Workspace, scope: dict) -> list[UnitSpec]:
                 UnitSpec(
                     semantic_unit_id("data_test_execution", test["test_id"]),
                     "data_test_execution",
-                    f"Execute datatest — {test['title']}",
+                    f"Run data test — {test['title']}",
                     (f"rcm:{test['rcm_id']}", f"datatest:{test['test_id']}"),
                     test,
                 )
@@ -145,7 +146,7 @@ def _rollup_ready(workspace: Workspace, scope: dict) -> Readiness:
     missing = [row["id"] for row in rcm_rows if not row.get("execution_rollup")]
     if missing:
         return Readiness(
-            "missing", (f"{len(missing)} RCM row(s) have not been rolled up",)
+            "missing", (f"{counted(len(missing), 'RCM row')} {verb(len(missing), 'has', 'have')} not been rolled up",)
         )
     return Readiness("satisfied", details={"artifact_count": len(rcm_rows)})
 

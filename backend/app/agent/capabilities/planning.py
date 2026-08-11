@@ -12,6 +12,7 @@ declared context. The dependency edges come from the authoritative graph in
 
 from __future__ import annotations
 
+from ...text import counted, verb
 from ...workspaces import Workspace
 from ..workflow import Capability, Readiness, UnitSpec
 from ..workflows import audit as audit_workflow
@@ -116,7 +117,7 @@ def _rcm_ready(workspace: Workspace, scope: dict) -> Readiness:
     if invalid:
         return Readiness(
             "review_required",
-            (f"{len(invalid)} RCM row(s) lack a risk or control",),
+            (f"{counted(len(invalid), 'RCM row')} {verb(len(invalid), 'lacks', 'lack')} a risk or control",),
             details={"artifact_count": len(rows)},
         )
     # Structurally usable RCM rows exist; currency relative to the APM is not

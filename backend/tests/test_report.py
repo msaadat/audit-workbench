@@ -347,18 +347,18 @@ def test_deterministic_preliminary_report_discloses_incomplete_workflow_coverage
     generated = report.generate(ws, use_model=False, workflow=workflow_state)
 
     assert generated["generation_warnings"] == [
-        "Incomplete planning coverage: 1 planning workflow unit(s) failed and "
-        "1 required planning item(s) are missing.",
-        "Incomplete execution-definition coverage: 1 execution-definition workflow "
-        "unit(s) failed and 1 required execution definition(s) are missing.",
+        "Incomplete planning coverage: 1 planning step failed and "
+        "1 required planning item is missing.",
+        "Incomplete execution-definition coverage: 1 execution-definition step "
+        "failed and 1 required execution definition is missing.",
     ]
     assert "# Preliminary Internal Audit Working Draft" in generated["markdown"]
     # Limitations bound the scope, so they are disclosed under it rather than in
     # a section of their own a reader has to go looking for.
     assert "### 2. Objective and Scope" in generated["markdown"]
     assert "**Scope limitations**" in generated["markdown"]
-    assert "Incomplete planning coverage: 1 planning workflow unit(s) failed" in generated["markdown"]
-    assert "Incomplete execution-definition coverage: 1 execution-definition workflow unit(s) failed" in generated["markdown"]
+    assert "Incomplete planning coverage: 1 planning step failed" in generated["markdown"]
+    assert "Incomplete execution-definition coverage: 1 execution-definition step failed" in generated["markdown"]
 
 
 def test_report_nests_the_executive_summary_under_one_heading(workspace_with_data):
@@ -482,7 +482,7 @@ def test_summary_of_findings_counts_every_confirmed_finding(workspace_with_data)
     assert f"| {ws.name} | 0 | 2 | 1 | 0 |" in summary
     # An informational finding has no column, so it is stated rather than
     # dropped from a count a reader will take as complete.
-    assert "A further 1 finding(s) are recorded at informational severity" in summary
+    assert "A further 1 finding is recorded at informational severity" in summary
 
 
 def test_recorded_limitations_are_capped_and_the_remainder_counted(workspace_with_data):
@@ -500,7 +500,7 @@ def test_recorded_limitations_are_capped_and_the_remainder_counted(workspace_wit
     # Limitations are recorded per test, so a thinly evidenced engagement
     # restates the same few gaps many times; the count is more use than the list.
     assert body.count("\n- ") == report._SCOPE_LIMITATION_LIMIT + 1
-    assert "A further 4 limitation(s) are recorded" in body
+    assert "A further 4 limitations are recorded" in body
 
 
 def test_a_findings_own_counts_are_not_read_as_the_reports_arithmetic(workspace_with_data):

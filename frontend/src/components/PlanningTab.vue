@@ -24,6 +24,7 @@ import RcmControlAttributesEditor from './planning/RcmControlAttributesEditor.vu
 import UiOverflowMenu from './ui/UiOverflowMenu.vue'
 import UiPageHeader from './ui/UiPageHeader.vue'
 import UiTestStatus from './ui/UiTestStatus.vue'
+import { plural } from '../format'
 
 const props = defineProps<{ workspace: WorkspaceSummary; section: 'apm' | 'rcm' }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -194,9 +195,9 @@ async function importRcm(event: Event) {
     emit('changed')
     toast.add({
       severity: result.unmatched.length ? 'warn' : 'success',
-      summary: `RCM imported — ${result.updated} row(s) updated`,
+      summary: `RCM imported — ${plural(result.updated, 'row')} updated`,
       detail: result.unmatched.length
-        ? `${result.unmatched.length} row id(s) not found and skipped (no rows are added or removed): ${result.unmatched.join(', ')}`
+        ? `${plural(result.unmatched.length, 'row id')} not found and skipped (no rows are added or removed): ${result.unmatched.join(', ')}`
         : undefined,
       life: 7000,
     })
@@ -325,7 +326,7 @@ async function runAllDataTests() {
     toast.add({
       severity: result.failed.length ? 'warn' : 'success',
       summary: `Ran ${result.completed.length} of ${result.total} RCM Data Test${result.total === 1 ? '' : 's'}`,
-      detail: result.failed.length ? `${result.failed.length} test(s) could not run: ${result.failed.map(item => item.data_test_id).join(', ')}` : undefined,
+      detail: result.failed.length ? `${plural(result.failed.length, 'test')} could not run: ${result.failed.map(item => item.data_test_id).join(', ')}` : undefined,
       life: 6000,
     })
   } catch (error) { fail('Could not run RCM Data Tests', error) }
@@ -461,7 +462,7 @@ const rcmActions = computed(() => [
       <div class="view-toggle" role="group" aria-label="RCM view">
         <button :class="{ on: rcmView === 'board' }" :aria-pressed="rcmView === 'board'" @click="setRcmView('board')"><i class="pi pi-th-large"/>Board</button>
         <button :class="{ on: rcmView === 'grid' }" :aria-pressed="rcmView === 'grid'" @click="setRcmView('grid')"><i class="pi pi-table"/>Grid</button>
-        <span class="view-hint">{{ rcmView === 'board' ? 'Grouped by state of assurance. Switch to the grid to edit rows in bulk.' : `${data.rcm.length} row(s) · edit, import, and export from here.` }}</span>
+        <span class="view-hint">{{ rcmView === 'board' ? 'Grouped by state of assurance. Switch to the grid to edit rows in bulk.' : `Edit, import, and export from here.` }}</span>
       </div>
       <CoverageBoard v-if="rcmView === 'board'" :rows="data.rcm" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @open="openRcm" @generate="generatePlannedTests"/>
       <RcmGrid v-else :rows="data.rcm" :dataTests="data.data_tests" :documentTests="data.document_tests" :findingRollups="data.finding_rollups" :generating="generatingTests" :canGenerate="!isActive && Boolean(agent.state.status?.configured)" @add="addRcm" @update="updateRcm" @remove="removeRcm" @open="openRcm" @generate="generatePlannedTests"/>
@@ -473,11 +474,11 @@ const rcmActions = computed(() => [
         <RcmControlAttributesEditor v-model="selectedRcm.control_attributes" :metadata="cycleMeta" />
         <div class="detail-actions"><Button label="Save RCM row" icon="pi pi-save" size="small" outlined @click="saveRcmDetail"/><Button label="RCM working paper" icon="pi pi-file" size="small" outlined @click="openWorkingPaper"/><Button label="Add Data Test" icon="pi pi-chart-bar" size="small" outlined @click="createTest('data')"/><Button label="Add Document Test" icon="pi pi-file-check" size="small" @click="createTest('document')"/></div>
         <section class="planned-list"><article v-for="item in linkedTests(selectedRcm)" :key="item.test_id" class="planned-card">
-          <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ item.exception_count }} exception(s) · {{ item.open_exception_count }} open</span></div>
+          <div class="planned-head"><div><strong>{{ item.test_id }}</strong><Tag :value="item.kind === 'datatest' ? 'data' : 'document'" severity="secondary"/><UiTestStatus :status="item.status" /></div><span>{{ plural(item.exception_count, 'exception') }} · {{ item.open_exception_count }} open</span></div>
           <p class="planned-title">{{ item.title }}</p>
           <p class="muted">{{ item.result_summary || 'Not executed yet.' }}</p>
           <p v-if="item.assurance_scope" class="muted">
-            <strong>{{ item.assurance_label }}</strong> · {{ item.tested_items ?? 0 }} tested item(s) ·
+            <strong>{{ item.assurance_label }}</strong> · {{ plural(item.tested_items ?? 0, 'tested item') }} ·
             {{ item.failed_items ?? 0 }} failed · {{ item.incomplete_items ?? 0 }} incomplete ·
             {{ item.assertion_mismatches ?? 0 }} diagnostic assertion mismatch(es) ·
             {{ item.conclusion_eligible ? 'population conclusion eligible' : 'no population conclusion' }}

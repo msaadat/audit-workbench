@@ -14,6 +14,7 @@ from . import cycle_vouching, data_tests, doc_tests
 from .evidence import normalize_anchor
 from .workspace_transactions import canonical_sha1, material_projection
 from .workspaces import Workspace
+from .text import counted
 
 
 _DURABLE_DOC_TEST_STATUSES = frozenset({
@@ -540,7 +541,7 @@ def _rollup_doctest(workspace: Workspace, row: dict, item: dict) -> tuple[str, i
             execution_ref=f"doctest:{item['id']}",
             exception_count=exceptions,
             classification="draft_finding_candidate",
-            summary=f"{exceptions} document-test exception or mismatch result(s).",
+            summary=f"{counted(exceptions, 'document-test exception or mismatch result')}.",
         )
         if observation.get("outcome") == "exception":
             open_exceptions = exceptions
@@ -583,16 +584,16 @@ def _rollup_test(workspace: Workspace, row: dict, test: dict) -> dict:
         item["control_conclusion_source"] = "none"
     if test["kind"] == "doctest" and doc_tests.is_cycle_test(item):
         result_summary = (
-            f"{detailed_rollup['tested_items']} of {detailed_rollup['items']} item(s) tested; "
+            f"{detailed_rollup['tested_items']} of {counted(detailed_rollup['items'], 'item')} tested; "
             f"{detailed_rollup['failed_items']} failed, "
             f"{detailed_rollup['incomplete_items']} incomplete, "
             f"{detailed_rollup['needs_review_items']} need review; "
             f"{detailed_rollup['assertion_mismatches']} assertion mismatch(es); "
-            f"{open_exceptions} open item exception(s)."
+            f"{counted(open_exceptions, 'open item exception')}."
         )
     else:
         result_summary = (
-            f"{executed} run(s); {exceptions} exception result(s), "
+            f"{counted(executed, 'run')}; {counted(exceptions, 'exception result')}, "
             f"{open_exceptions} open."
         )
     item.update(
